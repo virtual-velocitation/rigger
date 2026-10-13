@@ -6741,13 +6741,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-207b5aa153cb",
+    "id": "dup-3be67bbbcb08",
     "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
         "name": "kind_str",
-        "content_hash": "356013c71e3aa4fe"
+        "content_hash": "9dcb44149cfb1f1e"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
@@ -6765,13 +6765,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ff3bcd827c2f",
+    "id": "dup-ab65932dea10",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
         "name": "extract",
-        "content_hash": "44321c65c6fc2438"
+        "content_hash": "b201a26611c6a7e1"
       },
       {
         "file": "tests/common/source_audit.rs",

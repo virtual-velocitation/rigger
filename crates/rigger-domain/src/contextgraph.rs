@@ -43,6 +43,14 @@ pub const KIND_FINDING: &str = "finding";
 /// `<file>::<name>`; its attrs carry the name, the rigger `Kind` string, the 1-based line, and
 /// the language it was parsed as.
 pub const KIND_CODE_ENTITY: &str = "code-entity";
+/// The code kind (a code entity's `kind` attr) of a constructor: function-like, so a reference
+/// inside one has it as caller.
+pub const CODE_KIND_CONSTRUCTOR: &str = "constructor";
+/// The code kind of a macro, whose body is function-like to the caller rule.
+pub const CODE_KIND_MACRO: &str = "macro";
+/// The code kind of a declaration: a function, method or constructor with no body. Never a
+/// caller: a reference in its signature takes the next enclosing definition.
+pub const CODE_KIND_DECLARATION: &str = "declaration";
 /// A source file container node (spec 29a): the `<rel-path>` node that a file's extracted
 /// code entities hang off. Folded alongside the entities, so a query can reach a file's
 /// structure the same way it reaches the decisions that govern the file.

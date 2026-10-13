@@ -6,7 +6,8 @@
 //! stays compiled in both lanes.
 
 use crate::contextgraph::{
-    CodeEntityExtracted, EdgeInferred, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+    CodeEntityExtracted, EdgeInferred, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION,
+    CODE_KIND_MACRO, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
 };
 use crate::eventstore::Event;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
@@ -794,6 +795,9 @@ fn kind_str(k: Kind) -> &'static str {
         Kind::Impl => "impl",
         Kind::Module => "module",
         Kind::Constant => "constant",
+        Kind::Constructor => CODE_KIND_CONSTRUCTOR,
+        Kind::Macro => CODE_KIND_MACRO,
+        Kind::Declaration => CODE_KIND_DECLARATION,
         Kind::Other => "other",
     }
 }

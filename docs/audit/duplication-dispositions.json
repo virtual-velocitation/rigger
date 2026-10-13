@@ -550,7 +550,7 @@
     "reason": "`stage` builds a review-less never-merging `Stage` for the replay tests while `agent_with_prompt` builds an `AgentDef`; they construct different types."
   },
   {
-    "id": "dup-207b5aa153cb",
+    "id": "dup-3be67bbbcb08",
     "disposition": "not-a-duplicate",
     "reason": "Three enum-to-string mappings over different enums (edge direction to SQL, entity kind, language)."
   },

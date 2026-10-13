@@ -46,10 +46,10 @@ pub fn extract(
     let mut defs = Vec::new();
     let mut refs = Vec::new();
     // Each definition's byte range (the whole construct, body included - the tag's node range,
-    // see `enclosing_def`) paired with its name, and each reference's byte position. Collected in
-    // this single tag pass; the enclosing definition is resolved below so the reference order the
-    // emit pass depends on stays untouched.
-    let mut def_ranges: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    // see `enclosing_def`) with its name and kind, and each reference's byte position. Collected
+    // in this single tag pass; the enclosing definition is resolved below so the reference order
+    // the emit pass depends on stays untouched.
+    let mut def_ranges: Vec<(std::ops::Range<usize>, String, Kind)> = Vec::new();
     let mut ref_positions: Vec<usize> = Vec::new();
     for tag in tags {
         let tag = tag.map_err(|e| format!("symbols: tag: {e}"))?;
@@ -60,10 +60,10 @@ pub fn extract(
         // 1-based line from the tag span's start row.
         let line = tag.span.start.row as u32 + 1;
         if tag.is_definition {
-            let syntax = config.syntax_type_name(tag.syntax_type_id);
-            def_ranges.push((tag.range.clone(), name.clone()));
+            let kind = kind_of(config.syntax_type_name(tag.syntax_type_id));
+            def_ranges.push((tag.range.clone(), name.clone(), kind));
             defs.push(Def {
-                kind: kind_of(syntax),
+                kind,
                 name,
                 line,
                 // Resolved below, once every definition's range is known (test_regions needs the
@@ -104,10 +104,11 @@ pub fn extract(
         .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
     // Every impl block is a definition of its own (gap 104), named by its header, with its trait
     // and self type recorded as references. Added before the attribution pass below, so those two
-    // references attribute to the impl (the impl -> trait and impl -> type links) while a
-    // reference inside one of its methods still attributes to the method, the innermost range.
+    // references attribute to the impl (the impl -> trait and impl -> type links) unless a
+    // function encloses the impl, which then is their caller, while a reference inside one of its
+    // methods still attributes to the method, the innermost function.
     for block in impl_blocks(tree.root_node(), source.as_bytes()) {
-        def_ranges.push((block.range, block.name.clone()));
+        def_ranges.push((block.range, block.name.clone(), Kind::Impl));
         defs.push(Def {
             kind: Kind::Impl,
             name: block.name,
@@ -127,7 +128,8 @@ pub fn extract(
             });
         }
     }
-    // Attribute each reference to the innermost enclosing definition (the caller, spec 37). The
+    // Attribute each reference to its caller (`enclosing_def`: the innermost enclosing function,
+    // else the innermost enclosing definition; spec 116). The
     // reference order is unchanged - `enclosing` is a derived per-reference attribute, never a new
     // sort key, so identical source still yields byte-identical downstream events.
     for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
@@ -142,7 +144,7 @@ pub fn extract(
     // re-deriving attribute/comment boundaries from characters.
     let regions = test_regions(source.as_bytes(), tree.root_node(), &def_ranges);
     if !regions.is_empty() {
-        for (d, (range, _)) in defs.iter_mut().zip(def_ranges.iter()) {
+        for (d, (range, _, _)) in defs.iter_mut().zip(def_ranges.iter()) {
             d.is_test = regions
                 .iter()
                 .any(|r| r.start <= range.start && range.end <= r.end);
@@ -163,7 +165,7 @@ pub fn extract(
     // ([`out_of_line_path_override`]) - the SAME reason as `is_out_of_line_module` itself: only
     // this file's own parsed tree carries the attribute, so the events/index layer that resolves
     // it needs it carried on the definition, not re-derived from source it no longer has.
-    for (d, (range, _)) in defs.iter_mut().zip(def_ranges.iter()) {
+    for (d, (range, _, _)) in defs.iter_mut().zip(def_ranges.iter()) {
         if d.kind == Kind::Module {
             if let Some(n) = tree
                 .root_node()
@@ -210,12 +212,12 @@ pub fn extract(
 fn test_regions(
     source: &[u8],
     root: tree_sitter::Node,
-    def_ranges: &[(std::ops::Range<usize>, String)],
+    def_ranges: &[(std::ops::Range<usize>, String, Kind)],
 ) -> Vec<std::ops::Range<usize>> {
     def_ranges
         .iter()
-        .filter(|(range, _)| preceded_by_test_attribute(source, root, range))
-        .map(|(range, _)| range.clone())
+        .filter(|(range, _, _)| preceded_by_test_attribute(source, root, range))
+        .map(|(range, _, _)| range.clone())
         .collect()
 }
 
@@ -666,24 +668,34 @@ fn comma_separated_groups(tt: tree_sitter::Node) -> Vec<Vec<tree_sitter::Node>> 
     groups
 }
 
-/// The name of the INNERMOST definition whose byte range contains `pos`, or `None` when `pos`
-/// lies outside every definition (a top-level reference such as an import or a module-level
-/// call). Each definition tag carries the byte range of the WHOLE tagged construct - the function
-/// body included, not just its name span - so a reference inside a body falls within its
-/// definition's range. "Innermost" is the smallest containing range, so a reference in a nested
-/// definition attributes to the nested one, not its outer scope. Deterministic for identical
-/// input: ties on span break on the range start, then the definition name.
-fn enclosing_def(def_ranges: &[(std::ops::Range<usize>, String)], pos: usize) -> Option<String> {
+/// The name of the reference at `pos`'s CALLER: the innermost FUNCTION-LIKE definition
+/// (`Function`, `Method`, `Constructor`, `Macro`) whose byte range contains `pos`, else the
+/// innermost definition of any other kind that does, else `None` when `pos` lies outside every
+/// definition (a top-level reference such as an import or a module-level call), the file then
+/// being the caller. A `Declaration` is never a caller: its range is skipped, so a reference in
+/// a signature takes the next enclosing definition. Each definition tag carries the byte range of
+/// the WHOLE tagged construct - the function body included, not just its name span - so a
+/// reference inside a body falls within its definition's range. "Innermost" is the smallest
+/// containing range, so a reference in a nested function attributes to the nested one, not its
+/// outer scope, while a data definition, impl, trait or module nested in a function leaves its
+/// references the function's. Deterministic for identical input: ties on span break on the range
+/// start, then the definition name.
+fn enclosing_def(
+    def_ranges: &[(std::ops::Range<usize>, String, Kind)],
+    pos: usize,
+) -> Option<String> {
     def_ranges
         .iter()
-        .filter(|(range, _)| range.contains(&pos))
-        .min_by(|(a, a_name), (b, b_name)| {
-            (a.end - a.start)
-                .cmp(&(b.end - b.start))
-                .then_with(|| a.start.cmp(&b.start))
-                .then_with(|| a_name.cmp(b_name))
+        .filter(|(range, _, kind)| *kind != Kind::Declaration && range.contains(&pos))
+        .min_by_key(|entry| {
+            let (range, name, kind) = *entry;
+            let function_like = matches!(
+                kind,
+                Kind::Function | Kind::Method | Kind::Constructor | Kind::Macro
+            );
+            (!function_like, range.end - range.start, range.start, name)
         })
-        .map(|(_, name)| name.clone())
+        .map(|(_, name, _)| name.clone())
 }
 
 /// A definition's 1-based inclusive LINE extent: its site line and the last line of the WHOLE

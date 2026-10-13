@@ -39,13 +39,13 @@
       },
       {
         "file": "crates/rigger-domain/src/contextgraph.rs",
-        "start_line": 615,
-        "end_line": 617
+        "start_line": 623,
+        "end_line": 625
       },
       {
         "file": "crates/rigger-domain/src/contextgraph.rs",
-        "start_line": 671,
-        "end_line": 673
+        "start_line": 679,
+        "end_line": 681
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
@@ -6249,8 +6249,8 @@
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
-        "start_line": 60,
-        "end_line": 62
+        "start_line": 61,
+        "end_line": 63
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
@@ -6294,8 +6294,8 @@
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
-        "start_line": 209,
-        "end_line": 305
+        "start_line": 210,
+        "end_line": 306
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
@@ -6305,17 +6305,17 @@
     ]
   },
   {
-    "id": "dup-207b5aa153cb",
+    "id": "dup-3be67bbbcb08",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
-        "start_line": 788,
-        "end_line": 799
+        "start_line": 789,
+        "end_line": 803
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
-        "start_line": 803,
-        "end_line": 812
+        "start_line": 807,
+        "end_line": 816
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
@@ -6325,12 +6325,12 @@
     ]
   },
   {
-    "id": "dup-ff3bcd827c2f",
+    "id": "dup-ab65932dea10",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
         "start_line": 34,
-        "end_line": 201
+        "end_line": 203
       },
       {
         "file": "tests/common/source_audit.rs",

@@ -22,7 +22,9 @@ pub enum Lang {
 }
 
 /// The kind of a definition. A rigger enum, not a tree-sitter syntax-type id. Unknown grammar
-/// tag categories fold to `Other`, so the model stays grammar-agnostic.
+/// tag categories fold to `Other`, so the model stays grammar-agnostic. `Function`, `Method`,
+/// `Constructor` and `Macro` are the FUNCTION-LIKE kinds, a reference's first choice of caller;
+/// a `Declaration` (a function, method or constructor with no body) is never a caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Kind {
     Function,
@@ -32,6 +34,9 @@ pub enum Kind {
     Impl,
     Module,
     Constant,
+    Constructor,
+    Macro,
+    Declaration,
     Other,
 }
 
@@ -115,9 +120,10 @@ pub struct Def {
 
 /// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
 /// reference occurs inside (the caller). `None` for a top-level reference outside every
-/// definition - an import or a module-level call; an impl header's trait and type attribute
-/// to the impl block, a definition of its own. Set during extraction by attributing the reference
-/// to the innermost definition whose body contains it (spec 37). Serde-defaulted and omitted when
+/// definition - an import or a module-level call; a file-level impl header's trait and type
+/// attribute to the impl block, a definition of its own. Set during extraction by attributing the
+/// reference to the innermost function-like definition whose range contains it, else the
+/// innermost definition of any kind but a declaration (spec 116). Serde-defaulted and omitted when
 /// `None` so a pre-37 persisted index folds as caller-less and a caller-less ref serializes
 /// byte-identically to before.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,9 +169,11 @@ pub struct FileSymbols {
 /// recorded radius names the tag-query generation that produced it. Bump it when a shipped
 /// grammar or an authored tags query changes, so a radius computed under an older grammar set
 /// is distinguishable on replay from one the current set would produce, and so a persisted
-/// [`SymbolIndex`] built under an older set loads as absent and is rebuilt (gap 104). Parser-free,
-/// so it lives in the model both feature lanes compile.
-pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v2";
+/// [`SymbolIndex`] built under an older set loads as absent and is rebuilt (gap 104); so does a
+/// change to what extraction records under an unchanged query, the caller a reference carries
+/// (`SymRef::enclosing`) included. Parser-free, so it lives in the model both feature lanes
+/// compile.
+pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v3";
 
 /// The whole-project index. Deterministic containers only (`BTreeMap`): iterating it for
 /// serialization is stable across processes, unlike a `HashMap` whose iteration order is
