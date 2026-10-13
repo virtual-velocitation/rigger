@@ -85,6 +85,17 @@ pub fn saved_with_key(path: &str, symbols: FileSymbols, key: &str, why: &str) ->
     saved.reload()
 }
 
+/// Writes `body`, a hand-authored `index.json`, as the persisted index of `root`, stamped as
+/// built under the extraction generation `grammar`.
+pub fn persist_stamped(root: &str, grammar: &str, body: &str) {
+    let path = store::index_path(root);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut stamped: serde_json::Value =
+        serde_json::from_str(body).expect("the hand-authored index is JSON");
+    stamped["grammar"] = serde_json::Value::String(grammar.to_string());
+    std::fs::write(&path, serde_json::to_vec(&stamped).unwrap()).unwrap();
+}
+
 /// The `file` entry of a hand-authored legacy `index.json` (`legacy`) loaded through the real
 /// `store::load`, which must succeed (`must_load` names the back-compat promise) and hold it.
 /// The legacy form is stamped with the CURRENT extraction generation first, so what it proves is
@@ -93,14 +104,11 @@ pub fn saved_with_key(path: &str, symbols: FileSymbols, key: &str, why: &str) ->
 pub fn legacy_file(legacy: &str, file: &str, must_load: &str) -> FileSymbols {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_str().unwrap();
-    let path = store::index_path(root);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let mut stamped: serde_json::Value =
-        serde_json::from_str(legacy).expect("the legacy index is JSON");
-    stamped["grammar"] = serde_json::Value::String(
-        rigger::grounder::symbols::model::GRAMMAR_TAGS_VERSION.to_string(),
+    persist_stamped(
+        root,
+        rigger::grounder::symbols::model::GRAMMAR_TAGS_VERSION,
+        legacy,
     );
-    std::fs::write(&path, serde_json::to_vec(&stamped).unwrap()).unwrap();
     store::load(root)
         .expect(must_load)
         .files()
