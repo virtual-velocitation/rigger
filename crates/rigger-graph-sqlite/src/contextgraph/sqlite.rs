@@ -11914,7 +11914,22 @@ mod tests {
         /// A live edge as `(from, to, rel, valid-from, source)`.
         type LiveEdge = (String, String, String, i64, Position);
 
-        /// Fold one derived event stamped with replay key `key`, valid from `secs`, at `pos`.
+        /// One derived event stamped with replay key `key`, valid from `secs`, at `pos`.
+        fn keyed_event(
+            pos: u64,
+            type_: &str,
+            json: serde_json::Value,
+            key: &str,
+            secs: u64,
+        ) -> Event {
+            let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap())
+                .with_meta(rigger_domain::ingest::META_REPLAY_KEY, key)
+                .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
+            e.position = pos;
+            e
+        }
+
+        /// Fold one [`keyed_event`].
         fn apply_keyed(
             p: &Projector,
             pos: u64,
@@ -11923,10 +11938,7 @@ mod tests {
             key: &str,
             secs: u64,
         ) {
-            let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap())
-                .with_meta(rigger_domain::ingest::META_REPLAY_KEY, key)
-                .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
-            e.position = pos;
+            let e = keyed_event(pos, type_, json, key, secs);
             crate::test_support::folds(p, std::slice::from_ref(&e));
         }
 
@@ -12147,6 +12159,136 @@ mod tests {
                     references_to_x_tier_as_onto_its_fn(&[("x", "function", 3), ("x", "field", 7)]);
                 references_to_a_fn_folded_after_a_field_of_its_leaf_tier_as_onto_the_fn:
                     references_to_x_tier_as_onto_its_fn(&[("x", "field", 7), ("x", "function", 3)]);
+            }
+
+            /// `src/f.rs` holds its fn `f`, which calls `x`, and `defs` of the leaf `x`, a
+            /// cross-file call and a test reference landing on it, and is ingested again
+            /// unchanged at generation 2. The node retires with generation 1 and returns, so
+            /// its fn, at `line`, is proven and called at both tiers again: what a rebuild
+            /// folding generation 2 alone gives.
+            fn an_unchanged_shared_leaf_re_ingested_stays_the_fn_it_was(defs: &[Def], line: u64) {
+                let batch = [&[("f", "function", 1)], defs].concat();
+                let fold_generation = |p: &Projector, pos: u64, generation: &str, secs: u64| {
+                    fold_defs(p, pos, generation, secs, &batch);
+                    let call = call_json("src/f.rs", "x", "f");
+                    let key = format!("gc/src/f.rs@{generation}#4");
+                    apply_keyed(p, pos + 4, TYPE_EDGE_INFERRED, call, &key, secs);
+                };
+                let folded = Projector::open(":memory:", "test").unwrap();
+                fold_generation(&folded, 1, "h1", 10);
+                fold_a_cross_file_call_and_a_proof(&folded, 6);
+                fold_generation(&folded, 9, "h2", 20);
+                let rebuilt = Projector::open(":memory:", "test").unwrap();
+                fold_generation(&rebuilt, 1, "h2", 20);
+                fold_a_cross_file_call_and_a_proof(&rebuilt, 6);
+
+                let mut proven = definition("x", "function", line);
+                proven.insert("proven_by".to_string(), "1".to_string());
+                proven.insert(
+                    "proof_evidence".to_string(),
+                    r#"["tests/t.rs:3"]"#.to_string(),
+                );
+                for (p, why) in [
+                    (&folded, "folded onto generation 1"),
+                    (&rebuilt, "a rebuild of generation 2"),
+                ] {
+                    assert_eq!(attrs_of(p, X), proven, "{why}");
+                    assert_eq!(call_tiers(p, X), [TIER_EXTRACTED, TIER_EXTRACTED], "{why}");
+                    assert_eq!(
+                        call_tiers(p, "src/b.rs::x"),
+                        [TIER_INFERRED, TIER_INFERRED],
+                        "{why}"
+                    );
+                }
+            }
+
+            crate::test_cases! {
+                an_unchanged_fn_above_a_field_of_its_leaf_re_ingested_stays_the_fn_it_was:
+                    an_unchanged_shared_leaf_re_ingested_stays_the_fn_it_was(
+                        &[("x", "function", 3), ("x", "field", 7)],
+                        3,
+                    );
+                an_unchanged_field_above_a_fn_of_its_leaf_re_ingested_stays_the_fn_it_was:
+                    an_unchanged_shared_leaf_re_ingested_stays_the_fn_it_was(
+                        &[("x", "field", 3), ("x", "function", 7)],
+                        7,
+                    );
+            }
+
+            /// A rebuild's shadow holds what the fold rule it was folded under gave, so one
+            /// left by a binary of another rule is never resumed. A rebuild is interrupted
+            /// past the batch holding `src/f.rs`'s fn `x` at line 3 and its field `x` at line
+            /// 7, and its shadow is left as a rule-1 binary left one: the node the last
+            /// definition folded, a field at 7, and no fold rule recorded. The next rebuild
+            /// discards it and folds the log from its start, to the function at 3 a cold
+            /// rebuild gives.
+            #[test]
+            fn a_rebuild_discards_a_shadow_folded_under_another_fold_rule() {
+                let log = [
+                    keyed_event(
+                        1,
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        kind_def_json("src/f.rs", "x", "function", 3, true),
+                        "gc/src/f.rs@h1#0",
+                        10,
+                    ),
+                    keyed_event(
+                        2,
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        kind_def_json("src/f.rs", "x", "field", 7, false),
+                        "gc/src/f.rs@h1#1",
+                        10,
+                    ),
+                    decision_at("d1", "a.rs", 3),
+                ];
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("graph.db");
+                let path = path.to_str().unwrap();
+                drop(Projector::open(path, "test").unwrap());
+                let mut batches = 0;
+                let interrupted = Projector::rebuild(
+                    &locked(path),
+                    "test",
+                    true,
+                    &mut |after, sink| {
+                        stream_past(&log, after, 2, &mut |events, head| {
+                            batches += 1;
+                            if batches > 1 {
+                                return Err(Error("interrupted after the first batch".to_string()));
+                            }
+                            sink(events, head)
+                        })
+                    },
+                    &mut |_| Ok(None),
+                    &mut |_| {},
+                );
+                Connection::open(format!("{path}.rebuild"))
+                    .unwrap()
+                    .execute_batch(
+                        "UPDATE nodes SET attrs = json_patch(attrs, '{\"kind\":\"field\",\"line\":\"7\"}')
+                          WHERE id = 'src/f.rs::x';
+                         PRAGMA user_version = 0;",
+                    )
+                    .unwrap();
+
+                let mut reads_from = Vec::new();
+                rebuild_in_batches(path, &log, 2, &mut reads_from).unwrap();
+                let p = Projector::open(path, "test").unwrap();
+                assert_eq!(
+                    (
+                        interrupted.map_err(|e| e.to_string()),
+                        reads_from,
+                        attrs_of(&p, X),
+                        p.owed_because().unwrap(),
+                    ),
+                    (
+                        Err("graph: interrupted after the first batch".to_string()),
+                        vec![0, 3],
+                        definition("x", "function", 3),
+                        Vec::<&str>::new(),
+                    ),
+                    "the shadow of another rule is folded again from the start"
+                );
             }
 
             /// `x` ends as a field at line 1 carrying no proof, and the cross-file call to it

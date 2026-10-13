@@ -6097,7 +6097,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-24698ff3581b",
+    "id": "dup-63f69ecaa9ad",
     "classification": "semantic",
     "sites": [
       {
@@ -6149,6 +6149,11 @@
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "1953385dcb5ae89a"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "1103d16a349001ad"
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
@@ -6427,7 +6432,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 65 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 66 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
