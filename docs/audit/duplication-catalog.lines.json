@@ -7624,13 +7624,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 278,
-        "end_line": 280
+        "start_line": 264,
+        "end_line": 266
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 285,
-        "end_line": 287
+        "start_line": 271,
+        "end_line": 273
       }
     ]
   },
@@ -7639,8 +7639,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 376,
-        "end_line": 385
+        "start_line": 362,
+        "end_line": 371
       },
       {
         "file": "tests/community_resolution_knob.rs",

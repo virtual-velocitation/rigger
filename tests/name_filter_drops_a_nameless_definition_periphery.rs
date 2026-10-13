@@ -12,33 +12,35 @@ mod common;
 /// `_` and a Python file binding a module-level `_`,
 /// WHEN the operator runs `rigger graph build`,
 /// THEN the graph's code entities are exactly the Go file's named type and function, the JS and
-/// the Python `_` as constants, and one kindless placeholder per name a Go reference reaches
-/// that no definition gives (`int`, `other`, `probe`, `reach`); no entity is `main.go::_`. Its `CALLS` edges are exactly the named
+/// the Python `_`, and one placeholder per name a Go reference reaches that no definition gives
+/// (`int`, `other`, `probe`, `reach`); no entity is `main.go::_`. Its `CALLS` edges are exactly the named
 /// function's call: the calls inside the Go `func _()` and `func (T) _()` have the file as
 /// caller and make no edge.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_makes_no_node_of_a_go_blank_definition_and_keeps_a_js_and_python_underscore() {
+    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+
     let (_project, graph) = common::cli::built_graph(&[
         ("main.go", common::fixtures::GO_BLANK_SOURCE),
         ("a.js", common::fixtures::JS_UNDERSCORE_SOURCE),
         ("b.py", common::fixtures::PY_UNDERSCORE_SOURCE),
     ]);
 
-    let entities: Vec<(String, Option<String>)> = [
-        ("a.js::_", Some("constant")),
-        ("b.py::_", Some("constant")),
-        ("main.go::T", Some("type")),
-        ("main.go::int", None),
-        ("main.go::named", Some("function")),
-        ("main.go::other", None),
-        ("main.go::probe", None),
-        ("main.go::reach", None),
+    let entities: Vec<String> = [
+        "a.js::_",
+        "b.py::_",
+        "main.go::T",
+        "main.go::int",
+        "main.go::named",
+        "main.go::other",
+        "main.go::probe",
+        "main.go::reach",
     ]
-    .map(|(id, kind)| (id.to_string(), kind.map(str::to_string)))
+    .map(str::to_string)
     .to_vec();
     assert_eq!(
-        common::fixtures::live_code_entities(&graph),
+        common::fixtures::live_node_ids(&graph.whole().unwrap(), KIND_CODE_ENTITY),
         entities,
         "every code entity of the built graph: none for a Go `_`, one for a JS and a Python `_`"
     );

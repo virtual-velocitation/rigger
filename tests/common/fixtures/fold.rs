@@ -1,16 +1,17 @@
 //! Fold fixtures over the graph projector: folding a hand-built JSON event straight onto a
 //! `Projector` (the raw on-log JSON - never an in-crate payload struct - so a test pins the
 //! contract the log actually carries), the on-log payloads the code-ingest, decision and
-//! reference folds read, the canonical spec-53 two-subsystem coupling seed, and the two read-backs
-//! suites take of a folded `Graph`. `apply` returns `Err` on a fold failure, so every helper
-//! unwraps it: a successful call is itself evidence the payload folded.
+//! reference folds read, the canonical spec-53 two-subsystem coupling seed, the live edges and calls
+//! a projector serves, and the read-backs suites take of a folded `Graph`. `apply` returns `Err`
+//! on a fold failure, so every helper unwraps it: a successful call is itself evidence the
+//! payload folded.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, KIND_CODE_ENTITY, KIND_COMMUNITY, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY,
+    Graph, Projection, KIND_COMMUNITY, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY,
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
 use rigger::eventstore::Event;
@@ -99,21 +100,6 @@ pub fn live_calls(p: &Projector) -> Vec<(String, String)> {
         .filter(|(_, rel, ..)| rel == REL_CALLS)
         .map(|(from, _, to, ..)| (from, to))
         .collect()
-}
-
-/// Every code entity `p` serves as `(id, kind)`, sorted; a placeholder, a name some reference
-/// reaches and no definition gives, has no kind.
-pub fn live_code_entities(p: &Projector) -> Vec<(String, Option<String>)> {
-    let mut entities: Vec<_> = p
-        .whole()
-        .unwrap()
-        .nodes
-        .into_iter()
-        .filter(|n| n.kind == KIND_CODE_ENTITY)
-        .map(|n| (n.id, n.attrs.get("kind").cloned()))
-        .collect();
-    entities.sort();
-    entities
 }
 
 /// Fold `events` into `p` through the public fold, and insist they landed: the one spelling of
