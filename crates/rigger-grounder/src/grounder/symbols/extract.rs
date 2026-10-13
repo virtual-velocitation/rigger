@@ -1095,6 +1095,29 @@ setup!();
         enclosing_def(&ranges, pos)
     }
 
+    /// THE NAME FILTER DROPS A NAMELESS DEFINITION (spec 116 criterion 3), pinned per language
+    /// over the hand-built leaves empty, `_` and `x`: the empty leaf is nameless in every
+    /// language, `_` only in Go and Rust, whose grammars make it the blank identifier, and `x`
+    /// in none.
+    #[test]
+    fn the_name_filter_drops_the_empty_leaf_everywhere_and_the_blank_identifier_in_go_and_rust() {
+        let cases: [(Lang, [bool; 3]); 6] = [
+            (Lang::Go, [true, true, false]),
+            (Lang::Rust, [true, true, false]),
+            (Lang::Js, [true, false, false]),
+            (Lang::Ts, [true, false, false]),
+            (Lang::Python, [true, false, false]),
+            (Lang::CSharp, [true, false, false]),
+        ];
+        for (lang, dropped) in cases {
+            assert_eq!(
+                ["", "_", "x"].map(|leaf| is_nameless(lang, leaf)),
+                dropped,
+                "{lang:?}: whether the leaves empty, `_` and `x` are dropped"
+            );
+        }
+    }
+
     /// The four function-like kinds, the caller rule's first choice.
     const FUNCTION_LIKE: [Kind; 4] = [Kind::Function, Kind::Method, Kind::Constructor, Kind::Macro];
 
