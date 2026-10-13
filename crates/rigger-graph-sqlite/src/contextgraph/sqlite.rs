@@ -103,7 +103,9 @@ CREATE TABLE IF NOT EXISTS relabel_owed (
 /// a node the definitions of one file share the kind and line of the last one folded. A file at
 /// an older version that folded anything owes one cold rebuild from the log
 /// ([`Projector::rebuild`], which only `rigger setup` runs) and nothing folds into it
-/// incrementally until then.
+/// incrementally until then. A rebuild's shadow records the rule it is folded under the same
+/// way, from the moment it is opened, so one a binary of another rule left is never resumed
+/// ([`open_shadow`]).
 pub const PROJECTION_VERSION: i64 = 2;
 
 /// The generation ledgers and their views, dropped from a file at an older [`PROJECTION_VERSION`]
@@ -421,8 +423,8 @@ impl Projector {
     /// of the file: a process holding the live file open (an agent's MCP session, the dashboard)
     /// keeps a valid connection and reads the rebuilt file from its next query, where a file renamed
     /// over one it holds would leave it reading the old file through a write-ahead log the new one
-    /// shares. The shadow itself stays unstamped and unpruned until the swap ends by removing it
-    /// ([`remove_shadow`]).
+    /// shares. The shadow itself stays unpruned, and stamped with the fold rule it is folded under
+    /// ([`open_shadow`]), until the swap ends by removing it ([`remove_shadow`]).
     ///
     /// The shadow is never pruned, because the drop set is not monotone in the log: an id a closed
     /// run recorded moves from drop to keep when the active run records it again, and a prune
@@ -436,7 +438,8 @@ impl Projector {
     /// releases it with the process - and the next one resumes from the shadow's last committed
     /// batch without refolding it and prunes a fresh copy from the whole run attribution the shadow
     /// gathered - the same graph and the same counts a cold rebuild reaches, however far the pass
-    /// before it got.
+    /// before it got. A shadow folded under another fold rule holds what that rule gave, so it is
+    /// discarded and the log folded from its start ([`open_shadow`]).
     ///
     /// An emit that found the old file owing appended without folding, and did so before the
     /// copy: so after it `source` is read once more from the cursor alone, into the live file and
@@ -1380,16 +1383,23 @@ fn prune_a_copy(shadow: &Connection, copy: &str, project: &str) -> Result<Connec
 /// Open the rebuild's shadow file at `path`, creating it when there is none. Only the holder of the
 /// rebuild lock ([`RebuildLock`]) calls this, so the shadow it opens is its own: no other rebuild
 /// has it open, waits on it or removes it, and none can take its name while this one holds it. A
-/// shadow is resumed only together with the run attribution it gathered: one holding a cursor
-/// without it could derive the prune from part of that attribution alone, so it is discarded
-/// ([`remove_shadow`]) and opened again empty, to be folded from the start - under the lock, like
-/// every other end of a shadow.
+/// shadow is resumed only together with the run attribution it gathered, and only under the fold
+/// rule it was folded under: one holding a cursor without that attribution could derive the prune
+/// from part of it alone, and one holding a cursor of another [`PROJECTION_VERSION`] (a rule-1
+/// binary recorded none) holds what that rule folded, so either is discarded ([`remove_shadow`])
+/// and opened again empty, to be folded from the start - under the lock, like every other end of
+/// a shadow. The shadow handed back records the current rule.
 fn open_shadow(path: &str) -> Result<Connection, Error> {
-    let shadow = Connection::open(path).map_err(be)?;
-    if has_table(&shadow, "rebuild_cursor")? && !has_table(&shadow, "rebuild_run_closure")? {
+    let mut shadow = Connection::open(path).map_err(be)?;
+    let resumable =
+        has_table(&shadow, "rebuild_run_closure")? && fold_rule(&shadow)? == PROJECTION_VERSION;
+    if has_table(&shadow, "rebuild_cursor")? && !resumable {
         remove_shadow(shadow, path)?;
-        return Connection::open(path).map_err(be);
+        shadow = Connection::open(path).map_err(be)?;
     }
+    shadow
+        .pragma_update(None, "user_version", PROJECTION_VERSION)
+        .map_err(be)?;
     Ok(shadow)
 }
 
@@ -1513,12 +1523,15 @@ fn has_table(conn: &Connection, name: &str) -> Result<bool, Error> {
     .map_err(be)
 }
 
+/// The fold rule `conn`'s file records ([`PROJECTION_VERSION`]): 0 for a file that records none.
+fn fold_rule(conn: &Connection) -> Result<i64, Error> {
+    conn.pragma_query_value(None, "user_version", |r| r.get(0))
+        .map_err(be)
+}
+
 /// Whether `conn`'s file records a fold rule older than [`PROJECTION_VERSION`].
 fn stale(conn: &Connection) -> Result<bool, Error> {
-    let version: i64 = conn
-        .pragma_query_value(None, "user_version", |r| r.get(0))
-        .map_err(be)?;
-    Ok(version < PROJECTION_VERSION)
+    Ok(fold_rule(conn)? < PROJECTION_VERSION)
 }
 
 /// Whether the file behind `conn` owes its cold rebuild: it records an older fold rule AND folded
@@ -2143,23 +2156,22 @@ fn settle_node(
             detach_attachments(tx, id, at, project)?;
         }
     }
-    undo_what_resolved_against(tx, id, defined, project)
+    undo_what_resolved_against(tx, id, defined, project).map(drop)
 }
 
 /// Undo what resolved against node `id` ([`definition_retired`]) when it defined `defined`
-/// before a fold changed it and defines no name now.
+/// before a fold changed it and defines no name now, and answer the name it defines now.
 fn undo_what_resolved_against(
     tx: &Transaction,
     id: &str,
     defined: Option<String>,
     project: &str,
-) -> Result<(), Error> {
-    match defined {
-        Some(name) if definition_name(tx, id, project)?.is_none() => {
-            definition_retired(tx, id, &name, project)
-        }
-        _ => Ok(()),
+) -> Result<Option<String>, Error> {
+    let now = definition_name(tx, id, project)?;
+    if let (Some(name), None) = (&defined, &now) {
+        definition_retired(tx, id, name, project)?;
     }
+    Ok(now)
 }
 
 /// Where `kind` stands in [`CODE_KIND_PRECEDENCE`]: a kind outside the list ranks with its last
@@ -2192,22 +2204,40 @@ fn settling_definition(
     if by.identity.is_empty() {
         return Ok((folded.2, folded.1));
     }
-    let held: Option<(String, u32)> = tx
-        .query_row(
-            "SELECT json_extract(attrs, '$.kind'), CAST(json_extract(attrs, '$.line') AS INTEGER)
-               FROM node_assertions
-              WHERE project = ?1 AND identity = ?2 AND generation = ?3 AND node_id = ?4
-                AND json_extract(attrs, '$.kind') IS NOT NULL",
-            params![project, by.identity, by.generation, id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(be)?;
+    let held = recorded_assertion(tx, by, id, project)?
+        .filter(|(generation, ..)| generation == by.generation)
+        .and_then(|(_, _, attrs)| held_definition(&attrs?));
     let (_, line, kind) = match held {
         Some((kind, line)) => folded.min((kind_rank(&kind), line, kind)),
         None => folded,
     };
     Ok((kind, line))
+}
+
+/// The `(kind, line)` of the definition an assertion's `attrs` JSON carries: none for attrs
+/// without a `kind` (a bare reference target).
+fn held_definition(attrs: &str) -> Option<(String, u32)> {
+    let attrs: BTreeMap<String, String> = serde_json::from_str(attrs).ok()?;
+    Some((attrs.get("kind")?.clone(), attrs.get("line")?.parse().ok()?))
+}
+
+/// The one assertion `by`'s identity has recorded of node `id`, as `(generation, kind, attrs)`:
+/// an identity asserts a node once, its newest generation replacing the older
+/// ([`record_assertion`]).
+fn recorded_assertion(
+    tx: &Transaction,
+    by: &Asserter,
+    id: &str,
+    project: &str,
+) -> Result<Option<(String, String, Option<String>)>, Error> {
+    tx.query_row(
+        "SELECT generation, kind, attrs FROM node_assertions
+          WHERE project = ?1 AND identity = ?2 AND node_id = ?3",
+        params![project, by.identity, id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()
+    .map_err(be)
 }
 
 /// The name node `id` defines, when it is a live definition: a code entity carrying the `name`
@@ -2681,7 +2711,7 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                 ],
                 project,
             )?;
-            undo_what_resolved_against(tx, &entity, defined, project)?;
+            let defines = undo_what_resolved_against(tx, &entity, defined, project)?;
             // CONTAINS: the file container node holds this definition. A definition's containment
             // is the most explicit structural fact there is, so it folds at the EXTRACTED tier
             // (spec 29a, addendum 6.2).
@@ -2715,7 +2745,7 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             //
             // Both convergences run only when the settled node is a call target: a data member
             // or a declaration of this name upgrades no tier and takes no proof.
-            if definition_name(tx, &entity, project)?.is_some() {
+            if defines.is_some() {
                 tx.execute(
                     "UPDATE edges SET tier = ?1
                    WHERE rel IN (?2, ?7) AND tier = ?3 AND project = ?4 AND valid_to IS NULL
@@ -4027,16 +4057,7 @@ fn record_assertion(
     attrs: Option<&str>,
     project: &str,
 ) -> Result<(), Error> {
-    let recorded: Option<(String, String, Option<String>)> = tx
-        .query_row(
-            "SELECT generation, kind, attrs FROM node_assertions
-              WHERE project = ?1 AND identity = ?2 AND node_id = ?3",
-            params![project, by.identity, id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()
-        .map_err(be)?;
-    match recorded {
+    match recorded_assertion(tx, by, id, project)? {
         Some((generation, recorded_kind, _)) if generation == by.generation => {
             let settled = settled_kind([recorded_kind.as_str(), kind]).unwrap_or(kind);
             tx.execute(
