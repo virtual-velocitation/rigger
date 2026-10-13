@@ -400,4 +400,88 @@ mod tests {
             fn_fs.defs
         );
     }
+
+    /// A REFERENCE'S CALLER IS ITS FUNCTION (spec 116 criterion 2), under the composed JS query:
+    /// a call in a function-local `const x = f()` is its function's, whether that function is a
+    /// declaration or an arrow-valued const, each local const still a constant definition; a
+    /// top-level const no function encloses keeps its own call, and a top-level call has the
+    /// file, no caller.
+    #[test]
+    fn a_call_in_a_function_local_js_const_is_attributed_to_its_function() {
+        let entry = for_extension("js").unwrap();
+        let src = "\
+function outer() {
+  const x = f();
+}
+const y = g();
+const h = () => {
+  const z = k();
+};
+top();
+";
+        let fs = extract(src, entry.lang, &entry.language, entry.tags_query).unwrap();
+        let mut defs: Vec<(u32, &str, Kind)> = fs
+            .defs
+            .iter()
+            .map(|d| (d.line, d.name.as_str(), d.kind))
+            .collect();
+        defs.sort();
+        assert_eq!(
+            defs,
+            vec![
+                (1, "outer", Kind::Function),
+                (2, "x", Kind::Constant),
+                (4, "y", Kind::Constant),
+                (5, "h", Kind::Function),
+                (6, "z", Kind::Constant),
+            ],
+            "each function and each const, local or not, is a definition"
+        );
+        let mut refs: Vec<(u32, &str, Option<&str>)> = fs
+            .refs
+            .iter()
+            .map(|r| (r.line, r.name.as_str(), r.enclosing.as_deref()))
+            .collect();
+        refs.sort();
+        assert_eq!(
+            refs,
+            vec![
+                (2, "f", Some("outer")),
+                (4, "g", Some("y")),
+                (6, "k", Some("h")),
+                (8, "top", None),
+            ],
+            "a function-local const's call is its function's, a top-level const's its own, a \
+             top-level call the file's"
+        );
+    }
+
+    /// A persisted index stamped `ts-tags-v2`, the generation before the caller rule changed
+    /// what `SymRef.enclosing` holds, is not current and loads as absent; one stamped
+    /// `ts-tags-v3` is current and loads.
+    #[test]
+    fn a_persisted_ts_tags_v2_index_is_not_current() {
+        use crate::grounder::symbols::model::SymbolIndex;
+        use crate::grounder::symbols::store;
+        let persisted = |grammar: &str| -> (bool, bool) {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().to_str().unwrap();
+            let path = store::index_path(root);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, format!(r#"{{"grammar":"{grammar}","files":{{}}}}"#)).unwrap();
+            let index: SymbolIndex =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            (index.is_current(), store::load(root).is_some())
+        };
+        assert_eq!(
+            persisted("ts-tags-v2"),
+            (false, false),
+            "a ts-tags-v2 index is not current and loads as absent"
+        );
+        assert_eq!(
+            persisted("ts-tags-v3"),
+            (true, true),
+            "a ts-tags-v3 index is current and loads"
+        );
+    }
 }

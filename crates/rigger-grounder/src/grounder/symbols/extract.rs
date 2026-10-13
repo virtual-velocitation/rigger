@@ -1045,6 +1045,56 @@ setup!();
         );
     }
 
+    /// A REFERENCE'S CALLER IS ITS FUNCTION (spec 116 criterion 2), under `RUST_TAGS`: a
+    /// file-level impl header's trait and self type are the impl's, while a fn-local impl
+    /// header's, a fn-local trait body's outside its methods and a fn-local inline mod's
+    /// references are the fn's; a call inside a method or fn nested in any of them stays that
+    /// innermost function's; a file-level mod's and trait's own references stay theirs, no
+    /// function enclosing them; and a top-level reference has the file, no caller.
+    #[test]
+    fn a_reference_s_caller_is_its_innermost_enclosing_function_else_definition_else_file() {
+        let src = "\
+trait Draw {}
+struct Widget;
+impl Draw for Widget { fn draw(&self) { paint(); } }
+fn host() {
+    struct Local;
+    impl Draw for Local { fn draw(&self) { brush(); } }
+    trait Shape { declare!(); fn area(&self) { measure(); } }
+    mod inner { setup!(); fn deep() { dig(); } }
+}
+mod outer { boot!(); }
+trait Top { announce!(); }
+start!();
+";
+        let entry = crate::grounder::symbols::registry::for_extension("rs").unwrap();
+        let fs = extract(src, Lang::Rust, &entry.language, entry.tags_query).unwrap();
+        let mut refs: Vec<(u32, &str, Option<&str>)> = fs
+            .refs
+            .iter()
+            .map(|r| (r.line, r.name.as_str(), r.enclosing.as_deref()))
+            .collect();
+        refs.sort();
+        assert_eq!(
+            refs,
+            vec![
+                (3, "Draw", Some("impl Draw for Widget")),
+                (3, "Widget", Some("impl Draw for Widget")),
+                (3, "paint", Some("draw")),
+                (6, "Draw", Some("host")),
+                (6, "Local", Some("host")),
+                (6, "brush", Some("draw")),
+                (7, "declare", Some("host")),
+                (7, "measure", Some("area")),
+                (8, "dig", Some("deep")),
+                (8, "setup", Some("host")),
+                (10, "boot", Some("outer")),
+                (11, "announce", Some("Top")),
+                (12, "start", None),
+            ]
+        );
+    }
+
     /// The symbols the Rust grammar extracts from `src`.
     fn rust_symbols(src: &str) -> FileSymbols {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
