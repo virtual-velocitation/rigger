@@ -1326,7 +1326,7 @@ pub struct Reprojection {
     pub total: usize,
     /// The MARKED-UNRESOLVED members (spec 55 c1 honesty rule, extended by spec 63 c3's FILES-LENS
     /// PURITY), set only under [`Lens::Files`]: a bare cross-file placeholder member whose name
-    /// resolves to MORE THAN ONE definition (or to none) cannot be attributed to a single defining
+    /// resolves to MORE THAN ONE call-target definition (or to none) cannot be attributed to a single defining
     /// file, so it is surfaced here - each carrying its SORTED candidate definition ids - rather than
     /// folded into the WRONG file bucket its (referencing-file) id would encode; a member with NO file
     /// identity at all (a rare dev-loop node) is surfaced here too, with an EMPTY candidate frontier,
@@ -1365,17 +1365,17 @@ pub struct Reprojection {
 }
 
 /// One MARKED-UNRESOLVED member of a FILES re-projection (spec 55 c1): a bare cross-file placeholder
-/// whose entity-name has NOT exactly one definition, so it cannot be honestly attributed to a single
-/// defining file. `candidates` carries the SORTED ids of the definitions sharing the name (empty when
-/// the name is defined nowhere the graph knows) - the frontier a human re-seeds on, never a silent
+/// whose entity-name has NOT exactly one call-target definition, so it cannot be honestly attributed
+/// to a single defining file. `candidates` carries the SORTED ids of the call-target definitions
+/// sharing the name (empty when no call target of the name is known to the graph) - the frontier a human re-seeds on, never a silent
 /// wrong attribution. Mirrors the directed-call view's frontier honesty (spec 52), applied to
 /// re-projection.
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct UnresolvedMember {
     /// The bare placeholder member's id (the call target in its referencing file's namespace).
     pub id: String,
-    /// The SORTED ids of the code-entity definitions sharing the member's entity-name: MORE THAN ONE
-    /// (the ambiguous case) or ZERO (defined nowhere the graph knows).
+    /// The SORTED ids of the call-target definitions sharing the member's entity-name: MORE THAN
+    /// ONE (the ambiguous case) or ZERO (no call target of the name the graph knows).
     pub candidates: Vec<String>,
 }
 
@@ -1670,7 +1670,7 @@ pub const REPROJECT_FILES_UNRESOLVED: &str = "no member resolves to a file";
 ///
 /// Under [`Lens::Files`] the fold resolves CROSS-GRAIN honestly ([`Reprojection::unresolved`]): a
 /// member that is a real definition (or a doc / file path) folds under its own file; a BARE cross-file
-/// placeholder (no `name` attr) resolves by name-suffix to the DEFINITION sharing its name - EXACTLY
+/// placeholder (no `name` attr) resolves by name-suffix to the call-target DEFINITION sharing its name - EXACTLY
 /// ONE folds under that definition's file, MORE THAN ONE (or zero) is surfaced as a marked-unresolved
 /// entry carrying the sorted candidate ids, never a wrong attribution to the referencing file its id
 /// encodes; a member with NO file identity at all (a rare dev-loop node) is marked unresolved with an

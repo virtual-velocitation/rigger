@@ -137,7 +137,7 @@ impl Coupling {
                 }
             }
         }
-        // Canonicalize a node id: a bare cross-file placeholder resolves to the UNIQUE real
+        // Canonicalize a node id: a bare cross-file placeholder resolves to the UNIQUE call-target
         // definition sharing its simple name (EXACTLY ONE resolves; ZERO or MANY stays itself,
         // honest by construction) - the SAME unique-name-suffix rule the directed calls walk
         // (spec 52) applies at query time, here over the in-memory whole-graph read so the

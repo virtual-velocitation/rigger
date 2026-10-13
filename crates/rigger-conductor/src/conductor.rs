@@ -13027,9 +13027,10 @@ fn plain_node_line(n: &contextgraph::Node) -> String {
 /// findings sections read, so a single seeded traversal returns the code neighborhood, the
 /// decisions/findings about the files, and the design-intent nodes together - replacing the
 /// separate structural-grounder "Relevant locations" call `build_prompt_with_failure` used to
-/// stitch in. Only DEFINITION entities render (a `code-entity` node carrying a `name` attr): a bare
-/// reference node folded from an `EdgeInferred` event has no line/kind, so it is not a "read-first"
-/// location.
+/// stitch in. Only call-target DEFINITION entities render (a `code-entity` node carrying a `name`
+/// attr whose kind passes `is_call_target`): a bare reference node folded from an `EdgeInferred`
+/// event has no line/kind, so it is not a "read-first" location, and a field, a property or a
+/// declaration takes no slot.
 ///
 /// The file each definition lives in comes STRUCTURALLY from the `CONTAINS` edge the extraction
 /// folded (`file --CONTAINS--> entity`, spec 29a), NEVER by string-parsing the `<file>::<name>`

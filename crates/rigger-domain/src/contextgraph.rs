@@ -235,16 +235,19 @@ pub const REL_REVIEWS_LIGHT: &str = "REVIEWS_LIGHT";
 // reads the EXTRACTED sub-graph as the precise prompt seed and the structural reach
 // EXTRACTED u INFERRED as the blast radius's safe view (addendum 2.4).
 /// An explicit-in-source structural fact: a definition's containment, or a reference resolved to a
-/// definition in the SAME file (a call / import / inherit of a known local symbol). The highest
+/// call-target definition ([`is_call_target`]) in the SAME file (a call / import / inherit of a
+/// known local symbol; a data member or a declaration of the name resolves none). The highest
 /// confidence tier - the precise seed. Every non-code dev-loop edge (DECIDED / GOVERNS / ABOUT /
 /// SUPERSEDES / ...) also folds EXTRACTED: they are explicit facts recorded on the log.
 pub const TIER_EXTRACTED: &str = "extracted";
-/// A derived / transitive link: a reference whose name is NOT defined in the referencing file but
-/// IS defined in ANOTHER file the graph knows. The reference is inferred to reach that definition
-/// across files - real, but one confidence step below an explicit same-file reference.
+/// A derived / transitive link: a reference whose name no call target ([`is_call_target`])
+/// defines in the referencing file but one DOES define in ANOTHER file the graph knows. The
+/// reference is inferred to reach that definition across files - real, but one confidence step
+/// below an explicit same-file reference.
 pub const TIER_INFERRED: &str = "inferred";
-/// A text-only occurrence: a reference whose name is defined NOWHERE the graph knows - a macro
-/// body, a reflection string, a dynamic name, an external symbol. It is kept on the graph (never
+/// A text-only occurrence: a reference whose name no call target ([`is_call_target`]) defines
+/// ANYWHERE the graph knows - a macro body, a reflection string, a dynamic name, an external
+/// symbol, or a name only a data member or a declaration carries. It is kept on the graph (never
 /// dropped) but tiered lowest: the structural pass cannot confirm it resolves to any definition,
 /// so the blast radius never crosses it (addendum 2.4).
 pub const TIER_AMBIGUOUS: &str = "ambiguous";
@@ -772,10 +775,11 @@ pub trait Projection: Send + Sync {
     /// ([`Direction::Down`] - the execution path) or callers ([`Direction::Up`] - the call sites);
     /// `depth` clamps the hop distance; `tier_floor` is the LOWEST edge confidence tier the walk
     /// follows - [`TIER_INFERRED`] (the default the route passes) excludes the unresolved
-    /// [`TIER_AMBIGUOUS`] tier, and passing [`TIER_AMBIGUOUS`] opts it in. A cross-file hop that
-    /// lands on a BARE placeholder node resolves by the shared name-suffix to its definition(s):
-    /// a hop with EXACTLY ONE definition is auto-followed, a multi-definition hop becomes a marked
-    /// frontier the walk does NOT descend (honest by construction). Reached nodes dedup into a
+    /// [`TIER_AMBIGUOUS`] tier, and passing [`TIER_AMBIGUOUS`] opts it in. A hop that lands on a
+    /// BARE placeholder node, or on a named field, property or declaration, resolves by the shared
+    /// name-suffix onto the call-target definition(s) of that name alone ([`is_call_target`]): a
+    /// hop with EXACTLY ONE is auto-followed, a hop with more becomes a marked frontier the walk
+    /// does NOT descend (honest by construction). Reached nodes dedup into a
     /// layered DAG; a recursion edge is marked ([`CallEdge::back`]) rather than duplicated.
     ///
     /// The default returns an empty [`CallGraph`], so a projection with no directed-walk support (a

@@ -39,7 +39,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contextgraph::query::{file_of, name_suffix, Buckets, Lens};
 use crate::contextgraph::{
-    Graph, Node, KIND_CODE_ENTITY, KIND_FINDING, REL_ABOUT, REL_CALLS, REL_REFERENCES,
+    Graph, Node, CODE_KIND_CONSTANT, CODE_KIND_FUNCTION, CODE_KIND_TRAIT, CODE_KIND_TYPE,
+    KIND_CODE_ENTITY, KIND_FINDING, REL_ABOUT, REL_CALLS, REL_REFERENCES,
 };
 
 /// The community-detection resolution grain the map reads (mirrors
@@ -235,12 +236,12 @@ pub fn build(graph: &Graph) -> MapModel {
         // from_graph`'s own words: "A code-entity node carrying a `name` attr is a real
         // definition ... a code-entity with NO `name` attr is a bare cross-file placeholder"),
         // never a real definition - `Coupling::from_graph` canonicalizes every RESOLVABLE bare
-        // reference onto its unique real definition, but an AMBIGUOUS one (more than one
-        // same-named definition elsewhere) keeps its own placeholder id and still joins a
-        // community as a coupling-graph member. Such a node carries no `kind` either, so
+        // reference onto its unique call-target definition, but an AMBIGUOUS one (more than one
+        // same-named call target elsewhere, or none) keeps its own placeholder id and still
+        // joins a community as a coupling-graph member. Such a node carries no `kind` either, so
         // drawing it would violate "every visible node ... has a placed label and kind dot" -
-        // it is excluded here, same as [`crate::contextgraph::query::defs_by_entity_suffix`]'s
-        // own `name`-attr gate.
+        // it is excluded here by the `name` attr alone: every named node is drawn, a data
+        // member or a declaration included.
         if n.kind != KIND_CODE_ENTITY || !n.attrs.contains_key("name") {
             continue;
         }
@@ -1118,10 +1119,10 @@ pub fn fit_entity(model: &MapModel, viewport_w: f64, viewport_h: f64, id: &str) 
 /// interface all fold to `type` - see `crates/rigger-grounder/src/grounder/symbols/extract.rs::kind_of`), a trait, a
 /// constant. `(kind, label, colour)` triples, in the legend's own display order.
 pub const KIND_COLOURS: &[(&str, &str, &str)] = &[
-    ("function", "Function", "#6ea8fe"),
-    ("type", "Type", "#4ade80"),
-    ("trait", "Trait", "#a78bfa"),
-    ("constant", "Constant", "#f472b6"),
+    (CODE_KIND_FUNCTION, "Function", "#6ea8fe"),
+    (CODE_KIND_TYPE, "Type", "#4ade80"),
+    (CODE_KIND_TRAIT, "Trait", "#a78bfa"),
+    (CODE_KIND_CONSTANT, "Constant", "#f472b6"),
 ];
 
 /// The neutral colour a [`DrawEntity::kind`] outside [`KIND_COLOURS`] paints with (`method`,

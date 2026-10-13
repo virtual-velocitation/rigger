@@ -129,7 +129,8 @@ pub fn file_of(id: &str) -> Option<&str> {
 /// The entity-name SUFFIX of a `<file>::<name>` id (the part after the first `::`), or the whole id
 /// when it carries no `::`. The in-memory twin of the pinned `substr(id, instr(id, '::') + 2)`
 /// expression the store's cross-file name resolution uses (spec 52), so the FILES re-projection's
-/// bare-node resolution (spec 55 c1) matches a bare placeholder to the DEFINITIONS sharing its name.
+/// bare-node resolution (spec 55 c1) matches a bare placeholder to the call-target DEFINITIONS sharing
+/// its name.
 pub fn name_suffix(id: &str) -> &str {
     match id.find("::") {
         Some(i) => &id[i + 2..],

@@ -1016,8 +1016,10 @@ impl Projector {
                     if tier_rank(&tier, UNRECOGNIZED_EDGE_RANK) < floor {
                         continue; // below the confidence floor: not a followed edge
                     }
-                    // Resolve the callee: a same-file definition lands directly; a bare cross-file
-                    // placeholder resolves by its name-suffix to the definition(s) sharing the name.
+                    // Resolve the callee: a same-file call-target definition lands directly; a
+                    // bare cross-file placeholder, or a named data member or declaration,
+                    // resolves by its name-suffix to the call-target definition(s) sharing the
+                    // name.
                     let (target, frontier) = resolve_down_hop(&conn, &raw_to, &self.project)?;
                     hops.push((target, tier, valid_from, source, frontier));
                 }
@@ -3561,8 +3563,8 @@ fn referenced_not_called(
 ///   call-target definition's attrs) -> [`TIER_EXTRACTED`]: an explicit, resolved local reference (a call /
 ///   import / inherit of a known local symbol).
 /// - else the name is DEFINED in ANOTHER file the graph knows (some other code-entity node carries
-///   it as a definition) -> [`TIER_INFERRED`]: a derived / transitive cross-file link.
-/// - else the name is defined NOWHERE known -> [`TIER_AMBIGUOUS`]: a grep-visible-only occurrence (a
+///   it as a call-target definition) -> [`TIER_INFERRED`]: a derived / transitive cross-file link.
+/// - else no call target defines the name ANYWHERE known -> [`TIER_AMBIGUOUS`]: a grep-visible-only occurrence (a
 ///   macro body, reflection string, dynamic or external name). It is kept, never dropped, but
 ///   tiered lowest, and the blast radius never crosses it (addendum 2.4).
 ///
@@ -3580,22 +3582,8 @@ fn reference_tier(
     name: &str,
     project: &str,
 ) -> Result<&'static str, Error> {
-    let call_target = call_target_sql();
-    // Same-file definition: the target id already carries a call-target definition's `name` attr.
-    let same_file_def = tx
-        .query_row(
-            &format!(
-                "SELECT 1 FROM nodes
-                  WHERE id = ?1 AND project = ?2 AND json_extract(attrs, '$.name') IS NOT NULL
-                    AND {call_target}"
-            ),
-            params![target, project],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(be)?
-        .is_some();
-    if same_file_def {
+    // Same-file definition: the target id is already a named call target.
+    if named_call_target(tx, target, project)? == Some(true) {
         return Ok(TIER_EXTRACTED);
     }
     // Cross-file definition: a code-entity in a DIFFERENT file (id != this target) carries this
@@ -3607,8 +3595,9 @@ fn reference_tier(
                 "SELECT 1 FROM nodes
                   WHERE substr(id, instr(id, '::') + 2) = ?4
                     AND kind = ?1 AND project = ?2 AND id != ?3
-                    AND json_extract(attrs, '$.name') = ?4 AND {call_target}
-                  LIMIT 1"
+                    AND json_extract(attrs, '$.name') = ?4 AND {}
+                  LIMIT 1",
+                call_target_sql()
             ),
             params![KIND_CODE_ENTITY, project, target, name],
             |_| Ok(()),
