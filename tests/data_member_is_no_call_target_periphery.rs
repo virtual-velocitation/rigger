@@ -236,8 +236,21 @@ fn a_call_naming_a_members_leaf_walks_to_the_other_files_fn_in_both_directions()
 
 /// The call and its reference are tiered beside a member of the called leaf as with no member
 /// present: inferred, onto the caller's own `open` node, the member adding its `CONTAINS` edge.
+/// A fn of the leaf in the caller's own file is what tiers them extracted.
 #[test]
 fn a_member_of_the_called_leaf_changes_no_tier_of_the_call() {
+    assert_eq!(
+        tiers_onto(
+            &caller_of_open(&[("src/a.rs", "function")], &[]),
+            "src/a.rs::open"
+        ),
+        [
+            "CALLS extracted",
+            "CONTAINS extracted",
+            "REFERENCES extracted"
+        ],
+        "a same-file fn of the leaf is the resolved local call"
+    );
     assert_eq!(
         tiers_onto(
             &caller_of_open(&[("src/b.rs", "function")], &[]),
