@@ -1227,7 +1227,7 @@ impl ReleaseEraStore {
     /// The store whose log holds one generation of `src/f.rs` defining the leaf `x` twice, a fn
     /// at line 3 and then a field at line 7, and whose `graph.db` a release at fold rule 1
     /// folded: its ledgers are the current ones, it records rule 1, and the node the two
-    /// definitions share holds the one folded last, the field.
+    /// definitions share, with its file's assertion of it, holds the one folded last, the field.
     fn folded_at_rule_1() -> Self {
         use common::fixtures::kind_def_json;
         use rigger::contextgraph::sqlite::Projector;
@@ -1251,6 +1251,9 @@ impl ReleaseEraStore {
             .execute_batch(
                 "UPDATE nodes SET attrs = json_set(attrs, '$.kind', 'field', '$.line', '7')
                   WHERE id = 'src/f.rs::x';
+                 UPDATE node_assertions
+                    SET attrs = json_set(attrs, '$.kind', 'field', '$.line', '7')
+                  WHERE node_id = 'src/f.rs::x';
                  PRAGMA user_version = 1;",
             )
             .unwrap();

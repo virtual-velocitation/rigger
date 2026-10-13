@@ -35,11 +35,12 @@ fn the_precedence_list_is_the_spec_order_of_the_kind_strings_a_graph_holds() {
 }
 
 /// GIVEN a project whose one Rust file gives five leaves two definitions each: two `fn new` in
-/// two impls, a macro above a fn of its leaf (`x`) and a fn above a macro of its leaf (`y`), a fn
-/// above a type of its leaf (`Maker`) and a type above a fn of its leaf (`Kept`),
+/// two impls, a `macro_rules!` above a fn of its leaf (`x`) and a fn above a `macro_rules!` of its
+/// leaf (`y`), a fn above a type of its leaf (`Maker`) and a type above a fn of its leaf (`Kept`),
 /// WHEN the operator runs `rigger graph build`,
 /// THEN each leaf is one node carrying exactly its winner's kind and line: `new` the method at
-/// the lower line, `x` and `y` the function at the fn's line whichever side the macro sits on,
+/// the lower line, `x` and `y` the function at the fn's line whichever side the macro sits on
+/// (the extractor gives a `macro_rules!` a kind listed after `function`),
 /// `Maker` and `Kept` the type at the type's line whichever side the fn sits on. No leaf takes
 /// the definition the build happened to fold last.
 #[cfg(feature = "symbols")]
@@ -92,11 +93,9 @@ pub fn Kept() {}
         settled.map(|(name, _, _)| format!("f.rs::{name}")).to_vec(),
         "every code entity of the built graph: one node per leaf, however many definitions"
     );
-    for (name, kind, line) in settled {
-        assert_eq!(
-            attrs_of(&graph, &format!("f.rs::{name}")),
-            definition(name, kind, line),
-            "the node of `{name}`"
-        );
-    }
+    assert_eq!(
+        settled.map(|(name, _, _)| attrs_of(&graph, &format!("f.rs::{name}"))),
+        settled.map(|(name, kind, line)| definition(name, kind, line)),
+        "each node carries its winner's kind and line, and nothing else"
+    );
 }
