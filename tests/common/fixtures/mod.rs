@@ -11,6 +11,7 @@
 
 #![allow(dead_code, unused_imports)]
 
+mod caller_sources;
 mod config;
 mod events;
 mod extraction_tree;
@@ -20,6 +21,7 @@ mod host;
 mod page;
 mod read_fault;
 mod spawn;
+pub use caller_sources::*;
 pub use config::*;
 pub use events::*;
 pub use extraction_tree::*;

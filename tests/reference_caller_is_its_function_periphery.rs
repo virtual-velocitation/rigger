@@ -17,14 +17,12 @@ mod common;
 #[path = "common/symbol_index.rs"]
 mod symbol_index;
 
-use rigger::contextgraph::{CodeEntityExtracted, TYPE_CODE_ENTITY_EXTRACTED};
-use rigger::grounder::symbols::events::extract_events;
 use rigger::grounder::symbols::model::Kind;
 use symbol_index::{def, rust_file, SavedIndex};
 
-/// GIVEN a project whose Rust file nests an impl, a trait and an inline mod in `fn host` beside
-/// a file-level impl, mod and trait, and whose JS file binds calls to consts inside and outside
-/// functions,
+/// GIVEN a project holding the two caller sources: a Rust file nesting an impl, a trait and an
+/// inline mod in `fn host` beside a file-level impl, mod and trait, and a JS file binding calls
+/// to consts inside and outside functions,
 /// WHEN the operator runs `rigger graph build`,
 /// THEN the graph's `CALLS` edges are exactly: a fn-local impl header's, trait body's and inline
 /// mod's references from `host`; a call inside a method or fn nested in any of them from that
@@ -38,38 +36,8 @@ fn graph_build_hangs_each_call_off_its_innermost_enclosing_function() {
 
     let dir = common::cli::temp_project();
     let root = dir.path();
-    std::fs::write(
-        root.join("lib.rs"),
-        "\
-trait Draw {}
-struct Widget;
-impl Draw for Widget { fn render(&self) { paint(); } }
-fn host() {
-    struct Local;
-    impl Draw for Local { fn sketch(&self) { brush(); } }
-    trait Shape { declare!(); fn area(&self) { measure(); } }
-    mod inner { setup!(); fn deep() { dig(); } }
-}
-mod outer { boot!(); }
-trait Top { announce!(); }
-start!();
-",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("a.js"),
-        "\
-function outer() {
-  const x = f();
-}
-const y = g();
-const h = () => {
-  const z = k();
-};
-top();
-",
-    )
-    .unwrap();
+    std::fs::write(root.join("lib.rs"), common::fixtures::RUST_CALLER_SOURCE).unwrap();
+    std::fs::write(root.join("a.js"), common::fixtures::JS_CALLER_SOURCE).unwrap();
 
     common::cli::run_rigger_ok(root, &["graph", "build"]);
 
@@ -85,6 +53,8 @@ top();
         ("lib.rs::Top", "lib.rs::announce"),
         ("lib.rs::area", "lib.rs::measure"),
         ("lib.rs::deep", "lib.rs::dig"),
+        ("lib.rs::draw", "lib.rs::brush"),
+        ("lib.rs::draw", "lib.rs::paint"),
         ("lib.rs::host", "lib.rs::Draw"),
         ("lib.rs::host", "lib.rs::Local"),
         ("lib.rs::host", "lib.rs::declare"),
@@ -92,8 +62,6 @@ top();
         ("lib.rs::impl Draw for Widget", "lib.rs::Draw"),
         ("lib.rs::impl Draw for Widget", "lib.rs::Widget"),
         ("lib.rs::outer", "lib.rs::boot"),
-        ("lib.rs::render", "lib.rs::paint"),
-        ("lib.rs::sketch", "lib.rs::brush"),
     ]
     .map(|(from, to)| (from.to_string(), to.to_string()))
     .to_vec();
@@ -166,8 +134,12 @@ fn one_of_each_new_kind() -> rigger::grounder::symbols::model::FileSymbols {
 
 /// The emit pass lowers a constructor, a declaration and a macro definition to a code entity
 /// event carrying the kind string `constructor`, `declaration` and `macro`.
+#[cfg(feature = "symbols")]
 #[test]
 fn the_emit_pass_lowers_the_three_code_kinds_to_their_kind_strings() {
+    use rigger::contextgraph::{CodeEntityExtracted, TYPE_CODE_ENTITY_EXTRACTED};
+    use rigger::grounder::symbols::events::extract_events;
+
     let mut kinds: Vec<(String, String)> = extract_events("a.rs", &one_of_each_new_kind())
         .iter()
         .filter(|e| e.type_ == TYPE_CODE_ENTITY_EXTRACTED)

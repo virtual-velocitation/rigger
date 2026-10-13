@@ -63,6 +63,16 @@ mod test_support;
 #[path = "../../../tests/common/fixtures/graph.rs"]
 mod graph_fixtures;
 
+/// THE CALLER SOURCES the caller-rule tests extract, compiled here from the same file as the root
+/// crate's tests. It names no crate; only the default lane's tests extract them.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/caller_sources.rs"]
+mod caller_sources;
+
 /// THE READ FAULT fixture the tree's read-rule tests share with the root crate's tests, compiled
 /// here from the same file. It names no crate, so both lanes compile it.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]

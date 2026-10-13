@@ -1065,22 +1065,14 @@ setup!();
     /// function enclosing them; and a top-level reference has the file, no caller.
     #[test]
     fn a_reference_s_caller_is_its_innermost_enclosing_function_else_definition_else_file() {
-        let src = "\
-trait Draw {}
-struct Widget;
-impl Draw for Widget { fn draw(&self) { paint(); } }
-fn host() {
-    struct Local;
-    impl Draw for Local { fn draw(&self) { brush(); } }
-    trait Shape { declare!(); fn area(&self) { measure(); } }
-    mod inner { setup!(); fn deep() { dig(); } }
-}
-mod outer { boot!(); }
-trait Top { announce!(); }
-start!();
-";
         let entry = crate::grounder::symbols::registry::for_extension("rs").unwrap();
-        let fs = extract(src, Lang::Rust, &entry.language, entry.tags_query).unwrap();
+        let fs = extract(
+            crate::caller_sources::RUST_CALLER_SOURCE,
+            Lang::Rust,
+            &entry.language,
+            entry.tags_query,
+        )
+        .unwrap();
         assert_eq!(
             refs_with_callers(&fs),
             vec![

@@ -409,17 +409,13 @@ mod tests {
     #[test]
     fn a_call_in_a_function_local_js_const_is_attributed_to_its_function() {
         let entry = for_extension("js").unwrap();
-        let src = "\
-function outer() {
-  const x = f();
-}
-const y = g();
-const h = () => {
-  const z = k();
-};
-top();
-";
-        let fs = extract(src, entry.lang, &entry.language, entry.tags_query).unwrap();
+        let fs = extract(
+            crate::caller_sources::JS_CALLER_SOURCE,
+            entry.lang,
+            &entry.language,
+            entry.tags_query,
+        )
+        .unwrap();
         let mut defs: Vec<(u32, &str, Kind)> = fs
             .defs
             .iter()
