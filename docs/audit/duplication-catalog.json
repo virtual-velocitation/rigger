@@ -6097,7 +6097,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-8ec06e6f5d7d",
+    "id": "dup-b4f04114d7d8",
     "classification": "semantic",
     "sites": [
       {
@@ -6288,7 +6288,7 @@
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "947b79bd3220f894"
+        "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",

@@ -1680,7 +1680,7 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 
 - **Command::new call sites**: 89 site(s) - `dup-decc12fbf756`
 - **/proc-path string literals**: 55 site(s) - `dup-99a8136efbc4`
-- **sqlite Connection::open call sites**: 66 site(s) - `dup-8ec06e6f5d7d`
+- **sqlite Connection::open call sites**: 66 site(s) - `dup-b4f04114d7d8`
 - **.rigger-path string literals**: 604 site(s) - `dup-132c0798ea1a`
 - **error-shaping helper functions**: 13 site(s) - `dup-2b8f802a2dc3`
 
@@ -1769,7 +1769,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:73-75` `what`
 - `tests/common/fixtures/plan_critique.rs:29-34` `spec_defect_halt_text`
-- `tests/compaction_generations_periphery.rs:3471-3476` `closed_unit_line`
+- `tests/compaction_generations_periphery.rs:3541-3546` `closed_unit_line`
 - `tests/new_run_critique_refusal_periphery.rs:138-140` `no_critic_line`
 - `tests/no_os_kill_audit.rs:52-54` `join`
 
@@ -2876,12 +2876,12 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/mod.rs:308-308` `"{}/.rigger-test-scratch"`
 - `tests/common/workflow_probe.rs:15-15` `".rigger"`
 - `tests/common/workflow_probe.rs:16-16` `"create .rigger"`
-- `tests/compaction_generations_periphery.rs:1269-1269` `".rigger"`
-- `tests/compaction_generations_periphery.rs:1365-1365` `".rigger"`
-- `tests/compaction_generations_periphery.rs:2504-2504` `"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
+- `tests/compaction_generations_periphery.rs:1277-1277` `".rigger"`
+- `tests/compaction_generations_periphery.rs:1373-1373` `".rigger"`
+- `tests/compaction_generations_periphery.rs:2574-2574` `"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
          {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \
          decision (position {position}){fold}\n"`
-- `tests/compaction_generations_periphery.rs:3806-3806` `".rigger"`
+- `tests/compaction_generations_periphery.rs:3876-3876` `".rigger"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:138-138` `".rigger"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:139-139` `"write the .rigger/{rel} fixture: {e}"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:149-149` `".rigger"`
@@ -4033,7 +4033,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-driver/src/liveness.rs:924-938` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
 - `src/cli/setup.rs:2396-2410` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
-#### `dup-8ec06e6f5d7d` (semantic, 66 sites)
+#### `dup-b4f04114d7d8` (semantic, 66 sites)
 
 Proposed home: `one sqlite-connection-opening adapter function every caller is injected with`
 
@@ -4076,16 +4076,16 @@ mandatory sweep: sqlite Connection::open call sites - 66 site(s), collected mech
 - `tests/compaction_generations_periphery.rs:1055-1055` `Connection::open`
 - `tests/compaction_generations_periphery.rs:1071-1071` `Connection::open`
 - `tests/compaction_generations_periphery.rs:1193-1193` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1249-1249` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1371-1371` `Connection::open`
-- `tests/compaction_generations_periphery.rs:2290-2290` `Connection::open`
-- `tests/compaction_generations_periphery.rs:2350-2350` `Connection::open`
-- `tests/compaction_generations_periphery.rs:2566-2566` `Connection::open`
-- `tests/compaction_generations_periphery.rs:2864-2864` `Connection::open`
-- `tests/compaction_generations_periphery.rs:3124-3124` `Connection::open`
-- `tests/compaction_generations_periphery.rs:4258-4258` `Connection::open`
-- `tests/compaction_generations_periphery.rs:4600-4600` `Connection::open`
-- `tests/compaction_generations_periphery.rs:4907-4907` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1258-1258` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1379-1379` `Connection::open`
+- `tests/compaction_generations_periphery.rs:2360-2360` `Connection::open`
+- `tests/compaction_generations_periphery.rs:2420-2420` `Connection::open`
+- `tests/compaction_generations_periphery.rs:2636-2636` `Connection::open`
+- `tests/compaction_generations_periphery.rs:2934-2934` `Connection::open`
+- `tests/compaction_generations_periphery.rs:3194-3194` `Connection::open`
+- `tests/compaction_generations_periphery.rs:4328-4328` `Connection::open`
+- `tests/compaction_generations_periphery.rs:4670-4670` `Connection::open`
+- `tests/compaction_generations_periphery.rs:4977-4977` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:69-69` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:165-165` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:189-189` `Connection::open`
@@ -4513,7 +4513,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/cli.rs:513-520` `migrated_lines`
 - `tests/common/cli.rs:527-532` `derived_menu_line_naming`
 - `tests/common/cli.rs:1099-1104` `bloat_advisory_naming`
-- `tests/compaction_generations_periphery.rs:4938-4943` `runs_prunable`
+- `tests/compaction_generations_periphery.rs:5008-5013` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
 
@@ -4991,7 +4991,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/compaction_genera
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/compaction_generations_periphery.rs:1735-1740` `rebuild_owed_note`
+- `tests/compaction_generations_periphery.rs:1805-1810` `rebuild_owed_note`
 - `tests/product_binary_authority_periphery.rs:74-76` `product_file_name`
 
 #### `dup-36ebafe7bb7e` (near, 2 sites)
@@ -5000,7 +5000,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/compaction_genera
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/compaction_generations_periphery.rs:2162-2168` `holds_table`
+- `tests/compaction_generations_periphery.rs:2232-2238` `holds_table`
 - `tests/one_shot_reads_periphery.rs:310-312` `poison`
 
 #### `dup-515218e72204` (near, 2 sites)
@@ -5273,7 +5273,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9102 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9106 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4996-5037` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15081-15103` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5563,10 +5563,10 @@ Each entry is one of section 2's five named mandatory sweeps - collected mechani
 - Risk: low - no production spawn is left to move, and the gate keeps it that way.
 - Unblocks: the next process-spawning concern added anywhere in the crate reuses the port instead of constructing its own `Command`.
 
-#### 11. Consolidate the 66 sqlite `Connection::open` call sites (`dup-8ec06e6f5d7d`)
+#### 11. Consolidate the 66 sqlite `Connection::open` call sites (`dup-b4f04114d7d8`)
 
 - Scope: one sqlite-connection-opening adapter function (the cluster's own `proposed_home`) spanning `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`, `crates/rigger-store-sqlite/src/eventstore/sqlite.rs` and `src/main.rs`, plus several `tests/` files.
-- Files: full site list in `docs/audit/duplication-catalog.json` under `dup-8ec06e6f5d7d`.
+- Files: full site list in `docs/audit/duplication-catalog.json` under `dup-b4f04114d7d8`.
 - Expected line delta: negative - 66 open calls collapse toward one function.
 - Risk: medium - touches the event store and context graph's own connection-lifecycle code; needs the store-identity and store-resolution contract tests green throughout.
 - Unblocks: one place to change pragma/timeout/journal-mode settings instead of 66.
@@ -5630,7 +5630,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 18. Sweep the remaining 143 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 213 clusters, 63 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-decc12fbf756`, `dup-132c0798ea1a`, `dup-8ec06e6f5d7d`, `dup-99a8136efbc4`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-2b8f802a2dc3`); the remaining 143 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-05d3dd27c2af`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 213 clusters, 63 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-decc12fbf756`, `dup-132c0798ea1a`, `dup-b4f04114d7d8`, `dup-99a8136efbc4`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-2b8f802a2dc3`); the remaining 143 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-05d3dd27c2af`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.

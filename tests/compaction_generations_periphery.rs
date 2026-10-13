@@ -1246,18 +1246,26 @@ impl ReleaseEraStore {
             &Projector::open(store.graph_db.to_str().unwrap(), &store.project()).unwrap(),
             &store.log(),
         );
-        rusqlite::Connection::open(&store.graph_db)
+        Self::as_rule_1_left(&store.graph_db, 1);
+        store
+    }
+
+    /// Put the folded file at `db` in the state fold rule 1 left one holding
+    /// [`Self::folded_at_rule_1`]'s log: the node the two definitions of `x` share, with its
+    /// file's assertion of it, holds the one folded last, the field, and the file records
+    /// `version` as its fold rule.
+    fn as_rule_1_left(db: &Path, version: i64) {
+        rusqlite::Connection::open(db)
             .unwrap()
-            .execute_batch(
+            .execute_batch(&format!(
                 "UPDATE nodes SET attrs = json_set(attrs, '$.kind', 'field', '$.line', '7')
                   WHERE id = 'src/f.rs::x';
                  UPDATE node_assertions
                     SET attrs = json_set(attrs, '$.kind', 'field', '$.line', '7')
                   WHERE node_id = 'src/f.rs::x';
-                 PRAGMA user_version = 1;",
-            )
+                 PRAGMA user_version = {version};"
+            ))
             .unwrap();
-        store
     }
 
     /// The store whose log holds `log` and that has no `graph.db` yet, its durable identity
@@ -1533,6 +1541,68 @@ fn rigger_setup_rebuilds_a_rule_1_graph_db_and_its_shared_node_takes_its_precede
     assert!(
         !out.contains("graph.db"),
         "a paid rebuild is not owed or reported again; stdout: {out}"
+    );
+}
+
+/// Given an operator store whose `graph.db` a release at fold rule 1 folded, and beside it the
+/// shadow of a rebuild that release began and was interrupted in - past both definitions of the
+/// shared leaf, the node holding the one folded last, and no fold rule recorded, as a rule-1
+/// binary left one - when the operator runs `rigger setup`, then the shadow is never resumed:
+/// setup folds the log again from its start, both events, the node holds its precedence winner,
+/// the fn at the fn's line, the file records the current rule and is exactly the graph a fresh
+/// fold of the log reaches, and the shadow is gone.
+#[test]
+fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_log_again() {
+    use common::fixtures::{attrs_of, definition};
+    use rigger::contextgraph::sqlite::Projector;
+    let store = ReleaseEraStore::folded_at_rule_1();
+    let (log, shadow) = (store.log(), rigger_file(store.root(), "graph.db.rebuild"));
+    let head = log.last().unwrap().position;
+    let interrupted = Projector::rebuild(
+        &Projector::lock_rebuild(store.graph_db.to_str().unwrap()).unwrap(),
+        &store.project(),
+        false,
+        &mut |_, sink| {
+            sink(&log, head)?;
+            Err(rigger::contextgraph::Error("interrupted".to_string()))
+        },
+        &mut |_| Ok(None),
+        &mut no_progress,
+    );
+    assert_eq!(
+        (interrupted.unwrap_err().0.as_str(), shadow.exists()),
+        ("interrupted", true),
+        "the interrupted rebuild leaves its shadow holding both definitions"
+    );
+    ReleaseEraStore::as_rule_1_left(&shadow, 0);
+
+    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert_eq!(
+        out.lines()
+            .filter(|l| l.starts_with("rebuilt "))
+            .collect::<Vec<_>>(),
+        vec![
+            format!("rebuilt 2 events, through position {head} of {head} (100%)"),
+            "rebuilt graph.db from the event log".to_string(),
+        ],
+        "setup folds both definitions again, resuming nothing; stdout: {out}"
+    );
+    let graph = Projector::open(store.graph_db.to_str().unwrap(), &store.project()).unwrap();
+    assert_eq!(
+        (
+            attrs_of(&graph, "src/f.rs::x"),
+            user_version(&store.graph_db),
+            shadow.exists()
+        ),
+        (definition("x", "function", 3), PROJECTION_VERSION, false),
+        "the node holds the fn at the fn's line, under the current rule, and the shadow is gone"
+    );
+    drop(graph);
+    let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
+    assert_eq!(
+        graph, fresh,
+        "the rebuilt graph.db is the whole log's, fold state included"
     );
 }
 

@@ -34,22 +34,11 @@ fn the_precedence_list_is_the_spec_order_of_the_kind_strings_a_graph_holds() {
     );
 }
 
-/// GIVEN a project whose one Rust file gives five leaves two definitions each: two `fn new` in
-/// two impls, a `macro_rules!` above a fn of its leaf (`x`) and a fn above a `macro_rules!` of its
-/// leaf (`y`), a fn above a type of its leaf (`Maker`) and a type above a fn of its leaf (`Kept`),
-/// WHEN the operator runs `rigger graph build`,
-/// THEN each leaf is one node carrying exactly its winner's kind and line: `new` the method at
-/// the lower line, `x` and `y` the function at the fn's line whichever side the macro sits on
-/// (the extractor gives a `macro_rules!` a kind listed after `function`),
-/// `Maker` and `Kept` the type at the type's line whichever side the fn sits on. No leaf takes
-/// the definition the build happened to fold last.
+/// A Rust file giving five leaves two definitions each: two `fn new` in two impls, a
+/// `macro_rules!` above a fn of its leaf (`x`) and a fn above a `macro_rules!` of its leaf (`y`),
+/// a fn above a type of its leaf (`Maker`) and a type above a fn of its leaf (`Kept`).
 #[cfg(feature = "symbols")]
-#[test]
-fn graph_build_settles_a_leaf_one_file_defines_twice_on_its_precedence_winner() {
-    use common::fixtures::{attrs_of, definition, live_node_ids};
-    use rigger::contextgraph::KIND_CODE_ENTITY;
-
-    const SOURCE: &str = "\
+const SOURCE: &str = "\
 pub struct A;
 pub struct B;
 impl A {
@@ -75,7 +64,20 @@ pub struct Maker;
 pub struct Kept;
 pub fn Kept() {}
 ";
-    let (_project, graph) = common::cli::built_graph(&[("f.rs", SOURCE)]);
+
+/// `graph` holds exactly [`SOURCE`]'s nine nodes for `f.rs`, one per leaf, each carrying exactly
+/// its winner's kind and its winner's line in a file holding `above` lines over the source:
+/// `new` the method at the lower line, `x` and `y` the function at the fn's line whichever side
+/// the macro sits on (the extractor gives a `macro_rules!` a kind listed after `function`),
+/// `Maker` and `Kept` the type at the type's line whichever side the fn sits on.
+#[cfg(feature = "symbols")]
+fn every_leaf_is_its_precedence_winner(
+    graph: &rigger::contextgraph::sqlite::Projector,
+    above: u64,
+    why: &str,
+) {
+    use common::fixtures::{attrs_of, definition, live_node_ids};
+    use rigger::contextgraph::KIND_CODE_ENTITY;
 
     let settled = [
         ("A", "type", 1),
@@ -91,11 +93,45 @@ pub fn Kept() {}
     assert_eq!(
         live_node_ids(&graph.whole().unwrap(), KIND_CODE_ENTITY),
         settled.map(|(name, _, _)| format!("f.rs::{name}")).to_vec(),
-        "every code entity of the built graph: one node per leaf, however many definitions"
+        "every code entity of the built graph, one node per leaf: {why}"
     );
     assert_eq!(
-        settled.map(|(name, _, _)| attrs_of(&graph, &format!("f.rs::{name}"))),
-        settled.map(|(name, kind, line)| definition(name, kind, line)),
-        "each node carries its winner's kind and line, and nothing else"
+        settled.map(|(name, _, _)| attrs_of(graph, &format!("f.rs::{name}"))),
+        settled.map(|(name, kind, line)| definition(name, kind, line + above)),
+        "each node carries its winner's kind and line, and nothing else: {why}"
+    );
+}
+
+/// GIVEN a project whose one Rust file is [`SOURCE`],
+/// WHEN the operator runs `rigger graph build`,
+/// THEN each leaf is one node carrying exactly its winner's kind and line; no leaf takes the
+/// definition the build happened to fold last.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_settles_a_leaf_one_file_defines_twice_on_its_precedence_winner() {
+    let (_project, graph) = common::cli::built_graph(&[("f.rs", SOURCE)]);
+    every_leaf_is_its_precedence_winner(&graph, 0, "the first build");
+}
+
+/// GIVEN a project whose graph is built over [`SOURCE`],
+/// WHEN the operator puts two comment lines above the source and runs `rigger graph build` again,
+/// THEN each leaf is still one node carrying its winner's kind, at the winner's new line, two
+/// lower: the definitions the file's earlier generation gave a node are no candidates beside the
+/// new generation's, so no node keeps a line the file no longer holds a definition at.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_again_over_shifted_lines_moves_each_shared_node_to_its_winners_new_line() {
+    let (project, graph) = common::cli::built_graph(&[("f.rs", SOURCE)]);
+    drop(graph);
+    std::fs::write(
+        project.path().join("f.rs"),
+        format!("// moved\n// down\n{SOURCE}"),
+    )
+    .unwrap();
+    common::cli::run_rigger_ok(project.path(), &["graph", "build"]);
+    every_leaf_is_its_precedence_winner(
+        &common::cli::open_graph(project.path()),
+        2,
+        "the build after every line moved two down",
     );
 }
