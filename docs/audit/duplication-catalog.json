@@ -1132,7 +1132,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-9261d2b339a7",
+    "id": "dup-1121955af024",
     "classification": "semantic",
     "sites": [
       {
@@ -1944,21 +1944,6 @@
         "file": "src/cli/setup.rs",
         "name": "\"`sh .rigger/gates/red-before-green.sh`\"",
         "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "name": "\".rigger/agents/rust-engineer.md\"",
-        "content_hash": "ea68bfe8ed1f915f"
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "name": "\".rigger/agents/rust-engineer.md\"",
-        "content_hash": "ea68bfe8ed1f915f"
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "name": "\".rigger/agents/sdet-author.md\"",
-        "content_hash": "ea68bfe8ed1f915f"
       },
       {
         "file": "src/cli/validate.rs",
@@ -4162,7 +4147,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 605 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 602 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

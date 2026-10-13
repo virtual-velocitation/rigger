@@ -3424,6 +3424,15 @@ mod tests {
         out
     }
 
+    /// The committed persona `file` (`rust-engineer.md`, say) under `.rigger/agents`.
+    fn committed_persona(file: &str) -> String {
+        committed_personas()
+            .into_iter()
+            .find(|(name, _)| name == file)
+            .map(|(_, text)| text)
+            .unwrap_or_else(|| panic!("{file} must be a committed persona"))
+    }
+
     /// Every agent text rigger ships: the committed personas and the scaffold seeds, each
     /// labelled with where it lives.
     fn every_shipped_persona() -> Vec<(String, String)> {
@@ -3615,7 +3624,7 @@ mod tests {
     /// persona sends it to run `cargo test` over the workspace before it reports.
     #[test]
     fn rust_engineer_runs_the_hand_over_checks_and_leaves_the_whole_suite_to_the_gates() {
-        let text = std::fs::read_to_string(repo().join(".rigger/agents/rust-engineer.md")).unwrap();
+        let text = committed_persona("rust-engineer.md");
         let flat = rigger::wave::normalize_ws(&text);
         assert!(
             !flat.contains("and `cargo test` must ALL pass"),
@@ -3631,7 +3640,7 @@ mod tests {
     /// a rewrite, never by justifying it, and its accounting has no justified status.
     #[test]
     fn rust_engineer_closes_every_survivor_and_never_justifies_one() {
-        let text = std::fs::read_to_string(repo().join(".rigger/agents/rust-engineer.md")).unwrap();
+        let text = committed_persona("rust-engineer.md");
         for banned in ["JUSTIFIED", "missed-justified", "equivalence reason"] {
             assert!(
                 !text.contains(banned),
@@ -3657,7 +3666,7 @@ mod tests {
     /// instrument (`d112-op-sdet-probe-raw-diff`).
     #[test]
     fn sdet_author_probes_read_raw_diff_files_and_prove_an_empty_accounting() {
-        let text = std::fs::read_to_string(repo().join(".rigger/agents/sdet-author.md")).unwrap();
+        let text = committed_persona("sdet-author.md");
         assert!(
             text.contains("git diff BASE -- src/main.rs src/cli"),
             "the CLI probe must cover src/cli"
