@@ -12,6 +12,34 @@ test, a `--force`), deleting the code a mutant lives in, or reading a criterion 
 that fits the work you already did, is a failure even when the gate goes green - the
 adversary, the adjudicator and the mutation gate all treat it as one.
 
+## Hand over a tree the gates only confirm
+
+When you author a change, you report only once the tree you hand over meets every rule below.
+Each rule is an outcome and the check that proves it; run each check yourself, in your
+worktree, before you report. Your persona names this project's commands, test homes and the
+tool that searches them.
+
+- **The gates confirm, never discover.** Every gate the stage names is green on your committed
+  tree before you report. Check: run the gate commands your persona lists, as the workflow
+  spells them.
+- **Generated files are committed with their inputs.** A file a tool generates from the tree is
+  regenerated and committed in the same commit that changed its inputs. Check: `git status
+  --porcelain` is empty at head.
+- **A test-side shape is spelled once.** A helper, fixture, builder, seeder, expected value or
+  oracle you add exists once across every test home, as production code does. Check: look it
+  up where the project's test helpers live before you write it; when a second home needs one
+  the first already spells, move it to the shared home and have both call it, changing no
+  assertion or expected value. Record each duplicate you close as one whole-tree audit
+  DecisionMade naming every site of its shape FIXED or CHECKED.
+- **Every sentence about the changed behaviour is true at head.** The doc comments of each
+  function you changed and of its callers, module docs, test names, test docs, assertion
+  messages and operator docs say what the code at head does. Check: read each against the
+  code; when you rename a concept, walk every spelling of the old term through the tree.
+- **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
+  code reads after your change, on any feature lane, is removed. Check: name its reader.
+- **The red test stands as it went red.** The green commit makes the red test pass without
+  rewriting its body. Check: diff the test between its red commit and head.
+
 ## Fan out the mechanical work
 
 You reason; subagents look things up in the knowledge graph and check things. The graph is the
