@@ -1,7 +1,9 @@
 //! Symbol extraction: the ONE function that touches tree-sitter (architecture 5.5.3). It
 //! runs an INJECTED grammar's `tags` query over a source string and lowers the uniform tags
 //! into the parser-free `FileSymbols` model. Everything downstream sees `FileSymbols` and
-//! never the parser - so per-language support is a registration (unit 2), not bespoke code.
+//! never the parser - so per-language support is a registration (unit 2), and a language
+//! whose grammar gives a definition no name node also adds a read-off here, selected by the
+//! language `extract` is given.
 
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
@@ -1580,22 +1582,29 @@ pub fn bang() {}
         );
     }
 
-    /// `is_declaration` is consulted for a function, method or constructor only: a signature
-    /// node an injected query tags as another kind keeps that kind.
-    #[test]
-    fn a_signature_node_tagged_as_no_function_keeps_its_tagged_kind() {
+    crate::test_cases! {
+        /// `is_declaration` is consulted for a function, method or constructor only: a
+        /// signature node an injected query tags as another kind keeps that kind.
+        a_signature_node_tagged_as_no_function_keeps_its_tagged_kind:
+            assert_required_fn_lowers("constant", Kind::Constant);
+        /// `is_declaration` is consulted for a method as for a function: a signature node an
+        /// injected query tags a method is a declaration.
+        a_signature_node_tagged_a_method_is_a_declaration:
+            assert_required_fn_lowers("method", Kind::Declaration);
+    }
+
+    /// A trait's one required fn, `m`, lowers to exactly one definition, of `kind`, under an
+    /// injected query that tags its signature node a definition of the tag category `category`.
+    fn assert_required_fn_lowers(category: &str, kind: Kind) {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
         let fs = extract(
             "trait T { fn m(&self); }\n",
             Lang::Rust,
             &language,
-            "(function_signature_item name: (identifier) @name) @definition.constant",
+            &format!("(function_signature_item name: (identifier) @name) @definition.{category}"),
         )
         .unwrap();
-        assert_eq!(
-            crate::symbol_index::defs_by_line(&fs),
-            vec![(1, "m", Kind::Constant)]
-        );
+        assert_eq!(crate::symbol_index::defs_by_line(&fs), vec![(1, "m", kind)]);
     }
 
     /// The symbols the Rust grammar extracts from `src`.

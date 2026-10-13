@@ -4264,7 +4264,7 @@ Proposed home: `crates/rigger-grounder/src/grounder/symbols/extract.rs::extract 
 
 mandatory sweep: bespoke source-text lexer/scanner functions duplicating the canonical tree-sitter extractor - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `crates/rigger-grounder/src/grounder/symbols/extract.rs:114-280` `extract`
+- `crates/rigger-grounder/src/grounder/symbols/extract.rs:116-282` `extract`
 - `tests/common/source_audit.rs:448-554` `tokenize`
 - `tests/simplification_audit.rs:212-214` `scan_file`
 
