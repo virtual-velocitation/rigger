@@ -994,8 +994,8 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 427,
-        "end_line": 427
+        "start_line": 439,
+        "end_line": 439
       },
       {
         "file": "tests/product_binary_authority_periphery.rs",
@@ -1060,7 +1060,7 @@
     ]
   },
   {
-    "id": "dup-4469226407c0",
+    "id": "dup-9261d2b339a7",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1854,13 +1854,38 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3558,
-        "end_line": 3558
+        "start_line": 3592,
+        "end_line": 3592
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3584,
-        "end_line": 3584
+        "start_line": 3594,
+        "end_line": 3594
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3595,
+        "end_line": 3595
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3596,
+        "end_line": 3596
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3618,
+        "end_line": 3618
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3634,
+        "end_line": 3634
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3660,
+        "end_line": 3660
       },
       {
         "file": "src/cli/validate.rs",
@@ -3549,23 +3574,23 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 366,
-        "end_line": 366
+        "start_line": 368,
+        "end_line": 368
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 380,
-        "end_line": 380
+        "start_line": 392,
+        "end_line": 392
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 390,
-        "end_line": 390
+        "start_line": 402,
+        "end_line": 402
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 394,
-        "end_line": 394
+        "start_line": 406,
+        "end_line": 406
       },
       {
         "file": "tests/projections_stay_local.rs",

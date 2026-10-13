@@ -1132,7 +1132,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-4469226407c0",
+    "id": "dup-9261d2b339a7",
     "classification": "semantic",
     "sites": [
       {
@@ -1924,6 +1924,31 @@
         "file": "src/cli/setup.rs",
         "name": "\".rigger/agents/{f}\"",
         "content_hash": "1cbc061829c2fe0e"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\"`sh .rigger/gates/content.sh style`\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\"`sh .rigger/gates/content.sh no-os-kill`\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\"`sh .rigger/gates/red-before-green.sh`\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\".rigger/agents/rust-engineer.md\"",
+        "content_hash": "ea68bfe8ed1f915f"
       },
       {
         "file": "src/cli/setup.rs",
@@ -4137,7 +4162,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 600 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 605 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

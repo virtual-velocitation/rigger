@@ -3551,6 +3551,82 @@ mod tests {
         }
     }
 
+    /// The two author roles carry this project's anchors for the built-in hand-over rules as one
+    /// block, byte-identical in both and in no other persona: the implement gate set by name, the
+    /// commands the author runs before it reports (clippy on both lanes, the audit gate with a
+    /// clean `git status`, the boundary audit, the content gates and red-before-green), the whole
+    /// suite left to the gates, the audit's closing rule and the test homes with the tool that
+    /// searches them.
+    #[test]
+    fn the_author_roles_carry_one_hand_over_block_naming_the_checks_and_the_test_homes() {
+        const HEADING: &str = "## Hand-over checks in this project";
+        let mut blocks = Vec::new();
+        for (file, text) in committed_personas() {
+            let author = matches!(file.as_str(), "rust-engineer.md" | "sdet-author.md");
+            assert_eq!(
+                text.matches(HEADING).count(),
+                usize::from(author),
+                "{file}: the hand-over block belongs to the author roles alone"
+            );
+            if author {
+                let from = text.find(HEADING).expect("counted above");
+                let rest = &text[from + HEADING.len()..];
+                let to = rest
+                    .find("\n## ")
+                    .map_or(text.len(), |at| from + HEADING.len() + at);
+                blocks.push(text[from..to].to_string());
+            }
+        }
+        assert_eq!(blocks.len(), 2, "both author roles carry the block");
+        assert_eq!(
+            blocks[0], blocks[1],
+            "the block is byte-identical in both author roles"
+        );
+        let block = rigger::wave::normalize_ws(&blocks[0]);
+        for wanted in [
+            "fmt, clippy, build, audit, test, lane-no-default, style, no-os-kill, boundary and \
+             red-before-green",
+            "`cargo fmt --all --check`",
+            "`cargo clippy --workspace --all-targets -- -D warnings`",
+            "`cargo clippy --workspace --all-targets --no-default-features -- -D warnings`",
+            "`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty",
+            "`cargo test --test boundary_audit`",
+            "`sh .rigger/gates/content.sh style`",
+            "`sh .rigger/gates/content.sh no-os-kill`",
+            "`sh .rigger/gates/red-before-green.sh`",
+            "every test binary your change touched, on both lanes",
+            "The whole workspace suite on both lanes is the test and lane-no-default gates' run, \
+             not yours",
+            "`every_open_cluster_is_dispositioned`",
+            "never by a disposition in `docs/audit/duplication-dispositions.json` that excuses \
+             the twin",
+            "`tests/common/fixtures/<area>.rs`",
+            "`tests/common/cli.rs` (root tests only)",
+            "search all three with Read, awk or python3",
+        ] {
+            assert!(
+                block.contains(wanted),
+                "the hand-over block must say {wanted:?}"
+            );
+        }
+    }
+
+    /// The implementer runs the hand-over checks, never the whole suite: no sentence of its
+    /// persona sends it to run `cargo test` over the workspace before it reports.
+    #[test]
+    fn rust_engineer_runs_the_hand_over_checks_and_leaves_the_whole_suite_to_the_gates() {
+        let text = std::fs::read_to_string(repo().join(".rigger/agents/rust-engineer.md")).unwrap();
+        let flat = rigger::wave::normalize_ws(&text);
+        assert!(
+            !flat.contains("and `cargo test` must ALL pass"),
+            "rust-engineer.md still sends the implementer to run the whole suite"
+        );
+        assert!(
+            flat.contains("Run the hand-over checks below yourself"),
+            "rust-engineer.md must send the implementer to its hand-over checks"
+        );
+    }
+
     /// A mutation survivor is always a failure: the engineer closes it with a failing test or
     /// a rewrite, never by justifying it, and its accounting has no justified status.
     #[test]

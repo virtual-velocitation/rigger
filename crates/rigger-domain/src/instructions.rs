@@ -173,12 +173,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_working_discipline_carries_one_pass_the_fan_out_helpers_and_the_survivor_rule() {
-        let (_, body) = BUILTIN
+    /// The built-in working discipline's body.
+    fn working_discipline() -> &'static str {
+        BUILTIN
             .iter()
             .find(|(name, _)| *name == "working-discipline")
-            .expect("the working-discipline entry is built in");
+            .map(|(_, body)| *body)
+            .expect("the working-discipline entry is built in")
+    }
+
+    #[test]
+    fn the_working_discipline_carries_one_pass_the_fan_out_helpers_and_the_survivor_rule() {
+        let body = working_discipline();
         for heading in [
             "## One pass, by excellence",
             "## Fan out the mechanical work",
@@ -214,6 +220,44 @@ mod tests {
             !words.contains("builds hold the machine-wide build slots"),
             "an agent's build holds no machine-wide build slot"
         );
+    }
+
+    /// The hand-over section states each outcome an author's tree must meet before it reports,
+    /// with the check that proves it: the gates green in the author's worktree, generated files
+    /// committed with their inputs, a test-side shape spelled once, every sentence about the
+    /// changed behaviour true at head, nothing added that nothing reads, and the red test's body
+    /// untouched by the green commit. Read by its words, so a rewrap never moves a verdict.
+    #[test]
+    fn the_working_discipline_states_each_hand_over_outcome_and_its_check() {
+        let body = working_discipline();
+        assert_eq!(
+            body.matches("## Hand over a tree the gates only confirm")
+                .count(),
+            1,
+            "the working discipline carries the hand-over section exactly once"
+        );
+        let words = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        for phrase in [
+            "The gates confirm, never discover.",
+            "Every gate the stage names is green on your committed tree before you report.",
+            "regenerated and committed in the same commit that changed its inputs",
+            "`git status --porcelain` is empty at head",
+            "exists once across every test home, as production code does",
+            "look it up where the project's test helpers live before you write it",
+            "move it to the shared home and have both call it, changing no assertion or \
+             expected value",
+            "one whole-tree audit DecisionMade naming every site of its shape FIXED or CHECKED",
+            "module docs, test names, test docs, assertion messages and operator docs say what \
+             the code at head does",
+            "walk every spelling of the old term through the tree",
+            "Nothing is added that nothing reads.",
+            "makes the red test pass without rewriting its body",
+        ] {
+            assert!(
+                words.contains(phrase),
+                "the hand-over section must say {phrase:?}"
+            );
+        }
     }
 
     #[test]
