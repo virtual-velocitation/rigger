@@ -12031,7 +12031,7 @@ mod tests {
         mod shared_node {
             use super::*;
             use crate::contextgraph::CODE_KIND_PRECEDENCE;
-            use crate::test_support::{call_json, kind_def_json, ref_json};
+            use crate::test_support::{attrs_of, call_json, definition, kind_def_json, ref_json};
 
             /// One definition of `src/f.rs` as `(name, kind, line)`.
             type Def<'a> = (&'a str, &'a str, u64);
@@ -12061,26 +12061,6 @@ mod tests {
                 apply_def(p, pos, "src/b.rs", "g", 1, true);
                 apply_call(p, pos + 1, "src/b.rs", "x", "g");
                 apply_edge_inferred_evidence(p, pos + 2, "tests/t.rs", "x", 3);
-            }
-
-            /// The attrs node `id` carries.
-            fn attrs_of(p: &Projector, id: &str) -> BTreeMap<String, String> {
-                let nodes = p.whole().unwrap().nodes;
-                let node = nodes.into_iter().find(|n| n.id == id);
-                node.unwrap_or_else(|| panic!("{id} is held")).attrs
-            }
-
-            /// The attrs of a Rust definition `name`, a `kind` at `line`, and of nothing else:
-            /// a node carrying a proof is not equal to them.
-            fn definition(name: &str, kind: &str, line: u64) -> BTreeMap<String, String> {
-                [
-                    ("name", name),
-                    ("kind", kind),
-                    ("line", &line.to_string()),
-                    ("lang", "rust"),
-                ]
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .into()
             }
 
             /// `defs`, the definitions of one leaf, settle their node as a `kind` at `line`

@@ -6,7 +6,7 @@
 //! on a fold failure, so every helper unwraps it: a successful call is itself evidence the
 //! payload folded.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
@@ -390,6 +390,26 @@ pub fn live_node_ids(g: &Graph, kind: &str) -> Vec<String> {
         .collect();
     ids.sort();
     ids
+}
+
+/// The attrs node `id` carries in `p`'s whole graph.
+pub fn attrs_of(p: &Projector, id: &str) -> BTreeMap<String, String> {
+    let nodes = p.whole().unwrap().nodes;
+    let node = nodes.into_iter().find(|n| n.id == id);
+    node.unwrap_or_else(|| panic!("{id} is held")).attrs
+}
+
+/// The attrs of a Rust definition `name`, a `kind` at `line`, and of nothing else: a node
+/// carrying a proof is not equal to them.
+pub fn definition(name: &str, kind: &str, line: u64) -> BTreeMap<String, String> {
+    [
+        ("name", name),
+        ("kind", kind),
+        ("line", &line.to_string()),
+        ("lang", "rust"),
+    ]
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .into()
 }
 
 /// A deterministic snapshot of the whole community layer read over the PUBLIC surface: every
