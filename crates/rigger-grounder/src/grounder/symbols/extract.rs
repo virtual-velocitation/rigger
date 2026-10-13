@@ -7,9 +7,9 @@ use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
 
 /// Map a grammar tag's syntax-type NAME (the name half of a `tags.scm` category, e.g.
-/// "function", "method", "struct", "class", "interface", "trait", "module", "constant") to a
-/// rigger `Kind`. Unknown names fold to `Other`, so the model stays grammar-agnostic and a new
-/// grammar never forces a `Kind` variant.
+/// "function", "method", "struct", "class", "interface", "trait", "module", "constant", "macro",
+/// "static", "variant", "field") to a rigger `Kind`. Unknown names fold to `Other`, so the model
+/// stays grammar-agnostic and a new grammar never forces a `Kind` variant.
 fn kind_of(syntax_type: &str) -> Kind {
     match syntax_type {
         "function" => Kind::Function,
@@ -19,6 +19,10 @@ fn kind_of(syntax_type: &str) -> Kind {
         "impl" => Kind::Impl,
         "module" | "namespace" => Kind::Module,
         "constant" => Kind::Constant,
+        "macro" => Kind::Macro,
+        "static" => Kind::Static,
+        "variant" => Kind::Variant,
+        "field" => Kind::Field,
         _ => Kind::Other,
     }
 }
@@ -31,6 +35,65 @@ fn is_nameless(lang: Lang, leaf: &str) -> bool {
     leaf.is_empty() || (leaf == "_" && matches!(lang, Lang::Go | Lang::Rust))
 }
 
+/// A DECLARATION (spec 116): whether `node`, the own node of a function, method or constructor
+/// definition, has no body. Rust's is a `function_signature_item`, a trait required fn or an
+/// extern block's fn.
+fn is_declaration(node: tree_sitter::Node) -> bool {
+    node.kind() == "function_signature_item"
+}
+
+/// Whether `node` is a Rust fn the compiler registers as a procedural macro: a `function_item`
+/// whose outer attribute stack holds `#[proc_macro]`, `#[proc_macro_derive(..)]` or
+/// `#[proc_macro_attribute]`, wherever in the stack it sits.
+fn is_proc_macro_fn(node: tree_sitter::Node, source: &[u8]) -> bool {
+    node.kind() == "function_item"
+        && scan_attribute_stack(
+            source,
+            node.prev_sibling(),
+            |n| n.prev_sibling(),
+            |item, s| {
+                let (_, name) = named_attribute(item, s)?;
+                matches!(
+                    name,
+                    "proc_macro" | "proc_macro_derive" | "proc_macro_attribute"
+                )
+                .then_some(())
+            },
+        )
+        .is_some()
+}
+
+/// The kind a definition the query tagged `tagged` lowers to, read over `node`, its own node
+/// (the deepest one spanning its range): a function, method or constructor with no body
+/// ([`is_declaration`]) is a `Declaration`, and in Rust a proc-macro fn ([`is_proc_macro_fn`])
+/// is a `Macro`; every other definition keeps the kind its tag names.
+fn lowered_kind(lang: Lang, tagged: Kind, node: Option<tree_sitter::Node>, source: &[u8]) -> Kind {
+    match tagged {
+        Kind::Function | Kind::Method | Kind::Constructor if node.is_some_and(is_declaration) => {
+            Kind::Declaration
+        }
+        _ if lang == Lang::Rust && node.is_some_and(|n| is_proc_macro_fn(n, source)) => Kind::Macro,
+        _ => tagged,
+    }
+}
+
+/// A definition as the tag pass and the read-offs record it, ahead of the passes over the whole
+/// file that resolve the rest: `is_test` needs every definition's range (`test_regions` decides
+/// containment over the whole set), and the out-of-line module facts are read from the parsed
+/// tree once every definition is known (only a `Module`-kind definition ever carries them; see
+/// `Def::is_out_of_line_module`).
+fn unresolved_def(kind: Kind, name: String, line: u32) -> Def {
+    Def {
+        kind,
+        name,
+        line,
+        is_test: false,
+        is_out_of_line_module: false,
+        path_override: None,
+        enclosing_inline_module_path: None,
+    }
+}
+
 /// Extract one file's definitions and references by running the INJECTED grammar's tag query
 /// over `source` (5.5.3). This is the ONLY function that touches tree-sitter; the caller
 /// supplies the grammar and its query (unit 2's registry decides WHICH), and everything it
@@ -38,7 +101,12 @@ fn is_nameless(lang: Lang, leaf: &str) -> bool {
 ///
 /// A definition tag whose leaf names nothing ([`is_nameless`]) makes no `Def`, and the references
 /// in its body take the next enclosing definition by the caller rule, else the file. An impl
-/// block is not put to that filter: its name is its header, `impl ..`, never empty and never `_`.
+/// block is not put to that filter: its name is its header, `impl ..`, never empty and never `_`;
+/// nor is a tuple field, whose name is its index.
+///
+/// A tagged definition takes the kind its tag names, lowered once over its own node
+/// ([`lowered_kind`]). What the query cannot name is read off the parsed tree: every impl block
+/// ([`impl_blocks`]) and, selected by `lang`, Rust's tuple fields ([`tuple_fields`]).
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -55,6 +123,22 @@ pub fn extract(
     let (tags, _) = ctx
         .generate_tags(&config, source.as_bytes(), None)
         .map_err(|e| format!("symbols: generate tags: {e}"))?;
+    // The full parse of `source` (the SAME tree `tags_query` runs against, parsed a second time with
+    // the full grammar), read for what the tags pass cannot express: a tagged definition's own
+    // node, impl blocks, tuple fields, test attributes, and out-of-line module declarations. This
+    // is still the one function touching tree-sitter, so the single-parsing-authority invariant
+    // (5.5.3) survives. A `Parser::set_language` or `parse` failure here is defensive only:
+    // `ts_language` already configured the tags query above, using the identical language, so
+    // this path degrades to an `Err` rather than a panic without ever being expected to fire in
+    // practice.
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(ts_language)
+        .map_err(|e| format!("symbols: parser language: {e}"))?;
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
+    let root = tree.root_node();
     let mut defs = Vec::new();
     let mut refs = Vec::new();
     // Each definition's byte range (the whole construct, body included - the tag's node range,
@@ -78,23 +162,14 @@ pub fn extract(
             if is_nameless(lang, &name) {
                 continue;
             }
-            let kind = kind_of(config.syntax_type_name(tag.syntax_type_id));
+            let kind = lowered_kind(
+                lang,
+                kind_of(config.syntax_type_name(tag.syntax_type_id)),
+                root.descendant_for_byte_range(tag.range.start, tag.range.end),
+                source.as_bytes(),
+            );
             def_ranges.push((tag.range.clone(), name.clone(), kind));
-            defs.push(Def {
-                kind,
-                name,
-                line,
-                // Resolved below, once every definition's range is known (test_regions needs the
-                // WHOLE set to decide containment, not just what has been seen so far).
-                is_test: false,
-                // Resolved below too, from the second parsed tree (only a `Module`-kind def can
-                // ever be true here; see `Def::is_out_of_line_module`).
-                is_out_of_line_module: false,
-                path_override: None,
-                // Resolved below too, alongside `path_override`, from the same ancestor walk of
-                // the second parsed tree.
-                enclosing_inline_module_path: None,
-            });
+            defs.push(unresolved_def(kind, name, line));
         } else {
             ref_positions.push(tag.range.start);
             refs.push(SymRef {
@@ -105,37 +180,14 @@ pub fn extract(
             });
         }
     }
-    // The full parse of `source` (the SAME tree `tags_query` runs against, parsed a second time with
-    // the full grammar), read below for what the tags pass cannot express: impl blocks, test
-    // attributes, and out-of-line module declarations. This is still the one function touching
-    // tree-sitter, so the single-parsing-authority invariant (5.5.3) survives. A
-    // `Parser::set_language` or `parse` failure here is defensive only: `ts_language` already
-    // parsed successfully above via `TagsConfiguration::new`/`generate_tags`, using the identical
-    // language, so this path degrades to an `Err` rather than a panic without ever being expected
-    // to fire in practice.
-    let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(ts_language)
-        .map_err(|e| format!("symbols: parser language: {e}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
     // Every impl block is a definition of its own (gap 104), named by its header, with its trait
     // and self type recorded as references. Added before the attribution pass below, so those two
     // references attribute to the impl (the impl -> trait and impl -> type links) unless a
     // function encloses the impl, which then is their caller, while a reference inside one of its
     // methods still attributes to the method, the innermost function.
-    for block in impl_blocks(tree.root_node(), source.as_bytes()) {
+    for block in impl_blocks(root, source.as_bytes()) {
         def_ranges.push((block.range, block.name.clone(), Kind::Impl));
-        defs.push(Def {
-            kind: Kind::Impl,
-            name: block.name,
-            line: block.line,
-            is_test: false,
-            is_out_of_line_module: false,
-            path_override: None,
-            enclosing_inline_module_path: None,
-        });
+        defs.push(unresolved_def(Kind::Impl, block.name, block.line));
         for (name, line, pos) in block.targets {
             ref_positions.push(pos);
             refs.push(SymRef {
@@ -145,6 +197,16 @@ pub fn extract(
                 is_test: false,
             });
         }
+    }
+    // The fields the language's grammar gives no name node are read off the tree too, each a
+    // definition named by its index (spec 116); only Rust has them.
+    let read_off_fields = match lang {
+        Lang::Rust => tuple_fields(root),
+        _ => Vec::new(),
+    };
+    for (range, name, line) in read_off_fields {
+        def_ranges.push((range, name.clone(), Kind::Field));
+        defs.push(unresolved_def(Kind::Field, name, line));
     }
     // Attribute each reference to its caller (`enclosing_def`: the innermost enclosing function,
     // else the innermost enclosing definition; spec 116). The
@@ -160,7 +222,7 @@ pub fn extract(
     // see siblings and ancestors alike whatever order the tags happened to arrive in.
     // `test_regions` walks the parsed tree's `attribute_item` nodes structurally instead of
     // re-deriving attribute/comment boundaries from characters.
-    let regions = test_regions(source.as_bytes(), tree.root_node(), &def_ranges);
+    let regions = test_regions(source.as_bytes(), root, &def_ranges);
     if !regions.is_empty() {
         for (d, (range, _, _)) in defs.iter_mut().zip(def_ranges.iter()) {
             d.is_test = regions
@@ -185,10 +247,7 @@ pub fn extract(
     // it needs it carried on the definition, not re-derived from source it no longer has.
     for (d, (range, _, _)) in defs.iter_mut().zip(def_ranges.iter()) {
         if d.kind == Kind::Module {
-            if let Some(n) = tree
-                .root_node()
-                .descendant_for_byte_range(range.start, range.end)
-            {
+            if let Some(n) = root.descendant_for_byte_range(range.start, range.end) {
                 d.is_out_of_line_module =
                     n.kind() == "mod_item" && n.child_by_field_name("body").is_none();
                 if d.is_out_of_line_module {
@@ -211,7 +270,7 @@ pub fn extract(
     // the SAME `tree` `test_regions`/the out-of-line-module walk above already parsed (never a
     // second parse), so a malformed file's `defs`/`refs` are carried exactly as far as the parse
     // reached, tagged as partial rather than silently presented as complete.
-    let partial = tree.root_node().has_error();
+    let partial = root.has_error();
     Ok(FileSymbols {
         lang,
         defs,
@@ -244,12 +303,15 @@ fn test_regions(
 /// an attribute node that GATES THE ITEM'S OWN COMPILATION on `test`: bare `#[test]`, or
 /// `#[cfg(...)]` whose predicate names `test` ([`attribute_item_names_test`] /
 /// [`cfg_predicate_token_tree_names_test`]). `range` is looked up in the ALREADY-PARSED tree
-/// rooted at `root` ([`root.descendant_for_byte_range`]) - the SAME node the tags query captured,
-/// since a tag's range is exactly its underlying grammar node's range - and the scan walks that
-/// node's `prev_sibling()` chain: an `attribute_item` (or comment) is a sibling of the item it
-/// decorates in every grammar shape this crate has ever seen it in (a top-level item, a `mod`
-/// body, an `impl` body), so this generalizes to any nesting depth without a separate case for
-/// each. The walk stops at the first sibling that is neither a comment nor an `attribute_item` -
+/// rooted at `root`, and the walk starts from the OUTERMOST node below the root whose range
+/// equals it: `descendant_for_byte_range` answers the deepest such node, which for a unit
+/// variant is its name child, a node with no sibling, so the lookup climbs every parent of the
+/// same range and stops below the root, whose range a file of one item shares. A tagged
+/// definition's range is its grammar node's; a tuple field's is its type node's, the grammar
+/// giving it no node of its own. The scan walks that node's `prev_sibling()` chain: an
+/// `attribute_item` (or comment) is a sibling of the item it decorates in every grammar shape
+/// (a top-level item, a `mod` body, an `impl` body, a field or variant list), so this
+/// generalizes to any nesting depth without a separate case for each. The walk stops at the first sibling that is neither a comment nor an `attribute_item` -
 /// the boundary of the contiguous attribute/comment stack directly above the item - and every
 /// attribute in that stack is inspected (not just the nearest), so `#[test]` two attributes above
 /// a `#[should_panic]` still matches, and a comment between two stacked attributes never severs
@@ -292,19 +354,30 @@ fn preceded_by_test_attribute(
     root: tree_sitter::Node,
     range: &std::ops::Range<usize>,
 ) -> bool {
-    let Some(node) = root.descendant_for_byte_range(range.start, range.end) else {
+    let Some(mut node) = root.descendant_for_byte_range(range.start, range.end) else {
         return false;
     };
+    while let Some(parent) = node
+        .parent()
+        .filter(|p| p.parent().is_some() && p.byte_range() == node.byte_range())
+    {
+        node = parent;
+    }
     node_preceded_by_test_attribute(node, source)
 }
 
 /// The core [`preceded_by_test_attribute`] applies once a candidate node is in hand:
 /// self-attributed test either through the node's OWN leading
 /// inner attribute ([`leading_inner_test_attribute`]) or through an outer attribute stack sitting
-/// as its sibling immediately before it.
+/// as its sibling immediately before it. A tuple field's `pub` is a sibling too, between its
+/// attributes and its type, so the walk first steps over a `visibility_modifier`.
 fn node_preceded_by_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
+    let above = match node.prev_sibling() {
+        Some(visibility) if visibility.kind() == "visibility_modifier" => visibility.prev_sibling(),
+        above => above,
+    };
     leading_inner_test_attribute(node, source)
-        || attribute_stack_names_test(source, node.prev_sibling(), |n| n.prev_sibling())
+        || attribute_stack_names_test(source, above, |n| n.prev_sibling())
 }
 
 /// One impl block read off the parsed tree: its header name (`impl Trait for Type`, or
@@ -323,13 +396,40 @@ struct ImplBlock {
 /// source order, as an [`ImplBlock`]. Keyed on the Rust grammar's own node kind, so a file of any
 /// other language has none.
 fn impl_blocks(root: tree_sitter::Node, source: &[u8]) -> Vec<ImplBlock> {
+    nodes_of_kind(root, "impl_item")
+        .into_iter()
+        .filter_map(|node| impl_block(node, source))
+        .collect()
+}
+
+/// Rust's TUPLE FIELDS (spec 116): every field of every tuple struct and tuple variant under
+/// `root`, in source order, as its byte range, its leaf and its 1-based line. The grammar gives
+/// a tuple field no node of its own (an `ordered_field_declaration_list` holds each field's
+/// attributes, visibility and type as siblings), so a field is read off its type node, whose
+/// range and line it takes, and its leaf is its index among the list's types, from `0`.
+fn tuple_fields(root: tree_sitter::Node) -> Vec<(std::ops::Range<usize>, String, u32)> {
+    let mut out = Vec::new();
+    for list in nodes_of_kind(root, "ordered_field_declaration_list") {
+        let mut cursor = list.walk();
+        for (index, ty) in list.children_by_field_name("type", &mut cursor).enumerate() {
+            out.push((
+                ty.byte_range(),
+                index.to_string(),
+                ty.start_position().row as u32 + 1,
+            ));
+        }
+    }
+    out
+}
+
+/// Every node of the grammar kind `kind` anywhere under `root`, `root` included, in source
+/// order.
+fn nodes_of_kind<'t>(root: tree_sitter::Node<'t>, kind: &str) -> Vec<tree_sitter::Node<'t>> {
     let mut out = Vec::new();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        if node.kind() == "impl_item" {
-            if let Some(block) = impl_block(node, source) {
-                out.push(block);
-            }
+        if node.kind() == kind {
+            out.push(node);
         }
         let mut cursor = node.walk();
         let children: Vec<_> = node.children(&mut cursor).collect();
@@ -397,18 +497,32 @@ fn base_type_identifier(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
 /// (present on every item kind that can carry inner attributes - `mod_item`, `function_item`,
 /// `impl_item`, `trait_item`, ...; absent, hence always `false`, on a leafy definition kind such as
 /// a `const_item` that has no body to open one in) and walks forward from its first named child via
-/// the SAME [`attribute_stack_names_test`] the sibling-before case uses, so a doc comment or a
+/// the SAME [`scan_attribute_stack`] the sibling-before case uses, so a doc comment or a
 /// stacked `#![allow(..)]` ahead of the real `#![cfg(test)]` never hides it either.
+///
+/// It counts INNER attributes only (spec 116): an OUTER `#[cfg(test)]` a body opens with governs
+/// the member, variant, method, statement or item after it, never the body's owner, so
+/// `struct S { #[cfg(test)] probe: u32, real: u32 }` keeps `S` and `real` production and only
+/// `probe`, by its own sibling walk, is test code.
 fn leading_inner_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
     let Some(body) = node.child_by_field_name("body") else {
         return false;
     };
-    attribute_stack_names_test(source, body.named_child(0), |n| n.next_named_sibling())
+    scan_attribute_stack(
+        source,
+        body.named_child(0),
+        |n| n.next_named_sibling(),
+        |item, s| {
+            (item.kind() == "inner_attribute_item" && attribute_item_names_test(item, s))
+                .then_some(())
+        },
+    )
+    .is_some()
 }
 
-/// The one walk shared by both [`preceded_by_test_attribute`] (backward over `prev_sibling`) and
+/// The one walk shared by [`preceded_by_test_attribute`] (backward over `prev_sibling`),
 /// [`leading_inner_test_attribute`] (forward over `next_named_sibling`, from a body's first named
-/// child), and (round 7) [`out_of_line_path_override`]: starting at `first`, follow `advance`
+/// child), [`is_proc_macro_fn`] and (round 7) [`out_of_line_path_override`]: starting at `first`, follow `advance`
 /// across a contiguous run of comment (`line_comment`, `block_comment`) and attribute
 /// (`attribute_item`, `inner_attribute_item`) nodes, stopping at the first node that is neither -
 /// the boundary of the stack. `visit` is asked of every attribute node encountered along the way
@@ -440,9 +554,9 @@ fn scan_attribute_stack<'a, T>(
 }
 
 /// [`scan_attribute_stack`] applied to the "does any attribute in the stack gate on `test`"
-/// question [`preceded_by_test_attribute`]/[`leading_inner_test_attribute`] both need -
+/// question [`preceded_by_test_attribute`]'s sibling walk asks -
 /// [`attribute_item_names_test`] is the `visit` closure, and presence-of-a-match (`Some(())`)
-/// collapses to the boolean this and every caller actually wants.
+/// collapses to the boolean its caller wants.
 fn attribute_stack_names_test<'a>(
     source: &[u8],
     first: Option<tree_sitter::Node<'a>>,
@@ -509,9 +623,8 @@ fn enclosing_inline_module_path(node: tree_sitter::Node, source: &[u8]) -> Optio
 /// double-quoted string literal (round-7 scope: rustc itself requires one here, so this is
 /// defensive only, never expected to fire on real source).
 fn path_attribute_value(item: tree_sitter::Node, source: &[u8]) -> Option<String> {
-    let attribute = item.named_child(0)?;
-    let name_node = attribute.named_child(0)?;
-    if name_node.utf8_text(source).unwrap_or_default() != "path" {
+    let (attribute, name) = named_attribute(item, source)?;
+    if name != "path" {
         return None;
     }
     let value = attribute.child_by_field_name("value")?;
@@ -535,19 +648,28 @@ fn path_attribute_value(item: tree_sitter::Node, source: &[u8]) -> Option<String
 ///   compilation of the tagged item itself, so an item under `#[cfg_attr(test, derive(Debug))]`
 ///   is compiled unconditionally and is unambiguously product code.
 fn attribute_item_names_test(item: tree_sitter::Node, source: &[u8]) -> bool {
-    let Some(attribute) = item.named_child(0) else {
-        return false;
-    };
-    let Some(name_node) = attribute.named_child(0) else {
-        return false;
-    };
-    match name_node.utf8_text(source).unwrap_or_default() {
-        "test" => true,
-        "cfg" => attribute
+    match named_attribute(item, source) {
+        Some((_, "test")) => true,
+        Some((attribute, "cfg")) => attribute
             .child_by_field_name("arguments")
             .is_some_and(|args| cfg_predicate_token_tree_names_test(args, source)),
         _ => false,
     }
+}
+
+/// The `attribute` node an attribute item (`#[..]` or `#![..]`) holds, its sole named child,
+/// with the name that attribute opens with (`test`, `cfg`, `path`, `proc_macro`, ...), its own
+/// first named child; `None` for an item holding neither.
+fn named_attribute<'t, 's>(
+    item: tree_sitter::Node<'t>,
+    source: &'s [u8],
+) -> Option<(tree_sitter::Node<'t>, &'s str)> {
+    let attribute = item.named_child(0)?;
+    let name = attribute
+        .named_child(0)?
+        .utf8_text(source)
+        .unwrap_or_default();
+    Some((attribute, name))
 }
 
 /// Whether a `#[cfg(..)]` attribute's parenthesized argument list, `tt` (a `token_tree` node,

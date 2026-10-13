@@ -37,6 +37,9 @@ pub enum Kind {
     Constructor,
     Macro,
     Declaration,
+    Static,
+    Variant,
+    Field,
     Other,
 }
 

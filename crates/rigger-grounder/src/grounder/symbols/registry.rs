@@ -11,21 +11,33 @@ use std::sync::OnceLock;
 /// callee is a bare identifier or a method (`f()`, `x.f()`), so every path-qualified or turbofish
 /// call - `Store::open()`, `crate::sqlite::open_connection()`, `make::<T>()` - left no reference
 /// and its caller no call edge. It also tags an impl block only as a reference to its trait (or,
-/// for an inherent impl, its type), and only when that name is a bare identifier. This is the
-/// upstream query's definitions and call references verbatim, plus the path-qualified and
-/// turbofish call shapes, minus the impl-header references: impl blocks are read off the parsed
-/// tree by `extract` instead, which records each one as a definition with its trait and type
-/// references attributed to it, whatever their path or generic shape.
+/// for an inherent impl, its type), and only when that name is a bare identifier, and it tags no
+/// `const`, `static`, enum variant, field, trait required fn, associated type or `extern crate`.
+/// This is the upstream query's call references verbatim, plus the path-qualified and turbofish
+/// call shapes, minus the impl-header references, with a definition pattern for every Rust
+/// definition type the grammar names (spec 116): impl blocks and tuple fields, which the grammar
+/// gives no name node, are read off the parsed tree by `extract` instead. A trait is tagged a
+/// trait and a `macro_rules!` a macro; a trait required fn or an extern block's fn is tagged a
+/// function, which `extract` lowers to a declaration; an `extern crate` is a module named by its
+/// alias when it has one, else by its name.
 const RUST_TAGS: &str = r#"
 (struct_item name: (type_identifier) @name) @definition.class
 (enum_item name: (type_identifier) @name) @definition.class
 (union_item name: (type_identifier) @name) @definition.class
 (type_item name: (type_identifier) @name) @definition.class
+(associated_type name: (type_identifier) @name) @definition.class
 (declaration_list (function_item name: (identifier) @name) @definition.method)
 (function_item name: (identifier) @name) @definition.function
-(trait_item name: (type_identifier) @name) @definition.interface
+(function_signature_item name: (identifier) @name) @definition.function
+(trait_item name: (type_identifier) @name) @definition.trait
 (mod_item name: (identifier) @name) @definition.module
+(extern_crate_declaration name: (identifier) @name !alias) @definition.module
+(extern_crate_declaration alias: (identifier) @name) @definition.module
 (macro_definition name: (identifier) @name) @definition.macro
+(const_item name: (identifier) @name) @definition.constant
+(static_item name: (identifier) @name) @definition.static
+(enum_variant name: (identifier) @name) @definition.variant
+(field_declaration name: (field_identifier) @name) @definition.field
 
 (call_expression function: (identifier) @name) @reference.call
 (call_expression function: (field_expression field: (field_identifier) @name)) @reference.call
