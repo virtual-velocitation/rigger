@@ -1,6 +1,6 @@
 //! Periphery (contract / integration) tests for spec 37 criterion 1: the extractor attributes
-//! each reference to its INNERMOST enclosing definition (the caller), recorded on the new
-//! `SymRef.enclosing` field.
+//! each reference to its INNERMOST enclosing function (the caller; a reference no function
+//! encloses takes its innermost enclosing definition), recorded on the `SymRef.enclosing` field.
 //!
 //! These run OUTSIDE the crate, over the library's public surface, and guard the boundary the
 //! inside-out unit tests are structurally blind to. The inside-out `extract` test asserts only the

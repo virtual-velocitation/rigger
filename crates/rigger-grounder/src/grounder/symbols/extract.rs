@@ -968,7 +968,7 @@ fn free() {}
 
     #[test]
     fn a_reference_is_attributed_to_its_enclosing_definition() {
-        // Spec 37 criterion 1: the extractor attributes each reference to the INNERMOST definition
+        // Spec 37 criterion 1: the extractor attributes each reference to the INNERMOST function
         // whose body encloses it (the caller), and a reference outside every definition carries
         // none. `fn f() { G(); }` yields a `SymRef` for `G` whose `enclosing` is `f`; a top-level
         // reference belonging to no definition (the `setup!()` macro call at the end) carries
@@ -1043,7 +1043,7 @@ setup!();
             );
         }
 
-        // The call inside the NESTED `fn inner` (line 13) attributes to the INNERMOST definition
+        // The call inside the NESTED `fn inner` (line 13) attributes to the INNERMOST function
         // `inner`, not the outer `outer` - proving innermost containment, not merely any encloser.
         let g_nested = fs
             .refs
@@ -1053,7 +1053,7 @@ setup!();
         assert_eq!(
             g_nested.enclosing.as_deref(),
             Some("inner"),
-            "a call in a nested definition attributes to the innermost enclosing definition"
+            "a call in a nested function attributes to the innermost enclosing function"
         );
     }
 
@@ -1170,7 +1170,7 @@ start!();
     #[test]
     fn a_declaration_is_excluded_from_the_caller_ranges() {
         let decl = (20..30, "decl", Kind::Declaration);
-        assert_eq!(caller(&[decl.clone()], 25), None);
+        assert_eq!(caller(std::slice::from_ref(&decl), 25), None);
         assert_eq!(
             caller(&[(10..50, "host", Kind::Trait), decl.clone()], 25),
             Some("host".to_string())

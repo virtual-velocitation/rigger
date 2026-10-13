@@ -880,9 +880,10 @@ pub struct EdgeInferred {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh: bool,
     /// The enclosing definition this reference was attributed to during extraction (spec 37): the
-    /// caller's name, same-file. `None` for a top-level reference outside every definition (an
-    /// import or a module-level call; an impl header's trait and type attribute to the impl
-    /// block, a definition of its own). The emit pass carries what extraction attributed onto the
+    /// caller's name, same-file, the innermost enclosing function before any other definition
+    /// (spec 116). `None` for a top-level reference outside every definition (an import or a
+    /// module-level call; a file-level impl header's trait and type attribute to the impl block,
+    /// a definition of its own). The emit pass carries what extraction attributed onto the
     /// `SymRef`; the fold, when it is present, adds a `<file>::<caller> --CALLS--> <callee>` edge
     /// ALONGSIDE the existing file-level `REFERENCES` edge (a later criterion owns that fold).
     /// Serde-defaulted and omitted when `None`, so a pre-37 log folds as caller-less and a
