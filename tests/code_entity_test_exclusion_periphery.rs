@@ -85,6 +85,17 @@
 //!    `macro_definition`, plus the non-tagged `use_declaration`/`const_item`/`static_item`) are
 //!    verified ALREADY correct - the sibling walk is kind-agnostic by construction - and PASS
 //!    (`cfg_test_on_every_other_item_kind_excludes_or_stays_scoped_through_the_public_api`).
+//!  - spec 116 criterion 1 (DEV-ONLY CODE MAKES NO NODE), which widens the whole-file rule from
+//!    a `tests/` directory to every DEV-ONLY PATHS pattern, read by one path predicate. Through
+//!    the SAME public API, over a real tree in every registered language: a file at each pattern
+//!    is no node and proves the production definition it calls, each production control keeps
+//!    its definitions, and a pattern-named file an out-of-line `#[cfg(test)] mod` declares
+//!    proves nothing
+//!    (`a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it_calls`);
+//!    and a design doc's mention of such a path mints no node
+//!    (`a_dev_only_design_doc_mention_never_becomes_a_live_node_through_the_public_api`). The
+//!    ranking use of the predicate is driven through the binary, in `tests/cli.rs`
+//!    (`ground_ranks_a_go_test_files_definition_below_the_production_one_it_shadows`).
 
 mod common;
 
@@ -1831,6 +1842,296 @@ fn a_tests_rooted_design_doc_mention_never_becomes_a_live_node_through_the_publi
         "a genuine product-code mention in the SAME doc must still reach the graph normally; \
          nodes: {node_ids:?}"
     );
+}
+
+/// Spec 116 criterion 1 (DEV-ONLY CODE MAKES NO NODE), the design pass through the fold: a
+/// design doc's mention of a path a DEV-ONLY PATHS pattern names - a Go `*_test.go` file inline
+/// and cited with an `#anchor`, a `benches/` file inline, an `examples/` file cited - mints no
+/// node, while the production file beside the Go test, mentioned both ways, is the doc's one
+/// neighbor. Drives the REAL `extract_concepts`/`extract_links` pass through
+/// `link_events`/`concept_events` and the always-compiled fold, as the `tests/`-rooted test
+/// above does.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_dev_only_design_doc_mention_never_becomes_a_live_node_through_the_public_api() {
+    use rigger::contextgraph::Projection;
+    use rigger::grounder::design::events::{concept_events, link_events};
+    use rigger::grounder::design::extract::{extract_concepts, extract_links};
+
+    let md = "# Reference architecture\n\n\
+              See `pkg/x_test.go`, `benches/b.rs` and `pkg/x.go` inline, and cite \
+              [the test](pkg/x_test.go#L3), [the example](examples/e.rs) and \
+              [the code](pkg/x.go).\n";
+    let mut events = concept_events(&extract_concepts("docs/architecture.md", md));
+    events.extend(link_events(&extract_links("docs/architecture.md", md)));
+    let g = fold_events(events)
+        .subgraph(&["docs/architecture.md".to_string()], 3)
+        .unwrap();
+
+    let mut node_ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+    node_ids.sort_unstable();
+    assert_eq!(
+        node_ids,
+        vec!["docs/architecture.md", "pkg/x.go"],
+        "the doc reaches its production mention alone: no dev-only path is a node"
+    );
+    let mut links: Vec<(&str, &str, &str)> = g
+        .edges
+        .iter()
+        .map(|e| (e.from.as_str(), e.rel.as_str(), e.to.as_str()))
+        .collect();
+    links.sort_unstable();
+    assert_eq!(
+        links,
+        vec![
+            ("docs/architecture.md", "SPECIFIES", "pkg/x.go"),
+            ("docs/architecture.md", "references", "pkg/x.go"),
+        ],
+        "each carrier links the production file and no dev-only path"
+    );
+}
+
+/// The production file of [`a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it_calls`]:
+/// one definition per DEV-ONLY PATHS pattern, each called from that pattern's file alone, the
+/// definition the out-of-line test module calls, and the one only production controls call.
+#[cfg(feature = "symbols")]
+const DEV_ONLY_PRODUCT_SRC: &str = "\
+pub fn by_tests_dir() {}
+pub fn by_benches_dir() {}
+pub fn by_examples_dir() {}
+pub fn by_dunder_tests_dir() {}
+pub fn by_go_test() {}
+pub fn by_py_test_prefix() {}
+pub fn by_py_test_suffix() {}
+pub fn by_js_test() {}
+pub fn by_ts_spec() {}
+pub fn by_cs_tests_dir() {}
+pub fn by_cs_test_dir() {}
+pub fn by_out_of_line_module() {}
+pub fn by_production_only() {}
+
+#[cfg(test)]
+mod tests;
+";
+
+/// One file per DEV-ONLY PATHS pattern, each `(path, source, the production definition it
+/// calls, the line of the call)`.
+#[cfg(feature = "symbols")]
+const DEV_ONLY_FILES: &[(&str, &str, &str, u32)] = &[
+    (
+        "App.Tests/A.cs",
+        "class A {\n    void Check() {\n        Lib.by_cs_tests_dir();\n    }\n}\n",
+        "by_cs_tests_dir",
+        3,
+    ),
+    (
+        "UnitTest/B.cs",
+        "class B {\n    void Check() {\n        Lib.by_cs_test_dir();\n    }\n}\n",
+        "by_cs_test_dir",
+        3,
+    ),
+    (
+        "benches/b.rs",
+        "fn bench() {\n    by_benches_dir();\n}\n",
+        "by_benches_dir",
+        2,
+    ),
+    (
+        "examples/e.rs",
+        "fn main() {\n    by_examples_dir();\n}\n",
+        "by_examples_dir",
+        2,
+    ),
+    (
+        "pkg/x_test.go",
+        "package pkg\n\nfunc TestX() {\n\tby_go_test()\n}\n",
+        "by_go_test",
+        4,
+    ),
+    (
+        "py/a_test.py",
+        "def check():\n    by_py_test_suffix()\n",
+        "by_py_test_suffix",
+        2,
+    ),
+    (
+        "py/test_a.py",
+        "def check():\n    by_py_test_prefix()\n",
+        "by_py_test_prefix",
+        2,
+    ),
+    (
+        "tests/t.rs",
+        "fn check() {\n    by_tests_dir();\n}\n",
+        "by_tests_dir",
+        2,
+    ),
+    (
+        "web/__tests__/a.js",
+        "function check() {\n  by_dunder_tests_dir();\n}\n",
+        "by_dunder_tests_dir",
+        2,
+    ),
+    (
+        "web/a.spec.ts",
+        "function check(): void {\n  by_ts_spec();\n}\n",
+        "by_ts_spec",
+        2,
+    ),
+    (
+        "web/a.test.js",
+        "function check() {\n  by_js_test();\n}\n",
+        "by_js_test",
+        2,
+    ),
+];
+
+/// The spec's production controls, each `(path, source, the definitions it holds)`: a path
+/// that reads close to a pattern and is production. Each calls `by_production_only`.
+#[cfg(feature = "symbols")]
+const PRODUCTION_CONTROLS: &[(&str, &str, &[&str])] = &[
+    (
+        "Contest/a.cs",
+        "class Contest {\n    void Run() {\n        Lib.by_production_only();\n    }\n}\n",
+        &["Contest", "Run"],
+    ),
+    (
+        "FooTests/lib.rs",
+        "fn foo_tests_lib() {\n    by_production_only();\n}\n",
+        &["foo_tests_lib"],
+    ),
+    (
+        "LoadTest/run.py",
+        "def load_test_run():\n    by_production_only()\n",
+        &["load_test_run"],
+    ),
+    (
+        "build.rs",
+        "fn build_script() {\n    by_production_only();\n}\n",
+        &["build_script"],
+    ),
+    (
+        "src/a.test.rs",
+        "fn a_test_rs() {\n    by_production_only();\n}\n",
+        &["a_test_rs"],
+    ),
+    (
+        "src/testsuite.rs",
+        "fn testsuite() {\n    by_production_only();\n}\n",
+        &["testsuite"],
+    ),
+];
+
+/// Spec 116 criterion 1 (DEV-ONLY CODE MAKES NO NODE), end to end through the public
+/// `project_batches` -> `Projector` path over a real tree in every registered language: a file
+/// at each DEV-ONLY PATHS pattern is no node, holds no node and ends no edge, and its one call
+/// is the one proof on the production definition it names; each production control is a file
+/// node containing its definitions and proves nothing; and `src/tests/mod.rs`, which a pattern
+/// names and `#[cfg(test)] mod tests;` declares, is no node and proves nothing either.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it_calls() {
+    use rigger::contextgraph::query::card;
+    use rigger::contextgraph::{KIND_FILE, REL_CONTAINS};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const PRODUCT: &str = "src/lib.rs";
+    const OUT_OF_LINE: &str = "src/tests/mod.rs";
+    let mut files: Vec<(&str, &str)> = vec![
+        (PRODUCT, DEV_ONLY_PRODUCT_SRC),
+        (
+            OUT_OF_LINE,
+            "fn check() {\n    super::by_out_of_line_module();\n}\n",
+        ),
+    ];
+    files.extend(DEV_ONLY_FILES.iter().map(|&(path, src, ..)| (path, src)));
+    files.extend(
+        PRODUCTION_CONTROLS
+            .iter()
+            .map(|&(path, src, _)| (path, src)),
+    );
+    let seeds: Vec<&str> = files.iter().map(|&(path, _)| path).collect();
+    let g = ingested_subgraph(&files, &seeds, 3);
+
+    // Every file node is production, and each control contains exactly its definitions.
+    let file_nodes: BTreeSet<&str> = g
+        .nodes
+        .iter()
+        .filter(|n| n.kind == KIND_FILE)
+        .map(|n| n.id.as_str())
+        .collect();
+    let mut production_files: BTreeSet<&str> =
+        PRODUCTION_CONTROLS.iter().map(|&(path, ..)| path).collect();
+    production_files.insert(PRODUCT);
+    assert_eq!(file_nodes, production_files);
+
+    let contained: BTreeSet<(&str, &str)> = g
+        .edges
+        .iter()
+        .filter(|e| e.rel == REL_CONTAINS && e.from != PRODUCT)
+        .map(|e| (e.from.as_str(), e.to.as_str()))
+        .collect();
+    let control_definitions: Vec<(&str, String)> = PRODUCTION_CONTROLS
+        .iter()
+        .flat_map(|&(path, _, names)| {
+            names
+                .iter()
+                .map(move |name| (path, format!("{path}::{name}")))
+        })
+        .collect();
+    assert_eq!(
+        contained,
+        control_definitions
+            .iter()
+            .map(|(path, id)| (*path, id.as_str()))
+            .collect()
+    );
+
+    // No node and no edge end sits at or under a dev-only path.
+    let dev_only: BTreeSet<&str> = DEV_ONLY_FILES
+        .iter()
+        .map(|&(path, ..)| path)
+        .chain([OUT_OF_LINE])
+        .collect();
+    let at_dev_only = |id: &str| dev_only.contains(id.split("::").next().unwrap_or(id));
+    let leaked_nodes: Vec<&str> = g
+        .nodes
+        .iter()
+        .map(|n| n.id.as_str())
+        .filter(|id| at_dev_only(id))
+        .collect();
+    assert_eq!(leaked_nodes, Vec::<&str>::new());
+    let leaked_edges: Vec<(&str, &str, &str)> = g
+        .edges
+        .iter()
+        .filter(|e| at_dev_only(&e.from) || at_dev_only(&e.to))
+        .map(|e| (e.from.as_str(), e.rel.as_str(), e.to.as_str()))
+        .collect();
+    assert_eq!(leaked_edges, Vec::<(&str, &str, &str)>::new());
+
+    let product_prefix = format!("{PRODUCT}::");
+    // Each pattern's file proves the one definition it calls; the out-of-line module's call and
+    // the controls' calls prove nothing.
+    let proofs: BTreeMap<String, Vec<String>> = g
+        .nodes
+        .iter()
+        .filter(|n| n.id.starts_with(&product_prefix))
+        .map(|n| {
+            let card = card(&g, &n.id).expect("a node of the graph has a card");
+            assert_eq!(card.proven_by, card.proof_evidence.len(), "{}", n.id);
+            (
+                n.id[product_prefix.len()..].to_string(),
+                card.proof_evidence,
+            )
+        })
+        .collect();
+    let mut expected_proofs: BTreeMap<String, Vec<String>> = DEV_ONLY_FILES
+        .iter()
+        .map(|&(path, _, name, line)| (name.to_string(), vec![format!("{path}:{line}")]))
+        .collect();
+    expected_proofs.insert("by_out_of_line_module".to_string(), vec![]);
+    expected_proofs.insert("by_production_only".to_string(), vec![]);
+    assert_eq!(proofs, expected_proofs);
 }
 
 rigger::test_cases! {

@@ -2786,6 +2786,26 @@ fn ground_via_symbols_grounder_ranks_a_genuinely_rare_contains_tier_entity_above
     );
 }
 
+/// DEV-ONLY CODE MAKES NO NODE (spec 116 criterion 1), at ranking, end to end through the REAL
+/// `rigger ground` CLI: given a Go test file and a production file that each define `Widget`,
+/// when the operator grounds `Widget`, then the production definition is the first row and the
+/// test file's the second. Neither definition carries a test marking of its own, so the path
+/// alone demotes `a_test.go`, which sorts before `widget.go` and so leads the page whenever
+/// ranking reads the two as equals.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranks_a_go_test_files_definition_below_the_production_one_it_shadows() {
+    let source = "package pkg\n\nfunc Widget() {}\n";
+    let out = ground_via_symbols(
+        &[("a_test.go", source), ("widget.go", source)],
+        &["Widget", "10"],
+    );
+    assert_eq!(
+        out, "widget.go:3: Widget (degree 0)\na_test.go:3: Widget (degree 0)\n",
+        "the production definition must rank above the `*_test.go` one"
+    );
+}
+
 /// Spec 92 criterion 3's `cmd_ground` orchestration - NOT the `Grounder` trait itself: an
 /// explicit `k = 0` is the caller asking for NOTHING, so `cmd_ground` must stay silent even for
 /// a query that would otherwise trip the weak-match honest line (the very query that prints
