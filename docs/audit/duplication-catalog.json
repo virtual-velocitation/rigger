@@ -1132,7 +1132,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-1121955af024",
+    "id": "dup-132c0798ea1a",
     "classification": "semantic",
     "sites": [
       {
@@ -1943,6 +1943,16 @@
       {
         "file": "src/cli/setup.rs",
         "name": "\"`sh .rigger/gates/red-before-green.sh`\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk\"",
         "content_hash": "e24c26c0d9d4cbdb"
       },
       {
@@ -4147,7 +4157,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 602 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 604 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

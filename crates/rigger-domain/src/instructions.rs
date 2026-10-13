@@ -225,9 +225,11 @@ mod tests {
 
     /// The hand-over section states each outcome an author's tree must meet before it reports,
     /// with the check that proves it: the gates green in the author's worktree, generated files
-    /// committed with their inputs, a test-side shape spelled once, every sentence about the
-    /// changed behaviour true at head, nothing added that nothing reads, and the red test's body
-    /// untouched by the green commit. Read by its words, so a rewrap never moves a verdict.
+    /// committed with their inputs, a test-side shape spelled once with every added shape
+    /// recorded in a whole-tree audit whether merged or not, every sentence about the changed
+    /// behaviour true at head with a renamed name's old spelling counted to zero, nothing added
+    /// that nothing reads, and the red test's body untouched by the green commit. Read by its
+    /// words, so a rewrap never moves a verdict.
     #[test]
     fn the_working_discipline_states_each_hand_over_outcome_and_its_check() {
         let body = working_discipline();
@@ -247,10 +249,20 @@ mod tests {
             "look it up where the project's test helpers live before you write it",
             "move it to the shared home and have both call it, changing no assertion or \
              expected value",
+            "A table, fixture, helper, builder, seeder, expected value or oracle you add",
+            "The record is owed for every test-side shape you add, merged or not:",
             "one whole-tree audit DecisionMade naming every site of its shape FIXED or CHECKED",
+            "FIXED when moved to the shared home with both calling it and no assertion or \
+             expected value changed, CHECKED when kept apart, with the reason",
             "module docs, test names, test docs, assertion messages and operator docs say what \
              the code at head does",
-            "walk every spelling of the old term through the tree",
+            "when you rename or retire a name, walk every spelling of the old term through the \
+             tree",
+            "The old spelling occurs zero times in the tree outside git history, counted over \
+             every root",
+            "test docs, test comments and assertion messages are sentences too",
+            "or your hand-over names each remaining occurrence as a deliberate mention with its \
+             reason",
             "Nothing is added that nothing reads.",
             "makes the red test pass without rewriting its body",
         ] {
