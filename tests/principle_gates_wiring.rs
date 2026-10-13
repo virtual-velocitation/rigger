@@ -359,16 +359,28 @@ const PERSONA_CHECKLIST: &[(&str, &str)] = &[
 const GATES_GRADE: &str = "Never re-run a gate the GATE EVIDENCE block in your prompt shows green \
                            on the tree under review";
 
-/// The build-seam test author keeps TDD whole on the tests it writes and leaves the battery to
-/// the gates that run on the committed tree right after it.
+/// The build-seam test author keeps TDD whole on each test it writes, runs the hand-over checks
+/// on the tree it hands to the gates, and leaves the whole suite to the gates; the shared test
+/// homes are not the implementer's, so a fixture both need moves to the shared home, while the
+/// implementer's unit tests stay the implementer's.
 #[test]
-fn the_sdet_author_runs_only_its_own_tests_and_leaves_the_battery_to_the_gates() {
+fn the_sdet_author_runs_its_own_tests_alone_then_the_hand_over_checks_and_shares_the_fixtures() {
     let text = std::fs::read_to_string(repo_root().join(".rigger/agents/sdet-author.md")).unwrap();
     assert!(
         text.contains("with `cargo test -p <crate> <test>` for that test alone"),
         "{text}"
     );
     assert!(!text.contains("Local-first"), "{text}");
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for gone in ["the battery is theirs", "you do not touch theirs"] {
+        assert!(!flat.contains(gone), "sdet-author.md still says {gone:?}");
+    }
+    for wanted in [
+        "Then run the hand-over checks below on the tree you hand to the gates",
+        "The test homes are shared, not theirs",
+    ] {
+        assert!(flat.contains(wanted), "sdet-author.md must say {wanted:?}");
+    }
 }
 
 /// Every checklist line missing from the persona files under `root/.rigger/agents`.

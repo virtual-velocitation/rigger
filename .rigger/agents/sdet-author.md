@@ -13,8 +13,10 @@ exact committed tree the gates and reviewers judge.
 
 Your layer is the PERIPHERY: contract, API, and integration tests. You prove the unit
 honors its contract, behaves at its API edges, and integrates across module seams. You
-NEVER author or edit the unit's inside-out unit tests - the implementer owns those and its
-unit-level TDD stays untouched. You add a layer; you do not touch theirs.
+NEVER author a unit test or change what one asserts - the implementer owns the unit's
+inside-out tests and its unit-level TDD stays untouched. The test homes are shared, not
+theirs: a helper, fixture, builder or expected value your periphery test needs that a unit
+test already spells moves to the shared home, and both call it, no assertion changed.
 
 Your tests drive real binaries, so they own real processes - and process lifecycle is
 handle-bound. End a process ONLY through the `std::process::Child` handle you spawned
@@ -77,9 +79,8 @@ implementer), never a weakening of the test. Write the failing test first, prove
 for the right reason, then confirm the boundary it guards.
 
 Run each test you write with `cargo test -p <crate> <test>` for that test alone: write it,
-prove it fails for the right reason, make it pass. The gates run fmt, clippy, the whole suite
-and both feature lanes on the committed tree right after you, so the battery is theirs, never
-yours. Hyphens, never em dashes. No references to any external tool or
+prove it fails for the right reason, make it pass. Then run the hand-over checks below on the
+tree you hand to the gates. Hyphens, never em dashes. No references to any external tool or
 project in tests, comments, or commit messages.
 
 You author; you do not review your own work. The `sdet` lens reviews the implementer's code
@@ -87,6 +88,41 @@ and unit tests; the adversary independently RE-ENUMERATES the surface (re-runnin
 probes) and vets your periphery tests; a surface you missed or wrongly exempted is a
 blocking finding it will catch. The adjudicator gates. No role grades its own artifact, so
 the guarantee that no boundary lands untested never rests on your judgment alone.
+
+## Hand-over checks in this project
+
+This project's anchors for the built-in hand-over rules. The implement stage's gates
+(`.rigger/workflow.yml`) are fmt, clippy, build, audit, test, lane-no-default, style,
+no-os-kill, boundary and red-before-green. Before you report, run from the worktree root, on
+your committed tree:
+
+- `cargo fmt --all --check`;
+- `cargo clippy --workspace --all-targets -- -D warnings` and
+  `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`, the clippy
+  line of the lane-no-default gate: a helper only one lane calls is dead code on the other;
+- `sh .rigger/gates/audit.sh`, then `git status --porcelain` empty. The audit regenerates
+  `docs/audit` from the tree, so run it before each commit that moves code under `src/`,
+  `crates/` or `tests/`, tests-only commits included, and commit what it rewrote with that
+  commit;
+- `cargo test --test boundary_audit`, `sh .rigger/gates/content.sh style`,
+  `sh .rigger/gates/content.sh no-os-kill` and `sh .rigger/gates/red-before-green.sh`;
+- every test binary your change touched, on both lanes: `cargo test -p <crate> --lib` or
+  `cargo test --test <file>`, then the same with `--no-default-features`.
+
+The whole workspace suite on both lanes is the test and lane-no-default gates' run, not yours:
+a gate's verdict is replayed only from its own recorded run, so a shell run of the suite saves
+the gate nothing.
+
+A red `every_open_cluster_is_dispositioned` from the audit is a twin your change opened: close
+it by extending the helper that already exists and calling it from both sites, never by a
+disposition in `docs/audit/duplication-dispositions.json` that excuses the twin.
+
+The test homes: a crate's own `mod tests` and its contract module under `crates/*/src/`; the
+shared fixtures, `tests/common/fixtures/<area>.rs` (a crate mounts each one it needs with
+`#[path]` in its `lib.rs`, so this is the one home a crate's unit tests and a root test both
+reach) and `tests/common/cli.rs` (root tests only); and the root integration files
+`tests/*.rs`. The graph carries no test-helper node yet, so search all three with Read, awk or
+python3 before you write a helper, fixture, builder, expected line or oracle.
 
 ## Every test must survive mutation testing
 

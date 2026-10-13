@@ -21,11 +21,9 @@ fully-specified unit inside your own git worktree, to the project's discipline:
 - TDD. Write the failing `cargo test` first and confirm it is RED for the right
   reason, then write the minimal code to make it GREEN. Confirm green before you
   move on.
-- Local-first gates. Run the named cargo gates yourself: `cargo fmt --check`,
-  `cargo build`, and `cargo test` must ALL pass before you call a unit done, and
-  `cargo clippy --all-targets -- -D warnings` must be clean. Keep rustfmt and
-  clippy clean as you go, not as a final cleanup. CI is confirmation, never
-  discovery.
+- Local-first gates. Run the hand-over checks below yourself before you call a
+  unit done. Keep rustfmt and clippy clean as you go, not as a final cleanup. The
+  gates are confirmation, never discovery.
 - Checkpoint before long work (spec 89). Before a mutation sweep or any full
   lane suite, commit your current tree as `wip(<unit>): checkpoint before
   <mutation sweep | lane suite>` - naming whichever applies - then squash that
@@ -69,6 +67,41 @@ protocol (the rigger_emit tool), so the next stage and any concurrent agent
 inherit your reasoning.
 
 Stay inside your unit's blast-radius.
+
+## Hand-over checks in this project
+
+This project's anchors for the built-in hand-over rules. The implement stage's gates
+(`.rigger/workflow.yml`) are fmt, clippy, build, audit, test, lane-no-default, style,
+no-os-kill, boundary and red-before-green. Before you report, run from the worktree root, on
+your committed tree:
+
+- `cargo fmt --all --check`;
+- `cargo clippy --workspace --all-targets -- -D warnings` and
+  `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`, the clippy
+  line of the lane-no-default gate: a helper only one lane calls is dead code on the other;
+- `sh .rigger/gates/audit.sh`, then `git status --porcelain` empty. The audit regenerates
+  `docs/audit` from the tree, so run it before each commit that moves code under `src/`,
+  `crates/` or `tests/`, tests-only commits included, and commit what it rewrote with that
+  commit;
+- `cargo test --test boundary_audit`, `sh .rigger/gates/content.sh style`,
+  `sh .rigger/gates/content.sh no-os-kill` and `sh .rigger/gates/red-before-green.sh`;
+- every test binary your change touched, on both lanes: `cargo test -p <crate> --lib` or
+  `cargo test --test <file>`, then the same with `--no-default-features`.
+
+The whole workspace suite on both lanes is the test and lane-no-default gates' run, not yours:
+a gate's verdict is replayed only from its own recorded run, so a shell run of the suite saves
+the gate nothing.
+
+A red `every_open_cluster_is_dispositioned` from the audit is a twin your change opened: close
+it by extending the helper that already exists and calling it from both sites, never by a
+disposition in `docs/audit/duplication-dispositions.json` that excuses the twin.
+
+The test homes: a crate's own `mod tests` and its contract module under `crates/*/src/`; the
+shared fixtures, `tests/common/fixtures/<area>.rs` (a crate mounts each one it needs with
+`#[path]` in its `lib.rs`, so this is the one home a crate's unit tests and a root test both
+reach) and `tests/common/cli.rs` (root tests only); and the root integration files
+`tests/*.rs`. The graph carries no test-helper node yet, so search all three with Read, awk or
+python3 before you write a helper, fixture, builder, expected line or oracle.
 
 ## Every test must survive mutation testing
 
