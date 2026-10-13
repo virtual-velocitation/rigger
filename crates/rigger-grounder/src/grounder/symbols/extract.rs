@@ -788,7 +788,7 @@ fn line_of_byte(line_starts: &[usize], byte: usize) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::grounder::symbols::model::{Kind, Lang};
 
@@ -1081,14 +1081,8 @@ start!();
 ";
         let entry = crate::grounder::symbols::registry::for_extension("rs").unwrap();
         let fs = extract(src, Lang::Rust, &entry.language, entry.tags_query).unwrap();
-        let mut refs: Vec<(u32, &str, Option<&str>)> = fs
-            .refs
-            .iter()
-            .map(|r| (r.line, r.name.as_str(), r.enclosing.as_deref()))
-            .collect();
-        refs.sort();
         assert_eq!(
-            refs,
+            refs_with_callers(&fs),
             vec![
                 (3, "Draw", Some("impl Draw for Widget")),
                 (3, "Widget", Some("impl Draw for Widget")),
@@ -1105,6 +1099,18 @@ start!();
                 (12, "start", None),
             ]
         );
+    }
+
+    /// Every reference of `fs` as `(line, name, caller)`, sorted: the one projection the caller
+    /// tests here and in the registry's tests compare whole.
+    pub(crate) fn refs_with_callers(fs: &FileSymbols) -> Vec<(u32, &str, Option<&str>)> {
+        let mut refs: Vec<_> = fs
+            .refs
+            .iter()
+            .map(|r| (r.line, r.name.as_str(), r.enclosing.as_deref()))
+            .collect();
+        refs.sort();
+        refs
     }
 
     /// The caller [`enclosing_def`] gives `pos` over hand-built `(range, leaf, kind)`

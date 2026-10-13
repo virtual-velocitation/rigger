@@ -437,14 +437,8 @@ top();
             ],
             "each function and each const, local or not, is a definition"
         );
-        let mut refs: Vec<(u32, &str, Option<&str>)> = fs
-            .refs
-            .iter()
-            .map(|r| (r.line, r.name.as_str(), r.enclosing.as_deref()))
-            .collect();
-        refs.sort();
         assert_eq!(
-            refs,
+            crate::grounder::symbols::extract::tests::refs_with_callers(&fs),
             vec![
                 (2, "f", Some("outer")),
                 (4, "g", Some("y")),
