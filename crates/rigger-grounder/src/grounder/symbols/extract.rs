@@ -824,8 +824,7 @@ impl<T> EventStore for Wrapper<T> { fn append(&self) {} }
 impl Sqlite { pub fn open() -> Self { crate::sqlite::open_connection(); Sqlite } }
 pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>(); s }
 ";
-        let entry = crate::grounder::symbols::registry::for_extension("rs").unwrap();
-        let fs = extract(src, Lang::Rust, &entry.language, entry.tags_query).unwrap();
+        let fs = crate::symbol_index::extracted("rs", src);
         let impls: Vec<(&str, u32)> = fs
             .defs
             .iter()
@@ -1065,14 +1064,7 @@ setup!();
     /// function enclosing them; and a top-level reference has the file, no caller.
     #[test]
     fn a_reference_s_caller_is_its_innermost_enclosing_function_else_definition_else_file() {
-        let entry = crate::grounder::symbols::registry::for_extension("rs").unwrap();
-        let fs = extract(
-            crate::caller_sources::RUST_CALLER_SOURCE,
-            Lang::Rust,
-            &entry.language,
-            entry.tags_query,
-        )
-        .unwrap();
+        let fs = crate::symbol_index::extracted("rs", crate::caller_sources::RUST_CALLER_SOURCE);
         assert_eq!(
             crate::symbol_index::refs_with_callers(&fs),
             vec![

@@ -1,9 +1,11 @@
 //! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file
 //! index, saving it through the real `store` boundary and reading the bytes back, loading a
-//! hand-authored legacy `index.json`, and projecting a file's references with their callers.
+//! hand-authored legacy `index.json`, and projecting a file's definitions and its references with
+//! their callers.
 //! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention
-//! `tests/common/mod.rs` keeps). Parser-free, so it compiles in every feature lane.
+//! `tests/common/mod.rs` keeps). Parser-free but for `extracted`, which only the `symbols` lane
+//! compiles, so the rest compiles in every feature lane.
 
 #![allow(dead_code)]
 
@@ -84,6 +86,30 @@ pub fn saved_with_key(path: &str, symbols: FileSymbols, key: &str, why: &str) ->
     let bytes = &saved.bytes;
     assert!(bytes.contains(key), "{why}; got:\n{bytes}");
     saved.reload()
+}
+
+/// The symbols the grammar and query registered for the extension `ext` extract from `src`: the
+/// one read of a source text through the registry, for a test that asserts what a registered
+/// query yields. It is the one fixture here that reaches the parser, so only the `symbols` lane
+/// holds it.
+#[cfg(feature = "symbols")]
+pub fn extracted(ext: &str, src: &str) -> FileSymbols {
+    let entry = rigger::grounder::symbols::registry::for_extension(ext)
+        .expect("the extension is registered");
+    rigger::grounder::symbols::extract::extract(src, entry.lang, &entry.language, entry.tags_query)
+        .expect("the registered query extracts the source")
+}
+
+/// Every definition of `fs` as `(line, name, kind)`, sorted: the one projection the extraction
+/// tests of the registry compare whole.
+pub fn defs_by_line(fs: &FileSymbols) -> Vec<(u32, &str, Kind)> {
+    let mut defs: Vec<_> = fs
+        .defs
+        .iter()
+        .map(|d| (d.line, d.name.as_str(), d.kind))
+        .collect();
+    defs.sort();
+    defs
 }
 
 /// Every reference of `fs` as `(line, name, caller)`, sorted: the one projection the caller-rule

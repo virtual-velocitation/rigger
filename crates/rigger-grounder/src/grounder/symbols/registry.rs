@@ -294,11 +294,10 @@ mod tests {
         // Both are `Lang::Ts`, but a `.tsx` file must parse under the TSX (JSX-aware) grammar,
         // not the plain TypeScript one, or JSX bodies fail to parse. The registry owns WHICH
         // grammar a file uses (spec 15 unit 2), so this is exercised end to end below.
-        let tsx = for_extension("tsx").unwrap();
         // A `.tsx` component with a JSX body still yields its function definition (the plain TS
         // grammar would error on the JSX).
         let src = "function Panel() { return <div>{title}</div>; }\n";
-        let fs = extract(src, tsx.lang, &tsx.language, tsx.tags_query).unwrap();
+        let fs = crate::symbol_index::extracted("tsx", src);
         assert!(
             fs.defs.iter().any(|d| d.name == "Panel"),
             "tsx grammar should extract the Panel component def, got {:?}",
@@ -361,9 +360,8 @@ mod tests {
         // the gap docs/audit/2026-09-graph-vs-grep.md questions 5 and 8 measured against that
         // file's own `OUTER_WALL_CLOCK_SEC` (a ternary) and `FRESH` (a boolean coercion)
         // constants. Both must now extract as `Kind::Constant` definitions.
-        let entry = for_extension("js").unwrap();
         let src = "const OUTER_WALL_CLOCK_SEC = Number(x) > 0 ? Number(x) : 900\nconst FRESH = !!a.fresh\n";
-        let fs = extract(src, entry.lang, &entry.language, entry.tags_query).unwrap();
+        let fs = crate::symbol_index::extracted("js", src);
         assert!(
             fs.defs
                 .iter()
@@ -383,7 +381,7 @@ mod tests {
         // A function-valued const (already covered by the upstream query) must NOT also
         // double-tag as a constant - the new pattern is additive only for non-function values.
         let fn_src = "const greet = () => 1\n";
-        let fn_fs = extract(fn_src, entry.lang, &entry.language, entry.tags_query).unwrap();
+        let fn_fs = crate::symbol_index::extracted("js", fn_src);
         assert!(
             fn_fs
                 .defs
@@ -408,22 +406,9 @@ mod tests {
     /// file, no caller.
     #[test]
     fn a_call_in_a_function_local_js_const_is_attributed_to_its_function() {
-        let entry = for_extension("js").unwrap();
-        let fs = extract(
-            crate::caller_sources::JS_CALLER_SOURCE,
-            entry.lang,
-            &entry.language,
-            entry.tags_query,
-        )
-        .unwrap();
-        let mut defs: Vec<(u32, &str, Kind)> = fs
-            .defs
-            .iter()
-            .map(|d| (d.line, d.name.as_str(), d.kind))
-            .collect();
-        defs.sort();
+        let fs = crate::symbol_index::extracted("js", crate::caller_sources::JS_CALLER_SOURCE);
         assert_eq!(
-            defs,
+            crate::symbol_index::defs_by_line(&fs),
             vec![
                 (1, "outer", Kind::Function),
                 (2, "x", Kind::Constant),
@@ -470,6 +455,73 @@ mod tests {
             persisted("ts-tags-v3"),
             (true, true),
             "a ts-tags-v3 index is current and loads"
+        );
+    }
+
+    /// THE NAME FILTER DROPS A NAMELESS DEFINITION (spec 116 criterion 3), under the upstream Go
+    /// query: a function, a method and a type named `_`, Go's blank identifier, make no
+    /// definition, while the named type and function beside them keep theirs; the call inside
+    /// `func _()` has the file, no caller, as have the receiver type and the call of
+    /// `func (T) _()` and the underlying type of `type _ int`, a named function's call still
+    /// being its own.
+    #[test]
+    fn a_go_definition_named_with_the_blank_identifier_makes_no_def() {
+        let fs = crate::symbol_index::extracted(
+            "go",
+            "\
+package main
+type T struct{}
+func _() { probe() }
+func (T) _() { reach() }
+type _ int
+func named() { other() }
+",
+        );
+        assert_eq!(
+            crate::symbol_index::defs_by_line(&fs),
+            vec![(2, "T", Kind::Type), (6, "named", Kind::Function)],
+            "`func _()`, `func (T) _()` and `type _ int` make no definition"
+        );
+        assert_eq!(
+            crate::symbol_index::refs_with_callers(&fs),
+            vec![
+                (3, "probe", None),
+                (4, "T", None),
+                (4, "reach", None),
+                (5, "int", None),
+                (6, "other", Some("named")),
+            ],
+            "every reference inside a dropped definition takes the file as its caller"
+        );
+    }
+
+    /// The name filter keeps `_` where it is an ordinary name: a JS `const _ = require(..)` and a
+    /// Python `_ = gettext.gettext` each keep their definition under the composed JS query and
+    /// the upstream Python one; neither source holds a reference, the upstream JS query tagging
+    /// no `require` call and a Python attribute read being no call.
+    #[test]
+    fn a_js_and_a_python_definition_named_underscore_keeps_its_def() {
+        let js = crate::symbol_index::extracted("js", "const _ = require('lodash');\n");
+        assert_eq!(
+            crate::symbol_index::defs_by_line(&js),
+            vec![(1, "_", Kind::Constant)],
+            "a JS const named `_` is a definition"
+        );
+        assert_eq!(
+            crate::symbol_index::refs_with_callers(&js),
+            vec![],
+            "the upstream JS query tags no `require` call"
+        );
+        let py = crate::symbol_index::extracted("py", "import gettext\n_ = gettext.gettext\n");
+        assert_eq!(
+            crate::symbol_index::defs_by_line(&py),
+            vec![(2, "_", Kind::Constant)],
+            "a Python module-level `_` is a definition"
+        );
+        assert_eq!(
+            crate::symbol_index::refs_with_callers(&py),
+            vec![],
+            "a Python attribute read is no call"
         );
     }
 }
