@@ -741,7 +741,8 @@ mod tests {
     }
 
     /// DEV-ONLY CODE MAKES NO NODE (spec 116 criterion 1), at the design pass: a link to a path
-    /// a DEV-ONLY PATHS pattern names is dropped at both carriers, with or without an anchor, a
+    /// a DEV-ONLY PATHS pattern names is dropped at both carriers, with or without an anchor or
+    /// a `:line` or `:line-line` suffix, a
     /// gated pattern (`pkg/x_test.go`) and a markdown path (`examples/demo/README.md`) included,
     /// while the production file beside it and a production doc still link.
     #[test]
@@ -750,7 +751,12 @@ mod tests {
                   See `pkg/x_test.go`, `pkg/x_test.go#L3`, `benches/b.rs` and `pkg/x.go` inline, \
                   and cite [the test](pkg/x_test.go), [its line](pkg/x_test.go#L3), \
                   [the demo](examples/demo/README.md), [the code](pkg/x.go#L3) and \
-                  [the guide](docs/guide.md).\n";
+                  [the guide](docs/guide.md).\n\n\
+                  A `:line` or `:line-line` suffix names the same file: `pkg/x_test.go:12`, \
+                  `pkg/x_test.go:12-20` and [the case](pkg/x_test.go:12) drop, and `pkg/x.go:12` \
+                  links whole. A suffix that is no line span is no path's: `pkg/x_test.go:`, \
+                  `pkg/x_test.go:-20`, `pkg/x_test.go:1-2-3`, `pkg/x_test.go:12-` and \
+                  `pkg/x_test.go:1a` stay as written.\n";
         let link = |rel, to: &str| DesignLink {
             from: "docs/architecture.md".to_string(),
             rel,
@@ -760,6 +766,12 @@ mod tests {
             extract_links("docs/architecture.md", md),
             vec![
                 link(LinkRel::Specifies, "pkg/x.go"),
+                link(LinkRel::Specifies, "pkg/x.go:12"),
+                link(LinkRel::Specifies, "pkg/x_test.go:"),
+                link(LinkRel::Specifies, "pkg/x_test.go:-20"),
+                link(LinkRel::Specifies, "pkg/x_test.go:1-2-3"),
+                link(LinkRel::Specifies, "pkg/x_test.go:12-"),
+                link(LinkRel::Specifies, "pkg/x_test.go:1a"),
                 link(LinkRel::References, "docs/guide.md"),
                 link(LinkRel::References, "pkg/x.go#L3"),
             ]

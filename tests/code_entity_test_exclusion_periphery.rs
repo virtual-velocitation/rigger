@@ -1051,7 +1051,7 @@ rigger::test_cases! {
 /// this test pins. The round-5 fix (`fix-u86c1-r5-inner-attribute-item`) closed item 1 of the
 /// mandate (the inner-attribute module form) only; this test is expected to FAIL until a future
 /// round resolves each test-shaped out-of-line module declaration to its file(s) at the
-/// events/index layer (where every file's path is known - `events.rs`'s `is_under_tests_dir` /
+/// events/index layer (where every file's path is known - `events.rs`'s `is_dev_only` /
 /// `project_batches`, per the mandate) and excludes them there, since a per-file extractor
 /// structurally cannot see an attribute that lives in a different file.
 #[cfg(feature = "symbols")]
@@ -1183,7 +1183,7 @@ rigger::test_cases! {
 
 /// sdet-author gap: the out-of-line-resolution tests above read the flattened event list. The mandate
 /// (`op-u86c1-r5-close-every-remaining-test-shape` item 2, quoted in this file's own module doc)
-/// names TWO production entry points needing the fix - `events.rs`'s `is_under_tests_dir` /
+/// names TWO production entry points needing the fix - `events.rs`'s `is_dev_only` /
 /// `project_batches` - and `project_batches` is the ACTUAL entry point a live run drives
 /// (`conductor::RunCtx::ingest_project_batches`, spec 29c), not merely a test convenience;
 /// `out_of_line_test_module_files` is computed and applied at BOTH call sites independently (two
@@ -2276,7 +2276,7 @@ rigger::test_cases! {
                  mod helper;\n",
             ),
             // A directory NOT named `tests` - a fixture rooted at a literal `tests/` path would
-            // already be excluded by the unrelated `is_under_tests_dir` rule, masking the
+            // already be excluded by the unrelated `is_dev_only` rule, masking the
             // `#[path]`-resolution question this test isolates.
             ("fixtures/actual.rs", "pub fn overridden_test_helper() {}\n"),
         ],
