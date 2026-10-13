@@ -734,6 +734,32 @@ mod tests {
         );
     }
 
+    /// DEV-ONLY CODE MAKES NO NODE (spec 116 criterion 1), at the design pass: a link to a path
+    /// a DEV-ONLY PATHS pattern names is dropped at both carriers, with or without an anchor, a
+    /// gated pattern (`pkg/x_test.go`) and a markdown path (`examples/demo/README.md`) included,
+    /// while the production file beside it and a production doc still link.
+    #[test]
+    fn a_link_to_a_dev_only_path_is_dropped_inline_and_by_citation() {
+        let md = "# Reference architecture\n\n\
+                  See `pkg/x_test.go`, `pkg/x_test.go#L3`, `benches/b.rs` and `pkg/x.go` inline, \
+                  and cite [the test](pkg/x_test.go), [its line](pkg/x_test.go#L3), \
+                  [the demo](examples/demo/README.md), [the code](pkg/x.go#L3) and \
+                  [the guide](docs/guide.md).\n";
+        let link = |rel, to: &str| DesignLink {
+            from: "docs/architecture.md".to_string(),
+            rel,
+            to: to.to_string(),
+        };
+        assert_eq!(
+            extract_links("docs/architecture.md", md),
+            vec![
+                link(LinkRel::Specifies, "pkg/x.go"),
+                link(LinkRel::References, "docs/guide.md"),
+                link(LinkRel::References, "pkg/x.go#L3"),
+            ]
+        );
+    }
+
     #[test]
     fn an_arch_decision_constrains_and_a_handbook_rule_governs_their_code() {
         // The doc's kind picks the single design->code relation: a decision CONSTRAINS, a rule

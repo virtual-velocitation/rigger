@@ -2228,6 +2228,38 @@ mod tests {
         idx
     }
 
+    /// DEV-ONLY CODE MAKES NO NODE (spec 116 criterion 1), at ranking: [`scored_hits`] marks
+    /// every location of a `*_test.go` file as test, though none carries a test marking of its
+    /// own, and leaves its production sibling's unmarked.
+    #[test]
+    fn scored_hits_marks_a_go_test_file_location_as_test_and_its_sibling_as_production() {
+        let mut idx = SymbolIndex::default();
+        for path in ["pkg/x.go", "pkg/x_test.go"] {
+            idx.insert_file(
+                path.to_string(),
+                FileSymbols {
+                    lang: Lang::Go,
+                    defs: vec![hand_def("Widget", 1)],
+                    refs: vec![hand_ref("Widget", 2)],
+                    partial: false,
+                },
+            );
+        }
+        let marked: Vec<(&str, u32, bool)> = scored_hits(&idx, &["Widget"])
+            .iter()
+            .map(|h| (h.file, h.line, h.test))
+            .collect();
+        assert_eq!(
+            marked,
+            vec![
+                ("pkg/x.go", 1, false),
+                ("pkg/x.go", 2, false),
+                ("pkg/x_test.go", 1, true),
+                ("pkg/x_test.go", 2, true),
+            ]
+        );
+    }
+
     /// The name `hits` slots at `fixture.rs`'s `line`.
     fn slot_at<'a>(hits: &[ScoredHit<'a>], line: u32) -> Option<&'a str> {
         hits.iter()

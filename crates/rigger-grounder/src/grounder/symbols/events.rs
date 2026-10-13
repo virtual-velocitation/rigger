@@ -1202,6 +1202,299 @@ mod tests {
         );
     }
 
+    /// [`product_fs`] in the language `path`'s own extension registers, Rust when it registers
+    /// none (the shape a `--language` override indexes a file in).
+    fn product_fs_at(path: &str) -> FileSymbols {
+        let ext = path.rsplit('.').next().unwrap_or("");
+        FileSymbols {
+            lang: crate::grounder::symbols::registry::for_extension(ext)
+                .map_or(Lang::Rust, |entry| entry.lang),
+            ..product_fs()
+        }
+    }
+
+    /// The batch a file at `path` lowers [`product_fs_at`] to. Dev-only: the structural boundary
+    /// alone, then its one reference as proof evidence at its line. Production: its definition,
+    /// its reference as a structural edge, then the empty evidence boundary.
+    fn expected_batch(path: &str, dev_only: bool) -> Vec<(String, String)> {
+        let lang = super::lang_str(product_fs_at(path).lang);
+        let event = |type_: &str, name: &str, rest: &str| {
+            (
+                type_.to_string(),
+                format!(r#"{{"file":"{path}","name":"{name}",{rest}}}"#),
+            )
+        };
+        let edge = |name: &str, tail: &str| {
+            event(
+                TYPE_EDGE_INFERRED,
+                name,
+                &format!(r#""lang":"{lang}"{tail}"#),
+            )
+        };
+        if dev_only {
+            return vec![
+                edge("", r#","fresh":true"#),
+                edge("product_fn", r#","fresh":true,"line":2,"is_test":true"#),
+            ];
+        }
+        vec![
+            event(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                "product_fn",
+                &format!(r#""kind":"function","line":1,"lang":"{lang}","fresh":true"#),
+            ),
+            edge("product_fn", ""),
+            edge("", r#","fresh":true,"is_test":true"#),
+        ]
+    }
+
+    /// What [`super::lower_file`] lowers [`product_fs_at`] to at `path`, outside the out-of-line
+    /// set.
+    fn lowered_at(path: &str) -> Vec<(String, String)> {
+        crate::test_support::wire_owned(&super::lower_file(path, &product_fs_at(path), false))
+    }
+
+    /// DEV-ONLY CODE MAKES NO NODE (spec 116 criterion 1): a file each DEV-ONLY PATHS pattern
+    /// names lowers to no definition and no structural edge, only the boundary, and its
+    /// reference emits as proof evidence.
+    #[test]
+    fn a_file_each_dev_only_paths_pattern_names_lowers_to_the_boundary_and_its_proof() {
+        for (path, pattern) in [
+            ("tests/foo.rs", "a `tests` directory component"),
+            ("crate/benches/b.rs", "a `benches` directory component"),
+            ("examples/demo/main.rs", "an `examples` directory component"),
+            ("web/__tests__/a.js", "a `__tests__` directory component"),
+            ("pkg/x_test.go", "Go `*_test.go`"),
+            ("app/test_views.py", "Python `test_*.py`"),
+            ("app/views_test.py", "Python `*_test.py`"),
+            ("shim/shim.test.mjs", "JS `*.test.*`"),
+            ("web/a.spec.ts", "TS `*.spec.*`"),
+            ("Acme.Test/A.cs", "a C# directory component ending `Test`"),
+            ("Acme.Tests/A.cs", "a C# directory component ending `Tests`"),
+        ] {
+            assert_eq!(
+                lowered_at(path),
+                expected_batch(path, true),
+                "{pattern}: {path}"
+            );
+        }
+    }
+
+    /// The gates and edges of DEV-ONLY PATHS, each still dev-only: every registered JS and TS
+    /// extension, either marker in either language, a marker ahead of a further dot segment, the
+    /// empty glob star, a pattern directory at any depth, and an ungated directory holding a
+    /// file whose extension registers no language.
+    #[test]
+    fn a_dev_only_paths_pattern_holds_across_its_languages_and_at_its_edges() {
+        for path in [
+            "web/a.test.js",
+            "web/a.test.cjs",
+            "web/a.test.jsx",
+            "web/a.test.ts",
+            "web/a.test.tsx",
+            "web/a.spec.js",
+            "web/a.test.d.ts",
+            "web/.spec.ts",
+            "pkg/_test.go",
+            "app/test_.py",
+            "app/_test.py",
+            "FooTest/A.cs",
+            "FooTests/Sub/A.cs",
+            "Test/A.cs",
+            "a/b/tests/c/d.rs",
+            "benches/b.go",
+            "tests/notes.txt",
+            "examples/README",
+        ] {
+            assert_eq!(lowered_at(path), expected_batch(path, true), "{path}");
+        }
+    }
+
+    /// Every production control of DEV-ONLY PATHS, and the nearest path each pattern does not
+    /// name, lowers its definition and its structural edge and emits no proof.
+    #[test]
+    fn a_production_control_of_dev_only_paths_lowers_its_definitions() {
+        for (path, why) in [
+            (
+                "src/testsuite.rs",
+                "a file name that reads close to `tests`",
+            ),
+            ("build.rs", "a root file with no directory"),
+            ("Contest/a.cs", "the C# suffix is case-sensitive"),
+            ("LoadTest/run.py", "the directory suffix is C#'s alone"),
+            ("FooTests/lib.rs", "the directory suffix is C#'s alone"),
+            ("src/a.test.rs", "`*.test.*` is JS and TS's alone"),
+            ("src/a.spec.rs", "`*.spec.*` is JS and TS's alone"),
+            (
+                "src/tests.rs",
+                "a pattern directory name as the file's own name",
+            ),
+            (
+                "src/benches.rs",
+                "a pattern directory name as the file's own name",
+            ),
+            (
+                "src/examples.rs",
+                "a pattern directory name as the file's own name",
+            ),
+            (
+                "src/__tests__.js",
+                "a pattern directory name as the file's own name",
+            ),
+            (
+                "src/tests",
+                "a pattern directory name as an extensionless file",
+            ),
+            (
+                "testing/a.rs",
+                "a directory that only starts with `tests`'s letters",
+            ),
+            ("mytests/a.rs", "a directory that only ends with `tests`"),
+            ("pkg/xtest.go", "no `_` before `test`"),
+            ("pkg/x_test.rs", "`*_test.go` is Go's alone"),
+            ("pkg/test_x.go", "`test_*` is Python's alone"),
+            ("pkg/x.test.go", "`*.test.*` is JS and TS's alone"),
+            (
+                "pkg/x_test.go.txt",
+                "the gate reads the path's own extension",
+            ),
+            ("app/test.py", "no `_` after `test`"),
+            ("app/tests_a.py", "`tests_` is not `test_`"),
+            ("app/attest.py", "no `_` before `test`"),
+            ("app/a_test_b.py", "`_test` is not the name's end"),
+            ("app/a.spec.py", "`*.spec.*` is JS and TS's alone"),
+            ("web/test.js", "no dot before `test`"),
+            ("web/spec.ts", "no dot before `spec`"),
+            ("web/a_test.js", "`*_test` is Go and Python's alone"),
+            ("web/test_a.ts", "`test_*` is Python's alone"),
+            (
+                "web/atest.spec",
+                "the marker is the extension, which registers no language",
+            ),
+            (
+                "src/WidgetTests.cs",
+                "the C# suffix is a directory's, never the file's",
+            ),
+            (
+                "Acme.Tests.Core/A.cs",
+                "the C# suffix is the last dot segment's",
+            ),
+            ("Testing/A.cs", "`Test` is not the directory's end"),
+            ("Acme.tests/A.cs", "the C# suffix is case-sensitive"),
+        ] {
+            assert_eq!(
+                lowered_at(path),
+                expected_batch(path, false),
+                "{why}: {path}"
+            );
+        }
+    }
+
+    /// The whole walk over real sources: a `benches` file and a `*_test.go` file lower to the
+    /// boundary and their references as proof, beside the production files that lower their
+    /// definitions, and a `src/foo/tests/mod.rs` that `#[cfg(test)] mod tests;` declares, named
+    /// by a DEV-ONLY PATHS pattern and by the out-of-line set, takes the set's rule: the
+    /// boundary alone, no proof.
+    #[test]
+    fn the_walk_lowers_dev_only_files_to_proof_and_a_file_both_inputs_name_to_no_proof() {
+        use crate::test_support::wire;
+
+        let dir = tempfile::tempdir().unwrap();
+        for (path, source) in [
+            ("benches/b.rs", "fn bench() {\n    product();\n}\n"),
+            ("pkg/x.go", "package pkg\n\nfunc Product() {}\n"),
+            (
+                "pkg/x_test.go",
+                "package pkg\n\nfunc TestProduct() {\n\tProduct()\n}\n",
+            ),
+            (
+                "src/foo/mod.rs",
+                "#[cfg(test)]\nmod tests;\n\npub fn product() {}\n",
+            ),
+            (
+                "src/foo/tests/mod.rs",
+                "fn check() {\n    super::product();\n}\n",
+            ),
+        ] {
+            crate::host_fixtures::write_file(&dir.path().join(path), source.as_bytes());
+        }
+
+        let batches = super::project_batches(dir.path().to_str().unwrap());
+        let lowered: Vec<_> = batches
+            .iter()
+            .map(|(path, batch, excluded)| (path.as_str(), wire(batch), *excluded))
+            .collect();
+        assert_eq!(
+            lowered,
+            vec![
+                (
+                    "benches/b.rs",
+                    vec![
+                        (
+                            TYPE_EDGE_INFERRED,
+                            r#"{"file":"benches/b.rs","name":"","lang":"rust","fresh":true}"#
+                        ),
+                        (
+                            TYPE_EDGE_INFERRED,
+                            r#"{"file":"benches/b.rs","name":"product","lang":"rust","fresh":true,"line":2,"is_test":true}"#
+                        ),
+                    ],
+                    false
+                ),
+                (
+                    "pkg/x.go",
+                    vec![
+                        (
+                            TYPE_CODE_ENTITY_EXTRACTED,
+                            r#"{"file":"pkg/x.go","name":"Product","kind":"function","line":3,"lang":"go","fresh":true}"#
+                        ),
+                        (
+                            TYPE_EDGE_INFERRED,
+                            r#"{"file":"pkg/x.go","name":"","lang":"go","fresh":true,"is_test":true}"#
+                        ),
+                    ],
+                    false
+                ),
+                (
+                    "pkg/x_test.go",
+                    vec![
+                        (
+                            TYPE_EDGE_INFERRED,
+                            r#"{"file":"pkg/x_test.go","name":"","lang":"go","fresh":true}"#
+                        ),
+                        (
+                            TYPE_EDGE_INFERRED,
+                            r#"{"file":"pkg/x_test.go","name":"Product","lang":"go","fresh":true,"line":4,"is_test":true}"#
+                        ),
+                    ],
+                    false
+                ),
+                (
+                    "src/foo/mod.rs",
+                    vec![
+                        (
+                            TYPE_CODE_ENTITY_EXTRACTED,
+                            r#"{"file":"src/foo/mod.rs","name":"product","kind":"function","line":4,"lang":"rust","fresh":true}"#
+                        ),
+                        (
+                            TYPE_EDGE_INFERRED,
+                            r#"{"file":"src/foo/mod.rs","name":"","lang":"rust","fresh":true,"is_test":true}"#
+                        ),
+                    ],
+                    false
+                ),
+                (
+                    "src/foo/tests/mod.rs",
+                    vec![(
+                        TYPE_EDGE_INFERRED,
+                        r#"{"file":"src/foo/tests/mod.rs","name":"","lang":"rust","fresh":true}"#
+                    )],
+                    true
+                ),
+            ]
+        );
+    }
+
     #[test]
     fn extract_events_skips_is_test_items_and_the_fresh_boundary_lands_on_the_first_survivor() {
         // Spec 86 criterion 1, the in-file case: a definition/reference the extraction pass
