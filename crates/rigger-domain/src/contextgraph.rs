@@ -71,8 +71,10 @@ pub const CODE_KIND_OTHER: &str = "other";
 pub const CODE_KIND_FIELD: &str = "field";
 /// The code kind of a property, a data member read through accessors.
 pub const CODE_KIND_PROPERTY: &str = "property";
-/// The code kinds no call resolves onto.
-pub const NON_TARGET_KINDS: [&str; 0] = [];
+/// The code kinds no call resolves onto: a data member, and a declaration, whose calls reach
+/// its implementation.
+pub const NON_TARGET_KINDS: [&str; 3] =
+    [CODE_KIND_FIELD, CODE_KIND_PROPERTY, CODE_KIND_DECLARATION];
 
 /// Whether a named code entity of `kind` (its `kind` attr, `None` when it carries none) is a
 /// call target: a definition a call, a tier, a proof or a retirement resolves against. False

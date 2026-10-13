@@ -1805,7 +1805,8 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 /// - a member that IS a definition (a `name` attr) or a doc / file-path node folds under its OWN
 ///   file ([`file_of`]);
 /// - a BARE cross-file code-entity placeholder (no `name` attr) resolves by name-suffix over the
-///   DEFINITION nodes sharing its name: EXACTLY ONE folds under that definition's file; MORE THAN ONE
+///   call-target DEFINITION nodes sharing its name (never a data member or a declaration, which
+///   folds under its own file as every definition does): EXACTLY ONE folds under that definition's file; MORE THAN ONE
 ///   (or zero) is marked-unresolved with the sorted candidate ids;
 /// - a member with NO file identity at all (a rare dev-loop node, e.g. a decision) is marked
 ///   unresolved too, with an EMPTY candidate frontier - the same honesty shape a zero-candidate bare
@@ -1818,7 +1819,7 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 /// file buckets are sized, dominant-kind coloured, and cross-file coupling edges weighted exactly as
 /// every other lens. `total` is the member-set size (resolved or not).
 fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reprojection {
-    // Index every code-entity DEFINITION by its entity-name suffix, for the conservative cross-file
+    // Index every call-target code-entity DEFINITION by its entity-name suffix, for the conservative cross-file
     // resolution - the SAME index [`whole_graph_lens_key`] reads for the whole-graph fold.
     let defs_by_suffix = defs_by_entity_suffix(graph);
 

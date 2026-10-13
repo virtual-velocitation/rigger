@@ -27,9 +27,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::contextgraph::{
-    Edge, Error, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION,
-    KIND_FILE, KIND_FINDING, KIND_LESSON, REL_ABOUT, REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY,
-    REL_REALIZES,
+    is_call_target, Edge, Error, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
+    KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, REL_ABOUT, REL_CONTAINS, REL_GOVERNS,
+    REL_IN_COMMUNITY, REL_REALIZES,
 };
 use crate::eventstore::Position;
 
@@ -137,8 +137,10 @@ pub fn name_suffix(id: &str) -> &str {
     }
 }
 
-/// Index every code-entity DEFINITION (a `name` attr - the extraction fold's marker that a node is a
-/// real definition, never a bare cross-file placeholder) by its entity-name SUFFIX ([`name_suffix`]):
+/// Index every code-entity DEFINITION a call resolves onto (a `name` attr - the extraction fold's
+/// marker that a node is a real definition, never a bare cross-file placeholder - and a kind that
+/// passes [`is_call_target`], so never a data member or a declaration) by its entity-name SUFFIX
+/// ([`name_suffix`]):
 /// the ONE resolution authority a bare placeholder's [`file_of`] attribution reads, so the files-lens
 /// whole-graph fold ([`Buckets::new`]'s [`Lens::Files`] arm) and `dash.rs`'s `reproject_files` resolve
 /// the IDENTICAL shape identically (spec 52's `definitions_with_suffix`, in-memory). Each candidate
@@ -147,7 +149,10 @@ pub fn name_suffix(id: &str) -> &str {
 pub fn defs_by_entity_suffix(graph: &Graph) -> BTreeMap<&str, Vec<&str>> {
     let mut defs_by_suffix: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for n in &graph.nodes {
-        if n.kind == KIND_CODE_ENTITY && n.attrs.contains_key("name") {
+        if n.kind == KIND_CODE_ENTITY
+            && n.attrs.contains_key("name")
+            && is_call_target(n.attrs.get("kind").map(String::as_str))
+        {
             defs_by_suffix
                 .entry(name_suffix(&n.id))
                 .or_default()
@@ -315,7 +320,7 @@ pub struct Buckets<'g> {
     /// multi-concept member appears once, never silently duplicated. Always empty under
     /// [`Lens::Files`] and [`Lens::Code`] (a node carries at most one community).
     shared: BTreeSet<&'g str>,
-    /// [`Lens::Files`] ONLY (spec 63 c3, FILES-LENS PURITY): every code-entity DEFINITION indexed by
+    /// [`Lens::Files`] ONLY (spec 63 c3, FILES-LENS PURITY): every call-target DEFINITION indexed by
     /// entity-name suffix ([`defs_by_entity_suffix`]), so [`whole_graph_lens_key`] can resolve a bare
     /// cross-file placeholder to its unique real definition's file - the SAME honest resolution
     /// `dash.rs`'s `reproject_files` performs - rather than taking [`file_of`] of the placeholder's
@@ -535,8 +540,9 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
 /// live `REALIZES` membership at this grain gets NO bucket either, REGARDLESS of its own kind. Under
 /// [`Lens::Files`], the SAME shape of gate: a node outside [`KIND_CODE_ENTITY`] is excluded outright,
 /// and a code entity folds by [`file_of`] - its OWN FILE - rather than [`cluster_key`]'s directory
-/// fold. A REAL definition (a `name` attr) takes [`file_of`] of its own id directly; a BARE cross-file
-/// placeholder resolves FIRST by entity-name suffix over [`Buckets::defs_by_suffix`].
+/// fold. A REAL definition (a `name` attr, a data member's included) takes [`file_of`] of its own id
+/// directly; a BARE cross-file placeholder resolves FIRST by entity-name suffix over
+/// [`Buckets::defs_by_suffix`], the call targets alone.
 pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
     match buckets.lens {
         Lens::Code { .. } => {
@@ -556,9 +562,9 @@ pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<Str
             if node.kind != KIND_CODE_ENTITY {
                 return None;
             }
-            // A real definition (a `name` attr) folds under its OWN file. A BARE cross-file
-            // placeholder (no `name` attr) resolves by entity-name suffix over
-            // `buckets.defs_by_suffix` FIRST - the same honest resolution `reproject_files`
+            // A real definition (a `name` attr), a data member or a declaration as much as a fn,
+            // folds under its OWN file. A BARE cross-file placeholder (no `name` attr) resolves
+            // by entity-name suffix over `buckets.defs_by_suffix`, the call targets, FIRST - the same honest resolution `reproject_files`
             // performs - since its raw id names the REFERENCING file, not its true definition
             // file: EXACTLY ONE candidate resolves to that definition's file; ZERO or MORE THAN
             // ONE cannot be honestly attributed to any one file, so the fold excludes it entirely

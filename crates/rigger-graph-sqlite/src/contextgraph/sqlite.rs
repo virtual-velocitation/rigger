@@ -10,19 +10,19 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 
 use super::query::name_suffix;
 use super::{
-    is_call_target, CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite,
-    EntryBatch, EntryFold, Error, FoldAccess, Graph, Located, Node, Projection, KIND_AGENT,
-    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
-    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
-    KIND_LESSON, KIND_RATIONALE, KIND_STAGE, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
-    REBUILD_OWED, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES,
-    REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED, REL_REALIZES,
-    REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES,
-    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED,
-    TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
-    TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
-    TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch, EntryFold,
+    Error, FoldAccess, Graph, Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION,
+    KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC,
+    KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE,
+    KIND_STAGE, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE, REBUILD_OWED, REL_ABOUT,
+    REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS,
+    REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS,
+    REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED,
+    TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED,
+    TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE,
+    TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED,
+    TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED,
+    TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Position, Revision};
 use crate::lockfile::HeldLock;
@@ -861,7 +861,8 @@ impl Projector {
     ///
     /// Resolution order (the graph's existing surface convention): an EXACT node-id match first, so
     /// a full `<file>::<name>` id resolves directly; only on a miss is the input treated as a BARE
-    /// name and matched by the pinned name-suffix expression over code-entity DEFINITION nodes.
+    /// name and matched by the pinned name-suffix expression over code-entity DEFINITION nodes, a
+    /// data member and a declaration among them (a lookup, never the walks' call-target test).
     /// Zero candidates -> [`Located::None`]; exactly one -> [`Located::One`] (its site); more than
     /// one -> [`Located::Many`] the SORTED candidates, never a guess among them.
     ///
@@ -874,7 +875,7 @@ impl Projector {
             return Ok(Located::One(self.site_of(&conn, node)?));
         }
         // Else a bare name: the pinned name-suffix match over definition nodes (sorted by id).
-        let cands = definitions_with_suffix(&conn, entity, &self.project)?;
+        let cands = definitions_with_suffix(&conn, entity, &self.project, false)?;
         match cands.as_slice() {
             [] => Ok(Located::None),
             [only] => {
@@ -977,8 +978,9 @@ impl Projector {
     ///   discoverer's layer + 1. BFS visits shallowest-first, so a node's recorded layer is its
     ///   minimum hop distance from the seed, stable across polls.
     /// - **Cross-file resolution.** A `CALLS` edge whose callee target is BARE (no `name` attr - the
-    ///   definition is in another file) is resolved by the pinned name-suffix expression over
-    ///   code-entity DEFINITION nodes: EXACTLY ONE definition auto-continues (the edge is redirected
+    ///   definition is in another file), or a named node that is no call target (a data member or
+    ///   a declaration of the called leaf), is resolved by the pinned name-suffix expression over
+    ///   call-target DEFINITION nodes: EXACTLY ONE definition auto-continues (the edge is redirected
     ///   onto the real definition); MORE THAN ONE becomes a marked frontier ([`CallNode::frontier`]
     ///   carrying the SORTED candidate ids) the walk does NOT descend - honest by construction, the
     ///   human re-seeds on a chosen candidate; ZERO leaves the bare node a terminal leaf. A same-file
@@ -1048,8 +1050,10 @@ impl Projector {
     /// - **Reverse cross-file resolution (the mirror of the DOWN policy).** A caller of the seed's
     ///   name is found through the reverse name-match: an edge that literally targets `cur` is a
     ///   SAME-FILE caller (its call already lands on the definition - always followed, unambiguous);
-    ///   an edge to a BARE placeholder whose entity-name equals `cur`'s name is a CROSS-FILE caller,
-    ///   attributed to `cur` only when that name has EXACTLY ONE definition (`cur` itself). When the
+    ///   an edge to a BARE placeholder, or to a named data member or declaration, whose entity-name
+    ///   equals `cur`'s name is a CROSS-FILE caller, attributed to `cur` only when that name has
+    ///   EXACTLY ONE call-target definition (`cur` itself). A `cur` that is itself a data member or
+    ///   a declaration, as seed or as a node the walk reached, has no caller. When the
     ///   name has MORE THAN ONE definition the caller is a marked FRONTIER ([`CallNode::frontier`]
     ///   carrying the SORTED candidate definition ids) the walk does NOT ascend - honest by
     ///   construction, since that caller might be calling a same-named sibling rather than the seed;
@@ -2143,11 +2147,15 @@ fn settle_node(
 }
 
 /// The name node `id` defines, when it is a live definition: a code entity carrying the `name`
-/// attr its definition's extraction gave it.
+/// attr its definition's extraction gave it, of a kind a call resolves onto
+/// ([`call_target_sql`]). A data member or a declaration defines no name here.
 fn definition_name(tx: &Transaction, id: &str, project: &str) -> Result<Option<String>, Error> {
     tx.query_row(
-        "SELECT json_extract(attrs, '$.name') FROM nodes
-          WHERE id = ?1 AND project = ?2 AND kind = ?3",
+        &format!(
+            "SELECT json_extract(attrs, '$.name') FROM nodes
+              WHERE id = ?1 AND project = ?2 AND kind = ?3 AND {}",
+            call_target_sql()
+        ),
         params![id, project, KIND_CODE_ENTITY],
         |r| r.get::<_, Option<String>>(0),
     )
@@ -2159,20 +2167,23 @@ fn definition_name(tx: &Transaction, id: &str, project: &str) -> Result<Option<S
 /// Undo what resolved against definition `id` of `name` now that it is no longer one (spec 101,
 /// "convergences undo with their definition"), the inverse of the definition arm's two
 /// convergences: every live cross-file reference to `name` tiered INFERRED because a definition of
-/// it existed is demoted to AMBIGUOUS when no other definition remains ([`reference_tier`]'s own
+/// it existed is demoted to AMBIGUOUS when no other call target defines it ([`reference_tier`]'s own
 /// rule), and the test proofs of `name` are resolved again without it ([`resolve_proofs`]): what
 /// landed on `id` waits for, or moves to, the definition that now answers the name, and a retired
 /// `id` keeps no proof to come back with.
 fn definition_retired(tx: &Transaction, id: &str, name: &str, project: &str) -> Result<(), Error> {
     tx.execute(
-        "UPDATE edges SET tier = ?1
-          WHERE rel IN (?2, ?3) AND tier = ?4 AND project = ?5 AND valid_to IS NULL
-            AND substr(to_id, instr(to_id, '::') + 2) = ?6
-            AND NOT EXISTS (
-              SELECT 1 FROM nodes n
-               WHERE substr(n.id, instr(n.id, '::') + 2) = ?6
-                 AND n.kind = ?7 AND n.project = ?5 AND n.id != edges.to_id
-                 AND json_extract(n.attrs, '$.name') = ?6)",
+        &format!(
+            "UPDATE edges SET tier = ?1
+              WHERE rel IN (?2, ?3) AND tier = ?4 AND project = ?5 AND valid_to IS NULL
+                AND substr(to_id, instr(to_id, '::') + 2) = ?6
+                AND NOT EXISTS (
+                  SELECT 1 FROM nodes n
+                   WHERE substr(n.id, instr(n.id, '::') + 2) = ?6
+                     AND n.kind = ?7 AND n.project = ?5 AND n.id != edges.to_id
+                     AND json_extract(n.attrs, '$.name') = ?6 AND {})",
+            call_target_sql()
+        ),
         params![
             TIER_AMBIGUOUS,
             REL_REFERENCES,
@@ -2627,28 +2638,33 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             // one tier authority evolves both structural edges together, never a forked behavior
             // where the CALLS edge lags its sibling's confidence. A same-file CALLS to this
             // definition's own entity is excluded by the same `to_id != entity` guard.
-            tx.execute(
-                "UPDATE edges SET tier = ?1
+            //
+            // Both convergences run only when the settled node is a call target: a data member
+            // or a declaration of this name upgrades no tier and takes no proof.
+            if definition_name(tx, &entity, project)?.is_some() {
+                tx.execute(
+                    "UPDATE edges SET tier = ?1
                    WHERE rel IN (?2, ?7) AND tier = ?3 AND project = ?4 AND valid_to IS NULL
                      AND to_id != ?5
                      AND substr(to_id, instr(to_id, '::') + 2) = ?6",
-                params![
-                    TIER_INFERRED,
-                    REL_REFERENCES,
-                    TIER_AMBIGUOUS,
-                    project,
-                    entity,
-                    c.name,
-                    REL_CALLS
-                ],
-            )
-            .map_err(be)?;
-            // Spec 86 criterion 2's convergent half: any TEST-ORIGIN evidence staged before this
-            // definition existed (a forward reference to a file the sorted ingest had not yet
-            // reached) names it now - transfer it onto `entity` and clear the stage. Same
-            // convergence point as the tier upgrade just above (this definition folding is what
-            // makes both resolvable), never a second timing authority.
-            resolve_proofs(tx, &c.name, project)?;
+                    params![
+                        TIER_INFERRED,
+                        REL_REFERENCES,
+                        TIER_AMBIGUOUS,
+                        project,
+                        entity,
+                        c.name,
+                        REL_CALLS
+                    ],
+                )
+                .map_err(be)?;
+                // Spec 86 criterion 2's convergent half: any TEST-ORIGIN evidence staged before this
+                // definition existed (a forward reference to a file the sorted ingest had not yet
+                // reached) names it now - transfer it onto `entity` and clear the stage. Same
+                // convergence point as the tier upgrade just above (this definition folding is what
+                // makes both resolvable), never a second timing authority.
+                resolve_proofs(tx, &c.name, project)?;
+            }
         }
         TYPE_EDGE_INFERRED => {
             // Spec 29a criterion 1: one reference the extraction pass emitted. Fold it into a
@@ -3245,45 +3261,54 @@ fn call_target_sql() -> String {
     )
 }
 
-/// Whether the node `id` carries a `name` attr in `project` (spec 52) - i.e. it is a code-entity
-/// DEFINITION, not a bare cross-file placeholder the reference fold created attr-less. This is how
-/// a directed hop tells a same-file callee (which already lands on its definition) from a bare
-/// cross-file callee (which must be resolved by name-suffix).
-fn node_has_name(conn: &Connection, id: &str, project: &str) -> Result<bool, Error> {
-    let found = conn
-        .query_row(
-            "SELECT 1 FROM nodes
+/// Whether the NAMED node `id` is a call target in `project` ([`call_target_sql`]): `Some(true)`
+/// for a code-entity definition a call resolves onto, `Some(false)` for a named node of a
+/// non-target kind (a data member, a declaration), and `None` for a node carrying no `name` attr
+/// (a bare cross-file placeholder the reference fold created attr-less) or for no node at all.
+/// This is how a directed hop tells a same-file callee (which already lands on its definition)
+/// from a callee that must be resolved by name-suffix: every answer but `Some(true)`.
+fn named_call_target(conn: &Connection, id: &str, project: &str) -> Result<Option<bool>, Error> {
+    conn.query_row(
+        &format!(
+            "SELECT {} FROM nodes
               WHERE id = ?1 AND project = ?2 AND json_extract(attrs, '$.name') IS NOT NULL",
-            params![id, project],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(be)?;
-    Ok(found.is_some())
+            call_target_sql()
+        ),
+        params![id, project],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(be)
 }
 
 /// The code-entity DEFINITION nodes whose entity-name equals `suffix`, in `project`, sorted by id
 /// (spec 52 - the conservative cross-file resolution's candidate set). Phrased with the PINNED
 /// `substr(id, instr(id, '::') + 2)` expression so it seeks the `idx_nodes_name_suffix` expression
 /// index rather than scanning; filtered to real definitions (a `name` attr present), so a bare
-/// placeholder sharing the name is never itself a candidate.
+/// placeholder sharing the name is never itself a candidate. With `call_side` the candidates are
+/// the call targets alone ([`call_target_sql`]), what a walk resolves a call onto; without it
+/// every named node answers, a data member and a declaration included, what a lookup by name
+/// shows.
 fn definitions_with_suffix(
     conn: &Connection,
     suffix: &str,
     project: &str,
+    call_side: bool,
 ) -> Result<Vec<String>, Error> {
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT id FROM nodes
               WHERE substr(id, instr(id, '::') + 2) = ?1
                 AND kind = ?2
                 AND json_extract(attrs, '$.name') IS NOT NULL
                 AND project = ?3
+                AND (?4 = 0 OR {})
               ORDER BY id",
-        )
+            call_target_sql()
+        ))
         .map_err(be)?;
     let ids = stmt
-        .query_map(params![suffix, KIND_CODE_ENTITY, project], |r| {
+        .query_map(params![suffix, KIND_CODE_ENTITY, project, call_side], |r| {
             r.get::<_, String>(0)
         })
         .map_err(be)?
@@ -3336,9 +3361,11 @@ fn call_edge_rows(
 /// Resolve one DOWN hop's callee target (spec 52 criterion 1). Returns the id the edge should land
 /// on and, when the hop is a multi-candidate frontier, its SORTED candidate ids:
 ///
-/// - a SAME-FILE callee already carries a `name` attr (it is its own definition) -> land on it,
+/// - a SAME-FILE callee that is a named call target (it is its own definition) -> land on it,
 ///   no frontier;
-/// - a BARE cross-file placeholder resolves by name-suffix over the DEFINITION nodes: EXACTLY ONE
+/// - a BARE cross-file placeholder, and a named node that is no call target (a data member or a
+///   declaration of the called leaf), resolves by name-suffix over the call-target DEFINITION
+///   nodes: EXACTLY ONE
 ///   definition auto-continues (the edge is redirected onto the real definition, no frontier);
 ///   MORE THAN ONE is a marked frontier (the placeholder id, carrying the sorted candidates) the
 ///   caller does NOT descend; ZERO leaves the placeholder a terminal leaf (no descent target).
@@ -3347,10 +3374,10 @@ fn resolve_down_hop(
     raw_to: &str,
     project: &str,
 ) -> Result<(String, Option<Vec<String>>), Error> {
-    if node_has_name(conn, raw_to, project)? {
+    if named_call_target(conn, raw_to, project)? == Some(true) {
         return Ok((raw_to.to_string(), None));
     }
-    let cands = definitions_with_suffix(conn, name_suffix(raw_to), project)?;
+    let cands = definitions_with_suffix(conn, name_suffix(raw_to), project, true)?;
     match cands.len() {
         1 => Ok((cands.into_iter().next().unwrap(), None)),
         0 => Ok((raw_to.to_string(), None)),
@@ -3383,10 +3410,11 @@ fn callers_direct(
 /// the reverse cross-file resolution). A cross-file call targets a bare placeholder in the CALLER's
 /// file namespace (no `name` attr - the definition lives elsewhere), so these are the callers that
 /// call `name` across a file boundary. Phrased with the PINNED `substr(id, instr(id,'::')+2)`
-/// name-suffix expression so it seeks the `idx_nodes_name_suffix` index; filtered to bare targets (a
-/// `name` attr absent) so an edge that lands directly on a real definition (a same-file caller, or a
-/// call to a DIFFERENT same-named definition) is never miscounted here - those are covered by
-/// [`callers_direct`] on the exact definition, keeping the two caller sets disjoint.
+/// name-suffix expression so it seeks the `idx_nodes_name_suffix` index; filtered to targets that
+/// are no call target (a `name` attr absent, or a named data member or declaration a same-file
+/// call naming its leaf lands on) so an edge that lands directly on a real definition (a same-file
+/// caller, or a call to a DIFFERENT same-named definition) is never miscounted here - those are
+/// covered by [`callers_direct`] on the exact definition, keeping the two caller sets disjoint.
 fn callers_via_bare(
     conn: &Connection,
     name: &str,
@@ -3394,12 +3422,15 @@ fn callers_via_bare(
 ) -> Result<Vec<(String, String, i64, Position)>, Error> {
     call_edge_rows(
         conn,
-        "SELECT e.from_id, e.tier, e.valid_from, e.source FROM edges e
+        &format!(
+            "SELECT e.from_id, e.tier, e.valid_from, e.source FROM edges e
                JOIN nodes n ON n.id = e.to_id AND n.project = e.project
               WHERE e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2
                 AND substr(e.to_id, instr(e.to_id, '::') + 2) = ?3
-                AND json_extract(n.attrs, '$.name') IS NULL
+                AND (json_extract(n.attrs, '$.name') IS NULL OR NOT ({}))
               ORDER BY e.from_id",
+            call_target_sql()
+        ),
         params![REL_CALLS, project, name],
     )
 }
@@ -3412,25 +3443,31 @@ type CallHop = (String, String, i64, Position, Option<Vec<String>>);
 
 /// The callers of `cur` for one UP hop (spec 52 criterion 3), each a [`CallHop`] whose `frontier`
 /// carries the SORTED candidate definition ids on a multi-candidate hop the walk must NOT ascend.
-/// Two disjoint sources, mirroring [`resolve_down_hop`] in reverse:
+/// A named `cur` that is no call target (a data member or a declaration, as seed or as a node the
+/// walk reached) has NO caller: the calls naming its leaf are callers of the call target they
+/// resolve onto. Otherwise two disjoint sources, mirroring [`resolve_down_hop`] in reverse:
 ///
 /// - **Same-file callers** ([`callers_direct`]) whose edge literally targets `cur` - always an
 ///   unambiguous caller, no frontier.
-/// - **Cross-file callers** ([`callers_via_bare`]) that call `cur`'s NAME through a bare placeholder,
-///   attributed to `cur` only when that name resolves unambiguously: EXACTLY ONE definition (`cur`
-///   itself) -> a real caller, no frontier; MORE THAN ONE definition -> a marked frontier carrying
-///   the sorted candidate ids (the caller might be calling a same-named sibling, so the walk stops
-///   there). The cross-file source applies only when `cur` is a DEFINITION (carries a `name` attr):
-///   a bare node is not a definition, so a cross-file call to its name resolves to the real
-///   definitions elsewhere, never to it.
+/// - **Cross-file callers** ([`callers_via_bare`]) that call `cur`'s NAME through a node that is
+///   no call target, attributed to `cur` only when that name resolves unambiguously: EXACTLY ONE
+///   definition (`cur` itself) -> a real caller, no frontier; MORE THAN ONE definition -> a marked
+///   frontier carrying the sorted candidate ids (the caller might be calling a same-named sibling,
+///   so the walk stops there). The cross-file source applies only when `cur` is a call-target
+///   DEFINITION: a bare node is not a definition, so a cross-file call to its name resolves to the
+///   real definitions elsewhere, never to it.
 fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallHop>, Error> {
+    let definition = match named_call_target(conn, cur, project)? {
+        Some(false) => return Ok(Vec::new()),
+        target => target.is_some(),
+    };
     let mut out: Vec<CallHop> = Vec::new();
     for (from, tier, vf, src) in callers_direct(conn, cur, project)? {
         out.push((from, tier, vf, src, None));
     }
-    if node_has_name(conn, cur, project)? {
+    if definition {
         let name = name_suffix(cur);
-        let cands = definitions_with_suffix(conn, name, project)?;
+        let cands = definitions_with_suffix(conn, name, project, true)?;
         // `cur` is a definition of its own name, so it is always among the candidates: exactly one
         // means `cur` is the sole definition (unambiguous), more than one is a frontier.
         let frontier = if cands.len() > 1 { Some(cands) } else { None };
@@ -3521,7 +3558,7 @@ fn referenced_not_called(
 /// (cross-file resolution stays out of scope - only the tier is classified):
 ///
 /// - the name is DEFINED in the SAME file (the target `<file>::<name>` already carries a
-///   definition's attrs) -> [`TIER_EXTRACTED`]: an explicit, resolved local reference (a call /
+///   call-target definition's attrs) -> [`TIER_EXTRACTED`]: an explicit, resolved local reference (a call /
 ///   import / inherit of a known local symbol).
 /// - else the name is DEFINED in ANOTHER file the graph knows (some other code-entity node carries
 ///   it as a definition) -> [`TIER_INFERRED`]: a derived / transitive cross-file link.
@@ -3530,7 +3567,9 @@ fn referenced_not_called(
 ///   tiered lowest, and the blast radius never crosses it (addendum 2.4).
 ///
 /// A definition node is told from a bare reference target by carrying a `name` attr (the definition
-/// arm sets it; the reference arm creates bare, attr-less targets). Called BEFORE the reference arm
+/// arm sets it; the reference arm creates bare, attr-less targets) and being a call target
+/// ([`call_target_sql`]): a data member or a declaration of the name tiers a reference as no
+/// definition at all does. Called BEFORE the reference arm
 /// `ensure_node`s its bare target, so the target this reference is about to create never miscounts
 /// as its own definition. The reverse fold order - a reference folding before its cross-file
 /// definition - is reconciled convergently by the definition arm's AMBIGUOUS -> INFERRED upgrade, so
@@ -3541,11 +3580,15 @@ fn reference_tier(
     name: &str,
     project: &str,
 ) -> Result<&'static str, Error> {
-    // Same-file definition: the target id already carries a definition's `name` attr.
+    let call_target = call_target_sql();
+    // Same-file definition: the target id already carries a call-target definition's `name` attr.
     let same_file_def = tx
         .query_row(
-            "SELECT 1 FROM nodes
-              WHERE id = ?1 AND project = ?2 AND json_extract(attrs, '$.name') IS NOT NULL",
+            &format!(
+                "SELECT 1 FROM nodes
+                  WHERE id = ?1 AND project = ?2 AND json_extract(attrs, '$.name') IS NOT NULL
+                    AND {call_target}"
+            ),
             params![target, project],
             |_| Ok(()),
         )
@@ -3556,14 +3599,17 @@ fn reference_tier(
         return Ok(TIER_EXTRACTED);
     }
     // Cross-file definition: a code-entity in a DIFFERENT file (id != this target) carries this
-    // name as a definition. A bare reference target elsewhere never matches - it has no `name` attr.
+    // name as a call-target definition. A bare reference target elsewhere never matches - it has
+    // no `name` attr.
     let cross_file_def = tx
         .query_row(
-            "SELECT 1 FROM nodes
-              WHERE substr(id, instr(id, '::') + 2) = ?4
-                AND kind = ?1 AND project = ?2 AND id != ?3
-                AND json_extract(attrs, '$.name') = ?4
-              LIMIT 1",
+            &format!(
+                "SELECT 1 FROM nodes
+                  WHERE substr(id, instr(id, '::') + 2) = ?4
+                    AND kind = ?1 AND project = ?2 AND id != ?3
+                    AND json_extract(attrs, '$.name') = ?4 AND {call_target}
+                  LIMIT 1"
+            ),
             params![KIND_CODE_ENTITY, project, target, name],
             |_| Ok(()),
         )
@@ -3642,8 +3688,8 @@ fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(
     Ok(())
 }
 
-/// Resolve every recorded test reference to `name` against the definitions of `name` the graph
-/// holds NOW (spec 86 criterion 2; spec 101, "convergences undo with their definition"): the
+/// Resolve every recorded test reference to `name` against the call-target definitions of `name`
+/// ([`call_target_sql`]; no proof lands on a data member or a declaration) the graph holds NOW (spec 86 criterion 2; spec 101, "convergences undo with their definition"): the
 /// reference's own file's definition when there is one (the `#[cfg(test)] mod tests` idiom), else
 /// the ONE definition of `name` in the project, else none - a reference waits, never guessing among
 /// several same-named definitions. Run whenever a reference is recorded and whenever a definition of
@@ -3653,11 +3699,13 @@ fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(
 fn resolve_proofs(tx: &Transaction, name: &str, project: &str) -> Result<(), Error> {
     let definitions: BTreeSet<String> = {
         let mut stmt = tx
-            .prepare(
+            .prepare(&format!(
                 "SELECT id FROM nodes
                   WHERE substr(id, instr(id, '::') + 2) = ?3
-                    AND kind = ?1 AND project = ?2 AND json_extract(attrs, '$.name') = ?3",
-            )
+                    AND kind = ?1 AND project = ?2 AND json_extract(attrs, '$.name') = ?3
+                    AND {}",
+                call_target_sql()
+            ))
             .map_err(be)?;
         let rows = stmt
             .query_map(params![KIND_CODE_ENTITY, project, name], |r| r.get(0))
@@ -8903,8 +8951,8 @@ mod tests {
     mod call_target {
         use super::*;
         use crate::contextgraph::{
-            CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION, CODE_KIND_FIELD,
-            CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD,
+            is_call_target, CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION,
+            CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD,
             CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_TRAIT, CODE_KIND_TYPE,
         };
 

@@ -45,8 +45,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contextgraph::{
-    CommunityAssigned, Graph, KIND_CODE_ENTITY, REL_CALLS, REL_CONTAINS, REL_REFERENCES,
-    TIER_AMBIGUOUS, TYPE_COMMUNITY_ASSIGNED,
+    is_call_target, CommunityAssigned, Graph, KIND_CODE_ENTITY, REL_CALLS, REL_CONTAINS,
+    REL_REFERENCES, TIER_AMBIGUOUS, TYPE_COMMUNITY_ASSIGNED,
 };
 use crate::eventstore::Event;
 
@@ -120,7 +120,9 @@ impl Coupling {
         // Index real DEFINITIONS by simple name so a cross-file reference that folded onto a bare
         // same-file placeholder can be redirected to the definition it actually reaches. A
         // code-entity node carrying a `name` attr is a real definition (the extraction fold sets
-        // it); a code-entity with NO `name` attr is a bare cross-file placeholder. The "simple
+        // it), a redirect target only when its kind is a call target: a placeholder never
+        // redirects onto a data member or a declaration, which keeps its own edges as every named
+        // node does; a code-entity with NO `name` attr is a bare cross-file placeholder. The "simple
         // name" is the text after the FIRST `::` - the pinned `substr(id, instr(id,'::')+2)`
         // name-suffix the fold's own cross-file resolution keys on.
         let mut defs_by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -129,7 +131,7 @@ impl Coupling {
             let is_code = node.kind == KIND_CODE_ENTITY;
             let named = node.attrs.contains_key("name");
             bare.insert(node.id.as_str(), is_code && !named);
-            if is_code && named {
+            if is_code && named && is_call_target(node.attrs.get("kind").map(String::as_str)) {
                 if let Some(simple) = simple_name(&node.id) {
                     defs_by_name.entry(simple).or_default().push(&node.id);
                 }

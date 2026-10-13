@@ -13063,6 +13063,8 @@ fn graph_around_recovery(seed: &[String]) -> String {
     }
 }
 
+/// Render the code neighborhood: the seeded subgraph's definitions a call resolves onto, by
+/// file and line. A field, a property or a declaration takes no slot of the capped list.
 fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
     // Recover each definition's file from the recorded CONTAINS edge (file -> entity), keyed by the
     // contained entity id. An extracted definition always folds this edge, so a definition reachable
@@ -13084,6 +13086,7 @@ fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
         .iter()
         .filter(|n| n.kind == contextgraph::KIND_CODE_ENTITY)
         .filter(|n| n.attrs.get("name").is_some_and(|s| !s.is_empty()))
+        .filter(|n| contextgraph::is_call_target(n.attrs.get("kind").map(String::as_str)))
         .filter(|n| file_of.contains_key(n.id.as_str()))
         .collect();
     defs.sort_by(|a, c| {

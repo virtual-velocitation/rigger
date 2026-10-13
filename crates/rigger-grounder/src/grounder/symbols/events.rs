@@ -6,8 +6,10 @@
 //! stays compiled in both lanes.
 
 use crate::contextgraph::{
-    CodeEntityExtracted, EdgeInferred, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION,
-    CODE_KIND_MACRO, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+    CodeEntityExtracted, EdgeInferred, CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR,
+    CODE_KIND_DECLARATION, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD,
+    CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_TRAIT, CODE_KIND_TYPE, TYPE_CODE_ENTITY_EXTRACTED,
+    TYPE_EDGE_INFERRED,
 };
 use crate::eventstore::Event;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
@@ -788,17 +790,17 @@ pub fn out_of_line_test_module_files(idx: &SymbolIndex) -> BTreeSet<String> {
 /// folded onto the code-entity node's `kind` attr. A rigger-owned rendering, never a grammar tag.
 fn kind_str(k: Kind) -> &'static str {
     match k {
-        Kind::Function => "function",
-        Kind::Method => "method",
-        Kind::Type => "type",
-        Kind::Trait => "trait",
-        Kind::Impl => "impl",
-        Kind::Module => "module",
-        Kind::Constant => "constant",
+        Kind::Function => CODE_KIND_FUNCTION,
+        Kind::Method => CODE_KIND_METHOD,
+        Kind::Type => CODE_KIND_TYPE,
+        Kind::Trait => CODE_KIND_TRAIT,
+        Kind::Impl => CODE_KIND_IMPL,
+        Kind::Module => CODE_KIND_MODULE,
+        Kind::Constant => CODE_KIND_CONSTANT,
         Kind::Constructor => CODE_KIND_CONSTRUCTOR,
         Kind::Macro => CODE_KIND_MACRO,
         Kind::Declaration => CODE_KIND_DECLARATION,
-        Kind::Other => "other",
+        Kind::Other => CODE_KIND_OTHER,
     }
 }
 
