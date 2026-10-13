@@ -1775,3 +1775,84 @@ fn the_trimmed_implement_prompt_still_delivers_every_design_intent_binding_deter
          \nsecond prompt:\n{prompt2}"
     );
 }
+
+/// The code-neighborhood lines of `prompt` for `core.rs`, in rendered order.
+fn core_neighborhood_lines(prompt: &str) -> Vec<&str> {
+    prompt
+        .lines()
+        .filter(|l| l.starts_with("- core.rs:"))
+        .collect()
+}
+
+/// Spec 116 criterion 4, a data member is no call target, at the prompt boundary. GIVEN the
+/// touched file's extraction folded a fn, a field, a property, a declaration and a constant,
+/// WHEN the stage's agent is spawned, THEN its code neighborhood lists the fn and the constant
+/// and no line for the field, the property or the declaration.
+#[test]
+fn a_spawn_prompt_lists_no_data_member_and_no_declaration_in_its_code_neighborhood() {
+    let (graph, mut pos) = fresh_graph();
+    for (line, (name, kind)) in [
+        ("run", "function"),
+        ("state", "field"),
+        ("size", "property"),
+        ("open", "declaration"),
+        ("LIMIT", "constant"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        apply_next_json(
+            &graph,
+            &mut pos,
+            TYPE_CODE_ENTITY_EXTRACTED,
+            json!({ "file": "core.rs", "name": name, "kind": kind, "line": line + 1, "lang": "rust", "fresh": line == 0 }),
+        );
+    }
+
+    let prompt = first_prompt(
+        run_and_capture_prompts(&graph),
+        "the stage's agent must have been spawned",
+    );
+    assert_eq!(
+        core_neighborhood_lines(&prompt),
+        ["- core.rs:1  function run", "- core.rs:5  constant LIMIT"],
+        "the neighborhood lists the fn and the constant alone; prompt was:\n{prompt}"
+    );
+}
+
+/// A field takes no slot of the capped code neighborhood. GIVEN forty fields ahead of one fn in
+/// the touched file, more than the section renders verbatim, WHEN the stage's agent is spawned,
+/// THEN the fn is the one line listed and nothing is elided.
+#[test]
+fn a_field_takes_no_slot_of_the_capped_code_neighborhood() {
+    let (graph, mut pos) = fresh_graph();
+    for i in 1..=40u32 {
+        apply_next_json(
+            &graph,
+            &mut pos,
+            TYPE_CODE_ENTITY_EXTRACTED,
+            json!({ "file": "core.rs", "name": format!("member_{i:03}"), "kind": "field", "line": i, "lang": "rust", "fresh": i == 1 }),
+        );
+    }
+    apply_next_json(
+        &graph,
+        &mut pos,
+        TYPE_CODE_ENTITY_EXTRACTED,
+        json!({ "file": "core.rs", "name": "run", "kind": "function", "line": 41, "lang": "rust" }),
+    );
+
+    let prompt = first_prompt(
+        run_and_capture_prompts(&graph),
+        "the stage's agent must have been spawned",
+    );
+    assert_eq!(
+        core_neighborhood_lines(&prompt),
+        ["- core.rs:41  function run"],
+        "the fn behind forty fields is listed, the fields are not; prompt was:\n{prompt}"
+    );
+    assert_eq!(
+        prompt.matches("definition(s) elided").count(),
+        0,
+        "forty fields elide nothing from the neighborhood; prompt was:\n{prompt}"
+    );
+}

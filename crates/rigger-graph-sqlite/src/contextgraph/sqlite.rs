@@ -8955,26 +8955,11 @@ mod tests {
             CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD,
             CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_TRAIT, CODE_KIND_TYPE,
         };
+        use crate::test_support::{call_frontiers as frontiers, call_walk as walk};
 
         const A: &str = "src/a.rs";
         const B: &str = "src/b.rs";
         const C: &str = "src/c.rs";
-
-        fn walk(p: &Projector, seed: &str, direction: Direction) -> CallGraph {
-            p.calls(&[seed.to_string()], direction, 5, TIER_INFERRED)
-                .unwrap()
-        }
-
-        /// The reached nodes carrying a frontier, each with its candidates.
-        fn frontiers(cg: &CallGraph) -> Vec<(String, Vec<String>)> {
-            let mut marked: Vec<(String, Vec<String>)> = cg
-                .nodes
-                .iter()
-                .filter_map(|n| Some((n.node.id.clone(), n.frontier.clone()?)))
-                .collect();
-            marked.sort();
-            marked
-        }
 
         /// `a.rs`'s `f` calls `x`, which `c.rs` defines as a fn and `a.rs` as `member` (as
         /// nothing when `None`): the call resolves down onto `c.rs`'s fn, its edges are tiered
