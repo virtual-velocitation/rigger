@@ -12,6 +12,9 @@
 //!  - the wire forms of the three code kinds the rule reads, `constructor`, `macro` and
 //!    `declaration`: the kind string a code entity event carries and the variant name the
 //!    persisted index carries.
+//!
+//! It also holds the wire form of the eight older kinds (spec 116 criterion 4 moved their kind
+//! strings onto shared constants): the emit pass still lowers each to the string it always did.
 
 mod common;
 #[path = "common/symbol_index.rs"]
@@ -124,25 +127,66 @@ fn one_of_each_new_kind() -> rigger::grounder::symbols::model::FileSymbols {
     )
 }
 
-/// The emit pass lowers a constructor, a declaration and a macro definition to a code entity
-/// event carrying the kind string `constructor`, `declaration` and `macro`.
+/// The `(name, kind string)` of each code entity event the emit pass lowers `file` to, sorted.
 #[cfg(feature = "symbols")]
-#[test]
-fn the_emit_pass_lowers_the_three_code_kinds_to_their_kind_strings() {
+fn emitted_kinds(file: &rigger::grounder::symbols::model::FileSymbols) -> Vec<(String, String)> {
     use rigger::contextgraph::{CodeEntityExtracted, TYPE_CODE_ENTITY_EXTRACTED};
     use rigger::grounder::symbols::events::extract_events;
 
-    let mut kinds: Vec<(String, String)> = extract_events("a.rs", &one_of_each_new_kind())
+    let mut kinds: Vec<(String, String)> = extract_events("a.rs", file)
         .iter()
         .filter(|e| e.type_ == TYPE_CODE_ENTITY_EXTRACTED)
         .map(|e| serde_json::from_slice::<CodeEntityExtracted>(&e.data).unwrap())
         .map(|entity| (entity.name, entity.kind))
         .collect();
     kinds.sort();
+    kinds
+}
+
+/// The emit pass lowers a constructor, a declaration and a macro definition to a code entity
+/// event carrying the kind string `constructor`, `declaration` and `macro`.
+#[cfg(feature = "symbols")]
+#[test]
+fn the_emit_pass_lowers_the_three_code_kinds_to_their_kind_strings() {
     assert_eq!(
-        kinds,
+        emitted_kinds(&one_of_each_new_kind()),
         [("c", "constructor"), ("d", "declaration"), ("m", "macro")]
             .map(|(name, kind)| (name.to_string(), kind.to_string()))
+    );
+}
+
+/// The emit pass lowers each of the eight other definition kinds to the kind string a graph
+/// folded before the kind constants existed already holds: none is renamed by reading it from
+/// a constant, and none is swapped for another.
+#[cfg(feature = "symbols")]
+#[test]
+fn the_emit_pass_lowers_the_eight_older_kinds_to_the_kind_strings_a_folded_graph_holds() {
+    let file = rust_file(
+        vec![
+            def(Kind::Constant, "k"),
+            def(Kind::Function, "f"),
+            def(Kind::Impl, "i"),
+            def(Kind::Method, "e"),
+            def(Kind::Module, "o"),
+            def(Kind::Other, "x"),
+            def(Kind::Trait, "t"),
+            def(Kind::Type, "y"),
+        ],
+        vec![],
+    );
+    assert_eq!(
+        emitted_kinds(&file),
+        [
+            ("e", "method"),
+            ("f", "function"),
+            ("i", "impl"),
+            ("k", "constant"),
+            ("o", "module"),
+            ("t", "trait"),
+            ("x", "other"),
+            ("y", "type"),
+        ]
+        .map(|(name, kind)| (name.to_string(), kind.to_string()))
     );
 }
 
