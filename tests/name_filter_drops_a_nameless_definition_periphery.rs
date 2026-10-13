@@ -19,7 +19,7 @@ mod common;
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_makes_no_node_of_a_go_blank_definition_and_keeps_a_js_and_python_underscore() {
-    use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+    use rigger::contextgraph::KIND_CODE_ENTITY;
 
     let (_project, graph) = common::cli::built_graph(&[
         ("main.go", common::fixtures::GO_BLANK_SOURCE),
