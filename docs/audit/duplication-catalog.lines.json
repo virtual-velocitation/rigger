@@ -1209,8 +1209,8 @@
       },
       {
         "file": "crates/rigger-domain/src/instructions.rs",
-        "start_line": 70,
-        "end_line": 70
+        "start_line": 71,
+        "end_line": 71
       },
       {
         "file": "crates/rigger-gates-shell/src/gate.rs",
@@ -5259,8 +5259,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/instructions.rs",
-        "start_line": 92,
-        "end_line": 97
+        "start_line": 93,
+        "end_line": 98
       },
       {
         "file": "crates/rigger-gates-shell/src/gate.rs",
