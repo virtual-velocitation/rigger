@@ -167,8 +167,19 @@ pub fn code_entity_json(
 /// marks the FIRST event of a file's batch: the fold supersedes the file's prior structural edges
 /// before folding it, so a re-extraction replaces rather than accretes.
 pub fn def_json(file: &str, name: &str, line: u64, fresh: bool) -> serde_json::Value {
+    kind_def_json(file, name, "function", line, fresh)
+}
+
+/// [`def_json`] for a Rust definition of any `kind`.
+pub fn kind_def_json(
+    file: &str,
+    name: &str,
+    kind: &str,
+    line: u64,
+    fresh: bool,
+) -> serde_json::Value {
     serde_json::json!({
-        "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
+        "file": file, "name": name, "kind": kind, "line": line, "lang": "rust",
         "fresh": fresh,
     })
 }

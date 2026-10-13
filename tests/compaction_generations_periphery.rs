@@ -49,7 +49,7 @@ use common::fixtures::cleanup;
 use common::fixtures::files_open_by;
 use common::fixtures::wait_until_for;
 use common::git::temp_git_project_with_commit;
-use rigger::contextgraph::sqlite::{PruneStats, RebuildSink, Rebuilt};
+use rigger::contextgraph::sqlite::{PruneStats, RebuildSink, Rebuilt, PROJECTION_VERSION};
 use rigger::contextgraph::Fold;
 use rigger::contextgraph::{
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
@@ -899,7 +899,7 @@ fn a_rebuild_interrupted_in_its_tail_finishes_the_tail_on_the_next_call() {
     assert_eq!(interrupted.unwrap_err().0, "interrupted");
     assert_eq!(
         version_and_owed(&db),
-        (1, false),
+        (PROJECTION_VERSION, false),
         "the rebuilt file was swapped in"
     );
 
@@ -1120,10 +1120,14 @@ fn an_open_owes_the_rebuild_until_it_is_paid_writes_nothing_and_an_unfolded_file
     a_pre_rule_graph_db(&unfolded, &[], "");
     assert_eq!(
         version_and_owed(&unfolded),
-        (1, false),
+        (PROJECTION_VERSION, false),
         "a file that folded nothing owes nothing and records the current rule"
     );
-    assert_eq!(version_and_owed(&unfolded), (1, false), "and stays current");
+    assert_eq!(
+        version_and_owed(&unfolded),
+        (PROJECTION_VERSION, false),
+        "and stays current"
+    );
 }
 
 /// The `graph.db` schema of the release before the generation rule: no ledgers, no `proofs`, and
@@ -1327,7 +1331,7 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
         .unwrap();
     assert_eq!(
         (user_version(&store.graph_db), pending_proof_tables),
-        (1, 0),
+        (PROJECTION_VERSION, 0),
         "the rebuilt file records the current rule and no longer holds the old table"
     );
     let rebuilt = Projector::open(store.graph_db.to_str().unwrap(), &store.project()).unwrap();
@@ -1379,7 +1383,7 @@ fn rigger_setup_names_both_causes_a_graph_db_owes_its_rebuild_for_and_pays_both(
     );
     assert_eq!(
         (mark.exists(), user_version(&store.graph_db)),
-        (false, 1),
+        (false, PROJECTION_VERSION),
         "the one rebuild pays both: the mark is dropped and the file records the current rule"
     );
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
@@ -1598,7 +1602,7 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
     );
     assert_eq!(
         user_version(&store.graph_db),
-        1,
+        PROJECTION_VERSION,
         "and recorded the current rule"
     );
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
@@ -2092,7 +2096,7 @@ fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_on
             user_version(&store.graph_db),
             holds_table(&store.graph_db, "rebuild_cursor")
         ),
-        (1, true),
+        (PROJECTION_VERSION, true),
         "the rebuilt file is swapped in and still owes its tail"
     );
 

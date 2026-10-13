@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS relabel_owed (
 /// (spec 101): it holds facts a superseded generation asserted and has no assertion ledgers to
 /// retire them from, so it owes one cold rebuild from the log ([`Projector::rebuild`], which only
 /// `rigger setup` runs) and nothing folds into it incrementally until then.
-const PROJECTION_VERSION: i64 = 1;
+pub const PROJECTION_VERSION: i64 = 1;
 
 /// The generation ledgers and their views, dropped from a file at an older [`PROJECTION_VERSION`]
 /// so [`SCHEMA`] recreates them in their current shape.
@@ -5581,6 +5581,27 @@ mod tests {
         assert_eq!(p.owed_because().unwrap(), vec![OWED_OLDER_RULE]);
     }
 
+    /// The shared-node rule (spec 116) is fold rule 2: a file that folded under rule 1 took a
+    /// shared node's kind and line from the last definition folded, so it owes its rebuild, and
+    /// one at rule 2 owes none.
+    #[test]
+    fn a_graph_file_folded_at_projection_version_1_owes_its_rebuild_and_one_at_2_owes_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let p = Projector::open(path.to_str().unwrap(), "test").unwrap();
+        crate::test_support::apply_decision(&p, 1, "d1", "x", &["a.rs"], "");
+        let owed_at = |version: i64| {
+            p.conn
+                .lock()
+                .unwrap()
+                .pragma_update(None, "user_version", version)
+                .unwrap();
+            p.owed_because().unwrap()
+        };
+        assert_eq!(owed_at(1), vec![OWED_OLDER_RULE]);
+        assert_eq!(owed_at(2), Vec::<&str>::new());
+    }
+
     /// The owed mark belongs to the graph file whose fold it lost: once that file is gone the mark
     /// is dropped, so a file made in its place owes nothing - and while the file stands its mark
     /// is kept.
@@ -8929,7 +8950,9 @@ mod tests {
         use crate::contextgraph::{
             is_call_target, CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION,
             CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD,
-            CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_TRAIT, CODE_KIND_TYPE,
+            CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_PRECEDENCE, CODE_KIND_PROPERTY,
+            CODE_KIND_STATIC, CODE_KIND_TRAIT, CODE_KIND_TYPE, CODE_KIND_VARIABLE,
+            CODE_KIND_VARIANT,
         };
         use crate::test_support::{call_frontiers as frontiers, call_walk as walk};
 
@@ -8985,13 +9008,9 @@ mod tests {
                 apply_code_entity(&p, 6, A, "x", member, 2, "rust");
             }
 
-            let g = p.whole().unwrap();
             for target in ["src/a.rs::x", "src/b.rs::x"] {
                 assert_eq!(
-                    [
-                        edge_tier(&g, REL_CALLS, target),
-                        edge_tier(&g, REL_REFERENCES, target)
-                    ],
+                    call_tiers(&p, target),
                     [TIER_AMBIGUOUS, TIER_AMBIGUOUS],
                     "the edges onto {target}"
                 );
@@ -9149,30 +9168,49 @@ mod tests {
         }
 
         /// `call_target_sql()` and `is_call_target` answer alike, and as this table states, for
-        /// every code kind constant the tree holds and for a node carrying no `kind`.
+        /// every kind of `CODE_KIND_PRECEDENCE`, the one production list of the code kinds, and
+        /// for a node carrying no `kind`.
         #[test]
         fn the_sql_predicate_and_is_call_target_agree_over_every_kind() {
-            let kinds = [
-                (Some(CODE_KIND_FUNCTION), true),
-                (Some(CODE_KIND_METHOD), true),
-                (Some(CODE_KIND_TYPE), true),
-                (Some(CODE_KIND_TRAIT), true),
-                (Some(CODE_KIND_IMPL), true),
-                (Some(CODE_KIND_MODULE), true),
-                (Some(CODE_KIND_CONSTANT), true),
-                (Some(CODE_KIND_CONSTRUCTOR), true),
-                (Some(CODE_KIND_MACRO), true),
-                (Some(CODE_KIND_OTHER), true),
-                (Some(CODE_KIND_DECLARATION), false),
-                (Some(CODE_KIND_PROPERTY), false),
-                (Some(CODE_KIND_FIELD), false),
-                (None, true),
-            ];
+            let targets: BTreeMap<&str, bool> = [
+                (CODE_KIND_FUNCTION, true),
+                (CODE_KIND_METHOD, true),
+                (CODE_KIND_TYPE, true),
+                (CODE_KIND_TRAIT, true),
+                (CODE_KIND_IMPL, true),
+                (CODE_KIND_MODULE, true),
+                (CODE_KIND_CONSTANT, true),
+                (CODE_KIND_CONSTRUCTOR, true),
+                (CODE_KIND_MACRO, true),
+                (CODE_KIND_OTHER, true),
+                (CODE_KIND_STATIC, true),
+                (CODE_KIND_VARIANT, true),
+                (CODE_KIND_VARIABLE, true),
+                (CODE_KIND_DECLARATION, false),
+                (CODE_KIND_PROPERTY, false),
+                (CODE_KIND_FIELD, false),
+            ]
+            .into_iter()
+            .collect();
+            assert_eq!(
+                CODE_KIND_PRECEDENCE.into_iter().collect::<BTreeSet<_>>(),
+                targets.keys().copied().collect::<BTreeSet<_>>(),
+                "the table states every listed kind, and no other"
+            );
+            assert_eq!(
+                CODE_KIND_PRECEDENCE.len(),
+                targets.len(),
+                "no kind is listed twice"
+            );
             let conn = Connection::open_in_memory().unwrap();
             let sql = format!(
                 "SELECT {} FROM (SELECT json_patch('{{\"name\":\"x\"}}', json_object('kind', ?1)) AS attrs)",
                 call_target_sql()
             );
+            let kinds = CODE_KIND_PRECEDENCE
+                .into_iter()
+                .map(|kind| (Some(kind), targets[kind]))
+                .chain([(None, true)]);
             for (kind, target) in kinds {
                 let by_sql: bool = conn.query_row(&sql, params![kind], |r| r.get(0)).unwrap();
                 assert_eq!(
@@ -10734,6 +10772,15 @@ mod tests {
         matches[0].tier.clone()
     }
 
+    /// The tiers of the `CALLS` edge and of the `REFERENCES` edge landing on `to`, in that order.
+    fn call_tiers(p: &Projector, to: &str) -> [String; 2] {
+        let g = p.whole().unwrap();
+        [
+            edge_tier(&g, REL_CALLS, to),
+            edge_tier(&g, REL_REFERENCES, to),
+        ]
+    }
+
     #[test]
     fn every_structural_edge_carries_its_confidence_tier() {
         // Spec 29a criterion 2: every structural edge folds at a confidence tier - the precise/safe
@@ -11812,10 +11859,7 @@ mod tests {
         }
 
         fn def(name: &str, line: u64, fresh: bool) -> serde_json::Value {
-            serde_json::json!({
-                "file": "src/f.rs", "name": name, "kind": "function", "line": line,
-                "lang": "rust", "fresh": fresh,
-            })
+            crate::test_support::def_json("src/f.rs", name, line, fresh)
         }
 
         fn node_ids(p: &Projector) -> Vec<String> {
@@ -11887,13 +11931,7 @@ mod tests {
             }
             apply_def(&p, 3, "src/b.rs", "g", 1, true);
             apply_call(&p, 4, "src/b.rs", "x", "g");
-            let tiers = |p: &Projector| {
-                let g = p.whole().unwrap();
-                [
-                    edge_tier(&g, REL_CALLS, "src/b.rs::x"),
-                    edge_tier(&g, REL_REFERENCES, "src/b.rs::x"),
-                ]
-            };
+            let tiers = |p: &Projector| call_tiers(p, "src/b.rs::x");
             assert_eq!(tiers(&p), [TIER_INFERRED, TIER_INFERRED]);
 
             let y = def("y", 1, true);
@@ -11912,6 +11950,301 @@ mod tests {
                 a_fn_retiring_leaves_its_cross_file_call(Some("declaration"), TIER_AMBIGUOUS);
             a_fn_retiring_beside_a_constant_keeps_its_cross_file_call_inferred:
                 a_fn_retiring_leaves_its_cross_file_call(Some("constant"), TIER_INFERRED);
+        }
+
+        /// Spec 116 criterion 5, A SHARED NODE TAKES ONE KIND: the definitions one generation of
+        /// `src/f.rs` asserts on one node settle its kind and line by `CODE_KIND_PRECEDENCE`,
+        /// the lower line and then the lesser kind string breaking a tie, whatever order they
+        /// fold in, and the node is a definition only while that winner is a call target.
+        mod shared_node {
+            use super::*;
+            use crate::contextgraph::CODE_KIND_PRECEDENCE;
+            use crate::test_support::{call_json, kind_def_json, ref_json};
+
+            /// One definition of `src/f.rs` as `(name, kind, line)`.
+            type Def<'a> = (&'a str, &'a str, u64);
+
+            const X: &str = "src/f.rs::x";
+            const FN_AT_1: &[Def] = &[("x", "function", 1)];
+            const FIELD_AT_1: &[Def] = &[("x", "field", 1)];
+
+            /// Fold `defs` from `pos` as the first events of generation `generation` of
+            /// `src/f.rs`, at `secs`.
+            fn fold_defs(p: &Projector, pos: u64, generation: &str, secs: u64, defs: &[Def]) {
+                for (i, (name, kind, line)) in defs.iter().enumerate() {
+                    apply_keyed(
+                        p,
+                        pos + i as u64,
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        kind_def_json("src/f.rs", name, kind, *line, i == 0),
+                        &format!("gc/src/f.rs@{generation}#{i}"),
+                        secs,
+                    );
+                }
+            }
+
+            /// Fold, from `pos`, the call `src/b.rs`'s fn `g` makes to `x` and the test
+            /// reference `tests/t.rs` holds to it.
+            fn fold_a_cross_file_call_and_a_proof(p: &Projector, pos: u64) {
+                apply_def(p, pos, "src/b.rs", "g", 1, true);
+                apply_call(p, pos + 1, "src/b.rs", "x", "g");
+                apply_edge_inferred_evidence(p, pos + 2, "tests/t.rs", "x", 3);
+            }
+
+            /// The attrs node `id` carries.
+            fn attrs_of(p: &Projector, id: &str) -> BTreeMap<String, String> {
+                let nodes = p.whole().unwrap().nodes;
+                let node = nodes.into_iter().find(|n| n.id == id);
+                node.unwrap_or_else(|| panic!("{id} is held")).attrs
+            }
+
+            /// The attrs of a Rust definition `name`, a `kind` at `line`, and of nothing else:
+            /// a node carrying a proof is not equal to them.
+            fn definition(name: &str, kind: &str, line: u64) -> BTreeMap<String, String> {
+                [
+                    ("name", name),
+                    ("kind", kind),
+                    ("line", &line.to_string()),
+                    ("lang", "rust"),
+                ]
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .into()
+            }
+
+            /// `defs`, the definitions of one leaf, settle their node as a `kind` at `line`
+            /// folded in the order given and in its reverse.
+            fn a_shared_node_settles(defs: &[Def], kind: &str, line: u64) {
+                let name = defs[0].0;
+                let reversed: Vec<Def> = defs.iter().rev().copied().collect();
+                for order in [defs, &reversed] {
+                    let p = Projector::open(":memory:", "test").unwrap();
+                    fold_defs(&p, 1, "h1", 10, order);
+                    assert_eq!(
+                        attrs_of(&p, &format!("src/f.rs::{name}")),
+                        definition(name, kind, line),
+                        "folded as {order:?}"
+                    );
+                }
+            }
+
+            crate::test_cases! {
+                a_fn_above_a_field_of_its_leaf_settles_function_at_the_fns_line:
+                    a_shared_node_settles(&[("x", "function", 3), ("x", "field", 7)], "function", 3);
+                a_field_above_a_fn_of_its_leaf_settles_function_at_the_fns_line:
+                    a_shared_node_settles(&[("x", "field", 3), ("x", "function", 7)], "function", 7);
+                a_class_above_its_same_named_constructor_settles_type:
+                    a_shared_node_settles(&[("x", "type", 1), ("x", "constructor", 2)], "type", 1);
+                two_fn_new_settle_the_lower_line:
+                    a_shared_node_settles(
+                        &[("new", "function", 4), ("new", "function", 9)],
+                        "function",
+                        4,
+                    );
+                three_definitions_settle_the_first_kind_at_its_lower_line:
+                    a_shared_node_settles(
+                        &[("x", "field", 1), ("x", "function", 9), ("x", "function", 4)],
+                        "function",
+                        4,
+                    );
+                an_unlisted_kind_beside_a_function_settles_function:
+                    a_shared_node_settles(&[("x", "function", 5), ("x", "alien", 1)], "function", 5);
+                two_unlisted_kinds_at_one_line_settle_the_lesser_kind_string:
+                    a_shared_node_settles(&[("x", "alien", 3), ("x", "zeta", 3)], "alien", 3);
+                two_unlisted_kinds_settle_the_lower_line_before_the_lesser_kind_string:
+                    a_shared_node_settles(&[("x", "alien", 2), ("x", "zeta", 1)], "zeta", 1);
+                an_unlisted_kind_ranks_with_other_so_the_lesser_kind_string_settles_one_line:
+                    a_shared_node_settles(&[("x", "alien", 3), ("x", "other", 3)], "alien", 3);
+                an_unlisted_kind_ranks_with_other_so_its_lower_line_settles:
+                    a_shared_node_settles(&[("x", "zeta", 1), ("x", "other", 2)], "zeta", 1);
+                other_at_a_lower_line_settles_over_an_unlisted_kind:
+                    a_shared_node_settles(&[("x", "other", 1), ("x", "alien", 2)], "other", 1);
+                a_module_beside_a_field_of_its_leaf_settles_field:
+                    a_shared_node_settles(&[("x", "field", 2), ("x", "module", 1)], "field", 2);
+            }
+
+            /// Each kind of `CODE_KIND_PRECEDENCE` settles the node over the kind listed after
+            /// it, though that one sits at a lower line.
+            #[test]
+            fn a_kind_settles_the_node_over_the_kind_listed_after_it_at_a_lower_line() {
+                for pair in CODE_KIND_PRECEDENCE.windows(2) {
+                    a_shared_node_settles(&[("x", pair[0], 2), ("x", pair[1], 1)], pair[0], 2);
+                }
+            }
+
+            /// `src/f.rs`'s fn `f` calls `x`, which its file defines by `defs` folded in that
+            /// order, and `src/b.rs`'s `g` calls it across files: the same-file call is tiered
+            /// extracted and the cross-file one inferred, as onto the fn alone.
+            fn references_to_x_tier_as_onto_its_fn(defs: &[Def]) {
+                let p = Projector::open(":memory:", "test").unwrap();
+                let batch = [&[("f", "function", 1)], defs].concat();
+                fold_defs(&p, 1, "h1", 10, &batch);
+                let call = call_json("src/f.rs", "x", "f");
+                apply_keyed(&p, 5, TYPE_EDGE_INFERRED, call, "gc/src/f.rs@h1#4", 10);
+                fold_a_cross_file_call_and_a_proof(&p, 6);
+                assert_eq!(call_tiers(&p, X), [TIER_EXTRACTED, TIER_EXTRACTED]);
+                assert_eq!(
+                    call_tiers(&p, "src/b.rs::x"),
+                    [TIER_INFERRED, TIER_INFERRED]
+                );
+            }
+
+            crate::test_cases! {
+                references_to_a_fn_alone_are_tiered_extracted_in_its_file_and_inferred_across:
+                    references_to_x_tier_as_onto_its_fn(&[("x", "function", 3)]);
+                references_to_a_fn_folded_before_a_field_of_its_leaf_tier_as_onto_the_fn:
+                    references_to_x_tier_as_onto_its_fn(&[("x", "function", 3), ("x", "field", 7)]);
+                references_to_a_fn_folded_after_a_field_of_its_leaf_tier_as_onto_the_fn:
+                    references_to_x_tier_as_onto_its_fn(&[("x", "field", 7), ("x", "function", 3)]);
+            }
+
+            /// `x` ends as a field at line 1 carrying no proof, and the cross-file call to it
+            /// ambiguous: what a graph holding a field `x` and no fn of that leaf gives.
+            fn x_is_a_field_no_call_resolves_onto(p: &Projector, why: &str) {
+                assert_eq!(attrs_of(p, X), definition("x", "field", 1), "{why}");
+                assert_eq!(
+                    call_tiers(p, "src/b.rs::x"),
+                    [TIER_AMBIGUOUS, TIER_AMBIGUOUS],
+                    "{why}"
+                );
+            }
+
+            /// `src/f.rs` holds the fn `x` at generation 1, inferred by a cross-file call and
+            /// proven by a test reference, and `second` at generation 2, which holds only a
+            /// field of that leaf: the call turns ambiguous and the proof moves off, as a
+            /// rebuild folding generation 2 alone gives.
+            fn a_fn_that_is_only_a_field_at_the_next_generation_stops_being_a_definition(
+                second: &[Def],
+            ) {
+                let p = Projector::open(":memory:", "test").unwrap();
+                fold_defs(&p, 1, "h1", 10, FN_AT_1);
+                fold_a_cross_file_call_and_a_proof(&p, 2);
+                assert_eq!(
+                    call_tiers(&p, "src/b.rs::x"),
+                    [TIER_INFERRED, TIER_INFERRED]
+                );
+                assert_eq!(
+                    attrs_of(&p, X).get("proven_by").map(String::as_str),
+                    Some("1")
+                );
+                fold_defs(&p, 5, "h2", 20, second);
+                x_is_a_field_no_call_resolves_onto(&p, "folded onto generation 1");
+
+                let rebuilt = Projector::open(":memory:", "test").unwrap();
+                fold_defs(&rebuilt, 1, "h2", 20, second);
+                fold_a_cross_file_call_and_a_proof(&rebuilt, 5);
+                x_is_a_field_no_call_resolves_onto(&rebuilt, "a rebuild of generation 2");
+            }
+
+            crate::test_cases! {
+                /// The field opens generation 2's batch, so the node is settled by the entity
+                /// arm alone, before anything retires what generation 1 left unheld.
+                a_fn_at_generation_1_and_only_a_field_opening_generation_2_demotes_and_unproves:
+                    a_fn_that_is_only_a_field_at_the_next_generation_stops_being_a_definition(
+                        FIELD_AT_1,
+                    );
+                /// Another definition opens the batch, so generation 1's fn retires before the
+                /// field folds.
+                a_fn_at_generation_1_and_only_a_field_later_in_generation_2_demotes_and_unproves:
+                    a_fn_that_is_only_a_field_at_the_next_generation_stops_being_a_definition(
+                        &[("a", "function", 9), ("x", "field", 1)],
+                    );
+            }
+
+            /// A `module x` and a `field x` of one generation settle `field` in either fold
+            /// order, so a cross-file call and a test reference folded after the first of
+            /// `defs` end as onto a field: the module folded onto the field upgrades nothing,
+            /// and the field folded onto the module undoes what the module resolved.
+            fn a_module_and_a_field_of_one_leaf_leave_references_as_a_field_does(defs: &[Def; 2]) {
+                let p = Projector::open(":memory:", "test").unwrap();
+                fold_defs(&p, 1, "h1", 10, &defs[..1]);
+                fold_a_cross_file_call_and_a_proof(&p, 2);
+                let second = kind_def_json("src/f.rs", "x", defs[1].1, defs[1].2, false);
+                apply_keyed(
+                    &p,
+                    5,
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    second,
+                    "gc/src/f.rs@h1#1",
+                    10,
+                );
+                x_is_a_field_no_call_resolves_onto(&p, "the module and the field folded");
+            }
+
+            crate::test_cases! {
+                a_module_folded_onto_a_field_winner_upgrades_no_reference:
+                    a_module_and_a_field_of_one_leaf_leave_references_as_a_field_does(
+                        &[("x", "field", 1), ("x", "module", 2)],
+                    );
+                a_field_folded_onto_a_module_takes_the_node_and_undoes_what_the_module_resolved:
+                    a_module_and_a_field_of_one_leaf_leave_references_as_a_field_does(
+                        &[("x", "module", 2), ("x", "field", 1)],
+                    );
+            }
+
+            /// An unkeyed definition is asserted by no generation, so the node takes the last
+            /// one folded: a re-fold moves `line` up as well as down, and a field folded onto a
+            /// fn takes the node and undoes what the fn resolved.
+            #[test]
+            fn an_unkeyed_re_fold_moves_line_and_kind_to_the_last_folded() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                apply_def(&p, 1, "src/f.rs", "x", 5, true);
+                fold_a_cross_file_call_and_a_proof(&p, 2);
+                apply_def(&p, 5, "src/f.rs", "x", 9, true);
+                assert_eq!(attrs_of(&p, X).get("line").map(String::as_str), Some("9"));
+                apply_def(&p, 6, "src/f.rs", "x", 2, true);
+                assert_eq!(attrs_of(&p, X).get("line").map(String::as_str), Some("2"));
+                apply_code_entity(&p, 7, "src/f.rs", "x", "field", 1, "rust");
+                x_is_a_field_no_call_resolves_onto(&p, "the unkeyed field folded last");
+            }
+
+            /// The precedence reads only what the event's own identity asserts: a definition
+            /// another identity folds onto the node, at a generation of the same name, takes
+            /// it, last folded.
+            #[test]
+            fn a_definition_another_identity_asserts_on_the_node_takes_it_last_folded() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                fold_defs(&p, 1, "h1", 10, FN_AT_1);
+                let field = kind_def_json("src/f.rs", "x", "field", 9, true);
+                apply_keyed(
+                    &p,
+                    2,
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    field,
+                    "gc/src/g.rs@h1#0",
+                    10,
+                );
+                assert_eq!(attrs_of(&p, X), definition("x", "field", 9));
+            }
+
+            /// A reference `src/f.rs`'s generation folds before its definition asserts the
+            /// node with no attrs: it is no candidate, so the field that folds next settles the
+            /// node, and the fn after it wins by precedence.
+            #[test]
+            fn an_assertion_carrying_no_kind_is_no_candidate() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                let reference = ref_json("src/f.rs", "x");
+                apply_keyed(&p, 1, TYPE_EDGE_INFERRED, reference, "gc/src/f.rs@h1#0", 10);
+                let field = kind_def_json("src/f.rs", "x", "field", 4, false);
+                apply_keyed(
+                    &p,
+                    2,
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    field,
+                    "gc/src/f.rs@h1#1",
+                    10,
+                );
+                assert_eq!(attrs_of(&p, X), definition("x", "field", 4));
+                let function = kind_def_json("src/f.rs", "x", "function", 9, false);
+                apply_keyed(
+                    &p,
+                    3,
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    function,
+                    "gc/src/f.rs@h1#2",
+                    10,
+                );
+                assert_eq!(attrs_of(&p, X), definition("x", "function", 9));
+            }
         }
 
         const F: &str = "docs/f.md";

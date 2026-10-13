@@ -71,6 +71,34 @@ pub const CODE_KIND_OTHER: &str = "other";
 pub const CODE_KIND_FIELD: &str = "field";
 /// The code kind of a property, a data member read through accessors.
 pub const CODE_KIND_PROPERTY: &str = "property";
+/// The code kind of a static.
+pub const CODE_KIND_STATIC: &str = "static";
+/// The code kind of a variant of an enumerated type.
+pub const CODE_KIND_VARIANT: &str = "variant";
+/// The code kind of a variable.
+pub const CODE_KIND_VARIABLE: &str = "variable";
+/// Every code kind, in the order that settles a node the definitions of one file share: of the
+/// definitions one generation of a file asserts on one node, the node takes the kind and line of
+/// the one whose kind comes first here, the lower line and then the lesser kind string breaking
+/// a tie. A kind string outside the list ranks with [`CODE_KIND_OTHER`], last.
+pub const CODE_KIND_PRECEDENCE: [&str; 16] = [
+    CODE_KIND_TYPE,
+    CODE_KIND_TRAIT,
+    CODE_KIND_IMPL,
+    CODE_KIND_FUNCTION,
+    CODE_KIND_METHOD,
+    CODE_KIND_MACRO,
+    CODE_KIND_CONSTRUCTOR,
+    CODE_KIND_VARIANT,
+    CODE_KIND_CONSTANT,
+    CODE_KIND_STATIC,
+    CODE_KIND_VARIABLE,
+    CODE_KIND_DECLARATION,
+    CODE_KIND_PROPERTY,
+    CODE_KIND_FIELD,
+    CODE_KIND_MODULE,
+    CODE_KIND_OTHER,
+];
 /// The code kinds no call resolves onto: a data member, and a declaration, whose calls reach
 /// its implementation.
 pub const NON_TARGET_KINDS: [&str; 3] =
