@@ -11,18 +11,18 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use super::query::name_suffix;
 use super::{
     CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch, EntryFold,
-    Error, FoldAccess, Graph, Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION,
-    KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC,
-    KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE,
-    KIND_STAGE, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE, REBUILD_OWED, REL_ABOUT,
-    REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS,
-    REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS,
-    REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED,
-    TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED,
-    TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE,
-    TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED,
-    TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED,
-    TYPE_UNIT_STARTED,
+    Error, FoldAccess, Graph, Located, Node, Projection, CODE_KIND_PRECEDENCE, KIND_AGENT,
+    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
+    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
+    KIND_LESSON, KIND_RATIONALE, KIND_STAGE, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
+    REBUILD_OWED, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES,
+    REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED, REL_REALIZES,
+    REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES,
+    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED,
+    TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
+    TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
+    TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Position, Revision};
 use crate::lockfile::HeldLock;
@@ -96,12 +96,15 @@ CREATE TABLE IF NOT EXISTS relabel_owed (
 );
 ";
 
-/// The fold rule `graph.db` was folded under, recorded as the file's `user_version`. A file at an
-/// older version that folded anything was folded before generations superseded their predecessors
-/// (spec 101): it holds facts a superseded generation asserted and has no assertion ledgers to
-/// retire them from, so it owes one cold rebuild from the log ([`Projector::rebuild`], which only
-/// `rigger setup` runs) and nothing folds into it incrementally until then.
-pub const PROJECTION_VERSION: i64 = 1;
+/// The fold rule `graph.db` was folded under, recorded as the file's `user_version`. Rule 1 is
+/// generations superseding their predecessors (spec 101): a file folded before it holds facts a
+/// superseded generation asserted and has no assertion ledgers to retire them from. Rule 2 is
+/// the shared node's one kind (spec 116, [`settling_definition`]): a file folded before it gave
+/// a node the definitions of one file share the kind and line of the last one folded. A file at
+/// an older version that folded anything owes one cold rebuild from the log
+/// ([`Projector::rebuild`], which only `rigger setup` runs) and nothing folds into it
+/// incrementally until then.
+pub const PROJECTION_VERSION: i64 = 2;
 
 /// The generation ledgers and their views, dropped from a file at an older [`PROJECTION_VERSION`]
 /// so [`SCHEMA`] recreates them in their current shape.
@@ -2140,12 +2143,71 @@ fn settle_node(
             detach_attachments(tx, id, at, project)?;
         }
     }
+    undo_what_resolved_against(tx, id, defined, project)
+}
+
+/// Undo what resolved against node `id` ([`definition_retired`]) when it defined `defined`
+/// before a fold changed it and defines no name now.
+fn undo_what_resolved_against(
+    tx: &Transaction,
+    id: &str,
+    defined: Option<String>,
+    project: &str,
+) -> Result<(), Error> {
     match defined {
         Some(name) if definition_name(tx, id, project)?.is_none() => {
             definition_retired(tx, id, &name, project)
         }
         _ => Ok(()),
     }
+}
+
+/// Where `kind` stands in [`CODE_KIND_PRECEDENCE`]: a kind outside the list ranks with its last
+/// member, `other`.
+fn kind_rank(kind: &str) -> usize {
+    CODE_KIND_PRECEDENCE
+        .iter()
+        .position(|listed| *listed == kind)
+        .unwrap_or(CODE_KIND_PRECEDENCE.len() - 1)
+}
+
+/// The `(kind, line)` node `id` takes when `by` folds a definition of it, a `kind` at `line`
+/// (spec 116, A SHARED NODE TAKES ONE KIND). Every definition of one leaf in one file folds onto
+/// one node, so for a keyed event the node settles on ONE of the definitions its file's identity
+/// asserts on it at its current generation: the one whose kind is first in
+/// [`CODE_KIND_PRECEDENCE`], the lower line and then the lesser kind string breaking a tie -
+/// whatever order the batch emitted them in. The assertion that identity already recorded holds
+/// the winner of the definitions folded so far; one of another generation, or carrying no `kind`
+/// attr (a reference that folded before its definition), is no candidate. An unkeyed event is
+/// asserted by no generation and takes the node as it is, the last folded.
+fn settling_definition(
+    tx: &Transaction,
+    by: &Asserter,
+    id: &str,
+    kind: &str,
+    line: u32,
+    project: &str,
+) -> Result<(String, u32), Error> {
+    let folded = (kind_rank(kind), line, kind.to_string());
+    if by.identity.is_empty() {
+        return Ok((folded.2, folded.1));
+    }
+    let held: Option<(String, u32)> = tx
+        .query_row(
+            "SELECT json_extract(attrs, '$.kind'), CAST(json_extract(attrs, '$.line') AS INTEGER)
+               FROM node_assertions
+              WHERE project = ?1 AND identity = ?2 AND generation = ?3 AND node_id = ?4
+                AND json_extract(attrs, '$.kind') IS NOT NULL",
+            params![project, by.identity, by.generation, id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(be)?;
+    let (_, line, kind) = match held {
+        Some((kind, line)) => folded.min((kind_rank(&kind), line, kind)),
+        None => folded,
+    };
+    Ok((kind, line))
 }
 
 /// The name node `id` defines, when it is a live definition: a code entity carrying the `name`
@@ -2596,7 +2658,16 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             }
             ensure_node(tx, by, &file, KIND_FILE, &file_attrs, project)?;
             let entity = code_entity_id(&file, &c.name);
-            let line = c.line.to_string();
+            // A node its file's definitions share takes ONE kind and line
+            // ([`settling_definition`]), passed to the one `ensure_node` call, and is a
+            // definition only while that winner is a call target: a node that defined a name
+            // before this fold and defines none after it (a fn that is only a field at its
+            // file's next generation, a field settling over a module of its leaf) undoes what
+            // resolved against it, as a node that stops being a definition does when it settles
+            // ([`settle_node`], which reads the node only after this arm has changed it).
+            let defined = definition_name(tx, &entity, project)?;
+            let (kind, line) = settling_definition(tx, by, &entity, &c.kind, c.line, project)?;
+            let line = line.to_string();
             ensure_node(
                 tx,
                 by,
@@ -2604,12 +2675,13 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                 KIND_CODE_ENTITY,
                 &[
                     ("name", &c.name),
-                    ("kind", &c.kind),
+                    ("kind", &kind),
                     ("line", &line),
                     ("lang", &c.lang),
                 ],
                 project,
             )?;
+            undo_what_resolved_against(tx, &entity, defined, project)?;
             // CONTAINS: the file container node holds this definition. A definition's containment
             // is the most explicit structural fact there is, so it folds at the EXTRACTED tier
             // (spec 29a, addendum 6.2).
