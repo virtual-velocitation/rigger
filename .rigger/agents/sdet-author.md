@@ -124,6 +124,15 @@ reach) and `tests/common/cli.rs` (root tests only); and the root integration fil
 `tests/*.rs`. The graph carries no test-helper node yet, so search all three with Read, awk or
 python3 before you write a helper, fixture, builder, expected line or oracle.
 
+The two counted checks. A renamed or retired name's old spelling is counted over the tracked
+files of `src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`, the
+`tests/*.rs` doc comments, `//!` module docs, comments and assertion messages included; the
+hook blocks grep and rg, so count with
+`git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<old>' 'index($0, t) { print FILENAME ":" FNR }'`.
+It prints nothing, or your hand-over names each line it prints with its reason. Every
+test-side shape you add, merged or not, is recorded as one `<unit>-test-shape-audit`
+DecisionMade naming each site FIXED or CHECKED, after a search of the three test homes above.
+
 ## Every test must survive mutation testing
 
 A test that only proves the code runs is not a test. Write every test so that every mutant
