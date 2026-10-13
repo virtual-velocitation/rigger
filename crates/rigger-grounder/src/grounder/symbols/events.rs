@@ -1150,12 +1150,28 @@ mod tests {
         );
     }
 
-    /// The caller rule's kinds (spec 116 criterion 2) each lower to their own kind string.
+    /// The caller rule's kinds (spec 116 criterion 2) and the kinds the Rust data definitions
+    /// take (criterion 6) each lower to their own kind string.
     #[test]
-    fn the_caller_rule_s_kinds_lower_to_their_kind_strings() {
+    fn the_caller_rule_s_and_the_rust_data_kinds_lower_to_their_kind_strings() {
         assert_eq!(
-            [Kind::Constructor, Kind::Macro, Kind::Declaration].map(super::kind_str),
-            ["constructor", "macro", "declaration"]
+            [
+                Kind::Constructor,
+                Kind::Macro,
+                Kind::Declaration,
+                Kind::Static,
+                Kind::Variant,
+                Kind::Field
+            ]
+            .map(super::kind_str),
+            [
+                "constructor",
+                "macro",
+                "declaration",
+                "static",
+                "variant",
+                "field"
+            ]
         );
     }
 

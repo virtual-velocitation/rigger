@@ -250,10 +250,37 @@ pub fn for_path(path: &str, override_lang: Option<Lang>) -> Option<LanguageEntry
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::grounder::symbols::extract::extract;
     use crate::grounder::symbols::model::{Kind, Lang};
+
+    /// Rust's DEFINITION TYPES (spec 116): each row a node type of the Rust grammar that is a
+    /// definition, a kind it lowers to, and the leaf of the one definition of that kind the Rust
+    /// definitions fixture in `extract.rs`'s tests holds for it. A `function_item` has a row per
+    /// kind it takes; the last two rows are read off the parsed tree, the tuple-field row naming
+    /// its list, the grammar giving a tuple field no node of its own.
+    pub(crate) const RUST_DEFINITION_TYPES: [(&str, Kind, &str); 19] = [
+        ("function_item", Kind::Function, "host"),
+        ("function_item", Kind::Method, "width"),
+        ("function_item", Kind::Macro, "derive"),
+        ("function_signature_item", Kind::Declaration, "paint"),
+        ("struct_item", Kind::Type, "Pair"),
+        ("union_item", Kind::Type, "Bits"),
+        ("enum_item", Kind::Type, "Shape"),
+        ("type_item", Kind::Type, "Alias"),
+        ("associated_type", Kind::Type, "Canvas"),
+        ("trait_item", Kind::Trait, "Draw"),
+        ("mod_item", Kind::Module, "nest"),
+        ("extern_crate_declaration", Kind::Module, "alloc"),
+        ("const_item", Kind::Constant, "LIMIT"),
+        ("static_item", Kind::Static, "TABLE"),
+        ("enum_variant", Kind::Variant, "Unit"),
+        ("field_declaration", Kind::Field, "side"),
+        ("macro_definition", Kind::Macro, "shout"),
+        ("impl_item", Kind::Impl, "impl Pair"),
+        ("ordered_field_declaration_list", Kind::Field, "1"),
+    ];
 
     #[test]
     fn auto_detects_all_five_languages_by_extension() {

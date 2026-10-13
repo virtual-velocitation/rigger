@@ -1136,14 +1136,17 @@ setup!();
     /// The four function-like kinds, the caller rule's first choice.
     const FUNCTION_LIKE: [Kind; 4] = [Kind::Function, Kind::Method, Kind::Constructor, Kind::Macro];
 
-    /// Every kind tree 2 holds that is a caller only when no function-like definition encloses
-    /// the reference.
-    const NOT_FUNCTION_LIKE: [Kind; 6] = [
+    /// Every kind, a `Declaration` apart, that is a caller only when no function-like
+    /// definition encloses the reference.
+    const NOT_FUNCTION_LIKE: [Kind; 9] = [
         Kind::Type,
         Kind::Trait,
         Kind::Impl,
         Kind::Module,
         Kind::Constant,
+        Kind::Static,
+        Kind::Variant,
+        Kind::Field,
         Kind::Other,
     ];
 
@@ -1291,6 +1294,90 @@ impl X { #[cfg(test)] fn t() {} fn real() {} }
 fn f() { #[cfg(test)] let x = 1; }
 mod outer { #[cfg(test)] mod inner {} }
 ";
+
+    /// RUST DEFINITIONS ARE NODES (spec 116 criterion 6): under the registered Rust query the
+    /// fixture yields every definition it holds at its own kind and leaf, an aliased
+    /// `extern crate` at its alias, a tuple field at its index, a trait required fn a
+    /// declaration, a proc-macro fn and a `macro_rules!` macros, and a fn and a field of one
+    /// leaf each their own definition in either order; no `extern crate` is an out-of-line
+    /// module; and each row of Rust's DEFINITION TYPES names exactly one of them.
+    #[test]
+    fn every_rust_definition_type_yields_its_definition_at_its_kind() {
+        let fs = crate::symbol_index::extracted("rs", RUST_DEFINITIONS_SOURCE);
+        assert_eq!(
+            crate::symbol_index::defs_by_line(&fs),
+            vec![
+                (1, "alloc", Kind::Module),
+                (2, "base", Kind::Module),
+                (3, "LIMIT", Kind::Constant),
+                (4, "TABLE", Kind::Static),
+                (5, "0", Kind::Field),
+                (5, "1", Kind::Field),
+                (5, "2", Kind::Field),
+                (5, "Pair", Kind::Type),
+                (6, "0", Kind::Field),
+                (6, "Probe", Kind::Variant),
+                (6, "Shape", Kind::Type),
+                (6, "Struct", Kind::Variant),
+                (6, "Tuple", Kind::Variant),
+                (6, "Unit", Kind::Variant),
+                (6, "side", Kind::Field),
+                (7, "Bits", Kind::Type),
+                (7, "whole", Kind::Field),
+                (8, "Alias", Kind::Type),
+                (9, "Canvas", Kind::Type),
+                (9, "Draw", Kind::Trait),
+                (9, "paint", Kind::Declaration),
+                (10, "WIDTH", Kind::Constant),
+                (10, "impl Pair", Kind::Impl),
+                (10, "width", Kind::Method),
+                (11, "shout", Kind::Macro),
+                (13, "SEED", Kind::Constant),
+                (13, "derive", Kind::Macro),
+                (14, "CACHE", Kind::Static),
+                (14, "LOCAL", Kind::Constant),
+                (14, "host", Kind::Function),
+                (15, "nest", Kind::Module),
+                (16, "size", Kind::Function),
+                (17, "Plot", Kind::Type),
+                (17, "area", Kind::Field),
+                (17, "size", Kind::Field),
+                (17, "spy", Kind::Field),
+                (18, "area", Kind::Function),
+                (19, "PROBE_LIMIT", Kind::Constant),
+                (20, "PROBE_TABLE", Kind::Static),
+                (21, "S", Kind::Type),
+                (21, "probe", Kind::Field),
+                (21, "real", Kind::Field),
+                (22, "A", Kind::Variant),
+                (22, "B", Kind::Variant),
+                (22, "E", Kind::Type),
+                (23, "impl X", Kind::Impl),
+                (23, "real", Kind::Method),
+                (23, "t", Kind::Method),
+                (24, "f", Kind::Function),
+                (25, "inner", Kind::Module),
+                (25, "outer", Kind::Module),
+            ]
+        );
+        let out_of_line: Vec<&str> = fs
+            .defs
+            .iter()
+            .filter(|d| d.is_out_of_line_module)
+            .map(|d| d.name.as_str())
+            .collect();
+        assert_eq!(out_of_line, Vec::<&str>::new());
+        for (node_type, kind, leaf) in
+            crate::grounder::symbols::registry::tests::RUST_DEFINITION_TYPES
+        {
+            let found = fs
+                .defs
+                .iter()
+                .filter(|d| d.kind == kind && d.name == leaf)
+                .count();
+            assert_eq!(found, 1, "{node_type}: one {kind:?} definition at {leaf:?}");
+        }
+    }
 
     /// RUST DEFINITIONS ARE NODES (spec 116 criterion 6), the test attribute: a `#[cfg(test)]`
     /// tuple field, unit variant, named field, const and static are each test code, as a
