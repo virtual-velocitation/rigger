@@ -37,9 +37,10 @@ and the graph - the changed-file list; each hunk's identifiers, doc links (`[...
 constants included; the body comments of each changed item; the impl headers; the depth-1
 callers (`rigger graph --around <file>::<item> --depth 1`); the tracked lines spelling a changed
 item's name - and compare it with the record, and you re-run every rule-spelling search the
-record carries and compare the hit sets. A member the record omits is BLOCKING; a hit the record
-does not carry is BLOCKING; a CHECKED hit whose reason does not hold - it is a spelling of the
-retired rule after all - is BLOCKING; a record naming no rule-spelling search and no empty set
+record carries and compare the hit sets, and you re-read every hit, CHECKED ones included,
+against the code at head. A member the record omits is BLOCKING; a hit the record does not
+carry is BLOCKING; a CHECKED hit whose reason does not hold at head - it is a spelling of the
+retired rule or of one of its case labels after all - is BLOCKING; a record naming no rule-spelling search and no empty set
 is BLOCKING, and so is a record that names the set empty while the diff rewrites a rule (a doc
 hunk restating what a call lands on, what a key binds or what a tier means). Each is a finding
 on its own, citing the sentence's file:line with the generator or the command that reaches it.
