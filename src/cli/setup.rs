@@ -3623,7 +3623,8 @@ mod tests {
              `<unit>-test-shape-audit` DecisionMade naming each site FIXED or CHECKED",
             "`git diff --name-only <base>..HEAD`",
             "`rigger-run` when it names none",
-            "the `impl` header above a changed fn names its trait item",
+            "the `impl` header above a changed fn and above each of its callers names the trait \
+             item it implements",
             "`rigger graph --around <item>`",
             "when it answers nothing the callers are the lines the count above prints for the \
              item's name",

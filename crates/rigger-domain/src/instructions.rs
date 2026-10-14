@@ -264,8 +264,8 @@ mod tests {
             "the `//!` module doc of every file the change touches (the changed-file list)",
             "the doc comment and every comment in the body of each item the change touches \
              (the hunks)",
-            "the doc of the trait item a changed fn implements and of the trait a changed impl \
-             is for (the impl header)",
+            "the doc of the trait item a changed fn or any caller of one implements and of the \
+             trait a changed impl is for (the impl headers)",
             "the doc of every item a changed hunk names, callee, constant or type returned (the \
              hunk's identifiers)",
             "the doc of every caller of a changed item (the project's graph, or your persona's \
