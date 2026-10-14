@@ -3675,19 +3675,23 @@ mod tests {
         );
     }
 
-    /// The `sdet` lens is the built-in shape rule's enforcement: it re-runs every search the
-    /// author's shape record carries on the review tree and compares the hit sets, and a hit
-    /// the record lacks, a CHECKED reason that does not hold or a record with no command is
-    /// BLOCKING. The search is the author's instrument, never a gate, so the lens's rule against
-    /// re-running a green gate does not reach it.
+    /// The `sdet` lens is the enforcement of two built-in rules. Of the shape rule: it re-runs
+    /// every search the author's shape record carries on the review tree and compares the hit
+    /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
+    /// command is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
+    /// diff and the graph and compares it with the walk record, and re-runs every rule-spelling
+    /// search the record carries, and an omitted member, an uncarried hit, a CHECKED reason that
+    /// does not hold, or a record naming no search and no empty set is BLOCKING. Both records
+    /// are the author's instruments, never a gate, so the lens's rule against re-running a green
+    /// gate does not reach them.
     #[test]
-    fn the_sdet_lens_re_runs_every_shape_search_the_author_records() {
-        const HEADING: &str = "## Re-run the author's shape searches";
+    fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
+        const HEADING: &str = "## Re-run the author's searches and re-derive its walk";
         for (file, text) in committed_personas() {
             assert_eq!(
                 text.matches(HEADING).count(),
                 usize::from(file == "sdet.md"),
-                "{file}: the shape-search enforcement belongs to the sdet lens alone"
+                "{file}: the recorded-search enforcement belongs to the sdet lens alone"
             );
         }
         let flat = rigger::wave::normalize_ws(&committed_persona("sdet.md"));
@@ -3699,6 +3703,20 @@ mod tests {
             "a CHECKED hit whose reason does not hold - its shape does not differ in the way \
              the record names - is a twin and BLOCKING",
             "a record with no command is BLOCKING",
+            "You are also the enforcement of the built-in rule that every sentence about the \
+             changed behaviour is true at head.",
+            "you re-derive each generator's set on the review tree from the diff and the graph",
+            "each hunk's identifiers, doc links (`[...]`) and constants included",
+            "the depth-1 callers (`rigger graph --around <file>::<item> --depth 1`)",
+            "the tracked lines spelling a changed item's name",
+            "and compare it with the record, and you re-run every rule-spelling search the \
+             record carries and compare the hit sets",
+            "A member the record omits is BLOCKING",
+            "a hit the record does not carry is BLOCKING",
+            "a CHECKED hit whose reason does not hold - it is a spelling of the retired rule \
+             after all - is BLOCKING",
+            "a record naming no rule-spelling search and no empty set is BLOCKING",
+            "a record that names the set empty while the diff rewrites a rule",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
