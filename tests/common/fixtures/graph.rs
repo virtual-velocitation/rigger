@@ -4,9 +4,10 @@ use std::collections::BTreeMap;
 
 use rigger::contextgraph::query::split_id;
 use rigger::contextgraph::{
-    CallEdge, CallGraph, Direction, Edge, Graph, Node, Projection, KIND_CODE_ENTITY, KIND_CONCEPT,
-    KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, KIND_UNIT, REL_ABOUT, REL_CALLS,
-    REL_GOVERNS, REL_REALIZES, REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
+    CallEdge, CallGraph, Direction, Edge, Graph, Node, Projection, KIND_CODE_ENTITY,
+    KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, KIND_UNIT,
+    REL_ABOUT, REL_CALLS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES,
+    TIER_EXTRACTED, TIER_INFERRED,
 };
 
 /// A `kind` node with no attributes.
@@ -362,4 +363,16 @@ pub fn kinded_def_node(id: &str, kind: &str) -> Node {
     let mut node = leaf_named_node(id);
     node.attrs.insert("kind".to_string(), kind.to_string());
     node
+}
+
+/// A graph of the one community node `community` followed by `members`, each held by a live
+/// inferred `IN_COMMUNITY` edge in `members` order: the subject a re-projection folds.
+pub fn one_community_graph(community: &str, members: Vec<Node>) -> Graph {
+    let edges = members
+        .iter()
+        .map(|m| edge(&m.id, community, REL_IN_COMMUNITY, TIER_INFERRED))
+        .collect();
+    let mut nodes = vec![plain(community, KIND_COMMUNITY)];
+    nodes.extend(members);
+    Graph { nodes, edges }
 }

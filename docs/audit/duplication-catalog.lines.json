@@ -214,8 +214,8 @@
       },
       {
         "file": "tests/common/fixtures/graph.rs",
-        "start_line": 203,
-        "end_line": 205
+        "start_line": 204,
+        "end_line": 206
       },
       {
         "file": "tests/postmerge_gate_error_cleanup_periphery.rs",
@@ -4409,8 +4409,8 @@
     "sites": [
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 1974,
-        "end_line": 1989
+        "start_line": 1982,
+        "end_line": 1997
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
@@ -4429,13 +4429,13 @@
     "sites": [
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 2123,
-        "end_line": 2135
+        "start_line": 2131,
+        "end_line": 2143
       },
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 2463,
-        "end_line": 2477
+        "start_line": 2471,
+        "end_line": 2485
       }
     ]
   },
@@ -4444,18 +4444,18 @@
     "sites": [
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 2480,
-        "end_line": 2487
+        "start_line": 2488,
+        "end_line": 2495
       },
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 2584,
-        "end_line": 2589
+        "start_line": 2592,
+        "end_line": 2597
       },
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 2598,
-        "end_line": 2606
+        "start_line": 2606,
+        "end_line": 2614
       }
     ]
   },
@@ -4814,8 +4814,8 @@
       },
       {
         "file": "tests/common/fixtures/graph.rs",
-        "start_line": 275,
-        "end_line": 277
+        "start_line": 276,
+        "end_line": 278
       }
     ]
   },

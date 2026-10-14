@@ -1479,6 +1479,14 @@ mod tests {
             "the module with the true majority of members (zzz: 3) must dominate over a \
              lexicographically-earlier minority (aaa: 1)",
         );
+        /// Spec 119 criterion 13, THE FILE HALF IS ONE READ: an extensionless file's
+        /// definitions (`Makefile::all`) are counted in `Makefile`'s district, so its two
+        /// members outvote the one `aaa` member.
+        build_counts_an_extensionless_files_entity_in_its_files_district: assert_one_district_purpose(
+            &["Makefile::all", "Makefile::build", "src/aaa.rs::g"],
+            "Makefile",
+            "the two members of the file `Makefile` must dominate the one `aaa` member",
+        );
     }
 
     /// Pins the grid/ring LAYOUT arithmetic directly: four districts of strictly decreasing

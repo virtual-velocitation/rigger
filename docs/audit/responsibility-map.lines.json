@@ -9655,14 +9655,32 @@
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
+    "name": "cluster_counts",
+    "start_line": 10341,
+    "end_line": 10346
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "unresolved_frontiers",
+    "start_line": 10349,
+    "end_line": 10354
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "reproject_files_beside_a_member",
-    "start_line": 10345,
-    "end_line": 10385
+    "start_line": 10368,
+    "end_line": 10397
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
     "name": "reproject_files_resolves_a_placeholder_onto_the_nested_definition_of_its_leaf",
-    "start_line": 10414,
-    "end_line": 10440
+    "start_line": 10427,
+    "end_line": 10441
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "reproject_files_folds_an_extensionless_files_entity_under_its_file",
+    "start_line": 10456,
+    "end_line": 10472
   }
 ]

@@ -2315,8 +2315,24 @@ mod cluster_detail_budget_ranking_tests {
 
 /// Spec 116 criterion 4, A DATA MEMBER IS NO CALL TARGET, at the files lens: a bare placeholder
 /// never resolves onto a data member, which folds under its own file.
+/// The lens views the files-lens tests compare.
+#[cfg(test)]
+mod lens_views {
+    use super::*;
+
+    /// The files-lens key of each node of `g`, in node order.
+    pub(super) fn files_lens_keys(g: &Graph) -> Vec<Option<String>> {
+        let buckets = Buckets::new(g, &Lens::Files);
+        g.nodes
+            .iter()
+            .map(|n| whole_graph_lens_key(&buckets, n))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod call_target_tests {
+    use super::lens_views::files_lens_keys;
     use super::*;
     use crate::test_support::kinded_def_node;
     use crate::test_support::plain;
@@ -2330,12 +2346,9 @@ mod call_target_tests {
             nodes,
             edges: Vec::new(),
         };
-        let buckets = Buckets::new(&g, &Lens::Files);
+        let keys = files_lens_keys(&g);
         ids.iter()
-            .map(|id| {
-                let node = g.nodes.iter().find(|n| n.id == *id).unwrap();
-                whole_graph_lens_key(&buckets, node)
-            })
+            .map(|id| keys[g.nodes.iter().position(|n| n.id == *id).unwrap()].clone())
             .collect()
     }
 
@@ -2406,6 +2419,7 @@ mod call_target_tests {
 /// `b.rs`'s placeholder of its leaf.
 #[cfg(test)]
 mod leaf_tests {
+    use super::lens_views::files_lens_keys;
     use super::*;
     use crate::test_support::{def_node, empty_named_node, plain};
 
@@ -2489,13 +2503,59 @@ mod leaf_tests {
     fn the_files_lens_folds_a_placeholder_under_its_leafs_nested_definition() {
         let mut g = nested_and_placeholder();
         g.nodes.push(empty_named_node("c.rs::%new"));
-        let buckets = Buckets::new(&g, &Lens::Files);
+        assert_eq!(files_lens_keys(&g), vec![Some("a.rs".to_string()); 3]);
+    }
+}
+
+/// Spec 119 criterion 13, THE FILE HALF IS ONE READ: the file an id names is read by its kind,
+/// one id per arm of the kind table observed through [`cluster_key`].
+#[cfg(test)]
+mod file_half_tests {
+    use super::lens_views::files_lens_keys;
+    use super::*;
+    use crate::contextgraph::{KIND_DESIGN_DOC, KIND_FILE};
+    use crate::test_support::{def_node, plain};
+
+    #[test]
+    fn cluster_key_folds_an_id_by_the_file_its_kind_names() {
         assert_eq!(
-            g.nodes
-                .iter()
-                .map(|n| whole_graph_lens_key(&buckets, n))
-                .collect::<Vec<_>>(),
-            vec![Some("a.rs".to_string()); 3]
+            [
+                ("Makefile::all", KIND_CODE_ENTITY),
+                ("docs/design/x.md", KIND_DESIGN_DOC),
+                ("v1.2-choice", KIND_DECISION),
+                ("src/utils/Makefile", KIND_FILE),
+                // A code entity whose id holds no `::`, or whose file half is empty, names no file.
+                ("src/a.rs", KIND_CODE_ENTITY),
+                ("::x", KIND_CODE_ENTITY),
+            ]
+            .map(|(id, kind)| cluster_key(id, kind)),
+            [
+                CLUSTER_ROOT,
+                "docs/design",
+                KIND_DECISION,
+                "src/utils",
+                KIND_CODE_ENTITY,
+                KIND_CODE_ENTITY,
+            ]
+            .map(str::to_string)
+        );
+    }
+
+    /// The files lens folds `Makefile::all`, and the placeholder `src/b.rs::%all` of its leaf,
+    /// under `Makefile`, and its card gives it `file` `Makefile`.
+    #[test]
+    fn the_files_lens_and_the_card_give_an_extensionless_files_entity_its_file() {
+        let g = Graph {
+            nodes: vec![
+                def_node("Makefile::all", "all"),
+                plain("src/b.rs::%all", KIND_CODE_ENTITY),
+            ],
+            edges: Vec::new(),
+        };
+        assert_eq!(files_lens_keys(&g), vec![Some("Makefile".to_string()); 2]);
+        assert_eq!(
+            card(&g, "Makefile::all").and_then(|c| c.file),
+            Some("Makefile".to_string())
         );
     }
 }
