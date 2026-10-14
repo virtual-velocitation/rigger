@@ -42,13 +42,24 @@ tool that searches them.
 - **A test-side shape is spelled once.** A table, fixture, helper, builder, seeder, expected
   value or oracle you add exists once across every test home, as production code does; the
   list is open - a shape is any test-side token two tests could spell, a const or id literal, a
-  hand-built event or fixture row, a closure or a query string among them. Check:
-  look it up where the project's test helpers live before you write it; when a second home
-  needs one the first already spells, move it to the shared home and have both call it,
-  changing no assertion or expected value. The record is owed for every test-side shape you
-  add, merged or not: one whole-tree audit DecisionMade naming every site of its shape FIXED or
-  CHECKED - FIXED when moved to the shared home with both calling it and no assertion or
-  expected value changed, CHECKED when kept apart, with the reason.
+  hand-built event or fixture row, a closure or a query string among them. Naming a shape adds
+  it: a builder, fixture or helper that gives an existing inline spelling a name exists once
+  across every test home afterwards - every site that already spelled it inline calls it, the
+  shared home itself and any file you edit included. Check: look it up where the project's
+  test helpers live before you write it; when a second home needs one the first already
+  spells, move it to the shared home and have both call it, changing no assertion or expected
+  value. The search is an instrument, not a claim: for each shape you add or name, write down
+  its distinguishing expression - the token sequence its body cannot be written without (the
+  cut, the literal, the struct pattern, the query text; two expressions when one would miss a
+  spelling) - and run one search for each over every test home. The record is owed for every
+  test-side shape you add, merged or not: one whole-tree audit DecisionMade naming every site
+  of its shape FIXED or CHECKED, carrying each search's command, its hit count and every hit -
+  FIXED when moved to the shared home with both calling it and no assertion or expected value
+  changed, CHECKED when kept apart, with the reason: the named way its shape differs. A
+  CHECKED hit whose shape does not differ is a twin. A search you did not run is a record you
+  cannot write. The SDET lens re-runs each recorded search on the review tree: a hit the
+  record does not carry, or a CHECKED hit whose reason does not hold, is a BLOCKING finding on
+  its own.
 - **Every sentence about the changed behaviour is true at head.** The doc comments of each item
   you changed and of its callers, module docs, test names, test docs, assertion messages and
   operator docs say what the code at head does. Check: enumerate the walked set, each member
@@ -57,9 +68,11 @@ tool that searches them.
   touches (the hunks); the doc of the trait item a changed fn or any caller of one implements
   and of the trait a changed impl is for (the impl headers); the doc of every item a changed
   hunk names, callee, constant or type returned (the hunk's identifiers); the doc of every
-  caller of a changed item (the project's graph, or your persona's fallback); and every tracked
-  line outside the hunks that spells a changed item's name, counted over every root as an old
-  spelling is below - and read each against the code at head, leaving it true or fixing it;
+  caller of a changed item, read from the project's graph at depth 1 (`rigger graph --around
+  <file>::<item> --depth 1`, the lines naming callers; the default depth returns the item's
+  whole file neighbourhood and is not the caller set), or your persona's fallback; and every
+  tracked line outside the hunks that spells a changed item's name, counted over every root as
+  an old spelling is below - and read each against the code at head, leaving it true or fixing it;
   when you rename or retire a name, walk every spelling of the old term through the tree. The
   old spelling occurs zero times in the tree outside git history, counted over every root (test
   docs, test comments and assertion messages are sentences too), or your hand-over names each
