@@ -1017,7 +1017,7 @@ fn a_run_restores_an_identity_a_rebuild_left_behind_at_its_next_reindex_with_no_
     assert_eq!(state.units["rewords"].status, Status::Integrated);
     let left_behind: Vec<Option<String>> = first_walk
         .iter()
-        .map(|(entry, group, _)| Some(entry.generation.clone()).filter(|_| group != SOURCE))
+        .map(|(entry, group, _)| (group != SOURCE).then_some(entry.generation.clone()))
         .collect();
     assert_eq!(
         *driver.held_after_rebuild.lock().unwrap(),
