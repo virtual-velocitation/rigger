@@ -40,8 +40,8 @@ fn assert_cluster_keys(cases: &[(&str, &str, &str, &str)]) {
 
 rigger::test_cases! {
     /// The public fold key is reachable across the crate boundary and folds the three canonical
-    /// node shapes as documented: a path-bearing id clusters by its file's DIRECTORY, and a
-    /// non-path dev-loop id clusters by its KIND. This test's VALUE is structural: it proves
+    /// node shapes as documented: an id whose kind names a file clusters by its file's DIRECTORY,
+    /// and a dev-loop id, whose kind names none, clusters by its KIND. This test's VALUE is structural: it proves
     /// `cluster_key` and `CLUSTER_ROOT` are genuinely `pub` and usable by an external consumer (the
     /// downstream c2/c3 aggregations), which the in-module unit test cannot prove.
     cluster_key_is_reachable_over_the_public_crate_boundary: assert_cluster_keys(&[
@@ -52,19 +52,19 @@ rigger::test_cases! {
             "src/contextgraph",
             "a code entity folds to its file's full directory path",
         ),
-        // A plain path id clusters by its directory whatever its kind.
+        // A design doc's plain path id clusters by its directory.
         (
             "docs/architecture.md",
             KIND_DESIGN_DOC,
             "docs",
             "a plain path id folds to its directory",
         ),
-        // A non-path dev-loop node folds to its KIND, echoed verbatim.
+        // A dev-loop node, whose kind names no file, folds to its KIND, echoed verbatim.
         (
             "adj-u42c1-approve",
             KIND_DECISION,
             KIND_DECISION,
-            "a dev-loop node with no path id folds to its kind",
+            "a dev-loop node, whose kind names no file, folds to its kind",
         ),
         // The repo-root sentinel is reachable and is what a directory-less file folds to.
         (
