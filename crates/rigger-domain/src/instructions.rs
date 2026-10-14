@@ -285,7 +285,9 @@ mod tests {
     /// expression whose command and hits the record carries and the SDET lens re-runs, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators (an item's callers read from the graph at depth 1) and records on
-    /// every change, with a renamed name's old spelling
+    /// every change, each spelling of a rule the change rewrites found by a recorded search per
+    /// distinguishing phrase of its old statement, the SDET lens re-deriving each generator's set
+    /// and re-running each search, with a renamed name's old spelling
     /// counted to zero, nothing added that nothing reads, the red test's body untouched by the
     /// green commit, and a probe that edits the tree - the sharpest case of a turn's end being
     /// the session's end - run to completion and restored before the turn ends; the gates'
@@ -354,6 +356,28 @@ mod tests {
              walked by its generators",
             "every sentence FIXED with its location",
             "a member whose generator returned nothing is named as empty",
+            "has spellings no generator above reaches: prose that states it without naming a \
+             changed item",
+            "every spelling of each rewritten rule is walked too",
+            "the distinguishing phrase of the rule's OLD statement - the words a sentence \
+             stating it cannot be written without; two phrases when one would miss a spelling",
+            "run one recorded search for each over every tracked text line: code, doc comments, \
+             body comments, test names and docs, assertion messages, specs and operator docs",
+            "The record carries each search's command, its hit count and every hit",
+            "CHECKED with the named way it is not a spelling of the retired rule (a spec's \
+             account of the pre-change state, a history note, a different rule sharing the \
+             words)",
+            "A rewritten rule with no search is a record you cannot write; a change that \
+             rewrites no rule names the set empty.",
+            "The SDET lens re-derives each generator's set on the review tree from the diff and \
+             the graph",
+            "each hunk's identifiers, doc links (`[...]`) and constants included",
+            "the body comments of each changed item",
+            "the depth-1 callers",
+            "the tracked lines spelling a changed item's name",
+            "compares it with the walk record, and re-runs each recorded rule-spelling search: \
+             a member the record omits, a hit the record does not carry, or a CHECKED hit whose \
+             reason does not hold, is a BLOCKING finding on its own.",
             "when you rename or retire a name, walk every spelling of the old term through the \
              tree",
             "The old spelling occurs zero times in the tree outside git history, counted over \
