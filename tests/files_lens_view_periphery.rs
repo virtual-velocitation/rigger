@@ -1,6 +1,6 @@
 //! Periphery (API / integration / contract) tests for spec 63's FILES LENS (criterion 3): the
 //! default `Lens::Files` whole-graph fold, purified the same shape as the already-merged code lens
-//! (criterion 1). Only [`KIND_CODE_ENTITY`] nodes fold, each keyed by its OWN FILE ([`file_of`]) -
+//! (criterion 1). Only [`KIND_CODE_ENTITY`] nodes fold, each keyed by its OWN FILE ([`node_file`]) -
 //! never its directory, never its kind - so a cluster IS a file, sized by its CONTAINED-ENTITY count;
 //! weighted cross-file coupling edges connect files that reference each other; and drilling ANY
 //! cluster is unconditionally empty, because a file is this lens's atomic LEAF subject. Handoff
@@ -53,7 +53,7 @@ use rigger::dash::{
     WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 
-// `ce`: a code-entity DEFINITION node under `<file>::<name>` (so `file_of` folds it to `<file>`),
+// `ce`: a code-entity DEFINITION node under `<file>::<name>` (so `node_file` folds it to `<file>`),
 // named by its id's leaf - exactly as the extraction fold always sets for a REAL definition, the
 // files-lens honesty gate's (spec 63 c3) marker that this is not a bare placeholder.
 // Every fixture in this file models an entity's own file, never a cross-file reference, so this is

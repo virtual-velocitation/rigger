@@ -5772,10 +5772,11 @@ mod tests {
     }
 
     /// Spec 42 c1: [`cluster_key`] folds every node into ONE super-node bucket. A node whose id NAMES
-    /// A FILE (a code entity `<file>::<name>`, a rationale anchor `<file>#L<n>`, or a path id whose
-    /// last segment carries an extension) clusters by that file's DIRECTORY (its module); a
-    /// directory-less repo-root path falls back to the [`CLUSTER_ROOT`] bucket; every other node - a
-    /// dev-loop node with no path id - clusters by its KIND. The mapping is deterministic. This test
+    /// A FILE by its kind (a code entity `<file>::<name>`, a file's path, a rationale anchor
+    /// `<file>#L<n>`, or a design-doc path whose last segment carries an extension) clusters by that
+    /// file's DIRECTORY (its module); a directory-less repo-root path falls back to the
+    /// [`CLUSTER_ROOT`] bucket; every other node - a dev-loop node, whose kind names no file -
+    /// clusters by its KIND. The mapping is deterministic. This test
     /// OWNS the fold key; it does not exercise the overview/drill aggregations (c2, c3).
     #[test]
     fn cluster_key_folds_paths_by_directory_and_dev_loop_nodes_by_kind() {
@@ -5795,8 +5796,8 @@ mod tests {
             cluster_key("src/conductor.rs#L20616", KIND_RATIONALE),
             "src"
         );
-        // A plain path id (a file / design-doc whose last segment carries an extension) folds to its
-        // directory, whatever its node kind is.
+        // A plain path id (a file's path, or a design doc's whose last segment carries an
+        // extension) folds to its directory.
         assert_eq!(
             cluster_key("shim/mock-rigger-server.mjs", KIND_FILE),
             "shim"
@@ -5819,7 +5820,7 @@ mod tests {
             cluster_key("README.md#usage", KIND_DESIGN_DOC),
             CLUSTER_ROOT
         );
-        // A non-path dev-loop node (a decision / finding / agent - no path id) folds to its KIND.
+        // A dev-loop node (a decision / finding / agent, whose kind names no file) folds to its KIND.
         assert_eq!(
             cluster_key("adj-u41c1-approve", KIND_DECISION),
             KIND_DECISION
@@ -5833,7 +5834,7 @@ mod tests {
             KIND_AGENT
         );
         // A dev-loop id carrying slashes AND a `#` (e.g. a spawn-style agent id) is still NOT a path:
-        // its last segment has no extension, so it folds by kind, never mistaken for a file.
+        // an agent's kind names no file, so it folds by kind, never mistaken for a file.
         assert_eq!(cluster_key("u42-c1/implementer#0", KIND_AGENT), KIND_AGENT);
         // Determinism: two entities in the SAME file fold to one identical module bucket.
         assert_eq!(

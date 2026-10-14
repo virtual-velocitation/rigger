@@ -101,7 +101,7 @@ pub fn cluster_key(id: &str, kind: &str) -> String {
             Some((dir, _)) if !dir.is_empty() => dir.to_string(),
             _ => CLUSTER_ROOT.to_string(),
         },
-        // Every other node is a dev-loop node with no path id: cluster by its KIND.
+        // Every other node is a dev-loop node, whose kind names no file: cluster by its KIND.
         None => kind.to_string(),
     }
 }
