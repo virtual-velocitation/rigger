@@ -175,15 +175,16 @@ fn composed_once(cell: &'static OnceLock<String>, parts: &[&str]) -> &'static st
 
 /// Additional Go tags-query patterns (spec 116), appended to the upstream query, which tags a
 /// function, a method and a `type_spec` and no other definition: a `const_spec` name is a
-/// constant (captured as a direct identifier child, since the grammar's one `name` field over
-/// the whole comma list matches a `name:` pattern at the first name only), a `var_spec` name a
-/// variable when its `var_declaration` is a direct child of the source file, grouped or not, so
-/// a function-local `var` is none, a named field a field and an interface's `method_elem` a
-/// method, which `extract` lowers to a declaration. A spec or field naming several
-/// (`const a, b = f(), g()`, a field `x, y Foo`) is one definition per name, all of one range.
-/// An embedded field and a `type_alias` have no pattern: the upstream query holds each one's
-/// name node as a type reference, and one name node carries one tag, so `extract` reads them
-/// off the parsed tree and the reference stays.
+/// constant, captured as a direct identifier child: the grammar puts a `const_spec`'s commas
+/// inside its `name` field, and a `name:` pattern then matches its first name only, while a
+/// `var_spec` and a `field_declaration` field each name alone and match at every one. A
+/// `var_spec` name is a variable when its `var_declaration` is a direct child of the source
+/// file, grouped or not, so a function-local `var` is none, a named field a field and an
+/// interface's `method_elem` a method, which `extract` lowers to a declaration. A spec or field
+/// naming several (`const a, b = f(), g()`, a field `x, y Foo`) is one definition per name, all
+/// of one range. An embedded field and a `type_alias` have no pattern: the upstream query holds
+/// each one's name node as a type reference, and one name node carries one tag, so `extract`
+/// reads them off the parsed tree and the reference stays.
 const GO_DEFINITION_TAGS: &str = r#"
 (const_spec (identifier) @name) @definition.constant
 (source_file (var_declaration (var_spec name: (identifier) @name) @definition.variable))
