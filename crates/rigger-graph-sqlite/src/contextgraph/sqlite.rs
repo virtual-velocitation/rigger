@@ -1637,13 +1637,13 @@ fn migrate_edge_tier(conn: &Connection) -> Result<(), Error> {
     Ok(())
 }
 
-/// Additive read-path indexes (spec 45, unit 4). Two pure additions - no column, no data
-/// migration, no result change - that keep the whole-graph and directed-call reads sub-linear as a
-/// repository grows. Run AFTER [`migrate_project_scope`] and [`migrate_edge_tier`] so both indexes
-/// land on the FINAL table shapes: on a pre-spec-28 graph.db the scope migration DROPS and recreates
+/// Additive read-path indexes (spec 45, unit 4). Pure additions - no column, no data migration,
+/// no result change - that keep the whole-graph and directed-call reads sub-linear as a repository
+/// grows. Run AFTER [`migrate_project_scope`] and [`migrate_edge_tier`] so every index lands on the
+/// FINAL table shapes: on a pre-spec-28 graph.db the scope migration DROPS and recreates
 /// `nodes`, which would strand a `nodes` index created any earlier, so this must fire last. Unlike
 /// the column migrations, `CREATE INDEX IF NOT EXISTS` is inherently idempotent, so it needs no
-/// [`column_exists`] guard - a fresh db and an existing one both gain both indexes on open, and a
+/// [`column_exists`] guard - a fresh db and an existing one both gain every index on open, and a
 /// re-open is a no-op.
 ///
 /// - `idx_edges_live_rel_from` is a PARTIAL index on `(rel, from_id) WHERE valid_to IS NULL`: the
@@ -3551,8 +3551,8 @@ fn callers_direct(
 /// equals `name`, in `project`, as `(from_id, tier, valid_from, source)` sorted by caller (spec 52 -
 /// the reverse cross-file resolution). A cross-file call targets a bare placeholder in the CALLER's
 /// file namespace (no `name` attr - the definition lives elsewhere), so these are the callers that
-/// call `name` across a file boundary. Phrased with the PINNED `substr(to_id, instr(to_id,'::')+2)`
-/// target-text expression so it seeks the `idx_edges_live_to_name_suffix` index; filtered to
+/// call `name` across a file boundary, an edge's target text read by the pinned
+/// `substr(to_id, instr(to_id,'::')+2)` expression the edge side compares; filtered to
 /// targets that are no call target (no non-empty `name`, [`node_leaf_sql`], or a named data member
 /// or declaration a same-file call naming its leaf lands on) so an edge that lands directly on a real definition (a same-file
 /// caller, or a call to a DIFFERENT same-named definition) is never miscounted here - those are
