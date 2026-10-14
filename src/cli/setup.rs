@@ -3566,8 +3566,9 @@ mod tests {
     /// clean `git status`, the boundary audit, the content gates and red-before-green), the whole
     /// suite left to the gates, the audit's closing rule, the test homes with the tool that
     /// searches them, the counted checks: the roots a retired spelling is counted over with the
-    /// command that counts it, and the audit record owed for every added test-side shape, and
-    /// the sentence walk's generators as commands, the graph's caller lookup with its counted
+    /// command that counts it, and the audit record owed for every added test-side shape with the
+    /// search command it pastes with its hits for the `sdet` lens to re-run, and the sentence
+    /// walk's generators as commands, the graph's caller lookup at depth 1 with its counted
     /// fallback recorded as a gap, and the record the walk owes, and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
     /// line when the host backgrounds one.
@@ -3627,12 +3628,21 @@ mod tests {
             "`rigger-run` when it names none",
             "the `impl` header above a changed fn and above each of its callers names the trait \
              item it implements",
-            "`rigger graph --around <item>`",
+            "`rigger graph --around <file>::<item> --depth 1` lists each changed item's callers \
+             on the lines naming them (the default depth answers the item's whole file \
+             neighbourhood, never its callers)",
             "when it answers nothing the callers are the lines the count above prints for the \
              item's name",
             "a `GAP:` clause naming the item in the record",
             "the count above with `t='<name>'`",
             "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
+            "The search is this command, one run per distinguishing expression, the expression \
+             its one argument",
+            "`git ls-files tests crates | t='<expression>' xargs awk",
+            "index($0, ENVIRON[\"t\"])",
+            "END { print n + 0 \" hits\" }'`",
+            "The record pastes each command as run, its hit count and every hit it printed, each \
+             FIXED or CHECKED, and the `sdet` lens re-runs each on the review tree.",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
@@ -3642,6 +3652,10 @@ mod tests {
                 "the hand-over block must say {wanted:?}"
             );
         }
+        assert!(
+            !block.contains("`rigger graph --around <item>`"),
+            "the caller lookup names its depth; a bare `--around` answers the file neighbourhood"
+        );
     }
 
     /// The implementer runs the hand-over checks, never the whole suite: no sentence of its
