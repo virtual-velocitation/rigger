@@ -69,24 +69,30 @@ fn json_arg(composed: Result<Vec<u8>, hooks::Error>, what: &str) -> Result<Strin
 /// same key overrides the one here.
 ///
 /// Today exactly one pair, `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`. In print mode a session
-/// that started a background helper (a subagent dispatched without waiting on it, or a
-/// background command) stays open after its final turn until that work completes, but only
-/// for a default ceiling of ten minutes of continuous idle waiting; past it the harness stops
-/// whatever is still running and DROPS its partial result. A gating persona that handed its
-/// battery to a background helper and ended its turn to wait then exits with no verdict line,
-/// and the host records that verdict-less stdout as the spawn's result. With the ceiling at
-/// `0` the session stays open, the helper's result arrives, the persona takes its turn on it
-/// and records the verdict. The wait stays bounded by the harness's own limits: a subagent
-/// that streams no progress for its stall timeout (`CLAUDE_CODE_ASYNC_AGENT_STALL_TIMEOUT_MS`,
-/// ten minutes by default) is aborted and reported to the parent, which then takes a turn,
-/// and a background command runs under its own time limit; a healthy helper that runs for an
-/// hour holds the session open, which is the behaviour wanted - the work is in flight.
+/// that ended its final turn with a background subagent still running (one dispatched without
+/// waiting on it) stays open until that subagent completes, but only for a default ceiling of
+/// ten minutes of continuous idle waiting; past it the harness stops whatever is still running
+/// and DROPS its partial result. A gating persona that handed its battery to a background
+/// subagent and ended its turn to wait then exits with no verdict line, and the host records
+/// that verdict-less stdout as the spawn's result. With the ceiling at `0` the session stays
+/// open, the subagent's result arrives, the persona takes its turn on it and records the
+/// verdict. The wait stays bounded by the harness's own limits: a subagent that streams no
+/// progress for its stall timeout (`CLAUDE_CODE_ASYNC_AGENT_STALL_TIMEOUT_MS`, ten minutes by
+/// default) is aborted and reported to the parent, which then takes a turn.
+///
+/// A background command is different and depends on the Claude Code version. Versions 2.1.163
+/// through 2.1.291 stop a background command still running about five seconds after the final
+/// result once stdin has closed, whatever the ceiling (measured at 5.2 to 5.3 seconds on
+/// 2.1.290 in seven spawns); 2.1.292 and later wait for it until it exits or reaches its own
+/// time limit. The loop relies on neither wait: the working discipline's `Your turn's end is
+/// your session's end` section requires every job an agent starts to finish inside its turn,
+/// so the exit-time wait is a safety net at most.
 ///
 /// The rejected lever: `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` disables background work
 /// entirely, the `run_in_background` parameter on Bash and subagent tools and
-/// auto-backgrounding included, and a command that reaches the foreground timeout then stops
-/// instead of moving to the background - so every persona's long build battery, which runs as
-/// a background or auto-backgrounded command, would stop at the foreground cap.
+/// auto-backgrounding included. With it, a command that reaches the foreground timeout stops
+/// instead of moving to the background, so a battery that outlives the timeout could never be
+/// polled to its exit line as the working discipline prescribes.
 ///
 /// Sources: <https://code.claude.com/docs/en/headless.md> (the print-mode wait on background
 /// work and its ceiling) and <https://code.claude.com/docs/en/env-vars.md> (the variable,

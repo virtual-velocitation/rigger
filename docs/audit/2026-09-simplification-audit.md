@@ -3966,8 +3966,8 @@ Proposed home: `mod::launch_session - one canonical constructor, the rest thin v
 
 mandatory sweep: parallel constructor functions - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `crates/rigger-driver/src/driver/mod.rs:131-140` `of`
-- `crates/rigger-driver/src/driver/mod.rs:143-148` `fresh`
+- `crates/rigger-driver/src/driver/mod.rs:137-146` `of`
+- `crates/rigger-driver/src/driver/mod.rs:149-154` `fresh`
 
 #### `dup-282069e7109f` (near, 3 sites)
 
