@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use rigger::contextgraph::query::leaf_of;
+use rigger::contextgraph::query::split_id;
 use rigger::contextgraph::{
     CallEdge, CallGraph, Direction, Edge, Graph, Node, Projection, KIND_CODE_ENTITY, KIND_CONCEPT,
     KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, KIND_UNIT, REL_ABOUT, REL_CALLS,
@@ -330,9 +330,9 @@ pub fn empty_named_node(id: &str) -> Node {
 }
 
 /// A code-entity definition named by its id's leaf (`src/a.rs::foo` named `foo`): [`def_node`]
-/// over [`leaf_of`], the shape the extraction fold gives a flat definition.
+/// over [`split_id`]'s rest half, the shape the extraction fold gives a flat definition.
 pub fn leaf_named_node(id: &str) -> Node {
-    def_node(id, leaf_of(id).expect("a code-entity id holds `::`"))
+    def_node(id, split_id(id).1.expect("a code-entity id holds `::`"))
 }
 
 /// A small two-module + decision graph a route dispatch is proven over: the named definitions

@@ -2418,16 +2418,34 @@ mod leaf_tests {
                 ("a.rs", Some("")),
             ]
         );
-        // The leaf is the rest half less one leading sigil.
+        // The leaf is the rest half less one leading sigil, and only a rest half beginning with
+        // the sigil, a placeholder's, has one.
         assert_eq!(
-            ["b.rs::%new", "b.rs::%%x", "b.rs::new", "a.rs::", "a.rs"].map(leaf_of),
-            [Some("new"), Some("%x"), Some("new"), Some(""), None]
+            [
+                "b.rs::%new",
+                "b.rs::%%x",
+                "b.rs::new",
+                "a.rs::",
+                "a.rs",
+                "a.rs::%"
+            ]
+            .map(leaf_of),
+            [Some("new"), Some("%x"), None, None, None, Some("")]
         );
         // The file half answers `file_of` as at the base.
         assert_eq!(
             ["docs/x.md", "docs/x.md#sec", "foo::bar"].map(file_of),
             [Some("docs/x.md"), Some("docs/x.md"), None]
         );
+    }
+
+    #[test]
+    fn a_placeholder_is_its_file_and_its_leaf_behind_one_sigil() {
+        assert_eq!(
+            [("b.rs", "new"), ("b.rs", "%x"), ("Makefile", "")].map(|(f, l)| placeholder_id(f, l)),
+            ["b.rs::%new", "b.rs::%%x", "Makefile::%"].map(str::to_string)
+        );
+        assert_eq!(leaf_of(&placeholder_id("b.rs", "%x")), Some("%x"));
     }
 
     #[test]

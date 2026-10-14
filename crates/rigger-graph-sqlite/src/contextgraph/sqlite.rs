@@ -11401,9 +11401,18 @@ mod tests {
 
         /// Write the function definitions `(id, name)` unkeyed.
         pub(super) fn define(p: &Projector, defs: &[(&str, &str)]) {
+            let defs: Vec<_> = defs
+                .iter()
+                .map(|(id, name)| (*id, *name, "function"))
+                .collect();
+            define_kinds(p, &defs);
+        }
+
+        /// Write the definitions `(id, name, kind)` unkeyed.
+        pub(super) fn define_kinds(p: &Projector, defs: &[(&str, &str, &str)]) {
             write_directly(p, |tx, project| {
-                for (id, name) in defs {
-                    let attrs = [("name", *name), ("kind", "function"), ("line", "1")];
+                for (id, name, kind) in defs {
+                    let attrs = [("name", *name), ("kind", *kind), ("line", "1")];
                     entity(tx, project, &UNKEYED, id, &attrs);
                 }
             });
@@ -11426,6 +11435,17 @@ mod tests {
                 }
                 add_edge(tx, from, to, rel, 0, 4, project, tier).unwrap();
             });
+        }
+
+        /// Write `caller`'s live call onto `target` directly ([`edge_directly`]) and answer the
+        /// node ids the down walk from `caller` reaches, sorted.
+        pub(super) fn a_direct_call_walked_down(
+            p: &Projector,
+            caller: &str,
+            target: &str,
+        ) -> Vec<String> {
+            edge_directly(p, caller, target, REL_CALLS, TIER_INFERRED);
+            call_node_ids(&call_walk(p, caller, Direction::Down))
         }
 
         /// The id `p.locate(query)` resolves to, insisting it resolves to exactly one.
@@ -11466,14 +11486,13 @@ mod tests {
             apply_def(&p, 1, "b.rs", "main", 1, true);
             apply_def(&p, 2, "b.rs", "run", 5, false);
             apply_call(&p, 3, "b.rs", "new", "main");
-            // A placeholder spelled with the sigil, its call written directly.
-            edge_directly(&p, "b.rs::run", "b.rs::%new", REL_CALLS, TIER_INFERRED);
             assert_eq!(
                 call_node_ids(&call_walk(&p, "b.rs::main", Direction::Down)),
                 vec!["a.rs::T::new", "b.rs::main"]
             );
+            // A placeholder spelled with the sigil, its call written directly.
             assert_eq!(
-                call_node_ids(&call_walk(&p, "b.rs::run", Direction::Down)),
+                a_direct_call_walked_down(&p, "b.rs::run", "b.rs::%new"),
                 vec!["a.rs::T::new", "b.rs::run"]
             );
         }
@@ -11751,6 +11770,216 @@ mod tests {
             write_directly(&p, |tx, project| entity(tx, project, &UNKEYED, "x", &[]));
             edge_directly(&p, "f.rs", "f.rs::x", REL_REFERENCES, TIER_AMBIGUOUS);
             assert_eq!(referenced_not_called_ids(&p, "x"), Vec::<String>::new());
+        }
+    }
+
+    /// Spec 119 criterion 3 (A CALL LANDS ON ITS ONE SAME-FILE CANDIDATE): a reference naming
+    /// exactly one same-file call target lands on it at `extracted`, else on the placeholder
+    /// `<file>::%<leaf>` at the tier its leaf's other definitions give it, over hand-built events
+    /// folding each file's definitions before its references and nested definitions written
+    /// directly.
+    mod call_lands_on_its_one_same_file_candidate {
+        use super::leaf_keys_resolution::{
+            a_direct_call_walked_down, define, define_kinds, write_directly,
+        };
+        use super::*;
+        use crate::test_support::{apply_generation_head, apply_keyed, hold, ref_json};
+
+        /// Every live `REFERENCES` and `CALLS` edge `p` serves, as `(from, rel, to, tier)`,
+        /// sorted: where each reference landed and at what tier.
+        fn landed(p: &Projector) -> Vec<(String, String, String, String)> {
+            let mut edges: Vec<_> = p
+                .whole()
+                .unwrap()
+                .edges
+                .into_iter()
+                .filter(|e| e.rel == REL_REFERENCES || e.rel == REL_CALLS)
+                .map(|e| (e.from, e.rel, e.to, e.tier))
+                .collect();
+            edges.sort();
+            edges
+        }
+
+        /// The `(from, rel, to, tier)` rows of `f.rs`'s reference and of `f.rs::main`'s call,
+        /// both landed on `to` at `tier`, in [`landed`]'s order.
+        fn a_call_from_main(to: &str, tier: &str) -> Vec<(String, String, String, String)> {
+            [("f.rs", REL_REFERENCES), ("f.rs::main", REL_CALLS)]
+                .map(|(from, rel)| (from.into(), rel.into(), to.into(), tier.into()))
+                .to_vec()
+        }
+
+        /// `f.rs` defines `main` and the top-level `(name, kind)`s of `top` by hand-built
+        /// events, holds the `(id, name, kind)`s of `nested` written directly, and `main` calls
+        /// `called`: the call lands on `to` at `tier`.
+        fn a_call_lands(
+            top: &[(&str, &str)],
+            nested: &[(&str, &str, &str)],
+            called: &str,
+            to: &str,
+            tier: &str,
+        ) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            define_kinds(&p, nested);
+            apply_def(&p, 1, "f.rs", "main", 1, true);
+            for (pos, (name, kind)) in (2..).zip(top) {
+                apply_code_entity(&p, pos, "f.rs", name, kind, pos, "rust");
+            }
+            apply_call(&p, 9, "f.rs", called, "main");
+            assert_eq!(landed(&p), a_call_from_main(to, tier));
+        }
+
+        crate::test_cases! {
+            a_call_lands_on_its_one_same_file_method_beside_a_field_of_its_leaf:
+                a_call_lands(
+                    &[],
+                    &[("f.rs::T::run", "run", "method"), ("f.rs::S.run", "run", "field")],
+                    "run",
+                    "f.rs::T::run",
+                    TIER_EXTRACTED
+                );
+            a_call_beside_a_class_and_its_constructor_lands_on_the_placeholder:
+                a_call_lands(
+                    &[],
+                    &[("f.rs::N::Foo", "Foo", "class"), ("f.rs::N::Foo::Foo", "Foo", "constructor")],
+                    "Foo",
+                    "f.rs::%Foo",
+                    TIER_INFERRED
+                );
+            a_call_to_a_provided_trait_method_beside_its_impl_lands_on_the_placeholder:
+                a_call_lands(
+                    &[],
+                    &[("f.rs::Trait::m", "m", "method"), ("f.rs::<T as Trait>::m", "m", "method")],
+                    "m",
+                    "f.rs::%m",
+                    TIER_INFERRED
+                );
+            a_call_to_a_required_trait_fn_lands_on_its_one_impl:
+                a_call_lands(
+                    &[],
+                    &[("f.rs::Trait::m", "m", "declaration"), ("f.rs::<T as Trait>::m", "m", "method")],
+                    "m",
+                    "f.rs::<T as Trait>::m",
+                    TIER_EXTRACTED
+                );
+            a_call_beside_a_top_level_fn_and_a_method_of_its_leaf_lands_on_the_placeholder:
+                a_call_lands(
+                    &[("new", "function")],
+                    &[("f.rs::T::new", "new", "method")],
+                    "new",
+                    "f.rs::%new",
+                    TIER_INFERRED
+                );
+            a_call_beside_a_type_and_a_same_named_variant_lands_on_the_placeholder:
+                a_call_lands(
+                    &[("Foo", "struct")],
+                    &[("f.rs::E::Foo", "Foo", "variant")],
+                    "Foo",
+                    "f.rs::%Foo",
+                    TIER_INFERRED
+                );
+            a_call_with_no_same_file_candidate_lands_on_a_named_placeholder_id_ambiguous:
+                a_call_lands(&[("%x", "module")], &[], "x", "f.rs::%x", TIER_AMBIGUOUS);
+        }
+
+        /// Fold onto `p`, at `pos`, the first event of generation `generation` of `f.rs`: its
+        /// top-level reference to `name`, replay-keyed `gc/f.rs@<generation>#0`.
+        fn apply_reference_head(p: &Projector, pos: u64, generation: &str, name: &str) {
+            let mut head = ref_json("f.rs", name);
+            head["fresh"] = true.into();
+            let key = format!("gc/f.rs@{generation}#0");
+            apply_keyed(p, pos, TYPE_EDGE_INFERRED, head, &key, pos);
+        }
+
+        /// Generation `h1` of `f.rs` defines `foo` and references it, `held` names the nodes a
+        /// decision then holds, and generation `h2` only references `foo`: its reference lands
+        /// on `f.rs::%foo` at `ambiguous`, the dropped definition being no candidate.
+        fn a_dropped_definitions_reference_lands_on_its_placeholder(held: &[&str]) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_generation_head(&p, 1, "f.rs", "h1", "foo", 1);
+            apply_keyed(
+                &p,
+                2,
+                TYPE_EDGE_INFERRED,
+                ref_json("f.rs", "foo"),
+                "gc/f.rs@h1#1",
+                2,
+            );
+            hold(&p, 3, held);
+            apply_reference_head(&p, 4, "h2", "foo");
+            let to = ("f.rs".into(), REL_REFERENCES.into(), "f.rs::%foo".into());
+            assert_eq!(landed(&p), vec![(to.0, to.1, to.2, TIER_AMBIGUOUS.into())]);
+            let held_nodes: Vec<(String, String)> = raw_rows(
+                &p,
+                "SELECT id, kind FROM nodes WHERE id = 'f.rs::foo'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            );
+            let expected: Vec<(String, String)> = held
+                .iter()
+                .map(|id| (id.to_string(), KIND_ARTIFACT.to_string()))
+                .collect();
+            assert_eq!(held_nodes, expected);
+        }
+
+        crate::test_cases! {
+            a_reference_to_a_definition_its_next_generation_dropped_lands_on_its_placeholder:
+                a_dropped_definitions_reference_lands_on_its_placeholder(&[]);
+            a_dropped_definition_a_knowledge_assertion_still_holds_names_no_candidate:
+                a_dropped_definitions_reference_lands_on_its_placeholder(&["f.rs::foo"]);
+        }
+
+        #[test]
+        fn a_down_hop_from_a_bare_unsigiled_target_resolves_onto_nothing() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            define(&p, &[("g.rs::helper", "helper")]);
+            apply_def(&p, 1, "f.rs", "main", 1, true);
+            assert_eq!(
+                a_direct_call_walked_down(&p, "f.rs::main", "f.rs::helper"),
+                vec!["f.rs::helper", "f.rs::main"]
+            );
+        }
+
+        /// A `nodes` row `a.rs::foo` carrying the `name` `foo` that no assertion holds, beside
+        /// the live definitions `(id, name)` of `beside`, and a test proof of `foo` recorded in
+        /// `file`: the proof's target is `target`, never the unheld row.
+        fn an_unheld_named_row_is_no_proof_target(
+            beside: &[(&str, &str)],
+            file: &str,
+            target: Option<&str>,
+        ) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            write_directly(&p, |tx, project| {
+                tx.execute(
+                    "INSERT INTO nodes (id, kind, attrs, project)
+                     VALUES ('a.rs::foo', ?1, json_object('name', 'foo', 'kind', 'function'), ?2)",
+                    params![KIND_CODE_ENTITY, project],
+                )
+                .unwrap();
+            });
+            define(&p, beside);
+            apply_edge_inferred_evidence(&p, 1, file, "foo", 7);
+            let targets: Vec<Option<String>> =
+                raw_rows(&p, "SELECT target FROM proofs", [], |r| r.get(0));
+            assert_eq!(targets, vec![target.map(str::to_string)]);
+        }
+
+        crate::test_cases! {
+            an_unheld_named_row_alone_takes_no_proof_from_another_file:
+                an_unheld_named_row_is_no_proof_target(&[], "t.rs", None);
+            an_unheld_named_row_alone_takes_no_proof_from_its_own_file:
+                an_unheld_named_row_is_no_proof_target(&[], "a.rs", None);
+            an_unheld_named_row_beside_a_definition_leaves_another_files_proof_to_it:
+                an_unheld_named_row_is_no_proof_target(
+                    &[("b.rs::foo", "foo")],
+                    "t.rs",
+                    Some("b.rs::foo")
+                );
+            an_unheld_named_row_beside_a_definition_leaves_its_own_files_proof_to_it:
+                an_unheld_named_row_is_no_proof_target(
+                    &[("b.rs::foo", "foo")],
+                    "a.rs",
+                    Some("b.rs::foo")
+                );
         }
     }
 
