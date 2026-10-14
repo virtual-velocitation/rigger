@@ -83,8 +83,10 @@ tool that searches them.
   the code decides by, such as what a call lands on or what a tier means - has spellings no
   generator above reaches: prose that states it without naming a changed item. So every
   spelling of each rewritten rule is walked too, and its search is an instrument, not a claim:
-  write down the distinguishing phrase of the rule's OLD statement - the words a sentence
-  stating it cannot be written without; two phrases when one would miss a spelling - and run
+  write down the distinguishing phrases of the rule's OLD statement and of the labels its cases
+  carried - the words a sentence stating it cannot be written without, and each name the docs,
+  test names and comments give a case the old rule decided (a "cross-file caller" for the calls
+  only the old rule sent across files); two phrases when one would miss a spelling - and run
   one recorded search for each over every tracked text line: code, doc comments, body
   comments, test names and docs, assertion messages, specs and operator docs. The record
   carries each search's command, its hit count and every hit, each FIXED, or CHECKED with the
@@ -95,8 +97,9 @@ tool that searches them.
   changed-file list; each hunk's identifiers, doc links (`[...]`) and constants included; the
   body comments of each changed item; the impl headers; the depth-1 callers; the tracked lines
   spelling a changed item's name - compares it with the walk record, and re-runs each recorded
-  rule-spelling search: a member the record omits, a hit the record does not carry, or a
-  CHECKED hit whose reason does not hold, is a BLOCKING finding on its own.
+  rule-spelling search and re-reads every hit, CHECKED ones included, against the code at head:
+  a member the record omits, a hit the record does not carry, or a CHECKED hit whose reason does
+  not hold at head, is a BLOCKING finding on its own.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
   code reads after your change, on any feature lane, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
