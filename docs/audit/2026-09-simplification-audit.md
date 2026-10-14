@@ -2393,13 +2393,13 @@ __END__
 - `src/cli/setup.rs:3183-3183` `".rigger/workflow.yml"`
 - `src/cli/setup.rs:3413-3413` `".rigger"`
 - `src/cli/setup.rs:3441-3441` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:3606-3606` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:3608-3608` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:3609-3609` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:3610-3610` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:3620-3620` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:3623-3623` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:3636-3636` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:3607-3607` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:3609-3609` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:3610-3610` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:3611-3611` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:3621-3621` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:3624-3624` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:3646-3646` `"`sh .rigger/gates/lanes.sh <lane>`"`
 - `src/cli/validate.rs:850-850` `"warning: tracked .rigger/ files have uncommitted modifications:"`
 - `src/cli/validate.rs:1292-1292` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\
@@ -5278,7 +5278,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9213 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9214 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4996-5037` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15080-15102` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
