@@ -55,7 +55,7 @@ use rigger::dash::{
 
 // `ce`: a code-entity DEFINITION node under `<file>::<name>` (so `file_of` folds it to `<file>`),
 // named by its id's leaf - exactly as the extraction fold always sets for a REAL definition, the
-// files-lens honesty gate's (spec 63 c3) marker that this is not a bare cross-file placeholder.
+// files-lens honesty gate's (spec 63 c3) marker that this is not a bare placeholder.
 // Every fixture in this file models an entity's own file, never a cross-file reference, so this is
 // the correct shape throughout; [`bare_ce`] below is the dedicated placeholder shape the
 // honesty-gate tests need.
@@ -166,7 +166,7 @@ fn files_lens_overview_buckets_code_entities_by_file_and_excludes_every_other_no
 /// THE WHOLE-GRAPH FOLD'S OWN "NEVER BLANKED" CONTRACT (spec 63 c3, FILES-LENS PURITY, the sibling
 /// fix to [`REPROJECT_FILES_UNRESOLVED`]'s reprojection-cell contract): a NON-EMPTY graph whose Files
 /// fold admits NOTHING at all - every node either falls outside `KIND_CODE_ENTITY` or is a bare
-/// cross-file placeholder [`clustered_overview`] cannot honestly attribute to one file - must still
+/// placeholder [`clustered_overview`] cannot honestly attribute to one file - must still
 /// carry [`WHOLE_GRAPH_FILES_UNRESOLVED`] as its `empty_state`, never a bare `None` that dash.html's
 /// `renderKgOverview` would otherwise mistake for a truly empty graph and caption "empty graph -
 /// nothing to explore yet" on a graph that plainly is not. This is the IDENTICAL defect class this
@@ -203,7 +203,7 @@ fn clustered_overview_under_files_lens_carries_an_accurate_empty_state_when_the_
          caption, never a bare None that reads as a truly empty graph: {overview:?}"
     );
 
-    // Every code entity here IS a bare cross-file placeholder with ZERO matching definitions
+    // Every code entity here IS a bare placeholder with ZERO matching definitions
     // anywhere in the graph (no real code-entity definition exists at all) - unresolvable honestly, so
     // the fold still admits nothing even though `KIND_CODE_ENTITY` nodes exist. (A real definition
     // would fold under its own file regardless of whether it also candidates for some OTHER bare

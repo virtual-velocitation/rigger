@@ -50,10 +50,10 @@ fn the_pass_groups_densely_coupled_entities_across_directory_lines() {
     let (assignment, _events) = run_pass(&p, next);
     let m: BTreeMap<String, String> = assignment.members.iter().cloned().collect();
 
-    // The bare cross-file placeholders resolved away - only real definitions and files are members.
+    // The bare placeholders resolved away - only real definitions and files are members.
     assert!(
         !m.contains_key("src/combat/hit.rs::send"),
-        "a bare cross-file placeholder is never a member on its own"
+        "a bare placeholder is never a member on its own"
     );
 
     // Subsystem A: `strike` (combat) and `send` (net) share one community across the directory line.

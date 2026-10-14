@@ -10,7 +10,7 @@
 //! This criterion OWNS the re-projection MECHANICS and its RESOLUTION HONESTY:
 //!
 //!  - CROSS-GRAIN RESOLUTION never trusts the id. Projecting members to files resolves a BARE
-//!    cross-file placeholder node (a call target in the CALLER's namespace, carrying no `name` attr)
+//!    placeholder node (a call target in the CALLER's namespace, carrying no `name` attr)
 //!    to its DEFINING file by its leaf: EXACTLY ONE definition auto-resolves to
 //!    that definition's file; MORE THAN ONE (or zero) surfaces as a MARKED-UNRESOLVED entry carrying
 //!    the sorted candidate definition ids - never a wrong attribution to the referencing file the id

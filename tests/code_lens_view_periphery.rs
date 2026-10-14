@@ -432,7 +432,7 @@ fn code_lens_overview_carries_the_empty_state_when_only_a_non_code_entity_carrie
 /// `ClusterOverview.empty_state` are `skip_serializing_if = Option::is_none`, so:
 ///   * the FILES overview JSON carries NO `label` key on any cluster, ever (byte-identical to before
 ///     spec 53 on THAT axis); but it DOES carry `empty_state` here, because this fixture's every
-///     code entity carries no `name` attr (they model the CODE lens's own coupling members, which the files-lens honesty gate reads as bare cross-file placeholders -
+///     code entity carries no `name` attr (they model the CODE lens's own coupling members, which the files-lens honesty gate reads as bare placeholders -
 ///     spec 63 c3) and no real definition exists anywhere in the graph to resolve any of them to, so
 ///     the files fold admits NOTHING here and [`WHOLE_GRAPH_FILES_UNRESOLVED`] fires rather than a
 ///     bare `None` that would misreport this non-empty graph as blank;

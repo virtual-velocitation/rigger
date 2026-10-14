@@ -181,7 +181,7 @@ pub fn node_leaf(node: &Node) -> Option<&str> {
 
 /// Index every code-entity DEFINITION a call resolves onto (a non-empty `name` attr,
 /// [`node_name`] - the extraction fold's marker that a node is a real definition, never a bare
-/// cross-file placeholder - and a kind that passes [`is_call_target`], so never a data member or a
+/// placeholder - and a kind that passes [`is_call_target`], so never a data member or a
 /// declaration) by its leaf (a named node's [`node_leaf`] is that name, so `a.rs::T::new` keys
 /// under `new`):
 /// the ONE resolution authority a bare placeholder's [`file_of`] attribution reads, so the files-lens
@@ -282,7 +282,7 @@ const CONCEPTS_LENS_TEXTS: DerivedLensTexts = DerivedLensTexts {
 /// The documented empty-state message a [`Lens::Files`] WHOLE-GRAPH overview ([`clustered_overview`],
 /// spec 63 c3, FILES-LENS PURITY) carries when the graph holds at least one node but the Files fold
 /// admits NONE of them into any cluster - every node either falls outside [`KIND_CODE_ENTITY`] (a
-/// file's own node, a decision, a design-doc, ...) or is a bare cross-file placeholder
+/// file's own node, a decision, a design-doc, ...) or is a bare placeholder
 /// [`whole_graph_lens_key`] could not honestly attribute to one file (zero or more than one
 /// leaf candidate). A TRULY EMPTY graph (`total == 0`) never reaches this message:
 /// [`clustered_overview`] leaves `empty_state` `None` there instead.
@@ -362,7 +362,7 @@ pub struct Buckets<'g> {
     shared: BTreeSet<&'g str>,
     /// [`Lens::Files`] ONLY (spec 63 c3, FILES-LENS PURITY): every call-target DEFINITION indexed by
     /// its leaf ([`defs_by_entity_suffix`]), so [`whole_graph_lens_key`] can resolve a bare
-    /// cross-file placeholder to its unique real definition's file - the SAME honest resolution
+    /// placeholder to its unique real definition's file - the SAME honest resolution
     /// `dash.rs`'s `reproject_files` performs - rather than taking [`file_of`] of the placeholder's
     /// own id (which names the REFERENCING file, not its true definition file). Empty under
     /// [`Lens::Code`] / [`Lens::Concepts`].
@@ -581,7 +581,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
 /// [`Lens::Files`], the SAME shape of gate: a node outside [`KIND_CODE_ENTITY`] is excluded outright,
 /// and a code entity folds by [`file_of`] - its OWN FILE - rather than [`cluster_key`]'s directory
 /// fold. A REAL definition (a non-empty `name` attr, [`node_name`], a data member's included) takes
-/// [`file_of`] of its own id directly; a BARE cross-file placeholder resolves FIRST by its leaf
+/// [`file_of`] of its own id directly; a BARE placeholder resolves FIRST by its leaf
 /// ([`node_leaf`]) over [`Buckets::defs_by_suffix`], the call targets alone.
 pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
     match buckets.lens {
@@ -603,7 +603,7 @@ pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<Str
                 return None;
             }
             // A real definition (a non-empty `name` attr), a data member or a declaration as much
-            // as a fn, folds under its OWN file. A BARE cross-file placeholder (no `name`, or an
+            // as a fn, folds under its OWN file. A BARE placeholder (no `name`, or an
             // empty one) resolves by its leaf ([`node_leaf`]) over `buckets.defs_by_suffix`, the
             // call targets, FIRST - the same honest resolution `reproject_files` performs - since
             // its raw id names the REFERENCING file, not its true definition file: EXACTLY ONE

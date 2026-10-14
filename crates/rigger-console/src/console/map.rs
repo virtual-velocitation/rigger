@@ -133,7 +133,7 @@ pub(crate) fn district_purpose(module: &str) -> String {
 pub struct MapEntity {
     pub id: String,
     /// The entity's display name - its leaf ([`node_leaf`]: its non-empty `name` attr, the symbol
-    /// name, or, absent that (a bare cross-file placeholder), the leaf its id names) - NEVER the raw
+    /// name, or, absent that (a bare placeholder), the leaf its id names) - NEVER the raw
     /// `<file>::<name>` id, which would leak the file it lives in onto the canvas.
     pub name: String,
     /// The definition kind (`function`, `type`, ...) - the map's "kind dot" colour key.
@@ -238,7 +238,7 @@ pub fn build(graph: &Graph) -> MapModel {
 
     let mut by_community: BTreeMap<&str, Vec<&Node>> = BTreeMap::new();
     for n in &graph.nodes {
-        // A code entity with NO `name` attr is a BARE cross-file placeholder, never a real
+        // A code entity with NO `name` attr is a BARE placeholder, never a real
         // definition. `Coupling::from_graph` canonicalizes every RESOLVABLE bare reference onto
         // its unique call-target definition, reading a definition as a node with a non-empty
         // name (`query::node_name`), but an AMBIGUOUS one (more than one call target of its leaf

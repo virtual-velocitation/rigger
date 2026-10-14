@@ -42,9 +42,9 @@ use rigger::dash::{clustered_overview, Cluster, ClusterEdge, ClusterOverview, Le
 /// A graph node (the overview reads only its id, kind, and - for a code entity, spec 63 c3's files-
 /// lens honesty gate - whether it carries a `name` attr; never its label). A [`KIND_CODE_ENTITY`]
 /// node carries a `name` attr naming its id's leaf ([`leaf_named_node`]), exactly as the
-/// extraction fold always sets for a REAL definition (never a bare cross-file placeholder, which is
+/// extraction fold always sets for a REAL definition (never a bare placeholder, which is
 /// what a MISSING `name` attr means to that gate) - every fixture in this file models one entity's
-/// own file, never a cross-file placeholder, so this is the correct shape for all of them.
+/// own file, never a placeholder, so this is the correct shape for all of them.
 fn node(id: &str, kind: &str) -> Node {
     match kind {
         KIND_CODE_ENTITY => leaf_named_node(id),

@@ -983,7 +983,7 @@ impl Projector {
     /// - **Layers.** The seed is layer 0; each callee reached for the FIRST time takes its
     ///   discoverer's layer + 1. BFS visits shallowest-first, so a node's recorded layer is its
     ///   minimum hop distance from the seed, stable across polls.
-    /// - **Cross-file resolution.** A `CALLS` edge whose callee is no named call target is resolved
+    /// - **Resolution by leaf.** A `CALLS` edge whose callee is no named call target is resolved
     ///   by the leaf its id names over the call-target DEFINITION nodes of that leaf; only the
     ///   placeholder `<file>::%<leaf>` a call lands on when its file holds no one call target of
     ///   the leaf names one, so an id with no sigil (a data member, a declaration) has no
@@ -1048,21 +1048,22 @@ impl Projector {
     /// A breadth-first walk by LAYER over the live, caller-attributed `CALLS` edges (spec 37), this
     /// time following CALLERS transitively - the REVERSE of [`calls_down`](Projector::calls_down). It
     /// answers "who calls this, transitively" as a directed, layered DAG, resolving THROUGH the bare
-    /// cross-file placeholder nodes a naive reverse walk would never connect (a cross-file caller's
-    /// call target lives in the CALLER's file namespace as a bare placeholder, not on the seed's
-    /// definition).
+    /// placeholder nodes a naive reverse walk would never connect (a call that found no one
+    /// same-file candidate, in another file or in the seed's own, targets the placeholder
+    /// `<file>::%<leaf>` in the CALLER's file namespace, not the seed's definition).
     ///
     /// - **Layers.** The seed is layer 0; each caller reached for the FIRST time takes its callee's
     ///   layer + 1. BFS visits shallowest-first, so a caller's recorded layer is its minimum hop
     ///   distance from the seed, stable across polls. The left-to-right renderer draws the seed on the
     ///   RIGHT with callers flowing in from deeper layers.
-    /// - **Reverse cross-file resolution (the mirror of the DOWN policy).** A caller of the seed's
+    /// - **Reverse resolution by leaf (the mirror of the DOWN policy).** A caller of the seed's
     ///   leaf is found through the reverse leaf-match: an edge that literally targets `cur` is a
-    ///   SAME-FILE caller (its call landed on its one same-file candidate - always followed,
-    ///   unambiguous);
-    ///   an edge to a BARE placeholder, or to a named data member or declaration, whose target text
-    ///   binds `cur`'s leaf (spelled `<file>::<leaf>` or `<file>::%<leaf>`, spec 119) is a CROSS-FILE
-    ///   caller, attributed to `cur` only when that leaf has EXACTLY ONE call-target definition
+    ///   DIRECT caller (its call landed on its one same-file candidate - always followed,
+    ///   unambiguous); an edge to a BARE placeholder (in another file, or in `cur`'s own when the
+    ///   call found no one same-file candidate), or to a named data member or declaration (only a
+    ///   hand-built edge targets one), whose target text binds `cur`'s leaf (spelled
+    ///   `<file>::<leaf>` or `<file>::%<leaf>`, spec 119) is a caller THROUGH A PLACEHOLDER,
+    ///   attributed to `cur` only when that leaf has EXACTLY ONE call-target definition
     ///   (`cur` itself). A `cur` that is itself a data member or
     ///   a declaration, as seed or as a node the walk reached, has no caller. When the
     ///   name has MORE THAN ONE definition the caller is a marked FRONTIER ([`CallNode::frontier`]
@@ -3433,7 +3434,7 @@ fn edge_binds_leaf_sql(to_id: &str, leaf: &str) -> String {
 /// Whether the NAMED node `id` is a call target in `project` ([`call_target_sql`]): `Some(true)`
 /// for a code-entity definition a call resolves onto, `Some(false)` for a named node of a
 /// non-target kind (a data member, a declaration), and `None` for a node carrying no non-empty
-/// `name` ([`node_leaf_sql`]: a bare cross-file placeholder the reference fold created attr-less)
+/// `name` ([`node_leaf_sql`]: a bare placeholder the reference fold created attr-less)
 /// or for no node at all. This is how a directed hop tells a same-file callee (a call landed on its
 /// one same-file candidate) from a callee that must be resolved by its leaf: every answer but
 /// `Some(true)`.
@@ -3510,7 +3511,7 @@ fn live_definition_sql() -> String {
 
 /// The code-entity DEFINITION nodes whose leaf is `leaf` ([`node_leaf_sql`], spec 119) that
 /// `admitted` admits ([`Admitted`]), in `project` and, given a `file`, in that file's `<file>::`
-/// id range, sorted by id, each id once (spec 52 - the conservative cross-file resolution's
+/// id range, sorted by id, each id once (spec 52 - the conservative resolution by leaf's
 /// candidate set). Only a node with a non-empty `name` has a leaf here, so a bare placeholder
 /// sharing the leaf is never itself a candidate.
 fn definitions_with_suffix(
@@ -3618,7 +3619,7 @@ fn resolve_down_hop(
 }
 
 /// The live, caller-attributed `CALLS` edges whose target is EXACTLY `to_id`, in `project`, as
-/// `(from_id, tier, valid_from, source)` sorted by caller (spec 52). These are the SAME-FILE callers
+/// `(from_id, tier, valid_from, source)` sorted by caller (spec 52). These are the DIRECT callers
 /// of `to_id`: a same-file call landed on its one candidate, the callee's definition, so its edge
 /// literally targets it - always an unambiguous caller. Carries the
 /// `rel = CALLS AND valid_to IS NULL` shape the partial `idx_edges_live_rel_from` index cannot
@@ -3637,17 +3638,18 @@ fn callers_direct(
     )
 }
 
-/// The live, caller-attributed `CALLS` edges into a BARE cross-file placeholder whose target text
-/// binds `leaf`, in `project`, as `(from_id, tier, valid_from, source)` sorted by caller (spec 52 -
-/// the reverse cross-file resolution). A call with no one same-file candidate lands on the bare
-/// placeholder `<file>::%<leaf>` in the CALLER's file namespace (no `name` attr), so these are the
-/// callers that call `leaf` without landing on its definition, an edge's target text spelled
-/// `<file>::<leaf>` or `<file>::%<leaf>` ([`edge_binds_leaf_sql`], THE EDGE SIDE BINDS THE LEAF);
-/// filtered to targets that are no call target (no non-empty `name`, [`node_leaf_sql`], or a named
-/// data member or declaration, which only a hand-built target is, since the fold lands no call on
-/// one) so an edge that lands directly on a real definition (a same-file caller, or a
-/// call to a DIFFERENT same-named definition) is never miscounted here - those are covered by
-/// [`callers_direct`] on the exact definition, keeping the two caller sets disjoint.
+/// The live, caller-attributed `CALLS` edges into a BARE placeholder whose target text binds
+/// `leaf`, in `project`, as `(from_id, tier, valid_from, source)` sorted by caller (spec 52 - the
+/// reverse resolution by leaf). A call with no one same-file candidate, in another file or in the
+/// definition's own, lands on the bare placeholder `<file>::%<leaf>` in the CALLER's file namespace
+/// (no `name` attr), so these are the callers that call `leaf` without landing on its definition,
+/// an edge's target text spelled `<file>::<leaf>` or `<file>::%<leaf>` ([`edge_binds_leaf_sql`],
+/// THE EDGE SIDE BINDS THE LEAF); filtered to targets that are no call target (no non-empty
+/// `name`, [`node_leaf_sql`], or a named data member or declaration, which only a hand-built
+/// target is, since the fold lands no call on one) so an edge that lands directly on a real
+/// definition (a same-file call landed on its one candidate, or a call to a DIFFERENT same-named
+/// definition) is never miscounted here - those are covered by [`callers_direct`] on the exact
+/// definition, keeping the two caller sets disjoint.
 fn callers_via_bare(
     conn: &Connection,
     leaf: &str,
@@ -3690,18 +3692,20 @@ type CallHop = (String, String, i64, Position, Option<Vec<String>>);
 /// walk reached) has NO caller: the calls naming its leaf are callers of the call target they
 /// resolve onto. Otherwise two disjoint sources, mirroring [`resolve_down_hop`] in reverse:
 ///
-/// - **Same-file callers** ([`callers_direct`]) whose edge literally targets `cur` - always an
-///   unambiguous caller, no frontier.
-/// - **Cross-file callers** ([`callers_via_bare`]) that call `cur`'s LEAF ([`node_leaf`] over its
+/// - **Direct callers** ([`callers_direct`]) whose edge literally targets `cur` - a same-file call
+///   landed on its one candidate, always an unambiguous caller, no frontier.
+/// - **Callers through a placeholder** ([`callers_via_bare`]), in another file or in `cur`'s own
+///   when the call found no one same-file candidate, that call `cur`'s LEAF ([`node_leaf`] over its
 ///   node row, `new` for a nested `a.rs::T::new`) through a node that is no call target, the
 ///   call's target text bound to the leaf or the sigil-prefixed leaf (spec 119), attributed to
 ///   `cur` only when that leaf resolves unambiguously: its candidates key by the same leaf
 ///   ([`definitions_with_suffix`]), so `cur` is among them, and AT MOST ONE candidate definition
 ///   -> a real caller, no frontier; MORE THAN ONE -> a marked frontier carrying the sorted
 ///   candidate ids (the caller might be calling a same-named sibling, so the walk stops there).
-///   The cross-file source applies only when `cur` is a call-target
-///   DEFINITION: a bare node is not a definition, so a cross-file call to its name resolves to the
-///   real definitions elsewhere, never to it.
+///   The placeholder source applies only when `cur` is a call-target DEFINITION: a bare node is
+///   not a definition, so a call to its name resolves to the real definitions, never to it. The
+///   mirror stops at a hand-built edge onto an unsigiled data member or declaration: this source
+///   finds its caller by the target text, while the DOWN hop names no leaf for it.
 fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallHop>, Error> {
     let definition = match named_call_target(conn, cur, project)? {
         Some(false) => return Ok(Vec::new()),
@@ -8686,11 +8690,11 @@ mod tests {
             "the recursion dedups: main appears exactly once (a DAG, not a loop); nodes were {:?}",
             call_node_ids(&cg)
         );
-        // The walk resolved THROUGH the bare cross-file placeholders - they are not in the answer.
+        // The walk resolved THROUGH the bare placeholders - they are not in the answer.
         for bare in ["src/a.rs::%work", "src/b.rs::%main"] {
             assert!(
                 !cg.nodes.iter().any(|n| n.node.id == bare),
-                "the bare cross-file placeholder {bare} is resolved away, not returned; nodes were {:?}",
+                "the bare placeholder {bare} is resolved away, not returned; nodes were {:?}",
                 call_node_ids(&cg)
             );
         }
@@ -8811,7 +8815,7 @@ mod tests {
         );
         assert!(
             node("src/caller.rs::%solo").is_none(),
-            "the bare cross-file placeholder is resolved away, not returned; nodes were {:?}",
+            "the bare placeholder is resolved away, not returned; nodes were {:?}",
             call_node_ids(&cg),
         );
         // ...and the walk DESCENDS past it: solo's own callee is reached at layer 2, so the
@@ -8938,7 +8942,7 @@ mod tests {
     fn calls_up_walks_the_call_sites_as_a_layered_deduped_dag_and_lists_referenced_but_not_called()
     {
         // Spec 52 criterion 3: the UP traversal. From a seed DEFINITION, `calls(Up)` returns the
-        // transitive CALLER DAG - callers resolving THROUGH bare cross-file placeholders back onto the
+        // transitive CALLER DAG - callers resolving THROUGH bare placeholders back onto the
         // seed's definition (the reverse name-match), each at its correct per-node LAYER, deduped
         // under a mutual-call cycle whose recursive edge is marked BACK - PLUS the flat, non-traversed
         // "referenced but not called" list of files that import/use the seed name without calling it.
@@ -9006,11 +9010,11 @@ mod tests {
             "the caller-of-a-caller is two hops up; nodes were {:?}",
             call_node_ids(&cg)
         );
-        // The bare cross-file placeholders the callers literally target are resolved away.
+        // The bare placeholders the callers literally target are resolved away.
         for bare in ["src/b.rs::target", "src/c.rs::mid", "src/a.rs::mid"] {
             assert!(
                 !cg.nodes.iter().any(|n| n.node.id == bare),
-                "the bare cross-file placeholder {bare} is resolved away, not returned; nodes were {:?}",
+                "the bare placeholder {bare} is resolved away, not returned; nodes were {:?}",
                 call_node_ids(&cg),
             );
         }
@@ -12652,7 +12656,7 @@ mod tests {
 
         #[test]
         fn retired_code_entity_count_never_counts_a_placeholder_whose_only_reference_was_dropped() {
-            // A bare cross-file placeholder (its OWN file never CONTAINs it - `ensure_node` created
+            // A bare placeholder (its OWN file never CONTAINs it - `ensure_node` created
             // it with an empty attr set purely to anchor a REFERENCES edge) that later loses even
             // that reference (the referencing file re-extracts without it) ends up with NO live
             // edge either - but it must never be counted as "retired": it never carried a live

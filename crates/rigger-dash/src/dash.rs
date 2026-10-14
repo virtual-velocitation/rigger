@@ -1325,7 +1325,7 @@ pub struct Reprojection {
     /// NOT the whole-graph node count.
     pub total: usize,
     /// The MARKED-UNRESOLVED members (spec 55 c1 honesty rule, extended by spec 63 c3's FILES-LENS
-    /// PURITY), set only under [`Lens::Files`]: a bare cross-file placeholder member whose name
+    /// PURITY), set only under [`Lens::Files`]: a bare placeholder member whose name
     /// resolves to MORE THAN ONE call-target definition (or to none) cannot be attributed to a single defining
     /// file, so it is surfaced here - each carrying its SORTED candidate definition ids - rather than
     /// folded into the WRONG file bucket its (referencing-file) id would encode; a member with NO file
@@ -1364,7 +1364,7 @@ pub struct Reprojection {
     pub empty_state: Option<String>,
 }
 
-/// One MARKED-UNRESOLVED member of a FILES re-projection (spec 55 c1): a bare cross-file placeholder
+/// One MARKED-UNRESOLVED member of a FILES re-projection (spec 55 c1): a bare placeholder
 /// whose entity-name has NOT exactly one call-target definition, so it cannot be honestly attributed
 /// to a single defining file. `candidates` carries the SORTED ids of the call-target definitions
 /// sharing the name (empty when no call target of the name is known to the graph) - the frontier a human re-seeds on, never a silent
@@ -1646,7 +1646,7 @@ fn build_graph_view(graph: &Graph) -> GraphView {
 
 /// The documented empty-CELL message a [`Lens::Files`] RE-PROJECTION (spec 63 c3, FILES-LENS PURITY)
 /// carries when the member set is non-empty but resolves to NO file bucket at all - every member
-/// either carries no file identity or is an unresolvable bare cross-file placeholder, so
+/// either carries no file identity or is an unresolvable bare placeholder, so
 /// `reproject_files` marks each one unresolved rather than mis-labeling it, and this caption explains
 /// the resulting empty canvas instead of leaving it blank (mirroring [`REPROJECT_NO_COMMUNITY`] /
 /// [`REPROJECT_NO_CONCEPT`]'s "never blanked" contract for the derived lenses). `unresolved` still
@@ -1830,7 +1830,7 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
     for m in members {
         let is_bare = m.kind == KIND_CODE_ENTITY && node_name(m).is_none();
         if is_bare {
-            // A bare cross-file placeholder resolves by its leaf; the honesty rule decides.
+            // A bare placeholder resolves by its leaf; the honesty rule decides.
             let cands = node_leaf(m)
                 .and_then(|leaf| defs_by_suffix.get(leaf))
                 .map(Vec::as_slice)
@@ -5855,7 +5855,7 @@ mod tests {
     #[test]
     fn clustered_overview_under_files_lens_admits_only_code_entities_keyed_by_their_own_file() {
         // A code entity carries a `name` attr - the extraction fold's real-definition marker (spec
-        // 63 c3's honesty gate resolves a NO-name bare cross-file placeholder differently); every
+        // 63 c3's honesty gate resolves a NO-name bare placeholder differently); every
         // other kind carries none.
         let node = |id: &str, kind: &str| match kind {
             KIND_CODE_ENTITY => crate::test_support::leaf_named_node(id),
@@ -6484,7 +6484,7 @@ mod tests {
     fn concepts_lens_buckets_members_by_concept_excludes_membershipless_nodes_and_reports_underived_grain(
     ) {
         // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-
-        // lens honesty gate reads it to tell a real definition from a bare cross-file placeholder).
+        // lens honesty gate reads it to tell a real definition from a bare placeholder).
         let ce = crate::test_support::leaf_named_node;
         let doc = |id: &str| Node {
             id: id.to_string(),

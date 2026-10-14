@@ -91,7 +91,7 @@ Two rules make the cells well-defined. **Wide re-grains truncate, they do not li
 members span 200 files re-grained to `FILES` reuses the existing render budget and its "showing N of M"
 caption rather than pretending to draw all of them. **Cross-grain projection resolves, it does not
 trust the id**: projecting a concept or file "down/up" to another grain follows membership and
-definition edges, and a bare cross-file placeholder node is resolved to its *defining* file, not the
+definition edges, and a bare placeholder node is resolved to its *defining* file, not the
 referencing file its id encodes - otherwise a symbol is attributed to the wrong file exactly in the
 cross-file cases. The whole-graph overview is the "nothing selected" case at the current altitude.
 
@@ -105,7 +105,8 @@ undirected one flipped, because each hop must resolve a bare cross-file callee t
 it can continue. Three rules keep the result honest:
 
 - **Resolve conservatively.** A hop auto-continues only through edges that are unambiguous: a same-file
-  `extracted` call, or a cross-file `inferred` call whose name has exactly one definition. A hop whose
+  `extracted` call landed on its one candidate, or a call landed on a placeholder whose name has
+  exactly one definition. A hop whose
   name resolves to **multiple** definitions is not followed automatically - it renders as a
   **"fans out to N candidates - pick one"** frontier the human expands deliberately. This is the
   difference between a real execution path and a DAG dominated by the eleven wrong `new`s; auto-

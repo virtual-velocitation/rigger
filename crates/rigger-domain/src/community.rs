@@ -116,9 +116,9 @@ impl Coupling {
         // (the extraction fold sets it), a redirect target only when its kind is a call target: a
         // placeholder never redirects onto a data member or a declaration, which keeps its own
         // edges as every named node does; a code-entity with no `name`, or an empty one, is a
-        // bare cross-file placeholder. A definition keys by its leaf, which for a named node is
+        // bare placeholder. A definition keys by its leaf, which for a named node is
         // its name, and a placeholder by the leaf its id names ([`leaf_of`]): the leaf the
-        // store's cross-file resolution keys on too (spec 119).
+        // store's resolution by leaf keys on too (spec 119).
         let mut defs_by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         let mut bare: BTreeMap<&str, bool> = BTreeMap::new();
         for node in &g.nodes {
@@ -130,7 +130,7 @@ impl Coupling {
                 defs_by_name.entry(leaf).or_default().push(&node.id);
             }
         }
-        // Canonicalize a node id: a bare cross-file placeholder resolves to the UNIQUE call-target
+        // Canonicalize a node id: a bare placeholder resolves to the UNIQUE call-target
         // definition sharing its leaf (EXACTLY ONE resolves; ZERO or MANY stays itself, honest by
         // construction) - the SAME unique-leaf rule the directed calls walk (spec 52) applies at
         // query time, here over the in-memory whole-graph read so the undirected coupling layer
@@ -846,7 +846,7 @@ mod tests {
                     "src/b.rs::%foo",
                     KIND_CODE_ENTITY,
                     &[("title", None), ("name", None)],
-                ), // bare cross-file placeholder
+                ), // bare placeholder
             ],
             edges: vec![
                 edge("src/a.rs", "src/a.rs::foo", REL_CONTAINS, TIER_EXTRACTED),

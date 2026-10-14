@@ -664,7 +664,7 @@ impl<'a> Server<'a> {
     /// `rigger_graph` (spec 92, criterion 4's fix round): the STRUCTURE (`around`) and
     /// resolution (`show`) lookups, both over the SAME `graph` port `with_graph` already wires
     /// for the workflow bridge's event fold - `around` serves [`crate::contextgraph::around`] (the
-    /// trait's [`Projection::subgraph`] plus the seed's cross-file callers), `show` the trait's
+    /// trait's [`Projection::subgraph`] plus the seed's callers), `show` the trait's
     /// [`Projection::locate`] added alongside this fix, so no second graph-reading implementation
     /// is needed for either selector. Only reachable on the lookup surface; [`call_tool`] never
     /// dispatches here otherwise.

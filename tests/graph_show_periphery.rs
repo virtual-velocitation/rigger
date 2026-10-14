@@ -177,7 +177,7 @@ fn graph_show_degrades_to_stale_note_when_location_drifted() {
 }
 
 /// DEGRADE (recorded line 0): a definition whose recorded line is 0 - a location that never named a
-/// real source line (a bare cross-file placeholder, or a drifted attr) - degrades to the
+/// real source line (a bare placeholder, or a drifted attr) - degrades to the
 /// stale-location note with NO body, and still EXITS SUCCESS. Guards `definition_body`'s `start == 0`
 /// arm: the one degrade return the missing-file / past-EOF cases cannot reach, because it
 /// short-circuits BEFORE any file read (and BEFORE extent derivation, so it is lane-independent). The

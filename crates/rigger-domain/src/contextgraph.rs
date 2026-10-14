@@ -271,11 +271,12 @@ pub const REL_REVIEWS_LIGHT: &str = "REVIEWS_LIGHT";
 /// confidence tier - the precise seed. Every non-code dev-loop edge (DECIDED / GOVERNS / ABOUT /
 /// SUPERSEDES / ...) also folds EXTRACTED: they are explicit facts recorded on the log.
 pub const TIER_EXTRACTED: &str = "extracted";
-/// A derived / transitive link: a reference with no ONE same-file call-target candidate (its file
-/// defines the name as a call target ([`is_call_target`]) never or more than once), landed on its
-/// file's placeholder `<file>::%<name>`, whose name some call target the graph knows DOES define -
-/// in another file, or twice in its own. The reference is inferred to reach a definition - real,
-/// but one confidence step below a reference resolved to its one same-file candidate.
+/// A derived / transitive link: a reference landed on its file's placeholder `<file>::%<name>`,
+/// its file holding no ONE call-target candidate ([`is_call_target`]) of the name when it folded,
+/// whose name some call target the graph knows DOES define: in another file, more than once in
+/// its own, or once in its own when that definition folded after the reference (the definition
+/// arm's upgrade promotes it). The reference is inferred to reach a definition - real, but one
+/// confidence step below a reference resolved to its one same-file candidate.
 pub const TIER_INFERRED: &str = "inferred";
 /// A text-only occurrence: a reference whose name no call target ([`is_call_target`]) defines
 /// ANYWHERE the graph knows - a macro body, a reflection string, a dynamic name, an external
