@@ -732,7 +732,8 @@ fn resolve_out_of_line_target(idx: &SymbolIndex, declaring_path: &str, d: &Def) 
 
 /// Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 2), resolution fixed in round 7
 /// (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`): the set of file paths in `idx` that
-/// are declared, OUT OF LINE, by a `#[cfg(test)] mod name;` item somewhere in another file - Rust's
+/// are declared, OUT OF LINE, by a test-code `mod name;` item somewhere in another file (one under
+/// `#[cfg(test)]`, or anywhere in a file opening `#![cfg(test)]`) - Rust's
 /// out-of-tree module form, distinct from an INLINE `#[cfg(test)] mod name { .. }` (which already
 /// excludes its own contents by containment, `Def::is_test`/`extract::test_regions`, needing no
 /// cross-file lookup at all). A per-file extraction pass can structurally never see this on the
@@ -741,9 +742,10 @@ fn resolve_out_of_line_target(idx: &SymbolIndex, declaring_path: &str, d: &Def) 
 /// layer, the ONE place every file's path in the project is already known together.
 ///
 /// Two passes over [`resolve_out_of_line_target`]:
-/// 1. SEED: every `Module`-kind definition that is itself out-of-line AND directly test-attributed
-///    (`is_test`, set by the SAME attribute stack `extract::test_regions` reads - a `#[cfg(test)]`
-///    sibling of the `mod name;` item) contributes its resolved target.
+/// 1. SEED: every `Module`-kind definition that is itself out-of-line AND test code (`is_test`,
+///    set by the test regions `extract::test_regions` reads - a `#[cfg(test)]` sibling of the
+///    `mod name;` item, or a range holding it, such as a file opening `#![cfg(test)]`) contributes
+///    its resolved target.
 /// 2. CLOSURE: "Everything under a resolved test module file (its own nested out-of-line children,
 ///    resolved recursively by the same rule) is test code." A file pulled in by step 1 is now
 ///    wholly test code, so EVERY out-of-line module IT declares is excluded too, REGARDLESS of

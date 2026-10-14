@@ -174,8 +174,9 @@ fn unresolved_def(kind: Kind, name: String, line: u32) -> Def {
 /// Record one definition the tag pass or a read-off found, `tagged` the kind it names and
 /// `node` its own node, into `defs` and `def_ranges` at one index. THE NAME FILTER runs first: a
 /// definition whose leaf names nothing in `lang` ([`is_nameless`]) enters neither, so its range
-/// is no caller range and no test region; every other takes its kind lowered over its node
-/// ([`lowered_kind`]).
+/// is no caller range, and is returned instead, for [`test_regions`] to read when it is test
+/// attributed; every other takes its kind lowered over its node ([`lowered_kind`]) and returns
+/// `None`.
 fn record_def(
     lang: Lang,
     source: &[u8],
@@ -184,13 +185,14 @@ fn record_def(
     (range, name, line): ReadOff,
     defs: &mut Vec<Def>,
     def_ranges: &mut Vec<(std::ops::Range<usize>, String, Kind)>,
-) {
+) -> Option<std::ops::Range<usize>> {
     if is_nameless(lang, &name) {
-        return;
+        return Some(range);
     }
     let kind = lowered_kind(lang, tagged, node, source);
     def_ranges.push((range, name.clone(), kind));
     defs.push(unresolved_def(kind, name, line));
+    None
 }
 
 /// Extract one file's definitions and references by running the INJECTED grammar's tag query
@@ -253,6 +255,9 @@ pub fn extract(
     // in this single tag pass; the enclosing definition is resolved below so the reference order
     // the emit pass depends on stays untouched.
     let mut def_ranges: Vec<(std::ops::Range<usize>, String, Kind)> = Vec::new();
+    // The range of each definition THE NAME FILTER drops (`record_def`), in neither `defs` nor
+    // `def_ranges`, kept for `test_regions` alone.
+    let mut dropped: Vec<std::ops::Range<usize>> = Vec::new();
     let mut ref_positions: Vec<usize> = Vec::new();
     for tag in tags {
         let tag = tag.map_err(|e| format!("symbols: tag: {e}"))?;
@@ -265,7 +270,7 @@ pub fn extract(
             // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the name a
             // definition is filtered by, recorded under and named as a caller by is one.
             let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
-            record_def(
+            dropped.extend(record_def(
                 lang,
                 source.as_bytes(),
                 node,
@@ -273,7 +278,7 @@ pub fn extract(
                 (tag.range.clone(), def_leaf(node, name), line),
                 &mut defs,
                 &mut def_ranges,
-            );
+            ));
         } else {
             ref_positions.push(tag.range.start);
             refs.push(SymRef {
@@ -340,7 +345,7 @@ pub fn extract(
     for (kind, found) in read_offs {
         for found in found {
             let node = root.descendant_for_byte_range(found.0.start, found.0.end);
-            record_def(
+            dropped.extend(record_def(
                 lang,
                 source.as_bytes(),
                 node,
@@ -348,7 +353,7 @@ pub fn extract(
                 found,
                 &mut defs,
                 &mut def_ranges,
-            );
+            ));
         }
     }
     // Attribute each reference to its caller (`enclosing_def`: the innermost enclosing function,
@@ -359,13 +364,15 @@ pub fn extract(
         r.enclosing = enclosing_def(&def_ranges, pos);
     }
     // Spec 86 criterion 1: mark every definition and reference that falls inside a TEST REGION -
-    // a definition directly annotated `#[test]`/`#[cfg(test)]` (or nested inside one), an impl
-    // block included. Byte-range based, so it is exact regardless of which line a construct starts
+    // every test-attributed range (`test_regions`: a definition directly annotated
+    // `#[test]`/`#[cfg(test)]`, an impl block or one the name filter drops included, an extern
+    // block, or the whole file opening `#![cfg(test)]`), a definition nested inside one included.
+    // Byte-range based, so it is exact regardless of which line a construct starts
     // or ends on; computed AFTER every def's range is known, so a def's own containment check can
     // see siblings and ancestors alike whatever order the tags happened to arrive in.
     // `test_regions` walks the parsed tree's `attribute_item` nodes structurally instead of
     // re-deriving attribute/comment boundaries from characters.
-    let regions = test_regions(source.as_bytes(), root, &def_ranges);
+    let regions = test_regions(source.as_bytes(), root, &def_ranges, &dropped);
     if !regions.is_empty() {
         for (d, (range, _, _)) in defs.iter_mut().zip(def_ranges.iter()) {
             d.is_test = regions
@@ -422,9 +429,13 @@ pub fn extract(
     })
 }
 
-/// The byte ranges of every SELF-ATTRIBUTED test definition in `def_ranges` - one whose own
-/// `#[test]`/`#[cfg(..test..)]` attribute stack sits directly above it in the parsed tree rooted
-/// at `root` ([`preceded_by_test_attribute`]). A definition NESTED inside one of these ranges (a
+/// THE TEST REGIONS (spec 116): the byte ranges of every TEST-ATTRIBUTED range in the file
+/// `source` parsed to `root`, one whose own `#[test]`/`#[cfg(..test..)]` attribute stack sits
+/// directly above it ([`preceded_by_test_attribute`]): each definition of `def_ranges` and each
+/// one THE NAME FILTER dropped (`dropped`, a `#[cfg(test)] const _: () = { .. }`'s among them);
+/// each `foreign_mod_item`, an extern block being a container that yields no definition; and
+/// the whole file, `0..source.len()`, when the root opens with an inner `#![cfg(test)]`
+/// ([`opens_with_inner_test_attribute`]). A definition NESTED inside one of these ranges (a
 /// plain helper with no attribute of its own, living inside a `#[cfg(test)] mod tests { .. }`) is
 /// test code too, but it earns that status by CONTAINMENT, not by appearing in this list - the
 /// caller checks containment against the ranges this returns, so a doubly-nested item is covered
@@ -433,12 +444,25 @@ fn test_regions(
     source: &[u8],
     root: tree_sitter::Node,
     def_ranges: &[(std::ops::Range<usize>, String, Kind)],
+    dropped: &[std::ops::Range<usize>],
 ) -> Vec<std::ops::Range<usize>> {
-    def_ranges
+    let mut regions: Vec<_> = def_ranges
         .iter()
-        .filter(|(range, _, _)| preceded_by_test_attribute(source, root, range))
-        .map(|(range, _, _)| range.clone())
-        .collect()
+        .map(|(range, _, _)| range)
+        .chain(dropped)
+        .filter(|range| preceded_by_test_attribute(source, root, range))
+        .cloned()
+        .collect();
+    regions.extend(
+        nodes_of_kind(root, "foreign_mod_item")
+            .into_iter()
+            .filter(|block| node_preceded_by_test_attribute(*block, source))
+            .map(|block| block.byte_range()),
+    );
+    if opens_with_inner_test_attribute(root.named_child(0), source) {
+        regions.push(0..source.len());
+    }
+    regions
 }
 
 /// Whether the definition spanning `range` is directly preceded - skipping only comment nodes
@@ -509,8 +533,8 @@ fn preceded_by_test_attribute(
     node_preceded_by_test_attribute(node, source)
 }
 
-/// The core [`preceded_by_test_attribute`] applies once a candidate node is in hand:
-/// self-attributed test either through the node's OWN leading
+/// The core [`preceded_by_test_attribute`] applies once a candidate node is in hand, and
+/// [`test_regions`] applies to each extern block's own node: self-attributed test either through the node's OWN leading
 /// inner attribute ([`leading_inner_test_attribute`]) or through an outer attribute stack sitting
 /// as its sibling immediately before it. A tuple field's `pub` is a sibling too, between its
 /// attributes and its type, so the walk first steps over a `visibility_modifier`.
@@ -931,9 +955,10 @@ fn base_type_identifier(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
 /// only ever looks at what comes BEFORE `node`) can never see it. Reads `node`'s `body` field
 /// (present on every item kind that can carry inner attributes - `mod_item`, `function_item`,
 /// `impl_item`, `trait_item`, ...; absent, hence always `false`, on a leafy definition kind such as
-/// a `const_item` that has no body to open one in) and walks forward from its first named child via
-/// the SAME [`scan_attribute_stack`] the sibling-before case uses, so a doc comment or a
-/// stacked `#![allow(..)]` ahead of the real `#![cfg(test)]` never hides it either.
+/// a `const_item` that has no body to open one in) and walks forward from its first named child
+/// ([`opens_with_inner_test_attribute`], the file root's read too) via the SAME
+/// [`scan_attribute_stack`] the sibling-before case uses, so a doc comment or a stacked
+/// `#![allow(..)]` ahead of the real `#![cfg(test)]` never hides it either.
 ///
 /// It counts INNER attributes only (spec 116): an OUTER `#[cfg(test)]` a body opens with governs
 /// the member, variant, method, statement or item after it, never the body's owner, so
@@ -943,9 +968,18 @@ fn leading_inner_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bool 
     let Some(body) = node.child_by_field_name("body") else {
         return false;
     };
+    opens_with_inner_test_attribute(body.named_child(0), source)
+}
+
+/// Whether the leading attribute stack read forward from `first`, a body's or the file root's
+/// first named child, holds an INNER attribute naming `test` (`#![cfg(test)]`); an outer
+/// `#[cfg(test)]` there governs the item after it, never the body or the file. The one inner-only
+/// count [`leading_inner_test_attribute`] reads at a definition's body and [`test_regions`] at
+/// the root.
+fn opens_with_inner_test_attribute(first: Option<tree_sitter::Node>, source: &[u8]) -> bool {
     scan_attribute_stack(
         source,
-        body.named_child(0),
+        first,
         |n| n.next_named_sibling(),
         |item, s| {
             (item.kind() == "inner_attribute_item" && attribute_item_names_test(item, s))
@@ -956,8 +990,8 @@ fn leading_inner_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bool 
 }
 
 /// The one walk shared by [`preceded_by_test_attribute`] (backward over `prev_sibling`),
-/// [`leading_inner_test_attribute`] (forward over `next_named_sibling`, from a body's first named
-/// child), [`is_proc_macro_fn`] and (round 7) [`out_of_line_path_override`]: starting at `first`, follow `advance`
+/// [`opens_with_inner_test_attribute`] (forward over `next_named_sibling`, from a body's or the
+/// file root's first named child), [`is_proc_macro_fn`] and (round 7) [`out_of_line_path_override`]: starting at `first`, follow `advance`
 /// across a contiguous run of comment (`line_comment`, `block_comment`) and attribute
 /// (`attribute_item`, `inner_attribute_item`) nodes, stopping at the first node that is neither -
 /// the boundary of the stack. `visit` is asked of every attribute node encountered along the way
