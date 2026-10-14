@@ -215,6 +215,7 @@ pub fn extract(
     let read_offs = match lang {
         Lang::Rust => vec![(Kind::Field, tuple_fields(root))],
         Lang::Go => vec![
+            (Kind::Field, embedded_fields(root, source.as_bytes())),
             (Kind::Type, type_aliases(root, source.as_bytes())),
         ],
         _ => Vec::new(),
