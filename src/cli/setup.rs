@@ -3570,7 +3570,8 @@ mod tests {
     /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
     /// the root crate's `src/` test modules included), and the sentence
     /// walk's generators as commands, the graph's caller lookup at depth 1 with its counted
-    /// fallback recorded as a gap, the rule-spelling search over every tracked text file (a
+    /// fallback recorded as a gap, the rule-spelling search over every tracked text file, one
+    /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
     /// phrase a rewrap splits still a hit) whose command and hits the walk pastes for the `sdet`
     /// lens to re-run, and the record the walk owes, and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
@@ -3648,7 +3649,8 @@ mod tests {
             "The record pastes each command as run, its hit count and every hit it printed, each \
              FIXED or CHECKED, and the `sdet` lens re-runs each on the review tree.",
             "Each rule the change rewrites is searched by the distinguishing phrase of its old \
-             statement, one run per phrase, the phrase its one argument, over every tracked text \
+             statement and of each label its cases carried (a name a doc, test or comment gives \
+             a case the old rule decided), one run per phrase, the phrase its one argument, over every tracked text \
              file of the project (`.rs`, `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` \
              and `.html`",
             "so a phrase a rewrap splits across two lines is still a hit",
