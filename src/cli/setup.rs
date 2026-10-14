@@ -3567,7 +3567,8 @@ mod tests {
     /// suite left to the gates, the audit's closing rule, the test homes with the tool that
     /// searches them, the counted checks: the roots a retired spelling is counted over with the
     /// command that counts it, and the audit record owed for every added test-side shape with the
-    /// search command it pastes with its hits for the `sdet` lens to re-run, and the sentence
+    /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
+    /// the root crate's `src/` test modules included), and the sentence
     /// walk's generators as commands, the graph's caller lookup at depth 1 with its counted
     /// fallback recorded as a gap, and the record the walk owes, and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
@@ -3638,7 +3639,8 @@ mod tests {
             "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
             "The search is this command, one run per distinguishing expression, the expression \
              its one argument",
-            "`git ls-files tests crates | t='<expression>' xargs awk",
+            "`git ls-files tests crates src | t='<expression>' xargs awk",
+            "and the root crate's `src/` test modules the same way",
             "index($0, ENVIRON[\"t\"])",
             "END { print n + 0 \" hits\" }'`",
             "The record pastes each command as run, its hit count and every hit it printed, each \
