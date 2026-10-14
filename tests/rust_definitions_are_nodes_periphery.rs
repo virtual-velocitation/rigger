@@ -91,26 +91,15 @@ rigger::test_cases! {
             "every code entity of the built graph: one per production leaf, none for a \
              test-attributed member, one placeholder per undefined name a reference reaches",
         );
-}
-
-/// The persisted index writes a static, a variant and a field under the variant names
-/// `Static`, `Variant` and `Field`, and reads each back as the kind it was saved as.
-#[test]
-fn the_three_rust_data_kinds_persist_under_their_variant_names_and_reload() {
-    use rigger::grounder::symbols::model::Kind;
-    use symbol_index::{def, rust_file, SavedIndex};
-
-    let file = || {
-        rust_file(
-            vec![
-                def(Kind::Field, "f"),
-                def(Kind::Static, "s"),
-                def(Kind::Variant, "v"),
+    /// The persisted index writes a static, a variant and a field under the variant names
+    /// `Static`, `Variant` and `Field`, and reads each back as the kind it was saved as.
+    the_three_rust_data_kinds_persist_under_their_variant_names_and_reload:
+        symbol_index::assert_kinds_persist_under_their_variant_names(
+            "a.rs",
+            &[
+                (rigger::grounder::symbols::model::Kind::Field, "f", "Field"),
+                (rigger::grounder::symbols::model::Kind::Static, "s", "Static"),
+                (rigger::grounder::symbols::model::Kind::Variant, "v", "Variant"),
             ],
-            vec![],
-        )
-    };
-    let saved = SavedIndex::save("a.rs", file());
-    assert_eq!(saved.written_kinds("a.rs"), ["Field", "Static", "Variant"]);
-    assert_eq!(saved.reload().files()["a.rs"], file());
+        );
 }

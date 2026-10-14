@@ -2,7 +2,8 @@
 //! index, saving it through the real `store` boundary and reading the bytes back, loading a
 //! hand-authored legacy `index.json`, projecting a file's definitions, its test-marked
 //! definitions and its references with their callers, checking a language's definition
-//! types against a file's definitions, and checking a language's definitions fixture whole.
+//! types against a file's definitions, checking a language's definitions fixture whole, and
+//! checking the variant names a file's kinds persist under.
 //! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention
 //! `tests/common/mod.rs` keeps). Every lane compiles it; `extracted`, and
@@ -84,6 +85,25 @@ impl SavedIndex {
     pub fn reload(&self) -> SymbolIndex {
         store::load(self.dir.path().to_str().unwrap()).expect("the persisted index loads")
     }
+}
+
+/// The persisted index writes each definition of `kinds`, a (kind, name, variant name) triple,
+/// under its variant name, in the order given, and reads the file saved under `path` back as
+/// the kinds it was saved as.
+pub fn assert_kinds_persist_under_their_variant_names(path: &str, kinds: &[(Kind, &str, &str)]) {
+    let file = || {
+        rust_file(
+            kinds
+                .iter()
+                .map(|(kind, name, _)| def(*kind, name))
+                .collect(),
+            vec![],
+        )
+    };
+    let variants: Vec<&str> = kinds.iter().map(|(_, _, variant)| *variant).collect();
+    let saved = SavedIndex::save(path, file());
+    assert_eq!(saved.written_kinds(path), variants);
+    assert_eq!(saved.reload().files()[path], file());
 }
 
 /// Saving `symbols` under `path` writes no `key` at all - a field at its default serializes

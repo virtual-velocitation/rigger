@@ -13,6 +13,7 @@
 
 mod caller_sources;
 mod config;
+mod csharp_definition_sources;
 mod events;
 mod extraction_tree;
 mod git;
@@ -26,6 +27,7 @@ mod rust_definition_sources;
 mod spawn;
 pub use caller_sources::*;
 pub use config::*;
+pub use csharp_definition_sources::*;
 pub use events::*;
 pub use extraction_tree::*;
 pub use git::*;

@@ -96,17 +96,11 @@ rigger::test_cases! {
              function-local var or the alias named _, one placeholder per undefined name a \
              reference reaches",
         );
-}
-
-/// The persisted index writes a variable under the variant name `Variable`, and reads it back
-/// as the kind it was saved as.
-#[test]
-fn the_variable_kind_persists_under_its_variant_name_and_reloads() {
-    use rigger::grounder::symbols::model::Kind;
-    use symbol_index::{def, rust_file, SavedIndex};
-
-    let file = || rust_file(vec![def(Kind::Variable, "v")], vec![]);
-    let saved = SavedIndex::save("a.go", file());
-    assert_eq!(saved.written_kinds("a.go"), ["Variable"]);
-    assert_eq!(saved.reload().files()["a.go"], file());
+    /// The persisted index writes a variable under the variant name `Variable`, and reads it back
+    /// as the kind it was saved as.
+    the_variable_kind_persists_under_its_variant_name_and_reloads:
+        symbol_index::assert_kinds_persist_under_their_variant_names(
+            "a.go",
+            &[(rigger::grounder::symbols::model::Kind::Variable, "v", "Variable")],
+        );
 }
