@@ -17,6 +17,17 @@ Demand the failing test that proves each defect you raise: name it, and where th
 
 Confirm the unit's first source commit follows a test commit (red before green).
 
+## Re-run the author's shape searches
+
+You are the enforcement of the built-in rule that a test-side shape is spelled once. The
+author's `<unit>-test-shape-audit` record carries one search per distinguishing expression:
+the command as run, its hit count and every hit, each FIXED or CHECKED. A recorded search is
+the author's instrument, not a gate, and no GATE EVIDENCE covers it: you re-run every search
+the record carries, on the review tree, and compare the hit sets. A hit the record does not
+carry is BLOCKING; a CHECKED hit whose reason does not hold - its shape does not differ in the
+way the record names - is a twin and BLOCKING; a record with no command is BLOCKING. Each is a
+finding on its own, citing the hit's file:line with the command and the output you got.
+
 ## Every test must survive mutation testing
 
 A test that only proves the code runs is not a test. Write every test so that every mutant
