@@ -221,15 +221,25 @@ mod tests {
             !words.contains("builds hold the machine-wide build slots"),
             "an agent's build holds no machine-wide build slot"
         );
+        // A blocked command is an error naming its alternative, never the end of the turn.
+        assert!(
+            words.contains(
+                "A denied or blocked command comes back to you as an error that names its \
+                 alternative; your turn is not over - use the alternative."
+            ),
+            "the one-pass section must send a blocked agent to the alternative its error names"
+        );
     }
 
     /// The hand-over section states each outcome an author's tree must meet before it reports,
     /// with the check that proves it: the gates green in the author's worktree, generated files
-    /// committed with their inputs, a test-side shape spelled once with every added shape
-    /// recorded in a whole-tree audit whether merged or not, every sentence about the changed
-    /// behaviour true at head with a renamed name's old spelling counted to zero, nothing added
-    /// that nothing reads, and the red test's body untouched by the green commit. Read by its
-    /// words, so a rewrap never moves a verdict.
+    /// committed with their inputs, a test-side shape spelled once - any token two tests could
+    /// spell - with every added shape recorded in a whole-tree audit whether merged or not, every
+    /// sentence about the changed behaviour true at head over a walked set the author enumerates
+    /// from its generators and records on every change, with a renamed name's old spelling
+    /// counted to zero, nothing added that nothing reads, the red test's body untouched by the
+    /// green commit, and a probe that edits the tree run to completion and restored before the
+    /// turn ends. Read by its words, so a rewrap never moves a verdict.
     #[test]
     fn the_working_discipline_states_each_hand_over_outcome_and_its_check() {
         let body = working_discipline();
@@ -250,12 +260,31 @@ mod tests {
             "move it to the shared home and have both call it, changing no assertion or \
              expected value",
             "A table, fixture, helper, builder, seeder, expected value or oracle you add",
+            "the list is open - a shape is any test-side token two tests could spell",
+            "a const or id literal, a hand-built event or fixture row, a closure or a query \
+             string",
             "The record is owed for every test-side shape you add, merged or not:",
             "one whole-tree audit DecisionMade naming every site of its shape FIXED or CHECKED",
             "FIXED when moved to the shared home with both calling it and no assertion or \
              expected value changed, CHECKED when kept apart, with the reason",
             "module docs, test names, test docs, assertion messages and operator docs say what \
              the code at head does",
+            "enumerate the walked set, each member from what generates it",
+            "the `//!` module doc of every file the change touches (the changed-file list)",
+            "the doc comment and every comment in the body of each item the change touches \
+             (the hunks)",
+            "the doc of the trait item a changed fn or any caller of one implements and of the \
+             trait a changed impl is for (the impl headers)",
+            "the doc of every item a changed hunk names, callee, constant or type returned (the \
+             hunk's identifiers)",
+            "the doc of every caller of a changed item (the project's graph, or your persona's \
+             fallback)",
+            "every tracked line outside the hunks that spells a changed item's name",
+            "read each against the code at head, leaving it true or fixing it",
+            "The record is owed on every change: one whole-tree DecisionMade naming the set \
+             walked by its generators",
+            "every sentence FIXED with its location",
+            "a member whose generator returned nothing is named as empty",
             "when you rename or retire a name, walk every spelling of the old term through the \
              tree",
             "The old spelling occurs zero times in the tree outside git history, counted over \
@@ -265,6 +294,10 @@ mod tests {
              reason",
             "Nothing is added that nothing reads.",
             "makes the red test pass without rewriting its body",
+            "A probe that edits your tree is over before your turn is.",
+            "runs to completion and restores the tree before your turn ends, never as a \
+             detached or background job",
+            "the attempt checkpoint commits whatever the worktree holds when your session ends",
         ] {
             assert!(
                 words.contains(phrase),
