@@ -339,6 +339,9 @@ pub(crate) mod tests {
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::extract::extract;
     use crate::grounder::symbols::model::{Kind, Lang};
+    use crate::js_ts_definition_sources::{
+        JS_DEFINITIONS_SOURCE, TSX_DEFINITIONS_SOURCE, TS_DEFINITIONS_SOURCE,
+    };
 
     /// Rust's DEFINITION TYPES (spec 116): each row a node type of the Rust grammar that is a
     /// definition, a kind it lowers to, and the leaf of the one definition of that kind the Rust
@@ -430,6 +433,232 @@ pub(crate) mod tests {
         ),
         ("indexer_declaration", Kind::Method, "this"),
     ];
+
+    /// JS's DEFINITION TYPES (spec 116): each row a node type of the JS grammar that is a
+    /// definition, a kind it lowers to, and the leaf of the one definition of that kind the JS
+    /// definitions fixture holds for it. A `variable_declarator` takes its value's kind, a
+    /// function, a type or a constant, and one named by a pattern makes each identifier it binds
+    /// a constant; a `method_definition` named `constructor` is a constructor. The
+    /// `field_definition` rows, a field and a function-valued field, and the `for_in_statement`
+    /// row are read off the parsed tree; the last three rows are the upstream query's
+    /// definitions by a member assignment, an object pair and an exported assignment.
+    pub(crate) const JS_DEFINITION_TYPES: [(&str, Kind, &str); 18] = [
+        ("function_declaration", Kind::Function, "host"),
+        ("generator_function_declaration", Kind::Function, "gen"),
+        ("function_expression", Kind::Function, "fexp"),
+        ("generator_function", Kind::Function, "gexp"),
+        ("method_definition", Kind::Method, "area"),
+        ("method_definition", Kind::Constructor, "constructor"),
+        ("class_declaration", Kind::Type, "Shape"),
+        ("class", Kind::Type, "Baz"),
+        ("variable_declarator", Kind::Function, "g"),
+        ("variable_declarator", Kind::Type, "Foo"),
+        ("variable_declarator", Kind::Constant, "loc"),
+        ("variable_declarator", Kind::Constant, "a"),
+        ("field_definition", Kind::Field, "field"),
+        ("field_definition", Kind::Method, "act"),
+        ("for_in_statement", Kind::Constant, "j"),
+        ("assignment_expression", Kind::Function, "handler"),
+        ("pair", Kind::Function, "p"),
+        ("assignment_expression", Kind::Constant, "ex"),
+    ];
+
+    /// TS's DEFINITION TYPES (spec 116), the TS and TSX grammars' alike: each row a node type
+    /// that is a definition, a kind it lowers to, and the leaf of the one definition of that
+    /// kind the TS and the TSX definitions fixtures each hold for it. JS's rows but its
+    /// `field_definition` ones, whose class field the TS grammars name a
+    /// `public_field_definition`, then the TS types: the three signature types are
+    /// declarations, and the last row, an enum member with no value, is read off the parsed
+    /// tree.
+    pub(crate) const TS_DEFINITION_TYPES: [(&str, Kind, &str); 30] = [
+        ("function_declaration", Kind::Function, "host"),
+        ("generator_function_declaration", Kind::Function, "gen"),
+        ("function_expression", Kind::Function, "fexp"),
+        ("generator_function", Kind::Function, "gexp"),
+        ("method_definition", Kind::Method, "area"),
+        ("method_definition", Kind::Constructor, "constructor"),
+        ("class_declaration", Kind::Type, "Shape"),
+        ("class", Kind::Type, "Baz"),
+        ("variable_declarator", Kind::Function, "g"),
+        ("variable_declarator", Kind::Type, "Foo"),
+        ("variable_declarator", Kind::Constant, "loc"),
+        ("variable_declarator", Kind::Constant, "a"),
+        ("for_in_statement", Kind::Constant, "j"),
+        ("assignment_expression", Kind::Function, "handler"),
+        ("pair", Kind::Function, "p"),
+        ("assignment_expression", Kind::Constant, "ex"),
+        ("public_field_definition", Kind::Field, "field"),
+        ("public_field_definition", Kind::Method, "act"),
+        ("function_signature", Kind::Declaration, "sig"),
+        ("method_signature", Kind::Declaration, "m"),
+        ("abstract_method_signature", Kind::Declaration, "run"),
+        ("abstract_class_declaration", Kind::Type, "Abs"),
+        ("interface_declaration", Kind::Type, "Shape2"),
+        ("enum_declaration", Kind::Type, "Color"),
+        ("type_alias_declaration", Kind::Type, "Alias"),
+        ("module", Kind::Module, "x"),
+        ("internal_module", Kind::Module, "A.B"),
+        ("enum_assignment", Kind::Variant, "Blue"),
+        ("property_signature", Kind::Field, "prop"),
+        ("enum_body", Kind::Variant, "Red"),
+    ];
+
+    /// The definitions every one of the JS, TS and TSX definitions fixtures holds in its JS
+    /// lines, 1-15, as `(line, leaf, kind)`, sorted: each grammar of the family reads them
+    /// alike.
+    const JS_LINES_DEFINITIONS: [(u32, &str, Kind); 41] = [
+        (1, "host", Kind::Function),
+        (1, "j", Kind::Constant),
+        (1, "k", Kind::Constant),
+        (1, "loc", Kind::Constant),
+        (1, "v", Kind::Constant),
+        (2, "gen", Kind::Function),
+        (3, "fexp", Kind::Function),
+        (3, "named", Kind::Function),
+        (4, "gexp", Kind::Function),
+        (4, "gnamed", Kind::Function),
+        (5, "g", Kind::Function),
+        (6, "Foo", Kind::Type),
+        (6, "s", Kind::Field),
+        (7, "Bar", Kind::Type),
+        (7, "Baz", Kind::Type),
+        (8, "lazy", Kind::Function),
+        (8, "y", Kind::Constant),
+        (9, "a", Kind::Constant),
+        (9, "c", Kind::Constant),
+        (9, "r", Kind::Constant),
+        (10, "x", Kind::Constant),
+        (10, "y", Kind::Constant),
+        (10, "z", Kind::Constant),
+        (11, "#hid", Kind::Field),
+        (11, "#m", Kind::Method),
+        (11, "1", Kind::Method),
+        (11, "3", Kind::Field),
+        (11, "Shape", Kind::Type),
+        (11, "a-b", Kind::Method),
+        (11, "act", Kind::Method),
+        (11, "area", Kind::Method),
+        (11, "cb", Kind::Method),
+        (11, "constructor", Kind::Constructor),
+        (11, "field", Kind::Field),
+        (11, "local", Kind::Constant),
+        (11, "q-r", Kind::Field),
+        (12, "handler", Kind::Function),
+        (13, "o2", Kind::Constant),
+        (13, "p", Kind::Function),
+        (14, "ex", Kind::Constant),
+        (15, "el", Kind::Constant),
+    ];
+
+    /// The references in the JS lines of every JS and TS definitions fixture, each with its
+    /// caller, as `(line, name, caller)`, sorted.
+    const JS_LINES_REFERENCES: [(u32, &str, Option<&str>); 9] = [
+        (1, "probe", Some("host")),
+        (1, "use", Some("host")),
+        (5, "spin", Some("g")),
+        (6, "tick", Some("s")),
+        (10, "f", None),
+        (11, "init", Some("constructor")),
+        (11, "make", Some("constructor")),
+        (11, "paint", Some("area")),
+        (12, "run", Some("handler")),
+    ];
+
+    /// The definitions the TS and TSX definitions fixtures hold in their TS lines, 16-23, as
+    /// `(line, leaf, kind)`, sorted.
+    const TS_LINES_DEFINITIONS: [(u32, &str, Kind); 20] = [
+        (16, "sig", Kind::Declaration),
+        (17, "2", Kind::Field),
+        (17, "Shape2", Kind::Type),
+        (17, "bare", Kind::Field),
+        (17, "m", Kind::Declaration),
+        (17, "p-q", Kind::Field),
+        (17, "prop", Kind::Field),
+        (18, "Abs", Kind::Type),
+        (18, "act2", Kind::Method),
+        (18, "fld", Kind::Field),
+        (18, "run", Kind::Declaration),
+        (18, "s-t", Kind::Field),
+        (19, "Blue", Kind::Variant),
+        (19, "Color", Kind::Type),
+        (19, "Dark-red", Kind::Variant),
+        (19, "Red", Kind::Variant),
+        (20, "Alias", Kind::Type),
+        (21, "x", Kind::Module),
+        (22, "A.B", Kind::Module),
+        (23, "X", Kind::Constant),
+    ];
+
+    /// The references in the TS lines of the TS and TSX definitions fixtures, each with its
+    /// caller, as `(line, name, caller)`, sorted.
+    const TS_LINES_REFERENCES: [(u32, &str, Option<&str>); 11] = [
+        (16, "Arg", None),
+        (16, "Ret", None),
+        (17, "PQ", Some("p-q")),
+        (17, "PType", Some("prop")),
+        (17, "Ret", Some("Shape2")),
+        (17, "Two", Some("2")),
+        (17, "V", Some("Shape2")),
+        (18, "FT", Some("fld")),
+        (19, "mk", Some("Blue")),
+        (21, "boot", Some("x")),
+        (22, "setup", Some("A.B")),
+    ];
+
+    /// The `expression` subtypes of the grammar whose `node-types.json` is `node_types`,
+    /// flattened through `primary_expression`, sorted.
+    fn expression_subtypes(node_types: &str) -> Vec<String> {
+        let types: Vec<serde_json::Value> =
+            serde_json::from_str(node_types).expect("node-types.json is JSON");
+        let subtypes = |supertype: &str| -> Vec<String> {
+            types
+                .iter()
+                .find(|t| t["type"] == supertype && t["named"] == true)
+                .and_then(|t| t["subtypes"].as_array())
+                .expect("the grammar holds the supertype")
+                .iter()
+                .map(|s| s["type"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let mut flattened: Vec<String> = subtypes("expression")
+            .into_iter()
+            .flat_map(|t| match t.as_str() {
+                "primary_expression" => subtypes("primary_expression"),
+                _ => vec![t],
+            })
+            .collect();
+        flattened.sort();
+        flattened
+    }
+
+    /// The constant enumeration of the query registered for `ext` is every `expression` subtype
+    /// of its grammar's `node_types`, flattened through `primary_expression`, but a function
+    /// expression, an arrow function, a generator function and a class: the node types the
+    /// last `value: [..]` alternation of the query lists, its constant pattern composing last.
+    fn assert_constant_enumeration(ext: &str, node_types: &str) {
+        let query = for_extension(ext)
+            .expect("the extension is registered")
+            .tags_query;
+        let at = query
+            .rfind("value: [")
+            .expect("the query holds a value alternation");
+        let list = &query[at + "value: [".len()..];
+        let mut enumerated: Vec<String> = list[..list.find(']').unwrap()]
+            .split_whitespace()
+            .map(|t| t.trim_matches(['(', ')']).to_string())
+            .collect();
+        enumerated.sort();
+        let expected: Vec<String> = expression_subtypes(node_types)
+            .into_iter()
+            .filter(|t| {
+                !matches!(
+                    t.as_str(),
+                    "function_expression" | "arrow_function" | "generator_function" | "class"
+                )
+            })
+            .collect();
+        assert_eq!(enumerated, expected, ".{ext}");
+    }
 
     #[test]
     fn auto_detects_all_five_languages_by_extension() {
@@ -846,5 +1075,81 @@ pub(crate) mod tests {
                     (17, "Probe", Some("Run")),
                 ],
             );
+        /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the registered JS
+        /// query: the fixture yields every definition it holds at its own kind and leaf. A
+        /// declarator takes its value's kind: a function, named or generator value a function,
+        /// a class value, anonymous or named, a type at the declarator's name, the named class
+        /// keeping its own, and every other value a constant, a JSX element included, as is a
+        /// valueless `let y;`. A declarator named by a pattern makes each identifier it binds a
+        /// constant (`a`, `c` and `r` of `{a, b: c, ...r}`; `x`, `y` and `z` of
+        /// `[x, [y], , z = 1]`), and so does a `for .. of` declaring one (`k`, `v` and `j`),
+        /// while one assigning `q` or `o.p` makes none. A method is a method at its leaf,
+        /// private with its `#`, string-named between its quotes and numeric as written, the
+        /// computed one none; `constructor` is a constructor; a class field is a field at the
+        /// same leaves, the computed one none, and an arrow- or function-valued one a method.
+        /// Each row of JS's DEFINITION TYPES names exactly one of them.
+        ///
+        /// The callers: the calls in a function's local const and loop are the function's,
+        /// those in the constructor's body and in its local const the constructor's, a
+        /// generator value's the declarator's and a static field initializer's the field's; the
+        /// initializer of a pattern declarator is the file's, each binding spanning its own
+        /// identifier alone; and `require` is no reference.
+        every_js_definition_type_yields_its_definition_at_its_kind:
+            crate::symbol_index::assert_definitions_fixture(
+                "js",
+                JS_DEFINITIONS_SOURCE,
+                &JS_DEFINITION_TYPES,
+                &JS_LINES_DEFINITIONS,
+                &JS_LINES_REFERENCES,
+            );
+        /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the registered TS
+        /// query: the JS lines yield what they yield under the JS query, a type assertion value
+        /// a constant, and the TS lines every TS definition at its own kind and leaf: an
+        /// ambient function, an interface's method and an abstract method signature each a
+        /// declaration; an interface, an abstract class, an enum and a type alias each a type;
+        /// a property signature a field, string-named between its quotes, numeric as written
+        /// and one named by a string alone included; a class field a field and a
+        /// function-valued one a method; an enum member a variant, with or without a value,
+        /// string-named between its quotes; `declare module "x"` a module at `x` and
+        /// `namespace A.B` one at `A.B`; and `as const` a constant. Each row of TS's DEFINITION
+        /// TYPES names exactly one of them.
+        ///
+        /// The callers: a property signature's or a field's type reference is that member's; a
+        /// signature's types are its interface's, a declaration being no caller, so an ambient
+        /// function's are the file's; an index signature's is its interface's; an enum member
+        /// value's call is the member's; and a module's and a namespace's body calls are
+        /// theirs.
+        every_ts_definition_type_yields_its_definition_at_its_kind:
+            crate::symbol_index::assert_definitions_fixture(
+                "ts",
+                TS_DEFINITIONS_SOURCE,
+                &TS_DEFINITION_TYPES,
+                &[&JS_LINES_DEFINITIONS[..], &TS_LINES_DEFINITIONS[..]].concat(),
+                &[&JS_LINES_REFERENCES[..], &TS_LINES_REFERENCES[..]].concat(),
+            );
+        /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the TSX query `.tsx`
+        /// registers: the TSX fixture, the TS one with a JSX element in place of the type
+        /// assertion, yields the definitions and references the TS fixture yields under the TS
+        /// query, each row of TS's DEFINITION TYPES naming exactly one definition.
+        every_tsx_definition_type_yields_its_definition_at_its_kind:
+            crate::symbol_index::assert_definitions_fixture(
+                "tsx",
+                TSX_DEFINITIONS_SOURCE,
+                &TS_DEFINITION_TYPES,
+                &[&JS_LINES_DEFINITIONS[..], &TS_LINES_DEFINITIONS[..]].concat(),
+                &[&JS_LINES_REFERENCES[..], &TS_LINES_REFERENCES[..]].concat(),
+            );
+        /// The JS query's constant enumeration is the JS grammar's `expression` subtypes,
+        /// flattened through `primary_expression`, but the four the function and class
+        /// patterns tag, so a declarator of any other value is a constant.
+        the_js_constant_enumeration_is_every_other_expression_type:
+            assert_constant_enumeration("js", tree_sitter_javascript::NODE_TYPES);
+        /// The TS query's constant enumeration is the TS grammar's, its type assertion included.
+        the_ts_constant_enumeration_is_every_other_expression_type:
+            assert_constant_enumeration("ts", tree_sitter_typescript::TYPESCRIPT_NODE_TYPES);
+        /// The TSX query's constant enumeration is the TSX grammar's, its JSX elements
+        /// included and no type assertion.
+        the_tsx_constant_enumeration_is_every_other_expression_type:
+            assert_constant_enumeration("tsx", tree_sitter_typescript::TSX_NODE_TYPES);
     }
 }

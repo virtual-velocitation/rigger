@@ -113,6 +113,17 @@ mod go_definition_sources;
 #[path = "../../../tests/common/fixtures/csharp_definition_sources.rs"]
 mod csharp_definition_sources;
 
+/// THE JS AND TS DEFINITIONS FIXTURES the JS and TS definition tests extract, compiled here from
+/// the file the shared fixtures live in. They name no crate; only the default lane's tests
+/// extract them.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/js_ts_definition_sources.rs"]
+mod js_ts_definition_sources;
+
 /// The symbol index fixtures the extractor's and the registry's tests share with the root crate's
 /// tests (the stamped `index.json` writer, a source read through the registry, the definition
 /// and reference projections), compiled here from the same file. It names the crate as
