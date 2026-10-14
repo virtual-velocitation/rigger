@@ -707,11 +707,61 @@ pub(crate) mod tests {
         (22, "setup", Some("A.B")),
     ];
 
+    /// Rust's declared non-definitions (spec 116): the named node types of the Rust grammar
+    /// that THE RULE classifies no definition. An extern block, `foreign_mod_item`, carries no
+    /// `name` field and is listed as the spec's table lists it, a container like a block.
+    const RUST_NON_DEFINITIONS: &[&str] = &[];
+
+    /// Go's declared non-definitions (spec 116); `package_clause`, a container name, carries no
+    /// `name` field and is listed as the spec's table lists it.
+    const GO_NON_DEFINITIONS: &[&str] = &[];
+
+    /// C#'s declared non-definitions (spec 116).
+    const CSHARP_NON_DEFINITIONS: &[&str] = &[];
+
+    /// JS's declared non-definitions (spec 116).
+    const JS_NON_DEFINITIONS: &[&str] = &[];
+
+    /// TS's declared non-definitions (spec 116), the TS and TSX grammars' alike as
+    /// `TS_DEFINITION_TYPES` is: JS's, its three JSX types the TSX grammar's alone, plus the
+    /// TS types.
+    const TS_NON_DEFINITIONS: &[&str] = &[];
+
+    /// Python's declared non-definitions (spec 116).
+    const PYTHON_NON_DEFINITIONS: &[&str] = &[];
+
+    /// The node types of the grammar whose `node-types.json` is `node_types`.
+    fn node_types(node_types: &str) -> Vec<serde_json::Value> {
+        serde_json::from_str(node_types).expect("node-types.json is JSON")
+    }
+
+    /// COMPLETENESS IS A GATE (spec 116 criterion 12): the named node types of the grammar
+    /// whose `node-types.json` is `node_types` (SCOPE: a `name` among a type's `fields`, its
+    /// `named` flag not meant) that do not sit in exactly one list, the type column of
+    /// `definitions` or `non_definitions`, in that file's order: a type in neither list, and a
+    /// type in both. Only named types are checked, so a listed type the grammar lacks or holds
+    /// with no `name` field (a read-off row's) is never one.
+    fn named_types_outside_exactly_one_list(
+        node_types: &str,
+        definitions: &[(&str, Kind, &str)],
+        non_definitions: &[&str],
+    ) -> Vec<String> {
+        self::node_types(node_types)
+            .iter()
+            .filter(|t| t["fields"].get("name").is_some())
+            .map(|t| t["type"].as_str().expect("a node type names its type"))
+            .filter(|ty| {
+                let defined = definitions.iter().any(|(d, _, _)| d == ty);
+                defined == non_definitions.contains(ty)
+            })
+            .map(str::to_string)
+            .collect()
+    }
+
     /// The `expression` subtypes of the grammar whose `node-types.json` is `node_types`,
     /// flattened through `primary_expression`, sorted.
     fn expression_subtypes(node_types: &str) -> Vec<String> {
-        let types: Vec<serde_json::Value> =
-            serde_json::from_str(node_types).expect("node-types.json is JSON");
+        let types = self::node_types(node_types);
         let subtypes = |supertype: &str| -> Vec<String> {
             types
                 .iter()
@@ -1338,5 +1388,89 @@ pub(crate) mod tests {
         /// included and no type assertion.
         the_tsx_constant_enumeration_is_every_other_expression_type:
             assert_constant_enumeration("tsx", tree_sitter_typescript::TSX_NODE_TYPES);
+        /// COMPLETENESS IS A GATE (spec 116 criterion 12): every named node type of the Rust
+        /// grammar sits in exactly one of Rust's lists.
+        every_named_rust_type_sits_in_exactly_one_list: assert_eq!(
+            named_types_outside_exactly_one_list(
+                tree_sitter_rust::NODE_TYPES,
+                &RUST_DEFINITION_TYPES,
+                RUST_NON_DEFINITIONS
+            ),
+            Vec::<String>::new()
+        );
+        /// Every named node type of the Go grammar sits in exactly one of Go's lists.
+        every_named_go_type_sits_in_exactly_one_list: assert_eq!(
+            named_types_outside_exactly_one_list(
+                tree_sitter_go::NODE_TYPES,
+                &GO_DEFINITION_TYPES,
+                GO_NON_DEFINITIONS
+            ),
+            Vec::<String>::new()
+        );
+        /// Every named node type of the C# grammar sits in exactly one of C#'s lists.
+        every_named_csharp_type_sits_in_exactly_one_list: assert_eq!(
+            named_types_outside_exactly_one_list(
+                tree_sitter_c_sharp::NODE_TYPES,
+                &CSHARP_DEFINITION_TYPES,
+                CSHARP_NON_DEFINITIONS
+            ),
+            Vec::<String>::new()
+        );
+        /// Every named node type of the JS grammar sits in exactly one of JS's lists.
+        every_named_js_type_sits_in_exactly_one_list: assert_eq!(
+            named_types_outside_exactly_one_list(
+                tree_sitter_javascript::NODE_TYPES,
+                &JS_DEFINITION_TYPES,
+                JS_NON_DEFINITIONS
+            ),
+            Vec::<String>::new()
+        );
+        /// Every named node type of the TS grammar sits in exactly one of TS's lists.
+        every_named_ts_type_sits_in_exactly_one_list: assert_eq!(
+            named_types_outside_exactly_one_list(
+                tree_sitter_typescript::TYPESCRIPT_NODE_TYPES,
+                &TS_DEFINITION_TYPES,
+                TS_NON_DEFINITIONS
+            ),
+            Vec::<String>::new()
+        );
+        /// Every named node type of the TSX grammar sits in exactly one of TS's lists, its
+        /// JSX types included.
+        every_named_tsx_type_sits_in_exactly_one_list: assert_eq!(
+            named_types_outside_exactly_one_list(
+                tree_sitter_typescript::TSX_NODE_TYPES,
+                &TS_DEFINITION_TYPES,
+                TS_NON_DEFINITIONS
+            ),
+            Vec::<String>::new()
+        );
+        /// Every named node type of the Python grammar sits in exactly one of Python's lists.
+        every_named_python_type_sits_in_exactly_one_list: assert_eq!(
+            named_types_outside_exactly_one_list(
+                tree_sitter_python::NODE_TYPES,
+                &PYTHON_DEFINITION_TYPES,
+                PYTHON_NON_DEFINITIONS
+            ),
+            Vec::<String>::new()
+        );
+        /// The gate fails on a named type absent from both lists and on one in both, in the
+        /// grammar's order, and passes a type in one list alone, a type with no `name` field
+        /// and a type with no fields at all, whatever its `named` flag says.
+        the_gate_fails_on_a_named_type_in_neither_list_or_in_both: assert_eq!(
+            named_types_outside_exactly_one_list(
+                r#"[
+                    {"type": "defined", "named": true, "fields": {"name": {}}},
+                    {"type": "unlisted", "named": true, "fields": {"name": {}}},
+                    {"type": "declared", "named": true, "fields": {"name": {}}},
+                    {"type": "both", "named": true, "fields": {"name": {}}},
+                    {"type": "nameless", "named": true, "fields": {"body": {}}},
+                    {"type": "fieldless", "named": true},
+                    {"type": "unflagged", "named": false, "fields": {"name": {}}}
+                ]"#,
+                &[("defined", Kind::Type, "D"), ("both", Kind::Type, "B")],
+                &["declared", "both"]
+            ),
+            ["unlisted", "both", "unflagged"]
+        );
     }
 }
