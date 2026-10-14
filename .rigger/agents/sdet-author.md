@@ -159,8 +159,9 @@ item's name, each read. The walk is recorded as one `<unit>-sentence-walk` Decis
 beside the `<unit>-test-shape-audit` one, naming what each generator returned and every
 sentence FIXED with its location.
 
-Each rule the change rewrites is searched by the distinguishing phrase of its old statement,
-one run per phrase, the phrase its one argument, over every tracked text file of the project
+Each rule the change rewrites is searched by the distinguishing phrase of its old statement
+and of each label its cases carried (a name a doc, test or comment gives a case the old rule
+decided), one run per phrase, the phrase its one argument, over every tracked text file of the project
 (`.rs`, `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` and `.html`: the code, docs,
 specs, personas, gates, workflows and dashboard pages). It reads each line joined to the one
 before it with their comment markers stripped, so a phrase a rewrap splits across two lines is
