@@ -3593,10 +3593,13 @@ type CallHop = (String, String, i64, Position, Option<Vec<String>>);
 /// - **Same-file callers** ([`callers_direct`]) whose edge literally targets `cur` - always an
 ///   unambiguous caller, no frontier.
 /// - **Cross-file callers** ([`callers_via_bare`]) that call `cur`'s NAME through a node that is
-///   no call target, attributed to `cur` only when that name resolves unambiguously: EXACTLY ONE
-///   definition (`cur` itself) -> a real caller, no frontier; MORE THAN ONE definition -> a marked
-///   frontier carrying the sorted candidate ids (the caller might be calling a same-named sibling,
-///   so the walk stops there). The cross-file source applies only when `cur` is a call-target
+///   no call target, attributed to `cur` only when that name resolves unambiguously: AT MOST ONE
+///   candidate definition -> a real caller, no frontier; MORE THAN ONE -> a marked frontier
+///   carrying the sorted candidate ids (the caller might be calling a same-named sibling, so the
+///   walk stops there). The candidates key by leaf ([`definitions_with_suffix`]) while the seed
+///   keys by its id's rest ([`name_suffix`]) until spec 119's criterion 2 binds its leaf, so for a
+///   flat seed `cur` is among them, and for a nested seed (`a.rs::T::new`, rest `T::new`) it is
+///   not. The cross-file source applies only when `cur` is a call-target
 ///   DEFINITION: a bare node is not a definition, so a cross-file call to its name resolves to the
 ///   real definitions elsewhere, never to it.
 fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallHop>, Error> {
@@ -3611,8 +3614,8 @@ fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallHop
     if definition {
         let name = name_suffix(cur);
         let cands = definitions_with_suffix(conn, name, project, true, None)?;
-        // `cur` is a definition of its own name, so it is always among the candidates: exactly one
-        // means `cur` is the sole definition (unambiguous), more than one is a frontier.
+        // The candidates key by leaf, the seed by its id's rest until criterion 2: a flat `cur` is
+        // among them, a nested one is not. At most one is unambiguous, more than one a frontier.
         let frontier = if cands.len() > 1 { Some(cands) } else { None };
         for (from, tier, vf, src) in callers_via_bare(conn, name, project)? {
             out.push((from, tier, vf, src, frontier.clone()));

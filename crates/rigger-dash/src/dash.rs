@@ -10458,7 +10458,7 @@ mod call_target_c4 {
 mod leaf_keys_c1 {
     use super::*;
     use crate::contextgraph::{KIND_COMMUNITY, KIND_FILE, REL_IN_COMMUNITY, TIER_INFERRED};
-    use crate::test_support::{def_node, edge, node_with_attrs, plain};
+    use crate::test_support::{def_node, edge, empty_named_node, plain};
 
     #[test]
     fn reproject_files_resolves_a_placeholder_onto_the_nested_definition_of_its_leaf() {
@@ -10470,7 +10470,7 @@ mod leaf_keys_c1 {
                 plain(COM, KIND_COMMUNITY),
                 def_node(members[0], "new"),
                 plain(members[1], KIND_CODE_ENTITY),
-                node_with_attrs(members[2], KIND_CODE_ENTITY, &[("name", "")]),
+                empty_named_node(members[2]),
                 plain(members[3], KIND_FILE),
             ],
             edges: members

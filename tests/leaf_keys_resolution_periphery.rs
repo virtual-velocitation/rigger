@@ -16,7 +16,7 @@
 
 mod common;
 
-use common::fixtures::{apply_code_entity, apply_def, def_node, edge, node_with_attrs, plain};
+use common::fixtures::{apply_code_entity, apply_def, def_node, edge, empty_named_node, plain};
 use common::lens::{coupling_rows, files_lens_rows, SUB_C, SUB_C_FILES_ROUTE};
 use common::served::served_json;
 use rigger::contextgraph::sqlite::Projector;
@@ -51,11 +51,6 @@ fn leaf_graph(placeholder: &str, beside: Vec<Node>) -> Graph {
             edge(CALLER, placeholder, REL_CALLS, TIER_INFERRED),
         ],
     }
-}
-
-/// A node `id` whose `name` attr is present and empty.
-fn empty_named(id: &str) -> Node {
-    node_with_attrs(id, KIND_CODE_ENTITY, &[("name", "")])
 }
 
 /// GIVEN a placeholder whose leaf is the name of a nested definition in another file, WHEN the
@@ -95,7 +90,7 @@ fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
     );
     assert_eq!(
         files_lens_rows(
-            &leaf_graph(PLACEHOLDER, vec![empty_named("src/e.rs::new")]),
+            &leaf_graph(PLACEHOLDER, vec![empty_named_node("src/e.rs::new")]),
             SUB_C,
             3
         ),
@@ -121,7 +116,7 @@ fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
     );
     assert_eq!(
         files_lens_rows(
-            &leaf_graph("src/c.rs::", vec![empty_named("src/e.rs::")]),
+            &leaf_graph("src/c.rs::", vec![empty_named_node("src/e.rs::")]),
             SUB_C,
             3
         ),
@@ -198,7 +193,7 @@ fn the_coupling_layer_canonicalises_a_placeholder_onto_the_nested_definition_of_
         "two definitions of the leaf leave the placeholder its own node"
     );
     assert_eq!(
-        coupling_of_the_call(vec![empty_named("src/e.rs::new")]),
+        coupling_of_the_call(vec![empty_named_node("src/e.rs::new")]),
         ["src/a.rs 1", "src/a.rs::T::new 2", "src/c.rs::caller 1"],
         "a node of an empty `name` is no second definition"
     );

@@ -1861,7 +1861,7 @@
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"write\" (generic write helper); grouped under `conductor::support`.",
-    "content_hash": "853206f25e981286"
+    "content_hash": "fa2ab8931f32cb7e"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -12893,6 +12893,6 @@
     "is_test": true,
     "proposed_module": "dash::tests::leaf_keys_c1",
     "reason": "defined inside `leaf_keys_c1`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "8295273c28608b77"
+    "content_hash": "d3809736644d8da1"
   }
 ]

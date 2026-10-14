@@ -301,6 +301,12 @@ pub fn def_node(id: &str, name: &str) -> Node {
     )
 }
 
+/// A code-entity node whose `name` attr is present and EMPTY: no definition, since an empty name
+/// reads as absent (spec 119), so it resolves as a bare placeholder does.
+pub fn empty_named_node(id: &str) -> Node {
+    node_with_attrs(id, KIND_CODE_ENTITY, &[("name", "")])
+}
+
 /// A code-entity DEFINITION node of code kind `kind`, named by its id's leaf: what the
 /// extraction fold records for a definition of that kind.
 pub fn kinded_def_node(id: &str, kind: &str) -> Node {

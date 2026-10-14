@@ -128,8 +128,10 @@ pub fn file_of(id: &str) -> Option<&str> {
 
 /// The ONE cut of a node id (spec 119): its file half, the text before its first `::` (the whole
 /// id when it holds none), and its rest half, the text after that `::` (`Some("")` for `a.rs::`,
-/// `None` when the id holds no `::`). The domain owns the id format `<file>::<path>`; every reader
-/// that takes an id apart takes it apart here.
+/// `None` when the id holds no `::`). The domain owns the id format `<file>::<path>`, and this is
+/// its in-memory cut: [`file_of`] and [`leaf_of`] read it, while [`name_suffix`] and the store's
+/// `file_prefix` still cut an id themselves until they give way to it (spec 119, criteria 2 and
+/// 4); the store spells the file half in SQL over its id range.
 pub fn split_id(id: &str) -> (&str, Option<&str>) {
     match id.split_once("::") {
         Some((file, rest)) => (file, Some(rest)),
@@ -2403,7 +2405,7 @@ mod call_target_tests {
 #[cfg(test)]
 mod leaf_tests {
     use super::*;
-    use crate::test_support::{def_node, node_with_attrs, plain};
+    use crate::test_support::{def_node, empty_named_node, plain};
 
     /// The nested definition `a.rs::T::new` and `b.rs`'s placeholder of `new`.
     fn nested_and_placeholder() -> Graph {
@@ -2441,7 +2443,7 @@ mod leaf_tests {
 
     #[test]
     fn node_leaf_is_a_non_empty_name_else_the_ids_leaf() {
-        let unnamed = node_with_attrs("b.rs::%new", KIND_CODE_ENTITY, &[("name", "")]);
+        let unnamed = empty_named_node("b.rs::%new");
         assert_eq!(
             [
                 node_leaf(&def_node("a.rs::T::new", "new")),
@@ -2456,11 +2458,7 @@ mod leaf_tests {
     #[test]
     fn defs_by_entity_suffix_keys_a_nested_definition_by_its_leaf() {
         let mut g = nested_and_placeholder();
-        g.nodes.push(node_with_attrs(
-            "c.rs::new",
-            KIND_CODE_ENTITY,
-            &[("name", "")],
-        ));
+        g.nodes.push(empty_named_node("c.rs::new"));
         assert_eq!(
             defs_by_entity_suffix(&g),
             BTreeMap::from([("new", vec!["a.rs::T::new"])])
@@ -2470,11 +2468,7 @@ mod leaf_tests {
     #[test]
     fn the_files_lens_folds_a_placeholder_under_its_leafs_nested_definition() {
         let mut g = nested_and_placeholder();
-        g.nodes.push(node_with_attrs(
-            "c.rs::%new",
-            KIND_CODE_ENTITY,
-            &[("name", "")],
-        ));
+        g.nodes.push(empty_named_node("c.rs::%new"));
         let buckets = Buckets::new(&g, &Lens::Files);
         assert_eq!(
             g.nodes

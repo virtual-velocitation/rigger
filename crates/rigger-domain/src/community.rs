@@ -534,6 +534,7 @@ mod tests {
     use crate::contextgraph::{Edge, Node, KIND_FILE, TIER_EXTRACTED, TIER_INFERRED};
     use crate::test_support::def_node;
     use crate::test_support::edge;
+    use crate::test_support::empty_named_node;
     use crate::test_support::kinded_def_node;
     use crate::test_support::node_with_optional_attrs;
     use crate::test_support::pair_map;
@@ -883,7 +884,7 @@ mod tests {
                 plain("b.rs", KIND_FILE),
                 plain("b.rs::%new", KIND_CODE_ENTITY),
                 plain("c.rs", KIND_FILE),
-                node_with_optional_attrs("c.rs::%new", KIND_CODE_ENTITY, &[("name", Some(""))]),
+                empty_named_node("c.rs::%new"),
                 plain("d.rs", KIND_FILE),
                 kinded_def_node("d.rs::new", "field"),
                 node_with_optional_attrs("e.md", "design-doc", &[("name", Some("new"))]),

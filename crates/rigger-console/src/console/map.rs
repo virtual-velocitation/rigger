@@ -238,16 +238,16 @@ pub fn build(graph: &Graph) -> MapModel {
 
     let mut by_community: BTreeMap<&str, Vec<&Node>> = BTreeMap::new();
     for n in &graph.nodes {
-        // A code entity with NO `name` attr is a BARE cross-file placeholder (`Coupling::
-        // from_graph`'s own words: "A code-entity node carrying a `name` attr is a real
-        // definition ... a code-entity with NO `name` attr is a bare cross-file placeholder"),
-        // never a real definition - `Coupling::from_graph` canonicalizes every RESOLVABLE bare
-        // reference onto its unique call-target definition, but an AMBIGUOUS one (more than one
-        // same-named call target elsewhere, or none) keeps its own placeholder id and still
-        // joins a community as a coupling-graph member. Such a node carries no `kind` either, so
-        // drawing it would violate "every visible node ... has a placed label and kind dot" -
-        // it is excluded here by the `name` attr alone: every named node is drawn, a data
-        // member or a declaration included.
+        // A code entity with NO `name` attr is a BARE cross-file placeholder, never a real
+        // definition. `Coupling::from_graph` canonicalizes every RESOLVABLE bare reference onto
+        // its unique call-target definition, reading a definition as a node with a non-empty
+        // name (`query::node_name`), but an AMBIGUOUS one (more than one call target of its leaf
+        // elsewhere, or none) keeps its own placeholder id and still joins a community as a
+        // coupling-graph member. Such a node carries no `kind` either, so drawing it would
+        // violate "every visible node ... has a placed label and kind dot". The map admits a
+        // node here by the presence of its `name` key alone, empty or not: every named node is
+        // drawn, a data member or a declaration included, and labelled by its leaf
+        // ([`entity_label`]).
         if n.kind != KIND_CODE_ENTITY || !n.attrs.contains_key("name") {
             continue;
         }
