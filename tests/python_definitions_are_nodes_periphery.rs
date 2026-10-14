@@ -27,9 +27,9 @@ rigger::test_cases! {
     ///  - `t` under `if TYPE_CHECKING:`, the attribute target `self.x`, the augmented target `o`
     ///    and the type parameter `T` are no node.
     ///
-    /// Its `CALLS` edges are exactly: `probe()` from `host`, `make()` from `Shape` and `paint()`
-    /// from `inner`. The `f()` of the list pattern and of the chain take the file as caller and so
-    /// are no edge.
+    /// Its `CALLS` edges are exactly: `probe()` from `host`, `make()` from `k`, the class-body
+    /// assignment of one target spanning its whole value, and `paint()` from `inner`. The `f()` of
+    /// the list pattern and of the chain take the file as caller and so are no edge.
     #[cfg(feature = "symbols")]
     graph_build_makes_each_python_definition_a_node_of_its_kind_and_none_under_type_checking:
         common::cli::assert_built_graph_holds(
@@ -64,9 +64,9 @@ rigger::test_cases! {
             ],
             &["f", "make", "paint", "probe"],
             &[
-                ("f.py::Shape", "f.py::make"),
                 ("f.py::host", "f.py::probe"),
                 ("f.py::inner", "f.py::paint"),
+                ("f.py::k", "f.py::make"),
             ],
             "every code entity of the built graph: one per definition leaf, none under \
              if TYPE_CHECKING: or for an attribute, augmented or type-parameter name, one \

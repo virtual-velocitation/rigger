@@ -1258,9 +1258,10 @@ pub(crate) mod tests {
         /// TYPES names exactly one of them.
         ///
         /// The callers: a call in a function is the function's, one in a function nested in a
-        /// method the nested function's, and one in a class-body value the class's; the value
-        /// of a pattern or a chained assignment is the file's, each bound name spanning its own
-        /// identifier alone.
+        /// method the nested function's, and one in the value of a class-body assignment of one
+        /// target that assignment's (`make()` is `k`'s), its field spanning the whole assignment
+        /// as a module-level constant of one target does; the value of a pattern or a chained
+        /// assignment is the file's, each bound name spanning its own identifier alone.
         every_python_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "py",
@@ -1296,7 +1297,7 @@ pub(crate) mod tests {
                 ],
                 &[
                     (2, "probe", Some("host")),
-                    (9, "make", Some("Shape")),
+                    (9, "make", Some("k")),
                     (13, "paint", Some("inner")),
                     (18, "f", None),
                     (19, "f", None),
