@@ -1659,8 +1659,8 @@ fn migrate_edge_tier(conn: &Connection) -> Result<(), Error> {
 ///   MATCHES the indexed one, so every reader embeds [`node_leaf_sql`] verbatim or it silently
 ///   misses the index.
 /// - `idx_edges_live_to_name_suffix` is a PARTIAL EXPRESSION index on a live edge's target text,
-///   `substr(to_id, instr(to_id, '::') + 2)`, which every edge-side reader seeks by binding a leaf
-///   ([`edge_binds_leaf_sql`]).
+///   the pinned [`edge_text_sql`] expression, which every edge-side reader seeks by binding a leaf
+///   ([`edge_binds_leaf_sql`], embedding the same expression, so index and readers cannot drift).
 ///
 /// The node name-suffix index `idx_nodes_name_suffix` an older open created on
 /// `substr(id, instr(id, '::') + 2)` is dropped: no reader keys a node by its id's rest since every
@@ -1672,8 +1672,9 @@ fn migrate_indexes(conn: &Connection) -> Result<(), Error> {
          DROP INDEX IF EXISTS idx_nodes_name_suffix;
          CREATE INDEX IF NOT EXISTS idx_nodes_leaf ON nodes(project, {}, id);
          CREATE INDEX IF NOT EXISTS idx_edges_live_to_name_suffix
-             ON edges(substr(to_id, instr(to_id, '::') + 2)) WHERE valid_to IS NULL;",
-        node_leaf_sql()
+             ON edges({}) WHERE valid_to IS NULL;",
+        node_leaf_sql(),
+        edge_text_sql("to_id")
     ))
     .map_err(be)
 }
@@ -3389,19 +3390,25 @@ fn node_leaf_sql() -> &'static str {
     "NULLIF(json_extract(attrs, '$.name'), '')"
 }
 
-/// THE EDGE SIDE BINDS THE LEAF (spec 119): the live edge's target text, the
-/// `substr(<to_id>, instr(<to_id>, '::') + 2)` expression the partial index
-/// `idx_edges_live_to_name_suffix` ([`migrate_indexes`]) is built on, compared with the SQL value
-/// `leaf` and that value prefixed by [`PLACEHOLDER_SIGIL`]: two seeks of the index, the first
-/// matching a target spelled `<file>::<leaf>`, the second one spelled `<file>::%<leaf>`, so the
-/// binding holds under both spellings and decides nothing about where a reference lands. `to_id`
-/// names the edge's target column. The one spelling every edge-side reader embeds: the callers walk
-/// ([`callers_via_bare`]), the definition arm's tier upgrade, [`definition_retired`]'s demotion and
-/// both legs of [`referenced_not_called`].
+/// The text of an edge's target after its first `::`, `to_id` naming the target column: ONE pinned
+/// expression the partial index `idx_edges_live_to_name_suffix` ([`migrate_indexes`]) is built on
+/// over `to_id` and every edge-side reader embeds through [`edge_binds_leaf_sql`], since SQLite
+/// serves an expression index only to the identical expression.
+fn edge_text_sql(to_id: &str) -> String {
+    format!("substr({to_id}, instr({to_id}, '::') + 2)")
+}
+
+/// THE EDGE SIDE BINDS THE LEAF (spec 119): the live edge's target text ([`edge_text_sql`], the
+/// expression the partial index `idx_edges_live_to_name_suffix` is built on), compared with the
+/// SQL value `leaf` and that value prefixed by [`PLACEHOLDER_SIGIL`]: two seeks of the index, the
+/// first matching a target spelled `<file>::<leaf>`, the second one spelled `<file>::%<leaf>`, so
+/// the binding holds under both spellings and decides nothing about where a reference lands.
+/// `to_id` names the edge's target column. The one spelling every edge-side reader embeds: the
+/// callers walk ([`callers_via_bare`]), the definition arm's tier upgrade, [`definition_retired`]'s
+/// demotion and both legs of [`referenced_not_called`].
 fn edge_binds_leaf_sql(to_id: &str, leaf: &str) -> String {
-    format!(
-        "substr({to_id}, instr({to_id}, '::') + 2) IN ({leaf}, '{PLACEHOLDER_SIGIL}' || {leaf})"
-    )
+    let text = edge_text_sql(to_id);
+    format!("{text} IN ({leaf}, '{PLACEHOLDER_SIGIL}' || {leaf})")
 }
 
 /// Whether the NAMED node `id` is a call target in `project` ([`call_target_sql`]): `Some(true)`
@@ -11635,9 +11642,9 @@ mod tests {
     mod edge_side_binds_the_leaf {
         use super::leaf_keys_resolution::{define, edge_directly, entity, write_directly, UNKEYED};
         use super::*;
-        use crate::test_support::apply_keyed;
+        use crate::test_support::apply_generation_head;
         use crate::test_support::{
-            call_frontiers, call_node_ids, call_walk, def_json, referenced_not_called_ids,
+            call_frontiers, call_node_ids, call_walk, referenced_not_called_ids,
         };
 
         /// The callers walk from `seed`, a definition of leaf `leaf` written directly, reaches the
@@ -11672,11 +11679,9 @@ mod tests {
             define(&p, beside);
             edge_directly(&p, "b.rs", target, REL_REFERENCES, TIER_AMBIGUOUS);
             let tier = |p: &Projector| edge_tier(&p.whole().unwrap(), REL_REFERENCES, target);
-            let new = def_json("a.rs", "new", 1, true);
-            apply_keyed(&p, 1, TYPE_CODE_ENTITY_EXTRACTED, new, "gc/a.rs@h1#0", 10);
+            apply_generation_head(&p, 1, "a.rs", "h1", "new", 10);
             assert_eq!(tier(&p), TIER_INFERRED);
-            let other = def_json("a.rs", "other", 1, true);
-            apply_keyed(&p, 2, TYPE_CODE_ENTITY_EXTRACTED, other, "gc/a.rs@h2#0", 20);
+            apply_generation_head(&p, 2, "a.rs", "h2", "other", 20);
             assert_eq!(tier(&p), retired);
         }
 
@@ -12399,7 +12404,7 @@ mod tests {
         /// A live edge as `(from, to, rel, valid-from, source)`.
         type LiveEdge = (String, String, String, i64, Position);
 
-        use crate::test_support::{apply_keyed, keyed_event};
+        use crate::test_support::{apply_generation_head, apply_keyed, keyed_event};
 
         fn def(name: &str, line: u64, fresh: bool) -> serde_json::Value {
             crate::test_support::def_json("src/f.rs", name, line, fresh)
@@ -12467,8 +12472,7 @@ mod tests {
         /// beside a data member as with nothing beside it.
         fn a_fn_retiring_leaves_its_cross_file_call(beside: Option<&str>, tier: &str) {
             let p = Projector::open(":memory:", "test").unwrap();
-            let x = def("x", 1, true);
-            apply_keyed(&p, 1, TYPE_CODE_ENTITY_EXTRACTED, x, "gc/src/f.rs@h1#0", 10);
+            apply_generation_head(&p, 1, "src/f.rs", "h1", "x", 10);
             if let Some(kind) = beside {
                 apply_code_entity(&p, 2, "src/a.rs", "x", kind, 2, "rust");
             }
@@ -12477,8 +12481,7 @@ mod tests {
             let tiers = |p: &Projector| call_tiers(p, "src/b.rs::x");
             assert_eq!(tiers(&p), [TIER_INFERRED, TIER_INFERRED]);
 
-            let y = def("y", 1, true);
-            apply_keyed(&p, 5, TYPE_CODE_ENTITY_EXTRACTED, y, "gc/src/f.rs@h2#0", 20);
+            apply_generation_head(&p, 5, "src/f.rs", "h2", "y", 20);
             assert_eq!(tiers(&p), [tier, tier]);
         }
 
@@ -12988,14 +12991,7 @@ mod tests {
         #[test]
         fn a_dropped_entity_a_decision_still_governs_stays_live() {
             let p = Projector::open(":memory:", "test").unwrap();
-            apply_keyed(
-                &p,
-                1,
-                TYPE_CODE_ENTITY_EXTRACTED,
-                def("alpha", 1, true),
-                "gc/src/f.rs@h1#0",
-                10,
-            );
+            apply_generation_head(&p, 1, "src/f.rs", "h1", "alpha", 10);
             apply_keyed(
                 &p,
                 2,
@@ -13028,14 +13024,7 @@ mod tests {
         #[test]
         fn a_retired_node_that_returns_keeps_the_proof_another_file_recorded_on_it() {
             let p = Projector::open(":memory:", "test").unwrap();
-            apply_keyed(
-                &p,
-                1,
-                TYPE_CODE_ENTITY_EXTRACTED,
-                def("alpha", 1, true),
-                "gc/src/f.rs@h1#0",
-                10,
-            );
+            apply_generation_head(&p, 1, "src/f.rs", "h1", "alpha", 10);
             apply_keyed(
                 &p,
                 2,
@@ -13049,14 +13038,7 @@ mod tests {
             );
             // h2's first event defines another name, so `alpha` is retired at the boundary and
             // comes back with the event after it.
-            apply_keyed(
-                &p,
-                3,
-                TYPE_CODE_ENTITY_EXTRACTED,
-                def("beta", 1, true),
-                "gc/src/f.rs@h2#0",
-                20,
-            );
+            apply_generation_head(&p, 3, "src/f.rs", "h2", "beta", 20);
             apply_keyed(
                 &p,
                 4,

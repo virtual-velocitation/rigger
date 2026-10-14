@@ -335,9 +335,31 @@ pub fn leaf_named_node(id: &str) -> Node {
     def_node(id, leaf_of(id).expect("a code-entity id holds `::`"))
 }
 
-/// A code-entity DEFINITION node of code kind `kind`, named by its id's leaf: what the
-/// extraction fold records for a definition of that kind.
+/// A small two-module + decision graph a route dispatch is proven over: the named definitions
+/// ([`leaf_named_node`]) `src/a/mod.rs::foo` and `::bar` and `src/b/mod.rs::baz`, and a decision
+/// `d1`, with the live references `foo -> bar` (one file), `bar -> baz` (across files) and
+/// `d1 -> foo` (touching the decision no file cluster holds).
+pub fn two_module_graph() -> Graph {
+    let refs = |from: &str, to: &str| edge(from, to, REL_REFERENCES, TIER_EXTRACTED);
+    Graph {
+        nodes: vec![
+            leaf_named_node("src/a/mod.rs::foo"),
+            leaf_named_node("src/a/mod.rs::bar"),
+            leaf_named_node("src/b/mod.rs::baz"),
+            plain("d1", KIND_DECISION),
+        ],
+        edges: vec![
+            refs("src/a/mod.rs::foo", "src/a/mod.rs::bar"),
+            refs("src/a/mod.rs::bar", "src/b/mod.rs::baz"),
+            refs("d1", "src/a/mod.rs::foo"),
+        ],
+    }
+}
+
+/// A code-entity DEFINITION node of code kind `kind`, named by its id's leaf ([`leaf_named_node`]):
+/// what the extraction fold records for a definition of that kind.
 pub fn kinded_def_node(id: &str, kind: &str) -> Node {
-    let (_, leaf) = id.split_once("::").expect("a code entity id");
-    node_with_attrs(id, KIND_CODE_ENTITY, &[("name", leaf), ("kind", kind)])
+    let mut node = leaf_named_node(id);
+    node.attrs.insert("kind".to_string(), kind.to_string());
+    node
 }

@@ -38,14 +38,14 @@
 
 mod common;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use common::fixtures::edge;
 use common::fixtures::plain;
 use common::served::served as served_over;
 use common::served::served_json as served_json_over;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, REL_CONTAINS,
+    Edge, Graph, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, REL_CONTAINS,
     REL_REFERENCES, TIER_EXTRACTED,
 };
 use rigger::dash::{
@@ -53,20 +53,13 @@ use rigger::dash::{
     WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 
-/// A code-entity DEFINITION node under `<file>::<name>` (so [`file_of`] folds it to `<file>`),
-/// carrying a `name` attr matching its own entity-name suffix - exactly as the extraction fold always
-/// sets for a REAL definition, the files-lens honesty gate's (spec 63 c3) marker that this is not a
-/// bare cross-file placeholder. Every fixture in this file models an entity's own file, never a
-/// cross-file reference, so this is the correct shape throughout; [`bare_ce`] below is the dedicated
-/// placeholder shape the honesty-gate tests need.
-fn ce(id: &str) -> Node {
-    let name = id.rsplit_once("::").map_or(id, |(_, n)| n);
-    Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: BTreeMap::from([("name".to_string(), name.to_string())]),
-    }
-}
+// `ce`: a code-entity DEFINITION node under `<file>::<name>` (so `file_of` folds it to `<file>`),
+// named by its id's leaf - exactly as the extraction fold always sets for a REAL definition, the
+// files-lens honesty gate's (spec 63 c3) marker that this is not a bare cross-file placeholder.
+// Every fixture in this file models an entity's own file, never a cross-file reference, so this is
+// the correct shape throughout; [`bare_ce`] below is the dedicated placeholder shape the
+// honesty-gate tests need.
+use common::fixtures::leaf_named_node as ce;
 
 /// A currently-valid REFERENCES edge between two ids.
 fn refs(from: &str, to: &str) -> Edge {

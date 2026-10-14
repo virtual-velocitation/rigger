@@ -12185,19 +12185,11 @@
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
-    "name": "dispatch_graph",
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "87f2b1eba207184a"
-  },
-  {
-    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_dispatches_cluster_overview_and_seed_by_parameter",
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a315016e401c1caa"
+    "content_hash": "05dbf95430536267"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

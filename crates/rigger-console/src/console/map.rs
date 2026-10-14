@@ -1422,11 +1422,12 @@ mod tests {
     }
 
     /// A graph of `members` - `(entity id, community)` pairs, each a `function` named by its
-    /// id's own tail - plus the live `calls` edges between them.
+    /// id's leaf ([`kinded_def_node`](crate::test_support::kinded_def_node)) - plus the live
+    /// `calls` edges between them.
     fn community_graph(members: &[(&str, &str)], calls: &[(&str, &str)]) -> Graph {
         let nodes = members
             .iter()
-            .map(|(id, _)| code_node(id, id.rsplit("::").next().unwrap(), "function"))
+            .map(|(id, _)| crate::test_support::kinded_def_node(id, "function"))
             .collect();
         let edges = members
             .iter()

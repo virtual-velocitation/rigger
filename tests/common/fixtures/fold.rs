@@ -143,6 +143,23 @@ pub fn apply_keyed(
     folds(p, &[keyed_event(pos, type_, json, key, secs)]);
 }
 
+/// Fold onto `p`, at log position `pos`, the first event of generation `generation` of `file`: a
+/// definition of the function `name` at line 1, replay-keyed `gc/<file>@<generation>#0` and valid
+/// from `secs` - the batch head a re-extraction of `file` appends, retiring what the generation
+/// before it asserted and this one does not.
+pub fn apply_generation_head(
+    p: &Projector,
+    pos: u64,
+    file: &str,
+    generation: &str,
+    name: &str,
+    secs: u64,
+) {
+    let key = format!("gc/{file}@{generation}#0");
+    let head = def_json(file, name, 1, true);
+    apply_keyed(p, pos, TYPE_CODE_ENTITY_EXTRACTED, head, &key, secs);
+}
+
 /// Fold one `type_` event carrying `json` onto `p` at log position `pos`.
 pub fn apply_json(p: &Projector, pos: u64, type_: &str, json: serde_json::Value) {
     apply_json_as(p, pos, type_, json, None);

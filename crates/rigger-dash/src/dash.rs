@@ -6919,42 +6919,6 @@ mod tests {
         }
     }
 
-    /// A small two-module + decision graph the ROUTE-DISPATCH test drills, overviews, and seeds. Two
-    /// distinct file directories (`src/a`, `src/b`) fold to two file clusters and a bare `decision`
-    /// node folds by KIND, so the three views are visibly different: the overview reports all three
-    /// clusters, the drill returns one cluster's members, and the seed walks one node's neighborhood.
-    fn dispatch_graph() -> Graph {
-        // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-
-        // lens honesty gate reads it to tell a real definition from a bare cross-file placeholder).
-        let ce = crate::test_support::leaf_named_node;
-        let refs = |from: &str, to: &str| Edge {
-            from: from.to_string(),
-            to: to.to_string(),
-            rel: REL_REFERENCES.to_string(),
-            valid_from: 0,
-            valid_to: None,
-            source: 0,
-            tier: TIER_EXTRACTED.to_string(),
-        };
-        Graph {
-            nodes: vec![
-                ce("src/a/mod.rs::foo"), // cluster "src/a"
-                ce("src/a/mod.rs::bar"), // cluster "src/a"
-                ce("src/b/mod.rs::baz"), // cluster "src/b"
-                Node {
-                    id: "d1".to_string(),
-                    kind: KIND_DECISION.to_string(),
-                    attrs: BTreeMap::new(),
-                }, // cluster "decision"
-            ],
-            edges: vec![
-                refs("src/a/mod.rs::foo", "src/a/mod.rs::bar"), // intra src/a
-                refs("src/a/mod.rs::bar", "src/b/mod.rs::baz"), // cross src/a <-> src/b
-                refs("d1", "src/a/mod.rs::foo"),                // cross decision <-> src/a
-            ],
-        }
-    }
-
     /// The `/api/graph` route is ONE endpoint with THREE views selected by parameter (spec 42 c4):
     /// `cluster=<key>` returns the cluster DRILL, an empty `seed` with no `cluster` returns the
     /// clustered OVERVIEW (the new default KG view), and a non-empty `seed` returns the spec-30 SEEDED
@@ -6963,7 +6927,11 @@ mod tests {
     /// RIGHT projection and serves its shape as JSON.
     #[test]
     fn the_graph_route_dispatches_cluster_overview_and_seed_by_parameter() {
-        let graph = dispatch_graph();
+        // Two distinct file directories (`src/a`, `src/b`) fold to two file clusters and a bare
+        // `decision` node folds by KIND, so the three views are visibly different: the overview
+        // reports all three clusters, the drill returns one cluster's members, and the seed walks
+        // one node's neighborhood.
+        let graph = crate::test_support::two_module_graph();
         let call = |target: &str| {
             let r = route(
                 "GET",

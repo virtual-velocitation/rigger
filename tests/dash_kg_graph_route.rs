@@ -35,8 +35,8 @@ use common::served::body_of;
 use common::served::fetch_served;
 use common::served::node_harness_passes;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_IN_COMMUNITY,
-    REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
+    Edge, Graph, Node, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_IN_COMMUNITY, REL_REFERENCES,
+    TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{self, DashInputs};
 
@@ -1130,53 +1130,16 @@ rigger::test_cases! {
 /// community and so stay a real, many-member drill target; the OVERVIEW and SEED dispatch stay
 /// proven over the default (lens-absent) request, unaffected by the added membership edges.
 fn exploration_graph() -> Graph {
-    // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-lens
-    // honesty gate reads it to tell a real definition from a bare cross-file placeholder).
-    let ce = |id: &str| Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: BTreeMap::from([(
-            "name".to_string(),
-            id.rsplit_once("::").map_or(id, |(_, n)| n).to_string(),
-        )]),
-    };
-    let refs = |from: &str, to: &str| Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: REL_REFERENCES.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_EXTRACTED.to_string(),
-    };
-    let membership = |id: &str| Edge {
-        from: id.to_string(),
-        to: "community/1/0".to_string(),
-        rel: REL_IN_COMMUNITY.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_INFERRED.to_string(),
-    };
-    Graph {
-        nodes: vec![
-            ce("src/a/mod.rs::foo"), // file cluster "src/a/mod.rs"; community "community/1/0"
-            ce("src/a/mod.rs::bar"), // file cluster "src/a/mod.rs"; community "community/1/0"
-            ce("src/b/mod.rs::baz"), // file cluster "src/b/mod.rs"
-            Node {
-                id: "d1".to_string(),
-                kind: KIND_DECISION.to_string(),
-                attrs: BTreeMap::new(),
-            }, // no cluster under either lens (spec 63 c1/c3 purity)
-        ],
-        edges: vec![
-            refs("src/a/mod.rs::foo", "src/a/mod.rs::bar"), // intra file / intra community
-            refs("src/a/mod.rs::bar", "src/b/mod.rs::baz"), // cross file
-            refs("d1", "src/a/mod.rs::foo"),                // touches the purity-excluded decision
-            membership("src/a/mod.rs::foo"),
-            membership("src/a/mod.rs::bar"),
-        ],
+    let mut graph = common::fixtures::two_module_graph();
+    for member in ["src/a/mod.rs::foo", "src/a/mod.rs::bar"] {
+        graph.edges.push(edge(
+            member,
+            "community/1/0",
+            REL_IN_COMMUNITY,
+            TIER_INFERRED,
+        ));
     }
+    graph
 }
 
 /// The SERVED `/api/graph` route is ONE endpoint with THREE views selected by parameter (spec 42

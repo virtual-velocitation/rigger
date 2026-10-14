@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-05d3dd27c2af",
+    "id": "dup-f876dbc68da1",
     "classification": "near",
     "sites": [
       {
@@ -75,6 +75,11 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "shadow_of",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "edge_text_sql",
         "content_hash": "6fd90a8c2eed6379"
       },
       {
@@ -246,7 +251,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-aae9be3306c5",
+    "id": "dup-340eefdbe122",
     "classification": "near",
     "sites": [
       {
@@ -267,11 +272,6 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "code_entity_id",
-        "content_hash": "5d23ae9ae3e76aee"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "edge_binds_leaf_sql",
         "content_hash": "5d23ae9ae3e76aee"
       },
       {
@@ -8568,7 +8568,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-df1f9764f4e9",
+    "id": "dup-f4a922d43ae9",
     "classification": "semantic",
     "sites": [
       {
@@ -8579,7 +8579,7 @@
       {
         "file": "tests/dash_kg_graph_route.rs",
         "name": "exploration_graph",
-        "content_hash": "d29f856eb72e3f8f"
+        "content_hash": "c8402600c3f1cb4b"
       }
     ],
     "proposed_home": "one shared `exploration_graph` helper (e.g. relocated into `tests/common`) rather than each file defining its own",

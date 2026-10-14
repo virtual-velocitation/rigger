@@ -20,24 +20,14 @@
 mod common;
 
 use common::fixtures::{
-    apply_call, apply_code_entity, apply_def, apply_keyed, apply_ref, call_frontiers,
-    call_node_ids, call_walk, def_json, edge_tier, referenced_not_called_ids,
+    apply_call, apply_code_entity, apply_def, apply_generation_head, apply_ref, call_frontiers,
+    call_node_ids, call_walk, edge_tier, referenced_not_called_ids,
 };
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{
-    Direction, REL_REFERENCES, TIER_AMBIGUOUS, TIER_INFERRED, TYPE_CODE_ENTITY_EXTRACTED,
-};
+use rigger::contextgraph::{Direction, REL_REFERENCES, TIER_AMBIGUOUS, TIER_INFERRED};
 
 /// The definition every walk below starts from.
 const SEED: &str = "src/a.rs::new";
-
-/// Fold, at log position `pos`, the generation `generation` of `src/a.rs`, which defines `name`
-/// alone, valid from `secs`: the replay-keyed batch a re-extraction appends.
-fn fold_generation_of_a(p: &Projector, pos: u64, generation: &str, name: &str, secs: u64) {
-    let key = format!("gc/src/a.rs@{generation}#0");
-    let def = def_json("src/a.rs", name, 1, true);
-    apply_keyed(p, pos, TYPE_CODE_ENTITY_EXTRACTED, def, &key, secs);
-}
 
 /// GIVEN `src/b.rs` calls `new` from `run` as `new` and from `go` as `%new`, and `src/c.rs` calls
 /// `%%new` from `far`, before `src/a.rs` defines `new`, WHEN the callers walk ascends from
@@ -111,13 +101,13 @@ fn a_sigiled_reference_follows_a_definition_of_its_leaf_in_and_out() {
         [TIER_AMBIGUOUS, TIER_AMBIGUOUS],
         "nothing defines `new` yet"
     );
-    fold_generation_of_a(&p, 3, "h1", "new", 10);
+    apply_generation_head(&p, 3, "src/a.rs", "h1", "new", 10);
     assert_eq!(
         tiers(&p),
         [TIER_INFERRED, TIER_AMBIGUOUS],
         "a definition of `new` upgrades the `%new` reference and not the `%%new` one"
     );
-    fold_generation_of_a(&p, 4, "h2", "other", 20);
+    apply_generation_head(&p, 4, "src/a.rs", "h2", "other", 20);
     assert_eq!(
         tiers(&p),
         [TIER_AMBIGUOUS, TIER_AMBIGUOUS],
