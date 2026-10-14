@@ -11,7 +11,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, KIND_COMMUNITY, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY,
+    Graph, Projection, KIND_COMMUNITY, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
 use rigger::eventstore::Event;
@@ -100,6 +100,29 @@ pub fn live_calls(p: &Projector) -> Vec<(String, String)> {
         .filter(|(_, rel, ..)| rel == REL_CALLS)
         .map(|(from, _, to, ..)| (from, to))
         .collect()
+}
+
+/// Every live `REFERENCES` and `CALLS` edge `p` serves, as `(from, rel, to, tier)`, sorted:
+/// where each reference landed and at what tier.
+pub fn landed(p: &Projector) -> Vec<(String, String, String, String)> {
+    let mut edges: Vec<_> = p
+        .whole()
+        .unwrap()
+        .edges
+        .into_iter()
+        .filter(|e| e.rel == REL_REFERENCES || e.rel == REL_CALLS)
+        .map(|e| (e.from, e.rel, e.to, e.tier))
+        .collect();
+    edges.sort();
+    edges
+}
+
+/// The `(from, rel, to, tier)` rows of `f.rs`'s reference and of `f.rs::main`'s call, both
+/// landed on `to` at `tier`, in [`landed`]'s order.
+pub fn a_call_from_main(to: &str, tier: &str) -> Vec<(String, String, String, String)> {
+    [("f.rs", REL_REFERENCES), ("f.rs::main", REL_CALLS)]
+        .map(|(from, rel)| (from.into(), rel.into(), to.into(), tier.into()))
+        .to_vec()
 }
 
 /// Fold `events` into `p` through the public fold, and insist they landed: the one spelling of

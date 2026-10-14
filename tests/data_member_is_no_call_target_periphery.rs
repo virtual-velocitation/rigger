@@ -639,9 +639,7 @@ fn tiers_after_the_fn_retires(beside: Option<&str>) -> (Vec<String>, bool) {
     }
     drop(graph);
 
-    std::fs::write(dir.path().join("f.rs"), "fn y() {}\n").unwrap();
-    run_rigger_ok(dir.path(), &["graph", "build"]);
-    let graph = open_graph(dir.path());
+    let graph = common::cli::rebuilt_graph(dir.path(), &[("f.rs", "fn y() {}\n")]);
     let member_stands = graph
         .whole()
         .unwrap()

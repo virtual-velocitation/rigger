@@ -123,14 +123,9 @@ fn graph_build_settles_a_leaf_one_file_defines_twice_on_its_precedence_winner() 
 fn graph_build_again_over_shifted_lines_moves_each_shared_node_to_its_winners_new_line() {
     let (project, graph) = common::cli::built_graph(&[("f.rs", SOURCE)]);
     drop(graph);
-    std::fs::write(
-        project.path().join("f.rs"),
-        format!("// moved\n// down\n{SOURCE}"),
-    )
-    .unwrap();
-    common::cli::run_rigger_ok(project.path(), &["graph", "build"]);
+    let moved = format!("// moved\n// down\n{SOURCE}");
     every_leaf_is_its_precedence_winner(
-        &common::cli::open_graph(project.path()),
+        &common::cli::rebuilt_graph(project.path(), &[("f.rs", &moved)]),
         2,
         "the build after every line moved two down",
     );

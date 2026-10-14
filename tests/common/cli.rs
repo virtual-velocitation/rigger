@@ -471,12 +471,19 @@ pub fn open_graph(root: &Path) -> Projector {
 /// `(root-relative path, source text)` pair; the project lives as long as the returned directory.
 pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, Projector) {
     let dir = temp_project();
-    for (path, source) in files {
-        std::fs::write(dir.path().join(path), source).unwrap();
-    }
-    run_rigger_ok(dir.path(), &["graph", "build"]);
-    let graph = open_graph(dir.path());
+    let graph = rebuilt_graph(dir.path(), files);
     (dir, graph)
+}
+
+/// The graph `rigger graph build` folds over the project at `root` once each of `files`, a
+/// `(root-relative path, source text)` pair, is written there: a first build, or a rebuild over
+/// the files' next generation.
+pub fn rebuilt_graph(root: &Path, files: &[(&str, &str)]) -> Projector {
+    for (path, source) in files {
+        std::fs::write(root.join(path), source).unwrap();
+    }
+    run_rigger_ok(root, &["graph", "build"]);
+    open_graph(root)
 }
 
 /// GIVEN a project whose one file `path`, in the language `lang`, holds `source`, WHEN the

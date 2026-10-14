@@ -11849,31 +11849,9 @@ mod tests {
         };
         use super::*;
         use crate::test_support::{
-            apply_generation_head, apply_generation_head_event, apply_keyed, hold, ref_json,
+            a_call_from_main, apply_generation_head, apply_generation_head_event, apply_keyed,
+            hold, landed, ref_json,
         };
-
-        /// Every live `REFERENCES` and `CALLS` edge `p` serves, as `(from, rel, to, tier)`,
-        /// sorted: where each reference landed and at what tier.
-        fn landed(p: &Projector) -> Vec<(String, String, String, String)> {
-            let mut edges: Vec<_> = p
-                .whole()
-                .unwrap()
-                .edges
-                .into_iter()
-                .filter(|e| e.rel == REL_REFERENCES || e.rel == REL_CALLS)
-                .map(|e| (e.from, e.rel, e.to, e.tier))
-                .collect();
-            edges.sort();
-            edges
-        }
-
-        /// The `(from, rel, to, tier)` rows of `f.rs`'s reference and of `f.rs::main`'s call,
-        /// both landed on `to` at `tier`, in [`landed`]'s order.
-        fn a_call_from_main(to: &str, tier: &str) -> Vec<(String, String, String, String)> {
-            [("f.rs", REL_REFERENCES), ("f.rs::main", REL_CALLS)]
-                .map(|(from, rel)| (from.into(), rel.into(), to.into(), tier.into()))
-                .to_vec()
-        }
 
         /// `f.rs` defines `main` and the top-level `(name, kind)`s of `top` by hand-built
         /// events, holds the `(id, name, kind)`s of `nested` written directly, and `main` calls
