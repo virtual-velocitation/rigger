@@ -41,6 +41,7 @@ pub enum Kind {
     Variant,
     Field,
     Variable,
+    Property,
     Other,
 }
 

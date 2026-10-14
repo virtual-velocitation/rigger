@@ -7,11 +7,12 @@
 //! `extract` is given.
 
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
+use rigger_domain::wave::normalize_ws;
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
 
 /// Map a grammar tag's syntax-type NAME (the name half of a `tags.scm` category, e.g.
 /// "function", "method", "struct", "class", "interface", "trait", "module", "constant", "macro",
-/// "static", "variant", "field", "variable") to a rigger `Kind`. Unknown names fold to `Other`,
+/// "static", "variant", "field", "variable", "constructor", "property") to a rigger `Kind`. Unknown names fold to `Other`,
 /// so the model stays grammar-agnostic and a new grammar never forces a `Kind` variant.
 fn kind_of(syntax_type: &str) -> Kind {
     match syntax_type {
@@ -27,6 +28,8 @@ fn kind_of(syntax_type: &str) -> Kind {
         "variant" => Kind::Variant,
         "field" => Kind::Field,
         "variable" => Kind::Variable,
+        "constructor" => Kind::Constructor,
+        "property" => Kind::Property,
         _ => Kind::Other,
     }
 }
@@ -42,13 +45,34 @@ fn is_nameless(lang: Lang, leaf: &str) -> bool {
 /// A DECLARATION (spec 116): whether `node`, the own node of a function, method or constructor
 /// definition, has no body. Rust's is a `function_signature_item`, a trait required fn or an
 /// extern block's fn; Go's is an interface's `method_elem`, and a `function_declaration` or a
-/// `method_declaration` holding no `body`. It reads the node alone, so a grammar sharing one of
-/// those node types shares its rule.
+/// `method_declaration` holding no `body`; C#'s is a `method_declaration`, a
+/// `destructor_declaration`, a `local_function_statement`, a `constructor_declaration`, an
+/// `operator_declaration` or a `conversion_operator_declaration` holding no `body` (an interface,
+/// `abstract`, `extern` or `partial` member). It reads the node alone, so a grammar sharing one
+/// of those node types shares its rule.
 fn is_declaration(node: tree_sitter::Node) -> bool {
     match node.kind() {
         "function_signature_item" | "method_elem" => true,
-        "function_declaration" | "method_declaration" => node.child_by_field_name("body").is_none(),
+        "function_declaration"
+        | "method_declaration"
+        | "destructor_declaration"
+        | "local_function_statement"
+        | "constructor_declaration"
+        | "operator_declaration"
+        | "conversion_operator_declaration" => node.child_by_field_name("body").is_none(),
         _ => false,
+    }
+}
+
+/// THE LEAF of a tagged definition (spec 116): the name its `Def` and its caller range carry,
+/// read over `node`, its own node, and `name`, the slice of the source its tag names. A C#
+/// `destructor_declaration` is `~` and that identifier (`~Foo`), the grammar holding the `~`
+/// outside the name node; every other definition's leaf is the slice itself. It reads the node
+/// alone, as [`is_declaration`] does.
+fn def_leaf(node: Option<tree_sitter::Node>, name: &str) -> String {
+    match node.map(|n| n.kind()) {
+        Some("destructor_declaration") => format!("~{name}"),
+        _ => name.to_string(),
     }
 }
 
@@ -109,15 +133,18 @@ fn unresolved_def(kind: Kind, name: String, line: u32) -> Def {
 /// supplies the grammar and its query (unit 2's registry decides WHICH), and everything it
 /// returns is the parser-free `FileSymbols`.
 ///
-/// A definition tag whose leaf names nothing ([`is_nameless`]) makes no `Def`, and the references
+/// A tagged definition is named by its leaf ([`def_leaf`]), in `defs` and as a caller alike. A
+/// definition tag whose leaf names nothing ([`is_nameless`]) makes no `Def`, and the references
 /// in its body take the next enclosing definition by the caller rule, else the file. A
 /// definition read off the tree by `lang` is put to that filter too, so a Go `type _ = B` makes
 /// none. An impl block is not: its name is its header, `impl ..`, never empty and never `_`.
 ///
 /// A tagged definition takes the kind its tag names, lowered once over its own node
 /// ([`lowered_kind`]). What the query cannot tag is read off the parsed tree: every impl block
-/// ([`impl_blocks`]) and, selected by `lang`, Rust's tuple fields ([`tuple_fields`]) and Go's
-/// embedded fields and type aliases ([`embedded_fields`], [`type_aliases`]).
+/// ([`impl_blocks`]) and, selected by `lang`, Rust's tuple fields ([`tuple_fields`]), Go's
+/// embedded fields and type aliases ([`embedded_fields`], [`named_by_field`]) and C#'s operators,
+/// conversion operators and indexers ([`named_by_field`], [`conversion_operators`],
+/// [`indexers`]), each lowered over its own node as a tagged definition is.
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -163,10 +190,13 @@ pub fn extract(
         let Some(name) = source.get(tag.name_range.start..tag.name_range.end) else {
             continue;
         };
-        let name = name.to_string();
         // 1-based line from the tag span's start row.
         let line = tag.span.start.row as u32 + 1;
         if tag.is_definition {
+            // THE LEAF, ahead of the filter and both pushes, so the name a definition is filtered
+            // by, recorded under and named as a caller by is one.
+            let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
+            let name = def_leaf(node, name);
             // THE NAME FILTER, ahead of both pushes: a nameless definition enters neither `defs`
             // nor `def_ranges`, so the two stay index-aligned and its range is no caller range
             // and no test region.
@@ -176,7 +206,7 @@ pub fn extract(
             let kind = lowered_kind(
                 lang,
                 kind_of(config.syntax_type_name(tag.syntax_type_id)),
-                root.descendant_for_byte_range(tag.range.start, tag.range.end),
+                node,
                 source.as_bytes(),
             );
             def_ranges.push((tag.range.clone(), name.clone(), kind));
@@ -184,7 +214,7 @@ pub fn extract(
         } else {
             ref_positions.push(tag.range.start);
             refs.push(SymRef {
-                name,
+                name: name.to_string(),
                 line,
                 enclosing: None,
                 is_test: false,
@@ -210,13 +240,25 @@ pub fn extract(
         }
     }
     // The definitions the language's query cannot tag are read off the tree too (spec 116), each
-    // read-off giving the kind of what it finds; one whose leaf names nothing makes no
-    // definition, as a tagged one makes none.
+    // read-off giving the kind of what it finds, lowered over its own node as a tagged
+    // definition's is; one whose leaf names nothing makes no definition, as a tagged one makes
+    // none.
     let read_offs = match lang {
         Lang::Rust => vec![(Kind::Field, tuple_fields(root))],
         Lang::Go => vec![
             (Kind::Field, embedded_fields(root, source.as_bytes())),
-            (Kind::Type, type_aliases(root, source.as_bytes())),
+            (
+                Kind::Type,
+                named_by_field(root, source.as_bytes(), "type_alias", "name"),
+            ),
+        ],
+        Lang::CSharp => vec![
+            (
+                Kind::Method,
+                named_by_field(root, source.as_bytes(), "operator_declaration", "operator"),
+            ),
+            (Kind::Method, conversion_operators(root, source.as_bytes())),
+            (Kind::Method, indexers(root, source.as_bytes())),
         ],
         _ => Vec::new(),
     };
@@ -225,6 +267,12 @@ pub fn extract(
             if is_nameless(lang, &name) {
                 continue;
             }
+            let kind = lowered_kind(
+                lang,
+                kind,
+                root.descendant_for_byte_range(range.start, range.end),
+                source.as_bytes(),
+            );
             def_ranges.push((range, name.clone(), kind));
             defs.push(unresolved_def(kind, name, line));
         }
@@ -459,13 +507,53 @@ fn embedded_fields(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
         .collect()
 }
 
-/// Go's TYPE ALIASES (spec 116): every `type_alias` (`type A = B`) under `root`, in source
-/// order, as its byte range, its leaf and its 1-based line. The upstream query tags its name a
-/// type reference, which the alias's range then encloses.
-fn type_aliases(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
-    nodes_of_kind(root, "type_alias")
+/// The definitions a grammar names by a field its query cannot tag (spec 116): every node of
+/// the grammar kind `kind` under `root` holding the field `field`, in source order, as its byte
+/// range, its leaf, that field's text, and its 1-based line. Go's TYPE ALIASES are every
+/// `type_alias` (`type A = B`) by its `name`, which the upstream query tags a type reference
+/// the alias's range then encloses; C#'s OPERATORS are every `operator_declaration` by its
+/// `operator`, the token (`+`) the grammar gives it in place of a name node.
+fn named_by_field(root: tree_sitter::Node, source: &[u8], kind: &str, field: &str) -> Vec<ReadOff> {
+    nodes_of_kind(root, kind)
         .into_iter()
-        .filter_map(|alias| read_off(alias, alias.child_by_field_name("name")?, source))
+        .filter_map(|node| read_off(node, node.child_by_field_name(field)?, source))
+        .collect()
+}
+
+/// C#'s CONVERSION OPERATORS (spec 116): every `conversion_operator_declaration` under `root`,
+/// in source order, as its byte range, its leaf and its 1-based line. Its leaf is its header
+/// from `implicit` or `explicit` through its target type, as written with its whitespace
+/// collapsed (`implicit operator int`).
+fn conversion_operators(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    nodes_of_kind(root, "conversion_operator_declaration")
+        .into_iter()
+        .filter_map(|op| {
+            let mut cursor = op.walk();
+            let from = op
+                .children(&mut cursor)
+                .find(|c| matches!(c.kind(), "implicit" | "explicit"))?;
+            let to = op.child_by_field_name("type")?;
+            let header = std::str::from_utf8(source.get(from.start_byte()..to.end_byte())?).ok()?;
+            Some((
+                op.byte_range(),
+                normalize_ws(header),
+                op.start_position().row as u32 + 1,
+            ))
+        })
+        .collect()
+}
+
+/// C#'s INDEXERS (spec 116): every `indexer_declaration` under `root`, in source order, as its
+/// byte range, its leaf and its 1-based line. The grammar gives an indexer no name node; its
+/// leaf is its `this` token.
+fn indexers(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    nodes_of_kind(root, "indexer_declaration")
+        .into_iter()
+        .filter_map(|indexer| {
+            let mut cursor = indexer.walk();
+            let this = indexer.children(&mut cursor).find(|c| c.kind() == "this")?;
+            read_off(indexer, this, source)
+        })
         .collect()
 }
 
@@ -501,10 +589,8 @@ fn nodes_of_kind<'t>(root: tree_sitter::Node<'t>, kind: &str) -> Vec<tree_sitter
 /// The [`ImplBlock`] for one `impl_item` node, or `None` when its self type cannot be read (a
 /// syntax-error recovery shape).
 fn impl_block(node: tree_sitter::Node, source: &[u8]) -> Option<ImplBlock> {
-    let text = |n: tree_sitter::Node| -> Option<String> {
-        let raw = n.utf8_text(source).ok()?;
-        Some(raw.split_whitespace().collect::<Vec<_>>().join(" "))
-    };
+    let text =
+        |n: tree_sitter::Node| -> Option<String> { Some(normalize_ws(n.utf8_text(source).ok()?)) };
     let self_type = node.child_by_field_name("type")?;
     let trait_node = node.child_by_field_name("trait");
     let name = match trait_node {

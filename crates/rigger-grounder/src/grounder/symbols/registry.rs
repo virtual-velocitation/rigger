@@ -59,9 +59,52 @@ const RUST_TAGS: &str = r#"
 /// to compile. That pattern is also redundant: the line above it already tags the same
 /// `namespace_declaration` as `@definition.module`. This is the shipped query verbatim minus
 /// that one invalid, redundant line - authored here per the spec's "author or verify each
-/// grammar's tag query" mandate.
+/// grammar's tag query" mandate - with a definition pattern for every C# definition type the
+/// grammar names (spec 116). A struct, a record, an enum and a delegate are tagged as a class
+/// is; an enum member a variant; a destructor a method, which `extract` names `~` and its
+/// identifier; a local function a function; a constructor a constructor; a property and an event
+/// with accessors a property. A method, destructor, local function or constructor with no body
+/// `extract` lowers to a declaration. A namespace, block or file-scoped, is a module named by
+/// its whole name node, so `namespace A.B.C` is `A.B.C`. A `variable_declarator` is a field
+/// under a `field_declaration` or an `event_field_declaration` only, so a method-local variable
+/// is none, and one declaration naming several is one definition per name; its type sits
+/// outside the declarator, so the upstream reference to it stays its container's. Under a
+/// `field_declaration` holding the `const` modifier the declarator is a constant: that pattern
+/// stands BEFORE the field pattern because both match a `const` field's name node, and one name
+/// node carries one tag, the earlier pattern's. An operator, a conversion operator and an
+/// indexer have no name node, so `extract` reads them off the parsed tree.
 const CSHARP_TAGS: &str = r#"
 (class_declaration name: (identifier) @name) @definition.class
+
+(struct_declaration name: (identifier) @name) @definition.class
+
+(record_declaration name: (identifier) @name) @definition.class
+
+(enum_declaration name: (identifier) @name) @definition.class
+
+(delegate_declaration name: (identifier) @name) @definition.class
+
+(enum_member_declaration name: (identifier) @name) @definition.variant
+
+(destructor_declaration name: (identifier) @name) @definition.method
+
+(local_function_statement name: (identifier) @name) @definition.function
+
+(constructor_declaration name: (identifier) @name) @definition.constructor
+
+(property_declaration name: (identifier) @name) @definition.property
+
+(event_declaration name: (identifier) @name) @definition.property
+
+(field_declaration
+  (modifier "const")
+  (variable_declaration (variable_declarator name: (identifier) @name) @definition.constant))
+
+(field_declaration
+  (variable_declaration (variable_declarator name: (identifier) @name) @definition.field))
+
+(event_field_declaration
+  (variable_declaration (variable_declarator name: (identifier) @name) @definition.field))
 
 (class_declaration (base_list (_) @name)) @reference.class
 
@@ -81,7 +124,9 @@ const CSHARP_TAGS: &str = r#"
 
 (invocation_expression function: (member_access_expression name: (identifier) @name)) @reference.send
 
-(namespace_declaration name: (identifier) @name) @definition.module
+(namespace_declaration name: (_) @name) @definition.module
+
+(file_scoped_namespace_declaration name: (_) @name) @definition.module
 "#;
 
 /// Additional JS/TS tags-query patterns (spec 92 criterion 2, THE WHOLE PRODUCT IS COVERED): the
