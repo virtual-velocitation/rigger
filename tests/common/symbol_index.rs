@@ -2,13 +2,14 @@
 //! index, saving it through the real `store` boundary and reading the bytes back, loading a
 //! hand-authored legacy `index.json`, projecting a file's definitions, its test-marked
 //! definitions and its references with their callers, checking a language's definition
-//! types against a file's definitions, checking a language's definitions fixture whole, and
-//! checking the variant names a file's kinds persist under.
+//! types against a file's definitions, checking a language's definitions fixture whole,
+//! projecting a source's definition extents, and checking the variant names a file's kinds
+//! persist under.
 //! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention
-//! `tests/common/mod.rs` keeps). Every lane compiles it; `extracted`, and
-//! `assert_definitions_fixture` through it, alone reach the parser and are held by the `symbols`
-//! lane only.
+//! `tests/common/mod.rs` keeps). Every lane compiles it; `extracted`, with
+//! `assert_definitions_fixture` through it, and `extents_by_line` alone reach the parser and are
+//! held by the `symbols` lane only.
 
 #![allow(dead_code)]
 
@@ -132,6 +133,26 @@ pub fn extracted(ext: &str, src: &str) -> FileSymbols {
         .expect("the extension is registered");
     rigger::grounder::symbols::extract::extract(src, entry.lang, &entry.language, entry.tags_query)
         .expect("the registered query extracts the source")
+}
+
+/// Every definition extent the grammar and query registered for the extension `ext` bound in
+/// `src`, as `(start line, end line, name)`, sorted: the one projection of `definition_extents`
+/// the registry's tests compare whole. Only the `symbols` lane holds it, as it does `extracted`.
+#[cfg(feature = "symbols")]
+pub fn extents_by_line(ext: &str, src: &str) -> Vec<(u32, u32, String)> {
+    let entry = rigger::grounder::symbols::registry::for_extension(ext)
+        .expect("the extension is registered");
+    let mut extents: Vec<_> = rigger::grounder::symbols::extract::definition_extents(
+        src,
+        &entry.language,
+        entry.tags_query,
+    )
+    .expect("the registered query bounds the source")
+    .into_iter()
+    .map(|e| (e.start_line, e.end_line, e.name))
+    .collect();
+    extents.sort();
+    extents
 }
 
 /// Every definition of `fs` as `(line, name, kind)`, sorted: the one projection the extraction

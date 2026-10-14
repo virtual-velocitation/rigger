@@ -384,6 +384,7 @@ pub(crate) mod tests {
     use crate::js_ts_definition_sources::{
         JS_DEFINITIONS_SOURCE, TSX_DEFINITIONS_SOURCE, TS_DEFINITIONS_SOURCE,
     };
+    use crate::python_definition_sources::PYTHON_DEFINITIONS_SOURCE;
 
     /// Rust's DEFINITION TYPES (spec 116): each row a node type of the Rust grammar that is a
     /// definition, a kind it lowers to, and the leaf of the one definition of that kind the Rust
@@ -543,6 +544,25 @@ pub(crate) mod tests {
         ("enum_assignment", Kind::Variant, "Blue"),
         ("property_signature", Kind::Field, "prop"),
         ("property_identifier", Kind::Variant, "Red"),
+    ];
+
+    /// Python's DEFINITION TYPES (spec 116): each row a node type of the Python grammar that is a
+    /// definition, a kind it lowers to, and the leaf of the one definition of that kind the Python
+    /// definitions fixture holds for it. A `function_definition` is a method in a class, else a
+    /// function; an `assignment` makes each identifier its targets bind a constant at module
+    /// level and a field in a class body, a single target, a pattern's names and every target of
+    /// a chain alike, the module's single target alone tagged. The other `assignment` rows and
+    /// the `type_alias_statement` row are read off the parsed tree.
+    pub(crate) const PYTHON_DEFINITION_TYPES: [(&str, Kind, &str); 9] = [
+        ("class_definition", Kind::Type, "Shape"),
+        ("function_definition", Kind::Function, "host"),
+        ("function_definition", Kind::Method, "area"),
+        ("assignment", Kind::Constant, "z"),
+        ("assignment", Kind::Constant, "a"),
+        ("assignment", Kind::Constant, "y"),
+        ("assignment", Kind::Field, "h"),
+        ("assignment", Kind::Field, "e"),
+        ("type_alias_statement", Kind::Type, "X"),
     ];
 
     /// The definitions every one of the JS, TS and TSX definitions fixtures holds in its JS
@@ -1190,6 +1210,89 @@ pub(crate) mod tests {
                 &[&JS_LINES_DEFINITIONS[..], &TS_LINES_DEFINITIONS[..]].concat(),
                 &[&JS_LINES_REFERENCES[..], &TS_LINES_REFERENCES[..]].concat(),
             );
+        /// PYTHON DEFINITIONS ARE NODES (spec 116 criterion 10), under the registered Python
+        /// query: the fixture yields every definition it holds at its own kind and leaf. A def
+        /// is a method when its nearest enclosing definition is a class, a decorated one and
+        /// one of a class nested in a function included, and a function otherwise, one nested
+        /// in a method included. A module-level assignment makes a constant of each identifier
+        /// it binds, its one target whatever value the grammar admits (`z = 1`, `u = 1, 2`,
+        /// `m = yield`, `n = o += 1`), an annotated name with no value (`w: int`), each
+        /// name of a tuple, a parenthesized tuple or a list pattern, starred included (`a, b`,
+        /// `(j, q)`, `[c, *d]`), and each target of a chain once (`x = y = f()`); a class-body
+        /// one makes a field of each, an annotated name with no value (`h: int`) and a tuple's
+        /// names (`e, g`) included. An assignment under `if TYPE_CHECKING:` and an attribute
+        /// target (`self.x = 1`) make none, and a type alias is a type at its name, generic
+        /// (`type X[T] = int` at `X`) or not (`type Y = int`). Each row of Python's DEFINITION
+        /// TYPES names exactly one of them.
+        ///
+        /// The callers: a call in a function is the function's, one in a function nested in a
+        /// method the nested function's, and one in a class-body value the class's; the value
+        /// of a pattern or a chained assignment is the file's, each bound name spanning its own
+        /// identifier alone.
+        every_python_definition_type_yields_its_definition_at_its_kind:
+            crate::symbol_index::assert_definitions_fixture(
+                "py",
+                PYTHON_DEFINITIONS_SOURCE,
+                &PYTHON_DEFINITION_TYPES,
+                &[
+                    (1, "host", Kind::Function),
+                    (3, "Local", Kind::Type),
+                    (4, "run", Kind::Method),
+                    (6, "Shape", Kind::Type),
+                    (7, "h", Kind::Field),
+                    (8, "e", Kind::Field),
+                    (8, "g", Kind::Field),
+                    (9, "k", Kind::Field),
+                    (10, "area", Kind::Method),
+                    (12, "inner", Kind::Function),
+                    (15, "deco", Kind::Method),
+                    (17, "a", Kind::Constant),
+                    (17, "b", Kind::Constant),
+                    (18, "c", Kind::Constant),
+                    (18, "d", Kind::Constant),
+                    (19, "x", Kind::Constant),
+                    (19, "y", Kind::Constant),
+                    (20, "z", Kind::Constant),
+                    (21, "w", Kind::Constant),
+                    (24, "X", Kind::Type),
+                    (25, "u", Kind::Constant),
+                    (26, "m", Kind::Constant),
+                    (27, "n", Kind::Constant),
+                    (28, "j", Kind::Constant),
+                    (28, "q", Kind::Constant),
+                    (29, "Y", Kind::Type),
+                ],
+                &[
+                    (2, "probe", Some("host")),
+                    (9, "make", Some("Shape")),
+                    (13, "paint", Some("inner")),
+                    (18, "f", None),
+                    (19, "f", None),
+                ],
+            );
+        /// The Python query bounds a single-target module-level assignment by the whole
+        /// assignment (`z = 1`, `w: int`, and one of each other value type the grammar admits)
+        /// and every def and class by its block, and gives a
+        /// chained assignment's targets (`x = y = f()`) and every other bound or read-off name
+        /// no extent, the binding walk and the read-offs alone making them.
+        the_python_query_bounds_a_single_target_assignment_and_no_chained_one: assert_eq!(
+            crate::symbol_index::extents_by_line("py", PYTHON_DEFINITIONS_SOURCE),
+            [
+                (1, 5, "host"),
+                (3, 5, "Local"),
+                (4, 5, "run"),
+                (6, 16, "Shape"),
+                (10, 13, "area"),
+                (12, 13, "inner"),
+                (15, 16, "deco"),
+                (20, 20, "z"),
+                (21, 21, "w"),
+                (25, 25, "u"),
+                (26, 26, "m"),
+                (27, 27, "n"),
+            ]
+            .map(|(start, end, name): (u32, u32, &str)| (start, end, name.to_string()))
+        );
         /// The JS query's constant enumeration is the JS grammar's `expression` subtypes,
         /// flattened through `primary_expression`, but the four the function and class
         /// patterns tag, so a declarator of any other value is a constant.
