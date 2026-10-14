@@ -26,7 +26,9 @@ tool that searches them.
   regenerated and committed in the same commit that changed its inputs. Check: `git status
   --porcelain` is empty at head.
 - **A test-side shape is spelled once.** A table, fixture, helper, builder, seeder, expected
-  value or oracle you add exists once across every test home, as production code does. Check:
+  value or oracle you add exists once across every test home, as production code does; the
+  list is open - a shape is any test-side token two tests could spell, a const or id literal, a
+  hand-built event or fixture row, a closure or a query string among them. Check:
   look it up where the project's test helpers live before you write it; when a second home
   needs one the first already spells, move it to the shared home and have both call it,
   changing no assertion or expected value. The record is owed for every test-side shape you
@@ -34,12 +36,23 @@ tool that searches them.
   CHECKED - FIXED when moved to the shared home with both calling it and no assertion or
   expected value changed, CHECKED when kept apart, with the reason.
 - **Every sentence about the changed behaviour is true at head.** The doc comments of each
-  function you changed and of its callers, module docs, test names, test docs, assertion
-  messages and operator docs say what the code at head does. Check: read each against the
-  code; when you rename or retire a name, walk every spelling of the old term through the
-  tree. The old spelling occurs zero times in the tree outside git history, counted over every
-  root (test docs, test comments and assertion messages are sentences too), or your hand-over
-  names each remaining occurrence as a deliberate mention with its reason.
+  item you changed and of its callers, module docs, test names, test docs, assertion
+  messages and operator docs say what the code at head does. Check: enumerate the walked set,
+  each member from what generates it - the `//!` module doc of every file the change touches
+  (the changed-file list); the doc comment and every comment in the body of each item the
+  change touches (the hunks); the doc of the trait item a changed fn implements and of the
+  trait a changed impl is for (the impl header); the doc of every item a changed hunk names,
+  callee, constant or type returned (the hunk's identifiers); the doc of every caller of a
+  changed item (the project's graph, or your persona's fallback); and every tracked line
+  outside the hunks that spells a changed item's name, counted over every root as an old
+  spelling is below - and read each against the code at head, leaving it true or fixing it;
+  when you rename or retire a name, walk every spelling of the old term through the tree. The
+  old spelling occurs zero times in the tree outside git history, counted over every root
+  (test docs, test comments and assertion messages are sentences too), or your hand-over names
+  each remaining occurrence as a deliberate mention with its reason. The record is owed on
+  every change: one whole-tree DecisionMade naming the set walked by its generators (files,
+  items, trait items, callers, lines counted) and every sentence FIXED with its location; a
+  member whose generator returned nothing is named as empty.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
   code reads after your change, on any feature lane, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
