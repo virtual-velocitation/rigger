@@ -11742,6 +11742,21 @@ mod tests {
         }
 
         #[test]
+        fn the_callers_walks_cross_file_read_seeks_its_bound_leaf_on_the_edge_text_index() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            let plan = query_plan(
+                &p,
+                &callers_via_bare_sql(),
+                params![REL_CALLS, "test", "new"],
+            );
+            assert!(
+                plan.iter()
+                    .any(|d| d.contains("SEARCH e USING INDEX idx_edges_live_to_name_suffix")),
+                "{plan:?}"
+            );
+        }
+
+        #[test]
         fn a_seed_with_no_leaf_names_nothing_referenced() {
             let p = Projector::open(":memory:", "test").unwrap();
             write_directly(&p, |tx, project| entity(tx, project, &UNKEYED, "x", &[]));
