@@ -50,6 +50,8 @@ pub fn lens(name: &str) -> Lens {
 
 /// The concept subject of [`shared_member_graph`].
 pub const SUB_C: &str = "concept/1/0";
+/// The served `/api/graph` route re-graining [`SUB_C`] by the files lens.
+pub const SUB_C_FILES_ROUTE: &str = "/api/graph?seed=concept%2F1%2F0&lens=files";
 /// The other, larger concept of [`shared_member_graph`].
 pub const OTHER_D: &str = "concept/1/1";
 /// The member of [`shared_member_graph`] that realizes BOTH concepts.

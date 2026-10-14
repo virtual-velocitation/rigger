@@ -26,7 +26,7 @@ use common::fixtures::{
     call_frontiers, call_layer, call_node_ids, call_walk, edge, kinded_def_node,
     node_with_optional_attrs, plain,
 };
-use common::lens::{coupling_rows, files_lens_rows, SUB_C as CONCEPT};
+use common::lens::{coupling_rows, files_lens_rows, SUB_C as CONCEPT, SUB_C_FILES_ROUTE};
 use common::served::served_json;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
@@ -562,10 +562,7 @@ fn the_files_lens_folds_a_member_under_its_own_file_and_resolves_no_placeholder_
 /// the placeholder in the unresolved sidecar with no candidate.
 #[test]
 fn the_served_files_regrain_keeps_a_placeholder_off_a_field() {
-    let body = served_json(
-        &lens_graph("field", false),
-        "/api/graph?seed=concept%2F1%2F0&lens=files",
-    );
+    let body = served_json(&lens_graph("field", false), SUB_C_FILES_ROUTE);
     assert_eq!(
         body["clusters"]
             .as_array()

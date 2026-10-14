@@ -17,7 +17,7 @@
 mod common;
 
 use common::fixtures::{apply_code_entity, apply_def, def_node, edge, node_with_attrs, plain};
-use common::lens::{coupling_rows, files_lens_rows, SUB_C};
+use common::lens::{coupling_rows, files_lens_rows, SUB_C, SUB_C_FILES_ROUTE};
 use common::served::served_json;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
@@ -61,8 +61,9 @@ fn empty_named(id: &str) -> Node {
 /// GIVEN a placeholder whose leaf is the name of a nested definition in another file, WHEN the
 /// files lens folds the whole graph and re-grains the concept, THEN the placeholder folds under
 /// the nested definition's file; a second definition of the leaf leaves it unresolved with both
-/// candidates; a node of an empty `name` is no candidate but a placeholder of its id's leaf; and
-/// a doubled sigil leaves the leaf one sigil, which nothing defines.
+/// candidates; a node of an empty `name` is no candidate but a placeholder of its id's leaf; a
+/// doubled sigil leaves the leaf one sigil, which nothing defines; and an id with an empty rest
+/// has the empty leaf, which no node of an empty `name` defines.
 #[test]
 fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
     assert_eq!(
@@ -118,6 +119,21 @@ fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
         ],
         "one sigil is stripped, so the leaf `%new` has no definition"
     );
+    assert_eq!(
+        files_lens_rows(
+            &leaf_graph("src/c.rs::", vec![empty_named("src/e.rs::")]),
+            SUB_C,
+            3
+        ),
+        [
+            "whole src/a.rs 1",
+            "whole src/c.rs 1",
+            "concept src/a.rs 1",
+            "concept src/c.rs 1",
+            "concept src/c.rs:: <- []",
+        ],
+        "an empty `name` keys no definition, so the empty leaf of `src/c.rs::` has none"
+    );
 }
 
 /// GIVEN the same graph served, WHEN the operator re-grains the concept by files through the
@@ -125,10 +141,7 @@ fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
 /// member is unresolved.
 #[test]
 fn the_served_files_regrain_folds_a_placeholder_onto_the_nested_definition() {
-    let body = served_json(
-        &leaf_graph(PLACEHOLDER, Vec::new()),
-        "/api/graph?seed=concept%2F1%2F0&lens=files",
-    );
+    let body = served_json(&leaf_graph(PLACEHOLDER, Vec::new()), SUB_C_FILES_ROUTE);
     assert_eq!(
         body,
         serde_json::json!({

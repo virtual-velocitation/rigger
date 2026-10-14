@@ -32,7 +32,7 @@ use common::fixtures::def_node as def;
 use common::fixtures::edge;
 use common::fixtures::node_with_optional_attrs;
 use common::fixtures::plain;
-use common::lens::lens;
+use common::lens::{lens, SUB_C_FILES_ROUTE};
 use common::served::served_json;
 use rigger::contextgraph::{
     Graph, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
@@ -236,10 +236,7 @@ fn the_served_graph_route_reprojects_a_seed_under_a_lens() {
     );
 
     // --- seed + lens=files via the route: distinct defining files + the unresolved sidecar ---
-    let files = served_json(
-        &reproj_graph(),
-        "/api/graph?seed=concept%2F1%2F0&lens=files",
-    );
+    let files = served_json(&reproj_graph(), SUB_C_FILES_ROUTE);
     let file_keys: Vec<&str> = files["clusters"]
         .as_array()
         .expect("clusters array")
