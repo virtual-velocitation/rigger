@@ -983,14 +983,16 @@ impl Projector {
     /// - **Layers.** The seed is layer 0; each callee reached for the FIRST time takes its
     ///   discoverer's layer + 1. BFS visits shallowest-first, so a node's recorded layer is its
     ///   minimum hop distance from the seed, stable across polls.
-    /// - **Cross-file resolution.** A `CALLS` edge whose callee target is BARE (no `name` attr - the
-    ///   definition is in another file), or a named node that is no call target (a data member or
-    ///   a declaration of the called leaf), is resolved by the leaf its id names over the
-    ///   call-target DEFINITION nodes of that leaf: EXACTLY ONE definition auto-continues (the edge is redirected
-    ///   onto the real definition); MORE THAN ONE becomes a marked frontier ([`CallNode::frontier`]
-    ///   carrying the SORTED candidate ids) the walk does NOT descend - honest by construction, the
-    ///   human re-seeds on a chosen candidate; ZERO leaves the bare node a terminal leaf. A same-file
-    ///   callee already lands on its real definition, so it needs no resolution.
+    /// - **Cross-file resolution.** A `CALLS` edge whose callee is no named call target is resolved
+    ///   by the leaf its id names over the call-target DEFINITION nodes of that leaf; only the
+    ///   placeholder `<file>::%<leaf>` a call lands on when its file holds no one call target of
+    ///   the leaf names one, so an id with no sigil (a data member, a declaration) has no
+    ///   candidate. EXACTLY ONE definition auto-continues (the edge is redirected onto the real
+    ///   definition); MORE THAN ONE becomes a marked frontier ([`CallNode::frontier`] carrying the
+    ///   SORTED candidate ids) the walk does NOT descend - honest by construction, the human
+    ///   re-seeds on a chosen candidate; ZERO leaves the callee a terminal leaf. A
+    ///   same-file call landed on its one candidate targets its real definition, so it needs no
+    ///   resolution.
     /// - **Cycles / dedup.** Reached nodes dedup (a node is expanded at most once), so recursion and
     ///   mutual calls TERMINATE into a DAG instead of looping. An edge whose target layer is NOT
     ///   deeper than its source is marked a BACK edge ([`CallEdge::back`]) rather than duplicated.
@@ -1056,7 +1058,8 @@ impl Projector {
     ///   RIGHT with callers flowing in from deeper layers.
     /// - **Reverse cross-file resolution (the mirror of the DOWN policy).** A caller of the seed's
     ///   leaf is found through the reverse leaf-match: an edge that literally targets `cur` is a
-    ///   SAME-FILE caller (its call already lands on the definition - always followed, unambiguous);
+    ///   SAME-FILE caller (its call landed on its one same-file candidate - always followed,
+    ///   unambiguous);
     ///   an edge to a BARE placeholder, or to a named data member or declaration, whose target text
     ///   binds `cur`'s leaf (spelled `<file>::<leaf>` or `<file>::%<leaf>`, spec 119) is a CROSS-FILE
     ///   caller, attributed to `cur` only when that leaf has EXACTLY ONE call-target definition
@@ -3426,8 +3429,8 @@ fn edge_binds_leaf_sql(to_id: &str, leaf: &str) -> String {
 /// for a code-entity definition a call resolves onto, `Some(false)` for a named node of a
 /// non-target kind (a data member, a declaration), and `None` for a node carrying no non-empty
 /// `name` ([`node_leaf_sql`]: a bare cross-file placeholder the reference fold created attr-less)
-/// or for no node at all. This is how a directed hop tells a same-file callee (which already lands
-/// on its definition) from a callee that must be resolved by its leaf: every answer but
+/// or for no node at all. This is how a directed hop tells a same-file callee (a call landed on its
+/// one same-file candidate) from a callee that must be resolved by its leaf: every answer but
 /// `Some(true)`.
 fn named_call_target(conn: &Connection, id: &str, project: &str) -> Result<Option<bool>, Error> {
     conn.query_row(
@@ -3584,12 +3587,12 @@ fn call_edge_rows(
 ///
 /// - a SAME-FILE callee that is a named call target (it is its own definition) -> land on it,
 ///   no frontier;
-/// - a BARE cross-file placeholder, and a named node that is no call target (a data member or a
-///   declaration of the called leaf), resolves by the leaf its id names ([`leaf_of`]) over the
-///   call-target DEFINITION nodes: EXACTLY ONE
-///   definition auto-continues (the edge is redirected onto the real definition, no frontier);
-///   MORE THAN ONE is a marked frontier (the placeholder id, carrying the sorted candidates) the
-///   caller does NOT descend; ZERO leaves the placeholder a terminal leaf (no descent target).
+/// - any other target resolves by the leaf its id names ([`leaf_of`]) over the call-target
+///   DEFINITION nodes: only a placeholder `<file>::%<leaf>` names one, so an id with no sigil (a
+///   data member, a declaration, a hand-built bare id) has no candidate. EXACTLY ONE definition
+///   auto-continues (the edge is redirected onto the real definition, no frontier); MORE THAN ONE
+///   is a marked frontier (the placeholder id, carrying the sorted candidates) the caller does NOT
+///   descend; ZERO leaves the target a terminal leaf (no descent target).
 fn resolve_down_hop(
     conn: &Connection,
     raw_to: &str,
@@ -3611,10 +3614,10 @@ fn resolve_down_hop(
 
 /// The live, caller-attributed `CALLS` edges whose target is EXACTLY `to_id`, in `project`, as
 /// `(from_id, tier, valid_from, source)` sorted by caller (spec 52). These are the SAME-FILE callers
-/// of `to_id`: a same-file call already lands on the callee's definition, so its edge literally
-/// targets it - always an unambiguous caller. Carries the `rel = CALLS AND valid_to IS NULL` shape
-/// the partial `idx_edges_live_rel_from` index cannot serve on `to_id`, but the reverse read stays
-/// scoped and ordered so the UP walk is deterministic.
+/// of `to_id`: a same-file call landed on its one candidate, the callee's definition, so its edge
+/// literally targets it - always an unambiguous caller. Carries the
+/// `rel = CALLS AND valid_to IS NULL` shape the partial `idx_edges_live_rel_from` index cannot
+/// serve on `to_id`, but the reverse read stays scoped and ordered so the UP walk is deterministic.
 fn callers_direct(
     conn: &Connection,
     to_id: &str,
@@ -7219,7 +7222,8 @@ mod tests {
             g.edges
         );
         // The file REFERENCES the symbol named at the reference site (a structural edge folded
-        // from EdgeInferred), targeting the same file-scoped code-entity id.
+        // from EdgeInferred), targeting the file-scoped placeholder of its leaf, which the file
+        // does not define.
         assert!(
             g.edges.iter().any(|e| e.rel == REL_REFERENCES
                 && e.from == "src/combat.rs"

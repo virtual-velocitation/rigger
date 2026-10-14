@@ -354,8 +354,8 @@ pub fn apply_edge_inferred_evidence(p: &Projector, pos: u64, file: &str, name: &
 }
 
 /// Fold one caller-attributed call (see [`call_json`]) at `pos`. When `name` is defined in
-/// ANOTHER file it lands on a BARE same-file placeholder the detection pass resolves by its unique
-/// leaf.
+/// ANOTHER file it lands on the BARE same-file placeholder `<file>::%<name>` the detection
+/// pass resolves by its unique leaf.
 pub fn apply_call(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
     apply_json(p, pos, TYPE_EDGE_INFERRED, call_json(file, name, caller));
 }

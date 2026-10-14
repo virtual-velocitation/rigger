@@ -6,10 +6,11 @@
 //! tests (which feed a hand-built graph) are structurally blind to:
 //!
 //!  - the CROSS-FILE resolution over a real `whole()` read. A reference in one file to a symbol
-//!    defined in another folds onto a BARE same-file placeholder (spec 29a keeps cross-file name
-//!    resolution out of the fold); detection must redirect that placeholder onto the unique real
-//!    definition, so a community spans the directory boundary between caller and callee. The unit
-//!    tests hand-build already-resolved edges and never exercise this over the projection.
+//!    defined in another folds onto the BARE same-file placeholder `<file>::%<leaf>` (spec 29a
+//!    keeps cross-file name resolution out of the fold); detection must redirect that placeholder
+//!    onto the unique real definition, so a community spans the directory boundary between caller
+//!    and callee. The unit tests hand-build already-resolved edges and never exercise this over
+//!    the projection.
 //!  - the REBUILD-BYTE-IDENTICAL contract through the ACTUAL fold. The pass's `CommunityAssigned`
 //!    events, replayed from scratch into a fresh projection, must reproduce the same community nodes
 //!    (including the degree-derived label) and the same live `IN_COMMUNITY` edges - the rebuildable
