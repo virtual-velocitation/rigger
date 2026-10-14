@@ -117,6 +117,32 @@ fn fold_at(p: &Projector, pos: u64, mut e: Event) {
     folds(p, std::slice::from_ref(&e));
 }
 
+/// A `type_` event carrying `data`, replay-keyed `key` and valid from `secs` after the epoch.
+pub fn keyed(type_: &str, data: Vec<u8>, key: &str, secs: u64) -> Event {
+    Event::new(type_, data)
+        .with_meta(rigger::ingest::META_REPLAY_KEY, key)
+        .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
+}
+
+/// One derived event stamped with replay key `key`, valid from `secs`, at `pos`.
+pub fn keyed_event(pos: u64, type_: &str, json: serde_json::Value, key: &str, secs: u64) -> Event {
+    let mut e = keyed(type_, serde_json::to_vec(&json).unwrap(), key, secs);
+    e.position = pos;
+    e
+}
+
+/// Fold one [`keyed_event`] onto `p`.
+pub fn apply_keyed(
+    p: &Projector,
+    pos: u64,
+    type_: &str,
+    json: serde_json::Value,
+    key: &str,
+    secs: u64,
+) {
+    folds(p, &[keyed_event(pos, type_, json, key, secs)]);
+}
+
 /// Fold one `type_` event carrying `json` onto `p` at log position `pos`.
 pub fn apply_json(p: &Projector, pos: u64, type_: &str, json: serde_json::Value) {
     apply_json_as(p, pos, type_, json, None);

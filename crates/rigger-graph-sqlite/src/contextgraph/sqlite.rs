@@ -4366,6 +4366,7 @@ mod tests {
         apply_call, apply_code_entity, apply_decision, apply_def, apply_def_at,
         apply_edge_inferred_evidence, apply_governs_at, apply_json, apply_json_as, apply_ref,
         call_back_edge, call_edge_pairs, call_layer, call_node_ids, decision_json, dir_snapshot,
+        edge_tier,
     };
 
     #[test]
@@ -10931,21 +10932,6 @@ mod tests {
 
     // ---- spec 29a criterion 2: the confidence tier on folded structural edges ----
 
-    /// The tier of the one edge with relation `rel` landing on `to`, out of a subgraph.
-    fn edge_tier(g: &Graph, rel: &str, to: &str) -> String {
-        let matches: Vec<&Edge> = g
-            .edges
-            .iter()
-            .filter(|e| e.rel == rel && e.to == to)
-            .collect();
-        assert_eq!(
-            matches.len(),
-            1,
-            "expected exactly one {rel} edge to {to}; got {matches:?}"
-        );
-        matches[0].tier.clone()
-    }
-
     /// The tiers of the `CALLS` edge and of the `REFERENCES` edge landing on `to`, in that order.
     fn call_tiers(p: &Projector, to: &str) -> [String; 2] {
         let g = p.whole().unwrap();
@@ -11647,10 +11633,12 @@ mod tests {
     /// leaf, over a nested definition `a.rs::T::new` written directly and `b.rs`'s references to
     /// `new`, each spelled `b.rs::new` and `b.rs::%new`.
     mod edge_side_binds_the_leaf {
-        use super::generations::apply_keyed;
         use super::leaf_keys_resolution::{define, edge_directly, entity, write_directly, UNKEYED};
         use super::*;
-        use crate::test_support::{call_frontiers, call_node_ids, call_walk, def_json};
+        use crate::test_support::apply_keyed;
+        use crate::test_support::{
+            call_frontiers, call_node_ids, call_walk, def_json, referenced_not_called_ids,
+        };
 
         /// The callers walk from `seed`, a definition of leaf `leaf` written directly, reaches the
         /// caller `caller` whose call targets the nameless `target`, as an unambiguous caller.
@@ -11703,12 +11691,6 @@ mod tests {
                     &[("c.rs::U::new", "new")],
                     TIER_INFERRED
                 );
-        }
-
-        /// The ids of the files the UP view from `seed` lists referenced but not called.
-        fn referenced_not_called_ids(p: &Projector, seed: &str) -> Vec<String> {
-            let up = call_walk(p, seed, Direction::Up);
-            up.referenced_not_called.into_iter().map(|n| n.id).collect()
         }
 
         #[test]
@@ -12417,33 +12399,7 @@ mod tests {
         /// A live edge as `(from, to, rel, valid-from, source)`.
         type LiveEdge = (String, String, String, i64, Position);
 
-        /// One derived event stamped with replay key `key`, valid from `secs`, at `pos`.
-        fn keyed_event(
-            pos: u64,
-            type_: &str,
-            json: serde_json::Value,
-            key: &str,
-            secs: u64,
-        ) -> Event {
-            let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap())
-                .with_meta(rigger_domain::ingest::META_REPLAY_KEY, key)
-                .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
-            e.position = pos;
-            e
-        }
-
-        /// Fold one [`keyed_event`].
-        pub(super) fn apply_keyed(
-            p: &Projector,
-            pos: u64,
-            type_: &str,
-            json: serde_json::Value,
-            key: &str,
-            secs: u64,
-        ) {
-            let e = keyed_event(pos, type_, json, key, secs);
-            crate::test_support::folds(p, std::slice::from_ref(&e));
-        }
+        use crate::test_support::{apply_keyed, keyed_event};
 
         fn def(name: &str, line: u64, fresh: bool) -> serde_json::Value {
             crate::test_support::def_json("src/f.rs", name, line, fresh)

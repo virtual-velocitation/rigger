@@ -215,10 +215,31 @@ pub fn governs(graph_edges: &[Edge]) -> Vec<(String, String, u64, i64)> {
     out
 }
 
+/// The tier of the one edge with relation `rel` landing on `to`, out of a subgraph.
+pub fn edge_tier(g: &Graph, rel: &str, to: &str) -> String {
+    let matches: Vec<&Edge> = g
+        .edges
+        .iter()
+        .filter(|e| e.rel == rel && e.to == to)
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one {rel} edge to {to}; got {matches:?}"
+    );
+    matches[0].tier.clone()
+}
+
 /// The call walk of `p` from `seed` in `direction`, five hops deep, at the inferred floor.
 pub fn call_walk(p: &dyn Projection, seed: &str, direction: Direction) -> CallGraph {
     p.calls(&[seed.to_string()], direction, 5, TIER_INFERRED)
         .unwrap()
+}
+
+/// The ids of the files the UP view of `p` from `seed` lists referenced but not called.
+pub fn referenced_not_called_ids(p: &dyn Projection, seed: &str) -> Vec<String> {
+    let up = call_walk(p, seed, Direction::Up);
+    up.referenced_not_called.into_iter().map(|n| n.id).collect()
 }
 
 /// The reached nodes of a `CallGraph` carrying a frontier, each with its candidates, sorted.

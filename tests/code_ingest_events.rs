@@ -24,7 +24,7 @@ use rigger::contextgraph::{
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
 
-use common::fixtures::apply_json;
+use common::fixtures::{apply_json, edge_tier};
 
 /// Extracts the source tree at `root`, emits it, and folds every event onto `p` at the positions
 /// following `pos`, advancing `pos` past the last one.
@@ -847,21 +847,6 @@ fn apply_ref_json(p: &Projector, pos: u64, file: &str, name: &str) {
     );
 }
 
-/// The stored tier of the single `rel` edge landing on `to` in `g` (panics unless exactly one).
-fn one_edge_tier(g: &rigger::contextgraph::Graph, rel: &str, to: &str) -> String {
-    let hits: Vec<_> = g
-        .edges
-        .iter()
-        .filter(|e| e.rel == rel && e.to == to)
-        .collect();
-    assert_eq!(
-        hits.len(),
-        1,
-        "expected exactly one {rel} edge to {to}; got {hits:?}"
-    );
-    hits[0].tier.clone()
-}
-
 #[test]
 fn the_confidence_tier_persists_across_a_reopen_of_an_on_disk_graph() {
     // Persistence + reopen boundary the inside-out tier tests are structurally blind to: every
@@ -897,22 +882,22 @@ fn the_confidence_tier_persists_across_a_reopen_of_an_on_disk_graph() {
     // The literal on-disk wire values survive unchanged - this is the durable cross-version
     // contract, asserted against the raw strings, not just the consts.
     assert_eq!(
-        one_edge_tier(&g, REL_CONTAINS, "combat.rs::apply_damage"),
+        edge_tier(&g, REL_CONTAINS, "combat.rs::apply_damage"),
         "extracted",
         "a definition's CONTAINS edge persists at the extracted tier"
     );
     assert_eq!(
-        one_edge_tier(&g, REL_REFERENCES, "combat.rs::apply_damage"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::apply_damage"),
         "extracted",
         "a same-file reference persists at the extracted tier"
     );
     assert_eq!(
-        one_edge_tier(&g, REL_REFERENCES, "combat.rs::shared"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::shared"),
         "inferred",
         "a cross-file reference persists at the inferred tier across the reopen"
     );
     assert_eq!(
-        one_edge_tier(&g, REL_REFERENCES, "combat.rs::magic"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::magic"),
         "ambiguous",
         "a define-nowhere reference persists at the ambiguous tier across the reopen"
     );
@@ -955,7 +940,7 @@ fn a_definition_upgrades_only_the_exact_name_cross_file_reference_never_a_substr
     apply_def_json(&p, 2, "util.rs", "damage");
     let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     assert_eq!(
-        one_edge_tier(&g, REL_REFERENCES, "combat.rs::apply_damage"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::apply_damage"),
         TIER_AMBIGUOUS,
         "defining a substring name must NOT upgrade an unrelated reference (no wildcard match)"
     );
@@ -965,7 +950,7 @@ fn a_definition_upgrades_only_the_exact_name_cross_file_reference_never_a_substr
     apply_def_json(&p, 3, "util.rs", "apply_damage");
     let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     assert_eq!(
-        one_edge_tier(&g, REL_REFERENCES, "combat.rs::apply_damage"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::apply_damage"),
         TIER_INFERRED,
         "defining the exact name DOES promote the cross-file reference to inferred"
     );

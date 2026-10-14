@@ -160,6 +160,22 @@ fn additive_indexes_persist_and_a_foreign_reader_uses_them_across_a_reopen() {
         plan.iter().any(|d| d.contains("idx_edges_live_rel_from")),
         "the foreign reader's relationship-scoped forward scan uses the partial idx_edges_live_rel_from; plan was {plan:?}"
     );
+
+    // 2c. DURABLE READ PATH (edge text index, spec 119 criterion 2): a live edge read binding a
+    // leaf, its target text compared with the leaf and the sigil-prefixed leaf, is served by the
+    // partial edge text index for the foreign reader, the relation written `+rel` so the planner
+    // seeks by the bound leaf rather than by every live edge of the relation.
+    let plan = query_plan(
+        &reader,
+        "SELECT from_id FROM edges WHERE +rel = 'CALLS' AND valid_to IS NULL
+            AND substr(to_id, instr(to_id, '::') + 2) IN (?1, '%' || ?1)",
+        ["new"],
+    );
+    assert!(
+        plan.iter()
+            .any(|d| d.contains("SEARCH edges USING INDEX idx_edges_live_to_name_suffix")),
+        "the foreign reader's leaf-bound edge read seeks idx_edges_live_to_name_suffix; plan was {plan:?}"
+    );
 }
 
 /// The load-bearing ORDERING guard. `migrate_indexes` documents that it MUST run AFTER

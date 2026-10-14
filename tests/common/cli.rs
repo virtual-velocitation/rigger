@@ -11,6 +11,8 @@ use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 
+pub use super::fixtures::keyed;
+
 /// A throwaway project directory that is its own (commit-less) git repo, so the project
 /// identity the binary resolves for it is its basename, stable across every call a test makes.
 pub fn temp_project() -> tempfile::TempDir {
@@ -755,13 +757,6 @@ pub fn now_nanos() -> i64 {
 /// `secs` seconds as nanoseconds.
 pub fn nanos(secs: u64) -> i64 {
     Duration::from_secs(secs).as_nanos() as i64
-}
-
-/// A `type_` event carrying `data`, replay-keyed `key` and valid from `secs` after the epoch.
-pub fn keyed(type_: &str, data: Vec<u8>, key: &str, secs: u64) -> Event {
-    Event::new(type_, data)
-        .with_meta(rigger::ingest::META_REPLAY_KEY, key)
-        .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
 }
 
 /// The payload of one extracted code entity, `alpha` in `src/a.rs`.
