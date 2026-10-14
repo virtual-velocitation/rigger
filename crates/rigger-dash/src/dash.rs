@@ -3868,7 +3868,6 @@ mod console_wasm;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contextgraph::query::name_suffix;
     use crate::contextgraph::{
         Edge, Node, KIND_AGENT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DESIGN_DOC,
         KIND_FILE, KIND_RATIONALE, KIND_UNIT, REL_CALLS, REL_DECIDED, REL_GOVERNS,
@@ -5858,14 +5857,9 @@ mod tests {
         // A code entity carries a `name` attr - the extraction fold's real-definition marker (spec
         // 63 c3's honesty gate resolves a NO-name bare cross-file placeholder differently); every
         // other kind carries none.
-        let node = |id: &str, kind: &str| Node {
-            id: id.to_string(),
-            kind: kind.to_string(),
-            attrs: if kind == KIND_CODE_ENTITY {
-                BTreeMap::from([("name".to_string(), name_suffix(id).to_string())])
-            } else {
-                BTreeMap::new()
-            },
+        let node = |id: &str, kind: &str| match kind {
+            KIND_CODE_ENTITY => crate::test_support::leaf_named_node(id),
+            _ => crate::test_support::plain(id, kind),
         };
         let edge = |from: &str, to: &str, valid_to: Option<i64>| Edge {
             from: from.to_string(),
@@ -6285,11 +6279,7 @@ mod tests {
         // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-
         // lens honesty gate below reads it to tell a real definition from a bare cross-file
         // placeholder).
-        let ce = |id: &str| Node {
-            id: id.to_string(),
-            kind: KIND_CODE_ENTITY.to_string(),
-            attrs: BTreeMap::from([("name".to_string(), name_suffix(id).to_string())]),
-        };
+        let ce = crate::test_support::leaf_named_node;
         let community = |id: &str, label: &str| Node {
             id: id.to_string(),
             kind: KIND_COMMUNITY.to_string(),
@@ -6495,11 +6485,7 @@ mod tests {
     ) {
         // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-
         // lens honesty gate reads it to tell a real definition from a bare cross-file placeholder).
-        let ce = |id: &str| Node {
-            id: id.to_string(),
-            kind: KIND_CODE_ENTITY.to_string(),
-            attrs: BTreeMap::from([("name".to_string(), name_suffix(id).to_string())]),
-        };
+        let ce = crate::test_support::leaf_named_node;
         let doc = |id: &str| Node {
             id: id.to_string(),
             kind: KIND_DESIGN_DOC.to_string(),
@@ -6940,11 +6926,7 @@ mod tests {
     fn dispatch_graph() -> Graph {
         // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-
         // lens honesty gate reads it to tell a real definition from a bare cross-file placeholder).
-        let ce = |id: &str| Node {
-            id: id.to_string(),
-            kind: KIND_CODE_ENTITY.to_string(),
-            attrs: BTreeMap::from([("name".to_string(), name_suffix(id).to_string())]),
-        };
+        let ce = crate::test_support::leaf_named_node;
         let refs = |from: &str, to: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),

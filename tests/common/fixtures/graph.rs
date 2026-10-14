@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use rigger::contextgraph::query::leaf_of;
 use rigger::contextgraph::{
     CallEdge, CallGraph, Direction, Edge, Graph, Node, Projection, KIND_CODE_ENTITY, KIND_CONCEPT,
     KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, KIND_UNIT, REL_ABOUT, REL_CALLS,
@@ -305,6 +306,12 @@ pub fn def_node(id: &str, name: &str) -> Node {
 /// reads as absent (spec 119), so it resolves as a bare placeholder does.
 pub fn empty_named_node(id: &str) -> Node {
     node_with_attrs(id, KIND_CODE_ENTITY, &[("name", "")])
+}
+
+/// A code-entity definition named by its id's leaf (`src/a.rs::foo` named `foo`): [`def_node`]
+/// over [`leaf_of`], the shape the extraction fold gives a flat definition.
+pub fn leaf_named_node(id: &str) -> Node {
+    def_node(id, leaf_of(id).expect("a code-entity id holds `::`"))
 }
 
 /// A code-entity DEFINITION node of code kind `kind`, named by its id's leaf: what the

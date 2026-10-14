@@ -11246,55 +11246,58 @@ mod tests {
     }
 
     #[test]
-    fn additive_indexes_exist_and_the_pinned_name_suffix_query_uses_its_index() {
-        // Spec 45 criterion 4: the two additive indexes that keep whole-graph and directed reads
-        // sub-linear are present after migration and are actually USED. This test names NO
-        // feature-gated symbol, so it compiles and runs identically on the default and
-        // `--no-default-features` lanes - the "in BOTH feature lanes" clause is satisfied by
-        // construction. `open` runs the migration, so a fresh db already carries both indexes.
+    fn additive_indexes_exist_and_the_leaf_bound_edge_and_node_seeks_use_them() {
+        // Spec 45 criterion 4, re-expressed by spec 119 criterion 2: the additive indexes that
+        // keep whole-graph and directed reads sub-linear are present after migration and are
+        // actually USED, and the node name-suffix index is gone. This test names NO feature-gated
+        // symbol, so it compiles and runs identically on the default and `--no-default-features`
+        // lanes. `open` runs the migration, so a fresh db already carries every index.
         let p = Projector::open(":memory:", "test").unwrap();
         let names = index_names(&p);
+        for present in [
+            "idx_edges_live_rel_from",
+            "idx_nodes_leaf",
+            "idx_edges_live_to_name_suffix",
+        ] {
+            assert!(
+                names.contains(present),
+                "{present} is present; got {names:?}"
+            );
+        }
         assert!(
-            names.contains("idx_edges_live_rel_from"),
-            "the partial live-edge index edges(rel, from_id) WHERE valid_to IS NULL is present; got {names:?}"
-        );
-        assert!(
-            names.contains("idx_nodes_name_suffix"),
-            "the entity-name-suffix expression index on nodes is present; got {names:?}"
-        );
-        assert!(
-            names.contains("idx_edges_live_to_name_suffix"),
-            "the live-edge target-name-suffix index the tier convergences seek by is present; \
-             got {names:?}"
+            !names.contains("idx_nodes_name_suffix"),
+            "the node name-suffix index is retired; got {names:?}"
         );
 
-        // A few code-entity nodes (`<file>::<name>` ids) so the resolution query has a realistic
-        // target space to resolve `Foo` against.
-        {
-            let conn = p.conn.lock().unwrap();
-            for id in ["a.rs::Foo", "b.rs::Foo", "c.rs::Bar"] {
-                conn.execute(
-                    "INSERT INTO nodes (id, kind, attrs, project) VALUES (?1, ?2, NULL, 'test')",
-                    params![id, KIND_CODE_ENTITY],
-                )
-                .unwrap();
+        // ARE USED (edge expression index): the edge side's two-value binding of a leaf seeks the
+        // live-edge target-text index, the expression it embeds being the indexed one.
+        let bound = format!(
+            "SELECT from_id FROM edges WHERE valid_to IS NULL AND {}",
+            edge_binds_leaf_sql("to_id", "?1")
+        );
+        let plan = query_plan(&p, &bound, ["new"]);
+        assert!(
+            plan.iter()
+                .any(|d| d.contains("USING INDEX idx_edges_live_to_name_suffix")),
+            "the two-value edge seek uses idx_edges_live_to_name_suffix; plan was {plan:?}"
+        );
+
+        // ARE USED (both legs of `referenced_not_called`): each leg seeks the edge target-text
+        // index for the bound leaf and the leaf index for a target node named it.
+        for projected in [REFERENCING_FILE, CALLING_FILE] {
+            let plan = query_plan(
+                &p,
+                &seed_leaf_leg_sql(projected),
+                params![REL_REFERENCES, "test", r#"["new"]"#],
+            );
+            for index in ["idx_edges_live_to_name_suffix", "idx_nodes_leaf"] {
+                assert!(
+                    plan.iter()
+                        .any(|d| d.contains(&format!("USING INDEX {index}"))),
+                    "the {projected} leg seeks {index}; plan was {plan:?}"
+                );
             }
         }
-
-        // ARE USED (expression index): a name-resolution query phrased with the PINNED expression
-        // `substr(id, instr(id, '::') + 2)` - identical to the fold's twin on `to_id` - hits the
-        // expression index, not a full scan. SQLite uses an expression index only when the query's
-        // expression matches it, so this pins the exact phrasing the coming cross-file resolution
-        // (spec 46) MUST reuse or silently miss the index.
-        let plan = query_plan(
-            &p,
-            "SELECT id FROM nodes WHERE substr(id, instr(id, '::') + 2) = 'Foo'",
-            [],
-        );
-        assert!(
-            plan.iter().any(|d| d.contains("idx_nodes_name_suffix")),
-            "the pinned substr(id, instr(id,'::')+2) resolution uses idx_nodes_name_suffix; plan was {plan:?}"
-        );
 
         // ARE USED (partial index): the relationship-scoped forward scan
         // (`rel = ? AND valid_to IS NULL`, the shape a directed CALLS traversal walks) is served by
@@ -11320,7 +11323,7 @@ mod tests {
         use rigger_domain::contextgraph::query::node_leaf;
 
         /// The assertion of a recording outside the generation rule: never retracted.
-        const UNKEYED: Asserter<'static> = Asserter {
+        pub(super) const UNKEYED: Asserter<'static> = Asserter {
             identity: "",
             generation: "",
             at: 0,
@@ -11328,7 +11331,7 @@ mod tests {
 
         /// Run `write` in one committed transaction on `p`'s own connection: the direct writes
         /// that plant a nested id before any payload carries its path.
-        fn write_directly(p: &Projector, write: impl FnOnce(&Transaction, &str)) {
+        pub(super) fn write_directly(p: &Projector, write: impl FnOnce(&Transaction, &str)) {
             let mut conn = p.conn.lock().unwrap();
             let tx = conn.transaction().unwrap();
             write(&tx, &p.project);
@@ -11336,7 +11339,7 @@ mod tests {
         }
 
         /// Assert code entity `id` carrying `attrs` as `by`.
-        fn entity(
+        pub(super) fn entity(
             tx: &Transaction,
             project: &str,
             by: &Asserter,
@@ -11347,12 +11350,31 @@ mod tests {
         }
 
         /// Write the function definitions `(id, name)` unkeyed.
-        fn define(p: &Projector, defs: &[(&str, &str)]) {
+        pub(super) fn define(p: &Projector, defs: &[(&str, &str)]) {
             write_directly(p, |tx, project| {
                 for (id, name) in defs {
                     let attrs = [("name", *name), ("kind", "function"), ("line", "1")];
                     entity(tx, project, &UNKEYED, id, &attrs);
                 }
+            });
+        }
+
+        /// Write the live `rel` edge `from -> to` at `tier` unkeyed, first planting each endpoint
+        /// no node holds yet as a nameless node: a file for an id holding no `::`, else a code
+        /// entity. The edge is spelled whatever `to` spells, before any fold spells it.
+        pub(super) fn edge_directly(p: &Projector, from: &str, to: &str, rel: &str, tier: &str) {
+            write_directly(p, |tx, project| {
+                for id in [from, to] {
+                    if node_row(tx, id, project).unwrap().is_none() {
+                        let kind = if id.contains("::") {
+                            KIND_CODE_ENTITY
+                        } else {
+                            KIND_FILE
+                        };
+                        ensure_node(tx, &UNKEYED, id, kind, &[], project).unwrap();
+                    }
+                }
+                add_edge(tx, from, to, rel, 0, 4, project, tier).unwrap();
             });
         }
 
@@ -11395,20 +11417,7 @@ mod tests {
             apply_def(&p, 2, "b.rs", "run", 5, false);
             apply_call(&p, 3, "b.rs", "new", "main");
             // A placeholder spelled with the sigil, its call written directly.
-            write_directly(&p, |tx, project| {
-                entity(tx, project, &UNKEYED, "b.rs::%new", &[]);
-                add_edge(
-                    tx,
-                    "b.rs::run",
-                    "b.rs::%new",
-                    REL_CALLS,
-                    0,
-                    4,
-                    project,
-                    TIER_INFERRED,
-                )
-                .unwrap();
-            });
+            edge_directly(&p, "b.rs::run", "b.rs::%new", REL_CALLS, TIER_INFERRED);
             assert_eq!(
                 call_node_ids(&call_walk(&p, "b.rs::main", Direction::Down)),
                 vec!["a.rs::T::new", "b.rs::main"]
@@ -11573,6 +11582,116 @@ mod tests {
                     "{plan:?}"
                 );
             }
+        }
+    }
+
+    /// Spec 119 criterion 2 (THE EDGE SIDE BINDS THE LEAF): every edge-side reader binds its
+    /// seed's leaf and matches an edge's target text against the leaf and the sigil-prefixed
+    /// leaf, over a nested definition `a.rs::T::new` written directly and `b.rs`'s references to
+    /// `new`, each spelled `b.rs::new` and `b.rs::%new`.
+    mod edge_side_binds_the_leaf {
+        use super::generations::apply_keyed;
+        use super::leaf_keys_resolution::{define, edge_directly, entity, write_directly, UNKEYED};
+        use super::*;
+        use crate::test_support::{call_frontiers, call_node_ids, call_walk, def_json};
+
+        /// The callers walk from `seed`, a definition of leaf `leaf` written directly, reaches the
+        /// caller `caller` whose call targets the nameless `target`, as an unambiguous caller.
+        fn the_callers_walk_reaches(seed: (&str, &str), caller: &str, target: &str) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            define(&p, &[seed]);
+            edge_directly(&p, caller, target, REL_CALLS, TIER_INFERRED);
+            let up = call_walk(&p, seed.0, Direction::Up);
+            assert_eq!(call_node_ids(&up), vec![seed.0, caller]);
+            assert_eq!(call_frontiers(&up), Vec::new());
+        }
+
+        crate::test_cases! {
+            the_callers_walk_from_a_nested_definition_reaches_a_caller_through_its_bare_leaf:
+                the_callers_walk_reaches(("a.rs::T::new", "new"), "b.rs::run", "b.rs::new");
+            the_callers_walk_from_a_nested_definition_reaches_a_caller_through_its_sigiled_leaf:
+                the_callers_walk_reaches(("a.rs::T::new", "new"), "b.rs::run", "b.rs::%new");
+            a_csharp_operator_percent_seed_reaches_its_double_percent_caller:
+                the_callers_walk_reaches(("a.cs::T::%", "%"), "b.cs::run", "b.cs::%%");
+        }
+
+        /// A reference from `b.rs` written directly onto `target` at `ambiguous`, beside the
+        /// definitions `beside` written directly, is upgraded to `inferred` when a definition
+        /// `a.rs::new` folds and ends at `retired` when the next generation of `a.rs` drops it.
+        fn a_direct_reference_follows_a_definition_of_its_leaf(
+            target: &str,
+            beside: &[(&str, &str)],
+            retired: &str,
+        ) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            define(&p, beside);
+            edge_directly(&p, "b.rs", target, REL_REFERENCES, TIER_AMBIGUOUS);
+            let tier = |p: &Projector| edge_tier(&p.whole().unwrap(), REL_REFERENCES, target);
+            let new = def_json("a.rs", "new", 1, true);
+            apply_keyed(&p, 1, TYPE_CODE_ENTITY_EXTRACTED, new, "gc/a.rs@h1#0", 10);
+            assert_eq!(tier(&p), TIER_INFERRED);
+            let other = def_json("a.rs", "other", 1, true);
+            apply_keyed(&p, 2, TYPE_CODE_ENTITY_EXTRACTED, other, "gc/a.rs@h2#0", 20);
+            assert_eq!(tier(&p), retired);
+        }
+
+        crate::test_cases! {
+            a_bare_reference_is_upgraded_and_demoted_with_a_definition_of_its_leaf:
+                a_direct_reference_follows_a_definition_of_its_leaf("b.rs::new", &[], TIER_AMBIGUOUS);
+            a_sigiled_reference_is_upgraded_and_demoted_with_a_definition_of_its_leaf:
+                a_direct_reference_follows_a_definition_of_its_leaf("b.rs::%new", &[], TIER_AMBIGUOUS);
+            a_reference_stays_inferred_while_a_nested_definition_of_its_leaf_stands:
+                a_direct_reference_follows_a_definition_of_its_leaf(
+                    "b.rs::new",
+                    &[("c.rs::U::new", "new")],
+                    TIER_INFERRED
+                );
+        }
+
+        /// The ids of the files the UP view from `seed` lists referenced but not called.
+        fn referenced_not_called_ids(p: &Projector, seed: &str) -> Vec<String> {
+            let up = call_walk(p, seed, Direction::Up);
+            up.referenced_not_called.into_iter().map(|n| n.id).collect()
+        }
+
+        #[test]
+        fn referenced_not_called_counts_a_reference_through_the_leaf_its_sigil_and_a_nested_landing(
+        ) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            let nested = [("z.rs::T::new", "new"), ("w.rs::T::new", "new")];
+            define(&p, &[("a.rs::T::new", "new")]);
+            define(&p, &nested);
+            for (file, target) in [
+                ("x.rs", "x.rs::new"),
+                ("y.rs", "y.rs::%new"),
+                ("z.rs", "z.rs::T::new"),
+                ("u.rs", "u.rs::new"),
+                ("v.rs", "v.rs::%new"),
+                ("w.rs", "w.rs::T::new"),
+                ("o.rs", "o.rs::other"),
+            ] {
+                edge_directly(&p, file, target, REL_REFERENCES, TIER_INFERRED);
+            }
+            // `u.rs`, `v.rs` and `w.rs` also call `new` from within, through each spelling.
+            for (caller, target) in [
+                ("u.rs::run", "u.rs::new"),
+                ("v.rs::run", "v.rs::%new"),
+                ("w.rs::run", "w.rs::T::new"),
+            ] {
+                edge_directly(&p, caller, target, REL_CALLS, TIER_INFERRED);
+            }
+            assert_eq!(
+                referenced_not_called_ids(&p, "a.rs::T::new"),
+                vec!["x.rs", "y.rs", "z.rs"]
+            );
+        }
+
+        #[test]
+        fn a_seed_with_no_leaf_names_nothing_referenced() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            write_directly(&p, |tx, project| entity(tx, project, &UNKEYED, "x", &[]));
+            edge_directly(&p, "f.rs", "f.rs::x", REL_REFERENCES, TIER_AMBIGUOUS);
+            assert_eq!(referenced_not_called_ids(&p, "x"), Vec::<String>::new());
         }
     }
 
@@ -12242,7 +12361,7 @@ mod tests {
         }
 
         /// Fold one [`keyed_event`].
-        fn apply_keyed(
+        pub(super) fn apply_keyed(
             p: &Projector,
             pos: u64,
             type_: &str,

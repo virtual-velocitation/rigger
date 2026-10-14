@@ -215,7 +215,7 @@ fn clustered_overview_under_files_lens_carries_an_accurate_empty_state_when_the_
     // the fold still admits nothing even though `KIND_CODE_ENTITY` nodes exist. (A real definition
     // would fold under its own file regardless of whether it also candidates for some OTHER bare
     // placeholder's ambiguous resolution - that shape is a different, already-covered test:
-    // `clustered_overview_resolves_bare_cross_file_placeholders_by_unique_name_suffix`.)
+    // `clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf`.)
     let only_unresolvable_placeholders = Graph {
         nodes: vec![
             plain("src/caller.rs::ghost_one", KIND_CODE_ENTITY),
@@ -355,7 +355,7 @@ fn files_lens_merges_same_file_entities_and_keeps_different_files_apart() {
 /// `unresolved` sidecar at this altitude, unlike the re-projection surface) - never mis-attributed to
 /// the referencing file their own id encodes.
 #[test]
-fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_name_suffix() {
+fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf() {
     // `helper`: ONE definition (target.rs) - the bare placeholder in caller.rs's namespace resolves
     // to target.rs, so caller.rs's own cluster count stays at just `foo`, target.rs's count rises to
     // 2 (its real definition plus the resolved reference), and the foo->helper coupling now crosses

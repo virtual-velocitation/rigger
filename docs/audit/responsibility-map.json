@@ -12109,7 +12109,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "93095dfe55512711"
+    "content_hash": "a54de90a82ab2595"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12133,7 +12133,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "256afd6dcfc4732c"
+    "content_hash": "4f9d12e33e3a928c"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12141,7 +12141,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4841a8863a05023f"
+    "content_hash": "18768d3a89125d69"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12189,7 +12189,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "45f6e53bce37596c"
+    "content_hash": "87f2b1eba207184a"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
