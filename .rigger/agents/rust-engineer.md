@@ -121,8 +121,9 @@ argument; it reads every `.rs` file under a `tests/` directory whole, the contra
 and each other file under `crates/*/src/` from its first `#[cfg(test)]` on, and ends with the
 hit count:
 `git ls-files tests crates | t='<expression>' xargs awk 'FNR == 1 { s = FILENAME ~ /(^|\/)tests\/.*\.rs$|\/contract\.rs$/ } FILENAME ~ /\.rs$/ && /^[[:space:]]*#\[cfg\((all\()?test/ { s = 1 } s && index($0, ENVIRON["t"]) { n++; print FILENAME ":" FNR ": " $0 } END { print n + 0 " hits" }'`.
-The record pastes each command as run, its hit count and every hit it printed, each FIXED or
-CHECKED, and the `sdet` lens re-runs each on the review tree.
+A `'` in the expression is written `'\''`. The record pastes each command as run, its hit
+count and every hit it printed, each FIXED or CHECKED, and the `sdet` lens re-runs each on the
+review tree.
 
 The sentence walk's generators, run at head against the base your prompt names (`rigger-run`
 when it names none): `git diff --name-only <base>..HEAD` lists the changed files, the `//!`
