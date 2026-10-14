@@ -759,13 +759,15 @@ const PY_PATTERN_BINDINGS: [(&str, Binds); 5] = [
     ("list_splat_pattern", Binds::Children),
 ];
 
-/// Python's ASSIGNED NAMES (spec 116), the binding walk's seeds in `scope`, the module or a
-/// class body: the targets of every assignment that is a direct statement of it, each walked
-/// by [`bound_names`] over [`PY_PATTERN_BINDINGS`], a chained assignment's (`x = y = f()`) each
-/// one, followed down its `right` while that is an assignment, so the far-right value never
-/// binds. With `tagged` true (the module) an assignment the Python query tags a constant is
-/// skipped: one whose target is an identifier and whose value is absent or no assignment, the
-/// complement of what this walks there.
+/// Python's ASSIGNED NAMES (spec 116) in `scope`, the module or a class body, read off every
+/// assignment that is a direct statement of it. An assignment of ONE target ([`single_target`])
+/// names one definition spanning the whole assignment, its value included, so a call in that
+/// value takes it as caller: with `tagged` true (the module) the Python query tags it a constant
+/// and it is skipped here, and with `tagged` false (a class body) it is read off here with the
+/// same range. Every other assignment seeds the binding walk: its targets, a chained
+/// assignment's (`x = y = f()`) each one, followed down its `right` while that is an
+/// assignment, so the far-right value never binds, are each walked by [`bound_names`] over
+/// [`PY_PATTERN_BINDINGS`], each bound name spanning its own identifier alone.
 fn assigned_names(scope: tree_sitter::Node, source: &[u8], tagged: bool) -> Vec<ReadOff> {
     let mut out = Vec::new();
     let mut cursor = scope.walk();
@@ -780,7 +782,10 @@ fn assigned_names(scope: tree_sitter::Node, source: &[u8], tagged: bool) -> Vec<
             .filter(|child| child.kind() == "assignment")
             .collect();
         for assignment in assignments {
-            if tagged && is_tagged_python_constant(assignment) {
+            if let Some(target) = single_target(assignment) {
+                if !tagged {
+                    out.extend(read_off(assignment, target, source));
+                }
                 continue;
             }
             let mut link = Some(assignment);
@@ -797,20 +802,24 @@ fn assigned_names(scope: tree_sitter::Node, source: &[u8], tagged: bool) -> Vec<
     out
 }
 
-/// Whether the Python `assignment` is one the Python query tags a constant at module level:
-/// its target an identifier and its value absent (`w: int`) or no assignment (`z = 1`).
-fn is_tagged_python_constant(assignment: tree_sitter::Node) -> bool {
+/// The one target of the Python `assignment` when it has one: its `left` when that is an
+/// identifier and its value is absent (`w: int`) or no assignment (`z = 1`), the shape the
+/// Python query tags a constant at module level; `None` for a pattern or a chained target.
+fn single_target(assignment: tree_sitter::Node) -> Option<tree_sitter::Node> {
     assignment
         .child_by_field_name("left")
-        .is_some_and(|left| left.kind() == "identifier")
-        && assignment
-            .child_by_field_name("right")
-            .is_none_or(|right| right.kind() != "assignment")
+        .filter(|left| left.kind() == "identifier")
+        .filter(|_| {
+            assignment
+                .child_by_field_name("right")
+                .is_none_or(|right| right.kind() != "assignment")
+        })
 }
 
 /// Python's CLASS-BODY NAMES (spec 116): the names every assignment directly in a class body
-/// under `root` binds ([`assigned_names`]), a nested class's and a decorated one's included,
-/// in source order. The Python query tags none of them.
+/// under `root` makes ([`assigned_names`]), a nested class's and a decorated one's included,
+/// in source order: an assignment of one target its field over the whole assignment, a pattern's
+/// or a chain's each bound name over its own identifier. The Python query tags none of them.
 fn class_body_names(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
     nodes_of_kind(root, "class_definition")
         .into_iter()
