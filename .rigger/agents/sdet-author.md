@@ -137,15 +137,23 @@ hook blocks grep and rg, so count with
 It prints nothing, or your hand-over names each line it prints with its reason. Every
 test-side shape you add, merged or not, is recorded as one `<unit>-test-shape-audit`
 DecisionMade naming each site FIXED or CHECKED, after a search of the three test homes above.
+The search is this command, one run per distinguishing expression, the expression its one
+argument; it reads every `.rs` file under a `tests/` directory whole, the contract module whole
+and each other file under `crates/*/src/` from its first `#[cfg(test)]` on, and ends with the
+hit count:
+`git ls-files tests crates | t='<expression>' xargs awk 'FNR == 1 { s = FILENAME ~ /(^|\/)tests\/.*\.rs$|\/contract\.rs$/ } FILENAME ~ /\.rs$/ && /^[[:space:]]*#\[cfg\((all\()?test/ { s = 1 } s && index($0, ENVIRON["t"]) { n++; print FILENAME ":" FNR ": " $0 } END { print n + 0 " hits" }'`.
+The record pastes each command as run, its hit count and every hit it printed, each FIXED or
+CHECKED, and the `sdet` lens re-runs each on the review tree.
 
 The sentence walk's generators, run at head against the base your prompt names (`rigger-run`
 when it names none): `git diff --name-only <base>..HEAD` lists the changed files, the `//!`
 lines of each read; `git diff <base>..HEAD` gives the hunks, each changed item's doc and body
 comments and the identifiers each hunk names; the `impl` header above a changed fn and above
-each of its callers names the trait item it implements; `rigger graph --around <item>` lists
-each changed item's callers, and when it answers nothing the callers are the lines the count
-above prints for the item's name, each read, with a `GAP:` clause naming the item in the
-record; and the count above with `t='<name>'` prints every tracked line spelling each changed
+each of its callers names the trait item it implements; `rigger graph --around
+<file>::<item> --depth 1` lists each changed item's callers on the lines naming them (the
+default depth answers the item's whole file neighbourhood, never its callers), and when it
+answers nothing the callers are the lines the count above prints for the item's name, each
+read, with a `GAP:` clause naming the item in the record; and the count above with `t='<name>'` prints every tracked line spelling each changed
 item's name, each read. The walk is recorded as one `<unit>-sentence-walk` DecisionMade
 beside the `<unit>-test-shape-audit` one, naming what each generator returned and every
 sentence FIXED with its location.
