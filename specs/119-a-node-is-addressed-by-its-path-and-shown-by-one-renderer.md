@@ -92,7 +92,7 @@ grounder function, `extract::locate_extent(source, lang, ts_language, tags_query
 line)`, taking the grammar and tags query injected as `extract` takes them (`extract.rs:34-39`): it
 runs `extract` over the working-tree bytes and applies three tiers in order: spec 92's first (exact name, kind and line), then name and line with kind ignored, when exactly one production definition matches (so a definition whose kind changed in place since the last ingest still bounds at its recorded line), then spec 92's second as the third (the drifted line re-located by name and kind), to `Def.end_line` over the definitions
 that are not `is_test`, as `extract_events` drops them (`events.rs:220`), since the extent resolves
-a graph node and the graph holds production ones only, `kind` compared through
+a graph node and the graph holds production ones only (`is_test` read as `extract` gives it: a file whose shebang hides its file-opening `#![cfg(test)]` from `test_regions` is spec 118's, which keeps tests out of every production view, not this spec's), `kind` compared through
 `kind_str`, so a field beside a same-named fn, or a variant inside its same-named enum, never widens
 or blocks a match; from criterion 6 `locate_extent` also takes `path: Option<&str>`, which `print_entity_site`
 passes as the rest half of the id's `query::split_id` (none for an id without `::`, matching by name, kind and
@@ -258,7 +258,7 @@ variant (a member queried without its generic arguments, `Foo::new` for `<file>:
 matches no exact id, no leaf and no path form is tried last as file-qualified, the whole-query step's leaf lookup of its `split_id` rest half
 (every node carrying `name`, by `node_leaf_sql()`) filtered to the `<file>::` id range, never `same_file_candidates`, so pre-spec flat ids `a.rs::new`, `a.rs::field` and `a.rs::m`
 show `a.rs::T::new`, `a.rs::S.field` and the `declaration` `a.rs::Trait::m`, several listing and none saying none. The file-qualified step runs only for a non-empty rest half; otherwise the file-qualified step answers zero and the order continues to the deferred exact step. The path and file-qualified forms are one mechanism, the leaf lookup filtered on the id, by the suffix `::<path>`
-then by the `<file>::` range; a nameless node of graph kind `code-entity` or `artifact` whose id holds `::` is a knowledge-held flat id's bare node (`sqlite.rs:880`), so `show T::new` over an artifact `T::new` beside `a.rs::T::new` answers the definition by the path form.
+then by the `<file>::` range; a nameless node of graph kind `code-entity` or `artifact` whose id holds `::` is a knowledge-held flat id's bare node (`sqlite.rs:880`), so `show T::new` over an artifact `T::new` beside `a.rs::T::new` answers the definition by the path form. A `--around` seed stays an exact id and a bare name is rejected, never resolved, so no tie across files arises: when the subgraph is empty, `print_around_subgraph`'s note (`src/cli/graph.rs:152`) reads `(nothing found; a seed is an exact id, <file>::<path>, and rigger graph --show <name> resolves a bare name; has rigger run been run yet?)` in place of today's, criterion 7's, and the MCP `around` keeps answering an empty node list, accepted.
 
 **SHOW IS ONE RENDERER, decided here.** `EntitySite` grows `attrs`, which `site_of`
 (`sqlite.rs:909-929`) fills from the node's attrs. `site_of` and `locate`'s candidates (`:896`) take `file` from `query::node_file`; `file_prefix`
@@ -376,7 +376,7 @@ table or constant, its first production reader or writer); "-" = not retired.
 | `extract::def_of`, `Def.end_line` with its zero-length rule, `extract::locate_extent` with its recorded-line tier second, the kind and `name` attr `print_entity_site` hands it, the nameless-node note | 5 | `extract`, `locate_definition_extent`, `print_entity_site` | criterion 5 | - |
 | `unresolved_def`, `definition_extents`, `DefExtent` | - | - | base (116) | 5 |
 | `Def.path`, `CodeEntityExtracted.path` and the id built from it, the enclosing-path prefix with its strict containment, impl ids, the Go receiver path, `extract_events` writing `path`, the named function or class value's path, `locate_extent`'s `path` parameter matching `Def.path`, the empty-`path` rule | 6 | `extract`, `extract_events`, `print_entity_site`, `locate_definition_extent` | criterion 6 | - |
-| bare `show` by path, the file-qualified form as the leaf lookup filtered to the file's id range, the nameless exact-step deferral | 7 | `locate` | criterion 7 | - |
+| bare `show` by path, the file-qualified form as the leaf lookup filtered to the file's id range, the nameless exact-step deferral, the `--around` not-found note | 7 | `locate`, `print_around_subgraph` | criterion 7 | - |
 | `SymRef.enclosing` and `EdgeInferred.caller` as a path | 8 | `enclosing_def` | criterion 8 | - |
 | `Def.parent`, `CodeEntityExtracted.parent`, parent `CONTAINS` with its bare parent `ensure_node`, widened `supersede_file_edges`, `GRAMMAR_TAGS_VERSION` `ts-tags-v4`, the empty-`parent` and self-parent rules | 9 | `extract_events`, the entity fold arm, `SymbolIndex::is_current` | criterion 9 | - |
 | parent-before-child emission, the stable sort by parent chain, leaf and path | 16 | `extract_events` | criterion 16 | - |
@@ -451,7 +451,7 @@ LANDING TREES. At least one assertion per RESOLVER and READER table row a criter
 | 4 renderer | 13 (no attr entries, a file-less node prints `site: <id>:0`, an empty `kind` prints `?`) | 4 |
 | 5 extent | 4 (`Def` has no `end_line` and an index without it loads, a read-off definition is unbounded) | 5 |
 | 6 ids | 5 (extraction emits flat ids and an index lacking `path` loads; Go `const a, b` siblings and the `var` closure's `T` at the file either way) | 6 |
-| 7 bare show | 15 (a path query `Type::method` finds nothing, the nested id existing; `show a.rs::new` and `show a.rs::field` answer none, or a knowledge-held flat id's bare node, beside `a.rs::T::new` and `a.rs::S.field`; `show T::new` answers an artifact `T::new` beside `a.rs::T::new`) | 7 |
+| 7 bare show | 15 (a path query `Type::method` finds nothing, the nested id existing; `show a.rs::new` and `show a.rs::field` answer none, or a knowledge-held flat id's bare node, beside `a.rs::T::new` and `a.rs::S.field`; `show T::new` answers an artifact `T::new` beside `a.rs::T::new`; `--around new` prints today's note naming no seed form) | 7 |
 | 8 caller path | 7 (`enclosing` is a name) | 8 |
 | 9 CONTAINS | 14 (the file contains every definition; a `ts-tags-v3` index carrying `path` loads) | 9 |
 | 10 one event per path | 16 (twins emit one event each) | 10 |
@@ -476,7 +476,7 @@ LANDING TREES. At least one assertion per RESOLVER and READER table row a criter
   `#[cfg(feature = "symbols")]`, `src/cli/graph.rs:401`): criterion 5 but its index and nameless-node clauses, the extraction clauses of 6, 8-10 and 16, the fold clauses of 6 and 8
   (`symbols/extract.rs` and `symbols/events.rs`, `#[cfg(feature = "symbols")]`, `symbols/mod.rs:20-28`),
   6's and 7's `--show` clauses assert in the default lane, each such `tests/cli.rs` test carrying `#[cfg(feature = "symbols")]` as `graph_build_records_source_as_ledger_entries_and_folds_it_with_no_run` (`tests/cli.rs:2223`) does; 1-4,
-  the index clauses of 6 and 9 (`symbols/store.rs`, ungated), 5's nameless-node clause (`tests/cli.rs`), 7's, 9's and 15's `contextgraph/sqlite.rs` fold clauses, 14's `subgraph` and `member_sql()` clauses there too, 13 (`contextgraph/query.rs`, `dash.rs`, `console/map.rs`), 14's `contextgraph/query.rs` and conductor clauses, 5's index clause (`symbols/store.rs`) and 11's two clauses (`tests/cli.rs`: the version
+  the index clauses of 6 and 9 (`symbols/store.rs`, ungated), 5's nameless-node clause (`tests/cli.rs`), 7's `--around` note clause (`tests/cli.rs`), 7's, 9's and 15's `contextgraph/sqlite.rs` fold clauses, 14's `subgraph` and `member_sql()` clauses there too, 13 (`contextgraph/query.rs`, `dash.rs`, `console/map.rs`), 14's `contextgraph/query.rs` and conductor clauses, 5's index clause (`symbols/store.rs`) and 11's two clauses (`tests/cli.rs`: the version
   reading 3, no row at the flat nested id carrying `name`) fold, load or render hand-built input in the default and light lanes; the core lane, which compiles neither the grounder, `contextgraph/sqlite.rs`, `dash.rs`, the conductor nor the MCP server (`any(feature = "store", not(feature = "core"))`) and runs no root-crate test, holds only the `contextgraph/query.rs`, `community.rs` and `console/map.rs` clauses of 1, 13 and 14.
 
 ## Done when
@@ -543,7 +543,7 @@ LANDING TREES. At least one assertion per RESOLVER and READER table row a criter
   `path`: `show Type::method`, `show Struct.field` and `show Kind::Constant`, `show A.B` answering a
   `namespace A.B` in one file before a field `B` of a struct `A` in another, and in `tests/cli.rs`
   with `rigger graph build` over a real Rust file then `rigger graph --show Struct.field`; and in `contextgraph/sqlite.rs`'s tests over hand-built events `show a.rs::new` showing
-  `a.rs::T::new`, `show a.rs::field` the field `a.rs::S.field`, `show a.rs::new` still `a.rs::T::new` while a decision holds the flat `a.rs::new`, `show T::new` answering `a.rs::T::new` beside an artifact `T::new`, and listing `a.rs::T::new` and `a.rs::U::new` when both exist. This
+  `a.rs::T::new`, `show a.rs::field` the field `a.rs::S.field`, `show a.rs::new` still `a.rs::T::new` while a decision holds the flat `a.rs::new`, `show T::new` answering `a.rs::T::new` beside an artifact `T::new`, and listing `a.rs::T::new` and `a.rs::U::new` when both exist; and in `tests/cli.rs`, ungated, `rigger graph --around new` printing the not-found note that names the exact-id seed form and `--show`. This
   criterion OWNS what ARTIFACT OWNERSHIP gives criterion 7; the caller's path is criterion 8's, NOT this one's.
 - [ ] a test proves A CALLER IS NAMED BY ITS PATH: `SymRef.enclosing` and `EdgeInferred.caller` carry the caller's path,
   asserted in `symbols/extract.rs`'s and `symbols/events.rs`'s tests: a call in `impl T { fn new() }`
