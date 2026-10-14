@@ -280,9 +280,12 @@ mod tests {
     /// The hand-over section states each outcome an author's tree must meet before it reports,
     /// with the check that proves it: the gates green in the author's worktree, generated files
     /// committed with their inputs, a test-side shape spelled once - any token two tests could
-    /// spell - with every added shape recorded in a whole-tree audit whether merged or not, every
+    /// spell, a named inline spelling included - with every added or named shape recorded in a
+    /// whole-tree audit whether merged or not, the audit a search by the shape's distinguishing
+    /// expression whose command and hits the record carries and the SDET lens re-runs, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
-    /// from its generators and records on every change, with a renamed name's old spelling
+    /// from its generators (an item's callers read from the graph at depth 1) and records on
+    /// every change, with a renamed name's old spelling
     /// counted to zero, nothing added that nothing reads, the red test's body untouched by the
     /// green commit, and a probe that edits the tree - the sharpest case of a turn's end being
     /// the session's end - run to completion and restored before the turn ends; the gates'
@@ -315,6 +318,22 @@ mod tests {
             "one whole-tree audit DecisionMade naming every site of its shape FIXED or CHECKED",
             "FIXED when moved to the shared home with both calling it and no assertion or \
              expected value changed, CHECKED when kept apart, with the reason",
+            "Naming a shape adds it: a builder, fixture or helper that gives an existing inline \
+             spelling a name exists once across every test home afterwards",
+            "every site that already spelled it inline calls it, the shared home itself and any \
+             file you edit included",
+            "The search is an instrument, not a claim:",
+            "its distinguishing expression - the token sequence its body cannot be written \
+             without (the cut, the literal, the struct pattern, the query text; two expressions \
+             when one would miss a spelling)",
+            "run one search for each over every test home",
+            "carrying each search's command, its hit count and every hit",
+            "CHECKED when kept apart, with the reason: the named way its shape differs",
+            "A CHECKED hit whose shape does not differ is a twin.",
+            "A search you did not run is a record you cannot write.",
+            "The SDET lens re-runs each recorded search on the review tree: a hit the record \
+             does not carry, or a CHECKED hit whose reason does not hold, is a BLOCKING finding \
+             on its own.",
             "module docs, test names, test docs, assertion messages and operator docs say what \
              the code at head does",
             "enumerate the walked set, each member from what generates it",
@@ -325,8 +344,10 @@ mod tests {
              trait a changed impl is for (the impl headers)",
             "the doc of every item a changed hunk names, callee, constant or type returned (the \
              hunk's identifiers)",
-            "the doc of every caller of a changed item (the project's graph, or your persona's \
-             fallback)",
+            "the doc of every caller of a changed item, read from the project's graph at depth \
+             1 (`rigger graph --around <file>::<item> --depth 1`, the lines naming callers; the \
+             default depth returns the item's whole file neighbourhood and is not the caller \
+             set), or your persona's fallback",
             "every tracked line outside the hunks that spells a changed item's name",
             "read each against the code at head, leaving it true or fixing it",
             "The record is owed on every change: one whole-tree DecisionMade naming the set \
@@ -354,6 +375,12 @@ mod tests {
                 "the hand-over section must say {phrase:?}"
             );
         }
+        // The item's callers come from the graph at depth 1; a bare `--around` answers the
+        // item's whole file neighbourhood, so the generator never names the graph undepthed.
+        assert!(
+            !words.contains("(the project's graph, or your persona's fallback)"),
+            "the caller generator must name the graph's depth"
+        );
     }
 
     #[test]
