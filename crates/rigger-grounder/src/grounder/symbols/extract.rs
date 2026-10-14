@@ -79,6 +79,18 @@ fn is_function_valued(node: tree_sitter::Node) -> bool {
         .is_some_and(|v| matches!(v.kind(), "arrow_function" | "function_expression"))
 }
 
+/// A PYTHON METHOD (spec 116): whether `node`, the own node of a definition, is a Python
+/// `function_definition` whose nearest enclosing definition is a `class_definition`, the
+/// statements, blocks and `decorated_definition` wrappers between them passed through; a def
+/// nested in a function, a method's included, is a function. It reads the node and its
+/// ancestors alone, as [`is_declaration`] reads the node.
+fn is_python_method(node: tree_sitter::Node) -> bool {
+    node.kind() == "function_definition"
+        && std::iter::successors(node.parent(), |n| n.parent())
+            .find(|n| matches!(n.kind(), "class_definition" | "function_definition"))
+            .is_some_and(|n| n.kind() == "class_definition")
+}
+
 /// THE LEAF of a tagged definition (spec 116): the name its `Def` and its caller range carry,
 /// read over `node`, its own node, and `name`, the slice of the source its tag names. A C#
 /// `destructor_declaration` is `~` and that identifier (`~Foo`), the grammar holding the `~`
@@ -128,14 +140,15 @@ fn is_proc_macro_fn(node: tree_sitter::Node, source: &[u8]) -> bool {
 /// The kind a definition the query tagged `tagged` lowers to, read over `node`, its own node
 /// (the deepest one spanning its range): a function, method or constructor with no body
 /// ([`is_declaration`]) is a `Declaration`, a function-valued field ([`is_function_valued`]) a
-/// `Method`, and in Rust a proc-macro fn ([`is_proc_macro_fn`]) is a `Macro`; every other
-/// definition keeps the kind its tag names.
+/// `Method`, a Python def in a class ([`is_python_method`]) a `Method`, and in Rust a proc-macro
+/// fn ([`is_proc_macro_fn`]) is a `Macro`; every other definition keeps the kind its tag names.
 fn lowered_kind(lang: Lang, tagged: Kind, node: Option<tree_sitter::Node>, source: &[u8]) -> Kind {
     match tagged {
         Kind::Function | Kind::Method | Kind::Constructor if node.is_some_and(is_declaration) => {
             Kind::Declaration
         }
         Kind::Field if node.is_some_and(is_function_valued) => Kind::Method,
+        Kind::Function if node.is_some_and(is_python_method) => Kind::Method,
         _ if lang == Lang::Rust && node.is_some_and(|n| is_proc_macro_fn(n, source)) => Kind::Macro,
         _ => tagged,
     }
@@ -196,10 +209,11 @@ fn record_def(
 /// ([`impl_blocks`]) and, selected by `lang`, Rust's tuple fields ([`tuple_fields`]), Go's
 /// embedded fields and type aliases ([`embedded_fields`], [`named_by_field`]) and C#'s operators,
 /// conversion operators and indexers ([`named_by_field`], [`conversion_operators`],
-/// [`indexers`]), and JS's and TS's class fields, valueless enum members and the identifiers a
+/// [`indexers`]), JS's and TS's class fields, valueless enum members and the identifiers a
 /// pattern declarator or a declaring `for .. in`/`for .. of` binds ([`class_fields`],
-/// [`enum_members`], [`js_bindings`]), each recorded as a tagged definition is
-/// ([`record_def`]).
+/// [`enum_members`], [`js_bindings`]), and Python's module-level names a pattern or a chain
+/// binds, class-body names and type aliases ([`assigned_names`], [`class_body_names`],
+/// [`type_aliases`]), each recorded as a tagged definition is ([`record_def`]).
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -314,7 +328,14 @@ pub fn extract(
             (Kind::Variant, enum_members(root, source.as_bytes())),
             (Kind::Constant, js_bindings(root, source.as_bytes())),
         ],
-        _ => Vec::new(),
+        Lang::Python => vec![
+            (
+                Kind::Constant,
+                assigned_names(root, source.as_bytes(), true),
+            ),
+            (Kind::Field, class_body_names(root, source.as_bytes())),
+            (Kind::Type, type_aliases(root, source.as_bytes())),
+        ],
     };
     for (kind, found) in read_offs {
         for found in found {
@@ -724,6 +745,96 @@ fn js_bindings(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
         bound_names(seed, &JS_PATTERN_BINDINGS, source, &mut out);
     }
     out
+}
+
+/// The Python pattern node kinds and what each binds: a bare identifier binds itself; a tuple
+/// (`a, b`), a parenthesized tuple (`(a, b)`), a list (`[c, d]`) and a starred (`*d`) pattern
+/// are walked down. An attribute and a subscript target (`self.x`, `d[k]`) are unlisted, so
+/// each binds nothing.
+const PY_PATTERN_BINDINGS: [(&str, Binds); 5] = [
+    ("identifier", Binds::Itself),
+    ("pattern_list", Binds::Children),
+    ("tuple_pattern", Binds::Children),
+    ("list_pattern", Binds::Children),
+    ("list_splat_pattern", Binds::Children),
+];
+
+/// Python's ASSIGNED NAMES (spec 116), the binding walk's seeds in `scope`, the module or a
+/// class body: the targets of every assignment that is a direct statement of it, each walked
+/// by [`bound_names`] over [`PY_PATTERN_BINDINGS`], a chained assignment's (`x = y = f()`) each
+/// one, followed down its `right` while that is an assignment, so the far-right value never
+/// binds. With `tagged` true (the module) an assignment the Python query tags a constant is
+/// skipped: one whose target is an identifier and whose value is absent or no assignment, the
+/// complement of what this walks there.
+fn assigned_names(scope: tree_sitter::Node, source: &[u8], tagged: bool) -> Vec<ReadOff> {
+    let mut out = Vec::new();
+    let mut cursor = scope.walk();
+    let statements: Vec<_> = scope
+        .named_children(&mut cursor)
+        .filter(|statement| statement.kind() == "expression_statement")
+        .collect();
+    for statement in statements {
+        let mut cursor = statement.walk();
+        let assignments: Vec<_> = statement
+            .named_children(&mut cursor)
+            .filter(|child| child.kind() == "assignment")
+            .collect();
+        for assignment in assignments {
+            if tagged && is_tagged_python_constant(assignment) {
+                continue;
+            }
+            let mut link = Some(assignment);
+            while let Some(current) = link {
+                if let Some(target) = current.child_by_field_name("left") {
+                    bound_names(target, &PY_PATTERN_BINDINGS, source, &mut out);
+                }
+                link = current
+                    .child_by_field_name("right")
+                    .filter(|right| right.kind() == "assignment");
+            }
+        }
+    }
+    out
+}
+
+/// Whether the Python `assignment` is one the Python query tags a constant at module level:
+/// its target an identifier and its value absent (`w: int`) or no assignment (`z = 1`).
+fn is_tagged_python_constant(assignment: tree_sitter::Node) -> bool {
+    assignment
+        .child_by_field_name("left")
+        .is_some_and(|left| left.kind() == "identifier")
+        && assignment
+            .child_by_field_name("right")
+            .is_none_or(|right| right.kind() != "assignment")
+}
+
+/// Python's CLASS-BODY NAMES (spec 116): the names every assignment directly in a class body
+/// under `root` binds ([`assigned_names`]), a nested class's and a decorated one's included,
+/// in source order. The Python query tags none of them.
+fn class_body_names(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    nodes_of_kind(root, "class_definition")
+        .into_iter()
+        .filter_map(|class| class.child_by_field_name("body"))
+        .flat_map(|body| assigned_names(body, source, false))
+        .collect()
+}
+
+/// Python's TYPE ALIASES (spec 116): every `type_alias_statement` under `root`, in source
+/// order, as its byte range, its leaf and its 1-based line. Its leaf is the identifier its
+/// `left` type holds, directly (`type Y = int`) or as a generic type's (`type X[T] = int` gives
+/// `X`).
+fn type_aliases(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    nodes_of_kind(root, "type_alias_statement")
+        .into_iter()
+        .filter_map(|alias| {
+            let named = alias.child_by_field_name("left")?.named_child(0)?;
+            let leaf = match named.kind() {
+                "generic_type" => named.named_child(0)?,
+                _ => named,
+            };
+            read_off(alias, leaf, source)
+        })
+        .collect()
 }
 
 /// A definition read off the parsed tree: its byte range, its leaf and its 1-based line.

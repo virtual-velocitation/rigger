@@ -231,6 +231,38 @@ const GO_DEFINITION_TAGS: &str = r#"
 (method_elem name: (field_identifier) @name) @definition.method
 "#;
 
+/// The Python `tags` query. The upstream `tree-sitter-python` `tags.scm` tags a module-level
+/// assignment whose target is an identifier a constant whatever its value, so a chained
+/// assignment (`x = y = f()`) tags its first target alone over the whole chain, every call in it
+/// that target's. This is the upstream query with that pattern kept only where the assignment
+/// has no value (`w: int`) or a value of one of the types the grammar admits but `assignment`,
+/// so a single-target constant stays a tag over the whole assignment, while every target of a
+/// chain, the names a pattern binds, a class body's targets and a `type X = ..` alias are read
+/// off the parsed tree by `extract`. Every def is tagged a function, which `extract` lowers to a
+/// method when its nearest enclosing definition is a class.
+const PYTHON_TAGS: &str = r#"
+(module (expression_statement (assignment left: (identifier) @name !right) @definition.constant))
+(module
+  (expression_statement
+    (assignment
+      left: (identifier) @name
+      right: [(augmented_assignment) (expression) (expression_list) (pattern_list) (yield)])
+    @definition.constant))
+
+(class_definition
+  name: (identifier) @name) @definition.class
+
+(function_definition
+  name: (identifier) @name) @definition.function
+
+(call
+  function: [
+      (identifier) @name
+      (attribute
+        attribute: (identifier) @name)
+  ]) @reference.call
+"#;
+
 /// A registered language: the rigger `Lang`, its tree-sitter grammar, and the `tags` query the
 /// extractor runs over a file in that language. The three the extractor needs, resolved
 /// together so a file maps to exactly one grammar+query pair.
@@ -330,7 +362,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         "py" => (
             Lang::Python,
             tree_sitter_python::LANGUAGE.into(),
-            tree_sitter_python::TAGS_QUERY,
+            PYTHON_TAGS,
         ),
         _ => return None,
     };
@@ -962,7 +994,7 @@ pub(crate) mod tests {
 
     /// The name filter keeps `_` where it is an ordinary name: a JS `const _ = require(..)` and a
     /// Python `_ = gettext.gettext` each keep their definition under the composed JS query and
-    /// the upstream Python one; neither source holds a reference, the upstream JS query tagging
+    /// the registered Python one; neither source holds a reference, the upstream JS query tagging
     /// no `require` call and a Python attribute read being no call.
     #[test]
     fn a_js_and_a_python_definition_named_underscore_keeps_its_def() {

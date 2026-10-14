@@ -6340,12 +6340,12 @@
     ]
   },
   {
-    "id": "dup-dc2a15c1bb0b",
+    "id": "dup-5fde856e0596",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
-        "start_line": 207,
-        "end_line": 402
+        "start_line": 221,
+        "end_line": 423
       },
       {
         "file": "tests/common/source_audit.rs",
