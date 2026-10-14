@@ -3658,6 +3658,35 @@ mod tests {
         );
     }
 
+    /// The `sdet` lens is the built-in shape rule's enforcement: it re-runs every search the
+    /// author's shape record carries on the review tree and compares the hit sets, and a hit
+    /// the record lacks, a CHECKED reason that does not hold or a record with no command is
+    /// BLOCKING. The search is the author's instrument, never a gate, so the lens's rule against
+    /// re-running a green gate does not reach it.
+    #[test]
+    fn the_sdet_lens_re_runs_every_shape_search_the_author_records() {
+        const HEADING: &str = "## Re-run the author's shape searches";
+        for (file, text) in committed_personas() {
+            assert_eq!(
+                text.matches(HEADING).count(),
+                usize::from(file == "sdet.md"),
+                "{file}: the shape-search enforcement belongs to the sdet lens alone"
+            );
+        }
+        let flat = rigger::wave::normalize_ws(&committed_persona("sdet.md"));
+        for wanted in [
+            "A recorded search is the author's instrument, not a gate",
+            "you re-run every search the record carries, on the review tree, and compare the \
+             hit sets",
+            "A hit the record does not carry is BLOCKING",
+            "a CHECKED hit whose reason does not hold - its shape does not differ in the way \
+             the record names - is a twin and BLOCKING",
+            "a record with no command is BLOCKING",
+        ] {
+            assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
+        }
+    }
+
     /// The implementer runs the hand-over checks, never the whole suite: no sentence of its
     /// persona sends it to run `cargo test` over the workspace before it reports.
     #[test]
