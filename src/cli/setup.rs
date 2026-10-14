@@ -3681,8 +3681,8 @@ mod tests {
     /// every search the author's shape record carries on the review tree and compares the hit
     /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
     /// command is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
-    /// diff and the graph and compares it with the walk record, and re-runs every rule-spelling
-    /// search the record carries, and an omitted member, an uncarried hit, a CHECKED reason that
+    /// diff and the graph and compares it with the walk record, re-runs every rule-spelling
+    /// search the record carries and re-reads every hit against head, and an omitted member, an uncarried hit, a CHECKED reason that
     /// does not hold, or a record naming no search and no empty set is BLOCKING. Both records
     /// are the author's instruments, never a gate, so the lens's rule against re-running a green
     /// gate does not reach them.
@@ -3713,10 +3713,11 @@ mod tests {
             "the tracked lines spelling a changed item's name",
             "and compare it with the record, and you re-run every rule-spelling search the \
              record carries and compare the hit sets",
+            "and you re-read every hit, CHECKED ones included, against the code at head",
             "A member the record omits is BLOCKING",
             "a hit the record does not carry is BLOCKING",
-            "a CHECKED hit whose reason does not hold - it is a spelling of the retired rule \
-             after all - is BLOCKING",
+            "a CHECKED hit whose reason does not hold at head - it is a spelling of the retired \
+             rule or of one of its case labels after all - is BLOCKING",
             "a record naming no rule-spelling search and no empty set is BLOCKING",
             "a record that names the set empty while the diff rewrites a rule",
         ] {
