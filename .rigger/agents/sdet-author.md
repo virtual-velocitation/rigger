@@ -139,9 +139,9 @@ test-side shape you add, merged or not, is recorded as one `<unit>-test-shape-au
 DecisionMade naming each site FIXED or CHECKED, after a search of the three test homes above.
 The search is this command, one run per distinguishing expression, the expression its one
 argument; it reads every `.rs` file under a `tests/` directory whole, the contract module whole
-and each other file under `crates/*/src/` from its first `#[cfg(test)]` on, and ends with the
-hit count:
-`git ls-files tests crates | t='<expression>' xargs awk 'FNR == 1 { s = FILENAME ~ /(^|\/)tests\/.*\.rs$|\/contract\.rs$/ } FILENAME ~ /\.rs$/ && /^[[:space:]]*#\[cfg\((all\()?test/ { s = 1 } s && index($0, ENVIRON["t"]) { n++; print FILENAME ":" FNR ": " $0 } END { print n + 0 " hits" }'`.
+and each other file under `crates/*/src/` from its first `#[cfg(test)]` on, and the root crate's
+`src/` test modules the same way, and ends with the hit count:
+`git ls-files tests crates src | t='<expression>' xargs awk 'FNR == 1 { s = FILENAME ~ /(^|\/)tests\/.*\.rs$|\/contract\.rs$/ } FILENAME ~ /\.rs$/ && /^[[:space:]]*#\[cfg\((all\()?test/ { s = 1 } s && index($0, ENVIRON["t"]) { n++; print FILENAME ":" FNR ": " $0 } END { print n + 0 " hits" }'`.
 A `'` in the expression is written `'\''`. The record pastes each command as run, its hit
 count and every hit it printed, each FIXED or CHECKED, and the `sdet` lens re-runs each on the
 review tree.
