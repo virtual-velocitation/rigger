@@ -710,25 +710,98 @@ pub(crate) mod tests {
     /// Rust's declared non-definitions (spec 116): the named node types of the Rust grammar
     /// that THE RULE classifies no definition. An extern block, `foreign_mod_item`, carries no
     /// `name` field and is listed as the spec's table lists it, a container like a block.
-    const RUST_NON_DEFINITIONS: &[&str] = &[];
+    const RUST_NON_DEFINITIONS: &[&str] = &[
+        "const_parameter",
+        "lifetime_parameter",
+        "type_parameter",
+        "field_pattern",
+        "token_binding_pattern",
+        "scoped_identifier",
+        "scoped_type_identifier",
+        "struct_expression",
+        "type_binding",
+        "foreign_mod_item",
+    ];
 
     /// Go's declared non-definitions (spec 116); `package_clause`, a container name, carries no
     /// `name` field and is listed as the spec's table lists it.
-    const GO_NON_DEFINITIONS: &[&str] = &[];
+    const GO_NON_DEFINITIONS: &[&str] = &[
+        "package_clause",
+        "import_spec",
+        "parameter_declaration",
+        "variadic_parameter_declaration",
+        "type_parameter_declaration",
+        "qualified_type",
+    ];
 
     /// C#'s declared non-definitions (spec 116).
-    const CSHARP_NON_DEFINITIONS: &[&str] = &[];
+    const CSHARP_NON_DEFINITIONS: &[&str] = &[
+        "accessor_declaration",
+        "parameter",
+        "type_parameter",
+        "catch_declaration",
+        "declaration_expression",
+        "declaration_pattern",
+        "var_pattern",
+        "list_pattern",
+        "recursive_pattern",
+        "tuple_pattern",
+        "parenthesized_variable_designation",
+        "tuple_element",
+        "argument",
+        "attribute",
+        "attribute_argument",
+        "from_clause",
+        "alias_qualified_name",
+        "qualified_name",
+        "member_access_expression",
+        "member_binding_expression",
+        "bracketed_parameter_list",
+        "parameter_list",
+        "extern_alias_directive",
+        "using_directive",
+    ];
 
     /// JS's declared non-definitions (spec 116).
-    const JS_NON_DEFINITIONS: &[&str] = &[];
+    const JS_NON_DEFINITIONS: &[&str] = &[
+        "export_specifier",
+        "import_specifier",
+        "jsx_opening_element",
+        "jsx_closing_element",
+        "jsx_self_closing_element",
+    ];
 
     /// TS's declared non-definitions (spec 116), the TS and TSX grammars' alike as
     /// `TS_DEFINITION_TYPES` is: JS's, its three JSX types the TSX grammar's alone, plus the
     /// TS types.
-    const TS_NON_DEFINITIONS: &[&str] = &[];
+    const TS_NON_DEFINITIONS: &[&str] = &[
+        "export_specifier",
+        "import_specifier",
+        "jsx_opening_element",
+        "jsx_closing_element",
+        "jsx_self_closing_element",
+        "enum_body",
+        "index_signature",
+        "mapped_type_clause",
+        "generic_type",
+        "nested_type_identifier",
+        "type_parameter",
+        "type_predicate",
+        "optional_parameter",
+        "required_parameter",
+    ];
 
     /// Python's declared non-definitions (spec 116).
-    const PYTHON_NON_DEFINITIONS: &[&str] = &[];
+    const PYTHON_NON_DEFINITIONS: &[&str] = &[
+        "aliased_import",
+        "future_import_statement",
+        "import_from_statement",
+        "import_statement",
+        "default_parameter",
+        "typed_default_parameter",
+        "keyword_argument",
+        "named_expression",
+    ];
 
     /// The node types of the grammar whose `node-types.json` is `node_types`.
     fn node_types(node_types: &str) -> Vec<serde_json::Value> {
