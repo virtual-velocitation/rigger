@@ -402,11 +402,17 @@ pub fn attrs_of(p: &Projector, id: &str) -> BTreeMap<String, String> {
 /// The attrs of a Rust definition `name`, a `kind` at `line`, and of nothing else: a node
 /// carrying a proof is not equal to them.
 pub fn definition(name: &str, kind: &str, line: u64) -> BTreeMap<String, String> {
+    definition_in("rust", name, kind, line)
+}
+
+/// The attrs of a definition `name` in the language `lang`, a `kind` at `line`, and of nothing
+/// else: a node carrying a proof is not equal to them.
+pub fn definition_in(lang: &str, name: &str, kind: &str, line: u64) -> BTreeMap<String, String> {
     [
         ("name", name),
         ("kind", kind),
         ("line", &line.to_string()),
-        ("lang", "rust"),
+        ("lang", lang),
     ]
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .into()
