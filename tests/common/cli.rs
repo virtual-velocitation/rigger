@@ -482,8 +482,11 @@ pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, Projector) {
 /// GIVEN a project whose one file `path`, in the language `lang`, holds `source`, WHEN the
 /// operator runs `rigger graph build`, THEN the built graph's code entities are exactly one
 /// node per `definitions` row, a (leaf, kind, line) triple, each carrying exactly that kind and
-/// line, and one per `placeholders` leaf, a name a reference reaches that no definition gives
-/// (`entities_why` says what makes no node), and its `CALLS` edges are exactly `calls`.
+/// line, and one placeholder `<path>::%<leaf>` ([`placeholder_id`]) per `placeholders` leaf, a
+/// name a reference reaches that no one same-file call target gives (`entities_why` says what
+/// makes no node), and its `CALLS` edges are exactly `calls`.
+///
+/// [`placeholder_id`]: rigger::contextgraph::query::placeholder_id
 pub fn assert_built_graph_holds(
     (path, lang, source): (&str, &str, &str),
     definitions: &[(&str, &str, u64)],
@@ -492,15 +495,15 @@ pub fn assert_built_graph_holds(
     entities_why: &str,
 ) {
     use super::fixtures::{attrs_of, definition_in, live_calls, live_node_ids};
+    use rigger::contextgraph::query::placeholder_id;
     use rigger::contextgraph::KIND_CODE_ENTITY;
 
     let (_project, graph) = built_graph(&[(path, source)]);
     let id = |leaf: &str| format!("{path}::{leaf}");
     let mut entities: Vec<String> = definitions
         .iter()
-        .map(|(name, _, _)| *name)
-        .chain(placeholders.iter().copied())
-        .map(id)
+        .map(|(name, _, _)| id(name))
+        .chain(placeholders.iter().map(|leaf| placeholder_id(path, leaf)))
         .collect();
     entities.sort();
     assert_eq!(

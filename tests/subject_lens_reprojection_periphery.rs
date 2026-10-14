@@ -54,8 +54,8 @@ const BAZ: &str = "src/gamma/c.rs::baz";
 // The concept's BARE placeholder members: call targets sitting in a.rs's namespace with NO `name`
 // attr (the definition lives elsewhere). `HELPER` resolves to a SINGLE definition file; `RUN`'s name
 // has TWO definitions, so it is marked-unresolved rather than attributed to a wrong file.
-const HELPER_BARE: &str = "src/alpha/a.rs::helper";
-const RUN_BARE: &str = "src/alpha/a.rs::run";
+const HELPER_BARE: &str = "src/alpha/a.rs::%helper";
+const RUN_BARE: &str = "src/alpha/a.rs::%run";
 
 // The standalone DEFINITION nodes the bare members resolve against (NOT members of the concept).
 const HELPER_DEF: &str = "src/delta/d.rs::helper";

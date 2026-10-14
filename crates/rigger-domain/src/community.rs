@@ -530,7 +530,7 @@ fn number_groups(c: &Coupling, refined: &[usize]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contextgraph::query::node_leaf;
+    use crate::contextgraph::query::split_id;
     use crate::contextgraph::{Edge, Node, KIND_FILE, TIER_EXTRACTED, TIER_INFERRED};
     use crate::test_support::def_node;
     use crate::test_support::edge;
@@ -572,7 +572,7 @@ mod tests {
                     kind: "code-entity".to_string(),
                     attrs: Map::new(),
                 };
-                if let Some(leaf) = node_leaf(&node).map(str::to_string) {
+                if let Some(leaf) = split_id(&node.id).1.map(str::to_string) {
                     node.attrs.insert("name".to_string(), leaf);
                 }
                 node
@@ -829,7 +829,7 @@ mod tests {
     #[test]
     fn from_graph_resolves_a_bare_cross_file_reference_onto_its_unique_definition() {
         // The cross-directory heart of the pass: a reference in file B to `foo` (defined in file A)
-        // folds onto a BARE same-file placeholder `src/b.rs::foo` (no `name` attr). Detection must
+        // folds onto a BARE same-file placeholder `src/b.rs::%foo` (no `name` attr). Detection must
         // redirect that bare node onto the UNIQUE real definition `src/a.rs::foo`, so B genuinely
         // couples to A across the directory line - not to a dead-end placeholder. Without resolution,
         // B and A would sit in different components and never share a community.
@@ -843,7 +843,7 @@ mod tests {
                 ),
                 node_with_optional_attrs("src/b.rs", KIND_FILE, &[("title", None), ("name", None)]),
                 node_with_optional_attrs(
-                    "src/b.rs::foo",
+                    "src/b.rs::%foo",
                     KIND_CODE_ENTITY,
                     &[("title", None), ("name", None)],
                 ), // bare cross-file placeholder
@@ -851,7 +851,7 @@ mod tests {
             edges: vec![
                 edge("src/a.rs", "src/a.rs::foo", REL_CONTAINS, TIER_EXTRACTED),
                 // The cross-file reference, landed on the bare placeholder at the inferred tier.
-                edge("src/b.rs", "src/b.rs::foo", REL_REFERENCES, TIER_INFERRED),
+                edge("src/b.rs", "src/b.rs::%foo", REL_REFERENCES, TIER_INFERRED),
             ],
         };
         let c = Coupling::from_graph(&g);
@@ -859,7 +859,7 @@ mod tests {
         let m = pair_map(&a.members);
 
         assert!(
-            !m.contains_key("src/b.rs::foo"),
+            !m.contains_key("src/b.rs::%foo"),
             "the bare placeholder resolves away - it is never a member on its own"
         );
         assert!(
@@ -920,14 +920,14 @@ mod tests {
                 ),
                 node_with_optional_attrs("src/b.rs", KIND_FILE, &[("title", None), ("name", None)]),
                 node_with_optional_attrs(
-                    "src/b.rs::foo",
+                    "src/b.rs::%foo",
                     KIND_CODE_ENTITY,
                     &[("title", None), ("name", None)],
                 ),
             ],
             edges: vec![edge(
                 "src/b.rs",
-                "src/b.rs::foo",
+                "src/b.rs::%foo",
                 REL_REFERENCES,
                 TIER_INFERRED,
             )],
@@ -938,7 +938,7 @@ mod tests {
         // The bare node stays itself (two candidates => no resolution), so B couples only to the
         // unresolved placeholder, never to either real definition.
         assert!(
-            m.contains_key("src/b.rs::foo"),
+            m.contains_key("src/b.rs::%foo"),
             "an ambiguous bare reference stays unresolved rather than guessing a definition"
         );
         assert!(
@@ -1154,11 +1154,11 @@ mod tests {
                 plain("src/a.rs", KIND_FILE),
                 kinded_def_node("src/a.rs::x", member),
                 plain("src/b.rs", KIND_FILE),
-                plain("src/b.rs::x", KIND_CODE_ENTITY),
+                plain("src/b.rs::%x", KIND_CODE_ENTITY),
             ],
             edges: vec![
                 edge("src/a.rs", "src/a.rs::x", REL_CONTAINS, TIER_EXTRACTED),
-                edge("src/b.rs", "src/b.rs::x", REL_REFERENCES, TIER_INFERRED),
+                edge("src/b.rs", "src/b.rs::%x", REL_REFERENCES, TIER_INFERRED),
             ],
         };
         if with_fn {
@@ -1176,17 +1176,17 @@ mod tests {
         a_placeholder_never_resolves_onto_a_field: from_graph_beside_a_member(
             "field",
             false,
-            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::x")],
+            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::%x")],
         );
         a_placeholder_never_resolves_onto_a_property: from_graph_beside_a_member(
             "property",
             false,
-            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::x")],
+            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::%x")],
         );
         a_placeholder_never_resolves_onto_a_declaration: from_graph_beside_a_member(
             "declaration",
             false,
-            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::x")],
+            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::%x")],
         );
         a_placeholder_resolves_past_a_field_onto_the_one_fn: from_graph_beside_a_member(
             "field",
@@ -1198,7 +1198,7 @@ mod tests {
             true,
             &[
                 MEMBER_KEEPS_ITS_EDGE,
-                ("src/b.rs", "src/b.rs::x"),
+                ("src/b.rs", "src/b.rs::%x"),
                 ("src/c.rs", "src/c.rs::x"),
             ],
         );

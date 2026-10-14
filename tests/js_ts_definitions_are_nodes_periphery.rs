@@ -27,8 +27,8 @@ rigger::test_cases! {
     /// WHEN the operator runs `rigger graph build`,
     /// THEN its code entities are the JS lines' nodes, their line-15 type assertion a
     /// `constant`, and the TS lines' (see [`TS_LINES_NODES`]), the call `run()` of the JS lines
-    /// now reaching the abstract `run` rather than a placeholder; its `CALLS` edges are the JS
-    /// lines' and the TS lines' (see [`TS_LINES_CALLS`]).
+    /// landing on the placeholder `run` beside the abstract `run`, a declaration being no call
+    /// target; its `CALLS` edges are the JS lines' and the TS lines' (see [`TS_LINES_CALLS`]).
     #[cfg(feature = "symbols")]
     graph_build_makes_each_ts_definition_a_node_of_its_kind:
         assert_definitions_graph(
@@ -173,11 +173,12 @@ const TS_LINES_NODES: [(&str, &str, u64); 26] = [
     ("sig", "declaration", 16),
 ];
 
-/// The placeholders the TS lines' references reach, each a type or call name no definition
-/// gives, the ambient function's file-level `Arg` included.
+/// The placeholders the TS lines' references reach, each a type or call name no call target of
+/// the file gives, the ambient function's file-level `Arg` included, and `run`, which the
+/// JS lines call and the TS lines declare abstract.
 #[cfg(feature = "symbols")]
-const TS_LINES_PLACEHOLDERS: [&str; 10] = [
-    "Arg", "FT", "PQ", "PType", "Ret", "Two", "V", "boot", "mk", "setup",
+const TS_LINES_PLACEHOLDERS: [&str; 11] = [
+    "Arg", "FT", "PQ", "PType", "Ret", "Two", "V", "boot", "mk", "run", "setup",
 ];
 
 /// The `CALLS` edges of the TS lines, `(caller leaf, callee leaf)`: each property signature's
@@ -200,8 +201,9 @@ const TS_LINES_CALLS: [(&str, &str); 9] = [
 
 /// The graph `rigger graph build` folds from a project whose one file, `path`, is `source`, a JS
 /// or TS definitions fixture, holds exactly the JS lines' nodes, placeholders and `CALLS` edges
-/// and the `nodes`, `placeholders` and `calls` the fixture adds, each id the file and its leaf
-/// and each node of the language the extension names.
+/// and the `nodes`, `placeholders` and `calls` the fixture adds, each caller id the file and its
+/// leaf, each callee the placeholder of its leaf, and each node of the language the extension
+/// names.
 #[cfg(feature = "symbols")]
 fn assert_definitions_graph(
     (path, source): (&str, &str),
@@ -209,11 +211,13 @@ fn assert_definitions_graph(
     placeholders: &[&str],
     calls: &[(&str, &str)],
 ) {
+    use rigger::contextgraph::query::placeholder_id;
+
     let lang = if path.ends_with(".js") { "js" } else { "ts" };
     let mut edges: Vec<(String, String)> = JS_LINES_CALLS
         .iter()
         .chain(calls)
-        .map(|(from, to)| (format!("{path}::{from}"), format!("{path}::{to}")))
+        .map(|(from, to)| (format!("{path}::{from}"), placeholder_id(path, to)))
         .collect();
     edges.sort();
     let edges: Vec<(&str, &str)> = edges

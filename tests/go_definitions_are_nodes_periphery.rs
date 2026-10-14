@@ -18,7 +18,8 @@ rigger::test_cases! {
     /// WHEN the operator runs `rigger graph build`,
     /// THEN the graph's code entities are exactly one node per leaf a definition gives, each
     /// carrying exactly its kind and line, and one placeholder per name a reference reaches that no
-    /// definition gives (`Canvas`, `Coord`, `Side`, `_`, `f`, `g`, `h`, `int`, `k`, `probe`):
+    /// call target of the file gives (`Canvas`, `Coord`, `Gen`, `Ptr`, `Qual`, `Side`, `_`, `f`,
+    /// `g`, `h`, `int`, `k`, `probe`), a field being no call target:
     ///
     ///  - each name of a const spec is a `constant`, the two of `const a, b` and the function-local
     ///    `inner` included; a package-level `var` is a `variable`, single (`single`), grouped
@@ -36,7 +37,8 @@ rigger::test_cases! {
     ///
     /// Its `CALLS` edges are exactly: both calls of `const a, b = f(), g()` from `a` and both of
     /// `var m, n = h(), k()` from `m`; each embedded field's reference to its type from the field,
-    /// which is the node itself, the generic one's type argument too; the named field's type from
+    /// onto the node itself for the type `Base` and onto its leaf's placeholder for the fields
+    /// `Gen`, `Ptr` and `Qual`, the generic one's type argument too; the named field's type from
     /// the field and that of the declaration naming two from `x`; the alias's name and its target
     /// from the alias; the call in the function-local const from its function; the interface
     /// method's parameter type from the interface; and the method's receiver type from the method.
@@ -72,25 +74,26 @@ rigger::test_cases! {
                 ("y", "field", 8),
             ],
             &[
-                "Canvas", "Coord", "Side", "_", "f", "g", "h", "int", "k", "probe",
+                "Canvas", "Coord", "Gen", "Ptr", "Qual", "Side", "_", "f", "g", "h", "int", "k",
+                "probe",
             ],
             &[
                 ("f.go::Alias", "f.go::Alias"),
                 ("f.go::Alias", "f.go::Base"),
                 ("f.go::Base", "f.go::Base"),
-                ("f.go::Drawer", "f.go::Canvas"),
-                ("f.go::Gen", "f.go::Gen"),
-                ("f.go::Gen", "f.go::int"),
-                ("f.go::Ptr", "f.go::Ptr"),
-                ("f.go::Qual", "f.go::Qual"),
-                ("f.go::a", "f.go::f"),
-                ("f.go::a", "f.go::g"),
+                ("f.go::Drawer", "f.go::%Canvas"),
+                ("f.go::Gen", "f.go::%Gen"),
+                ("f.go::Gen", "f.go::%int"),
+                ("f.go::Ptr", "f.go::%Ptr"),
+                ("f.go::Qual", "f.go::%Qual"),
+                ("f.go::a", "f.go::%f"),
+                ("f.go::a", "f.go::%g"),
                 ("f.go::area", "f.go::Shape"),
-                ("f.go::host", "f.go::probe"),
-                ("f.go::m", "f.go::h"),
-                ("f.go::m", "f.go::k"),
-                ("f.go::side", "f.go::Side"),
-                ("f.go::x", "f.go::Coord"),
+                ("f.go::host", "f.go::%probe"),
+                ("f.go::m", "f.go::%h"),
+                ("f.go::m", "f.go::%k"),
+                ("f.go::side", "f.go::%Side"),
+                ("f.go::x", "f.go::%Coord"),
             ],
             "every code entity of the built graph: one per definition leaf, none for a \
              function-local var or the alias named _, one placeholder per undefined name a \

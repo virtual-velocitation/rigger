@@ -251,7 +251,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-340eefdbe122",
+    "id": "dup-e6d4de111048",
     "classification": "near",
     "sites": [
       {
@@ -265,14 +265,14 @@
         "content_hash": "dd84157febaa78c9"
       },
       {
-        "file": "crates/rigger-domain/src/review.rs",
-        "name": "spec_critique_prompt",
+        "file": "crates/rigger-domain/src/contextgraph/query.rs",
+        "name": "entity_id",
         "content_hash": "7963312db697b9f4"
       },
       {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "code_entity_id",
-        "content_hash": "5d23ae9ae3e76aee"
+        "file": "crates/rigger-domain/src/review.rs",
+        "name": "spec_critique_prompt",
+        "content_hash": "7963312db697b9f4"
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
@@ -305,7 +305,7 @@
         "content_hash": "5d23ae9ae3e76aee"
       }
     ],
-    "proposed_home": "a new shared module (sites span 9 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/review.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/common/fixtures/plan_critique.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
+    "proposed_home": "a new shared module (sites span 9 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/review.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/common/fixtures/plan_critique.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

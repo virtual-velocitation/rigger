@@ -145,7 +145,7 @@ fn a_code_event_missing_the_optional_lang_field_still_folds_backcompat() {
     assert!(
         g.edges.iter().any(|e| e.rel == REL_REFERENCES
             && e.from == "src/combat.rs"
-            && e.to == "src/combat.rs::clamp"),
+            && e.to == "src/combat.rs::%clamp"),
         "a REFERENCES edge folded from the lang-less reference event; got {:?}",
         g.edges
     );
@@ -193,7 +193,7 @@ fn replaying_the_code_events_does_not_double_the_entity_node_or_its_structural_e
     assert_eq!(
         g.edges
             .iter()
-            .filter(|e| e.rel == REL_REFERENCES && e.to == "src/combat.rs::clamp")
+            .filter(|e| e.rel == REL_REFERENCES && e.to == "src/combat.rs::%clamp")
             .count(),
         1,
         "replay must not double the REFERENCES edge; got {:?}",
@@ -315,13 +315,13 @@ fn real_extraction_tiers_every_structural_edge_through_the_emit_fold_pipeline() 
         "a real same-file reference folds EXTRACTED"
     );
     assert_eq!(
-        tier_of("combat.rs::shared"),
+        tier_of("combat.rs::%shared"),
         TIER_INFERRED,
         "a real cross-file reference folds INFERRED (through the convergent upgrade, since the \
          definition folds after the reference in sorted file order)"
     );
     assert_eq!(
-        tier_of("combat.rs::undefined_thing"),
+        tier_of("combat.rs::%undefined_thing"),
         TIER_AMBIGUOUS,
         "a real reference to a name defined nowhere folds AMBIGUOUS"
     );
@@ -371,13 +371,13 @@ fn real_extraction_folds_caller_attributed_calls_edges_at_every_tier() {
         "a real same-file call folds EXTRACTED, mirroring its REFERENCES twin"
     );
     assert_eq!(
-        calls_tier("combat.rs::shared"),
+        calls_tier("combat.rs::%shared"),
         TIER_INFERRED,
         "a real cross-file call upgrades AMBIGUOUS -> INFERRED with its REFERENCES twin (the \
          definition folds after the call in sorted file order)"
     );
     assert_eq!(
-        calls_tier("combat.rs::undefined_thing"),
+        calls_tier("combat.rs::%undefined_thing"),
         TIER_AMBIGUOUS,
         "a real call to a name defined nowhere folds AMBIGUOUS"
     );
@@ -892,12 +892,12 @@ fn the_confidence_tier_persists_across_a_reopen_of_an_on_disk_graph() {
         "a same-file reference persists at the extracted tier"
     );
     assert_eq!(
-        edge_tier(&g, REL_REFERENCES, "combat.rs::shared"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::%shared"),
         "inferred",
         "a cross-file reference persists at the inferred tier across the reopen"
     );
     assert_eq!(
-        edge_tier(&g, REL_REFERENCES, "combat.rs::magic"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::%magic"),
         "ambiguous",
         "a define-nowhere reference persists at the ambiguous tier across the reopen"
     );
@@ -940,7 +940,7 @@ fn a_definition_upgrades_only_the_exact_name_cross_file_reference_never_a_substr
     apply_def_json(&p, 2, "util.rs", "damage");
     let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     assert_eq!(
-        edge_tier(&g, REL_REFERENCES, "combat.rs::apply_damage"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::%apply_damage"),
         TIER_AMBIGUOUS,
         "defining a substring name must NOT upgrade an unrelated reference (no wildcard match)"
     );
@@ -950,7 +950,7 @@ fn a_definition_upgrades_only_the_exact_name_cross_file_reference_never_a_substr
     apply_def_json(&p, 3, "util.rs", "apply_damage");
     let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     assert_eq!(
-        edge_tier(&g, REL_REFERENCES, "combat.rs::apply_damage"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::%apply_damage"),
         TIER_INFERRED,
         "defining the exact name DOES promote the cross-file reference to inferred"
     );
@@ -1057,7 +1057,7 @@ fn a_refs_only_files_re_extraction_supersedes_via_the_reference_batch_boundary()
     // Precondition: both references are live before the file changes.
     let g0 = p.subgraph(&[file.to_string()], 2).unwrap();
     assert!(
-        has_live_edge(&g0, REL_REFERENCES, file, "src/only_refs.rs::beta"),
+        has_live_edge(&g0, REL_REFERENCES, file, "src/only_refs.rs::%beta"),
         "precondition: beta is REFERENCEd before re-extraction; got {:?}",
         g0.edges
     );
@@ -1069,12 +1069,12 @@ fn a_refs_only_files_re_extraction_supersedes_via_the_reference_batch_boundary()
 
     let g1 = p.subgraph(&[file.to_string()], 2).unwrap();
     assert!(
-        has_live_edge(&g1, REL_REFERENCES, file, "src/only_refs.rs::alpha"),
+        has_live_edge(&g1, REL_REFERENCES, file, "src/only_refs.rs::%alpha"),
         "alpha is still REFERENCEd after re-extraction; got {:?}",
         g1.edges
     );
     assert!(
-        !has_live_edge(&g1, REL_REFERENCES, file, "src/only_refs.rs::beta"),
+        !has_live_edge(&g1, REL_REFERENCES, file, "src/only_refs.rs::%beta"),
         "the removed beta reference is superseded (gone from the live view) via the reference \
          batch boundary; got {:?}",
         g1.edges
@@ -1106,7 +1106,7 @@ fn a_re_extraction_supersedes_only_its_own_files_edges_not_another_files_referen
         g0.edges
     );
     assert!(
-        has_live_edge(&g0, REL_REFERENCES, b, "src/b.rs::shared"),
+        has_live_edge(&g0, REL_REFERENCES, b, "src/b.rs::%shared"),
         "precondition: B REFERENCEs its own shared target before A re-extracts; got {:?}",
         g0.edges
     );
@@ -1131,7 +1131,7 @@ fn a_re_extraction_supersedes_only_its_own_files_edges_not_another_files_referen
     // The scope boundary: B's reference edge (from_id = B) was NOT touched by supersede(A), so it
     // stays live. A supersede that ignored `from_id` would have wrongly retired it.
     assert!(
-        has_live_edge(&g1, REL_REFERENCES, b, "src/b.rs::shared"),
+        has_live_edge(&g1, REL_REFERENCES, b, "src/b.rs::%shared"),
         "B's cross-file reference survives A's re-extraction (supersede is scoped to A's own \
          from-edges); got {:?}",
         g1.edges

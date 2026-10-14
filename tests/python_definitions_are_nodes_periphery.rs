@@ -64,9 +64,9 @@ rigger::test_cases! {
             ],
             &["f", "make", "paint", "probe"],
             &[
-                ("f.py::host", "f.py::probe"),
-                ("f.py::inner", "f.py::paint"),
-                ("f.py::k", "f.py::make"),
+                ("f.py::host", "f.py::%probe"),
+                ("f.py::inner", "f.py::%paint"),
+                ("f.py::k", "f.py::%make"),
             ],
             "every code entity of the built graph: one per definition leaf, none under \
              if TYPE_CHECKING: or for an attribute, augmented or type-parameter name, one \

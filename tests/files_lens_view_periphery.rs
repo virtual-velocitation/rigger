@@ -354,14 +354,14 @@ fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf() {
     // 2 (its real definition plus the resolved reference), and the foo->helper coupling now crosses
     // files instead of collapsing to an intra-cluster edge.
     const CALLER_FOO: &str = "src/caller.rs::foo";
-    const HELPER_BARE: &str = "src/caller.rs::helper";
+    const HELPER_BARE: &str = "src/caller.rs::%helper";
     const HELPER_DEF: &str = "src/target.rs::helper";
     // `ghost`: ZERO definitions anywhere - excluded entirely (never attributed to its own referencing
     // file `src/caller.rs`).
-    const GHOST_BARE: &str = "src/caller.rs::ghost";
+    const GHOST_BARE: &str = "src/caller.rs::%ghost";
     // `ambiguous`: TWO definitions (x.rs and y.rs) - excluded entirely (never attributed to either
     // candidate file, nor to its own referencing file).
-    const AMBIGUOUS_BARE: &str = "src/caller.rs::ambiguous";
+    const AMBIGUOUS_BARE: &str = "src/caller.rs::%ambiguous";
     const AMBIGUOUS_DEF_ONE: &str = "src/x.rs::ambiguous";
     const AMBIGUOUS_DEF_TWO: &str = "src/y.rs::ambiguous";
 

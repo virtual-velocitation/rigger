@@ -82,11 +82,11 @@ rigger::test_cases! {
             ],
             &["X", "build", "compute", "seed"],
             &[
-                ("f.rs::TABLE", "f.rs::build"),
-                ("f.rs::derive", "f.rs::seed"),
-                ("f.rs::host", "f.rs::compute"),
+                ("f.rs::TABLE", "f.rs::%build"),
+                ("f.rs::derive", "f.rs::%seed"),
+                ("f.rs::host", "f.rs::%compute"),
                 ("f.rs::impl Pair", "f.rs::Pair"),
-                ("f.rs::impl X", "f.rs::X"),
+                ("f.rs::impl X", "f.rs::%X"),
             ],
             "every code entity of the built graph: one per production leaf, none for a \
              test-attributed member, one placeholder per undefined name a reference reaches",

@@ -732,8 +732,8 @@ traversal (`Projection::calls`):
 - `view=calls` with `dir=up` - the **call sites** (reverse: who calls it).
 - `view=calls` with `dir=both` - both directions from the seed.
 
-A hop auto-continues only through **unambiguous** edges: a same-file call, or a cross-file
-call whose name has exactly one definition. A name that resolves to **multiple** definitions
+A hop auto-continues only through **unambiguous** edges: a same-file call landed on its one
+candidate, or a cross-file call whose name has exactly one definition. A name that resolves to **multiple** definitions
 is not followed automatically - it renders as a "**fans out to N candidates - pick one**"
 frontier the human expands deliberately (the difference between a real execution path and a
 DAG dominated by the wrong same-named definitions). Cycles yield a depth-bounded DAG with

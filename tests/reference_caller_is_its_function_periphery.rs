@@ -42,21 +42,21 @@ fn graph_build_hangs_each_call_off_its_innermost_enclosing_function() {
 
     let calls = common::fixtures::live_calls(&graph);
     let expected: Vec<(String, String)> = [
-        ("a.js::h", "a.js::k"),
-        ("a.js::outer", "a.js::f"),
-        ("a.js::y", "a.js::g"),
-        ("lib.rs::Top", "lib.rs::announce"),
-        ("lib.rs::area", "lib.rs::measure"),
-        ("lib.rs::deep", "lib.rs::dig"),
-        ("lib.rs::draw", "lib.rs::brush"),
-        ("lib.rs::draw", "lib.rs::paint"),
+        ("a.js::h", "a.js::%k"),
+        ("a.js::outer", "a.js::%f"),
+        ("a.js::y", "a.js::%g"),
+        ("lib.rs::Top", "lib.rs::%announce"),
+        ("lib.rs::area", "lib.rs::%measure"),
+        ("lib.rs::deep", "lib.rs::%dig"),
+        ("lib.rs::draw", "lib.rs::%brush"),
+        ("lib.rs::draw", "lib.rs::%paint"),
+        ("lib.rs::host", "lib.rs::%declare"),
+        ("lib.rs::host", "lib.rs::%setup"),
         ("lib.rs::host", "lib.rs::Draw"),
         ("lib.rs::host", "lib.rs::Local"),
-        ("lib.rs::host", "lib.rs::declare"),
-        ("lib.rs::host", "lib.rs::setup"),
         ("lib.rs::impl Draw for Widget", "lib.rs::Draw"),
         ("lib.rs::impl Draw for Widget", "lib.rs::Widget"),
-        ("lib.rs::outer", "lib.rs::boot"),
+        ("lib.rs::outer", "lib.rs::%boot"),
     ]
     .map(|(from, to)| (from.to_string(), to.to_string()))
     .to_vec();

@@ -141,12 +141,12 @@ fn calls_down_surfaces_a_multi_candidate_hop_as_a_marked_frontier_and_never_desc
         )
         .unwrap();
 
-    // The bare cross-file callee `src/c.rs::target` is returned as a layer-1 FRONTIER carrying the
+    // The bare cross-file callee `src/c.rs::%target` is returned as a layer-1 FRONTIER carrying the
     // sorted candidate definition ids - NOT resolved to either candidate.
     let frontier = cg
         .nodes
         .iter()
-        .find(|n| n.node.id == "src/c.rs::target")
+        .find(|n| n.node.id == "src/c.rs::%target")
         .expect("the multi-candidate callee is returned as a (frontier) node");
     assert_eq!(
         frontier.layer, 1,
@@ -180,7 +180,7 @@ fn calls_down_surfaces_a_multi_candidate_hop_as_a_marked_frontier_and_never_desc
     );
     assert_eq!(
         call_node_ids(&cg),
-        vec!["src/c.rs::caller", "src/c.rs::target"],
+        vec!["src/c.rs::%target", "src/c.rs::caller"],
         "exactly the seed and the marked frontier callee",
     );
     // The one edge lands on the frontier placeholder and is a forward (non-back) CALLS edge.
@@ -188,7 +188,7 @@ fn calls_down_surfaces_a_multi_candidate_hop_as_a_marked_frontier_and_never_desc
         call_edge_pairs(&cg),
         vec![(
             "src/c.rs::caller".to_string(),
-            "src/c.rs::target".to_string()
+            "src/c.rs::%target".to_string()
         )],
         "the single edge points at the frontier, not at any candidate",
     );
@@ -242,19 +242,19 @@ fn the_tier_floor_excludes_an_ambiguous_call_by_default_and_includes_it_only_whe
         .unwrap();
     assert_eq!(
         call_node_ids(&ambiguous_floor),
-        vec!["src/c.rs::caller", "src/c.rs::nowheredef"],
+        vec!["src/c.rs::%nowheredef", "src/c.rs::caller"],
         "lowering the floor to `ambiguous` opts the unresolved tier in - the callee is reached",
     );
     assert_eq!(
         call_edge_pairs(&ambiguous_floor),
         vec![(
             "src/c.rs::caller".to_string(),
-            "src/c.rs::nowheredef".to_string()
+            "src/c.rs::%nowheredef".to_string()
         )],
         "the previously-excluded ambiguous CALLS edge is now followed",
     );
     assert_eq!(
-        call_layer(&ambiguous_floor, "src/c.rs::nowheredef"),
+        call_layer(&ambiguous_floor, "src/c.rs::%nowheredef"),
         Some(1),
         "the opted-in callee is a layer-1 terminal leaf (defined nowhere, nothing to descend)",
     );

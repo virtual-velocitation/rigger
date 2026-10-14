@@ -141,11 +141,24 @@ pub fn split_id(id: &str) -> (&str, Option<&str>) {
 
 /// The leaf an id alone names (spec 119): [`split_id`]'s rest half less exactly one leading
 /// [`PLACEHOLDER_SIGIL`] (`<file>::%x` gives `x`, `<file>::%%x` gives `%x`), `None` for an id
-/// holding no `::`. Read only where an id is all a reader holds; a reader holding a node reads
-/// [`node_leaf`].
+/// holding no `::` and for a rest half not beginning with the sigil (`<file>::x`, a definition's
+/// or a bare node's id): the one decision of what is a placeholder. Read only where an id is all
+/// a reader holds; a reader holding a node reads [`node_leaf`].
 pub fn leaf_of(id: &str) -> Option<&str> {
-    let rest = split_id(id).1?;
-    Some(rest.strip_prefix(PLACEHOLDER_SIGIL).unwrap_or(rest))
+    split_id(id).1?.strip_prefix(PLACEHOLDER_SIGIL)
+}
+
+/// The ONE join of a code-entity id (spec 119), the inverse of [`split_id`]: `<file>::<rest>`,
+/// the rest a definition's name or a placeholder's sigiled leaf ([`placeholder_id`]).
+pub fn entity_id(file: &str, rest: &str) -> String {
+    format!("{file}::{rest}")
+}
+
+/// The id of the placeholder a reference to `leaf` from `file` lands on when the file holds no
+/// one candidate for it (spec 119): `<file>::%<leaf>` ([`entity_id`]), the leaf behind one
+/// [`PLACEHOLDER_SIGIL`], so [`leaf_of`] gives `leaf` back whatever it begins with.
+pub fn placeholder_id(file: &str, leaf: &str) -> String {
+    entity_id(file, &format!("{PLACEHOLDER_SIGIL}{leaf}"))
 }
 
 /// The `name` attr a node carries when it is non-empty: an empty `name` reads as absent, the one
@@ -2309,9 +2322,9 @@ mod call_target_tests {
     use crate::test_support::plain;
 
     /// The files-lens key of each of `ids` in a graph of `defs` - `(id, kind)` definitions -
-    /// and the bare placeholder `src/b.rs::x`.
+    /// and the bare placeholder `src/b.rs::%x`.
     fn files_keys(defs: &[(&str, &str)], ids: &[&str]) -> Vec<Option<String>> {
-        let mut nodes = vec![plain("src/b.rs::x", KIND_CODE_ENTITY)];
+        let mut nodes = vec![plain("src/b.rs::%x", KIND_CODE_ENTITY)];
         nodes.extend(defs.iter().map(|(id, kind)| kinded_def_node(id, kind)));
         let g = Graph {
             nodes,
@@ -2334,7 +2347,7 @@ mod call_target_tests {
     /// its own file.
     fn a_lone_member_resolves_no_placeholder(member: &str) {
         assert_eq!(
-            files_keys(&[("src/a.rs::x", member)], &["src/b.rs::x", "src/a.rs::x"]),
+            files_keys(&[("src/a.rs::x", member)], &["src/b.rs::%x", "src/a.rs::x"]),
             files(&[None, Some("src/a.rs")])
         );
     }
@@ -2357,7 +2370,7 @@ mod call_target_tests {
                     ("src/d.rs::x", "declaration"),
                     ("src/p.rs::x", "property"),
                 ],
-                &["src/b.rs::x", "src/a.rs::x", "src/d.rs::x", "src/p.rs::x"]
+                &["src/b.rs::%x", "src/a.rs::x", "src/d.rs::x", "src/p.rs::x"]
             ),
             files(&[
                 Some("src/c.rs"),

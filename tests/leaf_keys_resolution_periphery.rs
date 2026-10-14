@@ -10,9 +10,9 @@
 //!    `Projector::apply`, answers no bare lookup through `Projector::locate` (the binary's
 //!    `rigger graph --show` refuses an empty entity before it reaches the projection).
 //!
-//! No grammar yields a nested id or a placeholder sigil at this tree, so the cross-crate readers
-//! are driven over an in-memory graph; the empty `name` enters as the entity event the fold
-//! reads. Every test runs on both lanes.
+//! No grammar yields a nested id at this tree, so the cross-crate readers are driven over an
+//! in-memory graph; the empty `name` enters as the entity event the fold reads. Every test runs
+//! on both lanes.
 
 mod common;
 
@@ -57,8 +57,8 @@ fn leaf_graph(placeholder: &str, beside: Vec<Node>) -> Graph {
 /// files lens folds the whole graph and re-grains the concept, THEN the placeholder folds under
 /// the nested definition's file; a second definition of the leaf leaves it unresolved with both
 /// candidates; a node of an empty `name` is no candidate but a placeholder of its id's leaf; a
-/// doubled sigil leaves the leaf one sigil, which nothing defines; and an id with an empty rest
-/// has the empty leaf, which no node of an empty `name` defines.
+/// doubled sigil leaves the leaf one sigil, which nothing defines; and the placeholder of the
+/// empty leaf, `src/c.rs::%`, has no definition, which no node of an empty `name` gives.
 #[test]
 fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
     assert_eq!(
@@ -90,7 +90,7 @@ fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
     );
     assert_eq!(
         files_lens_rows(
-            &leaf_graph(PLACEHOLDER, vec![empty_named_node("src/e.rs::new")]),
+            &leaf_graph(PLACEHOLDER, vec![empty_named_node("src/e.rs::%new")]),
             SUB_C,
             3
         ),
@@ -116,7 +116,7 @@ fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
     );
     assert_eq!(
         files_lens_rows(
-            &leaf_graph("src/c.rs::", vec![empty_named_node("src/e.rs::")]),
+            &leaf_graph("src/c.rs::%", vec![empty_named_node("src/e.rs::%")]),
             SUB_C,
             3
         ),
@@ -125,9 +125,9 @@ fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
             "whole src/c.rs 1",
             "concept src/a.rs 1",
             "concept src/c.rs 1",
-            "concept src/c.rs:: <- []",
+            "concept src/c.rs::% <- []",
         ],
-        "an empty `name` keys no definition, so the empty leaf of `src/c.rs::` has none"
+        "an empty `name` keys no definition, so the empty leaf of `src/c.rs::%` has none"
     );
 }
 
@@ -193,7 +193,7 @@ fn the_coupling_layer_canonicalises_a_placeholder_onto_the_nested_definition_of_
         "two definitions of the leaf leave the placeholder its own node"
     );
     assert_eq!(
-        coupling_of_the_call(vec![empty_named_node("src/e.rs::new")]),
+        coupling_of_the_call(vec![empty_named_node("src/e.rs::%new")]),
         ["src/a.rs 1", "src/a.rs::T::new 2", "src/c.rs::caller 1"],
         "a node of an empty `name` is no second definition"
     );

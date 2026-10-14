@@ -696,12 +696,12 @@ fn ambiguous_files_graph() -> Graph {
     Graph {
         nodes: vec![
             node_with_optional_attrs("concept/9/0", KIND_CONCEPT, &[("label", Some("the idea"))]),
-            plain("src/caller.rs::amb", KIND_CODE_ENTITY),
+            plain("src/caller.rs::%amb", KIND_CODE_ENTITY),
             def("src/p/x.rs::amb", "amb"),
             def("src/q/y.rs::amb", "amb"),
         ],
         edges: vec![edge(
-            "src/caller.rs::amb",
+            "src/caller.rs::%amb",
             "concept/9/0",
             REL_REALIZES,
             TIER_EXTRACTED,
@@ -759,7 +759,7 @@ fn reprojection_json_omits_unresolved_when_empty_and_carries_it_when_present() {
     );
     assert_eq!(
         unresolved[0]["id"].as_str(),
-        Some("src/caller.rs::amb"),
+        Some("src/caller.rs::%amb"),
         "the marked member carries its bare id, never a wrong file attribution: {body}"
     );
     assert_eq!(
@@ -840,7 +840,7 @@ fn served_reproject_fires_for_a_file_subject_and_cluster_drill_takes_precedence(
 //    caption rather than a blank, unexplained canvas.
 
 const UNMATCHED_CONCEPT: &str = "concept/7/0";
-const EXTERNAL_BARE: &str = "src/caller.rs::external_symbol";
+const EXTERNAL_BARE: &str = "src/caller.rs::%external_symbol";
 
 /// A concept whose one member is a bare placeholder whose name matches NO definition anywhere.
 fn unmatched_bare_graph() -> Graph {

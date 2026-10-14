@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
-use super::query::{leaf_of, node_leaf};
+use super::query::{entity_id, leaf_of, node_leaf, placeholder_id};
 use super::{
     CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch, EntryFold,
     Error, FoldAccess, Graph, Located, Node, Projection, CODE_KIND_PRECEDENCE, KIND_AGENT,
@@ -881,7 +881,7 @@ impl Projector {
             return Ok(Located::One(self.site_of(&conn, node)?));
         }
         // Else a bare name: the pinned leaf match over definition nodes (sorted by id).
-        let cands = definitions_with_suffix(&conn, entity, &self.project, false, None)?;
+        let cands = definitions_with_suffix(&conn, entity, &self.project, Admitted::Named, None)?;
         match cands.as_slice() {
             [] => Ok(Located::None),
             [only] => {
@@ -2787,11 +2787,12 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
         }
         TYPE_EDGE_INFERRED => {
             // Spec 29a criterion 1: one reference the extraction pass emitted. Fold it into a
-            // structural REFERENCES edge from the referencing file to the referenced symbol's
-            // file-scoped code-entity id. When that name is defined in the same file, the edge
-            // lands on its definition entity (a real intra-file reference); otherwise `ensure_node`
-            // creates a bare code-entity node for the referenced name so the edge never dangles -
-            // cross-file name resolution is out of this criterion's scope. The empty attr set means
+            // structural REFERENCES edge from the referencing file to the code entity it lands on
+            // (spec 119, A CALL LANDS ON ITS ONE SAME-FILE CANDIDATE): the file's one call target
+            // of the referenced leaf a live assertion defines ([`same_file_candidates`]), else the
+            // placeholder `<file>::%<leaf>` ([`placeholder_id`]), which `ensure_node` creates bare
+            // so the edge never dangles - cross-file name resolution is the readers' (the calls
+            // walk, the tiers), never a move of the edge. The empty attr set means
             // a reference never overwrites a definition's attrs (the `ensure_node` COALESCE keeps
             // the existing ones). ALWAYS compiled, project-scoped like every arm. The file path is
             // alias-resolved like the artifact-producing arms, so the referencing file node is the
@@ -2839,12 +2840,21 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                 file_attrs.push(("partial", "true"));
             }
             ensure_node(tx, by, &file, KIND_FILE, &file_attrs, project)?;
-            let target = code_entity_id(&file, &r.name);
             // REFERENCES (spec 29a criterion 2): the file references this symbol, at the confidence
-            // tier its resolution earns. The tier is read BEFORE `ensure_node` creates the bare
-            // target, so a bare target this reference is about to create never miscounts as a
-            // definition. The definition arm's convergent upgrade covers the reverse fold order.
-            let tier = reference_tier(tx, &target, &r.name, project)?;
+            // tier its resolution earns: EXTRACTED on its one same-file candidate, else what
+            // [`reference_tier`] answers for the placeholder. The tier is read BEFORE `ensure_node`
+            // creates the bare placeholder, so a placeholder this reference is about to create
+            // never miscounts as a definition. The definition arm's convergent upgrade covers the
+            // reverse fold order.
+            let (target, tier) = match same_file_candidates(tx, project, &file, &r.name)?.as_slice()
+            {
+                [one] => (one.clone(), TIER_EXTRACTED),
+                _ => {
+                    let target = placeholder_id(&file, &r.name);
+                    let tier = reference_tier(tx, &target, &r.name, project)?;
+                    (target, tier)
+                }
+            };
             ensure_node(tx, by, &target, KIND_CODE_ENTITY, &[], project)?;
             add_edge(
                 tx,
@@ -3298,13 +3308,14 @@ fn resolve_in_tx(tx: &Transaction, mention: &str) -> String {
     .unwrap_or_else(|| mention.to_string())
 }
 
-/// The stable node id for a code entity (spec 29a): `<file>::<name>`. File-scoped so two files
-/// defining the same name are distinct located entities, and stable across re-extraction (it
-/// carries no line, which an edit shifts) so a later supersede-on-re-extract criterion can key a
-/// file's edges by this from-side identity. The SAME id derives a definition's node and a
-/// same-file reference's target, so a reference to a locally-defined name lands on its definition.
+/// The stable node id for a code entity (spec 29a): `<file>::<name>`, the domain's one join
+/// ([`entity_id`]). File-scoped so two files defining the same name are distinct located
+/// entities, and stable across re-extraction (it carries no line, which an edit shifts) so a
+/// later supersede-on-re-extract criterion can key a file's edges by this from-side identity. It
+/// derives a definition's node and a caller's, while a reference lands on its file's one
+/// candidate or on its placeholder ([`placeholder_id`]).
 fn code_entity_id(file: &str, name: &str) -> String {
-    format!("{file}::{name}")
+    entity_id(file, name)
 }
 
 /// The file prefix of a `<file>::<name>` id (spec 58): everything BEFORE the first `::`, the file
@@ -3433,59 +3444,98 @@ fn named_call_target(conn: &Connection, id: &str, project: &str) -> Result<Optio
     .map_err(be)
 }
 
-/// The read [`definitions_with_suffix`] runs: `?1` the leaf, `?2` the code-entity kind, `?3` the
-/// project, `?4` whether only call targets answer and `?5` the file whose `<file>::` id range the
-/// candidates lie in, or NULL for every file. Phrased with the pinned [`node_leaf_sql`] after the
-/// project so it seeks the leaf index `idx_nodes_leaf`.
-fn leaf_definitions_sql() -> String {
+/// The read of the code-entity nodes a leaf names, each admitted by the SQL term `rule`: `?1` the
+/// leaf, `?2` the code-entity kind, `?3` the project and `?4` the file whose `<file>::` id range
+/// the candidates lie in, or NULL for every file. Phrased with the pinned [`node_leaf_sql`] after
+/// the project so it seeks the leaf index `idx_nodes_leaf`.
+fn leaf_definitions_sql(rule: &str) -> String {
     format!(
         "SELECT id FROM nodes
           WHERE project = ?3 AND {} = ?1
             AND kind = ?2
-            AND (?4 = 0 OR {})
-            AND (?5 IS NULL OR (id >= ?5 || '::' AND id < ?5 || ':;'))
+            AND {rule}
+            AND (?4 IS NULL OR (id >= ?4 || '::' AND id < ?4 || ':;'))
           ORDER BY id",
+        node_leaf_sql()
+    )
+}
+
+/// Which named nodes of a leaf [`definitions_with_suffix`] admits.
+#[derive(Clone, Copy)]
+enum Admitted {
+    /// Every named node, a data member and a declaration included: what a lookup by name shows.
+    Named,
+    /// The call targets alone, by the node's own `kind` ([`call_target_sql`]): what a walk
+    /// resolves a call onto.
+    CallTargets,
+    /// The call targets a live assertion defines ([`live_definition_sql`]): what a reference
+    /// lands on and what a test proof names.
+    LiveCallTargets,
+}
+
+/// The SQL term [`leaf_definitions_sql`] admits a node by under `admitted`.
+fn admitted_sql(admitted: Admitted) -> String {
+    match admitted {
+        Admitted::Named => "1".to_string(),
+        Admitted::CallTargets => call_target_sql(),
+        Admitted::LiveCallTargets => live_definition_sql(),
+    }
+}
+
+/// The live-assertion candidate rule (spec 119) for [`leaf_definitions_sql`]: a node is a
+/// candidate only while a LIVE assertion of it ([`live_node_assertions`], joined by `node_id`
+/// through `idx_node_assertions_node`) carries a non-empty `name` ([`node_leaf_sql`]) and a kind
+/// that passes [`call_target_sql`], both read off that assertion's own attrs, since the subquery's
+/// unqualified `attrs` is the assertion's. A knowledge assertion carries no `name`, so it never
+/// keeps a dropped definition a candidate, and a `nodes` row no live assertion names is none.
+///
+/// [`live_node_assertions`]: SCHEMA
+fn live_definition_sql() -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM live_node_assertions
+                  WHERE project = nodes.project AND node_id = nodes.id
+                    AND {} IS NOT NULL AND {})",
         node_leaf_sql(),
         call_target_sql()
     )
 }
 
-/// The code-entity DEFINITION nodes whose leaf is `leaf` ([`node_leaf_sql`], spec 119), in
-/// `project` and, given a `file`, in that file's `<file>::` id range, sorted by id (spec 52 - the
-/// conservative cross-file resolution's candidate set). Only a node with a non-empty `name` has a
-/// leaf here, so a bare placeholder sharing the leaf is never itself a candidate. With `call_side`
-/// the candidates are the call targets alone ([`call_target_sql`]), what a walk resolves a call
-/// onto; without it every named node answers, a data member and a declaration included, what a
-/// lookup by name shows.
+/// The code-entity DEFINITION nodes whose leaf is `leaf` ([`node_leaf_sql`], spec 119) that
+/// `admitted` admits ([`Admitted`]), in `project` and, given a `file`, in that file's `<file>::`
+/// id range, sorted by id, each id once (spec 52 - the conservative cross-file resolution's
+/// candidate set). Only a node with a non-empty `name` has a leaf here, so a bare placeholder
+/// sharing the leaf is never itself a candidate.
 fn definitions_with_suffix(
     conn: &Connection,
     leaf: &str,
     project: &str,
-    call_side: bool,
+    admitted: Admitted,
     file: Option<&str>,
 ) -> Result<Vec<String>, Error> {
-    let mut stmt = conn.prepare(&leaf_definitions_sql()).map_err(be)?;
+    let mut stmt = conn
+        .prepare(&leaf_definitions_sql(&admitted_sql(admitted)))
+        .map_err(be)?;
     let ids = stmt
-        .query_map(
-            params![leaf, KIND_CODE_ENTITY, project, call_side, file],
-            |r| r.get::<_, String>(0),
-        )
+        .query_map(params![leaf, KIND_CODE_ENTITY, project, file], |r| {
+            r.get::<_, String>(0)
+        })
         .map_err(be)?
         .collect::<Result<_, _>>()
         .map_err(be)?;
     Ok(ids)
 }
 
-/// The call targets of `leaf` defined in `file` ([`definitions_with_suffix`] over the file's
-/// `<file>::` id range), in `project`, sorted by id: a test proof's same-file candidates
-/// ([`resolve_proofs`]).
+/// The call targets of `leaf` a live assertion defines in `file` ([`definitions_with_suffix`]
+/// admitting [`Admitted::LiveCallTargets`] over the file's `<file>::` id range), in `project`,
+/// sorted by id: the candidates a reference from `file` lands on when there is exactly one (the
+/// reference fold arm) and a test proof's same-file candidates ([`resolve_proofs`]).
 fn same_file_candidates(
     tx: &Transaction,
     project: &str,
     file: &str,
     leaf: &str,
 ) -> Result<Vec<String>, Error> {
-    definitions_with_suffix(tx, leaf, project, true, Some(file))
+    definitions_with_suffix(tx, leaf, project, Admitted::LiveCallTargets, Some(file))
 }
 
 /// The live, caller-attributed `CALLS` edges OUT of `from_id` in `project`, as
@@ -3549,7 +3599,7 @@ fn resolve_down_hop(
         return Ok((raw_to.to_string(), None));
     }
     let cands = match leaf_of(raw_to) {
-        Some(leaf) => definitions_with_suffix(conn, leaf, project, true, None)?,
+        Some(leaf) => definitions_with_suffix(conn, leaf, project, Admitted::CallTargets, None)?,
         None => Vec::new(),
     };
     match cands.len() {
@@ -3659,7 +3709,7 @@ fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallHop
     };
     // A definition's node carries a non-empty `name`, so its leaf is that name.
     if let Some(leaf) = node.as_ref().and_then(node_leaf) {
-        let cands = definitions_with_suffix(conn, leaf, project, true, None)?;
+        let cands = definitions_with_suffix(conn, leaf, project, Admitted::CallTargets, None)?;
         // The candidates and the seed key by the same leaf, so `cur` is among them: at most one
         // is unambiguous, more than one a frontier.
         let frontier = if cands.len() > 1 { Some(cands) } else { None };
@@ -3763,16 +3813,14 @@ fn referenced_not_called(
     Ok(nodes)
 }
 
-/// The confidence tier for a REFERENCES edge (spec 29a criterion 2, addendum 6.2). Derived from how
-/// the referenced `name` resolves against the graph's structural knowledge, WITHOUT moving the edge
-/// (cross-file resolution stays out of scope - only the tier is classified):
+/// The confidence tier for a REFERENCES edge landed on the placeholder `target` (spec 29a
+/// criterion 2, addendum 6.2; spec 119): the reference arm itself tiers one landed on its one
+/// same-file candidate [`TIER_EXTRACTED`], and calls this for every other. Derived from how the
+/// referenced `name` resolves against the graph's structural knowledge, WITHOUT moving the edge:
 ///
-/// - the name is DEFINED in the SAME file (the target `<file>::<name>` already carries a
-///   call-target definition's attrs) -> [`TIER_EXTRACTED`]: an explicit, resolved local reference (a call /
-///   import / inherit of a known local symbol).
-/// - else the name is DEFINED elsewhere the graph knows (some code-entity node other than the target
-///   has it as its leaf, a call-target definition, nested or not: spec 119) -> [`TIER_INFERRED`]: a
-///   derived / transitive cross-file link.
+/// - the name is DEFINED somewhere the graph knows (some code-entity node other than the target
+///   has it as its leaf, a call-target definition, nested or not, two same-file ones included)
+///   -> [`TIER_INFERRED`]: a derived / transitive link.
 /// - else no call target defines the name ANYWHERE known -> [`TIER_AMBIGUOUS`]: a grep-visible-only occurrence (a
 ///   macro body, reflection string, dynamic or external name). It is kept, never dropped, but
 ///   tiered lowest, and the blast radius never crosses it (addendum 2.4).
@@ -3791,14 +3839,10 @@ fn reference_tier(
     name: &str,
     project: &str,
 ) -> Result<&'static str, Error> {
-    // Same-file definition: the target id is already a named call target.
-    if named_call_target(tx, target, project)? == Some(true) {
-        return Ok(TIER_EXTRACTED);
-    }
-    // Cross-file definition: a code-entity other than this target whose leaf is this name, a
-    // call target ([`definitions_with_suffix`]), nested or not. A bare reference target elsewhere
-    // never matches - it has no `name` attr.
-    let cross_file_def = definitions_with_suffix(tx, name, project, true, None)?
+    // A code-entity other than this target whose leaf is this name, a call target
+    // ([`definitions_with_suffix`]), nested or not. A bare reference target elsewhere never
+    // matches - it has no `name` attr.
+    let cross_file_def = definitions_with_suffix(tx, name, project, Admitted::CallTargets, None)?
         .iter()
         .any(|id| id != target);
     if cross_file_def {
@@ -3874,7 +3918,8 @@ fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(
 }
 
 /// Resolve every recorded test reference to `name` against the call-target definitions of the leaf
-/// `name` ([`definitions_with_suffix`]; no proof lands on a data member or a declaration) the graph
+/// `name` a live assertion defines ([`Admitted::LiveCallTargets`]; no proof lands on a data member, a
+/// declaration or a `nodes` row no live assertion names) the graph
 /// holds NOW (spec 86 criterion 2; spec 101, "convergences undo with their definition"; spec 119):
 /// the reference's own file's one candidate when it has exactly one ([`same_file_candidates`], the
 /// `#[cfg(test)] mod tests` idiom), else, when its file has none, the ONE definition of `name` in
@@ -3884,7 +3929,7 @@ fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(
 /// definitions and references - the same whichever order they folded in, and the same for a log
 /// and its compacted form.
 fn resolve_proofs(tx: &Transaction, name: &str, project: &str) -> Result<(), Error> {
-    let definitions = definitions_with_suffix(tx, name, project, true, None)?;
+    let definitions = definitions_with_suffix(tx, name, project, Admitted::LiveCallTargets, None)?;
     let only = match definitions.as_slice() {
         [one] => Some(one.clone()),
         _ => None,
@@ -7178,7 +7223,7 @@ mod tests {
         assert!(
             g.edges.iter().any(|e| e.rel == REL_REFERENCES
                 && e.from == "src/combat.rs"
-                && e.to == "src/combat.rs::clamp"),
+                && e.to == "src/combat.rs::%clamp"),
             "a REFERENCES edge ties the file to the referenced symbol; got {:?}",
             g.edges
         );
@@ -7961,7 +8006,7 @@ mod tests {
         assert!(
             g0.edges
                 .iter()
-                .any(|e| e.rel == REL_REFERENCES && e.to == "src/a.rs::helper"),
+                .any(|e| e.rel == REL_REFERENCES && e.to == "src/a.rs::%helper"),
             "precondition: helper is REFERENCEd before re-extraction; got {:?}",
             g0.edges
         );
@@ -7984,7 +8029,7 @@ mod tests {
         assert!(
             g1.edges
                 .iter()
-                .any(|e| e.rel == REL_REFERENCES && e.to == "src/a.rs::other"),
+                .any(|e| e.rel == REL_REFERENCES && e.to == "src/a.rs::%other"),
             "the new `other` reference is live; got {:?}",
             g1.edges
         );
@@ -7994,7 +8039,7 @@ mod tests {
             g1.edges
         );
         assert!(
-            !g1.edges.iter().any(|e| e.to == "src/a.rs::helper"),
+            !g1.edges.iter().any(|e| e.to == "src/a.rs::%helper"),
             "the removed helper reference is gone from the live view; got {:?}",
             g1.edges
         );
@@ -8046,7 +8091,7 @@ mod tests {
         );
         let helper_edge = from_file
             .iter()
-            .find(|t| t.1 == REL_REFERENCES && t.0 == "src/a.rs::helper")
+            .find(|t| t.1 == REL_REFERENCES && t.0 == "src/a.rs::%helper")
             .expect("helper's REFERENCES edge is retained, not deleted");
         assert!(
             helper_edge.2.is_some(),
@@ -8561,7 +8606,7 @@ mod tests {
         let refs_post = g_post
             .edges
             .iter()
-            .find(|e| e.rel == REL_REFERENCES && e.to == "src/a.rs::G")
+            .find(|e| e.rel == REL_REFERENCES && e.to == "src/a.rs::%G")
             .expect("REFERENCES twin present");
         assert_eq!(
             refs_post.tier, TIER_INFERRED,
@@ -8601,7 +8646,7 @@ mod tests {
             .unwrap();
 
         // LAYERS: the seed at 0; both its callees at 1; the cross-file callee resolved to its real
-        // definition b.rs::work (NOT the bare a.rs::work placeholder). The cycle back onto main
+        // definition b.rs::work (NOT the bare a.rs::%work placeholder). The cycle back onto main
         // DEDUPS - main appears EXACTLY ONCE, still at layer 0.
         assert_eq!(
             call_layer(&cg, "src/a.rs::main"),
@@ -8631,7 +8676,7 @@ mod tests {
             call_node_ids(&cg)
         );
         // The walk resolved THROUGH the bare cross-file placeholders - they are not in the answer.
-        for bare in ["src/a.rs::work", "src/b.rs::main"] {
+        for bare in ["src/a.rs::%work", "src/b.rs::%main"] {
             assert!(
                 !cg.nodes.iter().any(|n| n.node.id == bare),
                 "the bare cross-file placeholder {bare} is resolved away, not returned; nodes were {:?}",
@@ -8754,7 +8799,7 @@ mod tests {
             "a single-candidate hop is fully resolved - not a frontier"
         );
         assert!(
-            node("src/caller.rs::solo").is_none(),
+            node("src/caller.rs::%solo").is_none(),
             "the bare cross-file placeholder is resolved away, not returned; nodes were {:?}",
             call_node_ids(&cg),
         );
@@ -8770,7 +8815,7 @@ mod tests {
         // MULTI-candidate: `dup` is a marked FRONTIER on the bare placeholder, carrying its SORTED
         // candidate ids. TEETH: b.rs was folded before a.rs, so a missing `ORDER BY id` would return
         // [b, a]; only the real sort yields [a, b].
-        let dup = node("src/caller.rs::dup")
+        let dup = node("src/caller.rs::%dup")
             .expect("the multi-candidate callee is returned as a frontier node");
         assert_eq!(dup.layer, 1, "the frontier callee is one hop from the seed");
         assert_eq!(
@@ -8808,7 +8853,7 @@ mod tests {
         assert_eq!(
             call_node_ids(&cg),
             vec![
-                "src/caller.rs::dup".to_string(),
+                "src/caller.rs::%dup".to_string(),
                 "src/caller.rs::entry".to_string(),
                 "src/sink.rs::sink".to_string(),
                 "src/solo.rs::solo".to_string(),
@@ -8844,7 +8889,7 @@ mod tests {
         let ghost = cg
             .nodes
             .iter()
-            .find(|n| n.node.id == "src/caller.rs::ghost")
+            .find(|n| n.node.id == "src/caller.rs::%ghost")
             .expect("the zero-candidate callee is reached on the bare placeholder itself");
         assert_eq!(
             ghost.layer, 1,
@@ -8858,7 +8903,7 @@ mod tests {
         assert!(
             !cg.edges
                 .iter()
-                .any(|e| e.edge.from == "src/caller.rs::ghost"),
+                .any(|e| e.edge.from == "src/caller.rs::%ghost"),
             "no edge leaves the zero-candidate leaf; edges were {:?}",
             cg.edges
                 .iter()
@@ -8871,8 +8916,8 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                "src/caller.rs::entry".to_string(),
-                "src/caller.rs::ghost".to_string()
+                "src/caller.rs::%ghost".to_string(),
+                "src/caller.rs::entry".to_string()
             ],
             "the walk resolves the unknown callee to a bare terminal leaf, nothing more",
         );
@@ -9155,8 +9200,8 @@ mod tests {
             apply_call(&p, 4, A, "x", "f");
 
             let g = p.whole().unwrap();
-            assert_eq!(edge_tier(&g, REL_CALLS, "src/a.rs::x"), TIER_INFERRED);
-            assert_eq!(edge_tier(&g, REL_REFERENCES, "src/a.rs::x"), TIER_INFERRED);
+            assert_eq!(edge_tier(&g, REL_CALLS, "src/a.rs::%x"), TIER_INFERRED);
+            assert_eq!(edge_tier(&g, REL_REFERENCES, "src/a.rs::%x"), TIER_INFERRED);
 
             let down = walk(&p, "src/a.rs::f", Direction::Down);
             assert_eq!(call_node_ids(&down), ["src/a.rs::f", "src/c.rs::x"]);
@@ -9190,7 +9235,7 @@ mod tests {
                 apply_code_entity(&p, 6, A, "x", member, 2, "rust");
             }
 
-            for target in ["src/a.rs::x", "src/b.rs::x"] {
+            for target in ["src/a.rs::%x", "src/b.rs::%x"] {
                 assert_eq!(
                     call_tiers(&p, target),
                     [TIER_AMBIGUOUS, TIER_AMBIGUOUS],
@@ -9227,17 +9272,19 @@ mod tests {
                     .collect()
             };
             let down = walk(&p, "src/b.rs::g", Direction::Down);
-            assert_eq!(call_node_ids(&down), ["src/b.rs::g", landing]);
+            let mut reached = ["src/b.rs::g", landing];
+            reached.sort();
+            assert_eq!(call_node_ids(&down), reached);
             assert_eq!(frontiers(&down), marked(landing));
             let up = walk(&p, "src/c.rs::x", Direction::Up);
             assert_eq!(call_node_ids(&up), ["src/b.rs::g", "src/c.rs::x"]);
             assert_eq!(frontiers(&up), marked("src/b.rs::g"));
         }
 
-        /// The up walk seeded at `a.rs`'s `x`, which `f` calls in its file and `g` across
-        /// files, `c.rs` defining the fn `x`: a `member` has no caller, a bare placeholder
-        /// (`None`) keeps its direct one.
-        fn the_up_walk_seeded_at_x_reaches(member: Option<&str>, nodes: &[&str]) {
+        /// The up walk seeded at `seed`, `a.rs`'s `x` or the placeholder `a.rs::%x` its calls
+        /// land on, which `f` calls in its file and `g` across files, `c.rs` defining the fn
+        /// `x`: a `member` has no caller, a bare placeholder (`None`) keeps its direct one.
+        fn the_up_walk_seeded_at_x_reaches(member: Option<&str>, seed: &str, nodes: &[&str]) {
             let p = Projector::open(":memory:", "test").unwrap();
             apply_def(&p, 1, A, "f", 1, true);
             apply_def(&p, 2, B, "g", 1, true);
@@ -9248,7 +9295,7 @@ mod tests {
             apply_call(&p, 5, A, "x", "f");
             apply_call(&p, 6, B, "x", "g");
 
-            let up = walk(&p, "src/a.rs::x", Direction::Up);
+            let up = walk(&p, seed, Direction::Up);
             assert_eq!(call_node_ids(&up), nodes);
             assert_eq!(up.edges.len(), nodes.len() - 1);
         }
@@ -9327,17 +9374,21 @@ mod tests {
             a_constant_of_a_fns_leaf_is_still_a_candidate:
                 the_walks_frontier_holds(
                     &[("src/a.rs", "field"), ("src/d.rs", "declaration"), ("src/k.rs", "constant")],
-                    "src/b.rs::x",
+                    "src/b.rs::%x",
                     Some(&["src/c.rs::x", "src/k.rs::x"]),
                 );
             a_field_seed_has_no_caller:
-                the_up_walk_seeded_at_x_reaches(Some("field"), &["src/a.rs::x"]);
+                the_up_walk_seeded_at_x_reaches(Some("field"), "src/a.rs::x", &["src/a.rs::x"]);
             a_property_seed_has_no_caller:
-                the_up_walk_seeded_at_x_reaches(Some("property"), &["src/a.rs::x"]);
+                the_up_walk_seeded_at_x_reaches(Some("property"), "src/a.rs::x", &["src/a.rs::x"]);
             a_declaration_seed_has_no_caller:
-                the_up_walk_seeded_at_x_reaches(Some("declaration"), &["src/a.rs::x"]);
+                the_up_walk_seeded_at_x_reaches(Some("declaration"), "src/a.rs::x", &["src/a.rs::x"]);
             a_bare_placeholder_seed_keeps_its_direct_caller:
-                the_up_walk_seeded_at_x_reaches(None, &["src/a.rs::f", "src/a.rs::x"]);
+                the_up_walk_seeded_at_x_reaches(
+                    None,
+                    "src/a.rs::%x",
+                    &["src/a.rs::%x", "src/a.rs::f"]
+                );
             the_up_walk_stops_at_a_field_it_reaches:
                 the_up_walk_stops_at_a_member_it_reaches("field");
             the_up_walk_stops_at_a_property_it_reaches:
@@ -10982,13 +11033,13 @@ mod tests {
         );
         // A reference to a name defined in ANOTHER file: INFERRED (derived / transitive link).
         assert_eq!(
-            edge_tier(&g, REL_REFERENCES, "combat.rs::shared"),
+            edge_tier(&g, REL_REFERENCES, "combat.rs::%shared"),
             TIER_INFERRED,
             "a reference to a name defined in another file folds INFERRED"
         );
         // A reference to a name defined nowhere known: AMBIGUOUS (grep-visible-only).
         assert_eq!(
-            edge_tier(&g, REL_REFERENCES, "combat.rs::magic"),
+            edge_tier(&g, REL_REFERENCES, "combat.rs::%magic"),
             TIER_AMBIGUOUS,
             "a reference to a name defined nowhere folds AMBIGUOUS"
         );
@@ -11021,7 +11072,7 @@ mod tests {
         apply_ref(&a, 2, "combat.rs", "shared");
         let ga = a.subgraph(&["combat.rs".to_string()], 3).unwrap();
         assert_eq!(
-            edge_tier(&ga, REL_REFERENCES, "combat.rs::shared"),
+            edge_tier(&ga, REL_REFERENCES, "combat.rs::%shared"),
             TIER_INFERRED,
             "definition-first: the cross-file reference is INFERRED"
         );
@@ -11033,22 +11084,22 @@ mod tests {
         // Before the definition folds, the reference is grep-visible-only: AMBIGUOUS.
         let mid = b.subgraph(&["combat.rs".to_string()], 3).unwrap();
         assert_eq!(
-            edge_tier(&mid, REL_REFERENCES, "combat.rs::shared"),
+            edge_tier(&mid, REL_REFERENCES, "combat.rs::%shared"),
             TIER_AMBIGUOUS,
             "reference-first, before any definition: the reference is AMBIGUOUS"
         );
         apply_code_entity(&b, 2, "util.rs", "shared", "function", 1, "rust");
         let gb = b.subgraph(&["combat.rs".to_string()], 3).unwrap();
         assert_eq!(
-            edge_tier(&gb, REL_REFERENCES, "combat.rs::shared"),
+            edge_tier(&gb, REL_REFERENCES, "combat.rs::%shared"),
             TIER_INFERRED,
             "reference-first: the later definition promotes the earlier reference AMBIGUOUS -> INFERRED"
         );
 
         // Convergence: both fold orders reach the identical stored tier.
         assert_eq!(
-            edge_tier(&ga, REL_REFERENCES, "combat.rs::shared"),
-            edge_tier(&gb, REL_REFERENCES, "combat.rs::shared"),
+            edge_tier(&ga, REL_REFERENCES, "combat.rs::%shared"),
+            edge_tier(&gb, REL_REFERENCES, "combat.rs::%shared"),
             "the cross-file tier is order-independent"
         );
     }
@@ -11226,8 +11277,8 @@ mod tests {
             "file util.rs [lang=rust]",
             "code-entity combat.rs::apply_damage [kind=function,lang=rust,line=1,name=apply_damage]",
             "code-entity util.rs::shared [kind=function,lang=rust,line=1,name=shared]",
-            "code-entity combat.rs::shared []",
-            "code-entity combat.rs::magic []",
+            "code-entity combat.rs::%shared []",
+            "code-entity combat.rs::%magic []",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -11245,8 +11296,8 @@ mod tests {
             "util.rs -CONTAINS-> util.rs::shared [extracted]",
             "combat.rs -CONTAINS-> combat.rs::apply_damage [extracted]",
             "combat.rs -REFERENCES-> combat.rs::apply_damage [extracted]",
-            "combat.rs -REFERENCES-> combat.rs::shared [inferred]",
-            "combat.rs -REFERENCES-> combat.rs::magic [ambiguous]",
+            "combat.rs -REFERENCES-> combat.rs::%shared [inferred]",
+            "combat.rs -REFERENCES-> combat.rs::%magic [ambiguous]",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -11504,8 +11555,8 @@ mod tests {
             apply_ref(&p, 1, "b.rs", "new");
             apply_ref(&p, 2, "b.rs", "gone");
             let g = p.whole().unwrap();
-            assert_eq!(edge_tier(&g, REL_REFERENCES, "b.rs::new"), TIER_INFERRED);
-            assert_eq!(edge_tier(&g, REL_REFERENCES, "b.rs::gone"), TIER_AMBIGUOUS);
+            assert_eq!(edge_tier(&g, REL_REFERENCES, "b.rs::%new"), TIER_INFERRED);
+            assert_eq!(edge_tier(&g, REL_REFERENCES, "b.rs::%gone"), TIER_AMBIGUOUS);
         }
 
         #[test]
@@ -11553,7 +11604,8 @@ mod tests {
             });
             apply_def(&p, 1, "a.rs", "new", 1, true);
             apply_def(&p, 2, "b.rs", "main", 3, true);
-            apply_call(&p, 3, "b.rs", "new", "main");
+            // The call written directly onto the empty-named node, which no fold lands one on.
+            edge_directly(&p, "b.rs::main", "b.rs::new", REL_CALLS, TIER_INFERRED);
             assert_eq!(
                 call_node_ids(&call_walk(&p, "a.rs::new", Direction::Up)),
                 vec!["a.rs::new", "b.rs::main"]
@@ -11640,10 +11692,14 @@ mod tests {
                 "SELECT id FROM nodes WHERE project = 'test' AND {} = 'new'",
                 node_leaf_sql()
             );
-            let same_file = params!["new", KIND_CODE_ENTITY, "test", true, "a.rs"];
+            let same_file = params!["new", KIND_CODE_ENTITY, "test", "a.rs"];
             for plan in [
                 query_plan(&p, &pinned, []),
-                query_plan(&p, &leaf_definitions_sql(), same_file),
+                query_plan(
+                    &p,
+                    &leaf_definitions_sql(&admitted_sql(Admitted::LiveCallTargets)),
+                    same_file,
+                ),
             ] {
                 assert!(
                     plan.iter()
@@ -12707,7 +12763,7 @@ mod tests {
             }
             apply_def(&p, 3, "src/b.rs", "g", 1, true);
             apply_call(&p, 4, "src/b.rs", "x", "g");
-            let tiers = |p: &Projector| call_tiers(p, "src/b.rs::x");
+            let tiers = |p: &Projector| call_tiers(p, "src/b.rs::%x");
             assert_eq!(tiers(&p), [TIER_INFERRED, TIER_INFERRED]);
 
             apply_generation_head(&p, 5, "src/f.rs", "h2", "y", 20);
@@ -12838,7 +12894,7 @@ mod tests {
                 fold_a_cross_file_call_and_a_proof(&p, 6);
                 assert_eq!(call_tiers(&p, X), [TIER_EXTRACTED, TIER_EXTRACTED]);
                 assert_eq!(
-                    call_tiers(&p, "src/b.rs::x"),
+                    call_tiers(&p, "src/b.rs::%x"),
                     [TIER_INFERRED, TIER_INFERRED]
                 );
             }
@@ -12886,7 +12942,7 @@ mod tests {
                     assert_eq!(attrs_of(p, X), proven, "{why}");
                     assert_eq!(call_tiers(p, X), [TIER_EXTRACTED, TIER_EXTRACTED], "{why}");
                     assert_eq!(
-                        call_tiers(p, "src/b.rs::x"),
+                        call_tiers(p, "src/b.rs::%x"),
                         [TIER_INFERRED, TIER_INFERRED],
                         "{why}"
                     );
@@ -12971,7 +13027,7 @@ mod tests {
             fn x_is_a_field_no_call_resolves_onto(p: &Projector, why: &str) {
                 assert_eq!(attrs_of(p, X), definition("x", "field", 1), "{why}");
                 assert_eq!(
-                    call_tiers(p, "src/b.rs::x"),
+                    call_tiers(p, "src/b.rs::%x"),
                     [TIER_AMBIGUOUS, TIER_AMBIGUOUS],
                     "{why}"
                 );
@@ -12988,7 +13044,7 @@ mod tests {
                 fold_defs(&p, 1, "h1", 10, FN_AT_1);
                 fold_a_cross_file_call_and_a_proof(&p, 2);
                 assert_eq!(
-                    call_tiers(&p, "src/b.rs::x"),
+                    call_tiers(&p, "src/b.rs::%x"),
                     [TIER_INFERRED, TIER_INFERRED]
                 );
                 assert_eq!(
