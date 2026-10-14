@@ -70,6 +70,15 @@ fn is_declaration(node: tree_sitter::Node) -> bool {
     }
 }
 
+/// A FUNCTION-VALUED FIELD (spec 116): whether `node`, the own node of a field definition, holds
+/// an arrow function or a function expression as its `value`, a JS `field_definition` or a TS
+/// `public_field_definition` (`act = () => {}`), which is then a method. It reads the node alone,
+/// as [`is_declaration`] does, those two value types being JS's and TS's alone.
+fn is_function_valued(node: tree_sitter::Node) -> bool {
+    node.child_by_field_name("value")
+        .is_some_and(|v| matches!(v.kind(), "arrow_function" | "function_expression"))
+}
+
 /// THE LEAF of a tagged definition (spec 116): the name its `Def` and its caller range carry,
 /// read over `node`, its own node, and `name`, the slice of the source its tag names. A C#
 /// `destructor_declaration` is `~` and that identifier (`~Foo`), the grammar holding the `~`
@@ -118,13 +127,15 @@ fn is_proc_macro_fn(node: tree_sitter::Node, source: &[u8]) -> bool {
 
 /// The kind a definition the query tagged `tagged` lowers to, read over `node`, its own node
 /// (the deepest one spanning its range): a function, method or constructor with no body
-/// ([`is_declaration`]) is a `Declaration`, and in Rust a proc-macro fn ([`is_proc_macro_fn`])
-/// is a `Macro`; every other definition keeps the kind its tag names.
+/// ([`is_declaration`]) is a `Declaration`, a function-valued field ([`is_function_valued`]) a
+/// `Method`, and in Rust a proc-macro fn ([`is_proc_macro_fn`]) is a `Macro`; every other
+/// definition keeps the kind its tag names.
 fn lowered_kind(lang: Lang, tagged: Kind, node: Option<tree_sitter::Node>, source: &[u8]) -> Kind {
     match tagged {
         Kind::Function | Kind::Method | Kind::Constructor if node.is_some_and(is_declaration) => {
             Kind::Declaration
         }
+        Kind::Field if node.is_some_and(is_function_valued) => Kind::Method,
         _ if lang == Lang::Rust && node.is_some_and(|n| is_proc_macro_fn(n, source)) => Kind::Macro,
         _ => tagged,
     }
@@ -299,8 +310,7 @@ pub fn extract(
             (Kind::Method, indexers(root, source.as_bytes())),
         ],
         Lang::Js | Lang::Ts => vec![
-            (Kind::Field, class_fields(root, source.as_bytes(), false)),
-            (Kind::Method, class_fields(root, source.as_bytes(), true)),
+            (Kind::Field, class_fields(root, source.as_bytes())),
             (Kind::Variant, enum_members(root, source.as_bytes())),
             (Kind::Constant, js_bindings(root, source.as_bytes())),
         ],
@@ -600,21 +610,14 @@ fn indexers(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
         .collect()
 }
 
-/// JS's CLASS FIELDS (spec 116): every `field_definition` under `root` that is
-/// `function_valued` or is not, in source order, as its byte range, its leaf and its 1-based
-/// line. A field is function-valued when its value is an arrow function or a function
-/// expression, and is then a method. The grammar names a field by its `property`, read as a
-/// member's name is ([`member_read_off`]); TS's class field, a `public_field_definition`
-/// named by its `name`, is tagged by the TS query instead.
-fn class_fields(root: tree_sitter::Node, source: &[u8], function_valued: bool) -> Vec<ReadOff> {
+/// JS's CLASS FIELDS (spec 116): every `field_definition` under `root`, in source order, as its
+/// byte range, its leaf and its 1-based line. The grammar names a field by its `property`, read
+/// as a member's name is ([`member_read_off`]); TS's class field, a `public_field_definition`
+/// named by its `name`, is tagged by the TS query instead. A function-valued field lowers to a
+/// method as a tagged one does ([`is_function_valued`]).
+fn class_fields(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
     nodes_of_kind(root, "field_definition")
         .into_iter()
-        .filter(|field| {
-            field
-                .child_by_field_name("value")
-                .is_some_and(|v| matches!(v.kind(), "arrow_function" | "function_expression"))
-                == function_valued
-        })
         .filter_map(|field| member_read_off(field, field.child_by_field_name("property")?, source))
         .collect()
 }

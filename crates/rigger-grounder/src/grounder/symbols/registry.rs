@@ -151,34 +151,24 @@ const JS_DEFINITION_TAGS: &str = r#"
 (variable_declarator name: (identifier) @name !value) @definition.constant
 "#;
 
-/// Additional TS tags-query patterns (spec 116), appended to the TS and TSX queries: a private,
-/// string or numeric method or abstract method signature name, which upstream leaves untagged,
-/// as a method (`extract` lowers every signature to a declaration); an enum and a type alias as
-/// a type; a module named by a string (`declare module "x"`) or a dotted name, and a
-/// `namespace` of any name, as a module; an enum member with a value as a variant (one without
-/// is read off the enum's body by `extract`, the grammar holding it as the body's own `name`);
-/// and an interface's property signature and a class's field as a field, a class field whose
-/// value is an arrow function or a function expression being a method. That pattern stands
-/// BEFORE the field pattern because both match a function-valued field's name node, and one
-/// name node carries one tag, the earlier pattern's.
+/// Additional TS tags-query patterns (spec 116), appended to the TS and TSX queries: a string or
+/// numeric method signature or abstract method name, which upstream leaves untagged, as a method
+/// (`extract` lowers every signature to a declaration); an enum and a type alias as a type; a
+/// module named by a string (`declare module "x"`) or a dotted name, and a `namespace` of any
+/// name, as a module; an enum member with a value as a variant (one without is read off the
+/// enum's body by `extract`, the grammar holding it as the body's own `name`); and an
+/// interface's property signature and a class's field as a field, which `extract` lowers to a
+/// method when its value is a function. A private name (`#p`) is in the alternation of a class
+/// field alone, the one member of these TypeScript lets a private name declare.
 const TS_DEFINITION_TAGS: &str = r#"
-(method_signature
-  name: [(private_property_identifier) (string) (number)] @name) @definition.method
-(abstract_method_signature
-  name: [(private_property_identifier) (string) (number)] @name) @definition.method
+(method_signature name: [(string) (number)] @name) @definition.method
+(abstract_method_signature name: [(string) (number)] @name) @definition.method
 (enum_declaration name: (identifier) @name) @definition.class
 (type_alias_declaration name: (type_identifier) @name) @definition.type
 (module name: [(string) (nested_identifier)] @name) @definition.module
 (internal_module name: (_) @name) @definition.module
-(enum_assignment
-  name: [(property_identifier) (private_property_identifier) (string) (number)] @name)
-  @definition.variant
-(property_signature
-  name: [(property_identifier) (private_property_identifier) (string) (number)] @name)
-  @definition.field
-(public_field_definition
-  name: [(property_identifier) (private_property_identifier) (string) (number)] @name
-  value: [(arrow_function) (function_expression)]) @definition.method
+(enum_assignment name: [(property_identifier) (string) (number)] @name) @definition.variant
+(property_signature name: [(property_identifier) (string) (number)] @name) @definition.field
 (public_field_definition
   name: [(property_identifier) (private_property_identifier) (string) (number)] @name)
   @definition.field
