@@ -2388,12 +2388,12 @@ __END__
 - `src/cli/setup.rs:3183-3183` `".rigger/workflow.yml"`
 - `src/cli/setup.rs:3413-3413` `".rigger"`
 - `src/cli/setup.rs:3441-3441` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:3603-3603` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:3605-3605` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:3606-3606` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:3607-3607` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:3617-3617` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:3620-3620` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:3604-3604` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:3606-3606` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:3607-3607` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:3608-3608` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:3618-3618` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:3621-3621` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
 - `src/cli/validate.rs:850-850` `"warning: tracked .rigger/ files have uncommitted modifications:"`
 - `src/cli/validate.rs:1292-1292` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\
