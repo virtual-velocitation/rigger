@@ -1025,8 +1025,8 @@ impl Projector {
                         continue; // below the confidence floor: not a followed edge
                     }
                     // Resolve the callee: a same-file call-target definition lands directly; a
-                    // bare cross-file placeholder, or a named data member or declaration,
-                    // resolves by its leaf to the call-target definition(s) of that leaf.
+                    // placeholder `<file>::%<leaf>` resolves by its leaf to the call-target
+                    // definition(s) of that leaf; any other id names no leaf and stays put.
                     let (target, frontier) = resolve_down_hop(&conn, &raw_to, &self.project)?;
                     hops.push((target, tier, valid_from, source, frontier));
                 }
@@ -2742,22 +2742,27 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             )?;
             // Convergent tier upgrade (spec 29a criterion 2): a reference to THIS name that folded
             // BEFORE this definition existed was tiered AMBIGUOUS (grep-visible-only - no definition
-            // was known yet). Now that the definition IS known, any such reference from ANOTHER file
-            // is a derived / transitive link, so promote it AMBIGUOUS -> INFERRED. This mirrors the
+            // was known yet) and landed on its file's placeholder `<file>::%<name>`. Now that the
+            // definition IS known, any such reference - from ANOTHER file, or from this
+            // definition's own file when it folded before the definition - is a derived /
+            // transitive link, so promote it AMBIGUOUS -> INFERRED. This mirrors the
             // one-writer kind-promotion above: it makes the tier a pure function of the FINAL log,
             // independent of whether a reference or its definition folds first, so a rebuild
             // re-derives byte-identical tiers. Matched exactly by the reference's target text
             // binding this definition's name ([`edge_binds_leaf_sql`]: `<file>::<name>` or
             // `<file>::%<name>`, a file path never containing `::`), never by a wildcard, so a
-            // symbol whose name contains any character still matches precisely. A
-            // same-file reference already folded EXTRACTED (definitions emit before references), so
-            // excluding this definition's own entity id leaves it untouched, never demoting it.
+            // symbol whose name contains any character still matches precisely. A reference landed
+            // on its one same-file candidate is EXTRACTED and targets this definition's own entity
+            // id, which the `to_id != entity` guard and the `tier = AMBIGUOUS` match both exclude,
+            // so it is never demoted.
             //
             // The caller-attributed CALLS edge (spec 37) shares the callee `target` and tier of its
             // REFERENCES twin, so it is promoted in the SAME upgrade (`rel IN (REFERENCES, CALLS)`):
             // one tier authority evolves both structural edges together, never a forked behavior
             // where the CALLS edge lags its sibling's confidence. A same-file CALLS to this
-            // definition's own entity is excluded by the same `to_id != entity` guard.
+            // definition's own entity is excluded by the same `to_id != entity` guard; a same-file
+            // CALLS folded before this definition, landed on the placeholder, is promoted with its
+            // REFERENCES twin.
             //
             // Both convergences run only when the settled node is a call target: a data member
             // or a declaration of this name upgrades no tier and takes no proof.
@@ -3634,14 +3639,15 @@ fn callers_direct(
 
 /// The live, caller-attributed `CALLS` edges into a BARE cross-file placeholder whose target text
 /// binds `leaf`, in `project`, as `(from_id, tier, valid_from, source)` sorted by caller (spec 52 -
-/// the reverse cross-file resolution). A cross-file call targets a bare placeholder in the CALLER's
-/// file namespace (no `name` attr - the definition lives elsewhere), so these are the callers that
-/// call `leaf` across a file boundary, an edge's target text spelled `<file>::<leaf>` or
-/// `<file>::%<leaf>` ([`edge_binds_leaf_sql`], THE EDGE SIDE BINDS THE LEAF); filtered to
-/// targets that are no call target (no non-empty `name`, [`node_leaf_sql`], or a named data member
-/// or declaration a same-file call naming its leaf lands on) so an edge that lands directly on a real definition (a same-file
-/// caller, or a call to a DIFFERENT same-named definition) is never miscounted here - those are
-/// covered by [`callers_direct`] on the exact definition, keeping the two caller sets disjoint.
+/// the reverse cross-file resolution). A call with no one same-file candidate lands on the bare
+/// placeholder `<file>::%<leaf>` in the CALLER's file namespace (no `name` attr), so these are the
+/// callers that call `leaf` without landing on its definition, an edge's target text spelled
+/// `<file>::<leaf>` or `<file>::%<leaf>` ([`edge_binds_leaf_sql`], THE EDGE SIDE BINDS THE LEAF);
+/// filtered to targets that are no call target (no non-empty `name`, [`node_leaf_sql`], or a named
+/// data member or declaration, which only a hand-built target is, since the fold lands no call on
+/// one) so an edge that lands directly on a real definition (a same-file caller, or a
+/// call to a DIFFERENT same-named definition) is never miscounted here - those are covered by
+/// [`callers_direct`] on the exact definition, keeping the two caller sets disjoint.
 fn callers_via_bare(
     conn: &Connection,
     leaf: &str,
@@ -3833,9 +3839,10 @@ fn referenced_not_called(
 /// ([`call_target_sql`]): a data member or a declaration of the name tiers a reference as no
 /// definition at all does. Called BEFORE the reference arm
 /// `ensure_node`s its bare target, so the target this reference is about to create never miscounts
-/// as its own definition. The reverse fold order - a reference folding before its cross-file
-/// definition - is reconciled convergently by the definition arm's AMBIGUOUS -> INFERRED upgrade, so
-/// the stored tier is a pure function of the final log, not of fold interleaving.
+/// as its own definition. The reverse fold order - a reference folding before its definition, in
+/// another file or its own - is reconciled convergently by the definition arm's AMBIGUOUS ->
+/// INFERRED upgrade, so the stored tier is a pure function of the final log, not of fold
+/// interleaving.
 fn reference_tier(
     tx: &Transaction,
     target: &str,
@@ -11110,10 +11117,11 @@ mod tests {
 
     #[test]
     fn the_definition_upgrade_never_demotes_a_same_file_extracted_reference() {
-        // The convergent upgrade targets only cross-file AMBIGUOUS references. A reference resolved
-        // to a SAME-file definition is EXTRACTED and must stay EXTRACTED when the same name is later
-        // defined in another file too - the upgrade excludes the definition's own entity id, and the
-        // EXTRACTED reference is not AMBIGUOUS, so it is doubly protected from being pulled down.
+        // The convergent upgrade targets only AMBIGUOUS references on a placeholder. A reference
+        // resolved to a SAME-file definition is EXTRACTED and must stay EXTRACTED when the same
+        // name is later defined in another file too - the upgrade excludes the definition's own
+        // entity id, and the EXTRACTED reference is not AMBIGUOUS, so it is doubly protected from
+        // being pulled down.
         let p = Projector::open(":memory:", "test").unwrap();
         apply_code_entity(&p, 1, "combat.rs", "shared", "function", 1, "rust");
         apply_ref(&p, 2, "combat.rs", "shared");

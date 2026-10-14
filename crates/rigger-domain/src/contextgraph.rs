@@ -265,16 +265,17 @@ pub const REL_REVIEWS_LIGHT: &str = "REVIEWS_LIGHT";
 // three tiers partition the reference set, so the graph keeps EVERY reference: a later traversal
 // reads the EXTRACTED sub-graph as the precise prompt seed and the structural reach
 // EXTRACTED u INFERRED as the blast radius's safe view (addendum 2.4).
-/// An explicit-in-source structural fact: a definition's containment, or a reference resolved to a
-/// call-target definition ([`is_call_target`]) in the SAME file (a call / import / inherit of a
-/// known local symbol; a data member or a declaration of the name resolves none). The highest
+/// An explicit-in-source structural fact: a definition's containment, or a reference resolved to
+/// its ONE same-file call-target candidate ([`is_call_target`]) (a call / import / inherit of a
+/// known local symbol; a data member or a declaration of the name is no candidate). The highest
 /// confidence tier - the precise seed. Every non-code dev-loop edge (DECIDED / GOVERNS / ABOUT /
 /// SUPERSEDES / ...) also folds EXTRACTED: they are explicit facts recorded on the log.
 pub const TIER_EXTRACTED: &str = "extracted";
-/// A derived / transitive link: a reference whose name no call target ([`is_call_target`])
-/// defines in the referencing file but one DOES define in ANOTHER file the graph knows. The
-/// reference is inferred to reach that definition across files - real, but one confidence step
-/// below an explicit same-file reference.
+/// A derived / transitive link: a reference with no ONE same-file call-target candidate (its file
+/// defines the name as a call target ([`is_call_target`]) never or more than once), landed on its
+/// file's placeholder `<file>::%<name>`, whose name some call target the graph knows DOES define -
+/// in another file, or twice in its own. The reference is inferred to reach a definition - real,
+/// but one confidence step below a reference resolved to its one same-file candidate.
 pub const TIER_INFERRED: &str = "inferred";
 /// A text-only occurrence: a reference whose name no call target ([`is_call_target`]) defines
 /// ANYWHERE the graph knows - a macro body, a reflection string, a dynamic name, an external
