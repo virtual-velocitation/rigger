@@ -249,8 +249,8 @@
       },
       {
         "file": "crates/rigger-domain/src/contextgraph/query.rs",
-        "start_line": 153,
-        "end_line": 155
+        "start_line": 179,
+        "end_line": 181
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
@@ -354,8 +354,8 @@
       },
       {
         "file": "crates/rigger-domain/src/contextgraph/query.rs",
-        "start_line": 501,
-        "end_line": 503
+        "start_line": 527,
+        "end_line": 529
       }
     ]
   },
@@ -4289,8 +4289,8 @@
       },
       {
         "file": "crates/rigger-domain/src/contextgraph/query.rs",
-        "start_line": 1983,
-        "end_line": 1985
+        "start_line": 2008,
+        "end_line": 2010
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",

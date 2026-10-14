@@ -27,9 +27,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::contextgraph::{
-    is_call_target, Edge, Error, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
-    KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, PLACEHOLDER_SIGIL, REL_ABOUT,
-    REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
+    is_call_target, Edge, Error, Graph, Node, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
+    KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING,
+    KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, PLACEHOLDER_SIGIL, REL_ABOUT, REL_CONTAINS,
+    REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
 };
 use crate::eventstore::Position;
 
@@ -66,11 +67,12 @@ pub fn node_label(node: &Node) -> String {
 // ---------------------------------------------------------------------------
 // The whole-graph exploration fold (spec 42 c1): [`cluster_key`] folds EVERY graph node into one
 // super-node bucket, so the KG panel can render a 7k-node graph as a few dozen clusters instead of
-// node-for-node. A node whose id NAMES A FILE - a code entity (`<file>::<name>`), a rationale anchor
-// (`<file>#L<n>`), or a path id (a file / design-doc whose last segment carries an extension) -
-// clusters by that file's DIRECTORY (its module); a directory-less (repo-root) path falls back to
-// the `(root)` bucket. Every other node - the dev-loop nodes with NO path id (a decision, finding,
-// unit, agent, gate, lesson) - clusters by its KIND. The fold is a pure function of `(id, kind)`, so
+// node-for-node. A node whose id NAMES A FILE by its kind ([`node_file`]) - a code entity
+// (`<file>::<name>`), a file (its path), a rationale anchor (`<file>#L<n>`), or a design-doc path
+// whose last segment carries an extension - clusters by that file's DIRECTORY (its module); a
+// directory-less (repo-root) path falls back to the `(root)` bucket. Every other node - the
+// dev-loop nodes, whose kind names no file (a decision, finding, unit, agent, gate, lesson) -
+// clusters by its KIND. The fold is a pure function of `(id, kind)`, so
 // a given graph yields one stable overview (the determinism the spec requires by construction). This
 // is the fold KEY only; the overview and drill aggregations (c2, c3) consume it.
 // ---------------------------------------------------------------------------
@@ -83,17 +85,16 @@ pub const CLUSTER_ROOT: &str = "(root)";
 /// Fold a graph node `(id, kind)` into its exploration super-node bucket (spec 42 c1).
 ///
 /// A node whose id NAMES A FILE clusters by that file's DIRECTORY (its module); a directory-less
-/// (repo-root) file falls back to [`CLUSTER_ROOT`]. Every other node clusters by its `kind`. An id
-/// names a file after reducing it to a file path: a code entity `<file>::<name>` reduces to the part
-/// before the first `::`; a rationale anchor `<file>#L<n>` or a design-doc section `<doc>#<slug>`
-/// reduces to the part before the first `#`; a plain path id `<file>` (a file / design-doc) is
-/// itself. The reduced path names a file iff its last segment carries an extension. A file path
-/// contains neither `::` nor `#`, so those splits leave a plain path untouched, and a dev-loop id (a
-/// decision / finding / unit / agent / gate / lesson), whose last segment carries no extension, is
-/// never mistaken for one. The fold is a pure, total function of `(id, kind)`, so a given graph folds
-/// to one stable set of buckets (the determinism the exploration view relies on).
+/// (repo-root) file falls back to [`CLUSTER_ROOT`]. Every other node clusters by its `kind`. The
+/// file an id names is [`node_file`]'s, read by its kind: a code entity `<file>::<name>` names the
+/// part before the first `::` whatever it looks like (`Makefile::all` names `Makefile`); a file
+/// node names its whole path; a rationale anchor `<file>#L<n>` or a design-doc section
+/// `<doc>#<slug>` names the part before the first `#` when its last segment carries an extension;
+/// a dev-loop node (a decision / finding / unit / agent / gate / lesson) names none, a dotted id
+/// (`v1.2-choice`) included. The fold is a pure, total function of `(id, kind)`, so a given graph
+/// folds to one stable set of buckets (the determinism the exploration view relies on).
 pub fn cluster_key(id: &str, kind: &str) -> String {
-    match file_of(id) {
+    match node_file(kind, id) {
         // A file-bearing id clusters by the file's DIRECTORY (its module); a directory-less repo-root
         // file -> `(root)`.
         Some(file) => match file.rsplit_once('/') {
@@ -105,10 +106,35 @@ pub fn cluster_key(id: &str, kind: &str) -> String {
     }
 }
 
-/// The FILE PATH a node id names, or `None` when the id names no file (a dev-loop node - a decision /
-/// finding / unit / community / concept). The single file-naming authority [`cluster_key`] (which
-/// folds to the file's DIRECTORY) and the subject-by-lens FILES re-projection (which folds to the
-/// FILE itself, spec 55 c1) both read.
+/// The FILE an id of kind `kind` names (spec 119), by one kind table over the sixteen graph kinds:
+///
+/// | kind | file |
+/// | --- | --- |
+/// | `code-entity` | [`split_id`]'s file half; `None` when the id holds no `::` or its file half is empty |
+/// | `file` | [`split_id`]'s file half, its whole path whatever its last segment (`src/utils/Makefile`) |
+/// | `design-doc`, `arch-decision`, `handbook-rule`, `rationale`, `artifact` | [`file_of`] |
+/// | `finding`, `lesson`, `decision`, `unit`, `agent`, `gate`, `stage`, `community`, `concept` | `None` |
+///
+/// So `Makefile::all` names `Makefile`, while a dotted id of a kind naming no file (a decision
+/// `v1.2-choice`) names none. The ONE file read [`cluster_key`] (which folds to the file's
+/// DIRECTORY), the files lens ([`whole_graph_lens_key`]), [`card`], `dash.rs`'s
+/// `reproject_files` and the console map's district all take. Pure and total.
+pub fn node_file<'a>(kind: &str, id: &'a str) -> Option<&'a str> {
+    match kind {
+        KIND_CODE_ENTITY => match split_id(id) {
+            (file, Some(_)) if !file.is_empty() => Some(file),
+            _ => None,
+        },
+        KIND_FILE => Some(split_id(id).0),
+        KIND_DESIGN_DOC | KIND_ARCH_DECISION | KIND_HANDBOOK_RULE | KIND_RATIONALE
+        | KIND_ARTIFACT => file_of(id),
+        _ => None,
+    }
+}
+
+/// The FILE PATH a path-shaped id names, or `None` when the id names no file: the file half
+/// [`node_file`] reads for a design doc, an architecture decision, a handbook rule, a rationale
+/// anchor or an artifact.
 ///
 /// An id is reduced to a file path by taking [`split_id`]'s file half, then stripping a rationale /
 /// doc-section `#...` suffix (a plain path id survives both untouched). The reduced path names a file
@@ -129,7 +155,7 @@ pub fn file_of(id: &str) -> Option<&str> {
 /// The ONE cut of a node id (spec 119): its file half, the text before its first `::` (the whole
 /// id when it holds none), and its rest half, the text after that `::` (`Some("")` for `a.rs::`,
 /// `None` when the id holds no `::`). The domain owns the id format `<file>::<path>`, and this is
-/// its in-memory cut: [`file_of`] and [`leaf_of`] read it, while the store's `file_prefix` still
+/// its in-memory cut: [`node_file`], [`file_of`] and [`leaf_of`] read it, while the store's `file_prefix` still
 /// cuts an id itself until it gives way to it (spec 119, criterion 4); the store spells the file
 /// half in SQL over its id range.
 pub fn split_id(id: &str) -> (&str, Option<&str>) {
@@ -184,7 +210,7 @@ pub fn node_leaf(node: &Node) -> Option<&str> {
 /// placeholder - and a kind that passes [`is_call_target`], so never a data member or a
 /// declaration) by its leaf (a named node's [`node_leaf`] is that name, so `a.rs::T::new` keys
 /// under `new`):
-/// the ONE resolution authority a bare placeholder's [`file_of`] attribution reads, so the files-lens
+/// the ONE resolution authority a bare placeholder's [`node_file`] attribution reads, so the files-lens
 /// whole-graph fold ([`Buckets::new`]'s [`Lens::Files`] arm) and `dash.rs`'s `reproject_files` resolve
 /// the IDENTICAL shape identically (the store's `definitions_with_suffix`, in-memory). Each candidate
 /// list is sorted + deduped for a deterministic frontier: EXACTLY ONE candidate resolves a bare
@@ -363,7 +389,7 @@ pub struct Buckets<'g> {
     /// [`Lens::Files`] ONLY (spec 63 c3, FILES-LENS PURITY): every call-target DEFINITION indexed by
     /// its leaf ([`defs_by_entity_suffix`]), so [`whole_graph_lens_key`] can resolve a bare
     /// placeholder to its unique real definition's file - the SAME honest resolution
-    /// `dash.rs`'s `reproject_files` performs - rather than taking [`file_of`] of the placeholder's
+    /// `dash.rs`'s `reproject_files` performs - rather than taking [`node_file`] of the placeholder's
     /// own id (which names the REFERENCING file, not its true definition file). Empty under
     /// [`Lens::Code`] / [`Lens::Concepts`].
     pub(crate) defs_by_suffix: BTreeMap<&'g str, Vec<&'g str>>,
@@ -579,9 +605,9 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
 /// NO bucket either (unlike [`Buckets::key`]'s own fallback). Under [`Lens::Concepts`] a node with NO
 /// live `REALIZES` membership at this grain gets NO bucket either, REGARDLESS of its own kind. Under
 /// [`Lens::Files`], the SAME shape of gate: a node outside [`KIND_CODE_ENTITY`] is excluded outright,
-/// and a code entity folds by [`file_of`] - its OWN FILE - rather than [`cluster_key`]'s directory
+/// and a code entity folds by [`node_file`] - its OWN FILE - rather than [`cluster_key`]'s directory
 /// fold. A REAL definition (a non-empty `name` attr, [`node_name`], a data member's included) takes
-/// [`file_of`] of its own id directly; a BARE placeholder resolves FIRST by its leaf
+/// [`node_file`] of its own id directly; a BARE placeholder resolves FIRST by its leaf
 /// ([`node_leaf`]) over [`Buckets::defs_by_suffix`], the call targets alone.
 pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
     match buckets.lens {
@@ -611,13 +637,13 @@ pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<Str
             // honestly attributed to any one file, so the fold excludes it entirely (never
             // mis-attributed to the referencing file its own id encodes).
             if node_name(node).is_some() {
-                return file_of(&node.id).map(str::to_string);
+                return node_file(&node.kind, &node.id).map(str::to_string);
             }
             match node_leaf(node)
                 .and_then(|leaf| buckets.defs_by_suffix.get(leaf))
                 .map(Vec::as_slice)
             {
-                Some([only]) => file_of(only).map(str::to_string),
+                Some([only]) => node_file(KIND_CODE_ENTITY, only).map(str::to_string),
                 _ => None,
             }
         }
@@ -1341,13 +1367,12 @@ pub fn card(graph: &Graph, id: &str) -> Option<Card> {
         ),
         _ => (Vec::new(), Vec::new()),
     };
-    // `file`/`line` name a CODE ENTITY's definition site only: [`file_of`] would happily reduce a
-    // file's OWN id to itself (a file's path already names a file), which would render as a
-    // meaningless "file: <its own path>" row on a file's card, so this is gated on the entity kind
-    // rather than reusing `file_of`'s generic path-shaped-id test.
+    // `file`/`line` name a CODE ENTITY's definition site only: [`node_file`] names a file's OWN
+    // id as its file (a file's path is its file), which would render as a meaningless
+    // "file: <its own path>" row on a file's card, so this is gated on the entity kind.
     let (file, line) = if node.kind == KIND_CODE_ENTITY {
         (
-            file_of(id).map(str::to_string),
+            node_file(&node.kind, id).map(str::to_string),
             node.attrs.get("line").cloned(),
         )
     } else {

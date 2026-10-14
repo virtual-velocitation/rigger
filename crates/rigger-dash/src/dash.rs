@@ -50,8 +50,8 @@ use crate::contextgraph::{
 // one of them (in the code below and in `mod tests`'s `use super::*`), it just no longer DEFINES
 // them.
 use crate::contextgraph::query::{
-    bucket_label_index, defs_by_entity_suffix, file_of, fold_buckets, member_set, memory_rail_of,
-    neighborhood_of, node_label, node_leaf, node_name, Buckets,
+    bucket_label_index, defs_by_entity_suffix, fold_buckets, member_set, memory_rail_of,
+    neighborhood_of, node_file, node_label, node_leaf, node_name, Buckets,
 };
 pub use crate::contextgraph::query::{
     card, cluster_detail, cluster_key, clustered_overview, explain, memory_rail, neighborhood,
@@ -1802,8 +1802,8 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 /// honestly (spec 55 c1). Each member is resolved to a file key, or surfaced as marked-unresolved -
 /// NEVER folded to a raw storage-schema name (spec 63 c3, FILES-LENS PURITY):
 ///
-/// - a member that IS a definition (a non-empty `name` attr, [`node_name`]) or a doc / file-path
-///   node folds under its OWN file ([`file_of`]);
+/// - a member that IS a definition (a non-empty `name` attr, [`node_name`]) or a doc / file
+///   node folds under its OWN file ([`node_file`], read by its kind);
 /// - a BARE cross-file code-entity placeholder (no `name` attr, or an empty one) resolves by its
 ///   leaf ([`node_leaf`]) over the call-target DEFINITION nodes sharing it (never a data member or a declaration, which
 ///   folds under its own file as every definition does): EXACTLY ONE folds under that definition's file; MORE THAN ONE
@@ -1837,7 +1837,7 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
                 .unwrap_or_default();
             match cands {
                 [only] => {
-                    if let Some(file) = file_of(only) {
+                    if let Some(file) = node_file(KIND_CODE_ENTITY, only) {
                         resolved.insert(m.id.as_str(), file.to_string());
                         continue;
                     }
@@ -1858,7 +1858,7 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
         // identity (a rare dev-loop node) is marked unresolved with an EMPTY frontier - the honesty
         // shape a zero-candidate bare placeholder already uses - never its raw KIND as a cluster
         // label (spec 63 c3: no storage-schema name is ever a cluster key or group label here).
-        match file_of(&m.id) {
+        match node_file(&m.kind, &m.id) {
             Some(file) => {
                 resolved.insert(m.id.as_str(), file.to_string());
             }

@@ -37,7 +37,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::contextgraph::query::{file_of, node_leaf, Buckets, Lens};
+use crate::contextgraph::query::{node_file, node_leaf, Buckets, Lens};
 use crate::contextgraph::{
     Graph, Node, CODE_KIND_CONSTANT, CODE_KIND_FUNCTION, CODE_KIND_TRAIT, CODE_KIND_TYPE,
     KIND_CODE_ENTITY, KIND_FINDING, REL_ABOUT, REL_CALLS, REL_REFERENCES,
@@ -272,7 +272,7 @@ pub fn build(graph: &Graph) -> MapModel {
     for (c, members) in &by_community {
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
         for n in members {
-            if let Some(file) = file_of(&n.id) {
+            if let Some(file) = node_file(&n.kind, &n.id) {
                 *counts.entry(module_of(file)).or_default() += 1;
             }
         }

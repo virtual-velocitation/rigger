@@ -11261,7 +11261,7 @@
     "is_test": false,
     "proposed_module": "dash::reproject",
     "reason": "name contains \"reproject\" (graph reprojection); grouped under `dash::reproject`.",
-    "content_hash": "381c38aca839a5df"
+    "content_hash": "4a46319c85dc518e"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
