@@ -1153,10 +1153,10 @@ mod tests {
         );
     }
 
-    /// The caller rule's kinds (spec 116 criterion 2) and the kinds the Rust data definitions
-    /// take (criterion 6) each lower to their own kind string.
+    /// The kinds spec 116 adds (the caller rule's at criterion 2, the Rust data definitions' at
+    /// 6, Go's variable at 7) each lower to their own kind string.
     #[test]
-    fn the_caller_rule_s_and_the_rust_data_kinds_lower_to_their_kind_strings() {
+    fn each_kind_spec_116_adds_lowers_to_its_kind_string() {
         assert_eq!(
             [
                 Kind::Constructor,
@@ -1164,7 +1164,8 @@ mod tests {
                 Kind::Declaration,
                 Kind::Static,
                 Kind::Variant,
-                Kind::Field
+                Kind::Field,
+                Kind::Variable
             ]
             .map(super::kind_str),
             [
@@ -1173,7 +1174,8 @@ mod tests {
                 "declaration",
                 "static",
                 "variant",
-                "field"
+                "field",
+                "variable"
             ]
         );
     }

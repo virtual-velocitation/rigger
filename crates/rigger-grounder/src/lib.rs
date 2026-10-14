@@ -93,6 +93,16 @@ mod name_filter_sources;
 #[path = "../../../tests/common/fixtures/rust_definition_sources.rs"]
 mod rust_definition_sources;
 
+/// THE GO DEFINITIONS FIXTURE the Go definition tests extract, compiled here from the file the
+/// shared fixtures live in. It names no crate; only the default lane's tests extract it.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/go_definition_sources.rs"]
+mod go_definition_sources;
+
 /// The symbol index fixtures the extractor's and the registry's tests share with the root crate's
 /// tests (the stamped `index.json` writer, a source read through the registry, the definition
 /// and reference projections), compiled here from the same file. It names the crate as

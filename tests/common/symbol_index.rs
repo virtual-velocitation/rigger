@@ -1,7 +1,8 @@
 //! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file
 //! index, saving it through the real `store` boundary and reading the bytes back, loading a
-//! hand-authored legacy `index.json`, and projecting a file's definitions, its test-marked
-//! definitions and its references with their callers.
+//! hand-authored legacy `index.json`, projecting a file's definitions, its test-marked
+//! definitions and its references with their callers, and checking a language's definition
+//! types against a file's definitions.
 //! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention
 //! `tests/common/mod.rs` keeps). Every lane compiles it; `extracted` alone reaches the parser
@@ -122,6 +123,20 @@ pub fn defs_by_line(fs: &FileSymbols) -> Vec<(u32, &str, Kind)> {
         .collect();
     defs.sort();
     defs
+}
+
+/// Each row of a language's DEFINITION TYPES, a (node type, kind, fixture leaf) triple, names
+/// exactly one definition of `fs`, the symbols extracted from that language's fixture: one of
+/// the row's kind at the row's leaf.
+pub fn assert_one_def_per_row(fs: &FileSymbols, rows: &[(&str, Kind, &str)]) {
+    for (node_type, kind, leaf) in rows {
+        let found = fs
+            .defs
+            .iter()
+            .filter(|d| d.kind == *kind && d.name == *leaf)
+            .count();
+        assert_eq!(found, 1, "{node_type}: one {kind:?} definition at {leaf:?}");
+    }
 }
 
 /// Every definition of `fs` marked test code as `(line, name)`, sorted: the one projection the

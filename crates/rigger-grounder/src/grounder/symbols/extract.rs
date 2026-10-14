@@ -1456,16 +1456,10 @@ setup!();
             .map(|d| d.name.as_str())
             .collect();
         assert_eq!(out_of_line, Vec::<&str>::new());
-        for (node_type, kind, leaf) in
-            crate::grounder::symbols::registry::tests::RUST_DEFINITION_TYPES
-        {
-            let found = fs
-                .defs
-                .iter()
-                .filter(|d| d.kind == kind && d.name == leaf)
-                .count();
-            assert_eq!(found, 1, "{node_type}: one {kind:?} definition at {leaf:?}");
-        }
+        crate::symbol_index::assert_one_def_per_row(
+            &fs,
+            &crate::grounder::symbols::registry::tests::RUST_DEFINITION_TYPES,
+        );
     }
 
     /// RUST DEFINITIONS ARE NODES (spec 116 criterion 6), the test attribute: a `#[cfg(test)]`
@@ -1543,31 +1537,56 @@ pub fn bang() {}
         );
     }
 
-    /// The Rust read-offs are selected by the language `extract` is given: the fixture read
-    /// under the Rust grammar and query as another language makes no tuple field and leaves the
-    /// proc-macro fn a function, while what the query tags stays.
-    #[test]
-    fn the_rust_read_offs_run_only_for_the_rust_language() {
-        let entry = crate::grounder::symbols::registry::for_extension("rs").unwrap();
-        let fs = extract(
-            RUST_DEFINITIONS_SOURCE,
-            Lang::Go,
-            &entry.language,
-            entry.tags_query,
-        )
-        .unwrap();
-        let on_lines_5_and_13: Vec<_> = crate::symbol_index::defs_by_line(&fs)
+    crate::test_cases! {
+        /// The Rust read-offs are selected by the language `extract` is given: the fixture read
+        /// under the Rust grammar and query as another language makes no tuple field and leaves
+        /// the proc-macro fn a function, while what the query tags stays.
+        the_rust_read_offs_run_only_for_the_rust_language:
+            assert_defs_read_as(
+                "rs",
+                RUST_DEFINITIONS_SOURCE,
+                Lang::Go,
+                &[5, 13],
+                &[
+                    (5, "Pair", Kind::Type),
+                    (13, "SEED", Kind::Constant),
+                    (13, "derive", Kind::Function),
+                ],
+            );
+        /// The Go read-offs are selected by the language `extract` is given: the fixture read
+        /// under the Go grammar and query as another language makes no embedded field and no
+        /// alias, while what the query tags stays.
+        the_go_read_offs_run_only_for_the_go_language:
+            assert_defs_read_as(
+                "go",
+                crate::go_definition_sources::GO_DEFINITIONS_SOURCE,
+                Lang::Rust,
+                &[8, 9],
+                &[
+                    (8, "Shape", Kind::Type),
+                    (8, "side", Kind::Field),
+                    (8, "x", Kind::Field),
+                    (8, "y", Kind::Field),
+                ],
+            );
+    }
+
+    /// `src`, read under the grammar and query registered for `ext` as the language `lang`,
+    /// holds exactly the definitions `expected` on `lines`.
+    fn assert_defs_read_as(
+        ext: &str,
+        src: &str,
+        lang: Lang,
+        lines: &[u32],
+        expected: &[(u32, &str, Kind)],
+    ) {
+        let entry = crate::grounder::symbols::registry::for_extension(ext).unwrap();
+        let fs = extract(src, lang, &entry.language, entry.tags_query).unwrap();
+        let on_lines: Vec<_> = crate::symbol_index::defs_by_line(&fs)
             .into_iter()
-            .filter(|(line, _, _)| [5, 13].contains(line))
+            .filter(|(line, _, _)| lines.contains(line))
             .collect();
-        assert_eq!(
-            on_lines_5_and_13,
-            vec![
-                (5, "Pair", Kind::Type),
-                (13, "SEED", Kind::Constant),
-                (13, "derive", Kind::Function),
-            ]
-        );
+        assert_eq!(on_lines, expected);
     }
 
     /// The attribute walk starts below the root: a file that is one mod, its range the root's

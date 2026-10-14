@@ -265,6 +265,7 @@ pub fn for_path(path: &str, override_lang: Option<Lang>) -> Option<LanguageEntry
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::extract::extract;
     use crate::grounder::symbols::model::{Kind, Lang};
 
@@ -293,6 +294,26 @@ pub(crate) mod tests {
         ("macro_definition", Kind::Macro, "shout"),
         ("impl_item", Kind::Impl, "impl Pair"),
         ("ordered_field_declaration_list", Kind::Field, "1"),
+    ];
+
+    /// Go's DEFINITION TYPES (spec 116): each row a node type of the Go grammar that is a
+    /// definition, a kind it lowers to, and the leaf of the one definition of that kind the Go
+    /// definitions fixture holds for it. A `function_declaration` and a `method_declaration`
+    /// have a row with a body and one without; a `var_spec` is a definition at package level
+    /// only; the two `field_declaration` rows are a named field and an embedded one, which is
+    /// read off the parsed tree as the `type_alias` row is.
+    pub(crate) const GO_DEFINITION_TYPES: [(&str, Kind, &str); 11] = [
+        ("function_declaration", Kind::Function, "host"),
+        ("function_declaration", Kind::Declaration, "ext"),
+        ("method_declaration", Kind::Method, "area"),
+        ("method_declaration", Kind::Declaration, "bare"),
+        ("method_elem", Kind::Declaration, "Draw"),
+        ("type_spec", Kind::Type, "Shape"),
+        ("const_spec", Kind::Constant, "Limit"),
+        ("var_spec", Kind::Variable, "single"),
+        ("field_declaration", Kind::Field, "side"),
+        ("field_declaration", Kind::Field, "Ptr"),
+        ("type_alias", Kind::Type, "Alias"),
     ];
 
     #[test]
@@ -498,7 +519,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// THE NAME FILTER DROPS A NAMELESS DEFINITION (spec 116 criterion 3), under the upstream Go
+    /// THE NAME FILTER DROPS A NAMELESS DEFINITION (spec 116 criterion 3), under the registered Go
     /// query: a function, a method and a type named `_`, Go's blank identifier, make no
     /// definition, while the named type and function beside them keep theirs; the call inside
     /// `func _()` has the file, no caller, as have the receiver type and the call of
@@ -554,6 +575,85 @@ pub(crate) mod tests {
             crate::symbol_index::refs_with_callers(&py),
             vec![],
             "a Python attribute read is no call"
+        );
+    }
+
+    /// GO DEFINITIONS ARE NODES (spec 116 criterion 7): under the registered Go query the fixture
+    /// yields every definition it holds at its own kind and leaf: each name of a const spec a
+    /// constant, a function-local const included; a package-level `var`, single, grouped or
+    /// naming two, a variable, and the function-local `var local` and grouped `var deep` none; a
+    /// named field a field, each name of a field declaration naming two included; an embedded
+    /// field a field at its type's base identifier, pointer, package qualifier and type
+    /// arguments stripped; a type alias a type, the one named `_` none; an interface's method
+    /// and a function and a method with no body each a declaration. Each row of Go's DEFINITION
+    /// TYPES names exactly one of them.
+    ///
+    /// The callers: both calls of `const a, b = f(), g()` are `a`'s and both of
+    /// `var m, n = h(), k()` are `m`'s, the least name among the definitions of one range; an
+    /// embedded field keeps the reference to its type, the field its caller, a generic one its
+    /// type argument's too; a named field's type reference is the field's and that of a field
+    /// declaration naming two its least name's; an alias's name and its target are the alias's;
+    /// a call in a function-local const is its function's; an interface method's parameter type
+    /// is the interface's, a declaration being no caller, so that of a function or a method
+    /// with no body is the file's; and both references of the alias named `_` are the file's.
+    #[test]
+    fn every_go_definition_type_yields_its_definition_at_its_kind() {
+        let fs = crate::symbol_index::extracted("go", GO_DEFINITIONS_SOURCE);
+        assert_eq!(
+            crate::symbol_index::defs_by_line(&fs),
+            vec![
+                (2, "Limit", Kind::Constant),
+                (3, "a", Kind::Constant),
+                (3, "b", Kind::Constant),
+                (4, "single", Kind::Variable),
+                (5, "grouped", Kind::Variable),
+                (6, "m", Kind::Variable),
+                (6, "n", Kind::Variable),
+                (7, "Base", Kind::Type),
+                (8, "Base", Kind::Field),
+                (8, "Gen", Kind::Field),
+                (8, "Ptr", Kind::Field),
+                (8, "Qual", Kind::Field),
+                (8, "Shape", Kind::Type),
+                (8, "side", Kind::Field),
+                (8, "x", Kind::Field),
+                (8, "y", Kind::Field),
+                (9, "Alias", Kind::Type),
+                (10, "Draw", Kind::Declaration),
+                (10, "Drawer", Kind::Type),
+                (11, "host", Kind::Function),
+                (11, "inner", Kind::Constant),
+                (12, "area", Kind::Method),
+                (13, "ext", Kind::Declaration),
+                (14, "bare", Kind::Declaration),
+            ]
+        );
+        assert!(!fs.partial, "the fixture parses whole");
+        crate::symbol_index::assert_one_def_per_row(&fs, &GO_DEFINITION_TYPES);
+        assert_eq!(
+            crate::symbol_index::refs_with_callers(&fs),
+            vec![
+                (3, "f", Some("a")),
+                (3, "g", Some("a")),
+                (6, "h", Some("m")),
+                (6, "k", Some("m")),
+                (8, "Base", Some("Base")),
+                (8, "Coord", Some("x")),
+                (8, "Gen", Some("Gen")),
+                (8, "Ptr", Some("Ptr")),
+                (8, "Qual", Some("Qual")),
+                (8, "Side", Some("side")),
+                (8, "int", Some("Gen")),
+                (9, "Alias", Some("Alias")),
+                (9, "Base", Some("Alias")),
+                (10, "Canvas", Some("Drawer")),
+                (11, "probe", Some("host")),
+                (12, "Shape", Some("area")),
+                (13, "Canvas", None),
+                (14, "Shape", None),
+                (15, "Base", None),
+                (15, "_", None),
+            ]
         );
     }
 }
