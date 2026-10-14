@@ -98,6 +98,13 @@
 //!    (`a_dev_only_design_doc_mention_is_read_by_the_path_it_names_through_the_public_api`). The
 //!    ranking use of the predicate is driven through the binary, in `tests/cli.rs`
 //!    (`ground_ranks_a_go_test_files_definition_below_the_production_one_it_shadows`).
+//!  - spec 116 criterion 11 (A TEST REGION IS EVERY TEST-ATTRIBUTED RANGE), through the SAME
+//!    public API: a `#[cfg(test)] const _` the name filter drops, a `#[cfg(test)] extern` block
+//!    and a file opening `#![cfg(test)]` each make what they hold no node and no edge end, the
+//!    file a `mod` in that opened file declares included, while a file opening an outer
+//!    `#[cfg(test)] use` or `#[cfg(test)] mod tests;`, the unattributed twins and a
+//!    `#[cfg(unix)]` fn stay production
+//!    (`a_test_region_is_every_test_attributed_range_through_the_public_api`).
 
 mod common;
 
@@ -1817,17 +1824,29 @@ fn design_doc_graph(md: &str) -> rigger::contextgraph::Graph {
         .unwrap()
 }
 
+/// Every edge of `g` that `keep` holds, as `(from, rel, to)`, sorted: the one edge projection
+/// the end-to-end tests below compare whole.
+#[cfg(feature = "symbols")]
+fn edges_where(
+    g: &rigger::contextgraph::Graph,
+    keep: impl Fn(&rigger::contextgraph::Edge) -> bool,
+) -> Vec<(&str, &str, &str)> {
+    let mut edges: Vec<_> = g
+        .edges
+        .iter()
+        .filter(|e| keep(e))
+        .map(|e| (e.from.as_str(), e.rel.as_str(), e.to.as_str()))
+        .collect();
+    edges.sort_unstable();
+    edges
+}
+
 /// [`design_doc_graph`] of `md` holds exactly `links` (`(from, rel, to)`, sorted) and exactly
 /// the nodes `node_ids` (sorted).
 #[cfg(feature = "symbols")]
 fn assert_design_doc_graph(md: &str, links: &[(&str, &str, &str)], node_ids: &[&str]) {
     let g = design_doc_graph(md);
-    let mut got_links: Vec<(&str, &str, &str)> = g
-        .edges
-        .iter()
-        .map(|e| (e.from.as_str(), e.rel.as_str(), e.to.as_str()))
-        .collect();
-    got_links.sort_unstable();
+    let got_links = edges_where(&g, |_| true);
     assert_eq!(got_links, links, "the doc's links");
     let mut got_nodes: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
     got_nodes.sort_unstable();
@@ -2093,12 +2112,11 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
     production_files.insert(PRODUCT);
     assert_eq!(file_nodes, production_files);
 
-    let contained: BTreeSet<(&str, &str)> = g
-        .edges
-        .iter()
-        .filter(|e| e.rel == REL_CONTAINS && e.from != PRODUCT)
-        .map(|e| (e.from.as_str(), e.to.as_str()))
-        .collect();
+    let contained: BTreeSet<(&str, &str)> =
+        edges_where(&g, |e| e.rel == REL_CONTAINS && e.from != PRODUCT)
+            .into_iter()
+            .map(|(from, _, to)| (from, to))
+            .collect();
     let control_definitions: Vec<(&str, String)> = PRODUCTION_CONTROLS
         .iter()
         .flat_map(|&(path, _, names)| {
@@ -2129,12 +2147,7 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
         .filter(|id| at_dev_only(id))
         .collect();
     assert_eq!(leaked_nodes, Vec::<&str>::new());
-    let leaked_edges: Vec<(&str, &str, &str)> = g
-        .edges
-        .iter()
-        .filter(|e| at_dev_only(&e.from) || at_dev_only(&e.to))
-        .map(|e| (e.from.as_str(), e.rel.as_str(), e.to.as_str()))
-        .collect();
+    let leaked_edges = edges_where(&g, |e| at_dev_only(&e.from) || at_dev_only(&e.to));
     assert_eq!(leaked_edges, Vec::<(&str, &str, &str)>::new());
 
     let product_prefix = format!("{PRODUCT}::");
@@ -2160,6 +2173,150 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
     expected_proofs.insert("by_out_of_line_module".to_string(), vec![]);
     expected_proofs.insert("by_production_only".to_string(), vec![]);
     assert_eq!(proofs, expected_proofs);
+}
+
+/// Spec 116 criterion 11's tree, each file `(path, source)`: a crate root opening
+/// `#![cfg(test)]` whose `mod opened;` declares `src/opened.rs`; a file holding a test-attributed
+/// `const _` and extern block beside their unattributed twins and a `#[cfg(unix)]` fn; and two
+/// files opening an OUTER `#[cfg(test)]`, one on a `use` declaring `src/gated/kept.rs`, one on a
+/// bodiless `mod tests;` declaring `src/declared/tests.rs`.
+#[cfg(feature = "symbols")]
+const TEST_REGION_FILES: &[(&str, &str)] = &[
+    (
+        "src/lib.rs",
+        "#![cfg(test)]\nfn opener() {}\nfn opened_second() {\n    opener();\n}\nmod opened;\n",
+    ),
+    ("src/opened.rs", "fn in_opened() {}\n"),
+    (
+        "src/regions.rs",
+        "\
+#[cfg(test)]
+const _: () = {
+    fn region_helper() {
+        called_from_test();
+    }
+};
+const _: () = {
+    fn region_kept() {
+        called_from_production();
+    }
+};
+fn called_from_test() {}
+fn called_from_production() {}
+#[cfg(unix)]
+fn unix_only() {}
+#[cfg(test)]
+extern \"C\" {
+    fn ffi_test();
+}
+extern \"C\" {
+    fn ffi_production();
+}
+",
+    ),
+    (
+        "src/gated.rs",
+        "#[cfg(test)]\nuse y;\nfn gated_a() {}\nfn gated_b() {\n    gated_a();\n}\nmod kept;\n",
+    ),
+    ("src/gated/kept.rs", "fn in_kept() {}\n"),
+    (
+        "src/declared.rs",
+        "#[cfg(test)]\nmod tests;\nfn declared_c() {}\nfn declared_d() {\n    declared_c();\n}\n",
+    ),
+    ("src/declared/tests.rs", "fn in_declared_tests() {}\n"),
+];
+
+/// Spec 116 criterion 11 (A TEST REGION IS EVERY TEST-ATTRIBUTED RANGE), end to end through the
+/// public `project_batches` -> `Projector` path: a `#[cfg(test)] const _` the name filter drops,
+/// a `#[cfg(test)] extern` block and a file opening `#![cfg(test)]` each make what they hold
+/// test, so none of it is a node or ends an edge, and the file a `mod` in that opened file
+/// declares is test code whole; a file opening an outer `#[cfg(test)] use` or
+/// `#[cfg(test)] mod tests;` keeps its fns production, as do the unattributed twins and a
+/// `#[cfg(unix)]` fn.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_test_region_is_every_test_attributed_range_through_the_public_api() {
+    use rigger::contextgraph::{REL_CALLS, REL_CONTAINS, REL_REFERENCES};
+    use std::collections::BTreeSet;
+
+    let seeds: Vec<&str> = TEST_REGION_FILES.iter().map(|&(path, _)| path).collect();
+    let g = ingested_subgraph(TEST_REGION_FILES, &seeds, 3);
+
+    // Every production definition, and only those, is contained by its file.
+    assert_eq!(
+        edges_where(&g, |e| e.rel == REL_CONTAINS),
+        [
+            ("src/declared.rs", "src/declared.rs::declared_c"),
+            ("src/declared.rs", "src/declared.rs::declared_d"),
+            ("src/gated.rs", "src/gated.rs::gated_a"),
+            ("src/gated.rs", "src/gated.rs::gated_b"),
+            ("src/gated.rs", "src/gated.rs::kept"),
+            ("src/gated/kept.rs", "src/gated/kept.rs::in_kept"),
+            ("src/regions.rs", "src/regions.rs::called_from_production"),
+            ("src/regions.rs", "src/regions.rs::called_from_test"),
+            ("src/regions.rs", "src/regions.rs::ffi_production"),
+            ("src/regions.rs", "src/regions.rs::region_kept"),
+            ("src/regions.rs", "src/regions.rs::unix_only"),
+        ]
+        .map(|(file, id)| (file, REL_CONTAINS, id))
+    );
+
+    // No node and no edge end is a test item, the declared test files included.
+    let test_items = [
+        "src/declared.rs::tests",
+        "src/declared/tests.rs",
+        "src/declared/tests.rs::in_declared_tests",
+        "src/lib.rs::opened",
+        "src/lib.rs::opened_second",
+        "src/lib.rs::opener",
+        "src/opened.rs",
+        "src/opened.rs::in_opened",
+        "src/regions.rs::ffi_test",
+        "src/regions.rs::region_helper",
+    ];
+    let leaked: BTreeSet<&str> = g
+        .nodes
+        .iter()
+        .map(|n| n.id.as_str())
+        .chain(
+            g.edges
+                .iter()
+                .flat_map(|e| [e.from.as_str(), e.to.as_str()]),
+        )
+        .filter(|id| test_items.contains(id))
+        .collect();
+    assert_eq!(leaked, BTreeSet::new());
+
+    // A call is edges only from production code: each production caller's call is its CALLS
+    // edge and its file's REFERENCES edge, and the test helper's call to `called_from_test` is
+    // neither.
+    assert_eq!(
+        edges_where(&g, |e| e.rel != REL_CONTAINS),
+        [
+            (
+                "src/declared.rs",
+                REL_REFERENCES,
+                "src/declared.rs::declared_c"
+            ),
+            (
+                "src/declared.rs::declared_d",
+                REL_CALLS,
+                "src/declared.rs::declared_c"
+            ),
+            ("src/gated.rs", REL_REFERENCES, "src/gated.rs::gated_a"),
+            ("src/gated.rs::gated_b", REL_CALLS, "src/gated.rs::gated_a"),
+            (
+                "src/regions.rs",
+                REL_REFERENCES,
+                "src/regions.rs::called_from_production"
+            ),
+            (
+                "src/regions.rs::region_kept",
+                REL_CALLS,
+                "src/regions.rs::called_from_production"
+            ),
+        ]
+    );
 }
 
 rigger::test_cases! {
