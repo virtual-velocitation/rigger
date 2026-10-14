@@ -3570,7 +3570,10 @@ mod tests {
     /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
     /// the root crate's `src/` test modules included), and the sentence
     /// walk's generators as commands, the graph's caller lookup at depth 1 with its counted
-    /// fallback recorded as a gap, and the record the walk owes, and the foreground wait for
+    /// fallback recorded as a gap, the rule-spelling search over every tracked text file, one
+    /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
+    /// phrase in another case or split by a rewrap still a hit) whose command and hits the walk pastes for the `sdet`
+    /// lens to re-run, and the record the walk owes, and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
     /// line when the host backgrounds one.
     #[test]
@@ -3645,6 +3648,22 @@ mod tests {
             "END { print n + 0 \" hits\" }'`",
             "The record pastes each command as run, its hit count and every hit it printed, each \
              FIXED or CHECKED, and the `sdet` lens re-runs each on the review tree.",
+            "Each rule the change rewrites is searched by the distinguishing phrase of its old \
+             statement and of each label its cases carried (a name a doc, test or comment gives \
+             a case the old rule decided), one run per phrase, the phrase its one argument, over every tracked text \
+             file of the project (`.rs`, `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` \
+             and `.html`",
+            "so a phrase in another case, or one a rewrap splits across two lines, is still a \
+             hit",
+            "BEGIN { t = tolower(ENVIRON[\"t\"]) }",
+            "s = tolower($0)",
+            "`git ls-files | awk '/\\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | t='<phrase>' \
+             xargs awk",
+            "index(s, t) || !index(p, t) && index(p \" \" s, t)",
+            "The `<unit>-sentence-walk` record pastes each command as run, its hit count and \
+             every hit it printed, each FIXED or CHECKED with its reason, or names the \
+             rewritten-rule set empty; the `sdet` lens re-derives the generators' sets and \
+             re-runs each search on the review tree.",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
@@ -3660,19 +3679,23 @@ mod tests {
         );
     }
 
-    /// The `sdet` lens is the built-in shape rule's enforcement: it re-runs every search the
-    /// author's shape record carries on the review tree and compares the hit sets, and a hit
-    /// the record lacks, a CHECKED reason that does not hold or a record with no command is
-    /// BLOCKING. The search is the author's instrument, never a gate, so the lens's rule against
-    /// re-running a green gate does not reach it.
+    /// The `sdet` lens is the enforcement of two built-in rules. Of the shape rule: it re-runs
+    /// every search the author's shape record carries on the review tree and compares the hit
+    /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
+    /// command is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
+    /// diff and the graph and compares it with the walk record, re-runs every rule-spelling
+    /// search the record carries and re-reads every hit against head, and an omitted member, an uncarried hit, a CHECKED reason that
+    /// does not hold, or a record naming no search and no empty set is BLOCKING. Both records
+    /// are the author's instruments, never a gate, so the lens's rule against re-running a green
+    /// gate does not reach them.
     #[test]
-    fn the_sdet_lens_re_runs_every_shape_search_the_author_records() {
-        const HEADING: &str = "## Re-run the author's shape searches";
+    fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
+        const HEADING: &str = "## Re-run the author's searches and re-derive its walk";
         for (file, text) in committed_personas() {
             assert_eq!(
                 text.matches(HEADING).count(),
                 usize::from(file == "sdet.md"),
-                "{file}: the shape-search enforcement belongs to the sdet lens alone"
+                "{file}: the recorded-search enforcement belongs to the sdet lens alone"
             );
         }
         let flat = rigger::wave::normalize_ws(&committed_persona("sdet.md"));
@@ -3684,6 +3707,21 @@ mod tests {
             "a CHECKED hit whose reason does not hold - its shape does not differ in the way \
              the record names - is a twin and BLOCKING",
             "a record with no command is BLOCKING",
+            "You are also the enforcement of the built-in rule that every sentence about the \
+             changed behaviour is true at head.",
+            "you re-derive each generator's set on the review tree from the diff and the graph",
+            "each hunk's identifiers, doc links (`[...]`) and constants included",
+            "the depth-1 callers (`rigger graph --around <file>::<item> --depth 1`)",
+            "the tracked lines spelling a changed item's name",
+            "and compare it with the record, and you re-run every rule-spelling search the \
+             record carries and compare the hit sets",
+            "and you re-read every hit, CHECKED ones included, against the code at head",
+            "A member the record omits is BLOCKING",
+            "a hit the record does not carry is BLOCKING",
+            "a CHECKED hit whose reason does not hold at head - it is a spelling of the retired \
+             rule or of one of its case labels after all - is BLOCKING",
+            "a record naming no rule-spelling search and no empty set is BLOCKING",
+            "a record that names the set empty while the diff rewrites a rule",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
