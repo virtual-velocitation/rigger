@@ -4052,7 +4052,7 @@ mandatory sweep: sqlite Connection::open call sites - 68 site(s), collected mech
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5980-5980` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10413-10413` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11176-11176` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12994-12994` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12996-12996` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1547-1547` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2160-2160` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2182-2182` `Connection::open_with_flags`
@@ -4205,8 +4205,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12232-12263` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12508-12539` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12234-12265` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12510-12541` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
 
 #### `dup-a34b5b595e15` (near, 2 sites)
 

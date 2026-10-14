@@ -199,7 +199,7 @@ fn the_subcommand_records_a_live_community_layer_over_the_real_store() {
 
     // The bare placeholders resolved away: only real definitions / files are members.
     assert!(
-        member_of(&edges, "src/combat/hit.rs::send").is_none(),
+        member_of(&edges, "src/combat/hit.rs::%send").is_none(),
         "a bare placeholder is never a live member on its own"
     );
 }

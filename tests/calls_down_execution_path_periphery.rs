@@ -302,8 +302,8 @@ fn the_depth_bound_clamps_the_layers_the_walk_returns() {
 fn the_up_direction_mirrors_the_down_walk_resolving_the_caller_through_its_bare_placeholder() {
     // Spec 52 criterion 3 (now landed), over the library's PUBLIC surface: UP is the genuine mirror
     // of DOWN. `b.rs::caller` calls `callee`, which is DEFINED in `a.rs` - a CROSS-FILE call whose
-    // edge lands on the bare `b.rs::callee` placeholder in the caller's own file namespace. DOWN from
-    // the caller resolves that placeholder FORWARD onto the definition; UP from the definition
+    // edge lands on the bare `b.rs::%callee` placeholder in the caller's own file namespace. DOWN
+    // from the caller resolves that placeholder FORWARD onto the definition; UP from the definition
     // resolves it in REVERSE back onto the caller (the reverse name-match). A naive reverse walk that
     // only matched the literal edge target would connect neither direction across the file boundary.
     let p = Projector::open(":memory:", "test").unwrap();
@@ -328,7 +328,7 @@ fn the_up_direction_mirrors_the_down_walk_resolving_the_caller_through_its_bare_
     );
 
     // UP: over that SAME real call, from the definition the walk resolves the caller back through the
-    // bare `b.rs::callee` placeholder - the mirror of DOWN. The caller sits at layer 1; the bare
+    // bare `b.rs::%callee` placeholder - the mirror of DOWN. The caller sits at layer 1; the bare
     // placeholder is resolved away; the edge keeps the real CALLS direction (caller -> callee).
     let up = p
         .calls(
@@ -350,7 +350,7 @@ fn the_up_direction_mirrors_the_down_walk_resolving_the_caller_through_its_bare_
         call_node_ids(&up),
     );
     assert!(
-        !up.nodes.iter().any(|n| n.node.id == "src/b.rs::callee"),
+        !up.nodes.iter().any(|n| n.node.id == "src/b.rs::%callee"),
         "the bare placeholder is resolved away, not returned; nodes were {:?}",
         call_node_ids(&up),
     );

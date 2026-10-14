@@ -211,8 +211,8 @@ fn clustered_overview_under_files_lens_carries_an_accurate_empty_state_when_the_
     // `clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf`.)
     let only_unresolvable_placeholders = Graph {
         nodes: vec![
-            plain("src/caller.rs::ghost_one", KIND_CODE_ENTITY),
-            plain("src/caller.rs::ghost_two", KIND_CODE_ENTITY),
+            plain("src/caller.rs::%ghost_one", KIND_CODE_ENTITY),
+            plain("src/caller.rs::%ghost_two", KIND_CODE_ENTITY),
         ],
         edges: vec![],
     };

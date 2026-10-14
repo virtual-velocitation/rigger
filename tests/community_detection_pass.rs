@@ -52,7 +52,7 @@ fn the_pass_groups_densely_coupled_entities_across_directory_lines() {
 
     // The bare placeholders resolved away - only real definitions and files are members.
     assert!(
-        !m.contains_key("src/combat/hit.rs::send"),
+        !m.contains_key("src/combat/hit.rs::%send"),
         "a bare placeholder is never a member on its own"
     );
 

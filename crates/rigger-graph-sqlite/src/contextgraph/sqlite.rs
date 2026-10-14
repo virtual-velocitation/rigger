@@ -8961,8 +8961,8 @@ mod tests {
         apply_def(&p, 4, c, "top", 1, true);
         // Calls (each is a caller-attributed reference the emit pass produces for a call in a body):
         //   local  -> target  (SAME-FILE: lands directly on the seed def)
-        //   mid    -> target  (CROSS-FILE single-candidate: through the bare b.rs::target placeholder)
-        //   top    -> mid     (CROSS-FILE single-candidate: through the bare c.rs::mid placeholder)
+        //   mid    -> target  (CROSS-FILE single-candidate: through the bare b.rs::%target)
+        //   top    -> mid     (CROSS-FILE single-candidate: through the bare c.rs::%mid)
         //   target -> mid     (the mutual call that closes a CYCLE - target both defines the seed and
         //                      calls mid, so walking UP from target reaches mid, whose callers include
         //                      target again: a BACK edge, deduped, not re-ascended)
@@ -9011,7 +9011,7 @@ mod tests {
             call_node_ids(&cg)
         );
         // The bare placeholders the callers literally target are resolved away.
-        for bare in ["src/b.rs::target", "src/c.rs::mid", "src/a.rs::mid"] {
+        for bare in ["src/b.rs::%target", "src/c.rs::%mid", "src/a.rs::%mid"] {
             assert!(
                 !cg.nodes.iter().any(|n| n.node.id == bare),
                 "the bare placeholder {bare} is resolved away, not returned; nodes were {:?}",
@@ -12211,8 +12211,8 @@ mod tests {
 
         #[test]
         fn a_cross_file_test_reference_resolves_by_name_when_the_definition_already_exists() {
-            // No same-file definition exists under the evidence's OWN referencing-file id
-            // ("other_tests.rs::product_fn" carries no name attr); resolution falls through to the
+            // No same-file definition exists in the evidence's OWN referencing file
+            // (`other_tests.rs` defines no `product_fn`); resolution falls through to the
             // first code-entity anywhere in the project carrying this exact name - mirroring
             // reference_tier's own cross-file lookup.
             let p = Projector::open(":memory:", "test").unwrap();
@@ -12221,7 +12221,9 @@ mod tests {
             let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
             assert_eq!(proven_by(&g, "product.rs::product_fn"), 1);
             assert!(
-                !g.nodes.iter().any(|n| n.id == "other_tests.rs::product_fn"),
+                !g.nodes
+                    .iter()
+                    .any(|n| n.id == "other_tests.rs::%product_fn"),
                 "no placeholder entity is ever manufactured under the referencing file's own \
                  namespace; got {:?}",
                 g.nodes
