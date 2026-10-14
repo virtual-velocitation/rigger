@@ -10451,3 +10451,40 @@ mod call_target_c4 {
             );
     }
 }
+
+/// Spec 119 criterion 1, THE LEAF KEYS RESOLUTION, at the files re-projection.
+#[cfg(test)]
+mod leaf_keys_c1 {
+    use super::*;
+    use crate::contextgraph::{KIND_COMMUNITY, KIND_FILE, REL_IN_COMMUNITY, TIER_INFERRED};
+    use crate::test_support::{def_node, edge, node_with_attrs, plain};
+
+    #[test]
+    fn reproject_files_resolves_a_placeholder_onto_the_nested_definition_of_its_leaf() {
+        const COM: &str = "community/1/0";
+        // The file member `d.rs` is no placeholder: it folds under itself.
+        let members = ["a.rs::T::new", "b.rs::%new", "c.rs::%new", "d.rs"];
+        let g = Graph {
+            nodes: vec![
+                plain(COM, KIND_COMMUNITY),
+                def_node(members[0], "new"),
+                plain(members[1], KIND_CODE_ENTITY),
+                node_with_attrs(members[2], KIND_CODE_ENTITY, &[("name", "")]),
+                plain(members[3], KIND_FILE),
+            ],
+            edges: members
+                .iter()
+                .map(|m| edge(m, COM, REL_IN_COMMUNITY, TIER_INFERRED))
+                .collect(),
+        };
+        let re = reproject(&g, COM, &Lens::Files);
+        assert_eq!(
+            re.clusters
+                .iter()
+                .map(|c| (c.key.as_str(), c.count))
+                .collect::<Vec<_>>(),
+            vec![("a.rs", 3), ("d.rs", 1)]
+        );
+        assert_eq!(re.unresolved, Vec::new());
+    }
+}

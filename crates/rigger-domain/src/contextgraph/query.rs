@@ -2361,3 +2361,92 @@ mod call_target_tests {
         );
     }
 }
+
+/// Spec 119 criterion 1, THE LEAF KEYS RESOLUTION: one cut [`split_id`] and one node leaf
+/// [`node_leaf`] key the in-memory readers, a nested definition `a.rs::T::new` answering file
+/// `b.rs`'s placeholder of its leaf.
+#[cfg(test)]
+mod leaf_tests {
+    use super::*;
+    use crate::test_support::{def_node, node_with_attrs, plain};
+
+    /// The nested definition `a.rs::T::new` and `b.rs`'s placeholder of `new`.
+    fn nested_and_placeholder() -> Graph {
+        Graph {
+            nodes: vec![
+                def_node("a.rs::T::new", "new"),
+                plain("b.rs::%new", KIND_CODE_ENTITY),
+            ],
+            edges: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_id_is_cut_once_at_its_first_separator() {
+        assert_eq!(
+            ["a.rs::T::new", "a.rs", "Makefile::all", "a.rs::"].map(split_id),
+            [
+                ("a.rs", Some("T::new")),
+                ("a.rs", None),
+                ("Makefile", Some("all")),
+                ("a.rs", Some("")),
+            ]
+        );
+        // The leaf is the rest half less one leading sigil.
+        assert_eq!(
+            ["b.rs::%new", "b.rs::%%x", "b.rs::new", "a.rs::", "a.rs"].map(leaf_of),
+            [Some("new"), Some("%x"), Some("new"), Some(""), None]
+        );
+        // The file half answers `file_of` as at the base.
+        assert_eq!(
+            ["docs/x.md", "docs/x.md#sec", "foo::bar"].map(file_of),
+            [Some("docs/x.md"), Some("docs/x.md"), None]
+        );
+    }
+
+    #[test]
+    fn node_leaf_is_a_non_empty_name_else_the_ids_leaf() {
+        let unnamed = node_with_attrs("b.rs::%new", KIND_CODE_ENTITY, &[("name", "")]);
+        assert_eq!(
+            [
+                node_leaf(&def_node("a.rs::T::new", "new")),
+                node_leaf(&def_node("f.ts::%", "%")),
+                node_leaf(&unnamed),
+                node_leaf(&plain("x", KIND_CODE_ENTITY)),
+            ],
+            [Some("new"), Some("%"), Some("new"), None]
+        );
+    }
+
+    #[test]
+    fn defs_by_entity_suffix_keys_a_nested_definition_by_its_leaf() {
+        let mut g = nested_and_placeholder();
+        g.nodes.push(node_with_attrs(
+            "c.rs::new",
+            KIND_CODE_ENTITY,
+            &[("name", "")],
+        ));
+        assert_eq!(
+            defs_by_entity_suffix(&g),
+            BTreeMap::from([("new", vec!["a.rs::T::new"])])
+        );
+    }
+
+    #[test]
+    fn the_files_lens_folds_a_placeholder_under_its_leafs_nested_definition() {
+        let mut g = nested_and_placeholder();
+        g.nodes.push(node_with_attrs(
+            "c.rs::%new",
+            KIND_CODE_ENTITY,
+            &[("name", "")],
+        ));
+        let buckets = Buckets::new(&g, &Lens::Files);
+        assert_eq!(
+            g.nodes
+                .iter()
+                .map(|n| whole_graph_lens_key(&buckets, n))
+                .collect::<Vec<_>>(),
+            vec![Some("a.rs".to_string()); 3]
+        );
+    }
+}

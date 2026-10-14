@@ -9664,5 +9664,11 @@
     "name": "reproject_files_beside_a_member",
     "start_line": 10394,
     "end_line": 10434
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "reproject_files_resolves_a_placeholder_onto_the_nested_definition_of_its_leaf",
+    "start_line": 10463,
+    "end_line": 10489
   }
 ]

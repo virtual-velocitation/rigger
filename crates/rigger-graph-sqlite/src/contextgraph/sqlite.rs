@@ -11221,10 +11221,10 @@ mod tests {
 
     /// The `EXPLAIN QUERY PLAN` `detail` lines for `sql`, so a test can assert the planner chose a
     /// named index rather than a full table scan.
-    fn query_plan(p: &Projector, sql: &str) -> Vec<String> {
+    fn query_plan(p: &Projector, sql: &str, params: impl rusqlite::Params) -> Vec<String> {
         let conn = p.conn.lock().unwrap();
         let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
-        stmt.query_map([], |r| r.get::<_, String>(3))
+        stmt.query_map(params, |r| r.get::<_, String>(3))
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap()
@@ -11274,6 +11274,7 @@ mod tests {
         let plan = query_plan(
             &p,
             "SELECT id FROM nodes WHERE substr(id, instr(id, '::') + 2) = 'Foo'",
+            [],
         );
         assert!(
             plan.iter().any(|d| d.contains("idx_nodes_name_suffix")),
@@ -11287,11 +11288,277 @@ mod tests {
         let plan = query_plan(
             &p,
             "SELECT to_id FROM edges WHERE rel = 'CALLS' AND valid_to IS NULL",
+            [],
         );
         assert!(
             plan.iter().any(|d| d.contains("idx_edges_live_rel_from")),
             "the relationship-scoped forward scan uses the partial idx_edges_live_rel_from; plan was {plan:?}"
         );
+    }
+
+    /// Spec 119 criterion 1 (THE LEAF KEYS RESOLUTION): every node-side reader keys a definition
+    /// by its leaf, so a nested definition written directly in `a.rs` (`a.rs::T::new`, named
+    /// `new`) answers the references `b.rs` folds after it, one assertion per node-side row.
+    mod leaf_keys_resolution {
+        use super::*;
+        use crate::test_support::{attrs_of, call_node_ids, call_walk};
+        use rigger_domain::contextgraph::query::node_leaf;
+
+        /// The assertion of a recording outside the generation rule: never retracted.
+        const UNKEYED: Asserter<'static> = Asserter {
+            identity: "",
+            generation: "",
+            at: 0,
+        };
+
+        /// Run `write` in one committed transaction on `p`'s own connection: the direct writes
+        /// that plant a nested id before any payload carries its path.
+        fn write_directly(p: &Projector, write: impl FnOnce(&Transaction, &str)) {
+            let mut conn = p.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            write(&tx, &p.project);
+            tx.commit().unwrap();
+        }
+
+        /// Assert code entity `id` carrying `attrs` as `by`.
+        fn entity(
+            tx: &Transaction,
+            project: &str,
+            by: &Asserter,
+            id: &str,
+            attrs: &[(&str, &str)],
+        ) {
+            ensure_node(tx, by, id, KIND_CODE_ENTITY, attrs, project).unwrap();
+        }
+
+        /// Write the function definitions `(id, name)` unkeyed.
+        fn define(p: &Projector, defs: &[(&str, &str)]) {
+            write_directly(p, |tx, project| {
+                for (id, name) in defs {
+                    let attrs = [("name", *name), ("kind", "function"), ("line", "1")];
+                    entity(tx, project, &UNKEYED, id, &attrs);
+                }
+            });
+        }
+
+        /// The id `p.locate(query)` resolves to, insisting it resolves to exactly one.
+        fn located(p: &Projector, query: &str) -> String {
+            match p.locate(query).unwrap() {
+                Located::One(site) => site.id,
+                other => panic!("{query} resolves to one node; got {other:?}"),
+            }
+        }
+
+        /// The proof attrs `(proven_by, proof_evidence)` node `id` carries, absent as empty.
+        fn proof_of(p: &Projector, id: &str) -> (String, String) {
+            let attrs = attrs_of(p, id);
+            let key = |k: &str| attrs.get(k).cloned().unwrap_or_default();
+            (key("proven_by"), key("proof_evidence"))
+        }
+
+        #[test]
+        fn locate_answers_a_bare_query_by_the_leaf_of_a_nested_definition() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            write_directly(&p, |tx, project| {
+                let new = [("name", "new"), ("kind", "function"), ("line", "3")];
+                entity(tx, project, &UNKEYED, "a.rs::T::new", &new);
+                let field = [("name", "field"), ("kind", "field"), ("line", "5")];
+                entity(tx, project, &UNKEYED, "a.rs::S.field", &field);
+                let op = [("name", "%"), ("kind", "method"), ("line", "7")];
+                entity(tx, project, &UNKEYED, "a.rs::T::%", &op);
+            });
+            assert_eq!(located(&p, "new"), "a.rs::T::new");
+            assert_eq!(located(&p, "field"), "a.rs::S.field");
+            assert_eq!(located(&p, "%"), "a.rs::T::%");
+        }
+
+        #[test]
+        fn a_call_from_another_file_resolves_down_onto_the_nested_definition_of_its_leaf() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            define(&p, &[("a.rs::T::new", "new")]);
+            apply_def(&p, 1, "b.rs", "main", 1, true);
+            apply_def(&p, 2, "b.rs", "run", 5, false);
+            apply_call(&p, 3, "b.rs", "new", "main");
+            // A placeholder spelled with the sigil, its call written directly.
+            write_directly(&p, |tx, project| {
+                entity(tx, project, &UNKEYED, "b.rs::%new", &[]);
+                add_edge(
+                    tx,
+                    "b.rs::run",
+                    "b.rs::%new",
+                    REL_CALLS,
+                    0,
+                    4,
+                    project,
+                    TIER_INFERRED,
+                )
+                .unwrap();
+            });
+            assert_eq!(
+                call_node_ids(&call_walk(&p, "b.rs::main", Direction::Down)),
+                vec!["a.rs::T::new", "b.rs::main"]
+            );
+            assert_eq!(
+                call_node_ids(&call_walk(&p, "b.rs::run", Direction::Down)),
+                vec!["a.rs::T::new", "b.rs::run"]
+            );
+        }
+
+        #[test]
+        fn a_reference_from_another_file_to_a_nested_definitions_leaf_is_inferred() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            define(&p, &[("a.rs::T::new", "new")]);
+            apply_ref(&p, 1, "b.rs", "new");
+            apply_ref(&p, 2, "b.rs", "gone");
+            let g = p.whole().unwrap();
+            assert_eq!(edge_tier(&g, REL_REFERENCES, "b.rs::new"), TIER_INFERRED);
+            assert_eq!(edge_tier(&g, REL_REFERENCES, "b.rs::gone"), TIER_AMBIGUOUS);
+        }
+
+        #[test]
+        fn a_test_proof_from_another_file_lands_on_the_one_nested_definition_of_its_leaf() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            define(&p, &[("a.rs::T::new", "new")]);
+            apply_edge_inferred_evidence(&p, 1, "b.rs", "new", 7);
+            assert_eq!(
+                proof_of(&p, "a.rs::T::new"),
+                ("1".to_string(), r#"["b.rs:7"]"#.to_string())
+            );
+        }
+
+        #[test]
+        fn a_proof_recorded_in_a_file_lands_on_its_one_same_file_candidate() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            define(&p, &[("a.rs::T::new", "new"), ("c.rs::new", "new")]);
+            apply_edge_inferred_evidence(&p, 1, "a.rs", "new", 9);
+            assert_eq!(
+                proof_of(&p, "a.rs::T::new"),
+                ("1".to_string(), r#"["a.rs:9"]"#.to_string())
+            );
+            assert_eq!(proof_of(&p, "c.rs::new"), (String::new(), String::new()));
+        }
+
+        #[test]
+        fn two_same_file_candidates_of_a_proofs_leaf_name_no_target() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            define(&p, &[("a.rs::T::new", "new"), ("a.rs::U::new", "new")]);
+            apply_edge_inferred_evidence(&p, 1, "a.rs", "new", 9);
+            for id in ["a.rs::T::new", "a.rs::U::new"] {
+                assert_eq!(proof_of(&p, id), (String::new(), String::new()), "{id}");
+            }
+            let targets: Vec<Option<String>> =
+                raw_rows(&p, "SELECT target FROM proofs", [], |r| r.get(0));
+            assert_eq!(targets, vec![None]);
+        }
+
+        #[test]
+        fn an_empty_named_call_target_is_counted_bare_by_the_callers_walk() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            write_directly(&p, |tx, project| {
+                let attrs = [("name", ""), ("kind", "function"), ("line", "1")];
+                entity(tx, project, &UNKEYED, "b.rs::new", &attrs);
+            });
+            apply_def(&p, 1, "a.rs", "new", 1, true);
+            apply_def(&p, 2, "b.rs", "main", 3, true);
+            apply_call(&p, 3, "b.rs", "new", "main");
+            assert_eq!(
+                call_node_ids(&call_walk(&p, "a.rs::new", Direction::Up)),
+                vec!["a.rs::new", "b.rs::main"]
+            );
+        }
+
+        #[test]
+        fn an_empty_named_nodes_settle_fires_no_definition_retired() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            let first = Asserter {
+                identity: "gc/x",
+                generation: "g1",
+                at: 0,
+            };
+            let second = Asserter {
+                generation: "g2",
+                ..first
+            };
+            write_directly(&p, |tx, project| {
+                let attrs = [("name", ""), ("kind", "function"), ("line", "1")];
+                entity(tx, project, &first, "x", &attrs);
+                // An inferred reference whose target text is the empty leaf: a definition of
+                // the empty name retiring would demote it.
+                add_edge(
+                    tx,
+                    "f.rs",
+                    "q.rs::",
+                    REL_REFERENCES,
+                    0,
+                    1,
+                    project,
+                    TIER_INFERRED,
+                )
+                .unwrap();
+                // The second generation drops `x`: its settle retires the node.
+                entity(tx, project, &second, "x", &[]);
+            });
+            let tiers: Vec<String> = raw_rows(
+                &p,
+                "SELECT tier FROM edges WHERE to_id = 'q.rs::'",
+                [],
+                |r| r.get(0),
+            );
+            assert_eq!(tiers, vec![TIER_INFERRED]);
+        }
+
+        #[test]
+        fn the_pinned_leaf_expression_answers_as_node_leaf() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            let named = [
+                ("a.rs::T::new", "new"),
+                ("f.ts::A.B", "A.B"),
+                ("f.ts::a::b", "a::b"),
+                ("x", ""),
+            ];
+            define(&p, &named);
+            let leaves: Vec<(Option<String>, Option<String>)> = named
+                .iter()
+                .map(|(id, _)| {
+                    let stored: Option<String> = raw_rows::<_, Vec<_>>(
+                        &p,
+                        &format!("SELECT {} FROM nodes WHERE id = ?1", node_leaf_sql()),
+                        [id],
+                        |r| r.get(0),
+                    )
+                    .remove(0);
+                    let conn = p.conn.lock().unwrap();
+                    let node = node_row(&conn, id, &p.project).unwrap().unwrap();
+                    (stored, node_leaf(&node).map(str::to_string))
+                })
+                .collect();
+            let expected = [Some("new"), Some("A.B"), Some("a::b"), None]
+                .map(|leaf| leaf.map(str::to_string))
+                .map(|leaf| (leaf.clone(), leaf));
+            assert_eq!(leaves, expected);
+        }
+
+        #[test]
+        fn the_leaf_index_serves_the_pinned_leaf_query_and_the_same_file_candidates_read() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            assert!(index_names(&p).contains("idx_nodes_leaf"));
+            define(&p, &[("a.rs::T::new", "new"), ("b.rs::new", "new")]);
+            let pinned = format!(
+                "SELECT id FROM nodes WHERE project = 'test' AND {} = 'new'",
+                node_leaf_sql()
+            );
+            let same_file = params!["new", KIND_CODE_ENTITY, "test", true, "a.rs"];
+            for plan in [
+                query_plan(&p, &pinned, []),
+                query_plan(&p, &leaf_definitions_sql(), same_file),
+            ] {
+                assert!(
+                    plan.iter()
+                        .any(|d| d.contains("USING INDEX idx_nodes_leaf")),
+                    "{plan:?}"
+                );
+            }
+        }
     }
 
     /// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): the `TYPE_EDGE_INFERRED` fold's `is_test`

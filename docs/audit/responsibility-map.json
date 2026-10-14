@@ -12886,5 +12886,13 @@
     "proposed_module": "dash::tests::call_target_c4",
     "reason": "defined inside `call_target_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
     "content_hash": "67a192716665bd01"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "reproject_files_resolves_a_placeholder_onto_the_nested_definition_of_its_leaf",
+    "is_test": true,
+    "proposed_module": "dash::tests::leaf_keys_c1",
+    "reason": "defined inside `leaf_keys_c1`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "8295273c28608b77"
   }
 ]

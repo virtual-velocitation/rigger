@@ -537,7 +537,9 @@ fn number_groups(c: &Coupling, refined: &[usize]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contextgraph::query::node_leaf;
     use crate::contextgraph::{Edge, Node, KIND_FILE, TIER_EXTRACTED, TIER_INFERRED};
+    use crate::test_support::def_node;
     use crate::test_support::edge;
     use crate::test_support::kinded_def_node;
     use crate::test_support::node_with_optional_attrs;
@@ -571,15 +573,15 @@ mod tests {
                 // makes every endpoint a real definition so canonicalization is a no-op here and the
                 // topology under test is exactly the edges given. Cross-file BARE resolution has its
                 // own dedicated test.
-                let mut attrs = Map::new();
-                if let Some(simple) = super::simple_name(&id) {
-                    attrs.insert("name".to_string(), simple.to_string());
-                }
-                Node {
+                let mut node = Node {
                     id,
                     kind: "code-entity".to_string(),
-                    attrs,
+                    attrs: Map::new(),
+                };
+                if let Some(leaf) = node_leaf(&node).map(str::to_string) {
+                    node.attrs.insert("name".to_string(), leaf);
                 }
+                node
             })
             .collect();
         Graph { nodes, edges: es }
@@ -873,6 +875,35 @@ mod tests {
         assert_eq!(
             m["src/b.rs"], m["src/a.rs::foo"],
             "file B couples to A's definition across the directory line (one community)"
+        );
+    }
+
+    #[test]
+    fn from_graph_canonicalises_a_placeholder_onto_the_nested_definition_of_its_leaf() {
+        // Spec 119 criterion 1: `b.rs`'s placeholder `%new` and `c.rs`'s empty-named one both
+        // couple to `a.rs::T::new`, the one call-target definition of the leaf `new`. The field
+        // `d.rs::new` is named, so it is no placeholder and stays itself; neither it nor the
+        // named design doc `e.md` is a definition of `new`.
+        let g = Graph {
+            nodes: vec![
+                def_node("a.rs::T::new", "new"),
+                plain("b.rs", KIND_FILE),
+                plain("b.rs::%new", KIND_CODE_ENTITY),
+                plain("c.rs", KIND_FILE),
+                node_with_optional_attrs("c.rs::%new", KIND_CODE_ENTITY, &[("name", Some(""))]),
+                plain("d.rs", KIND_FILE),
+                kinded_def_node("d.rs::new", "field"),
+                node_with_optional_attrs("e.md", "design-doc", &[("name", Some("new"))]),
+            ],
+            edges: vec![
+                edge("b.rs", "b.rs::%new", REL_REFERENCES, TIER_INFERRED),
+                edge("c.rs", "c.rs::%new", REL_REFERENCES, TIER_INFERRED),
+                edge("d.rs", "d.rs::new", REL_REFERENCES, TIER_INFERRED),
+            ],
+        };
+        assert_eq!(
+            Coupling::from_graph(&g).nodes,
+            vec!["a.rs::T::new", "b.rs", "c.rs", "d.rs", "d.rs::new"]
         );
     }
 

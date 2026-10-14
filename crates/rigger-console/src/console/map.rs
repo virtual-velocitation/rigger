@@ -1581,6 +1581,25 @@ mod tests {
     }
 
     #[test]
+    fn an_entity_is_labelled_by_its_node_leaf_else_by_its_id() {
+        // Spec 119 criterion 1: a placeholder by its leaf less one sigil, a file by its id.
+        let bare = |id: &str, kind: &str| Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        assert_eq!(
+            [
+                entity_label(&bare("b.rs::%new", KIND_CODE_ENTITY)),
+                entity_label(&bare("b.rs::%%x", KIND_CODE_ENTITY)),
+                entity_label(&bare("src/a.rs", "file")),
+                entity_label(&code_node("a.rs::T::new", "new", "function")),
+            ],
+            ["new", "%x", "src/a.rs", "new"]
+        );
+    }
+
+    #[test]
     fn build_never_labels_an_entity_with_its_file() {
         let model = build(&two_district_graph());
         for e in &model.entities {
