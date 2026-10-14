@@ -3568,7 +3568,9 @@ mod tests {
     /// searches them, the counted checks: the roots a retired spelling is counted over with the
     /// command that counts it, and the audit record owed for every added test-side shape, and
     /// the sentence walk's generators as commands, the graph's caller lookup with its counted
-    /// fallback recorded as a gap, and the record the walk owes.
+    /// fallback recorded as a gap, and the record the walk owes, and the foreground wait for
+    /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
+    /// line when the host backgrounds one.
     #[test]
     fn the_author_roles_carry_one_hand_over_block_naming_the_checks_and_the_test_homes() {
         const HEADING: &str = "## Hand-over checks in this project";
@@ -3631,6 +3633,9 @@ mod tests {
             "a `GAP:` clause naming the item in the record",
             "the count above with `t='<name>'`",
             "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
+            "`sh .rigger/gates/lanes.sh <lane>`",
+            "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
+            "poll its output in an `until`-loop until its exit line is there, before you report",
         ] {
             assert!(
                 block.contains(wanted),

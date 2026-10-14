@@ -1060,7 +1060,7 @@
     ]
   },
   {
-    "id": "dup-132c0798ea1a",
+    "id": "dup-6ce4d1b3f33b",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1209,8 +1209,8 @@
       },
       {
         "file": "crates/rigger-domain/src/instructions.rs",
-        "start_line": 71,
-        "end_line": 71
+        "start_line": 72,
+        "end_line": 72
       },
       {
         "file": "crates/rigger-gates-shell/src/gate.rs",
@@ -1854,18 +1854,8 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3604,
-        "end_line": 3604
-      },
-      {
-        "file": "src/cli/setup.rs",
         "start_line": 3606,
         "end_line": 3606
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 3607,
-        "end_line": 3607
       },
       {
         "file": "src/cli/setup.rs",
@@ -1874,13 +1864,28 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3618,
-        "end_line": 3618
+        "start_line": 3609,
+        "end_line": 3609
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3621,
-        "end_line": 3621
+        "start_line": 3610,
+        "end_line": 3610
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3620,
+        "end_line": 3620
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3623,
+        "end_line": 3623
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3636,
+        "end_line": 3636
       },
       {
         "file": "src/cli/validate.rs",
@@ -5254,8 +5259,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/instructions.rs",
-        "start_line": 93,
-        "end_line": 98
+        "start_line": 94,
+        "end_line": 99
       },
       {
         "file": "crates/rigger-gates-shell/src/gate.rs",
@@ -5599,13 +5604,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/mod.rs",
-        "start_line": 131,
-        "end_line": 140
+        "start_line": 137,
+        "end_line": 146
       },
       {
         "file": "crates/rigger-driver/src/driver/mod.rs",
-        "start_line": 143,
-        "end_line": 148
+        "start_line": 149,
+        "end_line": 154
       }
     ]
   },

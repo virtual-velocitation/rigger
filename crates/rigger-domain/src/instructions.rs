@@ -24,7 +24,8 @@ pub struct Instruction {
 /// The built-in layer, in the order it is injected. The first entry is the engineering law
 /// the project holds every change to: Clean Architecture, SOLID, DRY, KISS, YAGNI, TDD and
 /// BDD where relevant. The second is the working discipline every agent follows: one pass by
-/// excellence, the hand-over an author's tree meets before it reports (each outcome with the
+/// excellence, a turn's end being the session's end (every job waited on inside the turn), the
+/// hand-over an author's tree meets before it reports (each outcome with the
 /// check that proves it), fanning mechanical work out to the `lookup` and `verify` helpers, and
 /// the rule that a surviving mutant is always a failure. A harness-wide rule lives here once,
 /// never copied into persona files; a persona carries only the project's anchors for it.
@@ -227,7 +228,52 @@ mod tests {
                 "A denied or blocked command comes back to you as an error that names its \
                  alternative; your turn is not over - use the alternative."
             ),
-            "the one-pass section must send a blocked agent to the alternative its error names"
+            "the working discipline must send a blocked agent to the alternative its error names"
+        );
+    }
+
+    /// A headless spawn's session ends with its turn: the discipline states that once, in a
+    /// section every agent reads, as the outcome (every job waited on inside the turn) and its
+    /// check, and the denied-command sentence hangs under it. Read by its words, so a rewrap
+    /// never moves a verdict.
+    #[test]
+    fn the_working_discipline_states_once_that_a_turns_end_is_the_sessions_end() {
+        let body = working_discipline();
+        const HEADING: &str = "## Your turn's end is your session's end";
+        assert_eq!(
+            body.matches(HEADING).count(),
+            1,
+            "the working discipline carries {HEADING:?} exactly once"
+        );
+        let words = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        for phrase in [
+            "When you end your turn the process exits and nothing re-invokes you",
+            "a job you start in the background and any watch you arm die with the process",
+            "So you wait for every job inside your turn - a foreground command, or an \
+             `until`-loop that polls its output - and read its result before you write a word \
+             of your report.",
+            "A command the host moves to the background when it reaches its timeout is such a \
+             job",
+            "Check: when you end your turn, no job you started is running and every claim in \
+             your report names the output it rests on.",
+        ] {
+            assert!(
+                words.contains(phrase),
+                "the turn's-end section must say {phrase:?}"
+            );
+        }
+        let section = words
+            .find(HEADING)
+            .expect("the turn's-end section is present");
+        let denied = words
+            .find("A denied or blocked command comes back to you")
+            .expect("the denied-command sentence is present");
+        let hand_over = words
+            .find("## Hand over a tree the gates only confirm")
+            .expect("the hand-over section is present");
+        assert!(
+            section < denied && denied < hand_over,
+            "the denied-command sentence hangs under the turn's-end section"
         );
     }
 
@@ -238,8 +284,10 @@ mod tests {
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators and records on every change, with a renamed name's old spelling
     /// counted to zero, nothing added that nothing reads, the red test's body untouched by the
-    /// green commit, and a probe that edits the tree run to completion and restored before the
-    /// turn ends. Read by its words, so a rewrap never moves a verdict.
+    /// green commit, and a probe that edits the tree - the sharpest case of a turn's end being
+    /// the session's end - run to completion and restored before the turn ends; the gates'
+    /// check names each gate command run to completion inside the turn. Read by its words, so
+    /// a rewrap never moves a verdict.
     #[test]
     fn the_working_discipline_states_each_hand_over_outcome_and_its_check() {
         let body = working_discipline();
@@ -298,6 +346,8 @@ mod tests {
             "runs to completion and restores the tree before your turn ends, never as a \
              detached or background job",
             "the attempt checkpoint commits whatever the worktree holds when your session ends",
+            "the sharpest case of the rule that your turn's end is your session's end",
+            "each run to completion inside your turn",
         ] {
             assert!(
                 words.contains(phrase),
