@@ -2397,7 +2397,7 @@ __END__
 - `src/cli/setup.rs:3615-3615` `"`sh .rigger/gates/red-before-green.sh`"`
 - `src/cli/setup.rs:3625-3625` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
 - `src/cli/setup.rs:3628-3628` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:3665-3665` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:3667-3667` `"`sh .rigger/gates/lanes.sh <lane>`"`
 - `src/cli/validate.rs:850-850` `"warning: tracked .rigger/ files have uncommitted modifications:"`
 - `src/cli/validate.rs:1292-1292` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\

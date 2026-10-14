@@ -3572,7 +3572,7 @@ mod tests {
     /// walk's generators as commands, the graph's caller lookup at depth 1 with its counted
     /// fallback recorded as a gap, the rule-spelling search over every tracked text file, one
     /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
-    /// phrase a rewrap splits still a hit) whose command and hits the walk pastes for the `sdet`
+    /// phrase in another case or split by a rewrap still a hit) whose command and hits the walk pastes for the `sdet`
     /// lens to re-run, and the record the walk owes, and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
     /// line when the host backgrounds one.
@@ -3653,11 +3653,13 @@ mod tests {
              a case the old rule decided), one run per phrase, the phrase its one argument, over every tracked text \
              file of the project (`.rs`, `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` \
              and `.html`",
-            "so a phrase a rewrap splits across two lines is still a hit",
+            "so a phrase in another case, or one a rewrap splits across two lines, is still a \
+             hit",
+            "BEGIN { t = tolower(ENVIRON[\"t\"]) }",
+            "s = tolower($0)",
             "`git ls-files | awk '/\\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | t='<phrase>' \
              xargs awk",
-            "index(s, ENVIRON[\"t\"]) || !index(p, ENVIRON[\"t\"]) && index(p \" \" s, \
-             ENVIRON[\"t\"])",
+            "index(s, t) || !index(p, t) && index(p \" \" s, t)",
             "The `<unit>-sentence-walk` record pastes each command as run, its hit count and \
              every hit it printed, each FIXED or CHECKED with its reason, or names the \
              rewritten-rule set empty; the `sdet` lens re-derives the generators' sets and \
