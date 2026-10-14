@@ -3595,12 +3595,14 @@ fn callers_via_bare(
 }
 
 /// The read [`callers_via_bare`] runs: `?1` the relation, `?2` the project and `?3` the leaf its
-/// target text binds ([`edge_binds_leaf_sql`]).
+/// target text binds ([`edge_binds_leaf_sql`]). The relation term is written `+e.rel` so the
+/// planner seeks by the bound leaf, never by `idx_edges_live_rel_from`'s every live edge of the
+/// relation.
 fn callers_via_bare_sql() -> String {
     format!(
         "SELECT e.from_id, e.tier, e.valid_from, e.source FROM edges e
            JOIN nodes n ON n.id = e.to_id AND n.project = e.project
-          WHERE e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2
+          WHERE +e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2
             AND {}
             AND ({} IS NULL OR NOT ({}))
           ORDER BY e.from_id",
