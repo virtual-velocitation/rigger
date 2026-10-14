@@ -221,6 +221,14 @@ mod tests {
             !words.contains("builds hold the machine-wide build slots"),
             "an agent's build holds no machine-wide build slot"
         );
+        // A blocked command is an error naming its alternative, never the end of the turn.
+        assert!(
+            words.contains(
+                "A denied or blocked command comes back to you as an error that names its \
+                 alternative; your turn is not over - use the alternative."
+            ),
+            "the one-pass section must send a blocked agent to the alternative its error names"
+        );
     }
 
     /// The hand-over section states each outcome an author's tree must meet before it reports,
@@ -229,8 +237,9 @@ mod tests {
     /// spell - with every added shape recorded in a whole-tree audit whether merged or not, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators and records on every change, with a renamed name's old spelling
-    /// counted to zero, nothing added that nothing reads, and the red test's body untouched by
-    /// the green commit. Read by its words, so a rewrap never moves a verdict.
+    /// counted to zero, nothing added that nothing reads, the red test's body untouched by the
+    /// green commit, and a probe that edits the tree run to completion and restored before the
+    /// turn ends. Read by its words, so a rewrap never moves a verdict.
     #[test]
     fn the_working_discipline_states_each_hand_over_outcome_and_its_check() {
         let body = working_discipline();
@@ -285,6 +294,10 @@ mod tests {
              reason",
             "Nothing is added that nothing reads.",
             "makes the red test pass without rewriting its body",
+            "A probe that edits your tree is over before your turn is.",
+            "runs to completion and restores the tree before your turn ends, never as a \
+             detached or background job",
+            "the attempt checkpoint commits whatever the worktree holds when your session ends",
         ] {
             assert!(
                 words.contains(phrase),

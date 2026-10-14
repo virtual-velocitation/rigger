@@ -12,6 +12,9 @@ test, a `--force`), deleting the code a mutant lives in, or reading a criterion 
 that fits the work you already did, is a failure even when the gate goes green - the
 adversary, the adjudicator and the mutation gate all treat it as one.
 
+A denied or blocked command comes back to you as an error that names its alternative; your
+turn is not over - use the alternative.
+
 ## Hand over a tree the gates only confirm
 
 When you author a change, you report only once the tree you hand over meets every rule below.
@@ -57,6 +60,11 @@ tool that searches them.
   code reads after your change, on any feature lane, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
   rewriting its body. Check: diff the test between its red commit and head.
+- **A probe that edits your tree is over before your turn is.** A reversion probe, or any check
+  that edits your worktree, runs to completion and restores the tree before your turn ends,
+  never as a detached or background job: the attempt checkpoint commits whatever the worktree
+  holds when your session ends. Check: no job you started is still running and `git status
+  --porcelain` is empty when you end your turn.
 
 ## Fan out the mechanical work
 
