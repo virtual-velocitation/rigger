@@ -144,9 +144,9 @@ pub fn apply_keyed(
 }
 
 /// Fold onto `p`, at log position `pos`, the first event of generation `generation` of `file`: a
-/// definition of the function `name` at line 1, replay-keyed `gc/<file>@<generation>#0` and valid
-/// from `secs` - the batch head a re-extraction of `file` appends, retiring what the generation
-/// before it asserted and this one does not.
+/// definition of the function `name` at line 1 ([`apply_generation_head_event`]) - the batch head
+/// a re-extraction of `file` appends, retiring what the generation before it asserted and this
+/// one does not.
 pub fn apply_generation_head(
     p: &Projector,
     pos: u64,
@@ -155,9 +155,32 @@ pub fn apply_generation_head(
     name: &str,
     secs: u64,
 ) {
-    let key = format!("gc/{file}@{generation}#0");
     let head = def_json(file, name, 1, true);
-    apply_keyed(p, pos, TYPE_CODE_ENTITY_EXTRACTED, head, &key, secs);
+    apply_generation_head_event(
+        p,
+        pos,
+        file,
+        generation,
+        TYPE_CODE_ENTITY_EXTRACTED,
+        head,
+        secs,
+    );
+}
+
+/// Fold onto `p`, at log position `pos`, the `type_` event carrying `head` as the first event of
+/// generation `generation` of `file`: replay-keyed `gc/<file>@<generation>#0` and valid from
+/// `secs`.
+pub fn apply_generation_head_event(
+    p: &Projector,
+    pos: u64,
+    file: &str,
+    generation: &str,
+    type_: &str,
+    head: serde_json::Value,
+    secs: u64,
+) {
+    let key = format!("gc/{file}@{generation}#0");
+    apply_keyed(p, pos, type_, head, &key, secs);
 }
 
 /// Fold one `type_` event carrying `json` onto `p` at log position `pos`.

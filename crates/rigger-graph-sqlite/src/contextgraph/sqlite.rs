@@ -11488,6 +11488,13 @@ mod tests {
             });
         }
 
+        /// The target of each recorded test proof, in recorded order, `None` where none is named.
+        pub(super) fn proof_targets(p: &Projector) -> Vec<Option<String>> {
+            raw_rows(p, "SELECT target FROM proofs ORDER BY rowid", [], |r| {
+                r.get(0)
+            })
+        }
+
         /// Write `caller`'s live call onto `target` directly ([`edge_directly`]) and answer the
         /// node ids the down walk from `caller` reaches, sorted.
         pub(super) fn a_direct_call_walked_down(
@@ -11590,9 +11597,7 @@ mod tests {
             for id in ["a.rs::T::new", "a.rs::U::new"] {
                 assert_eq!(proof_of(&p, id), (String::new(), String::new()), "{id}");
             }
-            let targets: Vec<Option<String>> =
-                raw_rows(&p, "SELECT target FROM proofs", [], |r| r.get(0));
-            assert_eq!(targets, vec![None]);
+            assert_eq!(proof_targets(&p), vec![None]);
         }
 
         #[test]
@@ -11836,10 +11841,12 @@ mod tests {
     /// directly.
     mod call_lands_on_its_one_same_file_candidate {
         use super::leaf_keys_resolution::{
-            a_direct_call_walked_down, define, define_kinds, write_directly,
+            a_direct_call_walked_down, define, define_kinds, proof_targets, write_directly,
         };
         use super::*;
-        use crate::test_support::{apply_generation_head, apply_keyed, hold, ref_json};
+        use crate::test_support::{
+            apply_generation_head, apply_generation_head_event, apply_keyed, hold, ref_json,
+        };
 
         /// Every live `REFERENCES` and `CALLS` edge `p` serves, as `(from, rel, to, tier)`,
         /// sorted: where each reference landed and at what tier.
@@ -11938,12 +11945,11 @@ mod tests {
         }
 
         /// Fold onto `p`, at `pos`, the first event of generation `generation` of `f.rs`: its
-        /// top-level reference to `name`, replay-keyed `gc/f.rs@<generation>#0`.
+        /// top-level reference to `name` ([`apply_generation_head_event`]).
         fn apply_reference_head(p: &Projector, pos: u64, generation: &str, name: &str) {
             let mut head = ref_json("f.rs", name);
             head["fresh"] = true.into();
-            let key = format!("gc/f.rs@{generation}#0");
-            apply_keyed(p, pos, TYPE_EDGE_INFERRED, head, &key, pos);
+            apply_generation_head_event(p, pos, "f.rs", generation, TYPE_EDGE_INFERRED, head, pos);
         }
 
         /// Generation `h1` of `f.rs` defines `foo` and references it, `held` names the nodes a
@@ -12014,9 +12020,7 @@ mod tests {
             });
             define(&p, beside);
             apply_edge_inferred_evidence(&p, 1, file, "foo", 7);
-            let targets: Vec<Option<String>> =
-                raw_rows(&p, "SELECT target FROM proofs", [], |r| r.get(0));
-            assert_eq!(targets, vec![target.map(str::to_string)]);
+            assert_eq!(proof_targets(&p), vec![target.map(str::to_string)]);
         }
 
         crate::test_cases! {
