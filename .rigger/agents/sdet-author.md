@@ -133,6 +133,18 @@ It prints nothing, or your hand-over names each line it prints with its reason. 
 test-side shape you add, merged or not, is recorded as one `<unit>-test-shape-audit`
 DecisionMade naming each site FIXED or CHECKED, after a search of the three test homes above.
 
+The sentence walk's generators, run at head against the base your prompt names (`rigger-run`
+when it names none): `git diff --name-only <base>..HEAD` lists the changed files, the `//!`
+lines of each read; `git diff <base>..HEAD` gives the hunks, each changed item's doc and body
+comments and the identifiers each hunk names; the `impl` header above a changed fn and above
+each of its callers names the trait item it implements; `rigger graph --around <item>` lists
+each changed item's callers, and when it answers nothing the callers are the lines the count
+above prints for the item's name, each read, with a `GAP:` clause naming the item in the
+record; and the count above with `t='<name>'` prints every tracked line spelling each changed
+item's name, each read. The walk is recorded as one `<unit>-sentence-walk` DecisionMade
+beside the `<unit>-test-shape-audit` one, naming what each generator returned and every
+sentence FIXED with its location.
+
 ## Every test must survive mutation testing
 
 A test that only proves the code runs is not a test. Write every test so that every mutant

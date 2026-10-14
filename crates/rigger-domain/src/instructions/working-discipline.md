@@ -12,6 +12,9 @@ test, a `--force`), deleting the code a mutant lives in, or reading a criterion 
 that fits the work you already did, is a failure even when the gate goes green - the
 adversary, the adjudicator and the mutation gate all treat it as one.
 
+A denied or blocked command comes back to you as an error that names its alternative; your
+turn is not over - use the alternative.
+
 ## Hand over a tree the gates only confirm
 
 When you author a change, you report only once the tree you hand over meets every rule below.
@@ -26,24 +29,42 @@ tool that searches them.
   regenerated and committed in the same commit that changed its inputs. Check: `git status
   --porcelain` is empty at head.
 - **A test-side shape is spelled once.** A table, fixture, helper, builder, seeder, expected
-  value or oracle you add exists once across every test home, as production code does. Check:
+  value or oracle you add exists once across every test home, as production code does; the
+  list is open - a shape is any test-side token two tests could spell, a const or id literal, a
+  hand-built event or fixture row, a closure or a query string among them. Check:
   look it up where the project's test helpers live before you write it; when a second home
   needs one the first already spells, move it to the shared home and have both call it,
   changing no assertion or expected value. The record is owed for every test-side shape you
   add, merged or not: one whole-tree audit DecisionMade naming every site of its shape FIXED or
   CHECKED - FIXED when moved to the shared home with both calling it and no assertion or
   expected value changed, CHECKED when kept apart, with the reason.
-- **Every sentence about the changed behaviour is true at head.** The doc comments of each
-  function you changed and of its callers, module docs, test names, test docs, assertion
-  messages and operator docs say what the code at head does. Check: read each against the
-  code; when you rename or retire a name, walk every spelling of the old term through the
-  tree. The old spelling occurs zero times in the tree outside git history, counted over every
-  root (test docs, test comments and assertion messages are sentences too), or your hand-over
-  names each remaining occurrence as a deliberate mention with its reason.
+- **Every sentence about the changed behaviour is true at head.** The doc comments of each item
+  you changed and of its callers, module docs, test names, test docs, assertion messages and
+  operator docs say what the code at head does. Check: enumerate the walked set, each member
+  from what generates it - the `//!` module doc of every file the change touches (the
+  changed-file list); the doc comment and every comment in the body of each item the change
+  touches (the hunks); the doc of the trait item a changed fn or any caller of one implements
+  and of the trait a changed impl is for (the impl headers); the doc of every item a changed
+  hunk names, callee, constant or type returned (the hunk's identifiers); the doc of every
+  caller of a changed item (the project's graph, or your persona's fallback); and every tracked
+  line outside the hunks that spells a changed item's name, counted over every root as an old
+  spelling is below - and read each against the code at head, leaving it true or fixing it;
+  when you rename or retire a name, walk every spelling of the old term through the tree. The
+  old spelling occurs zero times in the tree outside git history, counted over every root (test
+  docs, test comments and assertion messages are sentences too), or your hand-over names each
+  remaining occurrence as a deliberate mention with its reason. The record is owed on every
+  change: one whole-tree DecisionMade naming the set walked by its generators (files, items,
+  trait items, callers, lines counted) and every sentence FIXED with its location; a member
+  whose generator returned nothing is named as empty.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
   code reads after your change, on any feature lane, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
   rewriting its body. Check: diff the test between its red commit and head.
+- **A probe that edits your tree is over before your turn is.** A reversion probe, or any check
+  that edits your worktree, runs to completion and restores the tree before your turn ends,
+  never as a detached or background job: the attempt checkpoint commits whatever the worktree
+  holds when your session ends. Check: no job you started is still running and `git status
+  --porcelain` is empty when you end your turn.
 
 ## Fan out the mechanical work
 
