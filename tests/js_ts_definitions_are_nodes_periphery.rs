@@ -59,14 +59,14 @@ rigger::test_cases! {
 ///    named class `Baz`, and every other value a `constant`, the line-15 one and the valueless
 ///    `y` included;
 ///  - a declarator named by a pattern makes each identifier it binds a `constant` (`a`, `c`,
-///    `r`, `x`, `y`, `z`), the second `y` sharing the first's node, and so does a `for .. of`
+///    `d`, `r`, `x`, `y`, `z`), the second `y` sharing the first's node, and so does a `for .. of`
 ///    declaring one (`k`, `v`, `j`), while `for (q of m)` and `for (o.p of m)` make no node;
 ///  - a method is a `method` at its leaf, private with its `#`, string-named between its quotes
 ///    and numeric as written, the computed one none, and `constructor` a `constructor`; a class
 ///    field is a `field` at the same leaves, the computed one none, and an arrow- or
 ///    function-valued one (`act`, `cb`) a `method`.
 #[cfg(feature = "symbols")]
-const JS_LINES_NODES: [(&str, &str, u64); 40] = [
+const JS_LINES_NODES: [(&str, &str, u64); 41] = [
     ("#hid", "field", 11),
     ("#m", "method", 11),
     ("1", "method", 11),
@@ -80,6 +80,7 @@ const JS_LINES_NODES: [(&str, &str, u64); 40] = [
     ("act", "method", 11),
     ("area", "method", 11),
     ("c", "constant", 9),
+    ("d", "constant", 9),
     ("cb", "method", 11),
     ("constructor", "constructor", 11),
     ("el", "constant", 15),
@@ -133,33 +134,41 @@ const JS_LINES_CALLS: [(&str, &str); 8] = [
 ];
 
 /// The nodes the TS lines (16-23) of the TS and TSX definitions fixtures fold to, as
-/// `(leaf, kind, line)`: the ambient `sig`, the interface's `m` and the abstract `run` each a
-/// `declaration`; an interface, an abstract class, an enum and a type alias each a `type`; an
-/// enum member a `variant` with or without a value, string-named between its quotes; a property
-/// signature a `field`, string-named, numeric or named by a string alone, a class field a
-/// `field` and a function-valued one (`act2`) a `method`; `namespace A.B` a `module` at `A.B`;
-/// and `as const` a `constant`. `declare module "x"` is a module at `x`, the leaf of the
+/// `(leaf, kind, line)`: the ambient `sig`, the interface's `m`, `s-m` and `4` and the abstract
+/// `run`, `s-a` and `5` each a `declaration`; an interface, an abstract class, an enum and a type
+/// alias each a `type`; an enum member a `variant` with or without a value, string-named between
+/// its quotes and, with a value, numeric (`6`); a property signature a `field`, string-named,
+/// numeric or named by a string alone, a class field a `field` and a function-valued one
+/// (`act2`) a `method`; `namespace A.B` a `module` at `A.B` and `module M.N` one at `M.N`; and
+/// `as const` a `constant`. `declare module "x"` is a module at `x`, the leaf of the
 /// pattern-bound constant `x` of line 10, whose node the kind precedence settles a `constant`
 /// at line 10, so it adds no row.
 #[cfg(feature = "symbols")]
-const TS_LINES_NODES: [(&str, &str, u64); 19] = [
+const TS_LINES_NODES: [(&str, &str, u64); 26] = [
     ("2", "field", 17),
+    ("4", "declaration", 17),
+    ("5", "declaration", 18),
+    ("6", "variant", 19),
     ("A.B", "module", 22),
     ("Abs", "type", 18),
     ("Alias", "type", 20),
     ("Blue", "variant", 19),
     ("Color", "type", 19),
     ("Dark-red", "variant", 19),
+    ("M.N", "module", 24),
     ("Red", "variant", 19),
     ("Shape2", "type", 17),
     ("X", "constant", 23),
     ("act2", "method", 18),
     ("bare", "field", 17),
+    ("e-f", "variant", 19),
     ("fld", "field", 18),
     ("m", "declaration", 17),
     ("p-q", "field", 17),
     ("prop", "field", 17),
     ("run", "declaration", 18),
+    ("s-a", "declaration", 18),
+    ("s-m", "declaration", 17),
     ("s-t", "field", 18),
     ("sig", "declaration", 16),
 ];

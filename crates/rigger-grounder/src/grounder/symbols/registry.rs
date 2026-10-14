@@ -558,7 +558,7 @@ pub(crate) mod tests {
     /// The definitions every one of the JS, TS and TSX definitions fixtures holds in its JS
     /// lines, 1-15, as `(line, leaf, kind)`, sorted: each grammar of the family reads them
     /// alike.
-    const JS_LINES_DEFINITIONS: [(u32, &str, Kind); 41] = [
+    const JS_LINES_DEFINITIONS: [(u32, &str, Kind); 42] = [
         (1, "host", Kind::Function),
         (1, "j", Kind::Constant),
         (1, "k", Kind::Constant),
@@ -578,6 +578,7 @@ pub(crate) mod tests {
         (8, "y", Kind::Constant),
         (9, "a", Kind::Constant),
         (9, "c", Kind::Constant),
+        (9, "d", Kind::Constant),
         (9, "r", Kind::Constant),
         (10, "x", Kind::Constant),
         (10, "y", Kind::Constant),
@@ -618,27 +619,34 @@ pub(crate) mod tests {
 
     /// The definitions the TS and TSX definitions fixtures hold in their TS lines, 16-23, as
     /// `(line, leaf, kind)`, sorted.
-    const TS_LINES_DEFINITIONS: [(u32, &str, Kind); 20] = [
+    const TS_LINES_DEFINITIONS: [(u32, &str, Kind); 27] = [
         (16, "sig", Kind::Declaration),
         (17, "2", Kind::Field),
+        (17, "4", Kind::Declaration),
         (17, "Shape2", Kind::Type),
         (17, "bare", Kind::Field),
         (17, "m", Kind::Declaration),
         (17, "p-q", Kind::Field),
         (17, "prop", Kind::Field),
+        (17, "s-m", Kind::Declaration),
+        (18, "5", Kind::Declaration),
         (18, "Abs", Kind::Type),
         (18, "act2", Kind::Method),
         (18, "fld", Kind::Field),
         (18, "run", Kind::Declaration),
+        (18, "s-a", Kind::Declaration),
         (18, "s-t", Kind::Field),
+        (19, "6", Kind::Variant),
         (19, "Blue", Kind::Variant),
         (19, "Color", Kind::Type),
         (19, "Dark-red", Kind::Variant),
         (19, "Red", Kind::Variant),
+        (19, "e-f", Kind::Variant),
         (20, "Alias", Kind::Type),
         (21, "x", Kind::Module),
         (22, "A.B", Kind::Module),
         (23, "X", Kind::Constant),
+        (24, "M.N", Kind::Module),
     ];
 
     /// The references in the TS lines of the TS and TSX definitions fixtures, each with its
@@ -1133,7 +1141,7 @@ pub(crate) mod tests {
         /// a class value, anonymous or named, a type at the declarator's name, the named class
         /// keeping its own, and every other value a constant, a JSX element included, as is a
         /// valueless `let y;`. A declarator named by a pattern makes each identifier it binds a
-        /// constant (`a`, `c` and `r` of `{a, b: c, ...r}`; `x`, `y` and `z` of
+        /// constant (`a`, `c`, `d` and `r` of `{a, b: c, d = 2, ...r}`; `x`, `y` and `z` of
         /// `[x, [y], , z = 1]`), and so does a `for .. of` declaring one (`k`, `v` and `j`),
         /// while one assigning `q` or `o.p` makes none. A method is a method at its leaf,
         /// private with its `#`, string-named between its quotes and numeric as written, the
@@ -1157,14 +1165,15 @@ pub(crate) mod tests {
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the registered TS
         /// query: the JS lines yield what they yield under the JS query, a type assertion value
         /// a constant, and the TS lines every TS definition at its own kind and leaf: an
-        /// ambient function, an interface's method and an abstract method signature each a
-        /// declaration; an interface, an abstract class, an enum and a type alias each a type;
-        /// a property signature a field, string-named between its quotes, numeric as written
-        /// and one named by a string alone included; a class field a field and a
-        /// function-valued one a method; an enum member a variant, with or without a value,
-        /// string-named between its quotes; `declare module "x"` a module at `x` and
-        /// `namespace A.B` one at `A.B`; and `as const` a constant. Each row of TS's DEFINITION
-        /// TYPES names exactly one of them.
+        /// ambient function, an interface's method signature and an abstract method each a
+        /// declaration, named by an identifier, a string between its quotes or a number as
+        /// written; an interface, an abstract class, an enum and a type alias each a type; a
+        /// property signature a field, string-named between its quotes, numeric as written and
+        /// one named by a string alone included; a class field a field and a function-valued one
+        /// a method; an enum member a variant, with or without a value, string-named between its
+        /// quotes and, with a value, numeric as written; `declare module "x"` a module at `x`,
+        /// `namespace A.B` one at `A.B` and `module M.N` one at `M.N`; and `as const` a constant.
+        /// Each row of TS's DEFINITION TYPES names exactly one of them.
         ///
         /// The callers: a property signature's or a field's type reference is that member's; a
         /// signature's types are its interface's, a declaration being no caller, so an ambient
