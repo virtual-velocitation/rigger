@@ -28,8 +28,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::contextgraph::{
     is_call_target, Edge, Error, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
-    KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, REL_ABOUT, REL_CONTAINS, REL_GOVERNS,
-    REL_IN_COMMUNITY, REL_REALIZES,
+    KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, PLACEHOLDER_SIGIL, REL_ABOUT,
+    REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
 };
 use crate::eventstore::Position;
 
@@ -110,14 +110,14 @@ pub fn cluster_key(id: &str, kind: &str) -> String {
 /// folds to the file's DIRECTORY) and the subject-by-lens FILES re-projection (which folds to the
 /// FILE itself, spec 55 c1) both read.
 ///
-/// An id is reduced to a file path by stripping a code-entity `::name` suffix, then a rationale /
+/// An id is reduced to a file path by taking [`split_id`]'s file half, then stripping a rationale /
 /// doc-section `#...` suffix (a plain path id survives both untouched). The reduced path names a file
 /// iff its LAST segment carries an extension: a `.` with a non-empty stem AND a non-empty suffix - so
 /// a dotfile like `.gitignore` (whose only `.` is leading) is NOT a file, and a dev-loop id like
 /// `plan-critique` (no extension) never is either. A file path contains neither `::` nor `#`, so the
-/// splits leave a plain path untouched. Pure and total.
+/// cuts leave a plain path untouched. Pure and total.
 pub fn file_of(id: &str) -> Option<&str> {
-    let file = id.split_once("::").map_or(id, |(f, _)| f);
+    let (file, _) = split_id(id);
     let file = file.split_once('#').map_or(file, |(f, _)| f);
     let last_segment = file.rsplit_once('/').map_or(file, |(_, seg)| seg);
     let names_a_file = last_segment
@@ -126,11 +126,48 @@ pub fn file_of(id: &str) -> Option<&str> {
     names_a_file.then_some(file)
 }
 
+/// The ONE cut of a node id (spec 119): its file half, the text before its first `::` (the whole
+/// id when it holds none), and its rest half, the text after that `::` (`Some("")` for `a.rs::`,
+/// `None` when the id holds no `::`). The domain owns the id format `<file>::<path>`; every reader
+/// that takes an id apart takes it apart here.
+pub fn split_id(id: &str) -> (&str, Option<&str>) {
+    match id.split_once("::") {
+        Some((file, rest)) => (file, Some(rest)),
+        None => (id, None),
+    }
+}
+
+/// The leaf an id alone names (spec 119): [`split_id`]'s rest half less exactly one leading
+/// [`PLACEHOLDER_SIGIL`] (`<file>::%x` gives `x`, `<file>::%%x` gives `%x`), `None` for an id
+/// holding no `::`. Read only where an id is all a reader holds; a reader holding a node reads
+/// [`node_leaf`].
+pub fn leaf_of(id: &str) -> Option<&str> {
+    let rest = split_id(id).1?;
+    Some(rest.strip_prefix(PLACEHOLDER_SIGIL).unwrap_or(rest))
+}
+
+/// The `name` attr a node carries when it is non-empty: an empty `name` reads as absent, the one
+/// in-memory spelling of the name-presence test every reader keying a definition by its leaf
+/// applies (spec 119).
+pub fn node_name(node: &Node) -> Option<&str> {
+    node.attrs
+        .get("name")
+        .map(String::as_str)
+        .filter(|name| !name.is_empty())
+}
+
+/// A node's leaf (spec 119): its non-empty `name` attr whatever it holds ([`node_name`]: `new` for
+/// `a.rs::T::new`, `A.B`, `a::b`, a C# `operator %`'s `%`, so a named node is never read as a
+/// placeholder), else [`leaf_of`] its id. The store's pinned twin is the adapter's
+/// `node_leaf_sql()`, NULL exactly where this reads the id.
+pub fn node_leaf(node: &Node) -> Option<&str> {
+    node_name(node).or_else(|| leaf_of(&node.id))
+}
+
 /// The entity-name SUFFIX of a `<file>::<name>` id (the part after the first `::`), or the whole id
 /// when it carries no `::`. The in-memory twin of the pinned `substr(id, instr(id, '::') + 2)`
-/// expression the store's cross-file name resolution uses (spec 52), so the FILES re-projection's
-/// bare-node resolution (spec 55 c1) matches a bare placeholder to the call-target DEFINITIONS sharing
-/// its name.
+/// expression the store's edge-side readers compare an edge's target text with (spec 52), read by
+/// the store's callers walk and `referenced_not_called` to key a seed until they bind its leaf.
 pub fn name_suffix(id: &str) -> &str {
     match id.find("::") {
         Some(i) => &id[i + 2..],
@@ -138,26 +175,24 @@ pub fn name_suffix(id: &str) -> &str {
     }
 }
 
-/// Index every code-entity DEFINITION a call resolves onto (a `name` attr - the extraction fold's
-/// marker that a node is a real definition, never a bare cross-file placeholder - and a kind that
-/// passes [`is_call_target`], so never a data member or a declaration) by its entity-name SUFFIX
-/// ([`name_suffix`]):
+/// Index every code-entity DEFINITION a call resolves onto (a non-empty `name` attr,
+/// [`node_name`] - the extraction fold's marker that a node is a real definition, never a bare
+/// cross-file placeholder - and a kind that passes [`is_call_target`], so never a data member or a
+/// declaration) by its leaf (a named node's [`node_leaf`] is that name, so `a.rs::T::new` keys
+/// under `new`):
 /// the ONE resolution authority a bare placeholder's [`file_of`] attribution reads, so the files-lens
 /// whole-graph fold ([`Buckets::new`]'s [`Lens::Files`] arm) and `dash.rs`'s `reproject_files` resolve
-/// the IDENTICAL shape identically (spec 52's `definitions_with_suffix`, in-memory). Each candidate
+/// the IDENTICAL shape identically (the store's `definitions_with_suffix`, in-memory). Each candidate
 /// list is sorted + deduped for a deterministic frontier: EXACTLY ONE candidate resolves a bare
 /// placeholder honestly, MORE THAN ONE (or zero) cannot be.
 pub fn defs_by_entity_suffix(graph: &Graph) -> BTreeMap<&str, Vec<&str>> {
     let mut defs_by_suffix: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for n in &graph.nodes {
-        if n.kind == KIND_CODE_ENTITY
-            && n.attrs.contains_key("name")
-            && is_call_target(n.attrs.get("kind").map(String::as_str))
-        {
-            defs_by_suffix
-                .entry(name_suffix(&n.id))
-                .or_default()
-                .push(n.id.as_str());
+        if n.kind != KIND_CODE_ENTITY || !is_call_target(n.attrs.get("kind").map(String::as_str)) {
+            continue;
+        }
+        if let Some(leaf) = node_name(n) {
+            defs_by_suffix.entry(leaf).or_default().push(n.id.as_str());
         }
     }
     for cands in defs_by_suffix.values_mut() {
@@ -322,7 +357,7 @@ pub struct Buckets<'g> {
     /// [`Lens::Files`] and [`Lens::Code`] (a node carries at most one community).
     shared: BTreeSet<&'g str>,
     /// [`Lens::Files`] ONLY (spec 63 c3, FILES-LENS PURITY): every call-target DEFINITION indexed by
-    /// entity-name suffix ([`defs_by_entity_suffix`]), so [`whole_graph_lens_key`] can resolve a bare
+    /// its leaf ([`defs_by_entity_suffix`]), so [`whole_graph_lens_key`] can resolve a bare
     /// cross-file placeholder to its unique real definition's file - the SAME honest resolution
     /// `dash.rs`'s `reproject_files` performs - rather than taking [`file_of`] of the placeholder's
     /// own id (which names the REFERENCING file, not its true definition file). Empty under
@@ -541,9 +576,9 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
 /// live `REALIZES` membership at this grain gets NO bucket either, REGARDLESS of its own kind. Under
 /// [`Lens::Files`], the SAME shape of gate: a node outside [`KIND_CODE_ENTITY`] is excluded outright,
 /// and a code entity folds by [`file_of`] - its OWN FILE - rather than [`cluster_key`]'s directory
-/// fold. A REAL definition (a `name` attr, a data member's included) takes [`file_of`] of its own id
-/// directly; a BARE cross-file placeholder resolves FIRST by entity-name suffix over
-/// [`Buckets::defs_by_suffix`], the call targets alone.
+/// fold. A REAL definition (a non-empty `name` attr, [`node_name`], a data member's included) takes
+/// [`file_of`] of its own id directly; a BARE cross-file placeholder resolves FIRST by its leaf
+/// ([`node_leaf`]) over [`Buckets::defs_by_suffix`], the call targets alone.
 pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
     match buckets.lens {
         Lens::Code { .. } => {
@@ -563,19 +598,19 @@ pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<Str
             if node.kind != KIND_CODE_ENTITY {
                 return None;
             }
-            // A real definition (a `name` attr), a data member or a declaration as much as a fn,
-            // folds under its OWN file. A BARE cross-file placeholder (no `name` attr) resolves
-            // by entity-name suffix over `buckets.defs_by_suffix`, the call targets, FIRST - the same honest resolution `reproject_files`
-            // performs - since its raw id names the REFERENCING file, not its true definition
-            // file: EXACTLY ONE candidate resolves to that definition's file; ZERO or MORE THAN
-            // ONE cannot be honestly attributed to any one file, so the fold excludes it entirely
-            // (never mis-attributed to the referencing file its own id encodes).
-            if node.attrs.contains_key("name") {
+            // A real definition (a non-empty `name` attr), a data member or a declaration as much
+            // as a fn, folds under its OWN file. A BARE cross-file placeholder (no `name`, or an
+            // empty one) resolves by its leaf ([`node_leaf`]) over `buckets.defs_by_suffix`, the
+            // call targets, FIRST - the same honest resolution `reproject_files` performs - since
+            // its raw id names the REFERENCING file, not its true definition file: EXACTLY ONE
+            // candidate resolves to that definition's file; ZERO or MORE THAN ONE cannot be
+            // honestly attributed to any one file, so the fold excludes it entirely (never
+            // mis-attributed to the referencing file its own id encodes).
+            if node_name(node).is_some() {
                 return file_of(&node.id).map(str::to_string);
             }
-            match buckets
-                .defs_by_suffix
-                .get(name_suffix(&node.id))
+            match node_leaf(node)
+                .and_then(|leaf| buckets.defs_by_suffix.get(leaf))
                 .map(Vec::as_slice)
             {
                 Some([only]) => file_of(only).map(str::to_string),

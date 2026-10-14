@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
-use super::query::name_suffix;
+use super::query::{leaf_of, name_suffix};
 use super::{
     CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch, EntryFold,
     Error, FoldAccess, Graph, Located, Node, Projection, CODE_KIND_PRECEDENCE, KIND_AGENT,
@@ -862,13 +862,13 @@ impl Projector {
 
     /// Resolve a `rigger graph --show <entity>` query to a located entity, a candidate list, or
     /// nothing (spec 58, criterion 1). It serves from the SAME node/edge tables every graph surface
-    /// reads - reusing [`node_row`] and the pinned [`definitions_with_suffix`] name-suffix match -
-    /// so the show surface never forks a second resolution authority.
+    /// reads - reusing [`node_row`] and the pinned [`definitions_with_suffix`] leaf match - so the
+    /// show surface never forks a second resolution authority.
     ///
     /// Resolution order (the graph's existing surface convention): an EXACT node-id match first, so
-    /// a full `<file>::<name>` id resolves directly; only on a miss is the input treated as a BARE
-    /// name and matched by the pinned name-suffix expression over code-entity DEFINITION nodes, a
-    /// data member and a declaration among them (a lookup, never the walks' call-target test).
+    /// a full id resolves directly; only on a miss is the input treated as a BARE name and matched
+    /// as a leaf (spec 119: `new` answers `a.rs::T::new`) over code-entity DEFINITION nodes, a data
+    /// member and a declaration among them (a lookup, never the walks' call-target test).
     /// Zero candidates -> [`Located::None`]; exactly one -> [`Located::One`] (its site); more than
     /// one -> [`Located::Many`] the SORTED candidates, never a guess among them.
     ///
@@ -880,8 +880,8 @@ impl Projector {
         if let Some(node) = node_row(&conn, entity, &self.project)? {
             return Ok(Located::One(self.site_of(&conn, node)?));
         }
-        // Else a bare name: the pinned name-suffix match over definition nodes (sorted by id).
-        let cands = definitions_with_suffix(&conn, entity, &self.project, false)?;
+        // Else a bare name: the pinned leaf match over definition nodes (sorted by id).
+        let cands = definitions_with_suffix(&conn, entity, &self.project, false, None)?;
         match cands.as_slice() {
             [] => Ok(Located::None),
             [only] => {
@@ -1653,21 +1653,25 @@ fn migrate_edge_tier(conn: &Connection) -> Result<(), Error> {
 ///   seek by `rel` then `from_id` instead of scanning every historical edge. A query MUST carry the
 ///   exact `valid_to IS NULL` term for SQLite to use a partial index.
 /// - `idx_nodes_name_suffix` is an EXPRESSION index on `substr(id, instr(id, '::') + 2)` - the
-///   entity-name suffix of a `<file>::<name>` [`code_entity_id`]. This is the SAME expression the
-///   convergent-tier-upgrade fold already uses on the edge side (`substr(to_id, instr(to_id, '::') +
-///   2)`), pinned here on `nodes.id` so the coming cross-file name resolution resolves a bare name to
-///   its definition node via an index seek, not a full scan. SQLite uses an expression index only
-///   when the query's expression MATCHES the indexed one, so the resolution query must be phrased
-///   with this identical expression or it silently misses the index.
+///   entity-name suffix of a `<file>::<name>` [`code_entity_id`], the SAME expression the edge side
+///   keys a target's text by (`substr(to_id, instr(to_id, '::') + 2)`).
+/// - `idx_nodes_leaf` is the LEAF index (spec 119) on `(project, <leaf>, id)`, `<leaf>` the pinned
+///   [`node_leaf_sql`] expression: every node-side reader resolving a definition by its leaf
+///   ([`definitions_with_suffix`], [`same_file_candidates`]) seeks it, the `id` column serving a
+///   file's `<file>::` id range. SQLite uses an expression index only when the query's expression
+///   MATCHES the indexed one, so every reader embeds [`node_leaf_sql`] verbatim or it silently
+///   misses the index.
 fn migrate_indexes(conn: &Connection) -> Result<(), Error> {
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "CREATE INDEX IF NOT EXISTS idx_edges_live_rel_from
              ON edges(rel, from_id) WHERE valid_to IS NULL;
          CREATE INDEX IF NOT EXISTS idx_nodes_name_suffix
              ON nodes(substr(id, instr(id, '::') + 2));
+         CREATE INDEX IF NOT EXISTS idx_nodes_leaf ON nodes(project, {}, id);
          CREATE INDEX IF NOT EXISTS idx_edges_live_to_name_suffix
              ON edges(substr(to_id, instr(to_id, '::') + 2)) WHERE valid_to IS NULL;",
-    )
+        node_leaf_sql()
+    ))
     .map_err(be)
 }
 
@@ -2240,14 +2244,16 @@ fn recorded_assertion(
     .map_err(be)
 }
 
-/// The name node `id` defines, when it is a live definition: a code entity carrying the `name`
-/// attr its definition's extraction gave it, of a kind a call resolves onto
-/// ([`call_target_sql`]). A data member or a declaration defines no name here.
+/// The name node `id` defines, when it is a live definition: a code entity carrying the
+/// non-empty `name` attr its definition's extraction gave it ([`node_leaf_sql`], an empty `name`
+/// defining nothing), of a kind a call resolves onto ([`call_target_sql`]). A data member or a
+/// declaration defines no name here.
 fn definition_name(tx: &Transaction, id: &str, project: &str) -> Result<Option<String>, Error> {
     tx.query_row(
         &format!(
-            "SELECT json_extract(attrs, '$.name') FROM nodes
+            "SELECT {} FROM nodes
               WHERE id = ?1 AND project = ?2 AND kind = ?3 AND {}",
+            node_leaf_sql(),
             call_target_sql()
         ),
         params![id, project, KIND_CODE_ENTITY],
@@ -3365,18 +3371,29 @@ fn call_target_sql() -> String {
     )
 }
 
+/// The store form of [`node_leaf`](super::query::node_leaf) over a node row's `attrs` (spec 119):
+/// its non-empty `name`, NULL for an absent or empty one, where `node_leaf` reads the id. ONE pinned
+/// expression the leaf index (`idx_nodes_leaf`, [`migrate_indexes`]) is built on and every
+/// node-side reader embeds verbatim, since SQLite serves an expression index only to the identical
+/// expression; `IS NOT NULL` over it is the store's one name-presence test.
+fn node_leaf_sql() -> &'static str {
+    "NULLIF(json_extract(attrs, '$.name'), '')"
+}
+
 /// Whether the NAMED node `id` is a call target in `project` ([`call_target_sql`]): `Some(true)`
 /// for a code-entity definition a call resolves onto, `Some(false)` for a named node of a
-/// non-target kind (a data member, a declaration), and `None` for a node carrying no `name` attr
-/// (a bare cross-file placeholder the reference fold created attr-less) or for no node at all.
-/// This is how a directed hop tells a same-file callee (which already lands on its definition)
-/// from a callee that must be resolved by name-suffix: every answer but `Some(true)`.
+/// non-target kind (a data member, a declaration), and `None` for a node carrying no non-empty
+/// `name` ([`node_leaf_sql`]: a bare cross-file placeholder the reference fold created attr-less)
+/// or for no node at all. This is how a directed hop tells a same-file callee (which already lands
+/// on its definition) from a callee that must be resolved by its leaf: every answer but
+/// `Some(true)`.
 fn named_call_target(conn: &Connection, id: &str, project: &str) -> Result<Option<bool>, Error> {
     conn.query_row(
         &format!(
             "SELECT {} FROM nodes
-              WHERE id = ?1 AND project = ?2 AND json_extract(attrs, '$.name') IS NOT NULL",
-            call_target_sql()
+              WHERE id = ?1 AND project = ?2 AND {} IS NOT NULL",
+            call_target_sql(),
+            node_leaf_sql()
         ),
         params![id, project],
         |r| r.get(0),
@@ -3385,40 +3402,59 @@ fn named_call_target(conn: &Connection, id: &str, project: &str) -> Result<Optio
     .map_err(be)
 }
 
-/// The code-entity DEFINITION nodes whose entity-name equals `suffix`, in `project`, sorted by id
-/// (spec 52 - the conservative cross-file resolution's candidate set). Phrased with the PINNED
-/// `substr(id, instr(id, '::') + 2)` expression so it seeks the `idx_nodes_name_suffix` expression
-/// index rather than scanning; filtered to real definitions (a `name` attr present), so a bare
-/// placeholder sharing the name is never itself a candidate. With `call_side` the candidates are
-/// the call targets alone ([`call_target_sql`]), what a walk resolves a call onto; without it
-/// every named node answers, a data member and a declaration included, what a lookup by name
-/// shows.
+/// The read [`definitions_with_suffix`] runs: `?1` the leaf, `?2` the code-entity kind, `?3` the
+/// project, `?4` whether only call targets answer and `?5` the file whose `<file>::` id range the
+/// candidates lie in, or NULL for every file. Phrased with the pinned [`node_leaf_sql`] after the
+/// project so it seeks the leaf index `idx_nodes_leaf`.
+fn leaf_definitions_sql() -> String {
+    format!(
+        "SELECT id FROM nodes
+          WHERE project = ?3 AND {} = ?1
+            AND kind = ?2
+            AND (?4 = 0 OR {})
+            AND (?5 IS NULL OR (id >= ?5 || '::' AND id < ?5 || ':;'))
+          ORDER BY id",
+        node_leaf_sql(),
+        call_target_sql()
+    )
+}
+
+/// The code-entity DEFINITION nodes whose leaf is `leaf` ([`node_leaf_sql`], spec 119), in
+/// `project` and, given a `file`, in that file's `<file>::` id range, sorted by id (spec 52 - the
+/// conservative cross-file resolution's candidate set). Only a node with a non-empty `name` has a
+/// leaf here, so a bare placeholder sharing the leaf is never itself a candidate. With `call_side`
+/// the candidates are the call targets alone ([`call_target_sql`]), what a walk resolves a call
+/// onto; without it every named node answers, a data member and a declaration included, what a
+/// lookup by name shows.
 fn definitions_with_suffix(
     conn: &Connection,
-    suffix: &str,
+    leaf: &str,
     project: &str,
     call_side: bool,
+    file: Option<&str>,
 ) -> Result<Vec<String>, Error> {
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT id FROM nodes
-              WHERE substr(id, instr(id, '::') + 2) = ?1
-                AND kind = ?2
-                AND json_extract(attrs, '$.name') IS NOT NULL
-                AND project = ?3
-                AND (?4 = 0 OR {})
-              ORDER BY id",
-            call_target_sql()
-        ))
-        .map_err(be)?;
+    let mut stmt = conn.prepare(&leaf_definitions_sql()).map_err(be)?;
     let ids = stmt
-        .query_map(params![suffix, KIND_CODE_ENTITY, project, call_side], |r| {
-            r.get::<_, String>(0)
-        })
+        .query_map(
+            params![leaf, KIND_CODE_ENTITY, project, call_side, file],
+            |r| r.get::<_, String>(0),
+        )
         .map_err(be)?
         .collect::<Result<_, _>>()
         .map_err(be)?;
     Ok(ids)
+}
+
+/// The call targets of `leaf` defined in `file` ([`definitions_with_suffix`] over the file's
+/// `<file>::` id range), in `project`, sorted by id: a test proof's same-file candidates
+/// ([`resolve_proofs`]).
+fn same_file_candidates(
+    tx: &Transaction,
+    project: &str,
+    file: &str,
+    leaf: &str,
+) -> Result<Vec<String>, Error> {
+    definitions_with_suffix(tx, leaf, project, true, Some(file))
 }
 
 /// The live, caller-attributed `CALLS` edges OUT of `from_id` in `project`, as
@@ -3468,8 +3504,8 @@ fn call_edge_rows(
 /// - a SAME-FILE callee that is a named call target (it is its own definition) -> land on it,
 ///   no frontier;
 /// - a BARE cross-file placeholder, and a named node that is no call target (a data member or a
-///   declaration of the called leaf), resolves by name-suffix over the call-target DEFINITION
-///   nodes: EXACTLY ONE
+///   declaration of the called leaf), resolves by the leaf its id names ([`leaf_of`]) over the
+///   call-target DEFINITION nodes: EXACTLY ONE
 ///   definition auto-continues (the edge is redirected onto the real definition, no frontier);
 ///   MORE THAN ONE is a marked frontier (the placeholder id, carrying the sorted candidates) the
 ///   caller does NOT descend; ZERO leaves the placeholder a terminal leaf (no descent target).
@@ -3481,7 +3517,10 @@ fn resolve_down_hop(
     if named_call_target(conn, raw_to, project)? == Some(true) {
         return Ok((raw_to.to_string(), None));
     }
-    let cands = definitions_with_suffix(conn, name_suffix(raw_to), project, true)?;
+    let cands = match leaf_of(raw_to) {
+        Some(leaf) => definitions_with_suffix(conn, leaf, project, true, None)?,
+        None => Vec::new(),
+    };
     match cands.len() {
         1 => Ok((cands.into_iter().next().unwrap(), None)),
         0 => Ok((raw_to.to_string(), None)),
@@ -3513,10 +3552,10 @@ fn callers_direct(
 /// equals `name`, in `project`, as `(from_id, tier, valid_from, source)` sorted by caller (spec 52 -
 /// the reverse cross-file resolution). A cross-file call targets a bare placeholder in the CALLER's
 /// file namespace (no `name` attr - the definition lives elsewhere), so these are the callers that
-/// call `name` across a file boundary. Phrased with the PINNED `substr(id, instr(id,'::')+2)`
-/// name-suffix expression so it seeks the `idx_nodes_name_suffix` index; filtered to targets that
-/// are no call target (a `name` attr absent, or a named data member or declaration a same-file
-/// call naming its leaf lands on) so an edge that lands directly on a real definition (a same-file
+/// call `name` across a file boundary. Phrased with the PINNED `substr(to_id, instr(to_id,'::')+2)`
+/// target-text expression so it seeks the `idx_edges_live_to_name_suffix` index; filtered to
+/// targets that are no call target (no non-empty `name`, [`node_leaf_sql`], or a named data member
+/// or declaration a same-file call naming its leaf lands on) so an edge that lands directly on a real definition (a same-file
 /// caller, or a call to a DIFFERENT same-named definition) is never miscounted here - those are
 /// covered by [`callers_direct`] on the exact definition, keeping the two caller sets disjoint.
 fn callers_via_bare(
@@ -3531,8 +3570,9 @@ fn callers_via_bare(
                JOIN nodes n ON n.id = e.to_id AND n.project = e.project
               WHERE e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2
                 AND substr(e.to_id, instr(e.to_id, '::') + 2) = ?3
-                AND (json_extract(n.attrs, '$.name') IS NULL OR NOT ({}))
+                AND ({} IS NULL OR NOT ({}))
               ORDER BY e.from_id",
+            node_leaf_sql(),
             call_target_sql()
         ),
         params![REL_CALLS, project, name],
@@ -3571,7 +3611,7 @@ fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallHop
     }
     if definition {
         let name = name_suffix(cur);
-        let cands = definitions_with_suffix(conn, name, project, true)?;
+        let cands = definitions_with_suffix(conn, name, project, true, None)?;
         // `cur` is a definition of its own name, so it is always among the candidates: exactly one
         // means `cur` is the sole definition (unambiguous), more than one is a frontier.
         let frontier = if cands.len() > 1 { Some(cands) } else { None };
@@ -3664,14 +3704,15 @@ fn referenced_not_called(
 /// - the name is DEFINED in the SAME file (the target `<file>::<name>` already carries a
 ///   call-target definition's attrs) -> [`TIER_EXTRACTED`]: an explicit, resolved local reference (a call /
 ///   import / inherit of a known local symbol).
-/// - else the name is DEFINED in ANOTHER file the graph knows (some other code-entity node carries
-///   it as a call-target definition) -> [`TIER_INFERRED`]: a derived / transitive cross-file link.
+/// - else the name is DEFINED elsewhere the graph knows (some code-entity node other than the target
+///   has it as its leaf, a call-target definition, nested or not: spec 119) -> [`TIER_INFERRED`]: a
+///   derived / transitive cross-file link.
 /// - else no call target defines the name ANYWHERE known -> [`TIER_AMBIGUOUS`]: a grep-visible-only occurrence (a
 ///   macro body, reflection string, dynamic or external name). It is kept, never dropped, but
 ///   tiered lowest, and the blast radius never crosses it (addendum 2.4).
 ///
-/// A definition node is told from a bare reference target by carrying a `name` attr (the definition
-/// arm sets it; the reference arm creates bare, attr-less targets) and being a call target
+/// A definition node is told from a bare reference target by carrying a non-empty `name` attr (the
+/// definition arm sets it; the reference arm creates bare, attr-less targets) and being a call target
 /// ([`call_target_sql`]): a data member or a declaration of the name tiers a reference as no
 /// definition at all does. Called BEFORE the reference arm
 /// `ensure_node`s its bare target, so the target this reference is about to create never miscounts
@@ -3688,25 +3729,12 @@ fn reference_tier(
     if named_call_target(tx, target, project)? == Some(true) {
         return Ok(TIER_EXTRACTED);
     }
-    // Cross-file definition: a code-entity in a DIFFERENT file (id != this target) carries this
-    // name as a call-target definition. A bare reference target elsewhere never matches - it has
-    // no `name` attr.
-    let cross_file_def = tx
-        .query_row(
-            &format!(
-                "SELECT 1 FROM nodes
-                  WHERE substr(id, instr(id, '::') + 2) = ?4
-                    AND kind = ?1 AND project = ?2 AND id != ?3
-                    AND json_extract(attrs, '$.name') = ?4 AND {}
-                  LIMIT 1",
-                call_target_sql()
-            ),
-            params![KIND_CODE_ENTITY, project, target, name],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(be)?
-        .is_some();
+    // Cross-file definition: a code-entity other than this target whose leaf is this name, a
+    // call target ([`definitions_with_suffix`]), nested or not. A bare reference target elsewhere
+    // never matches - it has no `name` attr.
+    let cross_file_def = definitions_with_suffix(tx, name, project, true, None)?
+        .iter()
+        .any(|id| id != target);
     if cross_file_def {
         Ok(TIER_INFERRED)
     } else {
@@ -3779,34 +3807,20 @@ fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(
     Ok(())
 }
 
-/// Resolve every recorded test reference to `name` against the call-target definitions of `name`
-/// ([`call_target_sql`]; no proof lands on a data member or a declaration) the graph holds NOW (spec 86 criterion 2; spec 101, "convergences undo with their definition"): the
-/// reference's own file's definition when there is one (the `#[cfg(test)] mod tests` idiom), else
-/// the ONE definition of `name` in the project, else none - a reference waits, never guessing among
-/// several same-named definitions. Run whenever a reference is recorded and whenever a definition of
+/// Resolve every recorded test reference to `name` against the call-target definitions of the leaf
+/// `name` ([`definitions_with_suffix`]; no proof lands on a data member or a declaration) the graph
+/// holds NOW (spec 86 criterion 2; spec 101, "convergences undo with their definition"; spec 119):
+/// the reference's own file's one candidate when it has exactly one ([`same_file_candidates`], the
+/// `#[cfg(test)] mod tests` idiom), else, when its file has none, the ONE definition of `name` in
+/// the project, else none - two same-file candidates name none, and a reference waits, never
+/// guessing among several same-named definitions. Run whenever a reference is recorded and whenever a definition of
 /// `name` folds or stops being one, so where a proof lands is a pure function of the live
 /// definitions and references - the same whichever order they folded in, and the same for a log
 /// and its compacted form.
 fn resolve_proofs(tx: &Transaction, name: &str, project: &str) -> Result<(), Error> {
-    let definitions: BTreeSet<String> = {
-        let mut stmt = tx
-            .prepare(&format!(
-                "SELECT id FROM nodes
-                  WHERE substr(id, instr(id, '::') + 2) = ?3
-                    AND kind = ?1 AND project = ?2 AND json_extract(attrs, '$.name') = ?3
-                    AND {}",
-                call_target_sql()
-            ))
-            .map_err(be)?;
-        let rows = stmt
-            .query_map(params![KIND_CODE_ENTITY, project, name], |r| r.get(0))
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be)?;
-        rows
-    };
-    let only = match definitions.len() {
-        1 => definitions.first().cloned(),
+    let definitions = definitions_with_suffix(tx, name, project, true, None)?;
+    let only = match definitions.as_slice() {
+        [one] => Some(one.clone()),
         _ => None,
     };
     let recorded: Vec<(i64, String, Option<String>)> = {
@@ -3827,11 +3841,10 @@ fn resolve_proofs(tx: &Transaction, name: &str, project: &str) -> Result<(), Err
     };
     let mut touched: BTreeSet<String> = BTreeSet::new();
     for (row, file, target) in recorded {
-        let same_file = code_entity_id(&file, name);
-        let resolved = if definitions.contains(&same_file) {
-            Some(same_file)
-        } else {
-            only.clone()
+        let resolved = match same_file_candidates(tx, project, &file, name)?.as_slice() {
+            [] => only.clone(),
+            [one] => Some(one.clone()),
+            _ => None,
         };
         if resolved != target {
             tx.execute(

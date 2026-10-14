@@ -44,6 +44,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::contextgraph::query::{leaf_of, node_name};
 use crate::contextgraph::{
     is_call_target, CommunityAssigned, Graph, KIND_CODE_ENTITY, REL_CALLS, REL_CONTAINS,
     REL_REFERENCES, TIER_AMBIGUOUS, TYPE_COMMUNITY_ASSIGNED,
@@ -80,14 +81,6 @@ fn fnv1a_hex(s: &str) -> String {
     format!("{h:016x}")
 }
 
-/// The "simple name" of a code-entity id: the text after the FIRST `::` (the `<name>` of a
-/// `<file>::<name>` id). This is the pinned `substr(id, instr(id,'::')+2)` name-suffix the fold's
-/// own cross-file resolution keys on, so a bare placeholder and the definition it reaches share it.
-/// `None` for an id with no `::` (a file or non-code node), which never resolves.
-fn simple_name(id: &str) -> Option<&str> {
-    id.find("::").map(|pos| &id[pos + 2..])
-}
-
 /// An undirected, weighted coupling graph built from the projection's structure layer: the input
 /// community detection runs over. Its nodes are exactly the code-entity / file ids that participate
 /// in at least one coupling edge (a node with none is not part of any community and simply keeps its
@@ -117,36 +110,36 @@ impl Coupling {
     /// unordered node pair to one undirected edge weighted by how many such edges join it, and drops
     /// self-loops. A node with no surviving coupling edge is excluded (it joins no community).
     pub fn from_graph(g: &Graph) -> Self {
-        // Index real DEFINITIONS by simple name so a cross-file reference that folded onto a bare
+        // Index real DEFINITIONS by leaf so a cross-file reference that folded onto a bare
         // same-file placeholder can be redirected to the definition it actually reaches. A
-        // code-entity node carrying a `name` attr is a real definition (the extraction fold sets
-        // it), a redirect target only when its kind is a call target: a placeholder never
-        // redirects onto a data member or a declaration, which keeps its own edges as every named
-        // node does; a code-entity with NO `name` attr is a bare cross-file placeholder. The "simple
-        // name" is the text after the FIRST `::` - the pinned `substr(id, instr(id,'::')+2)`
-        // name-suffix the fold's own cross-file resolution keys on.
+        // code-entity node carrying a non-empty `name` attr ([`node_name`]) is a real definition
+        // (the extraction fold sets it), a redirect target only when its kind is a call target: a
+        // placeholder never redirects onto a data member or a declaration, which keeps its own
+        // edges as every named node does; a code-entity with no `name`, or an empty one, is a
+        // bare cross-file placeholder. A definition keys by its leaf, which for a named node is
+        // its name, and a placeholder by the leaf its id names ([`leaf_of`]): the leaf the
+        // store's cross-file resolution keys on too (spec 119).
         let mut defs_by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         let mut bare: BTreeMap<&str, bool> = BTreeMap::new();
         for node in &g.nodes {
             let is_code = node.kind == KIND_CODE_ENTITY;
-            let named = node.attrs.contains_key("name");
-            bare.insert(node.id.as_str(), is_code && !named);
-            if is_code && named && is_call_target(node.attrs.get("kind").map(String::as_str)) {
-                if let Some(simple) = simple_name(&node.id) {
-                    defs_by_name.entry(simple).or_default().push(&node.id);
-                }
+            let name = node_name(node);
+            bare.insert(node.id.as_str(), is_code && name.is_none());
+            let target = is_code && is_call_target(node.attrs.get("kind").map(String::as_str));
+            if let (true, Some(leaf)) = (target, name) {
+                defs_by_name.entry(leaf).or_default().push(&node.id);
             }
         }
         // Canonicalize a node id: a bare cross-file placeholder resolves to the UNIQUE call-target
-        // definition sharing its simple name (EXACTLY ONE resolves; ZERO or MANY stays itself,
-        // honest by construction) - the SAME unique-name-suffix rule the directed calls walk
-        // (spec 52) applies at query time, here over the in-memory whole-graph read so the
-        // undirected coupling layer genuinely spans files instead of stopping at same-file bare
-        // placeholders. Every other node (a real definition, a file, a non-code node) is itself.
+        // definition sharing its leaf (EXACTLY ONE resolves; ZERO or MANY stays itself, honest by
+        // construction) - the SAME unique-leaf rule the directed calls walk (spec 52) applies at
+        // query time, here over the in-memory whole-graph read so the undirected coupling layer
+        // genuinely spans files instead of stopping at same-file bare placeholders. Every other
+        // node (a real definition, a file, a non-code node) is itself.
         let canon = |id: &str| -> String {
             if *bare.get(id).unwrap_or(&false) {
-                if let Some(simple) = simple_name(id) {
-                    if let Some(defs) = defs_by_name.get(simple) {
+                if let Some(leaf) = leaf_of(id) {
+                    if let Some(defs) = defs_by_name.get(leaf) {
                         if defs.len() == 1 {
                             return defs[0].to_string();
                         }

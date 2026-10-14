@@ -37,7 +37,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::contextgraph::query::{file_of, name_suffix, Buckets, Lens};
+use crate::contextgraph::query::{file_of, node_leaf, Buckets, Lens};
 use crate::contextgraph::{
     Graph, Node, CODE_KIND_CONSTANT, CODE_KIND_FUNCTION, CODE_KIND_TRAIT, CODE_KIND_TYPE,
     KIND_CODE_ENTITY, KIND_FINDING, REL_ABOUT, REL_CALLS, REL_REFERENCES,
@@ -209,6 +209,12 @@ const INNER_R: f64 = 44.0;
 const RING_STEP: f64 = 30.0;
 const GOLDEN_ANGLE: f64 = 2.399_963_229_728_653;
 
+/// The label a map entity is drawn with: its leaf ([`node_leaf`]: a non-empty `name`, else the
+/// leaf its id names less one placeholder sigil), else its whole id (spec 119).
+fn entity_label(node: &Node) -> String {
+    node_leaf(node).map_or_else(|| node.id.clone(), str::to_string)
+}
+
 /// Build the map once from an already-loaded, already-community-derived [`Graph`] (the payload
 /// `graph_load` parses, after `rigger graph communities` has run - an UNDERIVED graph simply
 /// yields an empty model, never an error: see the CONSTRAINTS WALK's "empty graph" case, which is
@@ -329,14 +335,9 @@ pub fn build(graph: &Graph) -> MapModel {
                 max_x = max_x.max(x);
                 min_y = min_y.min(y);
                 max_y = max_y.max(y);
-                let name = node
-                    .attrs
-                    .get("name")
-                    .cloned()
-                    .unwrap_or_else(|| name_suffix(&node.id).to_string());
                 entities.push(MapEntity {
                     id: node.id.clone(),
-                    name,
+                    name: entity_label(node),
                     kind: node.attrs.get("kind").cloned().unwrap_or_default(),
                     community: (*c).to_string(),
                     district: purpose.clone(),

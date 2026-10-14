@@ -51,7 +51,7 @@ use crate::contextgraph::{
 // them.
 use crate::contextgraph::query::{
     bucket_label_index, defs_by_entity_suffix, file_of, fold_buckets, member_set, memory_rail_of,
-    name_suffix, neighborhood_of, node_label, Buckets,
+    neighborhood_of, node_label, node_leaf, node_name, Buckets,
 };
 pub use crate::contextgraph::query::{
     card, cluster_detail, cluster_key, clustered_overview, explain, memory_rail, neighborhood,
@@ -1802,10 +1802,10 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 /// honestly (spec 55 c1). Each member is resolved to a file key, or surfaced as marked-unresolved -
 /// NEVER folded to a raw storage-schema name (spec 63 c3, FILES-LENS PURITY):
 ///
-/// - a member that IS a definition (a `name` attr) or a doc / file-path node folds under its OWN
-///   file ([`file_of`]);
-/// - a BARE cross-file code-entity placeholder (no `name` attr) resolves by name-suffix over the
-///   call-target DEFINITION nodes sharing its name (never a data member or a declaration, which
+/// - a member that IS a definition (a non-empty `name` attr, [`node_name`]) or a doc / file-path
+///   node folds under its OWN file ([`file_of`]);
+/// - a BARE cross-file code-entity placeholder (no `name` attr, or an empty one) resolves by its
+///   leaf ([`node_leaf`]) over the call-target DEFINITION nodes sharing it (never a data member or a declaration, which
 ///   folds under its own file as every definition does): EXACTLY ONE folds under that definition's file; MORE THAN ONE
 ///   (or zero) is marked-unresolved with the sorted candidate ids;
 /// - a member with NO file identity at all (a rare dev-loop node, e.g. a decision) is marked
@@ -1819,7 +1819,7 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 /// file buckets are sized, dominant-kind coloured, and cross-file coupling edges weighted exactly as
 /// every other lens. `total` is the member-set size (resolved or not).
 fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reprojection {
-    // Index every call-target code-entity DEFINITION by its entity-name suffix, for the conservative cross-file
+    // Index every call-target code-entity DEFINITION by its leaf, for the conservative cross-file
     // resolution - the SAME index [`whole_graph_lens_key`] reads for the whole-graph fold.
     let defs_by_suffix = defs_by_entity_suffix(graph);
 
@@ -1828,11 +1828,11 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
     let mut resolved: BTreeMap<&str, String> = BTreeMap::new();
     let mut unresolved: Vec<UnresolvedMember> = Vec::new();
     for m in members {
-        let is_bare = m.kind == KIND_CODE_ENTITY && !m.attrs.contains_key("name");
+        let is_bare = m.kind == KIND_CODE_ENTITY && node_name(m).is_none();
         if is_bare {
-            // A bare cross-file placeholder resolves by name-suffix; the honesty rule decides.
-            let cands = defs_by_suffix
-                .get(name_suffix(&m.id))
+            // A bare cross-file placeholder resolves by its leaf; the honesty rule decides.
+            let cands = node_leaf(m)
+                .and_then(|leaf| defs_by_suffix.get(leaf))
                 .map(Vec::as_slice)
                 .unwrap_or_default();
             match cands {
@@ -3868,6 +3868,7 @@ mod console_wasm;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contextgraph::query::name_suffix;
     use crate::contextgraph::{
         Edge, Node, KIND_AGENT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DESIGN_DOC,
         KIND_FILE, KIND_RATIONALE, KIND_UNIT, REL_CALLS, REL_DECIDED, REL_GOVERNS,

@@ -13033,10 +13033,9 @@ fn plain_node_line(n: &contextgraph::Node) -> String {
 /// declaration takes no slot.
 ///
 /// The file each definition lives in comes STRUCTURALLY from the `CONTAINS` edge the extraction
-/// folded (`file --CONTAINS--> entity`, spec 29a), NEVER by string-parsing the `<file>::<name>`
-/// node id: that id format is the sqlite adapter's private convention ([`code_entity_id`]), so
-/// reading it here would duplicate that convention into the render layer and break silently on any
-/// id-format change. Reading the recorded edge is the same STRUCTURAL discipline
+/// folded (`file --CONTAINS--> entity`, spec 29a), NEVER by string-parsing the node id here: the
+/// id format `<file>::<path>` is the domain's (spec 119), `query::split_id` its one cut, so a
+/// render-layer parse would be a second cut beside it. Reading the recorded edge is the same STRUCTURAL discipline
 /// [`write_capped_section`]'s dependency-restore follows. A definition whose containing file is
 /// outside this seeded subgraph is not a neighborhood "of these files", so it does not render.
 ///

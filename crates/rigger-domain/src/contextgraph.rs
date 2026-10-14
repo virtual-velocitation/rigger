@@ -43,6 +43,9 @@ pub const KIND_FINDING: &str = "finding";
 /// `<file>::<name>`; its attrs carry the name, the rigger `Kind` string, the 1-based line, and
 /// the language it was parsed as.
 pub const KIND_CODE_ENTITY: &str = "code-entity";
+/// The sigil that marks a placeholder's leaf in its id, `<file>::%<leaf>` (spec 119): `%`
+/// begins no identifier in any registered grammar. [`query::leaf_of`] strips exactly one.
+pub const PLACEHOLDER_SIGIL: char = '%';
 /// The code kind (a code entity's `kind` attr) of a constructor: function-like, so a reference
 /// inside one has it as caller.
 pub const CODE_KIND_CONSTRUCTOR: &str = "constructor";

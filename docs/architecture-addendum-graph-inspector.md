@@ -197,10 +197,12 @@ The inspector must work on a cold checkout of any repository, with no build hist
   collision is handled by the conservative traversal (section 3), not by pretending precision.
 - `FILES` needs only code ingest; `CODE` needs the community pass; `CONCEPTS` needs the concept pass;
   the rationale overlay is simply empty on a project with no decisions. Each degrades independently.
-- Directed traversal and name resolution stay sub-linear on large repositories via two additive indexes
-  - a partial index on the live-edge relation, and an expression index on the entity-name attribute -
-  added through the existing additive-migration pattern, with the resolution query phrased to use the
-  exact name-suffix expression the index materialises (a mismatched expression silently misses it).
+- Directed traversal and name resolution stay sub-linear on large repositories via additive indexes
+  - a partial index on the live-edge relation, and the leaf index `idx_nodes_leaf`, an expression index
+  on a definition's leaf (its non-empty `name` attribute, `NULLIF(json_extract(attrs, '$.name'), '')`)
+  after the project - added through the existing additive-migration pattern, with every node-side
+  resolution query phrased to use the exact leaf expression the index materialises (a mismatched
+  expression silently misses it).
 
 ## Delivery
 
