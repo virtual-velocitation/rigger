@@ -109,6 +109,11 @@ your committed tree:
 - every test binary your change touched, on both lanes: `cargo test -p <crate> --lib` or
   `cargo test --test <file>`, then the same with `--no-default-features`.
 
+Each run above, the test binaries on both lanes and any `sh .rigger/gates/lanes.sh <lane>` run
+a unit asks of you included, takes minutes here: run it in the foreground with the Bash timeout
+raised to fit, and when one outlives that timeout and moves to the background, poll its output
+in an `until`-loop until its exit line is there, before you report.
+
 The whole workspace suite on both lanes is the test and lane-no-default gates' run, not yours:
 a gate's verdict is replayed only from its own recorded run, so a shell run of the suite saves
 the gate nothing.
