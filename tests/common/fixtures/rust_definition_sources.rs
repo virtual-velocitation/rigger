@@ -1,0 +1,43 @@
+//! THE RUST DEFINITIONS FIXTURE: the one source text RUST DEFINITIONS ARE NODES (every Rust
+//! definition type is a definition of its kind) is proven over, once on the symbols the
+//! registered Rust query extracts and once on the graph a build folds. It names no crate, so
+//! every lane compiles it.
+
+/// THE RUST DEFINITIONS FIXTURE (spec 116 criterion 6): one Rust file holding every Rust
+/// definition type. Lines 1-2 an `extern crate` without and with an alias; 3-4 an item const
+/// and an item static whose initializer calls; 5 a tuple struct whose third field is a
+/// test-attributed `pub` one; 6 an enum of a unit, a tuple and a struct variant and a
+/// test-attributed unit variant; 7-8 a union and a type alias; 9 a trait holding an
+/// associated type and a required fn; 10 an impl holding an associated const and a method; 11
+/// a `macro_rules!`; 12-13 a proc-macro fn holding a const whose initializer calls; 14 a fn
+/// holding a const whose initializer calls and a static; 15 a mod; 16-18 a fn `size` above a
+/// struct whose fields are `size`, `area` and a test-attributed `spy`, above a fn `area`;
+/// 19-20 a test-attributed const and static; 21-25 a struct, an enum, an impl, a fn and a mod
+/// whose body each opens with a test-attributed member, variant, method, statement or mod.
+pub const RUST_DEFINITIONS_SOURCE: &str = "\
+extern crate alloc;
+extern crate core as base;
+pub const LIMIT: u8 = 9;
+static TABLE: u8 = build();
+pub struct Pair(u8, u16, #[cfg(test)] pub u32);
+pub enum Shape { Unit, Tuple(u8), Struct { side: u8 }, #[cfg(test)] Probe }
+pub union Bits { whole: u8 }
+pub type Alias = u8;
+pub trait Draw { type Canvas; fn paint(&self); }
+impl Pair { const WIDTH: u8 = 2; fn width(&self) {} }
+macro_rules! shout { () => {} }
+#[proc_macro]
+pub fn derive(input: u8) -> u8 { const SEED: u8 = seed(); input }
+fn host() { const LOCAL: u8 = compute(); static CACHE: u8 = 1; }
+mod nest {}
+fn size() {}
+struct Plot { size: u8, area: u8, #[cfg(test)] spy: u8 }
+fn area() {}
+#[cfg(test)] const PROBE_LIMIT: u8 = 1;
+#[cfg(test)] static PROBE_TABLE: u8 = 1;
+struct S { #[cfg(test)] probe: u32, real: u32 }
+enum E { #[cfg(test)] A, B }
+impl X { #[cfg(test)] fn t() {} fn real() {} }
+fn f() { #[cfg(test)] let x = 1; }
+mod outer { #[cfg(test)] mod inner {} }
+";

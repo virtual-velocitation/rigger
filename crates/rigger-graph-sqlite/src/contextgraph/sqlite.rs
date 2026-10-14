@@ -11,17 +11,18 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use super::query::name_suffix;
 use super::{
     CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch, EntryFold,
-    Error, FoldAccess, Graph, Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION,
-    KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC,
-    KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE,
-    KIND_STAGE, OWED_LOST_FOLD, OWED_OLDER_RULE, REBUILD_OWED, REL_ABOUT, REL_CALLS,
-    REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY,
-    REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
-    REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
-    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
-    TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
-    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    Error, FoldAccess, Graph, Located, Node, Projection, CODE_KIND_PRECEDENCE, KIND_AGENT,
+    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
+    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
+    KIND_LESSON, KIND_RATIONALE, KIND_STAGE, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
+    REBUILD_OWED, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES,
+    REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED, REL_REALIZES,
+    REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES,
+    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED,
+    TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
+    TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
+    TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Position, Revision};
 use crate::lockfile::HeldLock;
@@ -95,12 +96,17 @@ CREATE TABLE IF NOT EXISTS relabel_owed (
 );
 ";
 
-/// The fold rule `graph.db` was folded under, recorded as the file's `user_version`. A file at an
-/// older version that folded anything was folded before generations superseded their predecessors
-/// (spec 101): it holds facts a superseded generation asserted and has no assertion ledgers to
-/// retire them from, so it owes one cold rebuild from the log ([`Projector::rebuild`], which only
-/// `rigger setup` runs) and nothing folds into it incrementally until then.
-const PROJECTION_VERSION: i64 = 1;
+/// The fold rule `graph.db` was folded under, recorded as the file's `user_version`. Rule 1 is
+/// generations superseding their predecessors (spec 101): a file folded before it holds facts a
+/// superseded generation asserted and has no assertion ledgers to retire them from. Rule 2 is
+/// the shared node's one kind (spec 116, [`settling_definition`]): a file folded before it gave
+/// a node the definitions of one file share the kind and line of the last one folded. A file at
+/// an older version that folded anything owes one cold rebuild from the log
+/// ([`Projector::rebuild`], which only `rigger setup` runs) and nothing folds into it
+/// incrementally until then. A rebuild's shadow records the rule it is folded under the same
+/// way, from the moment it is opened, so one a binary of another rule left is never resumed
+/// ([`open_shadow`]).
+pub const PROJECTION_VERSION: i64 = 2;
 
 /// The generation ledgers and their views, dropped from a file at an older [`PROJECTION_VERSION`]
 /// so [`SCHEMA`] recreates them in their current shape.
@@ -417,8 +423,8 @@ impl Projector {
     /// of the file: a process holding the live file open (an agent's MCP session, the dashboard)
     /// keeps a valid connection and reads the rebuilt file from its next query, where a file renamed
     /// over one it holds would leave it reading the old file through a write-ahead log the new one
-    /// shares. The shadow itself stays unstamped and unpruned until the swap ends by removing it
-    /// ([`remove_shadow`]).
+    /// shares. The shadow itself stays unpruned, and stamped with the fold rule it is folded under
+    /// ([`open_shadow`]), until the swap ends by removing it ([`remove_shadow`]).
     ///
     /// The shadow is never pruned, because the drop set is not monotone in the log: an id a closed
     /// run recorded moves from drop to keep when the active run records it again, and a prune
@@ -432,7 +438,8 @@ impl Projector {
     /// releases it with the process - and the next one resumes from the shadow's last committed
     /// batch without refolding it and prunes a fresh copy from the whole run attribution the shadow
     /// gathered - the same graph and the same counts a cold rebuild reaches, however far the pass
-    /// before it got.
+    /// before it got. A shadow folded under another fold rule holds what that rule gave, so it is
+    /// discarded and the log folded from its start ([`open_shadow`]).
     ///
     /// An emit that found the old file owing appended without folding, and did so before the
     /// copy: so after it `source` is read once more from the cursor alone, into the live file and
@@ -860,7 +867,8 @@ impl Projector {
     ///
     /// Resolution order (the graph's existing surface convention): an EXACT node-id match first, so
     /// a full `<file>::<name>` id resolves directly; only on a miss is the input treated as a BARE
-    /// name and matched by the pinned name-suffix expression over code-entity DEFINITION nodes.
+    /// name and matched by the pinned name-suffix expression over code-entity DEFINITION nodes, a
+    /// data member and a declaration among them (a lookup, never the walks' call-target test).
     /// Zero candidates -> [`Located::None`]; exactly one -> [`Located::One`] (its site); more than
     /// one -> [`Located::Many`] the SORTED candidates, never a guess among them.
     ///
@@ -873,7 +881,7 @@ impl Projector {
             return Ok(Located::One(self.site_of(&conn, node)?));
         }
         // Else a bare name: the pinned name-suffix match over definition nodes (sorted by id).
-        let cands = definitions_with_suffix(&conn, entity, &self.project)?;
+        let cands = definitions_with_suffix(&conn, entity, &self.project, false)?;
         match cands.as_slice() {
             [] => Ok(Located::None),
             [only] => {
@@ -976,8 +984,9 @@ impl Projector {
     ///   discoverer's layer + 1. BFS visits shallowest-first, so a node's recorded layer is its
     ///   minimum hop distance from the seed, stable across polls.
     /// - **Cross-file resolution.** A `CALLS` edge whose callee target is BARE (no `name` attr - the
-    ///   definition is in another file) is resolved by the pinned name-suffix expression over
-    ///   code-entity DEFINITION nodes: EXACTLY ONE definition auto-continues (the edge is redirected
+    ///   definition is in another file), or a named node that is no call target (a data member or
+    ///   a declaration of the called leaf), is resolved by the pinned name-suffix expression over
+    ///   call-target DEFINITION nodes: EXACTLY ONE definition auto-continues (the edge is redirected
     ///   onto the real definition); MORE THAN ONE becomes a marked frontier ([`CallNode::frontier`]
     ///   carrying the SORTED candidate ids) the walk does NOT descend - honest by construction, the
     ///   human re-seeds on a chosen candidate; ZERO leaves the bare node a terminal leaf. A same-file
@@ -1013,8 +1022,10 @@ impl Projector {
                     if tier_rank(&tier, UNRECOGNIZED_EDGE_RANK) < floor {
                         continue; // below the confidence floor: not a followed edge
                     }
-                    // Resolve the callee: a same-file definition lands directly; a bare cross-file
-                    // placeholder resolves by its name-suffix to the definition(s) sharing the name.
+                    // Resolve the callee: a same-file call-target definition lands directly; a
+                    // bare cross-file placeholder, or a named data member or declaration,
+                    // resolves by its name-suffix to the call-target definition(s) sharing the
+                    // name.
                     let (target, frontier) = resolve_down_hop(&conn, &raw_to, &self.project)?;
                     hops.push((target, tier, valid_from, source, frontier));
                 }
@@ -1047,8 +1058,10 @@ impl Projector {
     /// - **Reverse cross-file resolution (the mirror of the DOWN policy).** A caller of the seed's
     ///   name is found through the reverse name-match: an edge that literally targets `cur` is a
     ///   SAME-FILE caller (its call already lands on the definition - always followed, unambiguous);
-    ///   an edge to a BARE placeholder whose entity-name equals `cur`'s name is a CROSS-FILE caller,
-    ///   attributed to `cur` only when that name has EXACTLY ONE definition (`cur` itself). When the
+    ///   an edge to a BARE placeholder, or to a named data member or declaration, whose entity-name
+    ///   equals `cur`'s name is a CROSS-FILE caller, attributed to `cur` only when that name has
+    ///   EXACTLY ONE call-target definition (`cur` itself). A `cur` that is itself a data member or
+    ///   a declaration, as seed or as a node the walk reached, has no caller. When the
     ///   name has MORE THAN ONE definition the caller is a marked FRONTIER ([`CallNode::frontier`]
     ///   carrying the SORTED candidate definition ids) the walk does NOT ascend - honest by
     ///   construction, since that caller might be calling a same-named sibling rather than the seed;
@@ -1370,16 +1383,23 @@ fn prune_a_copy(shadow: &Connection, copy: &str, project: &str) -> Result<Connec
 /// Open the rebuild's shadow file at `path`, creating it when there is none. Only the holder of the
 /// rebuild lock ([`RebuildLock`]) calls this, so the shadow it opens is its own: no other rebuild
 /// has it open, waits on it or removes it, and none can take its name while this one holds it. A
-/// shadow is resumed only together with the run attribution it gathered: one holding a cursor
-/// without it could derive the prune from part of that attribution alone, so it is discarded
-/// ([`remove_shadow`]) and opened again empty, to be folded from the start - under the lock, like
-/// every other end of a shadow.
+/// shadow is resumed only together with the run attribution it gathered, and only under the fold
+/// rule it was folded under: one holding a cursor without that attribution could derive the prune
+/// from part of it alone, and one holding a cursor of another [`PROJECTION_VERSION`] (a rule-1
+/// binary recorded none) holds what that rule folded, so either is discarded ([`remove_shadow`])
+/// and opened again empty, to be folded from the start - under the lock, like every other end of
+/// a shadow. The shadow handed back records the current rule.
 fn open_shadow(path: &str) -> Result<Connection, Error> {
-    let shadow = Connection::open(path).map_err(be)?;
-    if has_table(&shadow, "rebuild_cursor")? && !has_table(&shadow, "rebuild_run_closure")? {
+    let mut shadow = Connection::open(path).map_err(be)?;
+    let resumable =
+        has_table(&shadow, "rebuild_run_closure")? && fold_rule(&shadow)? == PROJECTION_VERSION;
+    if has_table(&shadow, "rebuild_cursor")? && !resumable {
         remove_shadow(shadow, path)?;
-        return Connection::open(path).map_err(be);
+        shadow = Connection::open(path).map_err(be)?;
     }
+    shadow
+        .pragma_update(None, "user_version", PROJECTION_VERSION)
+        .map_err(be)?;
     Ok(shadow)
 }
 
@@ -1503,12 +1523,15 @@ fn has_table(conn: &Connection, name: &str) -> Result<bool, Error> {
     .map_err(be)
 }
 
+/// The fold rule `conn`'s file records ([`PROJECTION_VERSION`]): 0 for a file that records none.
+fn fold_rule(conn: &Connection) -> Result<i64, Error> {
+    conn.pragma_query_value(None, "user_version", |r| r.get(0))
+        .map_err(be)
+}
+
 /// Whether `conn`'s file records a fold rule older than [`PROJECTION_VERSION`].
 fn stale(conn: &Connection) -> Result<bool, Error> {
-    let version: i64 = conn
-        .pragma_query_value(None, "user_version", |r| r.get(0))
-        .map_err(be)?;
-    Ok(version < PROJECTION_VERSION)
+    Ok(fold_rule(conn)? < PROJECTION_VERSION)
 }
 
 /// Whether the file behind `conn` owes its cold rebuild: it records an older fold rule AND folded
@@ -2133,20 +2156,100 @@ fn settle_node(
             detach_attachments(tx, id, at, project)?;
         }
     }
-    match defined {
-        Some(name) if definition_name(tx, id, project)?.is_none() => {
-            definition_retired(tx, id, &name, project)
-        }
-        _ => Ok(()),
+    undo_what_resolved_against(tx, id, defined, project).map(drop)
+}
+
+/// Undo what resolved against node `id` ([`definition_retired`]) when it defined `defined`
+/// before a fold changed it and defines no name now, and answer the name it defines now.
+fn undo_what_resolved_against(
+    tx: &Transaction,
+    id: &str,
+    defined: Option<String>,
+    project: &str,
+) -> Result<Option<String>, Error> {
+    let now = definition_name(tx, id, project)?;
+    if let (Some(name), None) = (&defined, &now) {
+        definition_retired(tx, id, name, project)?;
     }
+    Ok(now)
+}
+
+/// Where `kind` stands in [`CODE_KIND_PRECEDENCE`]: a kind outside the list ranks with its last
+/// member, `other`.
+fn kind_rank(kind: &str) -> usize {
+    CODE_KIND_PRECEDENCE
+        .iter()
+        .position(|listed| *listed == kind)
+        .unwrap_or(CODE_KIND_PRECEDENCE.len() - 1)
+}
+
+/// The `(kind, line)` node `id` takes when `by` folds a definition of it, a `kind` at `line`
+/// (spec 116, A SHARED NODE TAKES ONE KIND). Every definition of one leaf in one file folds onto
+/// one node, so for a keyed event the node settles on ONE of the definitions its file's identity
+/// asserts on it at its current generation: the one whose kind is first in
+/// [`CODE_KIND_PRECEDENCE`], the lower line and then the lesser kind string breaking a tie -
+/// whatever order the batch emitted them in. The assertion that identity already recorded holds
+/// the winner of the definitions folded so far; one of another generation, or carrying no `kind`
+/// attr (a reference that folded before its definition), is no candidate. An unkeyed event is
+/// asserted by no generation and takes the node as it is, the last folded.
+fn settling_definition(
+    tx: &Transaction,
+    by: &Asserter,
+    id: &str,
+    kind: &str,
+    line: u32,
+    project: &str,
+) -> Result<(String, u32), Error> {
+    let folded = (kind_rank(kind), line, kind.to_string());
+    if by.identity.is_empty() {
+        return Ok((folded.2, folded.1));
+    }
+    let held = recorded_assertion(tx, by, id, project)?
+        .filter(|(generation, ..)| generation == by.generation)
+        .and_then(|(_, _, attrs)| held_definition(&attrs?));
+    let (_, line, kind) = match held {
+        Some((kind, line)) => folded.min((kind_rank(&kind), line, kind)),
+        None => folded,
+    };
+    Ok((kind, line))
+}
+
+/// The `(kind, line)` of the definition an assertion's `attrs` JSON carries: none for attrs
+/// without a `kind` (a bare reference target).
+fn held_definition(attrs: &str) -> Option<(String, u32)> {
+    let attrs: BTreeMap<String, String> = serde_json::from_str(attrs).ok()?;
+    Some((attrs.get("kind")?.clone(), attrs.get("line")?.parse().ok()?))
+}
+
+/// The one assertion `by`'s identity has recorded of node `id`, as `(generation, kind, attrs)`:
+/// an identity asserts a node once, its newest generation replacing the older
+/// ([`record_assertion`]).
+fn recorded_assertion(
+    tx: &Transaction,
+    by: &Asserter,
+    id: &str,
+    project: &str,
+) -> Result<Option<(String, String, Option<String>)>, Error> {
+    tx.query_row(
+        "SELECT generation, kind, attrs FROM node_assertions
+          WHERE project = ?1 AND identity = ?2 AND node_id = ?3",
+        params![project, by.identity, id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()
+    .map_err(be)
 }
 
 /// The name node `id` defines, when it is a live definition: a code entity carrying the `name`
-/// attr its definition's extraction gave it.
+/// attr its definition's extraction gave it, of a kind a call resolves onto
+/// ([`call_target_sql`]). A data member or a declaration defines no name here.
 fn definition_name(tx: &Transaction, id: &str, project: &str) -> Result<Option<String>, Error> {
     tx.query_row(
-        "SELECT json_extract(attrs, '$.name') FROM nodes
-          WHERE id = ?1 AND project = ?2 AND kind = ?3",
+        &format!(
+            "SELECT json_extract(attrs, '$.name') FROM nodes
+              WHERE id = ?1 AND project = ?2 AND kind = ?3 AND {}",
+            call_target_sql()
+        ),
         params![id, project, KIND_CODE_ENTITY],
         |r| r.get::<_, Option<String>>(0),
     )
@@ -2158,20 +2261,23 @@ fn definition_name(tx: &Transaction, id: &str, project: &str) -> Result<Option<S
 /// Undo what resolved against definition `id` of `name` now that it is no longer one (spec 101,
 /// "convergences undo with their definition"), the inverse of the definition arm's two
 /// convergences: every live cross-file reference to `name` tiered INFERRED because a definition of
-/// it existed is demoted to AMBIGUOUS when no other definition remains ([`reference_tier`]'s own
+/// it existed is demoted to AMBIGUOUS when no other call target defines it ([`reference_tier`]'s own
 /// rule), and the test proofs of `name` are resolved again without it ([`resolve_proofs`]): what
 /// landed on `id` waits for, or moves to, the definition that now answers the name, and a retired
 /// `id` keeps no proof to come back with.
 fn definition_retired(tx: &Transaction, id: &str, name: &str, project: &str) -> Result<(), Error> {
     tx.execute(
-        "UPDATE edges SET tier = ?1
-          WHERE rel IN (?2, ?3) AND tier = ?4 AND project = ?5 AND valid_to IS NULL
-            AND substr(to_id, instr(to_id, '::') + 2) = ?6
-            AND NOT EXISTS (
-              SELECT 1 FROM nodes n
-               WHERE substr(n.id, instr(n.id, '::') + 2) = ?6
-                 AND n.kind = ?7 AND n.project = ?5 AND n.id != edges.to_id
-                 AND json_extract(n.attrs, '$.name') = ?6)",
+        &format!(
+            "UPDATE edges SET tier = ?1
+              WHERE rel IN (?2, ?3) AND tier = ?4 AND project = ?5 AND valid_to IS NULL
+                AND substr(to_id, instr(to_id, '::') + 2) = ?6
+                AND NOT EXISTS (
+                  SELECT 1 FROM nodes n
+                   WHERE substr(n.id, instr(n.id, '::') + 2) = ?6
+                     AND n.kind = ?7 AND n.project = ?5 AND n.id != edges.to_id
+                     AND json_extract(n.attrs, '$.name') = ?6 AND {})",
+            call_target_sql()
+        ),
         params![
             TIER_AMBIGUOUS,
             REL_REFERENCES,
@@ -2582,7 +2688,16 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             }
             ensure_node(tx, by, &file, KIND_FILE, &file_attrs, project)?;
             let entity = code_entity_id(&file, &c.name);
-            let line = c.line.to_string();
+            // A node its file's definitions share takes ONE kind and line
+            // ([`settling_definition`]), passed to the one `ensure_node` call, and is a
+            // definition only while that winner is a call target: a node that defined a name
+            // before this fold and defines none after it (a fn that is only a field at its
+            // file's next generation, a field settling over a module of its leaf) undoes what
+            // resolved against it, as a node that stops being a definition does when it settles
+            // ([`settle_node`], which reads the node only after this arm has changed it).
+            let defined = definition_name(tx, &entity, project)?;
+            let (kind, line) = settling_definition(tx, by, &entity, &c.kind, c.line, project)?;
+            let line = line.to_string();
             ensure_node(
                 tx,
                 by,
@@ -2590,12 +2705,13 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                 KIND_CODE_ENTITY,
                 &[
                     ("name", &c.name),
-                    ("kind", &c.kind),
+                    ("kind", &kind),
                     ("line", &line),
                     ("lang", &c.lang),
                 ],
                 project,
             )?;
+            let defines = undo_what_resolved_against(tx, &entity, defined, project)?;
             // CONTAINS: the file container node holds this definition. A definition's containment
             // is the most explicit structural fact there is, so it folds at the EXTRACTED tier
             // (spec 29a, addendum 6.2).
@@ -2626,28 +2742,33 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             // one tier authority evolves both structural edges together, never a forked behavior
             // where the CALLS edge lags its sibling's confidence. A same-file CALLS to this
             // definition's own entity is excluded by the same `to_id != entity` guard.
-            tx.execute(
-                "UPDATE edges SET tier = ?1
+            //
+            // Both convergences run only when the settled node is a call target: a data member
+            // or a declaration of this name upgrades no tier and takes no proof.
+            if defines.is_some() {
+                tx.execute(
+                    "UPDATE edges SET tier = ?1
                    WHERE rel IN (?2, ?7) AND tier = ?3 AND project = ?4 AND valid_to IS NULL
                      AND to_id != ?5
                      AND substr(to_id, instr(to_id, '::') + 2) = ?6",
-                params![
-                    TIER_INFERRED,
-                    REL_REFERENCES,
-                    TIER_AMBIGUOUS,
-                    project,
-                    entity,
-                    c.name,
-                    REL_CALLS
-                ],
-            )
-            .map_err(be)?;
-            // Spec 86 criterion 2's convergent half: any TEST-ORIGIN evidence staged before this
-            // definition existed (a forward reference to a file the sorted ingest had not yet
-            // reached) names it now - transfer it onto `entity` and clear the stage. Same
-            // convergence point as the tier upgrade just above (this definition folding is what
-            // makes both resolvable), never a second timing authority.
-            resolve_proofs(tx, &c.name, project)?;
+                    params![
+                        TIER_INFERRED,
+                        REL_REFERENCES,
+                        TIER_AMBIGUOUS,
+                        project,
+                        entity,
+                        c.name,
+                        REL_CALLS
+                    ],
+                )
+                .map_err(be)?;
+                // Spec 86 criterion 2's convergent half: any TEST-ORIGIN evidence staged before this
+                // definition existed (a forward reference to a file the sorted ingest had not yet
+                // reached) names it now - transfer it onto `entity` and clear the stage. Same
+                // convergence point as the tier upgrade just above (this definition folding is what
+                // makes both resolvable), never a second timing authority.
+                resolve_proofs(tx, &c.name, project)?;
+            }
         }
         TYPE_EDGE_INFERRED => {
             // Spec 29a criterion 1: one reference the extraction pass emitted. Fold it into a
@@ -3233,45 +3354,65 @@ fn node_row(conn: &Connection, id: &str, project: &str) -> Result<Option<Node>, 
     .map_err(be)
 }
 
-/// Whether the node `id` carries a `name` attr in `project` (spec 52) - i.e. it is a code-entity
-/// DEFINITION, not a bare cross-file placeholder the reference fold created attr-less. This is how
-/// a directed hop tells a same-file callee (which already lands on its definition) from a bare
-/// cross-file callee (which must be resolved by name-suffix).
-fn node_has_name(conn: &Connection, id: &str, project: &str) -> Result<bool, Error> {
-    let found = conn
-        .query_row(
-            "SELECT 1 FROM nodes
+/// The SQL predicate [`is_call_target`] is, over a node row's `attrs`: true unless its `kind` is
+/// one of [`NON_TARGET_KINDS`], an absent `kind` coalescing to the empty string, which is none
+/// of them.
+fn call_target_sql() -> String {
+    let kinds: Vec<String> = NON_TARGET_KINDS.iter().map(|k| format!("'{k}'")).collect();
+    format!(
+        "COALESCE(json_extract(attrs, '$.kind'), '') NOT IN ({})",
+        kinds.join(", ")
+    )
+}
+
+/// Whether the NAMED node `id` is a call target in `project` ([`call_target_sql`]): `Some(true)`
+/// for a code-entity definition a call resolves onto, `Some(false)` for a named node of a
+/// non-target kind (a data member, a declaration), and `None` for a node carrying no `name` attr
+/// (a bare cross-file placeholder the reference fold created attr-less) or for no node at all.
+/// This is how a directed hop tells a same-file callee (which already lands on its definition)
+/// from a callee that must be resolved by name-suffix: every answer but `Some(true)`.
+fn named_call_target(conn: &Connection, id: &str, project: &str) -> Result<Option<bool>, Error> {
+    conn.query_row(
+        &format!(
+            "SELECT {} FROM nodes
               WHERE id = ?1 AND project = ?2 AND json_extract(attrs, '$.name') IS NOT NULL",
-            params![id, project],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(be)?;
-    Ok(found.is_some())
+            call_target_sql()
+        ),
+        params![id, project],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(be)
 }
 
 /// The code-entity DEFINITION nodes whose entity-name equals `suffix`, in `project`, sorted by id
 /// (spec 52 - the conservative cross-file resolution's candidate set). Phrased with the PINNED
 /// `substr(id, instr(id, '::') + 2)` expression so it seeks the `idx_nodes_name_suffix` expression
 /// index rather than scanning; filtered to real definitions (a `name` attr present), so a bare
-/// placeholder sharing the name is never itself a candidate.
+/// placeholder sharing the name is never itself a candidate. With `call_side` the candidates are
+/// the call targets alone ([`call_target_sql`]), what a walk resolves a call onto; without it
+/// every named node answers, a data member and a declaration included, what a lookup by name
+/// shows.
 fn definitions_with_suffix(
     conn: &Connection,
     suffix: &str,
     project: &str,
+    call_side: bool,
 ) -> Result<Vec<String>, Error> {
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT id FROM nodes
               WHERE substr(id, instr(id, '::') + 2) = ?1
                 AND kind = ?2
                 AND json_extract(attrs, '$.name') IS NOT NULL
                 AND project = ?3
+                AND (?4 = 0 OR {})
               ORDER BY id",
-        )
+            call_target_sql()
+        ))
         .map_err(be)?;
     let ids = stmt
-        .query_map(params![suffix, KIND_CODE_ENTITY, project], |r| {
+        .query_map(params![suffix, KIND_CODE_ENTITY, project, call_side], |r| {
             r.get::<_, String>(0)
         })
         .map_err(be)?
@@ -3324,9 +3465,11 @@ fn call_edge_rows(
 /// Resolve one DOWN hop's callee target (spec 52 criterion 1). Returns the id the edge should land
 /// on and, when the hop is a multi-candidate frontier, its SORTED candidate ids:
 ///
-/// - a SAME-FILE callee already carries a `name` attr (it is its own definition) -> land on it,
+/// - a SAME-FILE callee that is a named call target (it is its own definition) -> land on it,
 ///   no frontier;
-/// - a BARE cross-file placeholder resolves by name-suffix over the DEFINITION nodes: EXACTLY ONE
+/// - a BARE cross-file placeholder, and a named node that is no call target (a data member or a
+///   declaration of the called leaf), resolves by name-suffix over the call-target DEFINITION
+///   nodes: EXACTLY ONE
 ///   definition auto-continues (the edge is redirected onto the real definition, no frontier);
 ///   MORE THAN ONE is a marked frontier (the placeholder id, carrying the sorted candidates) the
 ///   caller does NOT descend; ZERO leaves the placeholder a terminal leaf (no descent target).
@@ -3335,10 +3478,10 @@ fn resolve_down_hop(
     raw_to: &str,
     project: &str,
 ) -> Result<(String, Option<Vec<String>>), Error> {
-    if node_has_name(conn, raw_to, project)? {
+    if named_call_target(conn, raw_to, project)? == Some(true) {
         return Ok((raw_to.to_string(), None));
     }
-    let cands = definitions_with_suffix(conn, name_suffix(raw_to), project)?;
+    let cands = definitions_with_suffix(conn, name_suffix(raw_to), project, true)?;
     match cands.len() {
         1 => Ok((cands.into_iter().next().unwrap(), None)),
         0 => Ok((raw_to.to_string(), None)),
@@ -3371,10 +3514,11 @@ fn callers_direct(
 /// the reverse cross-file resolution). A cross-file call targets a bare placeholder in the CALLER's
 /// file namespace (no `name` attr - the definition lives elsewhere), so these are the callers that
 /// call `name` across a file boundary. Phrased with the PINNED `substr(id, instr(id,'::')+2)`
-/// name-suffix expression so it seeks the `idx_nodes_name_suffix` index; filtered to bare targets (a
-/// `name` attr absent) so an edge that lands directly on a real definition (a same-file caller, or a
-/// call to a DIFFERENT same-named definition) is never miscounted here - those are covered by
-/// [`callers_direct`] on the exact definition, keeping the two caller sets disjoint.
+/// name-suffix expression so it seeks the `idx_nodes_name_suffix` index; filtered to targets that
+/// are no call target (a `name` attr absent, or a named data member or declaration a same-file
+/// call naming its leaf lands on) so an edge that lands directly on a real definition (a same-file
+/// caller, or a call to a DIFFERENT same-named definition) is never miscounted here - those are
+/// covered by [`callers_direct`] on the exact definition, keeping the two caller sets disjoint.
 fn callers_via_bare(
     conn: &Connection,
     name: &str,
@@ -3382,12 +3526,15 @@ fn callers_via_bare(
 ) -> Result<Vec<(String, String, i64, Position)>, Error> {
     call_edge_rows(
         conn,
-        "SELECT e.from_id, e.tier, e.valid_from, e.source FROM edges e
+        &format!(
+            "SELECT e.from_id, e.tier, e.valid_from, e.source FROM edges e
                JOIN nodes n ON n.id = e.to_id AND n.project = e.project
               WHERE e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2
                 AND substr(e.to_id, instr(e.to_id, '::') + 2) = ?3
-                AND json_extract(n.attrs, '$.name') IS NULL
+                AND (json_extract(n.attrs, '$.name') IS NULL OR NOT ({}))
               ORDER BY e.from_id",
+            call_target_sql()
+        ),
         params![REL_CALLS, project, name],
     )
 }
@@ -3400,25 +3547,31 @@ type CallHop = (String, String, i64, Position, Option<Vec<String>>);
 
 /// The callers of `cur` for one UP hop (spec 52 criterion 3), each a [`CallHop`] whose `frontier`
 /// carries the SORTED candidate definition ids on a multi-candidate hop the walk must NOT ascend.
-/// Two disjoint sources, mirroring [`resolve_down_hop`] in reverse:
+/// A named `cur` that is no call target (a data member or a declaration, as seed or as a node the
+/// walk reached) has NO caller: the calls naming its leaf are callers of the call target they
+/// resolve onto. Otherwise two disjoint sources, mirroring [`resolve_down_hop`] in reverse:
 ///
 /// - **Same-file callers** ([`callers_direct`]) whose edge literally targets `cur` - always an
 ///   unambiguous caller, no frontier.
-/// - **Cross-file callers** ([`callers_via_bare`]) that call `cur`'s NAME through a bare placeholder,
-///   attributed to `cur` only when that name resolves unambiguously: EXACTLY ONE definition (`cur`
-///   itself) -> a real caller, no frontier; MORE THAN ONE definition -> a marked frontier carrying
-///   the sorted candidate ids (the caller might be calling a same-named sibling, so the walk stops
-///   there). The cross-file source applies only when `cur` is a DEFINITION (carries a `name` attr):
-///   a bare node is not a definition, so a cross-file call to its name resolves to the real
-///   definitions elsewhere, never to it.
+/// - **Cross-file callers** ([`callers_via_bare`]) that call `cur`'s NAME through a node that is
+///   no call target, attributed to `cur` only when that name resolves unambiguously: EXACTLY ONE
+///   definition (`cur` itself) -> a real caller, no frontier; MORE THAN ONE definition -> a marked
+///   frontier carrying the sorted candidate ids (the caller might be calling a same-named sibling,
+///   so the walk stops there). The cross-file source applies only when `cur` is a call-target
+///   DEFINITION: a bare node is not a definition, so a cross-file call to its name resolves to the
+///   real definitions elsewhere, never to it.
 fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallHop>, Error> {
+    let definition = match named_call_target(conn, cur, project)? {
+        Some(false) => return Ok(Vec::new()),
+        target => target.is_some(),
+    };
     let mut out: Vec<CallHop> = Vec::new();
     for (from, tier, vf, src) in callers_direct(conn, cur, project)? {
         out.push((from, tier, vf, src, None));
     }
-    if node_has_name(conn, cur, project)? {
+    if definition {
         let name = name_suffix(cur);
-        let cands = definitions_with_suffix(conn, name, project)?;
+        let cands = definitions_with_suffix(conn, name, project, true)?;
         // `cur` is a definition of its own name, so it is always among the candidates: exactly one
         // means `cur` is the sole definition (unambiguous), more than one is a frontier.
         let frontier = if cands.len() > 1 { Some(cands) } else { None };
@@ -3509,16 +3662,18 @@ fn referenced_not_called(
 /// (cross-file resolution stays out of scope - only the tier is classified):
 ///
 /// - the name is DEFINED in the SAME file (the target `<file>::<name>` already carries a
-///   definition's attrs) -> [`TIER_EXTRACTED`]: an explicit, resolved local reference (a call /
+///   call-target definition's attrs) -> [`TIER_EXTRACTED`]: an explicit, resolved local reference (a call /
 ///   import / inherit of a known local symbol).
 /// - else the name is DEFINED in ANOTHER file the graph knows (some other code-entity node carries
-///   it as a definition) -> [`TIER_INFERRED`]: a derived / transitive cross-file link.
-/// - else the name is defined NOWHERE known -> [`TIER_AMBIGUOUS`]: a grep-visible-only occurrence (a
+///   it as a call-target definition) -> [`TIER_INFERRED`]: a derived / transitive cross-file link.
+/// - else no call target defines the name ANYWHERE known -> [`TIER_AMBIGUOUS`]: a grep-visible-only occurrence (a
 ///   macro body, reflection string, dynamic or external name). It is kept, never dropped, but
 ///   tiered lowest, and the blast radius never crosses it (addendum 2.4).
 ///
 /// A definition node is told from a bare reference target by carrying a `name` attr (the definition
-/// arm sets it; the reference arm creates bare, attr-less targets). Called BEFORE the reference arm
+/// arm sets it; the reference arm creates bare, attr-less targets) and being a call target
+/// ([`call_target_sql`]): a data member or a declaration of the name tiers a reference as no
+/// definition at all does. Called BEFORE the reference arm
 /// `ensure_node`s its bare target, so the target this reference is about to create never miscounts
 /// as its own definition. The reverse fold order - a reference folding before its cross-file
 /// definition - is reconciled convergently by the definition arm's AMBIGUOUS -> INFERRED upgrade, so
@@ -3529,29 +3684,23 @@ fn reference_tier(
     name: &str,
     project: &str,
 ) -> Result<&'static str, Error> {
-    // Same-file definition: the target id already carries a definition's `name` attr.
-    let same_file_def = tx
-        .query_row(
-            "SELECT 1 FROM nodes
-              WHERE id = ?1 AND project = ?2 AND json_extract(attrs, '$.name') IS NOT NULL",
-            params![target, project],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(be)?
-        .is_some();
-    if same_file_def {
+    // Same-file definition: the target id is already a named call target.
+    if named_call_target(tx, target, project)? == Some(true) {
         return Ok(TIER_EXTRACTED);
     }
     // Cross-file definition: a code-entity in a DIFFERENT file (id != this target) carries this
-    // name as a definition. A bare reference target elsewhere never matches - it has no `name` attr.
+    // name as a call-target definition. A bare reference target elsewhere never matches - it has
+    // no `name` attr.
     let cross_file_def = tx
         .query_row(
-            "SELECT 1 FROM nodes
-              WHERE substr(id, instr(id, '::') + 2) = ?4
-                AND kind = ?1 AND project = ?2 AND id != ?3
-                AND json_extract(attrs, '$.name') = ?4
-              LIMIT 1",
+            &format!(
+                "SELECT 1 FROM nodes
+                  WHERE substr(id, instr(id, '::') + 2) = ?4
+                    AND kind = ?1 AND project = ?2 AND id != ?3
+                    AND json_extract(attrs, '$.name') = ?4 AND {}
+                  LIMIT 1",
+                call_target_sql()
+            ),
             params![KIND_CODE_ENTITY, project, target, name],
             |_| Ok(()),
         )
@@ -3630,8 +3779,8 @@ fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(
     Ok(())
 }
 
-/// Resolve every recorded test reference to `name` against the definitions of `name` the graph
-/// holds NOW (spec 86 criterion 2; spec 101, "convergences undo with their definition"): the
+/// Resolve every recorded test reference to `name` against the call-target definitions of `name`
+/// ([`call_target_sql`]; no proof lands on a data member or a declaration) the graph holds NOW (spec 86 criterion 2; spec 101, "convergences undo with their definition"): the
 /// reference's own file's definition when there is one (the `#[cfg(test)] mod tests` idiom), else
 /// the ONE definition of `name` in the project, else none - a reference waits, never guessing among
 /// several same-named definitions. Run whenever a reference is recorded and whenever a definition of
@@ -3641,11 +3790,13 @@ fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(
 fn resolve_proofs(tx: &Transaction, name: &str, project: &str) -> Result<(), Error> {
     let definitions: BTreeSet<String> = {
         let mut stmt = tx
-            .prepare(
+            .prepare(&format!(
                 "SELECT id FROM nodes
                   WHERE substr(id, instr(id, '::') + 2) = ?3
-                    AND kind = ?1 AND project = ?2 AND json_extract(attrs, '$.name') = ?3",
-            )
+                    AND kind = ?1 AND project = ?2 AND json_extract(attrs, '$.name') = ?3
+                    AND {}",
+                call_target_sql()
+            ))
             .map_err(be)?;
         let rows = stmt
             .query_map(params![KIND_CODE_ENTITY, project, name], |r| r.get(0))
@@ -3906,16 +4057,7 @@ fn record_assertion(
     attrs: Option<&str>,
     project: &str,
 ) -> Result<(), Error> {
-    let recorded: Option<(String, String, Option<String>)> = tx
-        .query_row(
-            "SELECT generation, kind, attrs FROM node_assertions
-              WHERE project = ?1 AND identity = ?2 AND node_id = ?3",
-            params![project, by.identity, id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()
-        .map_err(be)?;
-    match recorded {
+    match recorded_assertion(tx, by, id, project)? {
         Some((generation, recorded_kind, _)) if generation == by.generation => {
             let settled = settled_kind([recorded_kind.as_str(), kind]).unwrap_or(kind);
             tx.execute(
@@ -4149,9 +4291,9 @@ mod tests {
         REL_GATED_BY, REL_TOUCHES,
     };
     use crate::test_support::{
-        apply_call, apply_code_entity, apply_decision, apply_def, apply_def_at, apply_governs_at,
-        apply_json, apply_json_as, apply_ref, call_back_edge, call_edge_pairs, call_layer,
-        call_node_ids, decision_json, dir_snapshot,
+        apply_call, apply_code_entity, apply_decision, apply_def, apply_def_at,
+        apply_edge_inferred_evidence, apply_governs_at, apply_json, apply_json_as, apply_ref,
+        call_back_edge, call_edge_pairs, call_layer, call_node_ids, decision_json, dir_snapshot,
     };
 
     #[test]
@@ -4492,6 +4634,31 @@ mod tests {
             &mut |after, sink| {
                 reads_from.push(after);
                 stream_past(log, after, batch, sink)
+            },
+            &mut |_| Ok(None),
+            &mut |_| {},
+        )
+    }
+
+    /// A rebuild of the graph file at `path` from `log` in batches of two, owed by its caller,
+    /// that fails at the second batch it is handed: its shadow is left holding the first.
+    fn rebuild_interrupted_after_its_first_batch(
+        path: &str,
+        log: &[Event],
+    ) -> Result<Option<Rebuilt>, Error> {
+        let mut batches = 0;
+        Projector::rebuild(
+            &locked(path),
+            "test",
+            true,
+            &mut |after, sink| {
+                stream_past(log, after, 2, &mut |events, head| {
+                    batches += 1;
+                    if batches > 1 {
+                        return Err(Error("interrupted after the first batch".to_string()));
+                    }
+                    sink(events, head)
+                })
             },
             &mut |_| Ok(None),
             &mut |_| {},
@@ -5139,23 +5306,7 @@ mod tests {
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
         drop(Projector::open(path, "test").unwrap());
-        let mut batches = 0;
-        let interrupted = Projector::rebuild(
-            &locked(path),
-            "test",
-            true,
-            &mut |after, sink| {
-                stream_past(&log, after, 2, &mut |events, head| {
-                    batches += 1;
-                    if batches > 1 {
-                        return Err(Error("interrupted after the first batch".to_string()));
-                    }
-                    sink(events, head)
-                })
-            },
-            &mut |_| Ok(None),
-            &mut |_| {},
-        );
+        let interrupted = rebuild_interrupted_after_its_first_batch(path, &log);
         let shadow = format!("{path}.rebuild");
         Connection::open(&shadow)
             .unwrap()
@@ -5530,6 +5681,27 @@ mod tests {
         );
         std::fs::remove_file(&mark).unwrap();
         assert_eq!(p.owed_because().unwrap(), vec![OWED_OLDER_RULE]);
+    }
+
+    /// The shared-node rule (spec 116) is fold rule 2: a file that folded under rule 1 took a
+    /// shared node's kind and line from the last definition folded, so it owes its rebuild, and
+    /// one at rule 2 owes none.
+    #[test]
+    fn a_graph_file_folded_at_projection_version_1_owes_its_rebuild_and_one_at_2_owes_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let p = Projector::open(path.to_str().unwrap(), "test").unwrap();
+        crate::test_support::apply_decision(&p, 1, "d1", "x", &["a.rs"], "");
+        let owed_at = |version: i64| {
+            p.conn
+                .lock()
+                .unwrap()
+                .pragma_update(None, "user_version", version)
+                .unwrap();
+            p.owed_because().unwrap()
+        };
+        assert_eq!(owed_at(1), vec![OWED_OLDER_RULE]);
+        assert_eq!(owed_at(2), Vec::<&str>::new());
     }
 
     /// The owed mark belongs to the graph file whose fold it lost: once that file is gone the mark
@@ -6279,19 +6451,6 @@ mod tests {
                 "file": file, "name": name, "kind": kind, "line": line, "lang": lang,
                 "partial": partial,
             }),
-        );
-    }
-
-    /// Spec 86 criterion 2: one TEST-ORIGIN reference evidence event, built by hand (no
-    /// `proof_events` dependency) so the fold is proven in isolation. Constructed as raw JSON
-    /// (mirroring [`apply_edge_inferred`]'s own style), never through the [`super::EdgeInferred`]
-    /// struct, so this exercises the exact wire shape a real emitter produces.
-    fn apply_edge_inferred_evidence(p: &Projector, pos: u64, file: &str, name: &str, line: u32) {
-        apply_json(
-            p,
-            pos,
-            TYPE_EDGE_INFERRED,
-            serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true }),
         );
     }
 
@@ -8884,6 +9043,287 @@ mod tests {
         );
     }
 
+    /// Spec 116 criterion 4, A DATA MEMBER IS NO CALL TARGET: a `field`, `property` or
+    /// `declaration` node is to every call-side reader what a bare placeholder is, over
+    /// hand-built events. `src/a.rs` holds the member `x` beside its fn `f`; `src/c.rs` holds the
+    /// fn `x`; `src/b.rs`'s fn `g` calls `x` across files.
+    mod call_target {
+        use super::*;
+        use crate::contextgraph::{
+            is_call_target, CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION,
+            CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD,
+            CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_PRECEDENCE, CODE_KIND_PROPERTY,
+            CODE_KIND_STATIC, CODE_KIND_TRAIT, CODE_KIND_TYPE, CODE_KIND_VARIABLE,
+            CODE_KIND_VARIANT,
+        };
+        use crate::test_support::{call_frontiers as frontiers, call_walk as walk};
+
+        const A: &str = "src/a.rs";
+        const B: &str = "src/b.rs";
+        const C: &str = "src/c.rs";
+
+        /// `a.rs`'s `f` calls `x`, which `c.rs` defines as a fn and `a.rs` as `member` (as
+        /// nothing when `None`): the call resolves down onto `c.rs`'s fn, its edges are tiered
+        /// as a cross-file reference, and the up walk from that fn reaches `f`.
+        fn a_same_file_call_naming_a_member_reaches_the_other_files_fn(member: Option<&str>) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_def(&p, 1, A, "f", 1, true);
+            if let Some(kind) = member {
+                apply_code_entity(&p, 2, A, "x", kind, 2, "rust");
+            }
+            apply_def(&p, 3, C, "x", 1, true);
+            apply_call(&p, 4, A, "x", "f");
+
+            let g = p.whole().unwrap();
+            assert_eq!(edge_tier(&g, REL_CALLS, "src/a.rs::x"), TIER_INFERRED);
+            assert_eq!(edge_tier(&g, REL_REFERENCES, "src/a.rs::x"), TIER_INFERRED);
+
+            let down = walk(&p, "src/a.rs::f", Direction::Down);
+            assert_eq!(call_node_ids(&down), ["src/a.rs::f", "src/c.rs::x"]);
+            assert_eq!(
+                call_edge_pairs(&down),
+                [("src/a.rs::f".to_string(), "src/c.rs::x".to_string())]
+            );
+            assert_eq!(frontiers(&down), []);
+
+            let up = walk(&p, "src/c.rs::x", Direction::Up);
+            assert_eq!(call_node_ids(&up), ["src/a.rs::f", "src/c.rs::x"]);
+            assert_eq!(
+                call_edge_pairs(&up),
+                [("src/a.rs::f".to_string(), "src/c.rs::x".to_string())]
+            );
+            assert_eq!(frontiers(&up), []);
+        }
+
+        /// No fn defines `x`: a same-file call and a cross-file call naming it stay ambiguous
+        /// whether `a.rs`'s `member` of that leaf folds before the calls or after them.
+        fn a_member_tiers_no_reference_to_its_leaf(member: &str, member_first: bool) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_def(&p, 1, A, "f", 1, true);
+            apply_def(&p, 2, B, "g", 1, true);
+            if member_first {
+                apply_code_entity(&p, 3, A, "x", member, 2, "rust");
+            }
+            apply_call(&p, 4, A, "x", "f");
+            apply_call(&p, 5, B, "x", "g");
+            if !member_first {
+                apply_code_entity(&p, 6, A, "x", member, 2, "rust");
+            }
+
+            for target in ["src/a.rs::x", "src/b.rs::x"] {
+                assert_eq!(
+                    call_tiers(&p, target),
+                    [TIER_AMBIGUOUS, TIER_AMBIGUOUS],
+                    "the edges onto {target}"
+                );
+            }
+        }
+
+        /// `b.rs`'s `g` calls `x`, which `c.rs` defines as a fn and each `(file, kind)` of
+        /// `others` defines too: the down walk from `g` lands on `landing`, and it and the up
+        /// walk from `c.rs`'s fn mark exactly `frontier`, the candidates the call targets are.
+        fn the_walks_frontier_holds(
+            others: &[(&str, &str)],
+            landing: &str,
+            frontier: Option<&[&str]>,
+        ) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_def(&p, 1, B, "g", 1, true);
+            apply_def(&p, 2, C, "x", 1, true);
+            for (pos, (file, kind)) in (3..).zip(others) {
+                apply_code_entity(&p, pos, file, "x", kind, 1, "rust");
+            }
+            apply_call(&p, 9, B, "x", "g");
+
+            let marked = |id: &str| -> Vec<(String, Vec<String>)> {
+                frontier
+                    .iter()
+                    .map(|cands| {
+                        (
+                            id.to_string(),
+                            cands.iter().map(|c| c.to_string()).collect(),
+                        )
+                    })
+                    .collect()
+            };
+            let down = walk(&p, "src/b.rs::g", Direction::Down);
+            assert_eq!(call_node_ids(&down), ["src/b.rs::g", landing]);
+            assert_eq!(frontiers(&down), marked(landing));
+            let up = walk(&p, "src/c.rs::x", Direction::Up);
+            assert_eq!(call_node_ids(&up), ["src/b.rs::g", "src/c.rs::x"]);
+            assert_eq!(frontiers(&up), marked("src/b.rs::g"));
+        }
+
+        /// The up walk seeded at `a.rs`'s `x`, which `f` calls in its file and `g` across
+        /// files, `c.rs` defining the fn `x`: a `member` has no caller, a bare placeholder
+        /// (`None`) keeps its direct one.
+        fn the_up_walk_seeded_at_x_reaches(member: Option<&str>, nodes: &[&str]) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_def(&p, 1, A, "f", 1, true);
+            apply_def(&p, 2, B, "g", 1, true);
+            apply_def(&p, 3, C, "x", 1, true);
+            if let Some(kind) = member {
+                apply_code_entity(&p, 4, A, "x", kind, 2, "rust");
+            }
+            apply_call(&p, 5, A, "x", "f");
+            apply_call(&p, 6, B, "x", "g");
+
+            let up = walk(&p, "src/a.rs::x", Direction::Up);
+            assert_eq!(call_node_ids(&up), nodes);
+            assert_eq!(up.edges.len(), nodes.len() - 1);
+        }
+
+        /// The up walk from `c.rs`'s fn `t` reaches `a.rs`'s `member` `x`, the caller a
+        /// hand-built call names, and ascends no further: neither to `f`, which calls `x` in its
+        /// file, nor to `g`, which calls it across files.
+        fn the_up_walk_stops_at_a_member_it_reaches(member: &str) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_def(&p, 1, C, "t", 1, true);
+            apply_def(&p, 2, A, "f", 1, true);
+            apply_def(&p, 3, B, "g", 1, true);
+            apply_code_entity(&p, 4, A, "x", member, 2, "rust");
+            apply_call(&p, 5, A, "t", "x");
+            apply_call(&p, 6, A, "x", "f");
+            apply_call(&p, 7, B, "x", "g");
+
+            let up = walk(&p, "src/c.rs::t", Direction::Up);
+            assert_eq!(call_node_ids(&up), ["src/a.rs::x", "src/c.rs::t"]);
+            assert_eq!(call_layer(&up, "src/a.rs::x"), Some(1));
+            assert_eq!(
+                call_edge_pairs(&up),
+                [("src/a.rs::x".to_string(), "src/c.rs::t".to_string())]
+            );
+        }
+
+        /// `locate` answers a `member`'s leaf: the member alone, and one of the sorted
+        /// candidates when another file's fn shares the leaf.
+        fn locate_answers_a_members_leaf(member: &str) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, A, "x", member, 2, "rust");
+            match p.locate("x").unwrap() {
+                Located::One(site) => assert_eq!(
+                    (site.id.as_str(), site.kind.as_str(), site.line),
+                    ("src/a.rs::x", member, 2)
+                ),
+                other => panic!("expected the member alone, got {other:?}"),
+            }
+            apply_def(&p, 2, C, "x", 1, true);
+            match p.locate("x").unwrap() {
+                Located::Many(cands) => assert_eq!(
+                    cands.into_iter().map(|c| c.id).collect::<Vec<_>>(),
+                    ["src/a.rs::x", "src/c.rs::x"]
+                ),
+                other => panic!("expected both candidates, got {other:?}"),
+            }
+        }
+
+        crate::test_cases! {
+            a_call_beside_no_member_reaches_the_other_files_fn:
+                a_same_file_call_naming_a_member_reaches_the_other_files_fn(None);
+            a_call_naming_a_field_reaches_the_other_files_fn:
+                a_same_file_call_naming_a_member_reaches_the_other_files_fn(Some("field"));
+            a_call_naming_a_property_reaches_the_other_files_fn:
+                a_same_file_call_naming_a_member_reaches_the_other_files_fn(Some("property"));
+            a_call_naming_a_declaration_reaches_the_other_files_fn:
+                a_same_file_call_naming_a_member_reaches_the_other_files_fn(Some("declaration"));
+            a_field_folded_first_tiers_no_reference_to_its_leaf:
+                a_member_tiers_no_reference_to_its_leaf("field", true);
+            a_field_folded_last_tiers_no_reference_to_its_leaf:
+                a_member_tiers_no_reference_to_its_leaf("field", false);
+            a_property_folded_first_tiers_no_reference_to_its_leaf:
+                a_member_tiers_no_reference_to_its_leaf("property", true);
+            a_property_folded_last_tiers_no_reference_to_its_leaf:
+                a_member_tiers_no_reference_to_its_leaf("property", false);
+            a_declaration_folded_first_tiers_no_reference_to_its_leaf:
+                a_member_tiers_no_reference_to_its_leaf("declaration", true);
+            a_declaration_folded_last_tiers_no_reference_to_its_leaf:
+                a_member_tiers_no_reference_to_its_leaf("declaration", false);
+            a_field_a_property_and_a_declaration_of_a_fns_leaf_add_no_candidate:
+                the_walks_frontier_holds(
+                    &[("src/a.rs", "field"), ("src/d.rs", "declaration"), ("src/p.rs", "property")],
+                    "src/c.rs::x",
+                    None,
+                );
+            a_constant_of_a_fns_leaf_is_still_a_candidate:
+                the_walks_frontier_holds(
+                    &[("src/a.rs", "field"), ("src/d.rs", "declaration"), ("src/k.rs", "constant")],
+                    "src/b.rs::x",
+                    Some(&["src/c.rs::x", "src/k.rs::x"]),
+                );
+            a_field_seed_has_no_caller:
+                the_up_walk_seeded_at_x_reaches(Some("field"), &["src/a.rs::x"]);
+            a_property_seed_has_no_caller:
+                the_up_walk_seeded_at_x_reaches(Some("property"), &["src/a.rs::x"]);
+            a_declaration_seed_has_no_caller:
+                the_up_walk_seeded_at_x_reaches(Some("declaration"), &["src/a.rs::x"]);
+            a_bare_placeholder_seed_keeps_its_direct_caller:
+                the_up_walk_seeded_at_x_reaches(None, &["src/a.rs::f", "src/a.rs::x"]);
+            the_up_walk_stops_at_a_field_it_reaches:
+                the_up_walk_stops_at_a_member_it_reaches("field");
+            the_up_walk_stops_at_a_property_it_reaches:
+                the_up_walk_stops_at_a_member_it_reaches("property");
+            the_up_walk_stops_at_a_declaration_it_reaches:
+                the_up_walk_stops_at_a_member_it_reaches("declaration");
+            locate_answers_a_fields_leaf: locate_answers_a_members_leaf("field");
+            locate_answers_a_propertys_leaf: locate_answers_a_members_leaf("property");
+            locate_answers_a_declarations_leaf: locate_answers_a_members_leaf("declaration");
+        }
+
+        /// `call_target_sql()` and `is_call_target` answer alike, and as this table states, for
+        /// every kind of `CODE_KIND_PRECEDENCE`, the one production list of the code kinds, and
+        /// for a node carrying no `kind`.
+        #[test]
+        fn the_sql_predicate_and_is_call_target_agree_over_every_kind() {
+            let targets: BTreeMap<&str, bool> = [
+                (CODE_KIND_FUNCTION, true),
+                (CODE_KIND_METHOD, true),
+                (CODE_KIND_TYPE, true),
+                (CODE_KIND_TRAIT, true),
+                (CODE_KIND_IMPL, true),
+                (CODE_KIND_MODULE, true),
+                (CODE_KIND_CONSTANT, true),
+                (CODE_KIND_CONSTRUCTOR, true),
+                (CODE_KIND_MACRO, true),
+                (CODE_KIND_OTHER, true),
+                (CODE_KIND_STATIC, true),
+                (CODE_KIND_VARIANT, true),
+                (CODE_KIND_VARIABLE, true),
+                (CODE_KIND_DECLARATION, false),
+                (CODE_KIND_PROPERTY, false),
+                (CODE_KIND_FIELD, false),
+            ]
+            .into_iter()
+            .collect();
+            assert_eq!(
+                CODE_KIND_PRECEDENCE.into_iter().collect::<BTreeSet<_>>(),
+                targets.keys().copied().collect::<BTreeSet<_>>(),
+                "the table states every listed kind, and no other"
+            );
+            assert_eq!(
+                CODE_KIND_PRECEDENCE.len(),
+                targets.len(),
+                "no kind is listed twice"
+            );
+            let conn = Connection::open_in_memory().unwrap();
+            let sql = format!(
+                "SELECT {} FROM (SELECT json_patch('{{\"name\":\"x\"}}', json_object('kind', ?1)) AS attrs)",
+                call_target_sql()
+            );
+            let kinds = CODE_KIND_PRECEDENCE
+                .into_iter()
+                .map(|kind| (Some(kind), targets[kind]))
+                .chain([(None, true)]);
+            for (kind, target) in kinds {
+                let by_sql: bool = conn.query_row(&sql, params![kind], |r| r.get(0)).unwrap();
+                assert_eq!(
+                    (by_sql, is_call_target(kind)),
+                    (target, target),
+                    "kind {kind:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_blast_radius_computed_event_folds_to_nothing_idempotently() {
         // spec 16 unit 3: BlastRadiusComputed is PURE AUDIT - the projector matches no fold arm
@@ -10434,6 +10874,15 @@ mod tests {
         matches[0].tier.clone()
     }
 
+    /// The tiers of the `CALLS` edge and of the `REFERENCES` edge landing on `to`, in that order.
+    fn call_tiers(p: &Projector, to: &str) -> [String; 2] {
+        let g = p.whole().unwrap();
+        [
+            edge_tier(&g, REL_CALLS, to),
+            edge_tier(&g, REL_REFERENCES, to),
+        ]
+    }
+
     #[test]
     fn every_structural_edge_carries_its_confidence_tier() {
         // Spec 29a criterion 2: every structural edge folds at a confidence tier - the precise/safe
@@ -10868,6 +11317,56 @@ mod tests {
                 .and_then(|n| n.attrs.get("proof_evidence"))
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default()
+        }
+
+        /// Spec 116 criterion 4, no proof moves onto a data member: `src/a.rs` defines a
+        /// `member` `x`, `src/c.rs` the fn `x` when `order` names `fn`, and `evidence_file`
+        /// records one test reference to `x`, folded in `order`. The fn is proven once when it
+        /// folds, the member never.
+        fn a_member_takes_no_proof_of_its_leaf(member: &str, evidence_file: &str, order: &[&str]) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            for (pos, step) in (1..).zip(order) {
+                match *step {
+                    "fn" => apply_def(&p, pos, "src/c.rs", "x", 1, true),
+                    "member" => apply_code_entity(&p, pos, "src/a.rs", "x", member, 2, "rust"),
+                    "evidence" => apply_edge_inferred_evidence(&p, pos, evidence_file, "x", 7),
+                    other => panic!("no step {other}"),
+                }
+            }
+            let g = p.whole().unwrap();
+            assert_eq!(
+                proven_by(&g, "src/a.rs::x"),
+                0,
+                "the member; got {:?}",
+                g.nodes
+            );
+            assert_eq!(proof_evidence(&g, "src/a.rs::x"), Vec::<String>::new());
+            let landed: Vec<String> = order
+                .iter()
+                .filter(|step| **step == "fn")
+                .map(|_| format!("{evidence_file}:7"))
+                .collect();
+            assert_eq!(proven_by(&g, "src/c.rs::x"), landed.len());
+            assert_eq!(proof_evidence(&g, "src/c.rs::x"), landed);
+        }
+
+        crate::test_cases! {
+            a_field_folded_before_the_fn_takes_no_proof:
+                a_member_takes_no_proof_of_its_leaf("field", "tests/t.rs", &["member", "fn", "evidence"]);
+            a_field_folded_after_the_proof_landed_takes_none:
+                a_member_takes_no_proof_of_its_leaf("field", "tests/t.rs", &["fn", "evidence", "member"]);
+            a_field_folded_after_a_waiting_proof_leaves_it_for_the_fn:
+                a_member_takes_no_proof_of_its_leaf("field", "tests/t.rs", &["evidence", "member", "fn"]);
+            a_field_takes_no_proof_recorded_in_its_own_file:
+                a_member_takes_no_proof_of_its_leaf("field", "src/a.rs", &["member", "fn", "evidence"]);
+            a_field_alone_takes_no_proof:
+                a_member_takes_no_proof_of_its_leaf("field", "tests/t.rs", &["member", "evidence"]);
+            a_field_alone_takes_no_proof_that_waited_for_it:
+                a_member_takes_no_proof_of_its_leaf("field", "src/a.rs", &["evidence", "member"]);
+            a_property_takes_no_proof:
+                a_member_takes_no_proof_of_its_leaf("property", "src/a.rs", &["evidence", "member", "fn"]);
+            a_declaration_takes_no_proof:
+                a_member_takes_no_proof_of_its_leaf("declaration", "src/a.rs", &["evidence", "member", "fn"]);
         }
 
         /// `product.rs::product_fn`, referenced by one test-origin reference per `(file, line)`
@@ -11445,7 +11944,22 @@ mod tests {
         /// A live edge as `(from, to, rel, valid-from, source)`.
         type LiveEdge = (String, String, String, i64, Position);
 
-        /// Fold one derived event stamped with replay key `key`, valid from `secs`, at `pos`.
+        /// One derived event stamped with replay key `key`, valid from `secs`, at `pos`.
+        fn keyed_event(
+            pos: u64,
+            type_: &str,
+            json: serde_json::Value,
+            key: &str,
+            secs: u64,
+        ) -> Event {
+            let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap())
+                .with_meta(rigger_domain::ingest::META_REPLAY_KEY, key)
+                .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
+            e.position = pos;
+            e
+        }
+
+        /// Fold one [`keyed_event`].
         fn apply_keyed(
             p: &Projector,
             pos: u64,
@@ -11454,18 +11968,12 @@ mod tests {
             key: &str,
             secs: u64,
         ) {
-            let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap())
-                .with_meta(rigger_domain::ingest::META_REPLAY_KEY, key)
-                .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
-            e.position = pos;
+            let e = keyed_event(pos, type_, json, key, secs);
             crate::test_support::folds(p, std::slice::from_ref(&e));
         }
 
         fn def(name: &str, line: u64, fresh: bool) -> serde_json::Value {
-            serde_json::json!({
-                "file": "src/f.rs", "name": name, "kind": "function", "line": line,
-                "lang": "rust", "fresh": fresh,
-            })
+            crate::test_support::def_json("src/f.rs", name, line, fresh)
         }
 
         fn node_ids(p: &Projector) -> Vec<String> {
@@ -11522,6 +12030,429 @@ mod tests {
             assert_eq!(live_edges(&p), edges);
             assert_eq!(node_ids(&p), nodes);
             assert_eq!(p.retired_code_entity_count().unwrap(), retired);
+        }
+
+        /// Spec 116 criterion 4: `src/f.rs`'s fn `x` retires at its file's next generation
+        /// while `src/a.rs` keeps a definition of that leaf of kind `beside` (none when `None`).
+        /// The call `src/b.rs`'s `g` makes to `x`, inferred while the fn stood, ends at `tier`:
+        /// beside a data member as with nothing beside it.
+        fn a_fn_retiring_leaves_its_cross_file_call(beside: Option<&str>, tier: &str) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            let x = def("x", 1, true);
+            apply_keyed(&p, 1, TYPE_CODE_ENTITY_EXTRACTED, x, "gc/src/f.rs@h1#0", 10);
+            if let Some(kind) = beside {
+                apply_code_entity(&p, 2, "src/a.rs", "x", kind, 2, "rust");
+            }
+            apply_def(&p, 3, "src/b.rs", "g", 1, true);
+            apply_call(&p, 4, "src/b.rs", "x", "g");
+            let tiers = |p: &Projector| call_tiers(p, "src/b.rs::x");
+            assert_eq!(tiers(&p), [TIER_INFERRED, TIER_INFERRED]);
+
+            let y = def("y", 1, true);
+            apply_keyed(&p, 5, TYPE_CODE_ENTITY_EXTRACTED, y, "gc/src/f.rs@h2#0", 20);
+            assert_eq!(tiers(&p), [tier, tier]);
+        }
+
+        crate::test_cases! {
+            a_fn_retiring_alone_demotes_its_cross_file_call:
+                a_fn_retiring_leaves_its_cross_file_call(None, TIER_AMBIGUOUS);
+            a_fn_retiring_beside_a_field_demotes_its_cross_file_call:
+                a_fn_retiring_leaves_its_cross_file_call(Some("field"), TIER_AMBIGUOUS);
+            a_fn_retiring_beside_a_property_demotes_its_cross_file_call:
+                a_fn_retiring_leaves_its_cross_file_call(Some("property"), TIER_AMBIGUOUS);
+            a_fn_retiring_beside_a_declaration_demotes_its_cross_file_call:
+                a_fn_retiring_leaves_its_cross_file_call(Some("declaration"), TIER_AMBIGUOUS);
+            a_fn_retiring_beside_a_constant_keeps_its_cross_file_call_inferred:
+                a_fn_retiring_leaves_its_cross_file_call(Some("constant"), TIER_INFERRED);
+        }
+
+        /// Spec 116 criterion 5, A SHARED NODE TAKES ONE KIND: the definitions one generation of
+        /// `src/f.rs` asserts on one node settle its kind and line by `CODE_KIND_PRECEDENCE`,
+        /// the lower line and then the lesser kind string breaking a tie, whatever order they
+        /// fold in, and the node is a definition only while that winner is a call target.
+        mod shared_node {
+            use super::*;
+            use crate::contextgraph::CODE_KIND_PRECEDENCE;
+            use crate::test_support::{attrs_of, call_json, definition, kind_def_json, ref_json};
+
+            /// One definition of `src/f.rs` as `(name, kind, line)`.
+            type Def<'a> = (&'a str, &'a str, u64);
+
+            const X: &str = "src/f.rs::x";
+            const FN_AT_1: &[Def] = &[("x", "function", 1)];
+            const FIELD_AT_1: &[Def] = &[("x", "field", 1)];
+
+            /// Fold `defs` from `pos` as the first events of generation `generation` of
+            /// `src/f.rs`, at `secs`.
+            fn fold_defs(p: &Projector, pos: u64, generation: &str, secs: u64, defs: &[Def]) {
+                for (i, (name, kind, line)) in defs.iter().enumerate() {
+                    apply_keyed(
+                        p,
+                        pos + i as u64,
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        kind_def_json("src/f.rs", name, kind, *line, i == 0),
+                        &format!("gc/src/f.rs@{generation}#{i}"),
+                        secs,
+                    );
+                }
+            }
+
+            /// Fold, from `pos`, the call `src/b.rs`'s fn `g` makes to `x` and the test
+            /// reference `tests/t.rs` holds to it.
+            fn fold_a_cross_file_call_and_a_proof(p: &Projector, pos: u64) {
+                apply_def(p, pos, "src/b.rs", "g", 1, true);
+                apply_call(p, pos + 1, "src/b.rs", "x", "g");
+                apply_edge_inferred_evidence(p, pos + 2, "tests/t.rs", "x", 3);
+            }
+
+            /// `defs`, the definitions of one leaf, settle their node as a `kind` at `line`
+            /// folded in the order given and in its reverse.
+            fn a_shared_node_settles(defs: &[Def], kind: &str, line: u64) {
+                let name = defs[0].0;
+                let reversed: Vec<Def> = defs.iter().rev().copied().collect();
+                for order in [defs, &reversed] {
+                    let p = Projector::open(":memory:", "test").unwrap();
+                    fold_defs(&p, 1, "h1", 10, order);
+                    assert_eq!(
+                        attrs_of(&p, &format!("src/f.rs::{name}")),
+                        definition(name, kind, line),
+                        "folded as {order:?}"
+                    );
+                }
+            }
+
+            crate::test_cases! {
+                a_fn_above_a_field_of_its_leaf_settles_function_at_the_fns_line:
+                    a_shared_node_settles(&[("x", "function", 3), ("x", "field", 7)], "function", 3);
+                a_field_above_a_fn_of_its_leaf_settles_function_at_the_fns_line:
+                    a_shared_node_settles(&[("x", "field", 3), ("x", "function", 7)], "function", 7);
+                a_class_above_its_same_named_constructor_settles_type:
+                    a_shared_node_settles(&[("x", "type", 1), ("x", "constructor", 2)], "type", 1);
+                two_fn_new_settle_the_lower_line:
+                    a_shared_node_settles(
+                        &[("new", "function", 4), ("new", "function", 9)],
+                        "function",
+                        4,
+                    );
+                three_definitions_settle_the_first_kind_at_its_lower_line:
+                    a_shared_node_settles(
+                        &[("x", "field", 1), ("x", "function", 9), ("x", "function", 4)],
+                        "function",
+                        4,
+                    );
+                an_unlisted_kind_beside_a_function_settles_function:
+                    a_shared_node_settles(&[("x", "function", 5), ("x", "alien", 1)], "function", 5);
+                two_unlisted_kinds_at_one_line_settle_the_lesser_kind_string:
+                    a_shared_node_settles(&[("x", "alien", 3), ("x", "zeta", 3)], "alien", 3);
+                two_unlisted_kinds_settle_the_lower_line_before_the_lesser_kind_string:
+                    a_shared_node_settles(&[("x", "alien", 2), ("x", "zeta", 1)], "zeta", 1);
+                an_unlisted_kind_ranks_with_other_so_the_lesser_kind_string_settles_one_line:
+                    a_shared_node_settles(&[("x", "alien", 3), ("x", "other", 3)], "alien", 3);
+                an_unlisted_kind_ranks_with_other_so_its_lower_line_settles:
+                    a_shared_node_settles(&[("x", "zeta", 1), ("x", "other", 2)], "zeta", 1);
+                other_at_a_lower_line_settles_over_an_unlisted_kind:
+                    a_shared_node_settles(&[("x", "other", 1), ("x", "alien", 2)], "other", 1);
+                a_module_beside_a_field_of_its_leaf_settles_field:
+                    a_shared_node_settles(&[("x", "field", 2), ("x", "module", 1)], "field", 2);
+            }
+
+            /// Each kind of `CODE_KIND_PRECEDENCE` settles the node over the kind listed after
+            /// it, though that one sits at a lower line.
+            #[test]
+            fn a_kind_settles_the_node_over_the_kind_listed_after_it_at_a_lower_line() {
+                for pair in CODE_KIND_PRECEDENCE.windows(2) {
+                    a_shared_node_settles(&[("x", pair[0], 2), ("x", pair[1], 1)], pair[0], 2);
+                }
+            }
+
+            /// `src/f.rs`'s fn `f` calls `x`, which its file defines by `defs` folded in that
+            /// order, and `src/b.rs`'s `g` calls it across files: the same-file call is tiered
+            /// extracted and the cross-file one inferred, as onto the fn alone.
+            fn references_to_x_tier_as_onto_its_fn(defs: &[Def]) {
+                let p = Projector::open(":memory:", "test").unwrap();
+                let batch = [&[("f", "function", 1)], defs].concat();
+                fold_defs(&p, 1, "h1", 10, &batch);
+                let call = call_json("src/f.rs", "x", "f");
+                apply_keyed(&p, 5, TYPE_EDGE_INFERRED, call, "gc/src/f.rs@h1#4", 10);
+                fold_a_cross_file_call_and_a_proof(&p, 6);
+                assert_eq!(call_tiers(&p, X), [TIER_EXTRACTED, TIER_EXTRACTED]);
+                assert_eq!(
+                    call_tiers(&p, "src/b.rs::x"),
+                    [TIER_INFERRED, TIER_INFERRED]
+                );
+            }
+
+            crate::test_cases! {
+                references_to_a_fn_alone_are_tiered_extracted_in_its_file_and_inferred_across:
+                    references_to_x_tier_as_onto_its_fn(&[("x", "function", 3)]);
+                references_to_a_fn_folded_before_a_field_of_its_leaf_tier_as_onto_the_fn:
+                    references_to_x_tier_as_onto_its_fn(&[("x", "function", 3), ("x", "field", 7)]);
+                references_to_a_fn_folded_after_a_field_of_its_leaf_tier_as_onto_the_fn:
+                    references_to_x_tier_as_onto_its_fn(&[("x", "field", 7), ("x", "function", 3)]);
+            }
+
+            /// `src/f.rs` holds its fn `f`, which calls `x`, and `defs` of the leaf `x`, a
+            /// cross-file call and a test reference landing on it, and is ingested again
+            /// unchanged at generation 2. The node retires with generation 1 and returns, so
+            /// its fn, at `line`, is proven and called at both tiers again: what a rebuild
+            /// folding generation 2 alone gives.
+            fn an_unchanged_shared_leaf_re_ingested_stays_the_fn_it_was(defs: &[Def], line: u64) {
+                let batch = [&[("f", "function", 1)], defs].concat();
+                let fold_generation = |p: &Projector, pos: u64, generation: &str, secs: u64| {
+                    fold_defs(p, pos, generation, secs, &batch);
+                    let call = call_json("src/f.rs", "x", "f");
+                    let key = format!("gc/src/f.rs@{generation}#4");
+                    apply_keyed(p, pos + 4, TYPE_EDGE_INFERRED, call, &key, secs);
+                };
+                let folded = Projector::open(":memory:", "test").unwrap();
+                fold_generation(&folded, 1, "h1", 10);
+                fold_a_cross_file_call_and_a_proof(&folded, 6);
+                fold_generation(&folded, 9, "h2", 20);
+                let rebuilt = Projector::open(":memory:", "test").unwrap();
+                fold_generation(&rebuilt, 1, "h2", 20);
+                fold_a_cross_file_call_and_a_proof(&rebuilt, 6);
+
+                let mut proven = definition("x", "function", line);
+                proven.insert("proven_by".to_string(), "1".to_string());
+                proven.insert(
+                    "proof_evidence".to_string(),
+                    r#"["tests/t.rs:3"]"#.to_string(),
+                );
+                for (p, why) in [
+                    (&folded, "folded onto generation 1"),
+                    (&rebuilt, "a rebuild of generation 2"),
+                ] {
+                    assert_eq!(attrs_of(p, X), proven, "{why}");
+                    assert_eq!(call_tiers(p, X), [TIER_EXTRACTED, TIER_EXTRACTED], "{why}");
+                    assert_eq!(
+                        call_tiers(p, "src/b.rs::x"),
+                        [TIER_INFERRED, TIER_INFERRED],
+                        "{why}"
+                    );
+                }
+            }
+
+            crate::test_cases! {
+                an_unchanged_fn_above_a_field_of_its_leaf_re_ingested_stays_the_fn_it_was:
+                    an_unchanged_shared_leaf_re_ingested_stays_the_fn_it_was(
+                        &[("x", "function", 3), ("x", "field", 7)],
+                        3,
+                    );
+                an_unchanged_field_above_a_fn_of_its_leaf_re_ingested_stays_the_fn_it_was:
+                    an_unchanged_shared_leaf_re_ingested_stays_the_fn_it_was(
+                        &[("x", "field", 3), ("x", "function", 7)],
+                        7,
+                    );
+            }
+
+            /// A rebuild's shadow holds what the fold rule it was folded under gave, so one
+            /// left by a binary of another rule is never resumed. A rebuild is interrupted
+            /// past the batch holding `src/f.rs`'s fn `x` at line 3 and its field `x` at line
+            /// 7, and its shadow is left as a rule-1 binary left one: the node the last
+            /// definition folded, a field at 7, and no fold rule recorded. The next rebuild
+            /// discards it and folds the log from its start, to the function at 3 a cold
+            /// rebuild gives.
+            #[test]
+            fn a_rebuild_discards_a_shadow_folded_under_another_fold_rule() {
+                let log = [
+                    keyed_event(
+                        1,
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        kind_def_json("src/f.rs", "x", "function", 3, true),
+                        "gc/src/f.rs@h1#0",
+                        10,
+                    ),
+                    keyed_event(
+                        2,
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        kind_def_json("src/f.rs", "x", "field", 7, false),
+                        "gc/src/f.rs@h1#1",
+                        10,
+                    ),
+                    decision_at("d1", "a.rs", 3),
+                ];
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("graph.db");
+                let path = path.to_str().unwrap();
+                drop(Projector::open(path, "test").unwrap());
+                let interrupted = rebuild_interrupted_after_its_first_batch(path, &log);
+                Connection::open(format!("{path}.rebuild"))
+                    .unwrap()
+                    .execute_batch(
+                        "UPDATE nodes SET attrs = json_patch(attrs, '{\"kind\":\"field\",\"line\":\"7\"}')
+                          WHERE id = 'src/f.rs::x';
+                         PRAGMA user_version = 0;",
+                    )
+                    .unwrap();
+
+                let mut reads_from = Vec::new();
+                rebuild_in_batches(path, &log, 2, &mut reads_from).unwrap();
+                let p = Projector::open(path, "test").unwrap();
+                assert_eq!(
+                    (
+                        interrupted.map_err(|e| e.to_string()),
+                        reads_from,
+                        attrs_of(&p, X),
+                        p.owed_because().unwrap(),
+                    ),
+                    (
+                        Err("graph: interrupted after the first batch".to_string()),
+                        vec![0, 3],
+                        definition("x", "function", 3),
+                        Vec::<&str>::new(),
+                    ),
+                    "the shadow of another rule is folded again from the start"
+                );
+            }
+
+            /// `x` ends as a field at line 1 carrying no proof, and the cross-file call to it
+            /// ambiguous: what a graph holding a field `x` and no fn of that leaf gives.
+            fn x_is_a_field_no_call_resolves_onto(p: &Projector, why: &str) {
+                assert_eq!(attrs_of(p, X), definition("x", "field", 1), "{why}");
+                assert_eq!(
+                    call_tiers(p, "src/b.rs::x"),
+                    [TIER_AMBIGUOUS, TIER_AMBIGUOUS],
+                    "{why}"
+                );
+            }
+
+            /// `src/f.rs` holds the fn `x` at generation 1, inferred by a cross-file call and
+            /// proven by a test reference, and `second` at generation 2, which holds only a
+            /// field of that leaf: the call turns ambiguous and the proof moves off, as a
+            /// rebuild folding generation 2 alone gives.
+            fn a_fn_that_is_only_a_field_at_the_next_generation_stops_being_a_definition(
+                second: &[Def],
+            ) {
+                let p = Projector::open(":memory:", "test").unwrap();
+                fold_defs(&p, 1, "h1", 10, FN_AT_1);
+                fold_a_cross_file_call_and_a_proof(&p, 2);
+                assert_eq!(
+                    call_tiers(&p, "src/b.rs::x"),
+                    [TIER_INFERRED, TIER_INFERRED]
+                );
+                assert_eq!(
+                    attrs_of(&p, X).get("proven_by").map(String::as_str),
+                    Some("1")
+                );
+                fold_defs(&p, 5, "h2", 20, second);
+                x_is_a_field_no_call_resolves_onto(&p, "folded onto generation 1");
+
+                let rebuilt = Projector::open(":memory:", "test").unwrap();
+                fold_defs(&rebuilt, 1, "h2", 20, second);
+                fold_a_cross_file_call_and_a_proof(&rebuilt, 5);
+                x_is_a_field_no_call_resolves_onto(&rebuilt, "a rebuild of generation 2");
+            }
+
+            crate::test_cases! {
+                /// The field opens generation 2's batch, so the node is settled by the entity
+                /// arm alone, before anything retires what generation 1 left unheld.
+                a_fn_at_generation_1_and_only_a_field_opening_generation_2_demotes_and_unproves:
+                    a_fn_that_is_only_a_field_at_the_next_generation_stops_being_a_definition(
+                        FIELD_AT_1,
+                    );
+                /// Another definition opens the batch, so generation 1's fn retires before the
+                /// field folds.
+                a_fn_at_generation_1_and_only_a_field_later_in_generation_2_demotes_and_unproves:
+                    a_fn_that_is_only_a_field_at_the_next_generation_stops_being_a_definition(
+                        &[("a", "function", 9), ("x", "field", 1)],
+                    );
+            }
+
+            /// A `module x` and a `field x` of one generation settle `field` in either fold
+            /// order, so a cross-file call and a test reference folded after the first of
+            /// `defs` end as onto a field: the module folded onto the field upgrades nothing,
+            /// and the field folded onto the module undoes what the module resolved.
+            fn a_module_and_a_field_of_one_leaf_leave_references_as_a_field_does(defs: &[Def; 2]) {
+                let p = Projector::open(":memory:", "test").unwrap();
+                fold_defs(&p, 1, "h1", 10, &defs[..1]);
+                fold_a_cross_file_call_and_a_proof(&p, 2);
+                let second = kind_def_json("src/f.rs", "x", defs[1].1, defs[1].2, false);
+                apply_keyed(
+                    &p,
+                    5,
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    second,
+                    "gc/src/f.rs@h1#1",
+                    10,
+                );
+                x_is_a_field_no_call_resolves_onto(&p, "the module and the field folded");
+            }
+
+            crate::test_cases! {
+                a_module_folded_onto_a_field_winner_upgrades_no_reference:
+                    a_module_and_a_field_of_one_leaf_leave_references_as_a_field_does(
+                        &[("x", "field", 1), ("x", "module", 2)],
+                    );
+                a_field_folded_onto_a_module_takes_the_node_and_undoes_what_the_module_resolved:
+                    a_module_and_a_field_of_one_leaf_leave_references_as_a_field_does(
+                        &[("x", "module", 2), ("x", "field", 1)],
+                    );
+            }
+
+            /// An unkeyed definition is asserted by no generation, so the node takes the last
+            /// one folded: a re-fold moves `line` up as well as down, and a field folded onto a
+            /// fn takes the node and undoes what the fn resolved.
+            #[test]
+            fn an_unkeyed_re_fold_moves_line_and_kind_to_the_last_folded() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                apply_def(&p, 1, "src/f.rs", "x", 5, true);
+                fold_a_cross_file_call_and_a_proof(&p, 2);
+                apply_def(&p, 5, "src/f.rs", "x", 9, true);
+                assert_eq!(attrs_of(&p, X).get("line").map(String::as_str), Some("9"));
+                apply_def(&p, 6, "src/f.rs", "x", 2, true);
+                assert_eq!(attrs_of(&p, X).get("line").map(String::as_str), Some("2"));
+                apply_code_entity(&p, 7, "src/f.rs", "x", "field", 1, "rust");
+                x_is_a_field_no_call_resolves_onto(&p, "the unkeyed field folded last");
+            }
+
+            /// The precedence reads only what the event's own identity asserts: a definition
+            /// another identity folds onto the node, at a generation of the same name, takes
+            /// it, last folded.
+            #[test]
+            fn a_definition_another_identity_asserts_on_the_node_takes_it_last_folded() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                fold_defs(&p, 1, "h1", 10, FN_AT_1);
+                let field = kind_def_json("src/f.rs", "x", "field", 9, true);
+                apply_keyed(
+                    &p,
+                    2,
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    field,
+                    "gc/src/g.rs@h1#0",
+                    10,
+                );
+                assert_eq!(attrs_of(&p, X), definition("x", "field", 9));
+            }
+
+            /// A reference `src/f.rs`'s generation folds before its definition asserts the
+            /// node with no attrs: it is no candidate, so the field that folds next settles the
+            /// node, and the fn after it wins by precedence.
+            #[test]
+            fn an_assertion_carrying_no_kind_is_no_candidate() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                let reference = ref_json("src/f.rs", "x");
+                apply_keyed(&p, 1, TYPE_EDGE_INFERRED, reference, "gc/src/f.rs@h1#0", 10);
+                let field = kind_def_json("src/f.rs", "x", "field", 4, false);
+                apply_keyed(
+                    &p,
+                    2,
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    field,
+                    "gc/src/f.rs@h1#1",
+                    10,
+                );
+                assert_eq!(attrs_of(&p, X), definition("x", "field", 4));
+                let function = kind_def_json("src/f.rs", "x", "function", 9, false);
+                apply_keyed(
+                    &p,
+                    3,
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    function,
+                    "gc/src/f.rs@h1#2",
+                    10,
+                );
+                assert_eq!(attrs_of(&p, X), definition("x", "function", 9));
+            }
         }
 
         const F: &str = "docs/f.md";

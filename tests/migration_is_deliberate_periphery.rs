@@ -7,7 +7,7 @@
 //!  - The emit+fold seam through the crate's PUBLIC API, over fixtures of its own, for ALL THREE
 //!    exclusion shapes criterion 1 established and this criterion's retirement mechanism must
 //!    reach: `extract_events`'s own two boundary-sentinel return sites (see that function's own
-//!    doc in `grounder/symbols/events.rs`) - the whole-`tests/`-dir exclusion (`is_under_tests_dir`,
+//!    doc in `grounder/symbols/events.rs`) - the whole-`tests/`-dir exclusion (`is_dev_only`,
 //!    the CENTRAL migration case the Design names) and the end-of-function "survived filtering
 //!    down to nothing" case (an in-file `#[cfg(test)]` re-wrap of a product item) - PLUS the
 //!    OUT-OF-LINE `#[cfg(test)] mod name;` shape (round 5,
@@ -67,7 +67,7 @@ use std::path::Path;
 // Part 1: the emit+fold seam through the PUBLIC API (symbols lane only)
 // =========================================================================================
 
-/// `is_under_tests_dir`'s branch: a WHOLE `tests/`-dir file, the Design's own central migration
+/// `is_dev_only`'s branch: a WHOLE `tests/`-dir file, the Design's own central migration
 /// case ("a whole `tests/*.rs` file - the central case"). `keep.rs` is an unrelated, untouched
 /// product file present throughout, so its survival independently proves "the fold yields the
 /// same product entities before and after".
@@ -131,7 +131,7 @@ fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_eve
 
     // "After": tests/legacy.rs's REAL re-ingest, driven entirely by the crate's PUBLIC
     // `extract_events` - never a hand-built boundary payload - proving the actual
-    // `is_under_tests_dir` -> `empty_structural_boundary_event` emit path composes correctly
+    // `is_dev_only` -> `empty_structural_boundary_event` emit path composes correctly
     // with the fold's `r.name.is_empty()` retirement arm at the public API boundary.
     let legacy_fs = idx
         .files()
@@ -233,7 +233,7 @@ fn a_lone_empty_structural_sentinel_through_the_real_pipeline_creates_nothing_at
 /// `extract_events`'s OTHER boundary-sentinel site: the end-of-function push that fires when a
 /// file's surviving definition/reference set drops to empty even though the file itself is NOT
 /// under a `tests/` directory - here, every item in a product-path file is re-wrapped entirely
-/// inside `#[cfg(test)]`. Distinct code path from `is_under_tests_dir`'s early return above, and
+/// inside `#[cfg(test)]`. Distinct code path from `is_dev_only`'s early return above, and
 /// distinct from the implementer's own `conductor.rs` regression test for this exact scenario
 /// (which drives it through the private `RunCtx`, not the crate's public API).
 #[cfg(feature = "symbols")]
@@ -270,7 +270,7 @@ fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_thro
 
     // Generation 2: the SAME symbol, now wholly inside `#[cfg(test)]` - not a tests/-dir path,
     // so this exercises extract_events's END-OF-FUNCTION empty-survivor push, never the
-    // is_under_tests_dir branch the sibling test above covers.
+    // is_dev_only branch the sibling test above covers.
     std::fs::write(
         &target,
         "#[cfg(test)]\nmod hidden {\n    pub fn folded() {}\n}\n",

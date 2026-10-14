@@ -49,7 +49,7 @@ use common::fixtures::cleanup;
 use common::fixtures::files_open_by;
 use common::fixtures::wait_until_for;
 use common::git::temp_git_project_with_commit;
-use rigger::contextgraph::sqlite::{PruneStats, RebuildSink, Rebuilt};
+use rigger::contextgraph::sqlite::{PruneStats, RebuildSink, Rebuilt, PROJECTION_VERSION};
 use rigger::contextgraph::Fold;
 use rigger::contextgraph::{
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
@@ -899,7 +899,7 @@ fn a_rebuild_interrupted_in_its_tail_finishes_the_tail_on_the_next_call() {
     assert_eq!(interrupted.unwrap_err().0, "interrupted");
     assert_eq!(
         version_and_owed(&db),
-        (1, false),
+        (PROJECTION_VERSION, false),
         "the rebuilt file was swapped in"
     );
 
@@ -1120,10 +1120,14 @@ fn an_open_owes_the_rebuild_until_it_is_paid_writes_nothing_and_an_unfolded_file
     a_pre_rule_graph_db(&unfolded, &[], "");
     assert_eq!(
         version_and_owed(&unfolded),
-        (1, false),
+        (PROJECTION_VERSION, false),
         "a file that folded nothing owes nothing and records the current rule"
     );
-    assert_eq!(version_and_owed(&unfolded), (1, false), "and stays current");
+    assert_eq!(
+        version_and_owed(&unfolded),
+        (PROJECTION_VERSION, false),
+        "and stays current"
+    );
 }
 
 /// The `graph.db` schema of the release before the generation rule: no ledgers, no `proofs`, and
@@ -1155,9 +1159,12 @@ CREATE TABLE pending_proof (
 CREATE INDEX idx_pending_proof_name ON pending_proof(project, name);
 ";
 
-/// An operator store whose log holds [`two_generations_dropping_facts`] plus a test's proof, and
-/// whose `graph.db` the release before the generation rule folded: it still holds the definition
-/// and the design link a superseded generation asserted, and the proof waiting in `pending_proof`.
+/// An operator store whose `graph.db` a release at an older fold rule folded. [`Self::new`] and
+/// [`Self::with_identity`] give the one the release before the generation rule folded: its log
+/// holds [`two_generations_dropping_facts`] plus a test's proof, and its `graph.db` still holds
+/// the definition and the design link a superseded generation asserted, and the proof waiting in
+/// `pending_proof`. [`Self::folded_at_rule_1`] gives the one the release before the shared-node
+/// rule folded.
 struct ReleaseEraStore {
     dir: tempfile::TempDir,
     events_db: std::path::PathBuf,
@@ -1173,12 +1180,6 @@ impl ReleaseEraStore {
     /// The store, with its durable identity `minted` already or still named after its directory
     /// (which `rigger setup` then mints, moving the log to it).
     fn with_identity(minted: bool) -> Self {
-        let dir = temp_store_project();
-        let root = dir.path();
-        if minted {
-            std::fs::write(root.join(".rigger").join("project.id"), "proj-era\n").unwrap();
-        }
-        let project = run_stream_identity(root);
         let mut log = two_generations_dropping_facts();
         log.push(keyed(
             TYPE_EDGE_INFERRED,
@@ -1186,21 +1187,10 @@ impl ReleaseEraStore {
             "gc/tests/t.rs@k1#0",
             30,
         ));
-        let events_db = rigger_file(root, "events.db");
-        let graph_db = rigger_file(root, "graph.db");
-        let appended = {
-            let backend = Store::open(events_db.to_str().unwrap()).unwrap();
-            let pre_ledger = common::fixtures::PreLedgerStore {
-                db: &events_db,
-                inner: &backend,
-            };
-            Namespaced::new(&pre_ledger, &project)
-                .append(rigger::conductor::STREAM, ExpectedRevision::Any, &log)
-                .unwrap();
-            run_events(&backend, &project)
-        };
-        let _ = std::fs::remove_file(&graph_db);
-        let conn = rusqlite::Connection::open(&graph_db).unwrap();
+        let store = Self::logging(minted, &log);
+        let (project, appended) = (store.project(), store.log());
+        let graph_db = &store.graph_db;
+        let conn = rusqlite::Connection::open(graph_db).unwrap();
         conn.execute_batch(RELEASE_ERA_SCHEMA).unwrap();
         for e in &appended {
             conn.execute("INSERT INTO applied (position) VALUES (?1)", [e.position])
@@ -1231,6 +1221,75 @@ impl ReleaseEraStore {
         )
         .unwrap();
         drop(conn);
+        store
+    }
+
+    /// The store whose log holds one generation of `src/f.rs` defining the leaf `x` twice, a fn
+    /// at line 3 and then a field at line 7, and whose `graph.db` a release at fold rule 1
+    /// folded: its ledgers are the current ones, it records rule 1, and the node the two
+    /// definitions share, with its file's assertion of it, holds the one folded last, the field.
+    fn folded_at_rule_1() -> Self {
+        use common::fixtures::kind_def_json;
+        use rigger::contextgraph::sqlite::Projector;
+        let def = |kind, line, fresh, key| {
+            let data = serde_json::to_vec(&kind_def_json("src/f.rs", "x", kind, line, fresh));
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, data.unwrap(), key, 10)
+        };
+        let store = Self::logging(
+            true,
+            &[
+                def("function", 3, true, "gc/src/f.rs@h1#0"),
+                def("field", 7, false, "gc/src/f.rs@h1#1"),
+            ],
+        );
+        common::fixtures::folds(
+            &Projector::open(store.graph_db.to_str().unwrap(), &store.project()).unwrap(),
+            &store.log(),
+        );
+        Self::as_rule_1_left(&store.graph_db, 1);
+        store
+    }
+
+    /// Put the folded file at `db` in the state fold rule 1 left one holding
+    /// [`Self::folded_at_rule_1`]'s log: the node the two definitions of `x` share, with its
+    /// file's assertion of it, holds the one folded last, the field, and the file records
+    /// `version` as its fold rule.
+    fn as_rule_1_left(db: &Path, version: i64) {
+        rusqlite::Connection::open(db)
+            .unwrap()
+            .execute_batch(&format!(
+                "UPDATE nodes SET attrs = json_set(attrs, '$.kind', 'field', '$.line', '7')
+                  WHERE id = 'src/f.rs::x';
+                 UPDATE node_assertions
+                    SET attrs = json_set(attrs, '$.kind', 'field', '$.line', '7')
+                  WHERE node_id = 'src/f.rs::x';
+                 PRAGMA user_version = {version};"
+            ))
+            .unwrap();
+    }
+
+    /// The store whose log holds `log` and that has no `graph.db` yet, its durable identity
+    /// `minted` already or still named after its directory.
+    fn logging(minted: bool, log: &[Event]) -> Self {
+        let dir = temp_store_project();
+        let root = dir.path();
+        if minted {
+            std::fs::write(root.join(".rigger").join("project.id"), "proj-era\n").unwrap();
+        }
+        let project = run_stream_identity(root);
+        let events_db = rigger_file(root, "events.db");
+        let graph_db = rigger_file(root, "graph.db");
+        {
+            let backend = Store::open(events_db.to_str().unwrap()).unwrap();
+            let pre_ledger = common::fixtures::PreLedgerStore {
+                db: &events_db,
+                inner: &backend,
+            };
+            Namespaced::new(&pre_ledger, &project)
+                .append(rigger::conductor::STREAM, ExpectedRevision::Any, log)
+                .unwrap();
+        }
+        let _ = std::fs::remove_file(&graph_db);
         ReleaseEraStore {
             dir,
             events_db,
@@ -1327,7 +1386,7 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
         .unwrap();
     assert_eq!(
         (user_version(&store.graph_db), pending_proof_tables),
-        (1, 0),
+        (PROJECTION_VERSION, 0),
         "the rebuilt file records the current rule and no longer holds the old table"
     );
     let rebuilt = Projector::open(store.graph_db.to_str().unwrap(), &store.project()).unwrap();
@@ -1379,7 +1438,7 @@ fn rigger_setup_names_both_causes_a_graph_db_owes_its_rebuild_for_and_pays_both(
     );
     assert_eq!(
         (mark.exists(), user_version(&store.graph_db)),
-        (false, 1),
+        (false, PROJECTION_VERSION),
         "the one rebuild pays both: the mark is dropped and the file records the current rule"
     );
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
@@ -1411,6 +1470,140 @@ fn rigger_setup_rebuilds_from_the_log_under_the_identity_it_mints() {
         graph.0
     );
     assert_eq!(graph, fresh, "the rebuilt graph.db is the whole log's");
+}
+
+/// Given an operator store whose `graph.db` a release at fold rule 1 folded, so the node two
+/// definitions of one leaf share holds the one folded last, when the operator opens it, then the
+/// open owes the rebuild and writes nothing; and when the operator runs `rigger setup`, then setup
+/// names the older rule, rebuilds from the log, the file records the current rule and the node
+/// holds its precedence winner, the fn at the fn's line - exactly the graph a fresh fold of the
+/// log reaches. A second `rigger setup` owes and reports no rebuild.
+#[test]
+fn rigger_setup_rebuilds_a_rule_1_graph_db_and_its_shared_node_takes_its_precedence_winner() {
+    use common::fixtures::{attrs_of, definition};
+    use rigger::contextgraph::sqlite::Projector;
+    const X: &str = "src/f.rs::x";
+    let store = ReleaseEraStore::folded_at_rule_1();
+    let x = || {
+        let graph = Projector::open(store.graph_db.to_str().unwrap(), &store.project()).unwrap();
+        attrs_of(&graph, X)
+    };
+    let before = store.graph_bytes();
+    assert_eq!(
+        version_and_owed(&store.graph_db),
+        (1, true),
+        "a file that folded at rule 1 owes its rebuild"
+    );
+    assert_eq!(
+        x(),
+        definition("x", "field", 7),
+        "until the rebuild the node is as rule 1 left it, the last folded"
+    );
+    assert!(
+        store.graph_bytes() == before,
+        "opening a file that owes its rebuild writes nothing to it"
+    );
+
+    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    let head = store.log().last().unwrap().position;
+    assert_eq!(
+        out.lines()
+            .filter(|l| l.starts_with("rebuilding graph.db") || l.starts_with("rebuilt "))
+            .collect::<Vec<_>>(),
+        vec![
+            "rebuilding graph.db from the event log: it was folded under an older fold rule, so \
+             the log's live selection is refolded once"
+                .to_string(),
+            format!("rebuilt 2 events, through position {head} of {head} (100%)"),
+            "rebuilt graph.db from the event log".to_string(),
+        ],
+        "setup names the older rule and refolds both definitions; stdout: {out}"
+    );
+    assert_eq!(
+        (user_version(&store.graph_db), x()),
+        (PROJECTION_VERSION, definition("x", "function", 3)),
+        "the rebuilt file records the current rule and the node holds the fn at the fn's line"
+    );
+    assert_eq!(
+        version_and_owed(&store.graph_db),
+        (PROJECTION_VERSION, false),
+        "the rebuild was paid"
+    );
+    let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
+    assert_eq!(
+        graph, fresh,
+        "the rebuilt graph.db is the whole log's, fold state included"
+    );
+
+    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "a second setup must succeed; stderr: {err}");
+    assert!(
+        !out.contains("graph.db"),
+        "a paid rebuild is not owed or reported again; stdout: {out}"
+    );
+}
+
+/// Given an operator store whose `graph.db` a release at fold rule 1 folded, and beside it the
+/// shadow of a rebuild that release began and was interrupted in - past both definitions of the
+/// shared leaf, the node holding the one folded last, and no fold rule recorded, as a rule-1
+/// binary left one - when the operator runs `rigger setup`, then the shadow is never resumed:
+/// setup folds the log again from its start, both events, the node holds its precedence winner,
+/// the fn at the fn's line, the file records the current rule and is exactly the graph a fresh
+/// fold of the log reaches, and the shadow is gone.
+#[test]
+fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_log_again() {
+    use common::fixtures::{attrs_of, definition};
+    use rigger::contextgraph::sqlite::Projector;
+    let store = ReleaseEraStore::folded_at_rule_1();
+    let (log, shadow) = (store.log(), rigger_file(store.root(), "graph.db.rebuild"));
+    let head = log.last().unwrap().position;
+    let interrupted = Projector::rebuild(
+        &Projector::lock_rebuild(store.graph_db.to_str().unwrap()).unwrap(),
+        &store.project(),
+        false,
+        &mut |_, sink| {
+            sink(&log, head)?;
+            Err(rigger::contextgraph::Error("interrupted".to_string()))
+        },
+        &mut |_| Ok(None),
+        &mut no_progress,
+    );
+    assert_eq!(
+        (interrupted.unwrap_err().0.as_str(), shadow.exists()),
+        ("interrupted", true),
+        "the interrupted rebuild leaves its shadow holding both definitions"
+    );
+    ReleaseEraStore::as_rule_1_left(&shadow, 0);
+
+    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert_eq!(
+        out.lines()
+            .filter(|l| l.starts_with("rebuilt "))
+            .collect::<Vec<_>>(),
+        vec![
+            format!("rebuilt 2 events, through position {head} of {head} (100%)"),
+            "rebuilt graph.db from the event log".to_string(),
+        ],
+        "setup folds both definitions again, resuming nothing; stdout: {out}"
+    );
+    let graph = Projector::open(store.graph_db.to_str().unwrap(), &store.project()).unwrap();
+    assert_eq!(
+        (
+            attrs_of(&graph, "src/f.rs::x"),
+            user_version(&store.graph_db),
+            shadow.exists()
+        ),
+        (definition("x", "function", 3), PROJECTION_VERSION, false),
+        "the node holds the fn at the fn's line, under the current rule, and the shadow is gone"
+    );
+    drop(graph);
+    let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
+    assert_eq!(
+        graph, fresh,
+        "the rebuilt graph.db is the whole log's, fold state included"
+    );
 }
 
 /// Given a project with no `graph.db`, `rigger setup` owes and reports no rebuild and creates none.
@@ -1598,7 +1791,7 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
     );
     assert_eq!(
         user_version(&store.graph_db),
-        1,
+        PROJECTION_VERSION,
         "and recorded the current rule"
     );
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
@@ -2092,7 +2285,7 @@ fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_on
             user_version(&store.graph_db),
             holds_table(&store.graph_db, "rebuild_cursor")
         ),
-        (1, true),
+        (PROJECTION_VERSION, true),
         "the rebuilt file is swapped in and still owes its tail"
     );
 

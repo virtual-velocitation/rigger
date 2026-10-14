@@ -196,7 +196,7 @@ and sharing it is what lets a single query cross from code to decision to design
 ```
 DOMAIN                    NODE KIND      SOURCE                          ROLE IN THE GRAPH
 ────────────────────────  ─────────────  ──────────────────────────────  ─────────────────────────────
-codebase structure        code-entity    tree-sitter (fn/type/mod)       the WHAT - the code itself
+codebase structure        code-entity    tree-sitter (KINDS, below)      the WHAT - the code itself
                           file           the module tree                 container for code-entities
 design & project intent   design-doc     RA / architecture.md / addenda  the DESIGN-INTENT layer
                           arch-decision  load-bearing decision / ADR     constrains the code
@@ -210,6 +210,11 @@ orchestration             unit           UnitProposed event              a plann
                           agent          agent lifecycle                 who did the work
                           artifact       produced output                 what a unit produced
 ```
+
+KINDS. A code-entity carries one kind, and these are the kinds the extractor may emit:
+`function`, `method`, `constructor`, `type`, `trait`, `impl`, `module`, `constant`, `static`,
+`variable`, `variant`, `field`, `property`, `macro` and `declaration`, with `other` only for a
+tag category the extractor does not know.
 
 The graph is ONE projection over all three domains: code structure, design intent, and the
 decision stream share a single id space, one query surface, and one lifecycle. Knowledge is

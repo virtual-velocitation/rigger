@@ -773,3 +773,117 @@ fn the_served_calls_route_walks_the_real_projection_over_the_wire() {
         "the real calls route still opens only the calls provider, never the whole-graph read"
     );
 }
+
+/// The `(id, layer)` of every node a served calls body carries, sorted by id.
+fn served_layers(body: &serde_json::Value) -> Vec<(String, i64)> {
+    let mut layers: Vec<(String, i64)> = body["nodes"]
+        .as_array()
+        .expect("a served calls body carries a nodes array")
+        .iter()
+        .map(|n| {
+            (
+                n["id"].as_str().expect("a node id").to_string(),
+                n["layer"].as_i64().expect("a node layer"),
+            )
+        })
+        .collect();
+    layers.sort();
+    layers
+}
+
+/// The `(from, to)` of every edge a served calls body carries, sorted.
+fn served_edges(body: &serde_json::Value) -> Vec<(String, String)> {
+    let mut edges: Vec<(String, String)> = body["edges"]
+        .as_array()
+        .expect("a served calls body carries an edges array")
+        .iter()
+        .map(|e| {
+            (
+                e["from"].as_str().expect("an edge source").to_string(),
+                e["to"].as_str().expect("an edge target").to_string(),
+            )
+        })
+        .collect();
+    edges.sort();
+    edges
+}
+
+/// Spec 116 criterion 4, a data member is no call target, over the wire. GIVEN a real projection
+/// where `src/b.rs` holds `fn caller` and a FIELD named `callee`, `caller` calls `callee`, and the
+/// one fn `callee` lives in `src/a.rs`, WHEN the calls route is served for each direction, THEN
+/// the DOWN walk from `caller` lands on the fn in the other file and never on the field, the UP
+/// walk from that fn reaches `caller`, and the UP walk seeded at the field serves the seed alone.
+#[test]
+fn the_served_calls_route_never_lands_a_call_on_a_field_of_the_called_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let graph_db = dir.path().join("graph.db").to_string_lossy().into_owned();
+    let identity = "callsroute";
+    {
+        let p = Projector::open(&graph_db, identity).unwrap();
+        apply_def(&p, 1, "src/a.rs", "callee", 1, true);
+        apply_def(&p, 2, "src/b.rs", "caller", 1, true);
+        common::fixtures::apply_code_entity(&p, 3, "src/b.rs", "callee", "field", 2, "rust");
+        apply_call(&p, 4, "src/b.rs", "callee", "caller");
+    }
+    let served = |target: &str| {
+        let db = graph_db.clone();
+        let id = identity.to_string();
+        let provider = move |_instance: Option<&str>,
+                             seeds: &[String],
+                             direction: Direction,
+                             depth: i64,
+                             floor: &str|
+              -> CallGraph {
+            Projector::open(&db, &id)
+                .and_then(|p| p.calls(seeds, direction, depth, floor))
+                .expect("the real projection walks")
+        };
+        ok_json(&drive(target, Graph::default(), provider))
+    };
+    let call = (
+        "src/b.rs::caller".to_string(),
+        "src/a.rs::callee".to_string(),
+    );
+
+    let down = served("/api/graph?view=calls&dir=down&seed=src%2Fb.rs%3A%3Acaller&depth=5");
+    assert_eq!(
+        served_layers(&down),
+        vec![
+            ("src/a.rs::callee".to_string(), 1),
+            ("src/b.rs::caller".to_string(), 0)
+        ],
+        "the DOWN walk serves the caller and the other file's fn, never the field: {down}"
+    );
+    assert_eq!(
+        served_edges(&down),
+        vec![call.clone()],
+        "the served call lands on the fn the field's leaf resolves down to: {down}"
+    );
+
+    let up = served("/api/graph?view=calls&dir=up&seed=src%2Fa.rs%3A%3Acallee&depth=5");
+    assert_eq!(
+        served_layers(&up),
+        vec![
+            ("src/a.rs::callee".to_string(), 0),
+            ("src/b.rs::caller".to_string(), -1)
+        ],
+        "the UP walk from the fn reaches the caller whose call names the field's leaf: {up}"
+    );
+    assert_eq!(
+        served_edges(&up),
+        vec![call.clone()],
+        "the served caller edge lands on the fn, never on the field: {up}"
+    );
+
+    let at_field = served("/api/graph?view=calls&dir=up&seed=src%2Fb.rs%3A%3Acallee&depth=5");
+    assert_eq!(
+        served_layers(&at_field),
+        vec![("src/b.rs::callee".to_string(), 0)],
+        "a field seeded UP has no caller: {at_field}"
+    );
+    assert_eq!(
+        served_edges(&at_field),
+        Vec::<(String, String)>::new(),
+        "a field seeded UP serves no caller edge: {at_field}"
+    );
+}

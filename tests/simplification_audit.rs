@@ -2047,6 +2047,13 @@ const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[
         SampleVerdict::NoDuplicate,
     ),
     (
+        "tests/code_entity_test_exclusion_periphery.rs",
+        "edges_where",
+        SampleVerdict::Closed(
+            "the design-doc assertion, the dev-only path test and the test-region test each re-rolled its `(from, rel, to)` edge projection inline; all now call `edges_where`",
+        ),
+    ),
+    (
         "crates/rigger-conductor/src/canary_store.rs",
         "any_finding_is_critical",
         SampleVerdict::NoDuplicate,

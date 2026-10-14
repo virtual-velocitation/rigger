@@ -1861,7 +1861,7 @@
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"write\" (generic write helper); grouped under `conductor::support`.",
-    "content_hash": "2b159c04e83d6261"
+    "content_hash": "853206f25e981286"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3998,6 +3998,14 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "3ca3498cbafff337"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "the_code_neighborhood_lists_no_data_member_and_no_declaration",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "a105cf9640ffd8fa"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -11253,7 +11261,7 @@
     "is_test": false,
     "proposed_module": "dash::reproject",
     "reason": "name contains \"reproject\" (graph reprojection); grouped under `dash::reproject`.",
-    "content_hash": "74ab8fd938245771"
+    "content_hash": "7fdf53e6fa01f6f7"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12870,5 +12878,13 @@
     "proposed_module": "dash::tests::metadata_card_c2",
     "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
     "content_hash": "58fbdd41e409d003"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "reproject_files_beside_a_member",
+    "is_test": true,
+    "proposed_module": "dash::tests::call_target_c4",
+    "reason": "defined inside `call_target_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "67a192716665bd01"
   }
 ]

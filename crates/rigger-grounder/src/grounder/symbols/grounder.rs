@@ -362,7 +362,8 @@ enum HitKind {
 /// `name_coverage` - the terms the entity's name holds - ranks first, so a query that names an
 /// entity by its shape (`impl EventStore for` -> the impl blocks named `impl EventStore for
 /// Store`) finds it above a name that holds one incidental word (`for`). `test` - the location is
-/// test code ([`Def::is_test`]/[`SymRef::is_test`], or a file under a `tests` directory) - ranks
+/// test code ([`Def::is_test`]/[`SymRef::is_test`], or a file at a dev-only path,
+/// [`is_dev_only`](crate::grounder::symbols::events::is_dev_only)) - ranks
 /// next, so a test double never outranks the product code it stands in for. `coverage` - the
 /// terms the name OR the file path holds - ranks third, so the words that name the module narrow
 /// the match (`sqlite store open` -> `open_connection` in `store/sqlite.rs` above `reopen_window`
@@ -425,7 +426,7 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
     let mut best: BTreeMap<(&'a str, u32), ScoredHit<'a>> = BTreeMap::new();
     for (path, fs) in idx.files() {
         let lower_path = path.to_lowercase();
-        let test_file = crate::grounder::symbols::events::is_under_tests_dir(path);
+        let test_file = crate::grounder::symbols::events::is_dev_only(path);
         let mut score_one = |name: &'a str, line: u32, kind: HitKind, lexical: u8, test: bool| {
             // The best TIER any query term gives this name: an EXACT match (some term equals the
             // name) always wins over a CONTAINS match (some term merely occurs within it).
@@ -2226,6 +2227,38 @@ mod tests {
             },
         );
         idx
+    }
+
+    /// DEV-ONLY CODE MAKES NO NODE (spec 116 criterion 1), at ranking: [`scored_hits`] marks
+    /// every location of a `*_test.go` file as test, though none carries a test marking of its
+    /// own, and leaves its production sibling's unmarked.
+    #[test]
+    fn scored_hits_marks_a_go_test_file_location_as_test_and_its_sibling_as_production() {
+        let mut idx = SymbolIndex::default();
+        for path in ["pkg/x.go", "pkg/x_test.go"] {
+            idx.insert_file(
+                path.to_string(),
+                FileSymbols {
+                    lang: Lang::Go,
+                    defs: vec![hand_def("Widget", 1)],
+                    refs: vec![hand_ref("Widget", 2)],
+                    partial: false,
+                },
+            );
+        }
+        let marked: Vec<(&str, u32, bool)> = scored_hits(&idx, &["Widget"])
+            .iter()
+            .map(|h| (h.file, h.line, h.test))
+            .collect();
+        assert_eq!(
+            marked,
+            vec![
+                ("pkg/x.go", 1, false),
+                ("pkg/x.go", 2, false),
+                ("pkg/x_test.go", 1, true),
+                ("pkg/x_test.go", 2, true),
+            ]
+        );
     }
 
     /// The name `hits` slots at `fixture.rs`'s `line`.

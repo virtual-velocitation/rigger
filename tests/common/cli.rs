@@ -465,6 +465,70 @@ pub fn open_graph(root: &Path) -> Projector {
     Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id).unwrap()
 }
 
+/// The graph `rigger graph build` folds over a fresh [`temp_project`] holding each of `files`, a
+/// `(root-relative path, source text)` pair; the project lives as long as the returned directory.
+pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, Projector) {
+    let dir = temp_project();
+    for (path, source) in files {
+        std::fs::write(dir.path().join(path), source).unwrap();
+    }
+    run_rigger_ok(dir.path(), &["graph", "build"]);
+    let graph = open_graph(dir.path());
+    (dir, graph)
+}
+
+/// GIVEN a project whose one file `path`, in the language `lang`, holds `source`, WHEN the
+/// operator runs `rigger graph build`, THEN the built graph's code entities are exactly one
+/// node per `definitions` row, a (leaf, kind, line) triple, each carrying exactly that kind and
+/// line, and one per `placeholders` leaf, a name a reference reaches that no definition gives
+/// (`entities_why` says what makes no node), and its `CALLS` edges are exactly `calls`.
+pub fn assert_built_graph_holds(
+    (path, lang, source): (&str, &str, &str),
+    definitions: &[(&str, &str, u64)],
+    placeholders: &[&str],
+    calls: &[(&str, &str)],
+    entities_why: &str,
+) {
+    use super::fixtures::{attrs_of, definition_in, live_calls, live_node_ids};
+    use rigger::contextgraph::KIND_CODE_ENTITY;
+
+    let (_project, graph) = built_graph(&[(path, source)]);
+    let id = |leaf: &str| format!("{path}::{leaf}");
+    let mut entities: Vec<String> = definitions
+        .iter()
+        .map(|(name, _, _)| *name)
+        .chain(placeholders.iter().copied())
+        .map(id)
+        .collect();
+    entities.sort();
+    assert_eq!(
+        live_node_ids(&graph.whole().unwrap(), KIND_CODE_ENTITY),
+        entities,
+        "{entities_why}"
+    );
+    let carried: Vec<_> = definitions
+        .iter()
+        .map(|(name, _, _)| attrs_of(&graph, &id(name)))
+        .collect();
+    let expected: Vec<_> = definitions
+        .iter()
+        .map(|(name, kind, line)| definition_in(lang, name, kind, *line))
+        .collect();
+    assert_eq!(
+        carried, expected,
+        "each definition node carries its kind and line, and nothing else"
+    );
+    let calls: Vec<(String, String)> = calls
+        .iter()
+        .map(|(from, to)| (from.to_string(), to.to_string()))
+        .collect();
+    assert_eq!(
+        live_calls(&graph),
+        calls,
+        "every CALLS edge of the built graph, each from the caller the fixture gives it"
+    );
+}
+
 /// Every `graph.db*` entry under `.rigger/` of `root` ([`super::fixtures::dir_snapshot`]).
 pub fn graph_files(root: &Path) -> Vec<(String, Option<Vec<u8>>)> {
     super::fixtures::dir_snapshot(&rigger_file(root, ""), "graph.db")

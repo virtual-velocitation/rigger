@@ -13027,9 +13027,10 @@ fn plain_node_line(n: &contextgraph::Node) -> String {
 /// findings sections read, so a single seeded traversal returns the code neighborhood, the
 /// decisions/findings about the files, and the design-intent nodes together - replacing the
 /// separate structural-grounder "Relevant locations" call `build_prompt_with_failure` used to
-/// stitch in. Only DEFINITION entities render (a `code-entity` node carrying a `name` attr): a bare
-/// reference node folded from an `EdgeInferred` event has no line/kind, so it is not a "read-first"
-/// location.
+/// stitch in. Only call-target DEFINITION entities render (a `code-entity` node carrying a `name`
+/// attr whose kind passes `is_call_target`): a bare reference node folded from an `EdgeInferred`
+/// event has no line/kind, so it is not a "read-first" location, and a field, a property or a
+/// declaration takes no slot.
 ///
 /// The file each definition lives in comes STRUCTURALLY from the `CONTAINS` edge the extraction
 /// folded (`file --CONTAINS--> entity`, spec 29a), NEVER by string-parsing the `<file>::<name>`
@@ -13063,6 +13064,8 @@ fn graph_around_recovery(seed: &[String]) -> String {
     }
 }
 
+/// Render the code neighborhood: the seeded subgraph's definitions a call resolves onto, by
+/// file and line. A field, a property or a declaration takes no slot of the capped list.
 fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
     // Recover each definition's file from the recorded CONTAINS edge (file -> entity), keyed by the
     // contained entity id. An extracted definition always folds this edge, so a definition reachable
@@ -13084,6 +13087,7 @@ fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
         .iter()
         .filter(|n| n.kind == contextgraph::KIND_CODE_ENTITY)
         .filter(|n| n.attrs.get("name").is_some_and(|s| !s.is_empty()))
+        .filter(|n| contextgraph::is_call_target(n.attrs.get("kind").map(String::as_str)))
         .filter(|n| file_of.contains_key(n.id.as_str()))
         .collect();
     defs.sort_by(|a, c| {
@@ -24022,6 +24026,28 @@ mod tests {
             "the byte-elided remainder must collapse into a visible elision note; got a section of \
              len {}",
             out.len()
+        );
+    }
+
+    /// Spec 116 criterion 4: a field, a property and a declaration take no slot of the code
+    /// neighborhood; a fn and a constant beside them keep theirs.
+    #[test]
+    fn the_code_neighborhood_lists_no_data_member_and_no_declaration() {
+        let out = render_code_neighborhood(
+            &[
+                ("core.rs", "run", "function", 1),
+                ("core.rs", "state", "field", 2),
+                ("core.rs", "size", "property", 3),
+                ("core.rs", "open", "declaration", 4),
+                ("core.rs", "LIMIT", "constant", 5),
+            ],
+            &["core.rs".to_string()],
+        );
+        assert_eq!(
+            out,
+            format!(
+                "{CODE_NEIGHBORHOOD_HEADER}\n- core.rs:1  function run\n- core.rs:5  constant LIMIT\n\n"
+            )
         );
     }
 

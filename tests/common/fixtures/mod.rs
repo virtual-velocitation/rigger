@@ -11,23 +11,37 @@
 
 #![allow(dead_code, unused_imports)]
 
+mod caller_sources;
 mod config;
+mod csharp_definition_sources;
 mod events;
 mod extraction_tree;
 mod git;
+mod go_definition_sources;
 mod graph;
 mod host;
+mod js_ts_definition_sources;
+mod name_filter_sources;
 mod page;
+mod python_definition_sources;
 mod read_fault;
+mod rust_definition_sources;
 mod spawn;
+pub use caller_sources::*;
 pub use config::*;
+pub use csharp_definition_sources::*;
 pub use events::*;
 pub use extraction_tree::*;
 pub use git::*;
+pub use go_definition_sources::*;
 pub use graph::*;
 pub use host::*;
+pub use js_ts_definition_sources::*;
+pub use name_filter_sources::*;
 pub use page::*;
+pub use python_definition_sources::*;
 pub use read_fault::*;
+pub use rust_definition_sources::*;
 pub use spawn::*;
 
 #[cfg(any(feature = "store", not(feature = "core")))]

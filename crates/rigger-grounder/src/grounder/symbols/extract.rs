@@ -1,15 +1,19 @@
 //! Symbol extraction: the ONE function that touches tree-sitter (architecture 5.5.3). It
 //! runs an INJECTED grammar's `tags` query over a source string and lowers the uniform tags
 //! into the parser-free `FileSymbols` model. Everything downstream sees `FileSymbols` and
-//! never the parser - so per-language support is a registration (unit 2), not bespoke code.
+//! never the parser - so per-language support is a registration (unit 2), and a language
+//! whose query cannot tag a definition (its grammar gives it no name node, or the upstream query
+//! already holds that node as a reference) also adds a read-off here, selected by the language
+//! `extract` is given.
 
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
+use rigger_domain::wave::normalize_ws;
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
 
 /// Map a grammar tag's syntax-type NAME (the name half of a `tags.scm` category, e.g.
-/// "function", "method", "struct", "class", "interface", "trait", "module", "constant") to a
-/// rigger `Kind`. Unknown names fold to `Other`, so the model stays grammar-agnostic and a new
-/// grammar never forces a `Kind` variant.
+/// "function", "method", "struct", "class", "interface", "trait", "module", "constant", "macro",
+/// "static", "variant", "field", "variable", "constructor", "property") to a rigger `Kind`. Unknown names fold to `Other`,
+/// so the model stays grammar-agnostic and a new grammar never forces a `Kind` variant.
 fn kind_of(syntax_type: &str) -> Kind {
     match syntax_type {
         "function" => Kind::Function,
@@ -19,14 +23,199 @@ fn kind_of(syntax_type: &str) -> Kind {
         "impl" => Kind::Impl,
         "module" | "namespace" => Kind::Module,
         "constant" => Kind::Constant,
+        "macro" => Kind::Macro,
+        "static" => Kind::Static,
+        "variant" => Kind::Variant,
+        "field" => Kind::Field,
+        "variable" => Kind::Variable,
+        "constructor" => Kind::Constructor,
+        "property" => Kind::Property,
         _ => Kind::Other,
     }
+}
+
+/// THE NAME FILTER (spec 116): whether a definition whose leaf is `leaf` names nothing in `lang`.
+/// The empty leaf names nothing in any language. `_` names nothing in Go and Rust, whose
+/// grammars make it the blank identifier, which nothing can refer to; in JS, TS, Python and C#
+/// `_` is an ordinary name its `_(..)` calls resolve to.
+fn is_nameless(lang: Lang, leaf: &str) -> bool {
+    leaf.is_empty() || (leaf == "_" && matches!(lang, Lang::Go | Lang::Rust))
+}
+
+/// A DECLARATION (spec 116): whether `node`, the own node of a function, method or constructor
+/// definition, has no body. Rust's is a `function_signature_item`, a trait required fn or an
+/// extern block's fn; Go's is an interface's `method_elem`, and a `function_declaration` or a
+/// `method_declaration` holding no `body`; C#'s is a `method_declaration`, a
+/// `destructor_declaration`, a `local_function_statement`, a `constructor_declaration`, an
+/// `operator_declaration` or a `conversion_operator_declaration` holding no `body` (an interface,
+/// `abstract`, `extern` or `partial` member); TS's is a `function_signature` (an ambient or
+/// overload function), a `method_signature` (an interface's method) or an
+/// `abstract_method_signature`. It reads the node alone, so a grammar sharing one
+/// of those node types shares its rule.
+fn is_declaration(node: tree_sitter::Node) -> bool {
+    match node.kind() {
+        "function_signature_item"
+        | "method_elem"
+        | "function_signature"
+        | "method_signature"
+        | "abstract_method_signature" => true,
+        "function_declaration"
+        | "method_declaration"
+        | "destructor_declaration"
+        | "local_function_statement"
+        | "constructor_declaration"
+        | "operator_declaration"
+        | "conversion_operator_declaration" => node.child_by_field_name("body").is_none(),
+        _ => false,
+    }
+}
+
+/// A FUNCTION-VALUED FIELD (spec 116): whether `node`, the own node of a field definition, holds
+/// an arrow function or a function expression as its `value`, a JS `field_definition` or a TS
+/// `public_field_definition` (`act = () => {}`), which is then a method. It reads the node alone,
+/// as [`is_declaration`] does, those two value types being JS's and TS's alone.
+fn is_function_valued(node: tree_sitter::Node) -> bool {
+    node.child_by_field_name("value")
+        .is_some_and(|v| matches!(v.kind(), "arrow_function" | "function_expression"))
+}
+
+/// A PYTHON METHOD (spec 116): whether `node`, the own node of a definition, is a Python
+/// `function_definition` whose nearest enclosing definition is a `class_definition`, the
+/// statements, blocks and `decorated_definition` wrappers between them passed through; a def
+/// nested in a function, a method's included, is a function. It reads the node and its
+/// ancestors alone, as [`is_declaration`] reads the node.
+fn is_python_method(node: tree_sitter::Node) -> bool {
+    node.kind() == "function_definition"
+        && std::iter::successors(node.parent(), |n| n.parent())
+            .find(|n| matches!(n.kind(), "class_definition" | "function_definition"))
+            .is_some_and(|n| n.kind() == "class_definition")
+}
+
+/// THE LEAF of a tagged definition (spec 116): the name its `Def` and its caller range carry,
+/// read over `node`, its own node, and `name`, the slice of the source its tag names. A C#
+/// `destructor_declaration` is `~` and that identifier (`~Foo`), the grammar holding the `~`
+/// outside the name node; a JS or TS definition named by a `string` (`declare module "x"`, a
+/// member `"a-b"`), or the `string` node itself, is the text between its quotes
+/// ([`unquoted`]); every other definition's leaf is the slice itself, a private member's `#`
+/// and a numeric member's digits included. It reads the node alone, as [`is_declaration`]
+/// does.
+fn def_leaf(node: Option<tree_sitter::Node>, name: &str) -> String {
+    match node {
+        Some(n) if n.kind() == "destructor_declaration" => format!("~{name}"),
+        Some(n) if n.child_by_field_name("name").unwrap_or(n).kind() == "string" => {
+            unquoted(name).to_string()
+        }
+        _ => name.to_string(),
+    }
+}
+
+/// The source text between the quotes of `text`, a JS or TS string's slice, escapes undecoded:
+/// its first and last character dropped, a quote each; `text` itself when it is shorter than
+/// two characters.
+fn unquoted(text: &str) -> &str {
+    text.get(1..text.len().saturating_sub(1)).unwrap_or(text)
+}
+
+/// Whether `node` is a Rust fn the compiler registers as a procedural macro: a `function_item`
+/// whose outer attribute stack holds `#[proc_macro]`, `#[proc_macro_derive(..)]` or
+/// `#[proc_macro_attribute]`, wherever in the stack it sits.
+fn is_proc_macro_fn(node: tree_sitter::Node, source: &[u8]) -> bool {
+    node.kind() == "function_item"
+        && scan_attribute_stack(
+            source,
+            node.prev_sibling(),
+            |n| n.prev_sibling(),
+            |item, s| {
+                let (_, name) = named_attribute(item, s)?;
+                matches!(
+                    name,
+                    "proc_macro" | "proc_macro_derive" | "proc_macro_attribute"
+                )
+                .then_some(())
+            },
+        )
+        .is_some()
+}
+
+/// The kind a definition the query tagged `tagged` lowers to, read over `node`, its own node
+/// (the deepest one spanning its range): a function, method or constructor with no body
+/// ([`is_declaration`]) is a `Declaration`, a function-valued field ([`is_function_valued`]) a
+/// `Method`, a Python def in a class ([`is_python_method`]) a `Method`, and in Rust a proc-macro
+/// fn ([`is_proc_macro_fn`]) is a `Macro`; every other definition keeps the kind its tag names.
+fn lowered_kind(lang: Lang, tagged: Kind, node: Option<tree_sitter::Node>, source: &[u8]) -> Kind {
+    match tagged {
+        Kind::Function | Kind::Method | Kind::Constructor if node.is_some_and(is_declaration) => {
+            Kind::Declaration
+        }
+        Kind::Field if node.is_some_and(is_function_valued) => Kind::Method,
+        Kind::Function if node.is_some_and(is_python_method) => Kind::Method,
+        _ if lang == Lang::Rust && node.is_some_and(|n| is_proc_macro_fn(n, source)) => Kind::Macro,
+        _ => tagged,
+    }
+}
+
+/// A definition as the tag pass and the read-offs record it, ahead of the passes over the whole
+/// file that resolve the rest: `is_test` needs every definition's range (`test_regions` decides
+/// containment over the whole set), and the out-of-line module facts are read from the parsed
+/// tree once every definition is known (only a `Module`-kind definition ever carries them; see
+/// `Def::is_out_of_line_module`).
+fn unresolved_def(kind: Kind, name: String, line: u32) -> Def {
+    Def {
+        kind,
+        name,
+        line,
+        is_test: false,
+        is_out_of_line_module: false,
+        path_override: None,
+        enclosing_inline_module_path: None,
+    }
+}
+
+/// Record one definition the tag pass or a read-off found, `tagged` the kind it names and
+/// `node` its own node, into `defs` and `def_ranges` at one index. THE NAME FILTER runs first: a
+/// definition whose leaf names nothing in `lang` ([`is_nameless`]) enters neither, so its range
+/// is no caller range, and is returned instead, for [`test_regions`] to read when it is test
+/// attributed; every other takes its kind lowered over its node ([`lowered_kind`]) and returns
+/// `None`.
+fn record_def(
+    lang: Lang,
+    source: &[u8],
+    node: Option<tree_sitter::Node>,
+    tagged: Kind,
+    (range, name, line): ReadOff,
+    defs: &mut Vec<Def>,
+    def_ranges: &mut Vec<(std::ops::Range<usize>, String, Kind)>,
+) -> Option<std::ops::Range<usize>> {
+    if is_nameless(lang, &name) {
+        return Some(range);
+    }
+    let kind = lowered_kind(lang, tagged, node, source);
+    def_ranges.push((range, name.clone(), kind));
+    defs.push(unresolved_def(kind, name, line));
+    None
 }
 
 /// Extract one file's definitions and references by running the INJECTED grammar's tag query
 /// over `source` (5.5.3). This is the ONLY function that touches tree-sitter; the caller
 /// supplies the grammar and its query (unit 2's registry decides WHICH), and everything it
 /// returns is the parser-free `FileSymbols`.
+///
+/// A tagged definition is named by its leaf ([`def_leaf`]), in `defs` and as a caller alike. A
+/// definition tag whose leaf names nothing ([`is_nameless`]) makes no `Def`, and the references
+/// in its body take the next enclosing definition by the caller rule, else the file. A
+/// definition read off the tree by `lang` is put to that filter too, so a Go `type _ = B` makes
+/// none. An impl block is not: its name is its header, `impl ..`, never empty and never `_`.
+///
+/// A tagged definition takes the kind its tag names, lowered once over its own node
+/// ([`lowered_kind`]). What the query cannot tag is read off the parsed tree: every impl block
+/// ([`impl_blocks`]) and, selected by `lang`, Rust's tuple fields ([`tuple_fields`]), Go's
+/// embedded fields and type aliases ([`embedded_fields`], [`named_by_field`]) and C#'s operators,
+/// conversion operators and indexers ([`named_by_field`], [`conversion_operators`],
+/// [`indexers`]), JS's and TS's class fields, valueless enum members and the identifiers a
+/// pattern declarator or a declaring `for .. in`/`for .. of` binds ([`class_fields`],
+/// [`enum_members`], [`js_bindings`]), and Python's module-level names a pattern or a chain
+/// binds, class-body names and type aliases ([`assigned_names`], [`class_body_names`],
+/// [`type_aliases`]), each recorded as a tagged definition is ([`record_def`]).
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -43,58 +232,14 @@ pub fn extract(
     let (tags, _) = ctx
         .generate_tags(&config, source.as_bytes(), None)
         .map_err(|e| format!("symbols: generate tags: {e}"))?;
-    let mut defs = Vec::new();
-    let mut refs = Vec::new();
-    // Each definition's byte range (the whole construct, body included - the tag's node range,
-    // see `enclosing_def`) paired with its name, and each reference's byte position. Collected in
-    // this single tag pass; the enclosing definition is resolved below so the reference order the
-    // emit pass depends on stays untouched.
-    let mut def_ranges: Vec<(std::ops::Range<usize>, String)> = Vec::new();
-    let mut ref_positions: Vec<usize> = Vec::new();
-    for tag in tags {
-        let tag = tag.map_err(|e| format!("symbols: tag: {e}"))?;
-        let Some(name) = source.get(tag.name_range.start..tag.name_range.end) else {
-            continue;
-        };
-        let name = name.to_string();
-        // 1-based line from the tag span's start row.
-        let line = tag.span.start.row as u32 + 1;
-        if tag.is_definition {
-            let syntax = config.syntax_type_name(tag.syntax_type_id);
-            def_ranges.push((tag.range.clone(), name.clone()));
-            defs.push(Def {
-                kind: kind_of(syntax),
-                name,
-                line,
-                // Resolved below, once every definition's range is known (test_regions needs the
-                // WHOLE set to decide containment, not just what has been seen so far).
-                is_test: false,
-                // Resolved below too, from the second parsed tree (only a `Module`-kind def can
-                // ever be true here; see `Def::is_out_of_line_module`).
-                is_out_of_line_module: false,
-                path_override: None,
-                // Resolved below too, alongside `path_override`, from the same ancestor walk of
-                // the second parsed tree.
-                enclosing_inline_module_path: None,
-            });
-        } else {
-            ref_positions.push(tag.range.start);
-            refs.push(SymRef {
-                name,
-                line,
-                enclosing: None,
-                is_test: false,
-            });
-        }
-    }
     // The full parse of `source` (the SAME tree `tags_query` runs against, parsed a second time with
-    // the full grammar), read below for what the tags pass cannot express: impl blocks, test
-    // attributes, and out-of-line module declarations. This is still the one function touching
-    // tree-sitter, so the single-parsing-authority invariant (5.5.3) survives. A
-    // `Parser::set_language` or `parse` failure here is defensive only: `ts_language` already
-    // parsed successfully above via `TagsConfiguration::new`/`generate_tags`, using the identical
-    // language, so this path degrades to an `Err` rather than a panic without ever being expected
-    // to fire in practice.
+    // the full grammar), read for what the tags pass cannot express: a tagged definition's own
+    // node, impl blocks, tuple fields, test attributes, and out-of-line module declarations. This
+    // is still the one function touching tree-sitter, so the single-parsing-authority invariant
+    // (5.5.3) survives. A `Parser::set_language` or `parse` failure here is defensive only:
+    // `ts_language` already configured the tags query above, using the identical language, so
+    // this path degrades to an `Err` rather than a panic without ever being expected to fire in
+    // practice.
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(ts_language)
@@ -102,21 +247,56 @@ pub fn extract(
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
+    let root = tree.root_node();
+    let mut defs = Vec::new();
+    let mut refs = Vec::new();
+    // Each definition's byte range (the whole construct, body included - the tag's node range,
+    // see `enclosing_def`) with its name and kind, and each reference's byte position. Collected
+    // in this single tag pass; the enclosing definition is resolved below so the reference order
+    // the emit pass depends on stays untouched.
+    let mut def_ranges: Vec<(std::ops::Range<usize>, String, Kind)> = Vec::new();
+    // The range of each definition THE NAME FILTER drops (`record_def`), in neither `defs` nor
+    // `def_ranges`, kept for `test_regions` alone.
+    let mut dropped: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut ref_positions: Vec<usize> = Vec::new();
+    for tag in tags {
+        let tag = tag.map_err(|e| format!("symbols: tag: {e}"))?;
+        let Some(name) = source.get(tag.name_range.start..tag.name_range.end) else {
+            continue;
+        };
+        // 1-based line from the tag span's start row.
+        let line = tag.span.start.row as u32 + 1;
+        if tag.is_definition {
+            // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the name a
+            // definition is filtered by, recorded under and named as a caller by is one.
+            let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
+            dropped.extend(record_def(
+                lang,
+                source.as_bytes(),
+                node,
+                kind_of(config.syntax_type_name(tag.syntax_type_id)),
+                (tag.range.clone(), def_leaf(node, name), line),
+                &mut defs,
+                &mut def_ranges,
+            ));
+        } else {
+            ref_positions.push(tag.range.start);
+            refs.push(SymRef {
+                name: name.to_string(),
+                line,
+                enclosing: None,
+                is_test: false,
+            });
+        }
+    }
     // Every impl block is a definition of its own (gap 104), named by its header, with its trait
     // and self type recorded as references. Added before the attribution pass below, so those two
-    // references attribute to the impl (the impl -> trait and impl -> type links) while a
-    // reference inside one of its methods still attributes to the method, the innermost range.
-    for block in impl_blocks(tree.root_node(), source.as_bytes()) {
-        def_ranges.push((block.range, block.name.clone()));
-        defs.push(Def {
-            kind: Kind::Impl,
-            name: block.name,
-            line: block.line,
-            is_test: false,
-            is_out_of_line_module: false,
-            path_override: None,
-            enclosing_inline_module_path: None,
-        });
+    // references attribute to the impl (the impl -> trait and impl -> type links) unless a
+    // function encloses the impl, which then is their caller, while a reference inside one of its
+    // methods still attributes to the method, the innermost function.
+    for block in impl_blocks(root, source.as_bytes()) {
+        def_ranges.push((block.range, block.name.clone(), Kind::Impl));
+        defs.push(unresolved_def(Kind::Impl, block.name, block.line));
         for (name, line, pos) in block.targets {
             ref_positions.push(pos);
             refs.push(SymRef {
@@ -127,22 +307,74 @@ pub fn extract(
             });
         }
     }
-    // Attribute each reference to the innermost enclosing definition (the caller, spec 37). The
+    // The definitions the language's query cannot tag are read off the tree too (spec 116), each
+    // read-off giving the kind of what it finds, lowered over its own node as a tagged
+    // definition's is; one whose leaf names nothing makes no definition, as a tagged one makes
+    // none.
+    let read_offs = match lang {
+        Lang::Rust => vec![(Kind::Field, tuple_fields(root))],
+        Lang::Go => vec![
+            (Kind::Field, embedded_fields(root, source.as_bytes())),
+            (
+                Kind::Type,
+                named_by_field(root, source.as_bytes(), "type_alias", "name"),
+            ),
+        ],
+        Lang::CSharp => vec![
+            (
+                Kind::Method,
+                named_by_field(root, source.as_bytes(), "operator_declaration", "operator"),
+            ),
+            (Kind::Method, conversion_operators(root, source.as_bytes())),
+            (Kind::Method, indexers(root, source.as_bytes())),
+        ],
+        Lang::Js | Lang::Ts => vec![
+            (Kind::Field, class_fields(root, source.as_bytes())),
+            (Kind::Variant, enum_members(root, source.as_bytes())),
+            (Kind::Constant, js_bindings(root, source.as_bytes())),
+        ],
+        Lang::Python => vec![
+            (
+                Kind::Constant,
+                assigned_names(root, source.as_bytes(), true),
+            ),
+            (Kind::Field, class_body_names(root, source.as_bytes())),
+            (Kind::Type, type_aliases(root, source.as_bytes())),
+        ],
+    };
+    for (kind, found) in read_offs {
+        for found in found {
+            let node = root.descendant_for_byte_range(found.0.start, found.0.end);
+            dropped.extend(record_def(
+                lang,
+                source.as_bytes(),
+                node,
+                kind,
+                found,
+                &mut defs,
+                &mut def_ranges,
+            ));
+        }
+    }
+    // Attribute each reference to its caller (`enclosing_def`: the innermost enclosing function,
+    // else the innermost enclosing definition; spec 116). The
     // reference order is unchanged - `enclosing` is a derived per-reference attribute, never a new
     // sort key, so identical source still yields byte-identical downstream events.
     for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
         r.enclosing = enclosing_def(&def_ranges, pos);
     }
     // Spec 86 criterion 1: mark every definition and reference that falls inside a TEST REGION -
-    // a definition directly annotated `#[test]`/`#[cfg(test)]` (or nested inside one), an impl
-    // block included. Byte-range based, so it is exact regardless of which line a construct starts
+    // every test-attributed range (`test_regions`: a definition directly annotated
+    // `#[test]`/`#[cfg(test)]`, an impl block or one the name filter drops included, an extern
+    // block, or the whole file opening `#![cfg(test)]`), a definition nested inside one included.
+    // Byte-range based, so it is exact regardless of which line a construct starts
     // or ends on; computed AFTER every def's range is known, so a def's own containment check can
     // see siblings and ancestors alike whatever order the tags happened to arrive in.
     // `test_regions` walks the parsed tree's `attribute_item` nodes structurally instead of
     // re-deriving attribute/comment boundaries from characters.
-    let regions = test_regions(source.as_bytes(), tree.root_node(), &def_ranges);
+    let regions = test_regions(source.as_bytes(), root, &def_ranges, &dropped);
     if !regions.is_empty() {
-        for (d, (range, _)) in defs.iter_mut().zip(def_ranges.iter()) {
+        for (d, (range, _, _)) in defs.iter_mut().zip(def_ranges.iter()) {
             d.is_test = regions
                 .iter()
                 .any(|r| r.start <= range.start && range.end <= r.end);
@@ -163,12 +395,9 @@ pub fn extract(
     // ([`out_of_line_path_override`]) - the SAME reason as `is_out_of_line_module` itself: only
     // this file's own parsed tree carries the attribute, so the events/index layer that resolves
     // it needs it carried on the definition, not re-derived from source it no longer has.
-    for (d, (range, _)) in defs.iter_mut().zip(def_ranges.iter()) {
+    for (d, (range, _, _)) in defs.iter_mut().zip(def_ranges.iter()) {
         if d.kind == Kind::Module {
-            if let Some(n) = tree
-                .root_node()
-                .descendant_for_byte_range(range.start, range.end)
-            {
+            if let Some(n) = root.descendant_for_byte_range(range.start, range.end) {
                 d.is_out_of_line_module =
                     n.kind() == "mod_item" && n.child_by_field_name("body").is_none();
                 if d.is_out_of_line_module {
@@ -191,7 +420,7 @@ pub fn extract(
     // the SAME `tree` `test_regions`/the out-of-line-module walk above already parsed (never a
     // second parse), so a malformed file's `defs`/`refs` are carried exactly as far as the parse
     // reached, tagged as partial rather than silently presented as complete.
-    let partial = tree.root_node().has_error();
+    let partial = root.has_error();
     Ok(FileSymbols {
         lang,
         defs,
@@ -200,9 +429,13 @@ pub fn extract(
     })
 }
 
-/// The byte ranges of every SELF-ATTRIBUTED test definition in `def_ranges` - one whose own
-/// `#[test]`/`#[cfg(..test..)]` attribute stack sits directly above it in the parsed tree rooted
-/// at `root` ([`preceded_by_test_attribute`]). A definition NESTED inside one of these ranges (a
+/// THE TEST REGIONS (spec 116): the byte ranges of every TEST-ATTRIBUTED range in the file
+/// `source` parsed to `root`, one whose own `#[test]`/`#[cfg(..test..)]` attribute stack sits
+/// directly above it ([`preceded_by_test_attribute`]): each definition of `def_ranges` and each
+/// one THE NAME FILTER dropped (`dropped`, a `#[cfg(test)] const _: () = { .. }`'s among them);
+/// each `foreign_mod_item`, an extern block being a container that yields no definition; and
+/// the whole file, `0..source.len()`, when the root opens with an inner `#![cfg(test)]`
+/// ([`opens_with_inner_test_attribute`]). A definition NESTED inside one of these ranges (a
 /// plain helper with no attribute of its own, living inside a `#[cfg(test)] mod tests { .. }`) is
 /// test code too, but it earns that status by CONTAINMENT, not by appearing in this list - the
 /// caller checks containment against the ranges this returns, so a doubly-nested item is covered
@@ -210,13 +443,26 @@ pub fn extract(
 fn test_regions(
     source: &[u8],
     root: tree_sitter::Node,
-    def_ranges: &[(std::ops::Range<usize>, String)],
+    def_ranges: &[(std::ops::Range<usize>, String, Kind)],
+    dropped: &[std::ops::Range<usize>],
 ) -> Vec<std::ops::Range<usize>> {
-    def_ranges
+    let mut regions: Vec<_> = def_ranges
         .iter()
-        .filter(|(range, _)| preceded_by_test_attribute(source, root, range))
-        .map(|(range, _)| range.clone())
-        .collect()
+        .map(|(range, _, _)| range)
+        .chain(dropped)
+        .filter(|range| preceded_by_test_attribute(source, root, range))
+        .cloned()
+        .collect();
+    regions.extend(
+        nodes_of_kind(root, "foreign_mod_item")
+            .into_iter()
+            .filter(|block| node_preceded_by_test_attribute(*block, source))
+            .map(|block| block.byte_range()),
+    );
+    if opens_with_inner_test_attribute(root.named_child(0), source) {
+        regions.push(0..source.len());
+    }
+    regions
 }
 
 /// Whether the definition spanning `range` is directly preceded - skipping only comment nodes
@@ -224,12 +470,15 @@ fn test_regions(
 /// an attribute node that GATES THE ITEM'S OWN COMPILATION on `test`: bare `#[test]`, or
 /// `#[cfg(...)]` whose predicate names `test` ([`attribute_item_names_test`] /
 /// [`cfg_predicate_token_tree_names_test`]). `range` is looked up in the ALREADY-PARSED tree
-/// rooted at `root` ([`root.descendant_for_byte_range`]) - the SAME node the tags query captured,
-/// since a tag's range is exactly its underlying grammar node's range - and the scan walks that
-/// node's `prev_sibling()` chain: an `attribute_item` (or comment) is a sibling of the item it
-/// decorates in every grammar shape this crate has ever seen it in (a top-level item, a `mod`
-/// body, an `impl` body), so this generalizes to any nesting depth without a separate case for
-/// each. The walk stops at the first sibling that is neither a comment nor an `attribute_item` -
+/// rooted at `root`, and the walk starts from the OUTERMOST node below the root whose range
+/// equals it: `descendant_for_byte_range` answers the deepest such node, which for a unit
+/// variant is its name child, a node with no sibling, so the lookup climbs every parent of the
+/// same range and stops below the root, whose range a file of one item shares. A tagged
+/// definition's range is its grammar node's; a tuple field's is its type node's, the grammar
+/// giving it no node of its own. The scan walks that node's `prev_sibling()` chain: an
+/// `attribute_item` (or comment) is a sibling of the item it decorates in every grammar shape
+/// (a top-level item, a `mod` body, an `impl` body, a field or variant list), so this
+/// generalizes to any nesting depth without a separate case for each. The walk stops at the first sibling that is neither a comment nor an `attribute_item` -
 /// the boundary of the contiguous attribute/comment stack directly above the item - and every
 /// attribute in that stack is inspected (not just the nearest), so `#[test]` two attributes above
 /// a `#[should_panic]` still matches, and a comment between two stacked attributes never severs
@@ -254,7 +503,7 @@ fn test_regions(
 /// BEFORE the item it gates) and an INNER `#![cfg(test)]` (the FIRST node INSIDE the item's own
 /// body, gating the item that body belongs to - `mod tests { #![cfg(test)] .. }`) are two
 /// grammar-distinct shapes for the identical Rust idiom. Two checks now cover both, both riding
-/// the SAME shared walk ([`attribute_stack_names_test`]) in opposite directions over different
+/// the SAME shared walk ([`scan_attribute_stack`]) in opposite directions over different
 /// sibling sets: `node.prev_sibling()` for an item that sits AFTER an inner attribute as a normal
 /// sibling inside a shared body (e.g. a plain helper following `#![cfg(test)]` in the same `mod`'s
 /// `declaration_list` - also how the pre-existing OUTER `#[cfg(test)]` shape is found, unchanged);
@@ -272,19 +521,30 @@ fn preceded_by_test_attribute(
     root: tree_sitter::Node,
     range: &std::ops::Range<usize>,
 ) -> bool {
-    let Some(node) = root.descendant_for_byte_range(range.start, range.end) else {
+    let Some(mut node) = root.descendant_for_byte_range(range.start, range.end) else {
         return false;
     };
+    while let Some(parent) = node
+        .parent()
+        .filter(|p| p.parent().is_some() && p.byte_range() == node.byte_range())
+    {
+        node = parent;
+    }
     node_preceded_by_test_attribute(node, source)
 }
 
-/// The core [`preceded_by_test_attribute`] applies once a candidate node is in hand:
-/// self-attributed test either through the node's OWN leading
+/// The core [`preceded_by_test_attribute`] applies once a candidate node is in hand, and
+/// [`test_regions`] applies to each extern block's own node: self-attributed test either through the node's OWN leading
 /// inner attribute ([`leading_inner_test_attribute`]) or through an outer attribute stack sitting
-/// as its sibling immediately before it.
+/// as its sibling immediately before it. A tuple field's `pub` is a sibling too, between its
+/// attributes and its type, so the walk first steps over a `visibility_modifier`.
 fn node_preceded_by_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
+    let above = match node.prev_sibling() {
+        Some(visibility) if visibility.kind() == "visibility_modifier" => visibility.prev_sibling(),
+        above => above,
+    };
     leading_inner_test_attribute(node, source)
-        || attribute_stack_names_test(source, node.prev_sibling(), |n| n.prev_sibling())
+        || attribute_stack_names_test(source, above, |n| n.prev_sibling())
 }
 
 /// One impl block read off the parsed tree: its header name (`impl Trait for Type`, or
@@ -303,13 +563,334 @@ struct ImplBlock {
 /// source order, as an [`ImplBlock`]. Keyed on the Rust grammar's own node kind, so a file of any
 /// other language has none.
 fn impl_blocks(root: tree_sitter::Node, source: &[u8]) -> Vec<ImplBlock> {
+    nodes_of_kind(root, "impl_item")
+        .into_iter()
+        .filter_map(|node| impl_block(node, source))
+        .collect()
+}
+
+/// Rust's TUPLE FIELDS (spec 116): every field of every tuple struct and tuple variant under
+/// `root`, in source order, as its byte range, its leaf and its 1-based line. The grammar gives
+/// a tuple field no node of its own (an `ordered_field_declaration_list` holds each field's
+/// attributes, visibility and type as siblings), so a field is read off its type node, whose
+/// range and line it takes, and its leaf is its index among the list's types, from `0`.
+fn tuple_fields(root: tree_sitter::Node) -> Vec<ReadOff> {
+    let mut out = Vec::new();
+    for list in nodes_of_kind(root, "ordered_field_declaration_list") {
+        let mut cursor = list.walk();
+        for (index, ty) in list.children_by_field_name("type", &mut cursor).enumerate() {
+            out.push((
+                ty.byte_range(),
+                index.to_string(),
+                ty.start_position().row as u32 + 1,
+            ));
+        }
+    }
+    out
+}
+
+/// Go's EMBEDDED FIELDS (spec 116): every `field_declaration` under `root` that holds no
+/// `name`, in source order, as its byte range, its leaf and its 1-based line. Its leaf is the
+/// name Go gives it, its type's base identifier ([`base_type_identifier`]); the upstream query
+/// tags that identifier a type reference, which the field's range then encloses. A pointer
+/// embed (`*T`) holds its `T` as the `type` child itself.
+fn embedded_fields(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    nodes_of_kind(root, "field_declaration")
+        .into_iter()
+        .filter(|field| field.child_by_field_name("name").is_none())
+        .filter_map(|field| {
+            let leaf = base_type_identifier(field.child_by_field_name("type")?)?;
+            read_off(field, leaf, source)
+        })
+        .collect()
+}
+
+/// The definitions a grammar names by a field its query cannot tag (spec 116): every node of
+/// the grammar kind `kind` under `root` holding the field `field`, in source order, as its byte
+/// range, its leaf, that field's text, and its 1-based line. Go's TYPE ALIASES are every
+/// `type_alias` (`type A = B`) by its `name`, which the upstream query tags a type reference
+/// the alias's range then encloses; C#'s OPERATORS are every `operator_declaration` by its
+/// `operator`, the token (`+`) the grammar gives it in place of a name node.
+fn named_by_field(root: tree_sitter::Node, source: &[u8], kind: &str, field: &str) -> Vec<ReadOff> {
+    nodes_of_kind(root, kind)
+        .into_iter()
+        .filter_map(|node| read_off(node, node.child_by_field_name(field)?, source))
+        .collect()
+}
+
+/// C#'s CONVERSION OPERATORS (spec 116): every `conversion_operator_declaration` under `root`,
+/// in source order, as its byte range, its leaf and its 1-based line. Its leaf is its header
+/// from `implicit` or `explicit` through its target type, as written with its whitespace
+/// collapsed (`implicit operator int`).
+fn conversion_operators(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    nodes_of_kind(root, "conversion_operator_declaration")
+        .into_iter()
+        .filter_map(|op| {
+            let mut cursor = op.walk();
+            let from = op
+                .children(&mut cursor)
+                .find(|c| matches!(c.kind(), "implicit" | "explicit"))?;
+            let to = op.child_by_field_name("type")?;
+            let header = std::str::from_utf8(source.get(from.start_byte()..to.end_byte())?).ok()?;
+            Some((
+                op.byte_range(),
+                normalize_ws(header),
+                op.start_position().row as u32 + 1,
+            ))
+        })
+        .collect()
+}
+
+/// C#'s INDEXERS (spec 116): every `indexer_declaration` under `root`, in source order, as its
+/// byte range, its leaf and its 1-based line. The grammar gives an indexer no name node; its
+/// leaf is its `this` token.
+fn indexers(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    nodes_of_kind(root, "indexer_declaration")
+        .into_iter()
+        .filter_map(|indexer| {
+            let mut cursor = indexer.walk();
+            let this = indexer.children(&mut cursor).find(|c| c.kind() == "this")?;
+            read_off(indexer, this, source)
+        })
+        .collect()
+}
+
+/// JS's CLASS FIELDS (spec 116): every `field_definition` under `root`, in source order, as its
+/// byte range, its leaf and its 1-based line. The grammar names a field by its `property`, read
+/// as a member's name is ([`member_read_off`]); TS's class field, a `public_field_definition`
+/// named by its `name`, is tagged by the TS query instead. A function-valued field lowers to a
+/// method as a tagged one does ([`is_function_valued`]).
+fn class_fields(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    nodes_of_kind(root, "field_definition")
+        .into_iter()
+        .filter_map(|field| member_read_off(field, field.child_by_field_name("property")?, source))
+        .collect()
+}
+
+/// TS's VALUELESS ENUM MEMBERS (spec 116): every name an `enum_body` under `root` holds as its
+/// own `name` (`enum E { A, "b-c" }`), in source order, as its byte range, its leaf and its
+/// 1-based line, each read as a member's name is ([`member_read_off`]) and spanning its name
+/// alone. A member with a value is an `enum_assignment`, which the TS query tags.
+fn enum_members(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    let mut out = Vec::new();
+    for body in nodes_of_kind(root, "enum_body") {
+        let mut cursor = body.walk();
+        for name in body.children_by_field_name("name", &mut cursor) {
+            out.extend(member_read_off(name, name, source));
+        }
+    }
+    out
+}
+
+/// The [`ReadOff`] of the JS or TS member `node` named by `name`, its leaf read as a tagged
+/// member's is ([`def_leaf`]): a string name's text between its quotes, a private name with
+/// its `#`, a numeric one as written; `None` for a computed name (`[k]`), which names nothing
+/// statically.
+fn member_read_off(
+    node: tree_sitter::Node,
+    name: tree_sitter::Node,
+    source: &[u8],
+) -> Option<ReadOff> {
+    if name.kind() == "computed_property_name" {
+        return None;
+    }
+    let (range, text, line) = read_off(node, name, source)?;
+    Some((range, def_leaf(Some(name), &text), line))
+}
+
+/// What a destructuring pattern node binds in THE BINDING WALK (spec 116): the node itself, a
+/// bare identifier; each of its named children, a nested or a rest pattern; or the one child in
+/// a field, a rename's `value` or a default's `left`. A node kind a grammar's table does not list
+/// binds nothing.
+enum Binds {
+    Itself,
+    Children,
+    Field(&'static str),
+}
+
+/// The JS and TS pattern node kinds and what each binds: `{a}`'s shorthand and a bare
+/// identifier bind themselves; an object, an array and a rest (`...r`) pattern are walked down;
+/// a rename (`{a: b}`) binds its value and a default (`{a = 1}`, `[x = 1]`) its left. An array
+/// hole has no node, and a member or subscript target is unlisted, so each binds nothing.
+const JS_PATTERN_BINDINGS: [(&str, Binds); 8] = [
+    ("identifier", Binds::Itself),
+    ("shorthand_property_identifier_pattern", Binds::Itself),
+    ("object_pattern", Binds::Children),
+    ("array_pattern", Binds::Children),
+    ("rest_pattern", Binds::Children),
+    ("pair_pattern", Binds::Field("value")),
+    ("assignment_pattern", Binds::Field("left")),
+    ("object_assignment_pattern", Binds::Field("left")),
+];
+
+/// THE BINDING WALK (spec 116): every bare identifier `pattern` binds under `table`, a
+/// grammar's pattern node kinds, pushed onto `out` in source order as its own range, its text
+/// and its 1-based line.
+fn bound_names(
+    pattern: tree_sitter::Node,
+    table: &[(&str, Binds)],
+    source: &[u8],
+    out: &mut Vec<ReadOff>,
+) {
+    match table.iter().find(|(kind, _)| *kind == pattern.kind()) {
+        Some((_, Binds::Itself)) => out.extend(read_off(pattern, pattern, source)),
+        Some((_, Binds::Children)) => {
+            let mut cursor = pattern.walk();
+            let children: Vec<_> = pattern.named_children(&mut cursor).collect();
+            for child in children {
+                bound_names(child, table, source, out);
+            }
+        }
+        Some((_, Binds::Field(field))) => {
+            if let Some(child) = pattern.child_by_field_name(field) {
+                bound_names(child, table, source, out);
+            }
+        }
+        None => {}
+    }
+}
+
+/// JS's and TS's DESTRUCTURED BINDINGS (spec 116), the binding walk's seeds: the name of every
+/// `variable_declarator` named by a pattern rather than an identifier (`const {a, b: c} = o`,
+/// `const [x] = f()`), and the `left` of every `for_in_statement` that declares (`for (const k of
+/// m)`, a `const`, `let` or `var` `kind`), each walked by [`bound_names`] over
+/// [`JS_PATTERN_BINDINGS`]. A loop with no `kind` assigns existing names and binds nothing.
+fn js_bindings(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    let declared = nodes_of_kind(root, "variable_declarator")
+        .into_iter()
+        .filter_map(|declarator| declarator.child_by_field_name("name"))
+        .filter(|name| name.kind() != "identifier");
+    let looped = nodes_of_kind(root, "for_in_statement")
+        .into_iter()
+        .filter(|for_in| for_in.child_by_field_name("kind").is_some())
+        .filter_map(|for_in| for_in.child_by_field_name("left"));
+    let mut out = Vec::new();
+    for seed in declared.chain(looped) {
+        bound_names(seed, &JS_PATTERN_BINDINGS, source, &mut out);
+    }
+    out
+}
+
+/// The Python pattern node kinds and what each binds: a bare identifier binds itself; a tuple
+/// (`a, b`), a parenthesized tuple (`(a, b)`), a list (`[c, d]`) and a starred (`*d`) pattern
+/// are walked down. An attribute and a subscript target (`self.x`, `d[k]`) are unlisted, so
+/// each binds nothing.
+const PY_PATTERN_BINDINGS: [(&str, Binds); 5] = [
+    ("identifier", Binds::Itself),
+    ("pattern_list", Binds::Children),
+    ("tuple_pattern", Binds::Children),
+    ("list_pattern", Binds::Children),
+    ("list_splat_pattern", Binds::Children),
+];
+
+/// Python's ASSIGNED NAMES (spec 116) in `scope`, the module or a class body, read off every
+/// assignment that is a direct statement of it. An assignment of ONE target ([`single_target`])
+/// names one definition spanning the whole assignment, its value included, so a call in that
+/// value takes it as caller: with `tagged` true (the module) the Python query tags it a constant
+/// and it is skipped here, and with `tagged` false (a class body) it is read off here with the
+/// same range. Every other assignment seeds the binding walk: its targets, a chained
+/// assignment's (`x = y = f()`) each one, followed down its `right` while that is an
+/// assignment, so the far-right value never binds, are each walked by [`bound_names`] over
+/// [`PY_PATTERN_BINDINGS`], each bound name spanning its own identifier alone.
+fn assigned_names(scope: tree_sitter::Node, source: &[u8], tagged: bool) -> Vec<ReadOff> {
+    let mut out = Vec::new();
+    let mut cursor = scope.walk();
+    let statements: Vec<_> = scope
+        .named_children(&mut cursor)
+        .filter(|statement| statement.kind() == "expression_statement")
+        .collect();
+    for statement in statements {
+        let mut cursor = statement.walk();
+        let assignments: Vec<_> = statement
+            .named_children(&mut cursor)
+            .filter(|child| child.kind() == "assignment")
+            .collect();
+        for assignment in assignments {
+            if let Some(target) = single_target(assignment) {
+                if !tagged {
+                    out.extend(read_off(assignment, target, source));
+                }
+                continue;
+            }
+            let mut link = Some(assignment);
+            while let Some(current) = link {
+                if let Some(target) = current.child_by_field_name("left") {
+                    bound_names(target, &PY_PATTERN_BINDINGS, source, &mut out);
+                }
+                link = current
+                    .child_by_field_name("right")
+                    .filter(|right| right.kind() == "assignment");
+            }
+        }
+    }
+    out
+}
+
+/// The one target of the Python `assignment` when it has one: its `left` when that is an
+/// identifier and its value is absent (`w: int`) or no assignment (`z = 1`), the shape the
+/// Python query tags a constant at module level; `None` for a pattern or a chained target.
+fn single_target(assignment: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    assignment
+        .child_by_field_name("left")
+        .filter(|left| left.kind() == "identifier")
+        .filter(|_| {
+            assignment
+                .child_by_field_name("right")
+                .is_none_or(|right| right.kind() != "assignment")
+        })
+}
+
+/// Python's CLASS-BODY NAMES (spec 116): the names every assignment directly in a class body
+/// under `root` makes ([`assigned_names`]), a nested class's and a decorated one's included,
+/// in source order: an assignment of one target its field over the whole assignment, a pattern's
+/// or a chain's each bound name over its own identifier. The Python query tags none of them.
+fn class_body_names(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    nodes_of_kind(root, "class_definition")
+        .into_iter()
+        .filter_map(|class| class.child_by_field_name("body"))
+        .flat_map(|body| assigned_names(body, source, false))
+        .collect()
+}
+
+/// Python's TYPE ALIASES (spec 116): every `type_alias_statement` under `root`, in source
+/// order, as its byte range, its leaf and its 1-based line. Its leaf is the identifier its
+/// `left` type holds, directly (`type Y = int`) or as a generic type's (`type X[T] = int` gives
+/// `X`).
+fn type_aliases(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    nodes_of_kind(root, "type_alias_statement")
+        .into_iter()
+        .filter_map(|alias| {
+            let named = alias.child_by_field_name("left")?.named_child(0)?;
+            let leaf = match named.kind() {
+                "generic_type" => named.named_child(0)?,
+                _ => named,
+            };
+            read_off(alias, leaf, source)
+        })
+        .collect()
+}
+
+/// A definition read off the parsed tree: its byte range, its leaf and its 1-based line.
+type ReadOff = (std::ops::Range<usize>, String, u32);
+
+/// The [`ReadOff`] of the definition `node` named by the text of `leaf`; `None` when that text
+/// is no UTF-8.
+fn read_off(node: tree_sitter::Node, leaf: tree_sitter::Node, source: &[u8]) -> Option<ReadOff> {
+    Some((
+        node.byte_range(),
+        leaf.utf8_text(source).ok()?.to_string(),
+        node.start_position().row as u32 + 1,
+    ))
+}
+
+/// Every node of the grammar kind `kind` anywhere under `root`, `root` included, in source
+/// order.
+fn nodes_of_kind<'t>(root: tree_sitter::Node<'t>, kind: &str) -> Vec<tree_sitter::Node<'t>> {
     let mut out = Vec::new();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        if node.kind() == "impl_item" {
-            if let Some(block) = impl_block(node, source) {
-                out.push(block);
-            }
+        if node.kind() == kind {
+            out.push(node);
         }
         let mut cursor = node.walk();
         let children: Vec<_> = node.children(&mut cursor).collect();
@@ -321,10 +902,8 @@ fn impl_blocks(root: tree_sitter::Node, source: &[u8]) -> Vec<ImplBlock> {
 /// The [`ImplBlock`] for one `impl_item` node, or `None` when its self type cannot be read (a
 /// syntax-error recovery shape).
 fn impl_block(node: tree_sitter::Node, source: &[u8]) -> Option<ImplBlock> {
-    let text = |n: tree_sitter::Node| -> Option<String> {
-        let raw = n.utf8_text(source).ok()?;
-        Some(raw.split_whitespace().collect::<Vec<_>>().join(" "))
-    };
+    let text =
+        |n: tree_sitter::Node| -> Option<String> { Some(normalize_ws(n.utf8_text(source).ok()?)) };
     let self_type = node.child_by_field_name("type")?;
     let trait_node = node.child_by_field_name("trait");
     let name = match trait_node {
@@ -351,15 +930,15 @@ fn impl_block(node: tree_sitter::Node, source: &[u8]) -> Option<ImplBlock> {
     })
 }
 
-/// The identifier a type names, through its path (`a::b::T` -> `T`), generic arguments
-/// (`T<U>` -> `T`) and reference or pointer (`&T` -> `T`); `None` for a shape that names no
-/// single type (a tuple, a slice, a function type).
+/// The identifier a type names, through its path (`a::b::T` -> `T`, Go's `pkg.T` -> `T`),
+/// generic arguments (`T<U>` -> `T`, Go's `T[U]` -> `T`) and reference or pointer (`&T` -> `T`);
+/// `None` for a shape that names no single type (a tuple, a slice, a function type).
 fn base_type_identifier(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     let mut cur = node;
     loop {
         cur = match cur.kind() {
             "type_identifier" => return Some(cur),
-            "scoped_type_identifier" => cur.child_by_field_name("name")?,
+            "scoped_type_identifier" | "qualified_type" => cur.child_by_field_name("name")?,
             "generic_type" | "reference_type" | "pointer_type" => {
                 cur.child_by_field_name("type")?
             }
@@ -376,19 +955,43 @@ fn base_type_identifier(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
 /// only ever looks at what comes BEFORE `node`) can never see it. Reads `node`'s `body` field
 /// (present on every item kind that can carry inner attributes - `mod_item`, `function_item`,
 /// `impl_item`, `trait_item`, ...; absent, hence always `false`, on a leafy definition kind such as
-/// a `const_item` that has no body to open one in) and walks forward from its first named child via
-/// the SAME [`attribute_stack_names_test`] the sibling-before case uses, so a doc comment or a
-/// stacked `#![allow(..)]` ahead of the real `#![cfg(test)]` never hides it either.
+/// a `const_item` that has no body to open one in) and walks forward from its first named child
+/// ([`opens_with_inner_test_attribute`], the file root's read too) via the SAME
+/// [`scan_attribute_stack`] the sibling-before case uses, so a doc comment or a stacked
+/// `#![allow(..)]` ahead of the real `#![cfg(test)]` never hides it either.
+///
+/// It counts INNER attributes only (spec 116): an OUTER `#[cfg(test)]` a body opens with governs
+/// the member, variant, method, statement or item after it, never the body's owner, so
+/// `struct S { #[cfg(test)] probe: u32, real: u32 }` keeps `S` and `real` production and only
+/// `probe`, by its own sibling walk, is test code.
 fn leading_inner_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
     let Some(body) = node.child_by_field_name("body") else {
         return false;
     };
-    attribute_stack_names_test(source, body.named_child(0), |n| n.next_named_sibling())
+    opens_with_inner_test_attribute(body.named_child(0), source)
 }
 
-/// The one walk shared by both [`preceded_by_test_attribute`] (backward over `prev_sibling`) and
-/// [`leading_inner_test_attribute`] (forward over `next_named_sibling`, from a body's first named
-/// child), and (round 7) [`out_of_line_path_override`]: starting at `first`, follow `advance`
+/// Whether the leading attribute stack read forward from `first`, a body's or the file root's
+/// first named child, holds an INNER attribute naming `test` (`#![cfg(test)]`); an outer
+/// `#[cfg(test)]` there governs the item after it, never the body or the file. The one inner-only
+/// count [`leading_inner_test_attribute`] reads at a definition's body and [`test_regions`] at
+/// the root.
+fn opens_with_inner_test_attribute(first: Option<tree_sitter::Node>, source: &[u8]) -> bool {
+    scan_attribute_stack(
+        source,
+        first,
+        |n| n.next_named_sibling(),
+        |item, s| {
+            (item.kind() == "inner_attribute_item" && attribute_item_names_test(item, s))
+                .then_some(())
+        },
+    )
+    .is_some()
+}
+
+/// The one walk shared by [`preceded_by_test_attribute`] (backward over `prev_sibling`),
+/// [`opens_with_inner_test_attribute`] (forward over `next_named_sibling`, from a body's or the
+/// file root's first named child), [`is_proc_macro_fn`] and (round 7) [`out_of_line_path_override`]: starting at `first`, follow `advance`
 /// across a contiguous run of comment (`line_comment`, `block_comment`) and attribute
 /// (`attribute_item`, `inner_attribute_item`) nodes, stopping at the first node that is neither -
 /// the boundary of the stack. `visit` is asked of every attribute node encountered along the way
@@ -420,9 +1023,9 @@ fn scan_attribute_stack<'a, T>(
 }
 
 /// [`scan_attribute_stack`] applied to the "does any attribute in the stack gate on `test`"
-/// question [`preceded_by_test_attribute`]/[`leading_inner_test_attribute`] both need -
+/// question [`preceded_by_test_attribute`]'s sibling walk asks -
 /// [`attribute_item_names_test`] is the `visit` closure, and presence-of-a-match (`Some(())`)
-/// collapses to the boolean this and every caller actually wants.
+/// collapses to the boolean its caller wants.
 fn attribute_stack_names_test<'a>(
     source: &[u8],
     first: Option<tree_sitter::Node<'a>>,
@@ -489,9 +1092,8 @@ fn enclosing_inline_module_path(node: tree_sitter::Node, source: &[u8]) -> Optio
 /// double-quoted string literal (round-7 scope: rustc itself requires one here, so this is
 /// defensive only, never expected to fire on real source).
 fn path_attribute_value(item: tree_sitter::Node, source: &[u8]) -> Option<String> {
-    let attribute = item.named_child(0)?;
-    let name_node = attribute.named_child(0)?;
-    if name_node.utf8_text(source).unwrap_or_default() != "path" {
+    let (attribute, name) = named_attribute(item, source)?;
+    if name != "path" {
         return None;
     }
     let value = attribute.child_by_field_name("value")?;
@@ -515,19 +1117,28 @@ fn path_attribute_value(item: tree_sitter::Node, source: &[u8]) -> Option<String
 ///   compilation of the tagged item itself, so an item under `#[cfg_attr(test, derive(Debug))]`
 ///   is compiled unconditionally and is unambiguously product code.
 fn attribute_item_names_test(item: tree_sitter::Node, source: &[u8]) -> bool {
-    let Some(attribute) = item.named_child(0) else {
-        return false;
-    };
-    let Some(name_node) = attribute.named_child(0) else {
-        return false;
-    };
-    match name_node.utf8_text(source).unwrap_or_default() {
-        "test" => true,
-        "cfg" => attribute
+    match named_attribute(item, source) {
+        Some((_, "test")) => true,
+        Some((attribute, "cfg")) => attribute
             .child_by_field_name("arguments")
             .is_some_and(|args| cfg_predicate_token_tree_names_test(args, source)),
         _ => false,
     }
+}
+
+/// The `attribute` node an attribute item (`#[..]` or `#![..]`) holds, its sole named child,
+/// with the name that attribute opens with (`test`, `cfg`, `path`, `proc_macro`, ...), its own
+/// first named child; `None` for an item holding neither.
+fn named_attribute<'t, 's>(
+    item: tree_sitter::Node<'t>,
+    source: &'s [u8],
+) -> Option<(tree_sitter::Node<'t>, &'s str)> {
+    let attribute = item.named_child(0)?;
+    let name = attribute
+        .named_child(0)?
+        .utf8_text(source)
+        .unwrap_or_default();
+    Some((attribute, name))
 }
 
 /// Whether a `#[cfg(..)]` attribute's parenthesized argument list, `tt` (a `token_tree` node,
@@ -666,24 +1277,34 @@ fn comma_separated_groups(tt: tree_sitter::Node) -> Vec<Vec<tree_sitter::Node>> 
     groups
 }
 
-/// The name of the INNERMOST definition whose byte range contains `pos`, or `None` when `pos`
-/// lies outside every definition (a top-level reference such as an import or a module-level
-/// call). Each definition tag carries the byte range of the WHOLE tagged construct - the function
-/// body included, not just its name span - so a reference inside a body falls within its
-/// definition's range. "Innermost" is the smallest containing range, so a reference in a nested
-/// definition attributes to the nested one, not its outer scope. Deterministic for identical
-/// input: ties on span break on the range start, then the definition name.
-fn enclosing_def(def_ranges: &[(std::ops::Range<usize>, String)], pos: usize) -> Option<String> {
+/// The name of the reference at `pos`'s CALLER: the innermost FUNCTION-LIKE definition
+/// (`Function`, `Method`, `Constructor`, `Macro`) whose byte range contains `pos`, else the
+/// innermost definition of any other kind that does, else `None` when `pos` lies outside every
+/// definition (a top-level reference such as an import or a module-level call), the file then
+/// being the caller. A `Declaration` is never a caller: its range is skipped, so a reference in
+/// a signature takes the next enclosing definition. Each definition tag carries the byte range of
+/// the WHOLE tagged construct - the function body included, not just its name span - so a
+/// reference inside a body falls within its definition's range. "Innermost" is the smallest
+/// containing range, so a reference in a nested function attributes to the nested one, not its
+/// outer scope, while a data definition, impl, trait or module nested in a function leaves its
+/// references the function's. Deterministic for identical input: ties on span break on the range
+/// start, then the definition name.
+fn enclosing_def(
+    def_ranges: &[(std::ops::Range<usize>, String, Kind)],
+    pos: usize,
+) -> Option<String> {
     def_ranges
         .iter()
-        .filter(|(range, _)| range.contains(&pos))
-        .min_by(|(a, a_name), (b, b_name)| {
-            (a.end - a.start)
-                .cmp(&(b.end - b.start))
-                .then_with(|| a.start.cmp(&b.start))
-                .then_with(|| a_name.cmp(b_name))
+        .filter(|(range, _, kind)| *kind != Kind::Declaration && range.contains(&pos))
+        .min_by_key(|entry| {
+            let (range, name, kind) = *entry;
+            let function_like = matches!(
+                kind,
+                Kind::Function | Kind::Method | Kind::Constructor | Kind::Macro
+            );
+            (!function_like, range.end - range.start, range.start, name)
         })
-        .map(|(_, name)| name.clone())
+        .map(|(_, name, _)| name.clone())
 }
 
 /// A definition's 1-based inclusive LINE extent: its site line and the last line of the WHOLE
@@ -812,8 +1433,7 @@ impl<T> EventStore for Wrapper<T> { fn append(&self) {} }
 impl Sqlite { pub fn open() -> Self { crate::sqlite::open_connection(); Sqlite } }
 pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>(); s }
 ";
-        let entry = crate::grounder::symbols::registry::for_extension("rs").unwrap();
-        let fs = extract(src, Lang::Rust, &entry.language, entry.tags_query).unwrap();
+        let fs = crate::symbol_index::extracted("rs", src);
         let impls: Vec<(&str, u32)> = fs
             .defs
             .iter()
@@ -910,8 +1530,8 @@ pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>()
 
     #[test]
     fn rust_grammar_kind_mapping_is_characterized() {
-        // Drives every reachable `kind_of` arm through the ONLY shipped grammar and pins the
-        // real observed lowering, so the mapping has actual coverage (not an eprintln probe).
+        // Drives the `kind_of` arms the UPSTREAM Rust query reaches and pins the real observed
+        // lowering, so the mapping has actual coverage (not an eprintln probe).
         let src = "\
 struct Widget;
 enum State { On, Off }
@@ -927,24 +1547,21 @@ fn free() {}
         let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
         let kind_of_def = |name: &str| fs.defs.iter().find(|d| d.name == name).map(|d| d.kind);
 
-        // Reachable arms with the Rust grammar: struct/enum -> Type, method -> Method,
-        // module -> Module, function -> Function, macro (unknown category) -> Other.
+        // The arms the upstream query reaches: struct/enum -> Type, method -> Method,
+        // module -> Module, function -> Function, macro -> Macro.
         assert_eq!(kind_of_def("Widget"), Some(Kind::Type));
         assert_eq!(kind_of_def("State"), Some(Kind::Type));
         assert_eq!(kind_of_def("draw"), Some(Kind::Method));
         assert_eq!(kind_of_def("inner"), Some(Kind::Module));
         assert_eq!(kind_of_def("free"), Some(Kind::Function));
-        assert_eq!(kind_of_def("mymac"), Some(Kind::Other));
+        assert_eq!(kind_of_def("mymac"), Some(Kind::Macro));
 
-        // KNOWN grammar limitation (NON-BLOCKING; a unit-2 tag-query concern, characterized
-        // here rather than changed in unit 1): the Rust `tags.scm` tags a `trait` under the
-        // "interface" category, so `Drawable` lowers to Kind::Type, NOT Kind::Trait - i.e.
-        // Kind::Trait is an unreachable arm with the only shipped grammar today.
+        // The upstream `tags.scm` tags a `trait` under the "interface" category, so under it
+        // `Drawable` lowers to Kind::Type; the registered `RUST_TAGS` tags it a trait instead.
         assert_eq!(kind_of_def("Drawable"), Some(Kind::Type));
-        // The Rust tags query emits no tag for a `const` or a `static`, so those definitions
-        // are absent (Kind::Constant is likewise unreachable with this grammar - the
-        // const/static drop is the same unit-2 tag-query concern). An `impl` block is read off
-        // the parsed tree instead (gap 104) and lowers to Kind::Impl, named by its header.
+        // The upstream query emits no tag for a `const` or a `static`, so under it those
+        // definitions are absent; `RUST_TAGS` tags both. An `impl` block is read off the parsed
+        // tree instead (gap 104) and lowers to Kind::Impl, named by its header.
         assert_eq!(kind_of_def("MAX"), None);
         assert_eq!(kind_of_def("GLOBAL"), None);
         assert_eq!(kind_of_def("impl Drawable for Widget"), Some(Kind::Impl));
@@ -956,7 +1573,7 @@ fn free() {}
 
     #[test]
     fn a_reference_is_attributed_to_its_enclosing_definition() {
-        // Spec 37 criterion 1: the extractor attributes each reference to the INNERMOST definition
+        // Spec 37 criterion 1: the extractor attributes each reference to the INNERMOST function
         // whose body encloses it (the caller), and a reference outside every definition carries
         // none. `fn f() { G(); }` yields a `SymRef` for `G` whose `enclosing` is `f`; a top-level
         // reference belonging to no definition (the `setup!()` macro call at the end) carries
@@ -1031,7 +1648,7 @@ setup!();
             );
         }
 
-        // The call inside the NESTED `fn inner` (line 13) attributes to the INNERMOST definition
+        // The call inside the NESTED `fn inner` (line 13) attributes to the INNERMOST function
         // `inner`, not the outer `outer` - proving innermost containment, not merely any encloser.
         let g_nested = fs
             .refs
@@ -1041,8 +1658,552 @@ setup!();
         assert_eq!(
             g_nested.enclosing.as_deref(),
             Some("inner"),
-            "a call in a nested definition attributes to the innermost enclosing definition"
+            "a call in a nested function attributes to the innermost enclosing function"
         );
+    }
+
+    /// A REFERENCE'S CALLER IS ITS FUNCTION (spec 116 criterion 2), under `RUST_TAGS`: a
+    /// file-level impl header's trait and self type are the impl's, while a fn-local impl
+    /// header's, a fn-local trait body's outside its methods and a fn-local inline mod's
+    /// references are the fn's; a call inside a method or fn nested in any of them stays that
+    /// innermost function's; a file-level mod's and trait's own references stay theirs, no
+    /// function enclosing them; and a top-level reference has the file, no caller.
+    #[test]
+    fn a_reference_s_caller_is_its_innermost_enclosing_function_else_definition_else_file() {
+        let fs = crate::symbol_index::extracted("rs", crate::caller_sources::RUST_CALLER_SOURCE);
+        assert_eq!(
+            crate::symbol_index::refs_with_callers(&fs),
+            vec![
+                (3, "Draw", Some("impl Draw for Widget")),
+                (3, "Widget", Some("impl Draw for Widget")),
+                (3, "paint", Some("draw")),
+                (6, "Draw", Some("host")),
+                (6, "Local", Some("host")),
+                (6, "brush", Some("draw")),
+                (7, "declare", Some("host")),
+                (7, "measure", Some("area")),
+                (8, "dig", Some("deep")),
+                (8, "setup", Some("host")),
+                (10, "boot", Some("outer")),
+                (11, "announce", Some("Top")),
+                (12, "start", None),
+            ]
+        );
+    }
+
+    /// The caller [`enclosing_def`] gives `pos` over hand-built `(range, leaf, kind)`
+    /// definition ranges.
+    fn caller(ranges: &[(std::ops::Range<usize>, &str, Kind)], pos: usize) -> Option<String> {
+        let ranges: Vec<_> = ranges
+            .iter()
+            .map(|(range, leaf, kind)| (range.clone(), leaf.to_string(), *kind))
+            .collect();
+        enclosing_def(&ranges, pos)
+    }
+
+    /// THE NAME FILTER DROPS A NAMELESS DEFINITION (spec 116 criterion 3), pinned per language
+    /// over the hand-built leaves empty, `_` and `x`: the empty leaf is nameless in every
+    /// language, `_` only in Go and Rust, whose grammars make it the blank identifier, and `x`
+    /// in none.
+    #[test]
+    fn the_name_filter_drops_the_empty_leaf_everywhere_and_the_blank_identifier_in_go_and_rust() {
+        let cases: [(Lang, [bool; 3]); 6] = [
+            (Lang::Go, [true, true, false]),
+            (Lang::Rust, [true, true, false]),
+            (Lang::Js, [true, false, false]),
+            (Lang::Ts, [true, false, false]),
+            (Lang::Python, [true, false, false]),
+            (Lang::CSharp, [true, false, false]),
+        ];
+        for (lang, dropped) in cases {
+            assert_eq!(
+                ["", "_", "x"].map(|leaf| is_nameless(lang, leaf)),
+                dropped,
+                "{lang:?}: whether the leaves empty, `_` and `x` are dropped"
+            );
+        }
+    }
+
+    /// The four function-like kinds, the caller rule's first choice.
+    const FUNCTION_LIKE: [Kind; 4] = [Kind::Function, Kind::Method, Kind::Constructor, Kind::Macro];
+
+    /// Every kind, a `Declaration` apart, that is a caller only when no function-like
+    /// definition encloses the reference.
+    const NOT_FUNCTION_LIKE: [Kind; 9] = [
+        Kind::Type,
+        Kind::Trait,
+        Kind::Impl,
+        Kind::Module,
+        Kind::Constant,
+        Kind::Static,
+        Kind::Variant,
+        Kind::Field,
+        Kind::Other,
+    ];
+
+    /// The caller filter, pinned per kind over hand-built ranges: each function-like kind
+    /// enclosing a reference is its caller past an inner definition of every other kind; the
+    /// innermost of two function-like definitions wins; and with no function-like definition
+    /// around it, the innermost definition of any kind does.
+    #[test]
+    fn the_caller_filter_takes_each_function_like_kind_past_an_inner_definition() {
+        for outer in FUNCTION_LIKE {
+            for inner in NOT_FUNCTION_LIKE {
+                assert_eq!(
+                    caller(&[(10..50, "outer", outer), (20..30, "inner", inner)], 25),
+                    Some("outer".to_string()),
+                    "{outer:?} around {inner:?}"
+                );
+            }
+            for inner in FUNCTION_LIKE {
+                assert_eq!(
+                    caller(&[(10..50, "outer", outer), (20..30, "inner", inner)], 25),
+                    Some("inner".to_string()),
+                    "{inner:?} inside {outer:?}"
+                );
+            }
+        }
+        for outer in NOT_FUNCTION_LIKE {
+            for inner in NOT_FUNCTION_LIKE {
+                assert_eq!(
+                    caller(&[(10..50, "outer", outer), (20..30, "inner", inner)], 25),
+                    Some("inner".to_string()),
+                    "{inner:?} inside {outer:?}, no function around either"
+                );
+            }
+        }
+    }
+
+    /// A `declaration` is no caller: a reference inside its range takes the next enclosing
+    /// definition, function-like first, else the file; and a definition nested in a
+    /// declaration's range is still found.
+    #[test]
+    fn a_declaration_is_excluded_from_the_caller_ranges() {
+        let decl = (20..30, "decl", Kind::Declaration);
+        assert_eq!(caller(std::slice::from_ref(&decl), 25), None);
+        assert_eq!(
+            caller(&[(10..50, "host", Kind::Trait), decl.clone()], 25),
+            Some("host".to_string())
+        );
+        assert_eq!(
+            caller(&[(10..50, "host", Kind::Function), decl.clone()], 25),
+            Some("host".to_string())
+        );
+        assert_eq!(
+            caller(
+                &[
+                    (0..60, "f", Kind::Function),
+                    (10..50, "host", Kind::Trait),
+                    decl.clone()
+                ],
+                25
+            ),
+            Some("f".to_string())
+        );
+        for inner in [Kind::Constant, Kind::Function] {
+            assert_eq!(
+                caller(
+                    &[(20..30, "decl", Kind::Declaration), (22..28, "in", inner)],
+                    25
+                ),
+                Some("in".to_string()),
+                "{inner:?} inside a declaration's range"
+            );
+        }
+    }
+
+    /// Within one class of definition the smallest containing range wins, a range holding its
+    /// start and not its end, equal spans breaking on the lower start and identical ranges on
+    /// the lesser name; no range gives no caller.
+    #[test]
+    fn the_innermost_containing_range_wins_and_ties_break_on_start_then_name() {
+        let one = [(10..20, "f", Kind::Function)];
+        assert_eq!(caller(&one, 9), None);
+        assert_eq!(caller(&one, 10), Some("f".to_string()));
+        assert_eq!(caller(&one, 19), Some("f".to_string()));
+        assert_eq!(caller(&one, 20), None);
+        assert_eq!(caller(&[], 0), None);
+        for kind in [Kind::Function, Kind::Constant] {
+            assert_eq!(
+                caller(&[(10..19, "outer", kind), (12..14, "inner", kind)], 13),
+                Some("inner".to_string()),
+                "{kind:?}: the smaller span, early in its outer"
+            );
+            assert_eq!(
+                caller(&[(10..20, "outer", kind), (18..20, "inner", kind)], 19),
+                Some("inner".to_string()),
+                "{kind:?}: the smaller span, at its outer's end"
+            );
+            assert_eq!(
+                caller(&[(15..25, "a", kind), (10..20, "z", kind)], 17),
+                Some("z".to_string()),
+                "{kind:?}: equal spans break on the lower start, ahead of the name"
+            );
+            assert_eq!(
+                caller(&[(10..20, "b", kind), (10..20, "a", kind)], 15),
+                Some("a".to_string()),
+                "{kind:?}: identical ranges break on the lesser name"
+            );
+        }
+    }
+
+    // THE RUST DEFINITIONS FIXTURE (spec 116 criterion 6), the one Rust file holding every Rust
+    // definition type: shared with the graph build test, which folds the same text.
+    use crate::rust_definition_sources::RUST_DEFINITIONS_SOURCE;
+
+    /// RUST DEFINITIONS ARE NODES (spec 116 criterion 6): under the registered Rust query the
+    /// fixture yields every definition it holds at its own kind and leaf, an aliased
+    /// `extern crate` at its alias, a tuple field at its index, a trait required fn a
+    /// declaration, a proc-macro fn and a `macro_rules!` macros, and a fn and a field of one
+    /// leaf each their own definition in either order; no `extern crate` is an out-of-line
+    /// module; and each row of Rust's DEFINITION TYPES names exactly one of them.
+    #[test]
+    fn every_rust_definition_type_yields_its_definition_at_its_kind() {
+        let fs = crate::symbol_index::extracted("rs", RUST_DEFINITIONS_SOURCE);
+        assert_eq!(
+            crate::symbol_index::defs_by_line(&fs),
+            vec![
+                (1, "alloc", Kind::Module),
+                (2, "base", Kind::Module),
+                (3, "LIMIT", Kind::Constant),
+                (4, "TABLE", Kind::Static),
+                (5, "0", Kind::Field),
+                (5, "1", Kind::Field),
+                (5, "2", Kind::Field),
+                (5, "Pair", Kind::Type),
+                (6, "0", Kind::Field),
+                (6, "Probe", Kind::Variant),
+                (6, "Shape", Kind::Type),
+                (6, "Struct", Kind::Variant),
+                (6, "Tuple", Kind::Variant),
+                (6, "Unit", Kind::Variant),
+                (6, "side", Kind::Field),
+                (7, "Bits", Kind::Type),
+                (7, "whole", Kind::Field),
+                (8, "Alias", Kind::Type),
+                (9, "Canvas", Kind::Type),
+                (9, "Draw", Kind::Trait),
+                (9, "paint", Kind::Declaration),
+                (10, "WIDTH", Kind::Constant),
+                (10, "impl Pair", Kind::Impl),
+                (10, "width", Kind::Method),
+                (11, "shout", Kind::Macro),
+                (13, "SEED", Kind::Constant),
+                (13, "derive", Kind::Macro),
+                (14, "CACHE", Kind::Static),
+                (14, "LOCAL", Kind::Constant),
+                (14, "host", Kind::Function),
+                (15, "nest", Kind::Module),
+                (16, "size", Kind::Function),
+                (17, "Plot", Kind::Type),
+                (17, "area", Kind::Field),
+                (17, "size", Kind::Field),
+                (17, "spy", Kind::Field),
+                (18, "area", Kind::Function),
+                (19, "PROBE_LIMIT", Kind::Constant),
+                (20, "PROBE_TABLE", Kind::Static),
+                (21, "S", Kind::Type),
+                (21, "probe", Kind::Field),
+                (21, "real", Kind::Field),
+                (22, "A", Kind::Variant),
+                (22, "B", Kind::Variant),
+                (22, "E", Kind::Type),
+                (23, "impl X", Kind::Impl),
+                (23, "real", Kind::Method),
+                (23, "t", Kind::Method),
+                (24, "f", Kind::Function),
+                (25, "inner", Kind::Module),
+                (25, "outer", Kind::Module),
+            ]
+        );
+        let out_of_line: Vec<&str> = fs
+            .defs
+            .iter()
+            .filter(|d| d.is_out_of_line_module)
+            .map(|d| d.name.as_str())
+            .collect();
+        assert_eq!(out_of_line, Vec::<&str>::new());
+        crate::symbol_index::assert_one_def_per_row(
+            &fs,
+            &crate::grounder::symbols::registry::tests::RUST_DEFINITION_TYPES,
+        );
+    }
+
+    /// RUST DEFINITIONS ARE NODES (spec 116 criterion 6), the test attribute: a `#[cfg(test)]`
+    /// tuple field, unit variant, named field, const and static are each test code, as a
+    /// `#[cfg(test)]` method and mod are, and nothing else is: a struct, enum, impl, fn or mod
+    /// whose body opens with a test-attributed child stays production with its other members.
+    #[test]
+    fn a_test_attributed_rust_member_is_test_code_and_its_owner_and_siblings_stay_production() {
+        let fs = crate::symbol_index::extracted("rs", RUST_DEFINITIONS_SOURCE);
+        assert_eq!(
+            crate::symbol_index::test_code_by_line(&fs).0,
+            vec![
+                (5, "2"),
+                (6, "Probe"),
+                (17, "spy"),
+                (19, "PROBE_LIMIT"),
+                (20, "PROBE_TABLE"),
+                (21, "probe"),
+                (22, "A"),
+                (23, "t"),
+                (25, "inner"),
+            ]
+        );
+    }
+
+    /// RUST DEFINITIONS ARE NODES (spec 116 criterion 6), the callers: a call in an item
+    /// static's initializer is the static's, no function enclosing it, while a call in a const
+    /// local to a fn is the fn's and one in a const local to a proc-macro fn the macro's; an impl
+    /// header's self type stays the impl's.
+    #[test]
+    fn a_call_in_a_rust_data_definition_is_its_function_s_else_the_definition_s() {
+        let fs = crate::symbol_index::extracted("rs", RUST_DEFINITIONS_SOURCE);
+        assert_eq!(
+            crate::symbol_index::refs_with_callers(&fs),
+            vec![
+                (4, "build", Some("TABLE")),
+                (10, "Pair", Some("impl Pair")),
+                (13, "seed", Some("derive")),
+                (14, "compute", Some("host")),
+                (23, "X", Some("impl X")),
+            ]
+        );
+    }
+
+    /// A fn under any of the three proc-macro attributes is a macro, wherever the attribute
+    /// sits in the fn's attribute stack; a fn under another attribute stays a function, and a
+    /// proc-macro attribute on an item that is no fn changes nothing.
+    #[test]
+    fn a_fn_under_a_proc_macro_attribute_is_a_macro() {
+        let src = "\
+#[proc_macro_derive(Shape)]
+pub fn derive_shape() {}
+#[proc_macro_attribute]
+pub fn route() {}
+#[inline]
+fn plain() {}
+#[proc_macro]
+struct Marked;
+/// Expands a call.
+#[proc_macro]
+// A comment inside the stack.
+#[allow(dead_code)]
+pub fn bang() {}
+";
+        let fs = crate::symbol_index::extracted("rs", src);
+        assert_eq!(
+            crate::symbol_index::defs_by_line(&fs),
+            vec![
+                (2, "derive_shape", Kind::Macro),
+                (4, "route", Kind::Macro),
+                (6, "plain", Kind::Function),
+                (8, "Marked", Kind::Type),
+                (13, "bang", Kind::Macro),
+            ]
+        );
+    }
+
+    crate::test_cases! {
+        /// The Rust read-offs are selected by the language `extract` is given: the fixture read
+        /// under the Rust grammar and query as another language makes no tuple field and leaves
+        /// the proc-macro fn a function, while what the query tags stays.
+        the_rust_read_offs_run_only_for_the_rust_language:
+            assert_defs_read_as(
+                "rs",
+                RUST_DEFINITIONS_SOURCE,
+                Lang::Go,
+                &[5, 13],
+                &[
+                    (5, "Pair", Kind::Type),
+                    (13, "SEED", Kind::Constant),
+                    (13, "derive", Kind::Function),
+                ],
+            );
+        /// The Go read-offs are selected by the language `extract` is given: the fixture read
+        /// under the Go grammar and query as another language makes no embedded field and no
+        /// alias, while what the query tags stays.
+        the_go_read_offs_run_only_for_the_go_language:
+            assert_defs_read_as(
+                "go",
+                crate::go_definition_sources::GO_DEFINITIONS_SOURCE,
+                Lang::Rust,
+                &[8, 9],
+                &[
+                    (8, "Shape", Kind::Type),
+                    (8, "side", Kind::Field),
+                    (8, "x", Kind::Field),
+                    (8, "y", Kind::Field),
+                ],
+            );
+        /// The C# read-offs are selected by the language `extract` is given: the fixture read
+        /// under the C# grammar and query as another language makes no operator, conversion
+        /// operator or indexer, while what the query tags stays, the destructor at the leaf
+        /// its node gives it.
+        the_csharp_read_offs_run_only_for_the_csharp_language:
+            assert_defs_read_as(
+                "cs",
+                crate::csharp_definition_sources::CSHARP_DEFINITIONS_SOURCE,
+                Lang::Rust,
+                &[13, 14, 15, 16],
+                &[(13, "~Foo", Kind::Method)],
+            );
+    }
+
+    /// `src`, read under the grammar and query registered for `ext` as the language `lang`,
+    /// holds exactly the definitions `expected` on `lines`.
+    fn assert_defs_read_as(
+        ext: &str,
+        src: &str,
+        lang: Lang,
+        lines: &[u32],
+        expected: &[(u32, &str, Kind)],
+    ) {
+        let entry = crate::grounder::symbols::registry::for_extension(ext).unwrap();
+        let fs = extract(src, lang, &entry.language, entry.tags_query).unwrap();
+        let on_lines: Vec<_> = crate::symbol_index::defs_by_line(&fs)
+            .into_iter()
+            .filter(|(line, _, _)| lines.contains(line))
+            .collect();
+        assert_eq!(on_lines, expected);
+    }
+
+    /// The attribute walk starts below the root: a file that is one mod, its range the root's
+    /// own, still reads the inner attribute its body opens with, so the mod and what it holds
+    /// are test code.
+    #[test]
+    fn a_definition_spanning_the_whole_file_is_still_read_for_its_inner_test_attribute() {
+        let fs = crate::symbol_index::extracted("rs", "mod t { #![cfg(test)] fn h() {} }");
+        assert_eq!(
+            crate::symbol_index::test_code_by_line(&fs).0,
+            vec![(1, "h"), (1, "t")]
+        );
+    }
+
+    crate::test_cases! {
+        /// A TEST REGION IS EVERY TEST-ATTRIBUTED RANGE (spec 116 criterion 11): a
+        /// `#[cfg(test)] const _` the name filter drops makes the fn it holds and that fn's
+        /// reference test, while an unattributed `const _`'s fn and a `#[cfg(unix)]` fn stay
+        /// production.
+        a_test_attributed_definition_the_name_filter_drops_makes_what_it_holds_test:
+            assert_test_code(
+                "\
+#[cfg(test)]
+const _: () = {
+    fn helper() {
+        real();
+    }
+};
+const _: () = {
+    fn kept() {
+        real();
+    }
+};
+fn real() {}
+#[cfg(unix)]
+fn f() {}
+",
+                &[(3, "helper")],
+                &[(4, "real")],
+            );
+        /// A TEST REGION IS EVERY TEST-ATTRIBUTED RANGE (spec 116 criterion 11): a
+        /// `#[cfg(test)] extern "C"` block, which yields no definition of its own, makes the
+        /// fn it holds test, while an unattributed extern block's fn stays production.
+        a_test_attributed_extern_block_makes_what_it_holds_test:
+            assert_test_code(
+                "\
+#[cfg(test)]
+extern \"C\" {
+    fn f();
+}
+extern \"C\" {
+    fn g();
+}
+",
+                &[(3, "f")],
+                &[],
+            );
+        /// A TEST REGION IS EVERY TEST-ATTRIBUTED RANGE (spec 116 criterion 11): a file opening
+        /// `#![cfg(test)]` is test code whole, its second fn, its `mod x;` and every reference
+        /// included, not only the item after the attribute.
+        a_file_opening_an_inner_cfg_test_is_test_code_whole:
+            assert_test_code(
+                "\
+#![cfg(test)]
+fn first() {}
+fn second() {
+    first();
+}
+mod x;
+",
+                &[(2, "first"), (3, "second"), (6, "x")],
+                &[(4, "first")],
+            );
+        /// A file opening an OUTER `#[cfg(test)] use x;` is no test region: the attribute
+        /// gates the `use` alone, so the fns after it and their references stay production.
+        a_file_opening_a_test_attributed_use_keeps_its_fns_production:
+            assert_test_code(
+                "\
+#[cfg(test)]
+use x;
+fn a() {}
+fn b() {
+    a();
+}
+",
+                &[],
+                &[],
+            );
+        /// A file opening an OUTER `#[cfg(test)] mod tests;` is no test region: the attribute
+        /// makes the `mod` test alone, so the fns after it and their references stay production.
+        a_file_opening_a_test_attributed_mod_declaration_keeps_its_fns_production:
+            assert_test_code(
+                "\
+#[cfg(test)]
+mod tests;
+fn a() {}
+fn b() {
+    a();
+}
+",
+                &[(2, "tests")],
+                &[],
+            );
+    }
+
+    /// The Rust source `src`, read through the registered grammar and query, marks exactly the
+    /// definitions `defs` and the references `refs` test code, each as `(line, name)`.
+    fn assert_test_code(src: &str, defs: &[(u32, &str)], refs: &[(u32, &str)]) {
+        let fs = crate::symbol_index::extracted("rs", src);
+        assert_eq!(
+            crate::symbol_index::test_code_by_line(&fs),
+            (defs.to_vec(), refs.to_vec())
+        );
+    }
+
+    crate::test_cases! {
+        /// `is_declaration` is consulted for a function, method or constructor only: a
+        /// signature node an injected query tags as another kind keeps that kind.
+        a_signature_node_tagged_as_no_function_keeps_its_tagged_kind:
+            assert_required_fn_lowers("constant", Kind::Constant);
+        /// `is_declaration` is consulted for a method as for a function: a signature node an
+        /// injected query tags a method is a declaration.
+        a_signature_node_tagged_a_method_is_a_declaration:
+            assert_required_fn_lowers("method", Kind::Declaration);
+    }
+
+    /// A trait's one required fn, `m`, lowers to exactly one definition, of `kind`, under an
+    /// injected query that tags its signature node a definition of the tag category `category`.
+    fn assert_required_fn_lowers(category: &str, kind: Kind) {
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fs = extract(
+            "trait T { fn m(&self); }\n",
+            Lang::Rust,
+            &language,
+            &format!("(function_signature_item name: (identifier) @name) @definition.{category}"),
+        )
+        .unwrap();
+        assert_eq!(crate::symbol_index::defs_by_line(&fs), vec![(1, "m", kind)]);
     }
 
     /// The symbols the Rust grammar extracts from `src`.

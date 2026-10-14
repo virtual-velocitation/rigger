@@ -85,6 +85,26 @@
 //!    `macro_definition`, plus the non-tagged `use_declaration`/`const_item`/`static_item`) are
 //!    verified ALREADY correct - the sibling walk is kind-agnostic by construction - and PASS
 //!    (`cfg_test_on_every_other_item_kind_excludes_or_stays_scoped_through_the_public_api`).
+//!  - spec 116 criterion 1 (DEV-ONLY CODE MAKES NO NODE), which widens the whole-file rule from
+//!    a `tests/` directory to every DEV-ONLY PATHS pattern, read by one path predicate. Through
+//!    the SAME public API, over a real tree in every registered language: a file at each pattern
+//!    is no node and proves the production definition it calls, each production control keeps
+//!    its definitions, and a pattern-named file an out-of-line `#[cfg(test)] mod` declares
+//!    proves nothing
+//!    (`a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it_calls`);
+//!    and a design doc's mention of such a path mints no node
+//!    (`a_dev_only_design_doc_mention_never_becomes_a_live_node_through_the_public_api`), the
+//!    mention read by the path it names, without a `:line` suffix and by its own extension
+//!    (`a_dev_only_design_doc_mention_is_read_by_the_path_it_names_through_the_public_api`). The
+//!    ranking use of the predicate is driven through the binary, in `tests/cli.rs`
+//!    (`ground_ranks_a_go_test_files_definition_below_the_production_one_it_shadows`).
+//!  - spec 116 criterion 11 (A TEST REGION IS EVERY TEST-ATTRIBUTED RANGE), through the SAME
+//!    public API: a `#[cfg(test)] const _` the name filter drops, a `#[cfg(test)] extern` block
+//!    and a file opening `#![cfg(test)]` each make what they hold no node and no edge end, the
+//!    file a `mod` in that opened file declares included, while a file opening an outer
+//!    `#[cfg(test)] use` or `#[cfg(test)] mod tests;`, the unattributed twins and a
+//!    `#[cfg(unix)]` fn stay production
+//!    (`a_test_region_is_every_test_attributed_range_through_the_public_api`).
 
 mod common;
 
@@ -1040,7 +1060,7 @@ rigger::test_cases! {
 /// this test pins. The round-5 fix (`fix-u86c1-r5-inner-attribute-item`) closed item 1 of the
 /// mandate (the inner-attribute module form) only; this test is expected to FAIL until a future
 /// round resolves each test-shaped out-of-line module declaration to its file(s) at the
-/// events/index layer (where every file's path is known - `events.rs`'s `is_under_tests_dir` /
+/// events/index layer (where every file's path is known - `events.rs`'s `is_dev_only` /
 /// `project_batches`, per the mandate) and excludes them there, since a per-file extractor
 /// structurally cannot see an attribute that lives in a different file.
 #[cfg(feature = "symbols")]
@@ -1172,7 +1192,7 @@ rigger::test_cases! {
 
 /// sdet-author gap: the out-of-line-resolution tests above read the flattened event list. The mandate
 /// (`op-u86c1-r5-close-every-remaining-test-shape` item 2, quoted in this file's own module doc)
-/// names TWO production entry points needing the fix - `events.rs`'s `is_under_tests_dir` /
+/// names TWO production entry points needing the fix - `events.rs`'s `is_dev_only` /
 /// `project_batches` - and `project_batches` is the ACTUAL entry point a live run drives
 /// (`conductor::RunCtx::ingest_project_batches`, spec 29c), not merely a test convenience;
 /// `out_of_line_test_module_files` is computed and applied at BOTH call sites independently (two
@@ -1787,13 +1807,58 @@ rigger::test_cases! {
     );
 }
 
+/// The graph three hops around `docs/architecture.md` once that doc, holding `md`, has gone
+/// through the REAL `extract_concepts`/`extract_links` pass, `concept_events`/`link_events` and
+/// the always-compiled fold. Seeded from the doc alone: an excluded target must not exist to
+/// seed from.
+#[cfg(feature = "symbols")]
+fn design_doc_graph(md: &str) -> rigger::contextgraph::Graph {
+    use rigger::contextgraph::Projection;
+    use rigger::grounder::design::events::{concept_events, link_events};
+    use rigger::grounder::design::extract::{extract_concepts, extract_links};
+
+    let mut events = concept_events(&extract_concepts("docs/architecture.md", md));
+    events.extend(link_events(&extract_links("docs/architecture.md", md)));
+    fold_events(events)
+        .subgraph(&["docs/architecture.md".to_string()], 3)
+        .unwrap()
+}
+
+/// Every edge of `g` that `keep` holds, as `(from, rel, to)`, sorted: the one edge projection
+/// the end-to-end tests below compare whole.
+#[cfg(feature = "symbols")]
+fn edges_where(
+    g: &rigger::contextgraph::Graph,
+    keep: impl Fn(&rigger::contextgraph::Edge) -> bool,
+) -> Vec<(&str, &str, &str)> {
+    let mut edges: Vec<_> = g
+        .edges
+        .iter()
+        .filter(|e| keep(e))
+        .map(|e| (e.from.as_str(), e.rel.as_str(), e.to.as_str()))
+        .collect();
+    edges.sort_unstable();
+    edges
+}
+
+/// [`design_doc_graph`] of `md` holds exactly `links` (`(from, rel, to)`, sorted) and exactly
+/// the nodes `node_ids` (sorted).
+#[cfg(feature = "symbols")]
+fn assert_design_doc_graph(md: &str, links: &[(&str, &str, &str)], node_ids: &[&str]) {
+    let g = design_doc_graph(md);
+    let got_links = edges_where(&g, |_| true);
+    assert_eq!(got_links, links, "the doc's links");
+    let mut got_nodes: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+    got_nodes.sort_unstable();
+    assert_eq!(got_nodes, node_ids, "the nodes the doc reaches");
+}
+
 /// Spec 86 criterion 1's CONSTRAINTS WALK amendment (the file's own module doc covers the
 /// code-entity pass; this ONE test covers the OTHER extraction pass the same amendment names): a
 /// design doc's inline-code mention (and its markdown-citation form) of a `tests/`-rooted path
 /// must be excluded from the design-intent link pass too, "by the SAME exclusion rule... no
 /// placeholder node for test-scoped code ever enters the intent layer this way either." Drives the
-/// REAL `extract_concepts`/`extract_links` pass (`grounder::design::extract`) end to end through
-/// `link_events`/`concept_events` and the always-compiled fold, the same outside-the-crate
+/// REAL design pass end to end through the fold ([`design_doc_graph`]), the same outside-the-crate
 /// discipline this file's other tests hold the code-entity pass to - so the guarantee that no bare
 /// `KIND_ARTIFACT` placeholder ever lands for a `tests/`-rooted mention does not rest on the
 /// extraction unit test (`grounder::design::extract::tests::
@@ -1801,23 +1866,13 @@ rigger::test_cases! {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_tests_rooted_design_doc_mention_never_becomes_a_live_node_through_the_public_api() {
-    use rigger::contextgraph::Projection;
-    use rigger::grounder::design::events::{concept_events, link_events};
-    use rigger::grounder::design::extract::{extract_concepts, extract_links};
     use std::collections::BTreeSet;
 
-    let md = "# Reference architecture\n\n\
-              See `tests/cli.rs` inline and cite [the suite](tests/no_os_kill_audit.rs). Real \
-              product code `src/conductor.rs` still links normally.\n";
-    let mut events = concept_events(&extract_concepts("docs/architecture.md", md));
-    events.extend(link_events(&extract_links("docs/architecture.md", md)));
-    let p = fold_events(events);
-
-    // Seed from the doc alone (never from the excluded targets, which must not exist to seed
-    // from) and walk far enough to reach any real edge the doc's own links created.
-    let g = p
-        .subgraph(&["docs/architecture.md".to_string()], 3)
-        .unwrap();
+    let g = design_doc_graph(
+        "# Reference architecture\n\n\
+         See `tests/cli.rs` inline and cite [the suite](tests/no_os_kill_audit.rs). Real \
+         product code `src/conductor.rs` still links normally.\n",
+    );
     let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
 
     assert!(
@@ -1830,6 +1885,437 @@ fn a_tests_rooted_design_doc_mention_never_becomes_a_live_node_through_the_publi
         node_ids.contains("src/conductor.rs"),
         "a genuine product-code mention in the SAME doc must still reach the graph normally; \
          nodes: {node_ids:?}"
+    );
+}
+
+/// Spec 116 criterion 1 (DEV-ONLY CODE MAKES NO NODE), the design pass through the fold: a
+/// design doc's mention of a path a DEV-ONLY PATHS pattern names - a Go `*_test.go` file inline
+/// and cited with an `#anchor`, a `benches/` file inline, an `examples/` file cited - mints no
+/// node, while the production file beside the Go test, mentioned both ways, is the doc's one
+/// neighbor ([`assert_design_doc_graph`]).
+#[cfg(feature = "symbols")]
+#[test]
+fn a_dev_only_design_doc_mention_never_becomes_a_live_node_through_the_public_api() {
+    assert_design_doc_graph(
+        "# Reference architecture\n\n\
+         See `pkg/x_test.go`, `benches/b.rs` and `pkg/x.go` inline, and cite \
+         [the test](pkg/x_test.go#L3), [the example](examples/e.rs) and \
+         [the code](pkg/x.go).\n",
+        &[
+            ("docs/architecture.md", "SPECIFIES", "pkg/x.go"),
+            ("docs/architecture.md", "references", "pkg/x.go"),
+        ],
+        &["docs/architecture.md", "pkg/x.go"],
+    );
+}
+
+/// Spec 116 criterion 1 (DEV-ONLY CODE MAKES NO NODE), the design pass through the fold, at the
+/// two edges of the path a mention names. A `:line` or `:line-line` suffix names the same file:
+/// a so-suffixed mention of a Go `*_test.go` file mints no node at either carrier, while the
+/// production file's suffixed mention is a node as written. A suffix that is no line span is
+/// part of the path, which then registers no language and is no pattern's. And the gate reads
+/// the path's own extension: the dotfile `Acme.Tests/.cs` has none, so it is cited as a node
+/// where `Acme.Tests/A.cs` beside it is dropped.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_dev_only_design_doc_mention_is_read_by_the_path_it_names_through_the_public_api() {
+    assert_design_doc_graph(
+        "# Reference architecture\n\n\
+         See `pkg/x_test.go:12`, `pkg/x_test.go:12-20`, `pkg/x.go:12` and \
+         `pkg/x_test.go:1a` inline, and cite [the case](pkg/x_test.go:12), \
+         [the class](Acme.Tests/A.cs) and [the dotfile](Acme.Tests/.cs).\n",
+        &[
+            ("docs/architecture.md", "SPECIFIES", "pkg/x.go:12"),
+            ("docs/architecture.md", "SPECIFIES", "pkg/x_test.go:1a"),
+            ("docs/architecture.md", "references", "Acme.Tests/.cs"),
+        ],
+        &[
+            "Acme.Tests/.cs",
+            "docs/architecture.md",
+            "pkg/x.go:12",
+            "pkg/x_test.go:1a",
+        ],
+    );
+}
+
+/// The production file of [`a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it_calls`]:
+/// one definition per DEV-ONLY PATHS pattern, each called from that pattern's file alone, the
+/// definition the out-of-line test module calls, and the one only production controls call.
+#[cfg(feature = "symbols")]
+const DEV_ONLY_PRODUCT_SRC: &str = "\
+pub fn by_tests_dir() {}
+pub fn by_benches_dir() {}
+pub fn by_examples_dir() {}
+pub fn by_dunder_tests_dir() {}
+pub fn by_go_test() {}
+pub fn by_py_test_prefix() {}
+pub fn by_py_test_suffix() {}
+pub fn by_js_test() {}
+pub fn by_ts_spec() {}
+pub fn by_cs_tests_dir() {}
+pub fn by_cs_test_dir() {}
+pub fn by_out_of_line_module() {}
+pub fn by_production_only() {}
+
+#[cfg(test)]
+mod tests;
+";
+
+/// One file per DEV-ONLY PATHS pattern, each `(path, source, the production definition it
+/// calls, the line of the call)`.
+#[cfg(feature = "symbols")]
+const DEV_ONLY_FILES: &[(&str, &str, &str, u32)] = &[
+    (
+        "App.Tests/A.cs",
+        "class A {\n    void Check() {\n        Lib.by_cs_tests_dir();\n    }\n}\n",
+        "by_cs_tests_dir",
+        3,
+    ),
+    (
+        "UnitTest/B.cs",
+        "class B {\n    void Check() {\n        Lib.by_cs_test_dir();\n    }\n}\n",
+        "by_cs_test_dir",
+        3,
+    ),
+    (
+        "benches/b.rs",
+        "fn bench() {\n    by_benches_dir();\n}\n",
+        "by_benches_dir",
+        2,
+    ),
+    (
+        "examples/e.rs",
+        "fn main() {\n    by_examples_dir();\n}\n",
+        "by_examples_dir",
+        2,
+    ),
+    (
+        "pkg/x_test.go",
+        "package pkg\n\nfunc TestX() {\n\tby_go_test()\n}\n",
+        "by_go_test",
+        4,
+    ),
+    (
+        "py/a_test.py",
+        "def check():\n    by_py_test_suffix()\n",
+        "by_py_test_suffix",
+        2,
+    ),
+    (
+        "py/test_a.py",
+        "def check():\n    by_py_test_prefix()\n",
+        "by_py_test_prefix",
+        2,
+    ),
+    (
+        "tests/t.rs",
+        "fn check() {\n    by_tests_dir();\n}\n",
+        "by_tests_dir",
+        2,
+    ),
+    (
+        "web/__tests__/a.js",
+        "function check() {\n  by_dunder_tests_dir();\n}\n",
+        "by_dunder_tests_dir",
+        2,
+    ),
+    (
+        "web/a.spec.ts",
+        "function check(): void {\n  by_ts_spec();\n}\n",
+        "by_ts_spec",
+        2,
+    ),
+    (
+        "web/a.test.js",
+        "function check() {\n  by_js_test();\n}\n",
+        "by_js_test",
+        2,
+    ),
+];
+
+/// The spec's production controls, each `(path, source, the definitions it holds)`: a path
+/// that reads close to a pattern and is production. Each calls `by_production_only`.
+#[cfg(feature = "symbols")]
+const PRODUCTION_CONTROLS: &[(&str, &str, &[&str])] = &[
+    (
+        "Contest/a.cs",
+        "class Contest {\n    void Run() {\n        Lib.by_production_only();\n    }\n}\n",
+        &["Contest", "Run"],
+    ),
+    (
+        "FooTests/lib.rs",
+        "fn foo_tests_lib() {\n    by_production_only();\n}\n",
+        &["foo_tests_lib"],
+    ),
+    (
+        "LoadTest/run.py",
+        "def load_test_run():\n    by_production_only()\n",
+        &["load_test_run"],
+    ),
+    (
+        "build.rs",
+        "fn build_script() {\n    by_production_only();\n}\n",
+        &["build_script"],
+    ),
+    (
+        "src/a.test.rs",
+        "fn a_test_rs() {\n    by_production_only();\n}\n",
+        &["a_test_rs"],
+    ),
+    (
+        "src/testsuite.rs",
+        "fn testsuite() {\n    by_production_only();\n}\n",
+        &["testsuite"],
+    ),
+];
+
+/// Spec 116 criterion 1 (DEV-ONLY CODE MAKES NO NODE), end to end through the public
+/// `project_batches` -> `Projector` path over a real tree in every registered language: a file
+/// at each DEV-ONLY PATHS pattern is no node, holds no node and ends no edge, and its one call
+/// is the one proof on the production definition it names; each production control is a file
+/// node containing its definitions and proves nothing; and `src/tests/mod.rs`, which a pattern
+/// names and `#[cfg(test)] mod tests;` declares, is no node and proves nothing either.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it_calls() {
+    use rigger::contextgraph::query::card;
+    use rigger::contextgraph::{KIND_FILE, REL_CONTAINS};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const PRODUCT: &str = "src/lib.rs";
+    const OUT_OF_LINE: &str = "src/tests/mod.rs";
+    let mut files: Vec<(&str, &str)> = vec![
+        (PRODUCT, DEV_ONLY_PRODUCT_SRC),
+        (
+            OUT_OF_LINE,
+            "fn check() {\n    super::by_out_of_line_module();\n}\n",
+        ),
+    ];
+    files.extend(DEV_ONLY_FILES.iter().map(|&(path, src, ..)| (path, src)));
+    files.extend(
+        PRODUCTION_CONTROLS
+            .iter()
+            .map(|&(path, src, _)| (path, src)),
+    );
+    let seeds: Vec<&str> = files.iter().map(|&(path, _)| path).collect();
+    let g = ingested_subgraph(&files, &seeds, 3);
+
+    // Every file node is production, and each control contains exactly its definitions.
+    let file_nodes: BTreeSet<&str> = g
+        .nodes
+        .iter()
+        .filter(|n| n.kind == KIND_FILE)
+        .map(|n| n.id.as_str())
+        .collect();
+    let mut production_files: BTreeSet<&str> =
+        PRODUCTION_CONTROLS.iter().map(|&(path, ..)| path).collect();
+    production_files.insert(PRODUCT);
+    assert_eq!(file_nodes, production_files);
+
+    let contained: BTreeSet<(&str, &str)> =
+        edges_where(&g, |e| e.rel == REL_CONTAINS && e.from != PRODUCT)
+            .into_iter()
+            .map(|(from, _, to)| (from, to))
+            .collect();
+    let control_definitions: Vec<(&str, String)> = PRODUCTION_CONTROLS
+        .iter()
+        .flat_map(|&(path, _, names)| {
+            names
+                .iter()
+                .map(move |name| (path, format!("{path}::{name}")))
+        })
+        .collect();
+    assert_eq!(
+        contained,
+        control_definitions
+            .iter()
+            .map(|(path, id)| (*path, id.as_str()))
+            .collect()
+    );
+
+    // No node and no edge end sits at or under a dev-only path.
+    let dev_only: BTreeSet<&str> = DEV_ONLY_FILES
+        .iter()
+        .map(|&(path, ..)| path)
+        .chain([OUT_OF_LINE])
+        .collect();
+    let at_dev_only = |id: &str| dev_only.contains(id.split("::").next().unwrap_or(id));
+    let leaked_nodes: Vec<&str> = g
+        .nodes
+        .iter()
+        .map(|n| n.id.as_str())
+        .filter(|id| at_dev_only(id))
+        .collect();
+    assert_eq!(leaked_nodes, Vec::<&str>::new());
+    let leaked_edges = edges_where(&g, |e| at_dev_only(&e.from) || at_dev_only(&e.to));
+    assert_eq!(leaked_edges, Vec::<(&str, &str, &str)>::new());
+
+    let product_prefix = format!("{PRODUCT}::");
+    // Each pattern's file proves the one definition it calls; the out-of-line module's call and
+    // the controls' calls prove nothing.
+    let proofs: BTreeMap<String, Vec<String>> = g
+        .nodes
+        .iter()
+        .filter(|n| n.id.starts_with(&product_prefix))
+        .map(|n| {
+            let card = card(&g, &n.id).expect("a node of the graph has a card");
+            assert_eq!(card.proven_by, card.proof_evidence.len(), "{}", n.id);
+            (
+                n.id[product_prefix.len()..].to_string(),
+                card.proof_evidence,
+            )
+        })
+        .collect();
+    let mut expected_proofs: BTreeMap<String, Vec<String>> = DEV_ONLY_FILES
+        .iter()
+        .map(|&(path, _, name, line)| (name.to_string(), vec![format!("{path}:{line}")]))
+        .collect();
+    expected_proofs.insert("by_out_of_line_module".to_string(), vec![]);
+    expected_proofs.insert("by_production_only".to_string(), vec![]);
+    assert_eq!(proofs, expected_proofs);
+}
+
+/// Spec 116 criterion 11's tree, each file `(path, source)`: a crate root opening
+/// `#![cfg(test)]` whose `mod opened;` declares `src/opened.rs`; a file holding a test-attributed
+/// `const _` and extern block beside their unattributed twins and a `#[cfg(unix)]` fn; and two
+/// files opening an OUTER `#[cfg(test)]`, one on a `use` declaring `src/gated/kept.rs`, one on a
+/// bodiless `mod tests;` declaring `src/declared/tests.rs`.
+#[cfg(feature = "symbols")]
+const TEST_REGION_FILES: &[(&str, &str)] = &[
+    (
+        "src/lib.rs",
+        "#![cfg(test)]\nfn opener() {}\nfn opened_second() {\n    opener();\n}\nmod opened;\n",
+    ),
+    ("src/opened.rs", "fn in_opened() {}\n"),
+    (
+        "src/regions.rs",
+        "\
+#[cfg(test)]
+const _: () = {
+    fn region_helper() {
+        called_from_test();
+    }
+};
+const _: () = {
+    fn region_kept() {
+        called_from_production();
+    }
+};
+fn called_from_test() {}
+fn called_from_production() {}
+#[cfg(unix)]
+fn unix_only() {}
+#[cfg(test)]
+extern \"C\" {
+    fn ffi_test();
+}
+extern \"C\" {
+    fn ffi_production();
+}
+",
+    ),
+    (
+        "src/gated.rs",
+        "#[cfg(test)]\nuse y;\nfn gated_a() {}\nfn gated_b() {\n    gated_a();\n}\nmod kept;\n",
+    ),
+    ("src/gated/kept.rs", "fn in_kept() {}\n"),
+    (
+        "src/declared.rs",
+        "#[cfg(test)]\nmod tests;\nfn declared_c() {}\nfn declared_d() {\n    declared_c();\n}\n",
+    ),
+    ("src/declared/tests.rs", "fn in_declared_tests() {}\n"),
+];
+
+/// Spec 116 criterion 11 (A TEST REGION IS EVERY TEST-ATTRIBUTED RANGE), end to end through the
+/// public `project_batches` -> `Projector` path: a `#[cfg(test)] const _` the name filter drops,
+/// a `#[cfg(test)] extern` block and a file opening `#![cfg(test)]` each make what they hold
+/// test, so none of it is a node or ends an edge, and the file a `mod` in that opened file
+/// declares is test code whole; a file opening an outer `#[cfg(test)] use` or
+/// `#[cfg(test)] mod tests;` keeps its fns production, as do the unattributed twins and a
+/// `#[cfg(unix)]` fn.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_test_region_is_every_test_attributed_range_through_the_public_api() {
+    use rigger::contextgraph::{REL_CALLS, REL_CONTAINS, REL_REFERENCES};
+    use std::collections::BTreeSet;
+
+    let seeds: Vec<&str> = TEST_REGION_FILES.iter().map(|&(path, _)| path).collect();
+    let g = ingested_subgraph(TEST_REGION_FILES, &seeds, 3);
+
+    // Every production definition, and only those, is contained by its file.
+    assert_eq!(
+        edges_where(&g, |e| e.rel == REL_CONTAINS),
+        [
+            ("src/declared.rs", "src/declared.rs::declared_c"),
+            ("src/declared.rs", "src/declared.rs::declared_d"),
+            ("src/gated.rs", "src/gated.rs::gated_a"),
+            ("src/gated.rs", "src/gated.rs::gated_b"),
+            ("src/gated.rs", "src/gated.rs::kept"),
+            ("src/gated/kept.rs", "src/gated/kept.rs::in_kept"),
+            ("src/regions.rs", "src/regions.rs::called_from_production"),
+            ("src/regions.rs", "src/regions.rs::called_from_test"),
+            ("src/regions.rs", "src/regions.rs::ffi_production"),
+            ("src/regions.rs", "src/regions.rs::region_kept"),
+            ("src/regions.rs", "src/regions.rs::unix_only"),
+        ]
+        .map(|(file, id)| (file, REL_CONTAINS, id))
+    );
+
+    // No node and no edge end is a test item, the declared test files included.
+    let test_items = [
+        "src/declared.rs::tests",
+        "src/declared/tests.rs",
+        "src/declared/tests.rs::in_declared_tests",
+        "src/lib.rs::opened",
+        "src/lib.rs::opened_second",
+        "src/lib.rs::opener",
+        "src/opened.rs",
+        "src/opened.rs::in_opened",
+        "src/regions.rs::ffi_test",
+        "src/regions.rs::region_helper",
+    ];
+    let leaked: BTreeSet<&str> = g
+        .nodes
+        .iter()
+        .map(|n| n.id.as_str())
+        .chain(
+            g.edges
+                .iter()
+                .flat_map(|e| [e.from.as_str(), e.to.as_str()]),
+        )
+        .filter(|id| test_items.contains(id))
+        .collect();
+    assert_eq!(leaked, BTreeSet::new());
+
+    // A call is edges only from production code: each production caller's call is its CALLS
+    // edge and its file's REFERENCES edge, and the test helper's call to `called_from_test` is
+    // neither.
+    assert_eq!(
+        edges_where(&g, |e| e.rel != REL_CONTAINS),
+        [
+            (
+                "src/declared.rs",
+                REL_REFERENCES,
+                "src/declared.rs::declared_c"
+            ),
+            (
+                "src/declared.rs::declared_d",
+                REL_CALLS,
+                "src/declared.rs::declared_c"
+            ),
+            ("src/gated.rs", REL_REFERENCES, "src/gated.rs::gated_a"),
+            ("src/gated.rs::gated_b", REL_CALLS, "src/gated.rs::gated_a"),
+            (
+                "src/regions.rs",
+                REL_REFERENCES,
+                "src/regions.rs::called_from_production"
+            ),
+            (
+                "src/regions.rs::region_kept",
+                REL_CALLS,
+                "src/regions.rs::called_from_production"
+            ),
+        ]
     );
 }
 
@@ -1975,7 +2461,7 @@ rigger::test_cases! {
                  mod helper;\n",
             ),
             // A directory NOT named `tests` - a fixture rooted at a literal `tests/` path would
-            // already be excluded by the unrelated `is_under_tests_dir` rule, masking the
+            // already be excluded by the unrelated `is_dev_only` rule, masking the
             // `#[path]`-resolution question this test isolates.
             ("fixtures/actual.rs", "pub fn overridden_test_helper() {}\n"),
         ],
@@ -2437,17 +2923,12 @@ rigger::test_cases! {
     /// UNEXCLUDED - which this fixture pins by asserting the real target's entity is ABSENT from
     /// the graph.
     ///
-    /// The `let _ = 1;` placeholder statement before the declaration is deliberate, not filler: it
-    /// keeps the `mod helper;` declaration from being the function body's OWN first named child. A
-    /// leading statement there would otherwise walk into a DIFFERENT, pre-existing, out-of-scope
-    /// defect this fixture is not about (`leading_inner_test_attribute`, extract.rs, predates round
-    /// 9 entirely): it does not distinguish an OUTER `#[cfg(test)]` attached to a following sibling
-    /// item from a genuine INNER `#![cfg(test)]` marking the body's own container, so a body whose
-    /// first child happens to be an outer-attributed item reads as if the CONTAINER itself were
-    /// test-attributed. Flagged separately as
-    /// `sdet-u86c1-r9-leading-attribute-inner-outer-conflation` (out of this round's
-    /// #[path]-contract scope, not fixed here) rather than folded silently into this fixture, which
-    /// stays a clean, single-variable proof of the `&&`/`||` distinction alone.
+    /// The placeholder statement before the declaration keeps the `mod helper;` declaration from
+    /// being the function body's OWN first named child. The body read
+    /// (`leading_inner_test_attribute`, extract.rs) counts INNER attributes only, so an OUTER
+    /// `#[cfg(test)]` a body opens with marks the item after it and never the body's container,
+    /// and `outer_fn` stays product code with or without the placeholder; the fixture keeps it
+    /// so it stays a single-variable proof of the `&&`/`||` distinction alone.
     #[cfg(feature = "symbols")]
     a_path_attribute_override_on_a_mod_declared_inside_a_function_body_is_not_treated_as_nested_in_a_module: assert_ingested_graph(
 &[

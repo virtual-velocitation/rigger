@@ -2338,6 +2338,270 @@ fn graph_build_records_a_changed_file_as_one_entry_from_the_bytes_it_holds_now()
     );
 }
 
+/// The Rust file of [`the_new_kinds_reach_an_older_store_at_setup_and_the_next_build`]: a static
+/// whose initializer calls `elapsed`, a variant, two fields - the second `elapsed` - a
+/// `macro_rules!` and a trait's required fn.
+#[cfg(feature = "symbols")]
+const OLDER_STORE_KINDS_PATH: &str = "src/kinds.rs";
+#[cfg(feature = "symbols")]
+const OLDER_STORE_KINDS_BODY: &str = "\
+static ORIGIN: u32 = elapsed();
+
+enum Phase {
+    Waxing,
+}
+
+struct Moon {
+    radius: u32,
+    elapsed: u32,
+}
+
+macro_rules! orbit {
+    () => {};
+}
+
+trait Tide {
+    fn ebb(&self);
+}
+";
+
+/// The second Rust file: the fn sharing the second field's leaf, which the binary under test
+/// mints a ledger entry for.
+#[cfg(feature = "symbols")]
+const OLDER_STORE_CLOCK_PATH: &str = "src/clock.rs";
+
+/// The generation the hand-keyed entry of [`OLDER_STORE_KINDS_PATH`] names: one no batch of this
+/// binary hashes to.
+#[cfg(feature = "symbols")]
+const OLDER_STORE_HAND_KEY: &str = "0ld0000000000000";
+
+/// The symbols index hand-written in a `ts-tags-v2` binary's shape: stamped `ts-tags-v2`, every
+/// file listed at the kinds that extractor had - no static, variant, field, declaration,
+/// variable, property or constructor, a trait a `Type` and a `macro_rules!` an `Other`.
+#[cfg(feature = "symbols")]
+const OLDER_STORE_INDEX: &str = r#"{"grammar":"ts-tags-v2","files":{"crater.cs":{"lang":"CSharp","defs":[{"kind":"Type","name":"Crater","line":1}],"refs":[]},"lunar.go":{"lang":"Go","defs":[],"refs":[]},"probe.js":{"lang":"Js","defs":[{"kind":"Type","name":"Probe","line":1}],"refs":[]},"src/clock.rs":{"lang":"Rust","defs":[{"kind":"Function","name":"elapsed","line":1}],"refs":[]},"src/kinds.rs":{"lang":"Rust","defs":[{"kind":"Type","name":"Moon","line":7},{"kind":"Type","name":"Phase","line":3},{"kind":"Type","name":"Tide","line":16},{"kind":"Other","name":"orbit","line":12}],"refs":[{"name":"elapsed","line":1}]}},"hashes":{}}"#;
+
+/// The hand-written `gc` batch folded under [`OLDER_STORE_HAND_KEY`]: the definitions
+/// [`OLDER_STORE_INDEX`] gives the file, then its one caller-less reference.
+#[cfg(feature = "symbols")]
+const OLDER_STORE_KINDS_BATCH: [(&str, &str); 5] = [
+    (
+        "CodeEntityExtracted",
+        r#"{"file":"src/kinds.rs","name":"Moon","kind":"type","line":7,"lang":"rust","fresh":true}"#,
+    ),
+    (
+        "CodeEntityExtracted",
+        r#"{"file":"src/kinds.rs","name":"Phase","kind":"type","line":3,"lang":"rust"}"#,
+    ),
+    (
+        "CodeEntityExtracted",
+        r#"{"file":"src/kinds.rs","name":"Tide","kind":"type","line":16,"lang":"rust"}"#,
+    ),
+    (
+        "CodeEntityExtracted",
+        r#"{"file":"src/kinds.rs","name":"orbit","kind":"other","line":12,"lang":"rust"}"#,
+    ),
+    (
+        "EdgeInferred",
+        r#"{"file":"src/kinds.rs","name":"elapsed","lang":"rust"}"#,
+    ),
+];
+
+/// Spec 116, criterion 13: THE NEW KINDS REACH AN OLDER STORE.
+///
+/// GIVEN a project whose `.rigger/` an older binary left - a `ts-tags-v2` symbols index, a
+/// `graph.db` stamped with fold rule 1, and two ledger entries: one for `src/clock.rs` that this
+/// binary mints (it reproduces it) and one hand-keyed for `src/kinds.rs` (it does not) - beside
+/// Go, C# and JS files no entry names, holding a package-level `var`, a property and a class's
+/// `constructor` method,
+/// WHEN the operator runs `rigger setup` then `rigger graph build`,
+/// THEN `rigger graph --show` of each new kind's leaf prints its kind, a call naming the second
+/// field's leaf walks down past the field to the other file's fn, the kept entry stands while the
+/// unreproduced one folds nothing at the rebuild and its file is extracted again by the build.
+#[cfg(feature = "symbols")]
+#[test]
+fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
+    use common::cli::{rigger_file, temp_rigger_project};
+    use common::fixtures::{
+        entry_records, events_of, generation_ingested, handed_by_the_walk, held_generations,
+        record_folded_entry,
+    };
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Direction, Projection, TIER_INFERRED};
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+
+    let dir = temp_rigger_project();
+    let root = dir.path();
+    std::fs::write(rigger_file(root, "project.id"), "proj-older\n").unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join(OLDER_STORE_CLOCK_PATH),
+        "fn elapsed() -> u32 {\n    0\n}\n",
+    )
+    .unwrap();
+    let clock = handed_by_the_walk(root.to_str().unwrap(), "gc/src/clock.rs");
+    let minted = clock.generation();
+    let project = run_stream_identity(root);
+    let graph_db = rigger_file(root, "graph.db");
+    {
+        let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+        let store = Namespaced::new(&backend, &project);
+        let graph = Projector::open(graph_db.to_str().unwrap(), &project).unwrap();
+        for (path, generation, batch) in [
+            (
+                OLDER_STORE_CLOCK_PATH,
+                minted.as_str(),
+                clock.keyed.iter().map(|(_, event)| event.clone()).collect(),
+            ),
+            (
+                OLDER_STORE_KINDS_PATH,
+                OLDER_STORE_HAND_KEY,
+                events_of(&OLDER_STORE_KINDS_BATCH),
+            ),
+        ] {
+            let entry = generation_ingested("gc", path, generation, "", false);
+            record_folded_entry(&store, &graph, rigger::conductor::STREAM, &entry, batch);
+        }
+    }
+    rusqlite::Connection::open(&graph_db)
+        .unwrap()
+        .execute_batch("PRAGMA user_version = 1;")
+        .unwrap();
+    let index = rigger::grounder::symbols::store::index_path(root.to_str().unwrap());
+    std::fs::create_dir_all(index.parent().unwrap()).unwrap();
+    std::fs::write(index, OLDER_STORE_INDEX).unwrap();
+    for (path, body) in [
+        (OLDER_STORE_KINDS_PATH, OLDER_STORE_KINDS_BODY),
+        ("lunar.go", "package lunar\n\nvar Albedo = 12\n"),
+        (
+            "crater.cs",
+            "class Crater\n{\n    public int Depth { get; set; }\n}\n",
+        ),
+        ("probe.js", "class Probe {\n  constructor() {}\n}\n"),
+    ] {
+        std::fs::write(root.join(path), body).unwrap();
+    }
+    let identities = ["gc/src/clock.rs", "gc/src/kinds.rs"];
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    let after_setup = held_generations(
+        &Projector::open(graph_db.to_str().unwrap(), &project).unwrap(),
+        &identities,
+    );
+    run_rigger_ok(root, &["graph", "build"]);
+
+    let shown = |leaf: &str| {
+        let out = run_rigger_ok(root, &["graph", "--show", leaf]);
+        let mut lines = out.lines();
+        let header = lines.next().unwrap_or_default().to_string();
+        let kind = lines
+            .next()
+            .and_then(|site| site.split("   kind ").nth(1))
+            .and_then(|rest| rest.split_whitespace().next())
+            .unwrap_or_default()
+            .to_string();
+        (header, kind)
+    };
+    let expected = |id: &str, kind: &str| (format!("show {id}"), kind.to_string());
+    assert_eq!(
+        [
+            "ORIGIN",
+            "Waxing",
+            "radius",
+            "orbit",
+            "ebb",
+            "Albedo",
+            "Depth",
+            "constructor"
+        ]
+        .map(shown),
+        [
+            expected("src/kinds.rs::ORIGIN", "static"),
+            expected("src/kinds.rs::Waxing", "variant"),
+            expected("src/kinds.rs::radius", "field"),
+            expected("src/kinds.rs::orbit", "macro"),
+            expected("src/kinds.rs::ebb", "declaration"),
+            expected("lunar.go::Albedo", "variable"),
+            expected("crater.cs::Depth", "property"),
+            expected("probe.js::constructor", "constructor"),
+        ],
+        "each new kind's leaf is shown at its own site with its kind"
+    );
+    assert_eq!(
+        run_rigger_ok(root, &["graph", "--show", "elapsed"]),
+        "show \"elapsed\": 2 candidates - the name is ambiguous, re-run --show on one id:\n\
+         \x20 src/clock.rs::elapsed   (src/clock.rs)\n\
+         \x20 src/kinds.rs::elapsed   (src/kinds.rs)\n",
+        "the second field's leaf lists the field beside the other file's fn"
+    );
+
+    let graph = Projector::open(graph_db.to_str().unwrap(), &project).unwrap();
+    let walk = graph
+        .calls(
+            &["src/kinds.rs::ORIGIN".to_string()],
+            Direction::Down,
+            2,
+            TIER_INFERRED,
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            walk.nodes
+                .iter()
+                .map(|n| (n.node.id.as_str(), n.layer, n.frontier.clone()))
+                .collect::<Vec<_>>(),
+            walk.edges
+                .iter()
+                .map(|e| (e.edge.from.as_str(), e.edge.to.as_str(), e.back))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            vec![
+                ("src/kinds.rs::ORIGIN", 0, None),
+                ("src/clock.rs::elapsed", 1, None),
+            ],
+            vec![("src/kinds.rs::ORIGIN", "src/clock.rs::elapsed", false)],
+        ),
+        "the call naming the field's leaf steps past the field to the other file's fn"
+    );
+
+    let rebuilt_kinds = handed_by_the_walk(root.to_str().unwrap(), "gc/src/kinds.rs").generation();
+    assert_eq!(
+        (after_setup, held_generations(&graph, &identities),),
+        (
+            vec![Some(minted.clone()), None],
+            vec![Some(minted), Some(rebuilt_kinds.clone())],
+        ),
+        "the rebuild keeps the entry it reproduces and folds nothing for the one it does not, \
+         whose file the build extracts again"
+    );
+    let recorded: Vec<(String, String)> = entry_records(&read_run_events(root))
+        .into_iter()
+        .filter(|(_, group, _)| group.starts_with("gc/"))
+        .map(|(entry, group, _)| (group, entry.generation))
+        .collect();
+    let groups: Vec<&str> = recorded.iter().map(|(group, _)| group.as_str()).collect();
+    assert_eq!(
+        (groups, &recorded[1].1, &recorded[5].1),
+        (
+            vec![
+                "gc/src/clock.rs",
+                "gc/src/kinds.rs",
+                "gc/crater.cs",
+                "gc/lunar.go",
+                "gc/probe.js",
+                "gc/src/kinds.rs",
+            ],
+            &OLDER_STORE_HAND_KEY.to_string(),
+            &rebuilt_kinds,
+        ),
+        "the build records every ledger-less file and the unreproduced one again, never the kept \
+         one"
+    );
+}
+
 /// The light lane's build records nothing (spec 107, criterion 12): with the extraction pass off
 /// there is no walk, so over a tree that carries real source `rigger graph build` records no
 /// ledger entry and no derived event - its run stream stays empty - and still exits 0, its line
@@ -2783,6 +3047,26 @@ fn ground_via_symbols_grounder_ranks_a_genuinely_rare_contains_tier_entity_above
          that keys CONTAINS-tier commonness on the raw query term instead of the matched \
          entity's own name ties all five at an artificial zero and falls through to line order, \
          which would rank zorble_alone LAST; stdout: {out:?}"
+    );
+}
+
+/// DEV-ONLY CODE MAKES NO NODE (spec 116 criterion 1), at ranking, end to end through the REAL
+/// `rigger ground` CLI: given a Go test file and a production file that each define `Widget`,
+/// when the operator grounds `Widget`, then the production definition is the first row and the
+/// test file's the second. Neither definition carries a test marking of its own, so the path
+/// alone demotes `a_test.go`, which sorts before `widget.go` and so leads the page whenever
+/// ranking reads the two as equals.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranks_a_go_test_files_definition_below_the_production_one_it_shadows() {
+    let source = "package pkg\n\nfunc Widget() {}\n";
+    let out = ground_via_symbols(
+        &[("a_test.go", source), ("widget.go", source)],
+        &["Widget", "10"],
+    );
+    assert_eq!(
+        out, "widget.go:3: Widget (degree 0)\na_test.go:3: Widget (degree 0)\n",
+        "the production definition must rank above the `*_test.go` one"
     );
 }
 

@@ -63,6 +63,89 @@ mod test_support;
 #[path = "../../../tests/common/fixtures/graph.rs"]
 mod graph_fixtures;
 
+/// THE CALLER SOURCES the caller-rule tests extract, compiled here from the same file as the root
+/// crate's tests. It names no crate; only the default lane's tests extract them.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/caller_sources.rs"]
+mod caller_sources;
+
+/// THE NAME FILTER SOURCES the name-filter tests extract, compiled here from the same file as the
+/// root crate's tests. It names no crate; only the default lane's tests extract them.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/name_filter_sources.rs"]
+mod name_filter_sources;
+
+/// THE RUST DEFINITIONS FIXTURE the Rust definition tests extract, compiled here from the same
+/// file as the root crate's tests. It names no crate; only the default lane's tests extract it.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/rust_definition_sources.rs"]
+mod rust_definition_sources;
+
+/// THE GO DEFINITIONS FIXTURE the Go definition tests extract, compiled here from the file the
+/// shared fixtures live in. It names no crate; only the default lane's tests extract it.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/go_definition_sources.rs"]
+mod go_definition_sources;
+
+/// THE C# DEFINITIONS FIXTURE the C# definition tests extract, compiled here from the file the
+/// shared fixtures live in. It names no crate; only the default lane's tests extract it.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/csharp_definition_sources.rs"]
+mod csharp_definition_sources;
+
+/// THE JS AND TS DEFINITIONS FIXTURES the JS and TS definition tests extract, compiled here from
+/// the file the shared fixtures live in. They name no crate; only the default lane's tests
+/// extract them.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/js_ts_definition_sources.rs"]
+mod js_ts_definition_sources;
+
+/// THE PYTHON DEFINITIONS FIXTURE the Python definition tests extract, compiled here from the
+/// file the shared fixtures live in. It names no crate; only the default lane's tests extract it.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/python_definition_sources.rs"]
+mod python_definition_sources;
+
+/// The symbol index fixtures the extractor's and the registry's tests share with the root crate's
+/// tests (the stamped `index.json` writer, a source read through the registry, the definition
+/// and reference projections), compiled here from the same file. It names the crate as
+/// `rigger::...`; only the default lane's tests read it.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/symbol_index.rs"]
+mod symbol_index;
+
 /// THE READ FAULT fixture the tree's read-rule tests share with the root crate's tests, compiled
 /// here from the same file. It names no crate, so both lanes compile it.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]

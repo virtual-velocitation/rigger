@@ -1,17 +1,18 @@
 //! Fold fixtures over the graph projector: folding a hand-built JSON event straight onto a
 //! `Projector` (the raw on-log JSON - never an in-crate payload struct - so a test pins the
 //! contract the log actually carries), the on-log payloads the code-ingest, decision and
-//! reference folds read, the canonical spec-53 two-subsystem coupling seed, and the two read-backs
-//! suites take of a folded `Graph`. `apply` returns `Err` on a fold failure, so every helper
-//! unwraps it: a successful call is itself evidence the payload folded.
+//! reference folds read, the canonical spec-53 two-subsystem coupling seed, the live edges and calls
+//! a projector serves, and the read-backs suites take of a folded `Graph`. `apply` returns `Err`
+//! on a fold failure, so every helper unwraps it: a successful call is itself evidence the
+//! payload folded.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, KIND_COMMUNITY, META_ACTOR, REL_IN_COMMUNITY, TYPE_CODE_ENTITY_EXTRACTED,
-    TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
+    Graph, Projection, KIND_COMMUNITY, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
 use rigger::eventstore::Event;
 use rigger::retention::GenerationIngested;
@@ -92,6 +93,15 @@ pub fn live_edges(p: &Projector) -> Vec<(String, String, String, i64, u64)> {
     edges
 }
 
+/// Every live `CALLS` edge `p` serves as `(caller, callee)`, sorted.
+pub fn live_calls(p: &Projector) -> Vec<(String, String)> {
+    live_edges(p)
+        .into_iter()
+        .filter(|(_, rel, ..)| rel == REL_CALLS)
+        .map(|(from, _, to, ..)| (from, to))
+        .collect()
+}
+
 /// Fold `events` into `p` through the public fold, and insist they landed: the one spelling of
 /// seeding a graph a test then reads.
 pub fn folds(p: &dyn Projection, events: &[Event]) {
@@ -157,8 +167,19 @@ pub fn code_entity_json(
 /// marks the FIRST event of a file's batch: the fold supersedes the file's prior structural edges
 /// before folding it, so a re-extraction replaces rather than accretes.
 pub fn def_json(file: &str, name: &str, line: u64, fresh: bool) -> serde_json::Value {
+    kind_def_json(file, name, "function", line, fresh)
+}
+
+/// [`def_json`] for a Rust definition of any `kind`.
+pub fn kind_def_json(
+    file: &str,
+    name: &str,
+    kind: &str,
+    line: u64,
+    fresh: bool,
+) -> serde_json::Value {
     serde_json::json!({
-        "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
+        "file": file, "name": name, "kind": kind, "line": line, "lang": "rust",
         "fresh": fresh,
     })
 }
@@ -253,6 +274,17 @@ pub fn apply_def_at(
 /// Fold into `p`, at log position `pos`, a caller-less reference from `file` to `name`.
 pub fn apply_ref(p: &Projector, pos: u64, file: &str, name: &str) {
     apply_json(p, pos, TYPE_EDGE_INFERRED, ref_json(file, name));
+}
+
+/// Fold into `p`, at log position `pos`, one test-origin reference from `file` line `line` to
+/// `name`: the evidence event a test's reference to a definition records, as raw on-log JSON.
+pub fn apply_edge_inferred_evidence(p: &Projector, pos: u64, file: &str, name: &str, line: u32) {
+    apply_json(
+        p,
+        pos,
+        TYPE_EDGE_INFERRED,
+        serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true }),
+    );
 }
 
 /// Fold one caller-attributed call (see [`call_json`]) at `pos`. When `name` is defined in
@@ -358,6 +390,32 @@ pub fn live_node_ids(g: &Graph, kind: &str) -> Vec<String> {
         .collect();
     ids.sort();
     ids
+}
+
+/// The attrs node `id` carries in `p`'s whole graph.
+pub fn attrs_of(p: &Projector, id: &str) -> BTreeMap<String, String> {
+    let nodes = p.whole().unwrap().nodes;
+    let node = nodes.into_iter().find(|n| n.id == id);
+    node.unwrap_or_else(|| panic!("{id} is held")).attrs
+}
+
+/// The attrs of a Rust definition `name`, a `kind` at `line`, and of nothing else: a node
+/// carrying a proof is not equal to them.
+pub fn definition(name: &str, kind: &str, line: u64) -> BTreeMap<String, String> {
+    definition_in("rust", name, kind, line)
+}
+
+/// The attrs of a definition `name` in the language `lang`, a `kind` at `line`, and of nothing
+/// else: a node carrying a proof is not equal to them.
+pub fn definition_in(lang: &str, name: &str, kind: &str, line: u64) -> BTreeMap<String, String> {
+    [
+        ("name", name),
+        ("kind", kind),
+        ("line", &line.to_string()),
+        ("lang", lang),
+    ]
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .into()
 }
 
 /// A deterministic snapshot of the whole community layer read over the PUBLIC surface: every

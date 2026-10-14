@@ -43,6 +43,73 @@ pub const KIND_FINDING: &str = "finding";
 /// `<file>::<name>`; its attrs carry the name, the rigger `Kind` string, the 1-based line, and
 /// the language it was parsed as.
 pub const KIND_CODE_ENTITY: &str = "code-entity";
+/// The code kind (a code entity's `kind` attr) of a constructor: function-like, so a reference
+/// inside one has it as caller.
+pub const CODE_KIND_CONSTRUCTOR: &str = "constructor";
+/// The code kind of a macro, whose body is function-like to the caller rule.
+pub const CODE_KIND_MACRO: &str = "macro";
+/// The code kind of a declaration: a function, method or constructor with no body. Never a
+/// caller: a reference in its signature takes the next enclosing definition.
+pub const CODE_KIND_DECLARATION: &str = "declaration";
+/// The code kind of a function with a body.
+pub const CODE_KIND_FUNCTION: &str = "function";
+/// The code kind of a method with a body.
+pub const CODE_KIND_METHOD: &str = "method";
+/// The code kind of a type.
+pub const CODE_KIND_TYPE: &str = "type";
+/// The code kind of a trait.
+pub const CODE_KIND_TRAIT: &str = "trait";
+/// The code kind of an impl block.
+pub const CODE_KIND_IMPL: &str = "impl";
+/// The code kind of a module.
+pub const CODE_KIND_MODULE: &str = "module";
+/// The code kind of a constant.
+pub const CODE_KIND_CONSTANT: &str = "constant";
+/// The code kind of a definition no other kind names.
+pub const CODE_KIND_OTHER: &str = "other";
+/// The code kind of a field, a data member of a type.
+pub const CODE_KIND_FIELD: &str = "field";
+/// The code kind of a property, a data member read through accessors.
+pub const CODE_KIND_PROPERTY: &str = "property";
+/// The code kind of a static.
+pub const CODE_KIND_STATIC: &str = "static";
+/// The code kind of a variant of an enumerated type.
+pub const CODE_KIND_VARIANT: &str = "variant";
+/// The code kind of a variable.
+pub const CODE_KIND_VARIABLE: &str = "variable";
+/// Every code kind, in the order that settles a node the definitions of one file share: of the
+/// definitions one generation of a file asserts on one node, the node takes the kind and line of
+/// the one whose kind comes first here, the lower line and then the lesser kind string breaking
+/// a tie. A kind string outside the list ranks with [`CODE_KIND_OTHER`], last.
+pub const CODE_KIND_PRECEDENCE: [&str; 16] = [
+    CODE_KIND_TYPE,
+    CODE_KIND_TRAIT,
+    CODE_KIND_IMPL,
+    CODE_KIND_FUNCTION,
+    CODE_KIND_METHOD,
+    CODE_KIND_MACRO,
+    CODE_KIND_CONSTRUCTOR,
+    CODE_KIND_VARIANT,
+    CODE_KIND_CONSTANT,
+    CODE_KIND_STATIC,
+    CODE_KIND_VARIABLE,
+    CODE_KIND_DECLARATION,
+    CODE_KIND_PROPERTY,
+    CODE_KIND_FIELD,
+    CODE_KIND_MODULE,
+    CODE_KIND_OTHER,
+];
+/// The code kinds no call resolves onto: a data member, and a declaration, whose calls reach
+/// its implementation.
+pub const NON_TARGET_KINDS: [&str; 3] =
+    [CODE_KIND_FIELD, CODE_KIND_PROPERTY, CODE_KIND_DECLARATION];
+
+/// Whether a named code entity of `kind` (its `kind` attr, `None` when it carries none) is a
+/// call target: a definition a call, a tier, a proof or a retirement resolves against. False
+/// exactly for a kind in [`NON_TARGET_KINDS`].
+pub fn is_call_target(kind: Option<&str>) -> bool {
+    kind.is_none_or(|k| !NON_TARGET_KINDS.contains(&k))
+}
 /// A source file container node (spec 29a): the `<rel-path>` node that a file's extracted
 /// code entities hang off. Folded alongside the entities, so a query can reach a file's
 /// structure the same way it reaches the decisions that govern the file.
@@ -196,16 +263,19 @@ pub const REL_REVIEWS_LIGHT: &str = "REVIEWS_LIGHT";
 // reads the EXTRACTED sub-graph as the precise prompt seed and the structural reach
 // EXTRACTED u INFERRED as the blast radius's safe view (addendum 2.4).
 /// An explicit-in-source structural fact: a definition's containment, or a reference resolved to a
-/// definition in the SAME file (a call / import / inherit of a known local symbol). The highest
+/// call-target definition ([`is_call_target`]) in the SAME file (a call / import / inherit of a
+/// known local symbol; a data member or a declaration of the name resolves none). The highest
 /// confidence tier - the precise seed. Every non-code dev-loop edge (DECIDED / GOVERNS / ABOUT /
 /// SUPERSEDES / ...) also folds EXTRACTED: they are explicit facts recorded on the log.
 pub const TIER_EXTRACTED: &str = "extracted";
-/// A derived / transitive link: a reference whose name is NOT defined in the referencing file but
-/// IS defined in ANOTHER file the graph knows. The reference is inferred to reach that definition
-/// across files - real, but one confidence step below an explicit same-file reference.
+/// A derived / transitive link: a reference whose name no call target ([`is_call_target`])
+/// defines in the referencing file but one DOES define in ANOTHER file the graph knows. The
+/// reference is inferred to reach that definition across files - real, but one confidence step
+/// below an explicit same-file reference.
 pub const TIER_INFERRED: &str = "inferred";
-/// A text-only occurrence: a reference whose name is defined NOWHERE the graph knows - a macro
-/// body, a reflection string, a dynamic name, an external symbol. It is kept on the graph (never
+/// A text-only occurrence: a reference whose name no call target ([`is_call_target`]) defines
+/// ANYWHERE the graph knows - a macro body, a reflection string, a dynamic name, an external
+/// symbol, or a name only a data member or a declaration carries. It is kept on the graph (never
 /// dropped) but tiered lowest: the structural pass cannot confirm it resolves to any definition,
 /// so the blast radius never crosses it (addendum 2.4).
 pub const TIER_AMBIGUOUS: &str = "ambiguous";
@@ -733,10 +803,11 @@ pub trait Projection: Send + Sync {
     /// ([`Direction::Down`] - the execution path) or callers ([`Direction::Up`] - the call sites);
     /// `depth` clamps the hop distance; `tier_floor` is the LOWEST edge confidence tier the walk
     /// follows - [`TIER_INFERRED`] (the default the route passes) excludes the unresolved
-    /// [`TIER_AMBIGUOUS`] tier, and passing [`TIER_AMBIGUOUS`] opts it in. A cross-file hop that
-    /// lands on a BARE placeholder node resolves by the shared name-suffix to its definition(s):
-    /// a hop with EXACTLY ONE definition is auto-followed, a multi-definition hop becomes a marked
-    /// frontier the walk does NOT descend (honest by construction). Reached nodes dedup into a
+    /// [`TIER_AMBIGUOUS`] tier, and passing [`TIER_AMBIGUOUS`] opts it in. A hop that lands on a
+    /// BARE placeholder node, or on a named field, property or declaration, resolves by the shared
+    /// name-suffix onto the call-target definition(s) of that name alone ([`is_call_target`]): a
+    /// hop with EXACTLY ONE is auto-followed, a hop with more becomes a marked frontier the walk
+    /// does NOT descend (honest by construction). Reached nodes dedup into a
     /// layered DAG; a recursion edge is marked ([`CallEdge::back`]) rather than duplicated.
     ///
     /// The default returns an empty [`CallGraph`], so a projection with no directed-walk support (a
@@ -872,9 +943,10 @@ pub struct EdgeInferred {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh: bool,
     /// The enclosing definition this reference was attributed to during extraction (spec 37): the
-    /// caller's name, same-file. `None` for a top-level reference outside every definition (an
-    /// import or a module-level call; an impl header's trait and type attribute to the impl
-    /// block, a definition of its own). The emit pass carries what extraction attributed onto the
+    /// caller's name, same-file, the innermost enclosing function before any other definition
+    /// (spec 116). `None` for a top-level reference outside every definition (an import or a
+    /// module-level call; a file-level impl header's trait and type attribute to the impl block,
+    /// a definition of its own). The emit pass carries what extraction attributed onto the
     /// `SymRef`; the fold, when it is present, adds a `<file>::<caller> --CALLS--> <callee>` edge
     /// ALONGSIDE the existing file-level `REFERENCES` edge (a later criterion owns that fold).
     /// Serde-defaulted and omitted when `None`, so a pre-37 log folds as caller-less and a

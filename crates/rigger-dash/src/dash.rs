@@ -1326,7 +1326,7 @@ pub struct Reprojection {
     pub total: usize,
     /// The MARKED-UNRESOLVED members (spec 55 c1 honesty rule, extended by spec 63 c3's FILES-LENS
     /// PURITY), set only under [`Lens::Files`]: a bare cross-file placeholder member whose name
-    /// resolves to MORE THAN ONE definition (or to none) cannot be attributed to a single defining
+    /// resolves to MORE THAN ONE call-target definition (or to none) cannot be attributed to a single defining
     /// file, so it is surfaced here - each carrying its SORTED candidate definition ids - rather than
     /// folded into the WRONG file bucket its (referencing-file) id would encode; a member with NO file
     /// identity at all (a rare dev-loop node) is surfaced here too, with an EMPTY candidate frontier,
@@ -1365,17 +1365,17 @@ pub struct Reprojection {
 }
 
 /// One MARKED-UNRESOLVED member of a FILES re-projection (spec 55 c1): a bare cross-file placeholder
-/// whose entity-name has NOT exactly one definition, so it cannot be honestly attributed to a single
-/// defining file. `candidates` carries the SORTED ids of the definitions sharing the name (empty when
-/// the name is defined nowhere the graph knows) - the frontier a human re-seeds on, never a silent
+/// whose entity-name has NOT exactly one call-target definition, so it cannot be honestly attributed
+/// to a single defining file. `candidates` carries the SORTED ids of the call-target definitions
+/// sharing the name (empty when no call target of the name is known to the graph) - the frontier a human re-seeds on, never a silent
 /// wrong attribution. Mirrors the directed-call view's frontier honesty (spec 52), applied to
 /// re-projection.
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct UnresolvedMember {
     /// The bare placeholder member's id (the call target in its referencing file's namespace).
     pub id: String,
-    /// The SORTED ids of the code-entity definitions sharing the member's entity-name: MORE THAN ONE
-    /// (the ambiguous case) or ZERO (defined nowhere the graph knows).
+    /// The SORTED ids of the call-target definitions sharing the member's entity-name: MORE THAN
+    /// ONE (the ambiguous case) or ZERO (no call target of the name the graph knows).
     pub candidates: Vec<String>,
 }
 
@@ -1670,7 +1670,7 @@ pub const REPROJECT_FILES_UNRESOLVED: &str = "no member resolves to a file";
 ///
 /// Under [`Lens::Files`] the fold resolves CROSS-GRAIN honestly ([`Reprojection::unresolved`]): a
 /// member that is a real definition (or a doc / file path) folds under its own file; a BARE cross-file
-/// placeholder (no `name` attr) resolves by name-suffix to the DEFINITION sharing its name - EXACTLY
+/// placeholder (no `name` attr) resolves by name-suffix to the call-target DEFINITION sharing its name - EXACTLY
 /// ONE folds under that definition's file, MORE THAN ONE (or zero) is surfaced as a marked-unresolved
 /// entry carrying the sorted candidate ids, never a wrong attribution to the referencing file its id
 /// encodes; a member with NO file identity at all (a rare dev-loop node) is marked unresolved with an
@@ -1805,7 +1805,8 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 /// - a member that IS a definition (a `name` attr) or a doc / file-path node folds under its OWN
 ///   file ([`file_of`]);
 /// - a BARE cross-file code-entity placeholder (no `name` attr) resolves by name-suffix over the
-///   DEFINITION nodes sharing its name: EXACTLY ONE folds under that definition's file; MORE THAN ONE
+///   call-target DEFINITION nodes sharing its name (never a data member or a declaration, which
+///   folds under its own file as every definition does): EXACTLY ONE folds under that definition's file; MORE THAN ONE
 ///   (or zero) is marked-unresolved with the sorted candidate ids;
 /// - a member with NO file identity at all (a rare dev-loop node, e.g. a decision) is marked
 ///   unresolved too, with an EMPTY candidate frontier - the same honesty shape a zero-candidate bare
@@ -1818,7 +1819,7 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 /// file buckets are sized, dominant-kind coloured, and cross-file coupling edges weighted exactly as
 /// every other lens. `total` is the member-set size (resolved or not).
 fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reprojection {
-    // Index every code-entity DEFINITION by its entity-name suffix, for the conservative cross-file
+    // Index every call-target code-entity DEFINITION by its entity-name suffix, for the conservative cross-file
     // resolution - the SAME index [`whole_graph_lens_key`] reads for the whole-graph fold.
     let defs_by_suffix = defs_by_entity_suffix(graph);
 
@@ -10374,5 +10375,79 @@ mod metadata_card_c2 {
             body, "{\"card\":null}",
             "an unknown card subject is a graceful null: {body}"
         );
+    }
+}
+
+/// Spec 116 criterion 4, A DATA MEMBER IS NO CALL TARGET, at the files re-projection.
+#[cfg(test)]
+mod call_target_c4 {
+    use super::*;
+    use crate::contextgraph::{KIND_COMMUNITY, REL_IN_COMMUNITY, TIER_INFERRED};
+    use crate::test_support::edge;
+    use crate::test_support::kinded_def_node;
+    use crate::test_support::plain;
+
+    /// A community holds the data member `src/a.rs::x` of kind `member`
+    /// and the bare placeholder `src/b.rs::x`, `src/c.rs` defining the fn `x` when `with_fn`.
+    /// `reproject_files` folds the member under its own file and never resolves the
+    /// placeholder onto it.
+    fn reproject_files_beside_a_member(
+        member: &str,
+        with_fn: bool,
+        files: &[&str],
+        unresolved: &[(&str, &[&str])],
+    ) {
+        const COM: &str = "community/1/0";
+        let mut g = Graph {
+            nodes: vec![
+                plain(COM, KIND_COMMUNITY),
+                kinded_def_node("src/a.rs::x", member),
+                plain("src/b.rs::x", KIND_CODE_ENTITY),
+            ],
+            edges: vec![
+                edge("src/a.rs::x", COM, REL_IN_COMMUNITY, TIER_INFERRED),
+                edge("src/b.rs::x", COM, REL_IN_COMMUNITY, TIER_INFERRED),
+            ],
+        };
+        if with_fn {
+            g.nodes.push(kinded_def_node("src/c.rs::x", "function"));
+        }
+        let re = reproject(&g, COM, &Lens::Files);
+        assert_eq!(
+            re.clusters
+                .iter()
+                .map(|c| (c.key.as_str(), c.count))
+                .collect::<Vec<_>>(),
+            files.iter().map(|f| (*f, 1)).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            re.unresolved
+                .iter()
+                .map(|u| (u.id.as_str(), u.candidates.clone()))
+                .collect::<Vec<_>>(),
+            unresolved
+                .iter()
+                .map(|(id, cands)| (*id, cands.iter().map(|c| c.to_string()).collect()))
+                .collect::<Vec<(&str, Vec<String>)>>()
+        );
+        assert_eq!(re.total, 2);
+    }
+
+    crate::test_cases! {
+        reproject_files_resolves_no_placeholder_onto_a_field:
+            reproject_files_beside_a_member("field", false, &["src/a.rs"], &[("src/b.rs::x", &[])]);
+        reproject_files_resolves_no_placeholder_onto_a_property:
+            reproject_files_beside_a_member("property", false, &["src/a.rs"], &[("src/b.rs::x", &[])]);
+        reproject_files_resolves_no_placeholder_onto_a_declaration:
+            reproject_files_beside_a_member("declaration", false, &["src/a.rs"], &[("src/b.rs::x", &[])]);
+        reproject_files_resolves_a_placeholder_past_a_field_onto_the_one_fn:
+            reproject_files_beside_a_member("field", true, &["src/a.rs", "src/c.rs"], &[]);
+        reproject_files_lists_a_constant_beside_a_fn_as_candidates:
+            reproject_files_beside_a_member(
+                "constant",
+                true,
+                &["src/a.rs"],
+                &[("src/b.rs::x", &["src/a.rs::x", "src/c.rs::x"])],
+            );
     }
 }

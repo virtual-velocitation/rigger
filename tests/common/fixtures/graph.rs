@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 
 use rigger::contextgraph::{
-    CallEdge, CallGraph, Edge, Graph, Node, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION,
-    KIND_FILE, KIND_FINDING, KIND_LESSON, KIND_UNIT, REL_ABOUT, REL_CALLS, REL_GOVERNS,
-    REL_REALIZES, REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
+    CallEdge, CallGraph, Direction, Edge, Graph, Node, Projection, KIND_CODE_ENTITY, KIND_CONCEPT,
+    KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, KIND_UNIT, REL_ABOUT, REL_CALLS,
+    REL_GOVERNS, REL_REALIZES, REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
 };
 
 /// A `kind` node with no attributes.
@@ -214,6 +214,23 @@ pub fn governs(graph_edges: &[Edge]) -> Vec<(String, String, u64, i64)> {
     out
 }
 
+/// The call walk of `p` from `seed` in `direction`, five hops deep, at the inferred floor.
+pub fn call_walk(p: &dyn Projection, seed: &str, direction: Direction) -> CallGraph {
+    p.calls(&[seed.to_string()], direction, 5, TIER_INFERRED)
+        .unwrap()
+}
+
+/// The reached nodes of a `CallGraph` carrying a frontier, each with its candidates, sorted.
+pub fn call_frontiers(cg: &CallGraph) -> Vec<(String, Vec<String>)> {
+    let mut marked: Vec<(String, Vec<String>)> = cg
+        .nodes
+        .iter()
+        .filter_map(|n| Some((n.node.id.clone(), n.frontier.clone()?)))
+        .collect();
+    marked.sort();
+    marked
+}
+
 /// The reached node ids of a `CallGraph`, sorted, for a stable membership assertion.
 pub fn call_node_ids(cg: &CallGraph) -> Vec<String> {
     let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
@@ -282,4 +299,11 @@ pub fn def_node(id: &str, name: &str) -> Node {
         KIND_CODE_ENTITY,
         &[("title", None), ("name", Some(name))],
     )
+}
+
+/// A code-entity DEFINITION node of code kind `kind`, named by its id's leaf: what the
+/// extraction fold records for a definition of that kind.
+pub fn kinded_def_node(id: &str, kind: &str) -> Node {
+    let (_, leaf) = id.split_once("::").expect("a code entity id");
+    node_with_attrs(id, KIND_CODE_ENTITY, &[("name", leaf), ("kind", kind)])
 }

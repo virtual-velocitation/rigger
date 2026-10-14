@@ -236,18 +236,30 @@ pub fn seed_generations_on_another_stream(
     graph: &dyn rigger::contextgraph::Projection,
     stream: &str,
 ) {
-    let folding = rigger::ingest::folding_into(store, Some(graph), &|_| {});
     rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch, excluded| {
         let (identity, generation) = rigger::ingest::derived_key_parts(&batch[0].0).unwrap();
         let (prefix, file) =
             rigger::retention::GenerationIngested::identity_parts(identity).unwrap();
         let entry = super::generation_ingested(prefix, file, generation, "", excluded);
         let events = batch.iter().map(|(_, event)| (*event).clone()).collect();
-        let done = folding
-            .append_entry_and_fold(stream, &entry.event(batch.len()), events)
-            .unwrap();
-        assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
+        record_folded_entry(store, graph, stream, &entry, events);
     });
+}
+
+/// Record `entry` on `stream` of `store` with `batch` as its batch, folding the two into `graph`,
+/// and insist the batch folded.
+#[cfg(feature = "symbols")]
+pub fn record_folded_entry(
+    store: &dyn rigger::eventstore::EventStore,
+    graph: &dyn rigger::contextgraph::Projection,
+    stream: &str,
+    entry: &GenerationIngested,
+    batch: Vec<Event>,
+) {
+    let done = rigger::ingest::folding_into(store, Some(graph), &|_| {})
+        .append_entry_and_fold(stream, &entry.event(batch.len()), batch)
+        .unwrap();
+    assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
 }
 
 /// The generation `graph` holds for each of `identities`, in order.
