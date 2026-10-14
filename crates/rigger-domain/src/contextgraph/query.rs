@@ -1515,7 +1515,7 @@ pub struct Neighborhood {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
     /// The UP call view's "referenced but not called" sidecar (spec 52 c4): the FILE nodes that
-    /// import / use the seed's name at file level but call it from no function. Carried verbatim
+    /// import / use the seed's leaf at file level but call it from no function. Carried verbatim
     /// from [`crate::contextgraph::CallGraph::referenced_not_called`], sorted by id. Empty (and
     /// omitted) for a DOWN walk and for every non-call view.
     #[serde(skip_serializing_if = "Vec::is_empty")]

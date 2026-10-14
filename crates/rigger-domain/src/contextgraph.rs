@@ -363,10 +363,10 @@ pub struct CallEdge {
 /// per-node `layer`/`frontier` and per-edge `back` metadata the neighborhood view does not carry.
 ///
 /// `referenced_not_called` is the UP direction's flat, NON-traversed sidecar (empty for `Down`): the
-/// FILE nodes that reference the seed's name at file level (a `REFERENCES` edge to the name) but
-/// carry NO caller-attributed `CALLS` edge to it from within the file - the imports / uses a
-/// "who-uses-this" reader cares about, which the layered caller DAG (functions that CALL the seed)
-/// deliberately does not include. Sorted by id, deterministic across polls.
+/// FILE nodes that reference the seed's leaf at file level (a `REFERENCES` edge whose target binds
+/// the leaf, [`query::node_leaf`]) but carry NO caller-attributed `CALLS` edge to it from within
+/// the file - the imports / uses a "who-uses-this" reader cares about, which the layered caller
+/// DAG (functions that CALL the seed) deliberately does not include. Sorted by id, deterministic across polls.
 #[derive(Clone, Debug, Default)]
 pub struct CallGraph {
     pub nodes: Vec<CallNode>,
