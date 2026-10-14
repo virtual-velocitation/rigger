@@ -1379,8 +1379,8 @@ mod tests {
                 WALKED
                     .iter()
                     .map(|batch| {
-                        Some(batch.generation.to_string())
-                            .filter(|_| (batch.prefix, batch.path) != ("gc", SOURCE_PATH))
+                        ((batch.prefix, batch.path) != ("gc", SOURCE_PATH))
+                            .then_some(batch.generation.to_string())
                     })
                     .collect::<Vec<_>>(),
                 "premise: the rebuild left the source file's code identity behind, and no other"
