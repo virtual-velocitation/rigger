@@ -139,8 +139,8 @@ pub fn node_file<'a>(kind: &str, id: &'a str) -> Option<&'a str> {
 /// An id is reduced to a file path by taking [`split_id`]'s file half, then stripping a rationale /
 /// doc-section `#...` suffix (a plain path id survives both untouched). The reduced path names a file
 /// iff its LAST segment carries an extension: a `.` with a non-empty stem AND a non-empty suffix - so
-/// a dotfile like `.gitignore` (whose only `.` is leading) is NOT a file, and a dev-loop id like
-/// `plan-critique` (no extension) never is either. A file path contains neither `::` nor `#`, so the
+/// a dotfile like `.gitignore` (whose only `.` is leading) is NOT a file, and an extensionless
+/// path like `docs/README` never is either. A file path contains neither `::` nor `#`, so the
 /// cuts leave a plain path untouched. Pure and total.
 pub fn file_of(id: &str) -> Option<&str> {
     let (file, _) = split_id(id);
