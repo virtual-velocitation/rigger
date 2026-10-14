@@ -1627,6 +1627,18 @@ pub fn bang() {}
                     (8, "y", Kind::Field),
                 ],
             );
+        /// The C# read-offs are selected by the language `extract` is given: the fixture read
+        /// under the C# grammar and query as another language makes no operator, conversion
+        /// operator or indexer, while what the query tags stays, the destructor at the leaf
+        /// its node gives it.
+        the_csharp_read_offs_run_only_for_the_csharp_language:
+            assert_defs_read_as(
+                "cs",
+                crate::csharp_definition_sources::CSHARP_DEFINITIONS_SOURCE,
+                Lang::Rust,
+                &[13, 14, 15, 16],
+                &[(13, "~Foo", Kind::Method)],
+            );
     }
 
     /// `src`, read under the grammar and query registered for `ext` as the language `lang`,

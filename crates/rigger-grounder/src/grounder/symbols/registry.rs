@@ -289,6 +289,7 @@ pub fn for_path(path: &str, override_lang: Option<Lang>) -> Option<LanguageEntry
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::csharp_definition_sources::CSHARP_DEFINITIONS_SOURCE;
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::extract::extract;
     use crate::grounder::symbols::model::{Kind, Lang};
@@ -338,6 +339,50 @@ pub(crate) mod tests {
         ("field_declaration", Kind::Field, "side"),
         ("field_declaration", Kind::Field, "Ptr"),
         ("type_alias", Kind::Type, "Alias"),
+    ];
+
+    /// C#'s DEFINITION TYPES (spec 116): each row a node type of the C# grammar that is a
+    /// definition, a kind it lowers to, and the leaf of the one definition of that kind the C#
+    /// definitions fixture holds for it. Each of the six types a body is optional on has a row
+    /// with a body and one without; a `variable_declarator` is a definition under a field or an
+    /// event field declaration only, a constant where its field declaration is `const`; the
+    /// last five rows are read off the parsed tree.
+    pub(crate) const CSHARP_DEFINITION_TYPES: [(&str, Kind, &str); 27] = [
+        ("class_declaration", Kind::Type, "Foo"),
+        ("struct_declaration", Kind::Type, "Cell"),
+        ("record_declaration", Kind::Type, "Rec"),
+        ("interface_declaration", Kind::Type, "IDraw"),
+        ("enum_declaration", Kind::Type, "Hue"),
+        ("delegate_declaration", Kind::Type, "Fold"),
+        ("enum_member_declaration", Kind::Variant, "Red"),
+        ("method_declaration", Kind::Method, "Run"),
+        ("method_declaration", Kind::Declaration, "Paint"),
+        ("destructor_declaration", Kind::Method, "~Foo"),
+        ("destructor_declaration", Kind::Declaration, "~Ext"),
+        ("local_function_statement", Kind::Function, "Inner"),
+        ("local_function_statement", Kind::Declaration, "Outer"),
+        ("constructor_declaration", Kind::Constructor, "Foo"),
+        ("constructor_declaration", Kind::Declaration, "Ext"),
+        ("property_declaration", Kind::Property, "Size"),
+        ("event_declaration", Kind::Property, "Moved"),
+        ("namespace_declaration", Kind::Module, "A.B.C"),
+        ("file_scoped_namespace_declaration", Kind::Module, "S.T"),
+        ("variable_declarator", Kind::Field, "owner"),
+        ("variable_declarator", Kind::Constant, "Max"),
+        ("variable_declarator", Kind::Field, "Changed"),
+        ("operator_declaration", Kind::Method, "+"),
+        ("operator_declaration", Kind::Declaration, "-"),
+        (
+            "conversion_operator_declaration",
+            Kind::Method,
+            "implicit operator int",
+        ),
+        (
+            "conversion_operator_declaration",
+            Kind::Declaration,
+            "explicit operator Ext",
+        ),
+        ("indexer_declaration", Kind::Method, "this"),
     ];
 
     #[test]
@@ -602,82 +647,158 @@ pub(crate) mod tests {
         );
     }
 
-    /// GO DEFINITIONS ARE NODES (spec 116 criterion 7): under the registered Go query the fixture
-    /// yields every definition it holds at its own kind and leaf: each name of a const spec a
-    /// constant, a function-local const included; a package-level `var`, single, grouped or
-    /// naming two, a variable, and the function-local `var local` and grouped `var deep` none; a
-    /// named field a field, each name of a field declaration naming two included; an embedded
-    /// field a field at its type's base identifier, pointer, package qualifier and type
-    /// arguments stripped; a type alias a type, the one named `_` none; an interface's method
-    /// and a function and a method with no body each a declaration. Each row of Go's DEFINITION
-    /// TYPES names exactly one of them.
-    ///
-    /// The callers: both calls of `const a, b = f(), g()` are `a`'s and both of
-    /// `var m, n = h(), k()` are `m`'s, the least name among the definitions of one range; an
-    /// embedded field keeps the reference to its type, the field its caller, a generic one its
-    /// type argument's too; a named field's type reference is the field's and that of a field
-    /// declaration naming two its least name's; an alias's name and its target are the alias's;
-    /// a call in a function-local const is its function's; an interface method's parameter type
-    /// is the interface's, a declaration being no caller, so that of a function or a method
-    /// with no body is the file's; and both references of the alias named `_` are the file's.
-    #[test]
-    fn every_go_definition_type_yields_its_definition_at_its_kind() {
-        let fs = crate::symbol_index::extracted("go", GO_DEFINITIONS_SOURCE);
-        assert_eq!(
-            crate::symbol_index::defs_by_line(&fs),
-            vec![
-                (2, "Limit", Kind::Constant),
-                (3, "a", Kind::Constant),
-                (3, "b", Kind::Constant),
-                (4, "single", Kind::Variable),
-                (5, "grouped", Kind::Variable),
-                (6, "m", Kind::Variable),
-                (6, "n", Kind::Variable),
-                (7, "Base", Kind::Type),
-                (8, "Base", Kind::Field),
-                (8, "Gen", Kind::Field),
-                (8, "Ptr", Kind::Field),
-                (8, "Qual", Kind::Field),
-                (8, "Shape", Kind::Type),
-                (8, "side", Kind::Field),
-                (8, "x", Kind::Field),
-                (8, "y", Kind::Field),
-                (9, "Alias", Kind::Type),
-                (10, "Draw", Kind::Declaration),
-                (10, "Drawer", Kind::Type),
-                (11, "host", Kind::Function),
-                (11, "inner", Kind::Constant),
-                (12, "area", Kind::Method),
-                (13, "ext", Kind::Declaration),
-                (14, "bare", Kind::Declaration),
-            ]
-        );
-        assert!(!fs.partial, "the fixture parses whole");
-        crate::symbol_index::assert_one_def_per_row(&fs, &GO_DEFINITION_TYPES);
-        assert_eq!(
-            crate::symbol_index::refs_with_callers(&fs),
-            vec![
-                (3, "f", Some("a")),
-                (3, "g", Some("a")),
-                (6, "h", Some("m")),
-                (6, "k", Some("m")),
-                (8, "Base", Some("Base")),
-                (8, "Coord", Some("x")),
-                (8, "Gen", Some("Gen")),
-                (8, "Ptr", Some("Ptr")),
-                (8, "Qual", Some("Qual")),
-                (8, "Side", Some("side")),
-                (8, "int", Some("Gen")),
-                (9, "Alias", Some("Alias")),
-                (9, "Base", Some("Alias")),
-                (10, "Canvas", Some("Drawer")),
-                (11, "probe", Some("host")),
-                (12, "Shape", Some("area")),
-                (13, "Canvas", None),
-                (14, "Shape", None),
-                (15, "Base", None),
-                (15, "_", None),
-            ]
-        );
+    crate::test_cases! {
+        /// GO DEFINITIONS ARE NODES (spec 116 criterion 7): under the registered Go query the
+        /// fixture yields every definition it holds at its own kind and leaf: each name of a const
+        /// spec a constant, a function-local const included; a package-level `var`, single, grouped
+        /// or naming two, a variable, and the function-local `var local` and grouped `var deep`
+        /// none; a named field a field, each name of a field declaration naming two included; an
+        /// embedded field a field at its type's base identifier, pointer, package qualifier and
+        /// type arguments stripped; a type alias a type, the one named `_` none; an interface's
+        /// method and a function and a method with no body each a declaration. Each row of Go's
+        /// DEFINITION TYPES names exactly one of them.
+        ///
+        /// The callers: both calls of `const a, b = f(), g()` are `a`'s and both of `var m, n =
+        /// h(), k()` are `m`'s, the least name among the definitions of one range; an embedded
+        /// field keeps the reference to its type, the field its caller, a generic one its type
+        /// argument's too; a named field's type reference is the field's and that of a field
+        /// declaration naming two its least name's; an alias's name and its target are the alias's;
+        /// a call in a function-local const is its function's; an interface method's parameter type
+        /// is the interface's, a declaration being no caller, so that of a function or a method
+        /// with no body is the file's; and both references of the alias named `_` are the file's.
+        every_go_definition_type_yields_its_definition_at_its_kind:
+            crate::symbol_index::assert_definitions_fixture(
+                "go",
+                GO_DEFINITIONS_SOURCE,
+                &GO_DEFINITION_TYPES,
+                &[
+                    (2, "Limit", Kind::Constant),
+                    (3, "a", Kind::Constant),
+                    (3, "b", Kind::Constant),
+                    (4, "single", Kind::Variable),
+                    (5, "grouped", Kind::Variable),
+                    (6, "m", Kind::Variable),
+                    (6, "n", Kind::Variable),
+                    (7, "Base", Kind::Type),
+                    (8, "Base", Kind::Field),
+                    (8, "Gen", Kind::Field),
+                    (8, "Ptr", Kind::Field),
+                    (8, "Qual", Kind::Field),
+                    (8, "Shape", Kind::Type),
+                    (8, "side", Kind::Field),
+                    (8, "x", Kind::Field),
+                    (8, "y", Kind::Field),
+                    (9, "Alias", Kind::Type),
+                    (10, "Draw", Kind::Declaration),
+                    (10, "Drawer", Kind::Type),
+                    (11, "host", Kind::Function),
+                    (11, "inner", Kind::Constant),
+                    (12, "area", Kind::Method),
+                    (13, "ext", Kind::Declaration),
+                    (14, "bare", Kind::Declaration),
+                ],
+                &[
+                    (3, "f", Some("a")),
+                    (3, "g", Some("a")),
+                    (6, "h", Some("m")),
+                    (6, "k", Some("m")),
+                    (8, "Base", Some("Base")),
+                    (8, "Coord", Some("x")),
+                    (8, "Gen", Some("Gen")),
+                    (8, "Ptr", Some("Ptr")),
+                    (8, "Qual", Some("Qual")),
+                    (8, "Side", Some("side")),
+                    (8, "int", Some("Gen")),
+                    (9, "Alias", Some("Alias")),
+                    (9, "Base", Some("Alias")),
+                    (10, "Canvas", Some("Drawer")),
+                    (11, "probe", Some("host")),
+                    (12, "Shape", Some("area")),
+                    (13, "Canvas", None),
+                    (14, "Shape", None),
+                    (15, "Base", None),
+                    (15, "_", None),
+                ],
+            );
+        /// C# DEFINITIONS ARE NODES (spec 116 criterion 8): under `CSHARP_TAGS` the fixture yields
+        /// every definition it holds at its own kind and leaf: a class, a struct, a record, an
+        /// interface, an enum and a delegate each a type; an enum member a variant; a property and
+        /// an event with accessors each a property; a field and each name of a field declaration
+        /// naming two a field, an event field too, and a `const` field a constant, whatever other
+        /// modifier it carries; a constructor a constructor at its class's leaf; a local function a
+        /// function; and the method-local `var local` and `const deep` none. `namespace A.B.C` and
+        /// the file-scoped `namespace S.T` are modules at their whole dotted text; the destructor
+        /// is a method at `~Foo`, the operator at `+`, the conversion operator at `implicit
+        /// operator int`, its header's whitespace collapsed, and the indexer at `this`. A method, a
+        /// destructor, a local function, a constructor, an operator and a conversion operator
+        /// holding no body are each a declaration. Each row of C#'s DEFINITION TYPES names exactly
+        /// one of them.
+        ///
+        /// The callers: a field's type reference is its struct's, the declarator being the field,
+        /// and its initializer's is the field's; the reference in an event's accessor is the
+        /// event's and in a property's value the property's; that in a constructor body is named by
+        /// the leaf its class shares; those in a destructor, an operator, a conversion operator and
+        /// an indexer are each named by that member's leaf; and that in a local function is the
+        /// local function's, the method keeping its own.
+        every_csharp_definition_type_yields_its_definition_at_its_kind:
+            crate::symbol_index::assert_definitions_fixture(
+                "cs",
+                CSHARP_DEFINITIONS_SOURCE,
+                &CSHARP_DEFINITION_TYPES,
+                &[
+                    (1, "S.T", Kind::Module),
+                    (2, "A.B.C", Kind::Module),
+                    (2, "Go", Kind::Method),
+                    (2, "Probe", Kind::Type),
+                    (3, "Fold", Kind::Type),
+                    (4, "Blue", Kind::Variant),
+                    (4, "Hue", Kind::Type),
+                    (4, "Red", Kind::Variant),
+                    (5, "Rec", Kind::Type),
+                    (6, "IDraw", Kind::Type),
+                    (6, "Paint", Kind::Declaration),
+                    (7, "Cell", Kind::Type),
+                    (7, "Max", Kind::Constant),
+                    (7, "Min", Kind::Constant),
+                    (7, "Seed", Kind::Field),
+                    (7, "hi", Kind::Field),
+                    (7, "lo", Kind::Field),
+                    (7, "made", Kind::Field),
+                    (7, "owner", Kind::Field),
+                    (8, "Foo", Kind::Type),
+                    (9, "Changed", Kind::Field),
+                    (10, "Moved", Kind::Property),
+                    (11, "Size", Kind::Property),
+                    (12, "Foo", Kind::Constructor),
+                    (13, "~Foo", Kind::Method),
+                    (14, "+", Kind::Method),
+                    (15, "implicit operator int", Kind::Method),
+                    (16, "this", Kind::Method),
+                    (17, "Inner", Kind::Function),
+                    (17, "Outer", Kind::Declaration),
+                    (17, "Run", Kind::Method),
+                    (19, "-", Kind::Declaration),
+                    (19, "Bare", Kind::Declaration),
+                    (19, "Ext", Kind::Type),
+                    (19, "Ext", Kind::Declaration),
+                    (19, "explicit operator Ext", Kind::Declaration),
+                    (19, "~Ext", Kind::Declaration),
+                ],
+                &[
+                    (7, "Probe", Some("Cell")),
+                    (7, "Probe", Some("Cell")),
+                    (7, "Probe", Some("made")),
+                    (10, "Probe", Some("Moved")),
+                    (11, "Probe", Some("Size")),
+                    (12, "Probe", Some("Foo")),
+                    (13, "Probe", Some("~Foo")),
+                    (14, "Go", Some("+")),
+                    (14, "Probe", Some("+")),
+                    (15, "Probe", Some("implicit operator int")),
+                    (16, "Probe", Some("this")),
+                    (17, "Probe", Some("Inner")),
+                    (17, "Probe", Some("Run")),
+                ],
+            );
     }
 }

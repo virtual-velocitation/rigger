@@ -1156,7 +1156,7 @@ mod tests {
     }
 
     /// The kinds spec 116 adds (the caller rule's at criterion 2, the Rust data definitions' at
-    /// 6, Go's variable at 7) each lower to their own kind string.
+    /// 6, Go's variable at 7, C#'s property at 8) each lower to their own kind string.
     #[test]
     fn each_kind_spec_116_adds_lowers_to_its_kind_string() {
         assert_eq!(
@@ -1167,7 +1167,8 @@ mod tests {
                 Kind::Static,
                 Kind::Variant,
                 Kind::Field,
-                Kind::Variable
+                Kind::Variable,
+                Kind::Property
             ]
             .map(super::kind_str),
             [
@@ -1177,7 +1178,8 @@ mod tests {
                 "static",
                 "variant",
                 "field",
-                "variable"
+                "variable",
+                "property"
             ]
         );
     }

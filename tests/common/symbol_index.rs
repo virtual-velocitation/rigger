@@ -139,6 +139,25 @@ pub fn assert_one_def_per_row(fs: &FileSymbols, rows: &[(&str, Kind, &str)]) {
     }
 }
 
+/// A language's definitions fixture `src`, read through the grammar and query registered for
+/// `ext`, parses whole and holds exactly the definitions `defs` and the references `refs`, each
+/// with its caller, and each row of `rows`, the language's DEFINITION TYPES, names exactly one
+/// of those definitions.
+#[cfg(feature = "symbols")]
+pub fn assert_definitions_fixture(
+    ext: &str,
+    src: &str,
+    rows: &[(&str, Kind, &str)],
+    defs: &[(u32, &str, Kind)],
+    refs: &[(u32, &str, Option<&str>)],
+) {
+    let fs = extracted(ext, src);
+    assert_eq!(defs_by_line(&fs), defs);
+    assert!(!fs.partial, "the fixture parses whole");
+    assert_one_def_per_row(&fs, rows);
+    assert_eq!(refs_with_callers(&fs), refs);
+}
+
 /// Every definition of `fs` marked test code as `(line, name)`, sorted: the one projection the
 /// test-attribute tests of the extractor compare whole, so a definition wrongly marked and one
 /// wrongly left production both fail it.
