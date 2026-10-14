@@ -200,10 +200,13 @@ pub fn assert_definitions_fixture(
     assert_eq!(refs_with_callers(&fs), refs);
 }
 
+/// The `(line, name)` of each item marked test code, sorted: [`test_code_by_line`]'s halves.
+pub type TestLines<'a> = Vec<(u32, &'a str)>;
+
 /// Every definition and every reference of `fs` marked test code, each as `(line, name)`,
 /// sorted: the one projection the test-attribute tests of the extractor compare whole, so an
 /// item wrongly marked and one wrongly left production both fail it.
-pub fn test_code_by_line(fs: &FileSymbols) -> (Vec<(u32, &str)>, Vec<(u32, &str)>) {
+pub fn test_code_by_line(fs: &FileSymbols) -> (TestLines<'_>, TestLines<'_>) {
     (
         test_by_line(fs.defs.iter().map(|d| (d.is_test, d.line, d.name.as_str()))),
         test_by_line(fs.refs.iter().map(|r| (r.is_test, r.line, r.name.as_str()))),
@@ -212,7 +215,7 @@ pub fn test_code_by_line(fs: &FileSymbols) -> (Vec<(u32, &str)>, Vec<(u32, &str)
 
 /// The `(line, name)` of each `(is_test, line, name)` in `marked` that is test code, sorted:
 /// [`test_code_by_line`]'s projection of a file's definitions and of its references alike.
-fn test_by_line<'a>(marked: impl Iterator<Item = (bool, u32, &'a str)>) -> Vec<(u32, &'a str)> {
+fn test_by_line<'a>(marked: impl Iterator<Item = (bool, u32, &'a str)>) -> TestLines<'a> {
     let mut lines: Vec<_> = marked
         .filter(|(is_test, _, _)| *is_test)
         .map(|(_, line, name)| (line, name))
