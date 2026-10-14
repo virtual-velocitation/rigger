@@ -130,88 +130,89 @@ const CSHARP_TAGS: &str = r#"
 (file_scoped_namespace_declaration name: (_) @name) @definition.module
 "#;
 
-/// Additional JS/TS tags-query patterns (spec 92 criterion 2, THE WHOLE PRODUCT IS COVERED): the
-/// upstream `tags.scm` tags a `const`/`let`/`var` declarator ONLY when its value is an
-/// arrow/function expression (or, for an ES-module-style export, an `export X = <literal>`
-/// assignment-form export this project's plain CommonJS-style scripts never use), so a plain
-/// top-level constant - a ternary, a boolean coercion, a string, a call result - never became a
-/// graph entity at all. `docs/audit/2026-09-graph-vs-grep.md` questions 5 and 8 are exactly this
-/// gap, measured against `workflows/rigger.js`'s own `OUTER_WALL_CLOCK_SEC` (a ternary) and
-/// `FRESH` (`!!A.fresh`, a unary coercion) constants.
-///
-/// The value's node type is enumerated EXPLICITLY (never a bare wildcard `(_)`), so this pattern
-/// can never also match an `arrow_function` / `function_expression` / `class` /
-/// `generator_function` value - those stay the upstream function/class patterns' own captures,
-/// never double-tagged here as a SECOND, conflicting definition of the same declarator.
-///
-/// Appended to BOTH the plain JavaScript query ([`javascript_tags_query`]) and the composed
-/// TypeScript one ([`typescript_tags_query`]) - the TypeScript grammar parses this same
-/// declarator shape - so the two grammars never diverge on what counts as a constant: one query
-/// fragment, not two hand-copies that could drift apart.
-const JS_CONSTANT_TAGS: &str = r#"
-(
-  (comment)* @doc
-  .
-  (lexical_declaration
-    (variable_declarator
-      name: (identifier) @name
-      value: [
-        (number) (string) (true) (false) (null) (undefined) (regex)
-        (identifier) (member_expression) (subscript_expression)
-        (call_expression) (new_expression) (binary_expression) (unary_expression)
-        (ternary_expression) (template_string) (object) (array)
-        (parenthesized_expression) (sequence_expression) (await_expression)
-      ]) @definition.constant)
-  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
-  (#select-adjacent! @doc @definition.constant)
-)
-
-(
-  (comment)* @doc
-  .
-  (variable_declaration
-    (variable_declarator
-      name: (identifier) @name
-      value: [
-        (number) (string) (true) (false) (null) (undefined) (regex)
-        (identifier) (member_expression) (subscript_expression)
-        (call_expression) (new_expression) (binary_expression) (unary_expression)
-        (ternary_expression) (template_string) (object) (array)
-        (parenthesized_expression) (sequence_expression) (await_expression)
-      ]) @definition.constant)
-  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
-  (#select-adjacent! @doc @definition.constant)
-)
+/// Additional JS tags-query patterns (spec 116), appended to the upstream query in all three of
+/// the JS, TS and TSX queries, every grammar of the family holding each node type they name.
+/// The upstream query tags a method named by a `property_identifier` only, and never one named
+/// `constructor`: a private (`#m`), string (`"a-b"`) or numeric (`1`) method name is a method
+/// too, whose leaf `extract` reads, and a method named `constructor` is a constructor; a
+/// computed name (`[k]`) has no pattern, nothing naming it statically. A declarator takes its
+/// value's kind: the upstream query tags an arrow function or function expression value a
+/// function, and a generator function value is one too; a class value, anonymous or named, is a
+/// type named by the declarator (a named class keeping its own definition); and a declarator
+/// with no value is a constant, as is every other value ([`JS_CONSTANT_VALUES`]). A declarator
+/// named by a pattern has no pattern here: `extract` walks the identifiers it binds.
+const JS_DEFINITION_TAGS: &str = r#"
+(method_definition
+  name: [(private_property_identifier) (string) (number)] @name) @definition.method
+((method_definition name: (property_identifier) @name) @definition.constructor
+  (#eq? @name "constructor"))
+(variable_declarator name: (identifier) @name value: (generator_function)) @definition.function
+(variable_declarator name: (identifier) @name value: (class)) @definition.class
+(variable_declarator name: (identifier) @name !value) @definition.constant
 "#;
 
-/// The JavaScript `tags` query, composed ONCE: the upstream query plus [`JS_CONSTANT_TAGS`].
-/// Returned as `&'static str` via a process-lifetime `OnceLock`, mirroring
-/// [`typescript_tags_query`] below.
-fn javascript_tags_query() -> &'static str {
-    static Q: OnceLock<String> = OnceLock::new();
-    composed_once(&Q, &[tree_sitter_javascript::TAGS_QUERY, JS_CONSTANT_TAGS])
-}
+/// Additional TS tags-query patterns (spec 116), appended to the TS and TSX queries: a private,
+/// string or numeric method or abstract method signature name, which upstream leaves untagged,
+/// as a method (`extract` lowers every signature to a declaration); an enum and a type alias as
+/// a type; a module named by a string (`declare module "x"`) or a dotted name, and a
+/// `namespace` of any name, as a module; an enum member with a value as a variant (one without
+/// is read off the enum's body by `extract`, the grammar holding it as the body's own `name`);
+/// and an interface's property signature and a class's field as a field, a class field whose
+/// value is an arrow function or a function expression being a method. That pattern stands
+/// BEFORE the field pattern because both match a function-valued field's name node, and one
+/// name node carries one tag, the earlier pattern's.
+const TS_DEFINITION_TAGS: &str = r#"
+(method_signature
+  name: [(private_property_identifier) (string) (number)] @name) @definition.method
+(abstract_method_signature
+  name: [(private_property_identifier) (string) (number)] @name) @definition.method
+(enum_declaration name: (identifier) @name) @definition.class
+(type_alias_declaration name: (type_identifier) @name) @definition.type
+(module name: [(string) (nested_identifier)] @name) @definition.module
+(internal_module name: (_) @name) @definition.module
+(enum_assignment
+  name: [(property_identifier) (private_property_identifier) (string) (number)] @name)
+  @definition.variant
+(property_signature
+  name: [(property_identifier) (private_property_identifier) (string) (number)] @name)
+  @definition.field
+(public_field_definition
+  name: [(property_identifier) (private_property_identifier) (string) (number)] @name
+  value: [(arrow_function) (function_expression)]) @definition.method
+(public_field_definition
+  name: [(property_identifier) (private_property_identifier) (string) (number)] @name)
+  @definition.field
+"#;
 
-/// The TypeScript `tags` query, composed ONCE. The upstream `tree-sitter-typescript` crate
-/// ships a `tags.scm` that tags only TypeScript-specific SIGNATURES (interfaces, ambient
-/// function/method signatures, abstract classes, modules) - NOT concrete `function`/`class`/
-/// `method` declarations, so ordinary TS/TSX source would index nothing. The TypeScript grammar
-/// is a superset of JavaScript, so the JavaScript crate's concrete-declaration rules compile and
-/// match against it; composing the JavaScript query (concrete declarations + call/reference
-/// rules) with the TypeScript query (the TS-specific signatures) yields a query that tags both.
-/// Verified to compile against BOTH the TypeScript and the TSX grammars. Returned as
-/// `&'static str` via a process-lifetime `OnceLock` so `LanguageEntry` stays borrow-free.
-fn typescript_tags_query() -> &'static str {
-    static Q: OnceLock<String> = OnceLock::new();
-    composed_once(
-        &Q,
-        &[
-            tree_sitter_javascript::TAGS_QUERY,
-            tree_sitter_typescript::TAGS_QUERY,
-            JS_CONSTANT_TAGS,
-        ],
-    )
-}
+/// The opening of the JS constant pattern (spec 92 criterion 2, spec 116): a declarator named by
+/// an identifier whose value is one of an enumerated list of node types is a constant. The list
+/// follows in the parts each grammar's query composes after this one, [`JS_CONSTANT_VALUES`]
+/// and that grammar's own types, and [`CONSTANT_TAGS_CLOSE`] ends it. The value types are
+/// enumerated EXPLICITLY (never a bare wildcard `(_)`): every `expression` subtype of the
+/// grammar but a function expression, an arrow function, a generator function and a class,
+/// which the function and class patterns tag, so a declarator never carries a second,
+/// conflicting kind.
+const CONSTANT_TAGS_OPEN: &str = "(variable_declarator name: (identifier) @name value: [";
+
+/// The `expression` subtypes, flattened through `primary_expression`, that the JS, TS and TSX
+/// grammars all hold and that make a declarator a constant.
+const JS_CONSTANT_VALUES: &str = "(array) (assignment_expression) \
+(augmented_assignment_expression) (await_expression) (binary_expression) (call_expression) \
+(false) (identifier) (member_expression) (meta_property) (new_expression) (null) (number) \
+(object) (parenthesized_expression) (regex) (string) (subscript_expression) (super) \
+(template_string) (ternary_expression) (this) (true) (unary_expression) (undefined) \
+(update_expression) (yield_expression)";
+
+/// The constant value types the JS and TSX grammars hold and the TS grammar does not.
+const JSX_CONSTANT_VALUES: &str = "(jsx_element) (jsx_self_closing_element)";
+
+/// The constant value types the TS and TSX grammars hold and the JS grammar does not; the TS
+/// grammar alone holds a `type_assertion` besides.
+const TS_CONSTANT_VALUES: &str = "(as_expression) (satisfies_expression) (non_null_expression) \
+(instantiation_expression) (internal_module)";
+
+/// The close of the pattern [`CONSTANT_TAGS_OPEN`] opens.
+const CONSTANT_TAGS_CLOSE: &str = "]) @definition.constant";
 
 /// `parts` joined one per line into `cell` on first use - a tags query composed ONCE for the
 /// process lifetime, so a [`LanguageEntry`] can borrow it as `&'static str`.
@@ -253,11 +254,26 @@ pub struct LanguageEntry {
 /// not one of the shipped languages (the indexer then skips that file). The
 /// JavaScript/TypeScript family folds several extensions onto one `Lang`:
 /// `.js/.mjs/.cjs/.jsx -> Js`, `.ts/.tsx -> Ts`. `.tsx` resolves to the JSX-aware TSX grammar
-/// (`LANGUAGE_TSX`) while `.ts` uses the plain TypeScript grammar - both share the one
-/// TypeScript `tags` query, so a `.tsx` file's JSX body parses instead of erroring.
+/// (`LANGUAGE_TSX`), so a `.tsx` file's JSX body parses instead of erroring, while `.ts` uses
+/// the plain TypeScript grammar; each takes its own query, whose constant pattern enumerates
+/// its own grammar's value types (TSX reads `<T>x` as JSX, so only TS holds a
+/// `type_assertion` and only TSX the JSX elements).
 pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
     // The Go `tags` query, composed ONCE: the upstream query plus `GO_DEFINITION_TAGS`.
     static GO_TAGS: OnceLock<String> = OnceLock::new();
+    // The JS, TS and TSX `tags` queries, each composed ONCE. The upstream
+    // `tree-sitter-typescript` crate ships a `tags.scm` that tags only TypeScript-specific
+    // SIGNATURES (interfaces, ambient function/method signatures, abstract classes, modules),
+    // NOT concrete `function`/`class`/`method` declarations, so ordinary TS source would index
+    // nothing. The TypeScript grammars are supersets of JavaScript, so the JavaScript crate's
+    // concrete-declaration rules compile and match against them: the TS and TSX queries compose
+    // the upstream JS query (concrete declarations and call/reference rules) with the upstream
+    // TS one, `JS_DEFINITION_TAGS` and `TS_DEFINITION_TAGS`, the JS query the upstream JS query
+    // with `JS_DEFINITION_TAGS`; each closes with the constant pattern over its own grammar's
+    // value types, so none of the three compiles against another's grammar.
+    static JS_TAGS: OnceLock<String> = OnceLock::new();
+    static TS_TAGS: OnceLock<String> = OnceLock::new();
+    static TSX_TAGS: OnceLock<String> = OnceLock::new();
     let (lang, language, tags_query): (Lang, tree_sitter::Language, &'static str) = match ext {
         "rs" => (Lang::Rust, tree_sitter_rust::LANGUAGE.into(), RUST_TAGS),
         "cs" => (
@@ -268,17 +284,53 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         "ts" => (
             Lang::Ts,
             tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            typescript_tags_query(),
+            composed_once(
+                &TS_TAGS,
+                &[
+                    tree_sitter_javascript::TAGS_QUERY,
+                    tree_sitter_typescript::TAGS_QUERY,
+                    JS_DEFINITION_TAGS,
+                    TS_DEFINITION_TAGS,
+                    CONSTANT_TAGS_OPEN,
+                    JS_CONSTANT_VALUES,
+                    TS_CONSTANT_VALUES,
+                    "(type_assertion)",
+                    CONSTANT_TAGS_CLOSE,
+                ],
+            ),
         ),
         "tsx" => (
             Lang::Ts,
             tree_sitter_typescript::LANGUAGE_TSX.into(),
-            typescript_tags_query(),
+            composed_once(
+                &TSX_TAGS,
+                &[
+                    tree_sitter_javascript::TAGS_QUERY,
+                    tree_sitter_typescript::TAGS_QUERY,
+                    JS_DEFINITION_TAGS,
+                    TS_DEFINITION_TAGS,
+                    CONSTANT_TAGS_OPEN,
+                    JS_CONSTANT_VALUES,
+                    TS_CONSTANT_VALUES,
+                    JSX_CONSTANT_VALUES,
+                    CONSTANT_TAGS_CLOSE,
+                ],
+            ),
         ),
         "js" | "mjs" | "cjs" | "jsx" => (
             Lang::Js,
             tree_sitter_javascript::LANGUAGE.into(),
-            javascript_tags_query(),
+            composed_once(
+                &JS_TAGS,
+                &[
+                    tree_sitter_javascript::TAGS_QUERY,
+                    JS_DEFINITION_TAGS,
+                    CONSTANT_TAGS_OPEN,
+                    JS_CONSTANT_VALUES,
+                    JSX_CONSTANT_VALUES,
+                    CONSTANT_TAGS_CLOSE,
+                ],
+            ),
         ),
         "go" => (
             Lang::Go,

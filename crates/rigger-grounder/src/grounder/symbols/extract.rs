@@ -48,11 +48,17 @@ fn is_nameless(lang: Lang, leaf: &str) -> bool {
 /// `method_declaration` holding no `body`; C#'s is a `method_declaration`, a
 /// `destructor_declaration`, a `local_function_statement`, a `constructor_declaration`, an
 /// `operator_declaration` or a `conversion_operator_declaration` holding no `body` (an interface,
-/// `abstract`, `extern` or `partial` member). It reads the node alone, so a grammar sharing one
+/// `abstract`, `extern` or `partial` member); TS's is a `function_signature` (an ambient or
+/// overload function), a `method_signature` (an interface's method) or an
+/// `abstract_method_signature`. It reads the node alone, so a grammar sharing one
 /// of those node types shares its rule.
 fn is_declaration(node: tree_sitter::Node) -> bool {
     match node.kind() {
-        "function_signature_item" | "method_elem" => true,
+        "function_signature_item"
+        | "method_elem"
+        | "function_signature"
+        | "method_signature"
+        | "abstract_method_signature" => true,
         "function_declaration"
         | "method_declaration"
         | "destructor_declaration"
@@ -67,13 +73,26 @@ fn is_declaration(node: tree_sitter::Node) -> bool {
 /// THE LEAF of a tagged definition (spec 116): the name its `Def` and its caller range carry,
 /// read over `node`, its own node, and `name`, the slice of the source its tag names. A C#
 /// `destructor_declaration` is `~` and that identifier (`~Foo`), the grammar holding the `~`
-/// outside the name node; every other definition's leaf is the slice itself. It reads the node
-/// alone, as [`is_declaration`] does.
+/// outside the name node; a JS or TS definition named by a `string` (`declare module "x"`, a
+/// member `"a-b"`), or the `string` node itself, is the text between its quotes
+/// ([`unquoted`]); every other definition's leaf is the slice itself, a private member's `#`
+/// and a numeric member's digits included. It reads the node alone, as [`is_declaration`]
+/// does.
 fn def_leaf(node: Option<tree_sitter::Node>, name: &str) -> String {
-    match node.map(|n| n.kind()) {
-        Some("destructor_declaration") => format!("~{name}"),
+    match node {
+        Some(n) if n.kind() == "destructor_declaration" => format!("~{name}"),
+        Some(n) if n.child_by_field_name("name").unwrap_or(n).kind() == "string" => {
+            unquoted(name).to_string()
+        }
         _ => name.to_string(),
     }
+}
+
+/// The source text between the quotes of `text`, a JS or TS string's slice, escapes undecoded:
+/// its first and last character dropped, a quote each; `text` itself when it is shorter than
+/// two characters.
+fn unquoted(text: &str) -> &str {
+    text.get(1..text.len().saturating_sub(1)).unwrap_or(text)
 }
 
 /// Whether `node` is a Rust fn the compiler registers as a procedural macro: a `function_item`
@@ -128,6 +147,28 @@ fn unresolved_def(kind: Kind, name: String, line: u32) -> Def {
     }
 }
 
+/// Record one definition the tag pass or a read-off found, `tagged` the kind it names and
+/// `node` its own node, into `defs` and `def_ranges` at one index. THE NAME FILTER runs first: a
+/// definition whose leaf names nothing in `lang` ([`is_nameless`]) enters neither, so its range
+/// is no caller range and no test region; every other takes its kind lowered over its node
+/// ([`lowered_kind`]).
+fn record_def(
+    lang: Lang,
+    source: &[u8],
+    node: Option<tree_sitter::Node>,
+    tagged: Kind,
+    (range, name, line): ReadOff,
+    defs: &mut Vec<Def>,
+    def_ranges: &mut Vec<(std::ops::Range<usize>, String, Kind)>,
+) {
+    if is_nameless(lang, &name) {
+        return;
+    }
+    let kind = lowered_kind(lang, tagged, node, source);
+    def_ranges.push((range, name.clone(), kind));
+    defs.push(unresolved_def(kind, name, line));
+}
+
 /// Extract one file's definitions and references by running the INJECTED grammar's tag query
 /// over `source` (5.5.3). This is the ONLY function that touches tree-sitter; the caller
 /// supplies the grammar and its query (unit 2's registry decides WHICH), and everything it
@@ -144,7 +185,10 @@ fn unresolved_def(kind: Kind, name: String, line: u32) -> Def {
 /// ([`impl_blocks`]) and, selected by `lang`, Rust's tuple fields ([`tuple_fields`]), Go's
 /// embedded fields and type aliases ([`embedded_fields`], [`named_by_field`]) and C#'s operators,
 /// conversion operators and indexers ([`named_by_field`], [`conversion_operators`],
-/// [`indexers`]), each lowered over its own node as a tagged definition is.
+/// [`indexers`]), and JS's and TS's class fields, valueless enum members and the identifiers a
+/// pattern declarator or a declaring `for .. in`/`for .. of` binds ([`class_fields`],
+/// [`enum_members`], [`js_bindings`]), each recorded as a tagged definition is
+/// ([`record_def`]).
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -193,24 +237,18 @@ pub fn extract(
         // 1-based line from the tag span's start row.
         let line = tag.span.start.row as u32 + 1;
         if tag.is_definition {
-            // THE LEAF, ahead of the filter and both pushes, so the name a definition is filtered
-            // by, recorded under and named as a caller by is one.
+            // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the name a
+            // definition is filtered by, recorded under and named as a caller by is one.
             let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
-            let name = def_leaf(node, name);
-            // THE NAME FILTER, ahead of both pushes: a nameless definition enters neither `defs`
-            // nor `def_ranges`, so the two stay index-aligned and its range is no caller range
-            // and no test region.
-            if is_nameless(lang, &name) {
-                continue;
-            }
-            let kind = lowered_kind(
+            record_def(
                 lang,
-                kind_of(config.syntax_type_name(tag.syntax_type_id)),
-                node,
                 source.as_bytes(),
+                node,
+                kind_of(config.syntax_type_name(tag.syntax_type_id)),
+                (tag.range.clone(), def_leaf(node, name), line),
+                &mut defs,
+                &mut def_ranges,
             );
-            def_ranges.push((tag.range.clone(), name.clone(), kind));
-            defs.push(unresolved_def(kind, name, line));
         } else {
             ref_positions.push(tag.range.start);
             refs.push(SymRef {
@@ -260,21 +298,26 @@ pub fn extract(
             (Kind::Method, conversion_operators(root, source.as_bytes())),
             (Kind::Method, indexers(root, source.as_bytes())),
         ],
+        Lang::Js | Lang::Ts => vec![
+            (Kind::Field, class_fields(root, source.as_bytes(), false)),
+            (Kind::Method, class_fields(root, source.as_bytes(), true)),
+            (Kind::Variant, enum_members(root, source.as_bytes())),
+            (Kind::Constant, js_bindings(root, source.as_bytes())),
+        ],
         _ => Vec::new(),
     };
     for (kind, found) in read_offs {
-        for (range, name, line) in found {
-            if is_nameless(lang, &name) {
-                continue;
-            }
-            let kind = lowered_kind(
+        for found in found {
+            let node = root.descendant_for_byte_range(found.0.start, found.0.end);
+            record_def(
                 lang,
-                kind,
-                root.descendant_for_byte_range(range.start, range.end),
                 source.as_bytes(),
+                node,
+                kind,
+                found,
+                &mut defs,
+                &mut def_ranges,
             );
-            def_ranges.push((range, name.clone(), kind));
-            defs.push(unresolved_def(kind, name, line));
         }
     }
     // Attribute each reference to its caller (`enclosing_def`: the innermost enclosing function,
@@ -555,6 +598,129 @@ fn indexers(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
             read_off(indexer, this, source)
         })
         .collect()
+}
+
+/// JS's CLASS FIELDS (spec 116): every `field_definition` under `root` that is
+/// `function_valued` or is not, in source order, as its byte range, its leaf and its 1-based
+/// line. A field is function-valued when its value is an arrow function or a function
+/// expression, and is then a method. The grammar names a field by its `property`, read as a
+/// member's name is ([`member_read_off`]); TS's class field, a `public_field_definition`
+/// named by its `name`, is tagged by the TS query instead.
+fn class_fields(root: tree_sitter::Node, source: &[u8], function_valued: bool) -> Vec<ReadOff> {
+    nodes_of_kind(root, "field_definition")
+        .into_iter()
+        .filter(|field| {
+            field
+                .child_by_field_name("value")
+                .is_some_and(|v| matches!(v.kind(), "arrow_function" | "function_expression"))
+                == function_valued
+        })
+        .filter_map(|field| member_read_off(field, field.child_by_field_name("property")?, source))
+        .collect()
+}
+
+/// TS's VALUELESS ENUM MEMBERS (spec 116): every name an `enum_body` under `root` holds as its
+/// own `name` (`enum E { A, "b-c" }`), in source order, as its byte range, its leaf and its
+/// 1-based line, each read as a member's name is ([`member_read_off`]) and spanning its name
+/// alone. A member with a value is an `enum_assignment`, which the TS query tags.
+fn enum_members(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    let mut out = Vec::new();
+    for body in nodes_of_kind(root, "enum_body") {
+        let mut cursor = body.walk();
+        for name in body.children_by_field_name("name", &mut cursor) {
+            out.extend(member_read_off(name, name, source));
+        }
+    }
+    out
+}
+
+/// The [`ReadOff`] of the JS or TS member `node` named by `name`, its leaf read as a tagged
+/// member's is ([`def_leaf`]): a string name's text between its quotes, a private name with
+/// its `#`, a numeric one as written; `None` for a computed name (`[k]`), which names nothing
+/// statically.
+fn member_read_off(
+    node: tree_sitter::Node,
+    name: tree_sitter::Node,
+    source: &[u8],
+) -> Option<ReadOff> {
+    if name.kind() == "computed_property_name" {
+        return None;
+    }
+    let (range, text, line) = read_off(node, name, source)?;
+    Some((range, def_leaf(Some(name), &text), line))
+}
+
+/// What a destructuring pattern node binds in THE BINDING WALK (spec 116): the node itself, a
+/// bare identifier; each of its named children, a nested or a rest pattern; or the one child in
+/// a field, a rename's `value` or a default's `left`. A node kind a grammar's table does not list
+/// binds nothing.
+enum Binds {
+    Itself,
+    Children,
+    Field(&'static str),
+}
+
+/// The JS and TS pattern node kinds and what each binds: `{a}`'s shorthand and a bare
+/// identifier bind themselves; an object, an array and a rest (`...r`) pattern are walked down;
+/// a rename (`{a: b}`) binds its value and a default (`{a = 1}`, `[x = 1]`) its left. An array
+/// hole has no node, and a member or subscript target is unlisted, so each binds nothing.
+const JS_PATTERN_BINDINGS: [(&str, Binds); 8] = [
+    ("identifier", Binds::Itself),
+    ("shorthand_property_identifier_pattern", Binds::Itself),
+    ("object_pattern", Binds::Children),
+    ("array_pattern", Binds::Children),
+    ("rest_pattern", Binds::Children),
+    ("pair_pattern", Binds::Field("value")),
+    ("assignment_pattern", Binds::Field("left")),
+    ("object_assignment_pattern", Binds::Field("left")),
+];
+
+/// THE BINDING WALK (spec 116): every bare identifier `pattern` binds under `table`, a
+/// grammar's pattern node kinds, pushed onto `out` in source order as its own range, its text
+/// and its 1-based line.
+fn bound_names(
+    pattern: tree_sitter::Node,
+    table: &[(&str, Binds)],
+    source: &[u8],
+    out: &mut Vec<ReadOff>,
+) {
+    match table.iter().find(|(kind, _)| *kind == pattern.kind()) {
+        Some((_, Binds::Itself)) => out.extend(read_off(pattern, pattern, source)),
+        Some((_, Binds::Children)) => {
+            let mut cursor = pattern.walk();
+            let children: Vec<_> = pattern.named_children(&mut cursor).collect();
+            for child in children {
+                bound_names(child, table, source, out);
+            }
+        }
+        Some((_, Binds::Field(field))) => {
+            if let Some(child) = pattern.child_by_field_name(field) {
+                bound_names(child, table, source, out);
+            }
+        }
+        None => {}
+    }
+}
+
+/// JS's and TS's DESTRUCTURED BINDINGS (spec 116), the binding walk's seeds: the name of every
+/// `variable_declarator` named by a pattern rather than an identifier (`const {a, b: c} = o`,
+/// `const [x] = f()`), and the `left` of every `for_in_statement` that declares (`for (const k of
+/// m)`, a `const`, `let` or `var` `kind`), each walked by [`bound_names`] over
+/// [`JS_PATTERN_BINDINGS`]. A loop with no `kind` assigns existing names and binds nothing.
+fn js_bindings(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    let declared = nodes_of_kind(root, "variable_declarator")
+        .into_iter()
+        .filter_map(|declarator| declarator.child_by_field_name("name"))
+        .filter(|name| name.kind() != "identifier");
+    let looped = nodes_of_kind(root, "for_in_statement")
+        .into_iter()
+        .filter(|for_in| for_in.child_by_field_name("kind").is_some())
+        .filter_map(|for_in| for_in.child_by_field_name("left"));
+    let mut out = Vec::new();
+    for seed in declared.chain(looped) {
+        bound_names(seed, &JS_PATTERN_BINDINGS, source, &mut out);
+    }
+    out
 }
 
 /// A definition read off the parsed tree: its byte range, its leaf and its 1-based line.
