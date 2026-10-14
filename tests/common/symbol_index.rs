@@ -1,12 +1,13 @@
 //! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file
 //! index, saving it through the real `store` boundary and reading the bytes back, loading a
 //! hand-authored legacy `index.json`, projecting a file's definitions, its test-marked
-//! definitions and its references with their callers, and checking a language's definition
-//! types against a file's definitions.
+//! definitions and its references with their callers, checking a language's definition
+//! types against a file's definitions, and checking a language's definitions fixture whole.
 //! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention
-//! `tests/common/mod.rs` keeps). Every lane compiles it; `extracted` alone reaches the parser
-//! and is held by the `symbols` lane only.
+//! `tests/common/mod.rs` keeps). Every lane compiles it; `extracted`, and
+//! `assert_definitions_fixture` through it, alone reach the parser and are held by the `symbols`
+//! lane only.
 
 #![allow(dead_code)]
 

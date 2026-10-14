@@ -57,10 +57,11 @@ const RUST_TAGS: &str = r#"
 /// pattern captures a bare `@module`, which `tree-sitter-tags` rejects (it accepts only
 /// `@definition.*` / `@reference.*` / `@name` / `@doc` / `@local.*`), so the shipped query fails
 /// to compile. That pattern is also redundant: the line above it already tags the same
-/// `namespace_declaration` as `@definition.module`. This is the shipped query verbatim minus
-/// that one invalid, redundant line - authored here per the spec's "author or verify each
-/// grammar's tag query" mandate - with a definition pattern for every C# definition type the
-/// grammar names (spec 116). A struct, a record, an enum and a delegate are tagged as a class
+/// `namespace_declaration` as `@definition.module`. This is the shipped query without that one
+/// invalid, redundant line - authored here per the spec's "author or verify each grammar's tag
+/// query" mandate - its namespace pattern taking any name node where the shipped one takes an
+/// identifier, plus a definition pattern for every other C# definition type the grammar names
+/// (spec 116). A struct, a record, an enum and a delegate are tagged as a class
 /// is; an enum member a variant; a destructor a method, which `extract` names `~` and its
 /// identifier; a local function a function; a constructor a constructor; a property and an event
 /// with accessors a property. A method, destructor, local function or constructor with no body
