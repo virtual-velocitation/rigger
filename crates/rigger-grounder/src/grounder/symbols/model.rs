@@ -40,6 +40,7 @@ pub enum Kind {
     Static,
     Variant,
     Field,
+    Variable,
     Other,
 }
 

@@ -1,8 +1,9 @@
 //! The grammar registry (architecture 5.5.3): the `extension -> (grammar, tag query)` table
 //! that decides WHICH grammar a file is parsed under. It supplies the injected pair unit 1's
 //! `extract` consumes; it never parses anything itself. Adding a language is adding one match
-//! arm here, and a language whose grammar gives a definition no name node also adds a read-off
-//! in `extract`. Confined to the `symbols` feature because it names `tree_sitter::Language`;
+//! arm here, and a language whose query cannot tag a definition (its grammar gives it no name
+//! node, or the upstream query already holds that node as a reference) also adds a read-off in
+//! `extract`. Confined to the `symbols` feature because it names `tree_sitter::Language`;
 //! the parser-free model stays in the light lane.
 
 use crate::grounder::symbols::model::Lang;
@@ -172,6 +173,26 @@ fn composed_once(cell: &'static OnceLock<String>, parts: &[&str]) -> &'static st
     cell.get_or_init(|| parts.join("\n")).as_str()
 }
 
+/// Additional Go tags-query patterns (spec 116), appended to the upstream query, which tags a
+/// function, a method and a `type_spec` and no other definition: a `const_spec` name is a
+/// constant (captured as a direct identifier child, since the grammar's one `name` field over
+/// the whole comma list matches a `name:` pattern at the first name only), a `var_spec` name a
+/// variable when its `var_declaration` is a direct child of the source file, grouped or not, so
+/// a function-local `var` is none, a named field a field and an interface's `method_elem` a
+/// method, which `extract` lowers to a declaration. A spec or field naming several
+/// (`const a, b = f(), g()`, a field `x, y Foo`) is one definition per name, all of one range.
+/// An embedded field and a `type_alias` have no pattern: the upstream query holds each one's
+/// name node as a type reference, and one name node carries one tag, so `extract` reads them
+/// off the parsed tree and the reference stays.
+const GO_DEFINITION_TAGS: &str = r#"
+(const_spec (identifier) @name) @definition.constant
+(source_file (var_declaration (var_spec name: (identifier) @name) @definition.variable))
+(source_file
+  (var_declaration (var_spec_list (var_spec name: (identifier) @name) @definition.variable)))
+(field_declaration name: (field_identifier) @name) @definition.field
+(method_elem name: (field_identifier) @name) @definition.method
+"#;
+
 /// A registered language: the rigger `Lang`, its tree-sitter grammar, and the `tags` query the
 /// extractor runs over a file in that language. The three the extractor needs, resolved
 /// together so a file maps to exactly one grammar+query pair.
@@ -188,6 +209,8 @@ pub struct LanguageEntry {
 /// (`LANGUAGE_TSX`) while `.ts` uses the plain TypeScript grammar - both share the one
 /// TypeScript `tags` query, so a `.tsx` file's JSX body parses instead of erroring.
 pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
+    // The Go `tags` query, composed ONCE: the upstream query plus `GO_DEFINITION_TAGS`.
+    static GO_TAGS: OnceLock<String> = OnceLock::new();
     let (lang, language, tags_query): (Lang, tree_sitter::Language, &'static str) = match ext {
         "rs" => (Lang::Rust, tree_sitter_rust::LANGUAGE.into(), RUST_TAGS),
         "cs" => (
@@ -213,7 +236,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         "go" => (
             Lang::Go,
             tree_sitter_go::LANGUAGE.into(),
-            tree_sitter_go::TAGS_QUERY,
+            composed_once(&GO_TAGS, &[tree_sitter_go::TAGS_QUERY, GO_DEFINITION_TAGS]),
         ),
         "py" => (
             Lang::Python,

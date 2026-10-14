@@ -9,7 +9,8 @@ use crate::contextgraph::{
     CodeEntityExtracted, EdgeInferred, CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR,
     CODE_KIND_DECLARATION, CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO,
     CODE_KIND_METHOD, CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_STATIC, CODE_KIND_TRAIT,
-    CODE_KIND_TYPE, CODE_KIND_VARIANT, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+    CODE_KIND_TYPE, CODE_KIND_VARIABLE, CODE_KIND_VARIANT, TYPE_CODE_ENTITY_EXTRACTED,
+    TYPE_EDGE_INFERRED,
 };
 use crate::eventstore::Event;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
@@ -803,6 +804,7 @@ fn kind_str(k: Kind) -> &'static str {
         Kind::Static => CODE_KIND_STATIC,
         Kind::Variant => CODE_KIND_VARIANT,
         Kind::Field => CODE_KIND_FIELD,
+        Kind::Variable => CODE_KIND_VARIABLE,
         Kind::Other => CODE_KIND_OTHER,
     }
 }

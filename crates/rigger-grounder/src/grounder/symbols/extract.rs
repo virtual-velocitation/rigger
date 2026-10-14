@@ -2,16 +2,17 @@
 //! runs an INJECTED grammar's `tags` query over a source string and lowers the uniform tags
 //! into the parser-free `FileSymbols` model. Everything downstream sees `FileSymbols` and
 //! never the parser - so per-language support is a registration (unit 2), and a language
-//! whose grammar gives a definition no name node also adds a read-off here, selected by the
-//! language `extract` is given.
+//! whose query cannot tag a definition (its grammar gives it no name node, or the upstream query
+//! already holds that node as a reference) also adds a read-off here, selected by the language
+//! `extract` is given.
 
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
 
 /// Map a grammar tag's syntax-type NAME (the name half of a `tags.scm` category, e.g.
 /// "function", "method", "struct", "class", "interface", "trait", "module", "constant", "macro",
-/// "static", "variant", "field") to a rigger `Kind`. Unknown names fold to `Other`, so the model
-/// stays grammar-agnostic and a new grammar never forces a `Kind` variant.
+/// "static", "variant", "field", "variable") to a rigger `Kind`. Unknown names fold to `Other`,
+/// so the model stays grammar-agnostic and a new grammar never forces a `Kind` variant.
 fn kind_of(syntax_type: &str) -> Kind {
     match syntax_type {
         "function" => Kind::Function,
@@ -25,6 +26,7 @@ fn kind_of(syntax_type: &str) -> Kind {
         "static" => Kind::Static,
         "variant" => Kind::Variant,
         "field" => Kind::Field,
+        "variable" => Kind::Variable,
         _ => Kind::Other,
     }
 }
@@ -39,9 +41,15 @@ fn is_nameless(lang: Lang, leaf: &str) -> bool {
 
 /// A DECLARATION (spec 116): whether `node`, the own node of a function, method or constructor
 /// definition, has no body. Rust's is a `function_signature_item`, a trait required fn or an
-/// extern block's fn.
+/// extern block's fn; Go's is an interface's `method_elem`, and a `function_declaration` or a
+/// `method_declaration` holding no `body`. It reads the node alone, so a grammar sharing one of
+/// those node types shares its rule.
 fn is_declaration(node: tree_sitter::Node) -> bool {
-    node.kind() == "function_signature_item"
+    match node.kind() {
+        "function_signature_item" | "method_elem" => true,
+        "function_declaration" | "method_declaration" => node.child_by_field_name("body").is_none(),
+        _ => false,
+    }
 }
 
 /// Whether `node` is a Rust fn the compiler registers as a procedural macro: a `function_item`
@@ -102,13 +110,14 @@ fn unresolved_def(kind: Kind, name: String, line: u32) -> Def {
 /// returns is the parser-free `FileSymbols`.
 ///
 /// A definition tag whose leaf names nothing ([`is_nameless`]) makes no `Def`, and the references
-/// in its body take the next enclosing definition by the caller rule, else the file. An impl
-/// block is not put to that filter: its name is its header, `impl ..`, never empty and never `_`;
-/// nor is a tuple field, whose name is its index.
+/// in its body take the next enclosing definition by the caller rule, else the file. A
+/// definition read off the tree by `lang` is put to that filter too, so a Go `type _ = B` makes
+/// none. An impl block is not: its name is its header, `impl ..`, never empty and never `_`.
 ///
 /// A tagged definition takes the kind its tag names, lowered once over its own node
-/// ([`lowered_kind`]). What the query cannot name is read off the parsed tree: every impl block
-/// ([`impl_blocks`]) and, selected by `lang`, Rust's tuple fields ([`tuple_fields`]).
+/// ([`lowered_kind`]). What the query cannot tag is read off the parsed tree: every impl block
+/// ([`impl_blocks`]) and, selected by `lang`, Rust's tuple fields ([`tuple_fields`]) and Go's
+/// embedded fields and type aliases ([`embedded_fields`], [`type_aliases`]).
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -200,15 +209,25 @@ pub fn extract(
             });
         }
     }
-    // The fields the language's grammar gives no name node are read off the tree too, each a
-    // definition named by its index (spec 116); only Rust has them.
-    let read_off_fields = match lang {
-        Lang::Rust => tuple_fields(root),
+    // The definitions the language's query cannot tag are read off the tree too (spec 116), each
+    // read-off giving the kind of what it finds; one whose leaf names nothing makes no
+    // definition, as a tagged one makes none.
+    let read_offs = match lang {
+        Lang::Rust => vec![(Kind::Field, tuple_fields(root))],
+        Lang::Go => vec![
+            (Kind::Field, embedded_fields(root, source.as_bytes())),
+            (Kind::Type, type_aliases(root, source.as_bytes())),
+        ],
         _ => Vec::new(),
     };
-    for (range, name, line) in read_off_fields {
-        def_ranges.push((range, name.clone(), Kind::Field));
-        defs.push(unresolved_def(Kind::Field, name, line));
+    for (kind, found) in read_offs {
+        for (range, name, line) in found {
+            if is_nameless(lang, &name) {
+                continue;
+            }
+            def_ranges.push((range, name.clone(), kind));
+            defs.push(unresolved_def(kind, name, line));
+        }
     }
     // Attribute each reference to its caller (`enclosing_def`: the innermost enclosing function,
     // else the innermost enclosing definition; spec 116). The
@@ -409,7 +428,7 @@ fn impl_blocks(root: tree_sitter::Node, source: &[u8]) -> Vec<ImplBlock> {
 /// a tuple field no node of its own (an `ordered_field_declaration_list` holds each field's
 /// attributes, visibility and type as siblings), so a field is read off its type node, whose
 /// range and line it takes, and its leaf is its index among the list's types, from `0`.
-fn tuple_fields(root: tree_sitter::Node) -> Vec<(std::ops::Range<usize>, String, u32)> {
+fn tuple_fields(root: tree_sitter::Node) -> Vec<ReadOff> {
     let mut out = Vec::new();
     for list in nodes_of_kind(root, "ordered_field_declaration_list") {
         let mut cursor = list.walk();
@@ -422,6 +441,45 @@ fn tuple_fields(root: tree_sitter::Node) -> Vec<(std::ops::Range<usize>, String,
         }
     }
     out
+}
+
+/// Go's EMBEDDED FIELDS (spec 116): every `field_declaration` under `root` that holds no
+/// `name`, in source order, as its byte range, its leaf and its 1-based line. Its leaf is the
+/// name Go gives it, its type's base identifier ([`base_type_identifier`]); the upstream query
+/// tags that identifier a type reference, which the field's range then encloses. A pointer
+/// embed (`*T`) holds its `T` as the `type` child itself.
+fn embedded_fields(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    nodes_of_kind(root, "field_declaration")
+        .into_iter()
+        .filter(|field| field.child_by_field_name("name").is_none())
+        .filter_map(|field| {
+            let leaf = base_type_identifier(field.child_by_field_name("type")?)?;
+            read_off(field, leaf, source)
+        })
+        .collect()
+}
+
+/// Go's TYPE ALIASES (spec 116): every `type_alias` (`type A = B`) under `root`, in source
+/// order, as its byte range, its leaf and its 1-based line. The upstream query tags its name a
+/// type reference, which the alias's range then encloses.
+fn type_aliases(root: tree_sitter::Node, source: &[u8]) -> Vec<ReadOff> {
+    nodes_of_kind(root, "type_alias")
+        .into_iter()
+        .filter_map(|alias| read_off(alias, alias.child_by_field_name("name")?, source))
+        .collect()
+}
+
+/// A definition read off the parsed tree: its byte range, its leaf and its 1-based line.
+type ReadOff = (std::ops::Range<usize>, String, u32);
+
+/// The [`ReadOff`] of the definition `node` named by the text of `leaf`; `None` when that text
+/// is no UTF-8.
+fn read_off(node: tree_sitter::Node, leaf: tree_sitter::Node, source: &[u8]) -> Option<ReadOff> {
+    Some((
+        node.byte_range(),
+        leaf.utf8_text(source).ok()?.to_string(),
+        node.start_position().row as u32 + 1,
+    ))
 }
 
 /// Every node of the grammar kind `kind` anywhere under `root`, `root` included, in source
@@ -473,15 +531,15 @@ fn impl_block(node: tree_sitter::Node, source: &[u8]) -> Option<ImplBlock> {
     })
 }
 
-/// The identifier a type names, through its path (`a::b::T` -> `T`), generic arguments
-/// (`T<U>` -> `T`) and reference or pointer (`&T` -> `T`); `None` for a shape that names no
-/// single type (a tuple, a slice, a function type).
+/// The identifier a type names, through its path (`a::b::T` -> `T`, Go's `pkg.T` -> `T`),
+/// generic arguments (`T<U>` -> `T`, Go's `T[U]` -> `T`) and reference or pointer (`&T` -> `T`);
+/// `None` for a shape that names no single type (a tuple, a slice, a function type).
 fn base_type_identifier(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     let mut cur = node;
     loop {
         cur = match cur.kind() {
             "type_identifier" => return Some(cur),
-            "scoped_type_identifier" => cur.child_by_field_name("name")?,
+            "scoped_type_identifier" | "qualified_type" => cur.child_by_field_name("name")?,
             "generic_type" | "reference_type" | "pointer_type" => {
                 cur.child_by_field_name("type")?
             }
