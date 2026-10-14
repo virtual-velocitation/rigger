@@ -17,7 +17,7 @@ Demand the failing test that proves each defect you raise: name it, and where th
 
 Confirm the unit's first source commit follows a test commit (red before green).
 
-## Re-run the author's shape searches
+## Re-run the author's searches and re-derive its walk
 
 You are the enforcement of the built-in rule that a test-side shape is spelled once. The
 author's `<unit>-test-shape-audit` record carries one search per distinguishing expression:
@@ -27,6 +27,22 @@ the record carries, on the review tree, and compare the hit sets. A hit the reco
 carry is BLOCKING; a CHECKED hit whose reason does not hold - its shape does not differ in the
 way the record names - is a twin and BLOCKING; a record with no command is BLOCKING. Each is a
 finding on its own, citing the hit's file:line with the command and the output you got.
+
+You are also the enforcement of the built-in rule that every sentence about the changed
+behaviour is true at head. The author's `<unit>-sentence-walk` record names what each generator
+returned and carries one rule-spelling search per distinguishing phrase of each rule the change
+rewrites, or names that set empty. The walk record is the author's instrument, not a gate, and
+no GATE EVIDENCE covers it: you re-derive each generator's set on the review tree from the diff
+and the graph - the changed-file list; each hunk's identifiers, doc links (`[...]`) and
+constants included; the body comments of each changed item; the impl headers; the depth-1
+callers (`rigger graph --around <file>::<item> --depth 1`); the tracked lines spelling a changed
+item's name - and compare it with the record, and you re-run every rule-spelling search the
+record carries and compare the hit sets. A member the record omits is BLOCKING; a hit the record
+does not carry is BLOCKING; a CHECKED hit whose reason does not hold - it is a spelling of the
+retired rule after all - is BLOCKING; a record naming no rule-spelling search and no empty set
+is BLOCKING, and so is a record that names the set empty while the diff rewrites a rule (a doc
+hunk restating what a call lands on, what a key binds or what a tier means). Each is a finding
+on its own, citing the sentence's file:line with the generator or the command that reaches it.
 
 ## Every test must survive mutation testing
 
