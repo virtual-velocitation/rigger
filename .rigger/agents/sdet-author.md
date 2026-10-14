@@ -164,9 +164,9 @@ and of each label its cases carried (a name a doc, test or comment gives a case 
 decided), one run per phrase, the phrase its one argument, over every tracked text file of the project
 (`.rs`, `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` and `.html`: the code, docs,
 specs, personas, gates, workflows and dashboard pages). It reads each line joined to the one
-before it with their comment markers stripped, so a phrase a rewrap splits across two lines is
-still a hit, and ends with the hit count:
-`git ls-files | awk '/\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | t='<phrase>' xargs awk 'FNR == 1 { p = "" } { s = $0; sub(/^[[:space:]]*(\/\/[\/!]?|#+|\*)?[[:space:]]*/, "", s) } index(s, ENVIRON["t"]) || !index(p, ENVIRON["t"]) && index(p " " s, ENVIRON["t"]) { n++; print FILENAME ":" FNR ": " $0 } { p = s } END { print n + 0 " hits" }'`.
+before it with their comment markers stripped, both lower-cased, so a phrase in another case,
+or one a rewrap splits across two lines, is still a hit, and ends with the hit count:
+`git ls-files | awk '/\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | t='<phrase>' xargs awk 'BEGIN { t = tolower(ENVIRON["t"]) } FNR == 1 { p = "" } { s = tolower($0); sub(/^[[:space:]]*(\/\/[\/!]?|#+|\*)?[[:space:]]*/, "", s) } index(s, t) || !index(p, t) && index(p " " s, t) { n++; print FILENAME ":" FNR ": " $0 } { p = s } END { print n + 0 " hits" }'`.
 The `<unit>-sentence-walk` record pastes each command as run, its hit count and every hit it
 printed, each FIXED or CHECKED with its reason, or names the rewritten-rule set empty; the
 `sdet` lens re-derives the generators' sets and re-runs each search on the review tree.
