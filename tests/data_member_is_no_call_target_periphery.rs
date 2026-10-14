@@ -26,8 +26,8 @@ use common::fixtures::{
     call_frontiers, call_layer, call_node_ids, call_walk, edge, kinded_def_node,
     node_with_optional_attrs, plain,
 };
+use common::lens::{coupling_rows, files_lens_rows, SUB_C as CONCEPT};
 use common::served::served_json;
-use rigger::community::Coupling;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     is_call_target, CallGraph, Candidate, Direction, Graph, Located, Projection,
@@ -36,7 +36,6 @@ use rigger::contextgraph::{
     KIND_CODE_ENTITY, KIND_CONCEPT, NON_TARGET_KINDS, REL_CALLS, REL_CONTAINS, REL_REALIZES,
     TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
 };
-use rigger::dash::{clustered_overview, reproject, Lens};
 
 /// The three kind strings no call resolves onto, as an entity event spells them.
 const NON_TARGETS: [&str; 3] = ["declaration", "field", "property"];
@@ -489,8 +488,6 @@ fn graph_show_answers_a_fields_leaf() {
     );
 }
 
-const CONCEPT: &str = "concept/1/0";
-
 /// A graph where the concept realizes three members: `src/a.rs::x`, a definition of `kind`;
 /// `src/c.rs::caller`, a fn; and `src/c.rs::x`, the bare placeholder `caller` calls. With
 /// `with_fn`, `src/b.rs::x`, a fn outside the concept, defines the leaf too.
@@ -515,30 +512,6 @@ fn lens_graph(kind: &str, with_fn: bool) -> Graph {
     }
 }
 
-/// The files lens over `graph`, whole and re-grained to the concept: the `whole <key> <count>`
-/// of each whole-graph cluster and the `whole <from> -- <to> <weight>` of each cluster edge,
-/// then the `concept <key> <count>` of each bucket of the concept's three members and the
-/// `concept <id> <- <candidates>` of each unresolved one.
-fn files_lens_rows(graph: &Graph) -> Vec<String> {
-    let overview = clustered_overview(graph, &Lens::Files);
-    let regrain = reproject(graph, CONCEPT, &Lens::Files);
-    assert_eq!(regrain.total, 3, "the concept has three members");
-    let mut rows: Vec<String> = Vec::new();
-    for c in &overview.clusters {
-        rows.push(format!("whole {} {}", c.key, c.count));
-    }
-    for e in &overview.edges {
-        rows.push(format!("whole {} -- {} {}", e.from, e.to, e.weight));
-    }
-    for c in &regrain.clusters {
-        rows.push(format!("concept {} {}", c.key, c.count));
-    }
-    for u in &regrain.unresolved {
-        rows.push(format!("concept {} <- {:?}", u.id, u.candidates));
-    }
-    rows
-}
-
 /// GIVEN a bare placeholder whose leaf a field, a property or a declaration in another file
 /// shares, WHEN the files lens folds the whole graph and re-grains the concept all three
 /// realize, THEN the member sits under its own file; with no fn of the leaf the placeholder
@@ -548,7 +521,7 @@ fn files_lens_rows(graph: &Graph) -> Vec<String> {
 fn the_files_lens_folds_a_member_under_its_own_file_and_resolves_no_placeholder_onto_it() {
     for kind in NON_TARGETS {
         assert_eq!(
-            files_lens_rows(&lens_graph(kind, false)),
+            files_lens_rows(&lens_graph(kind, false), CONCEPT, 3),
             [
                 "whole src/a.rs 1",
                 "whole src/c.rs 1",
@@ -559,7 +532,7 @@ fn the_files_lens_folds_a_member_under_its_own_file_and_resolves_no_placeholder_
             "{kind}: the member is its file's one entity and the placeholder has no candidate"
         );
         assert_eq!(
-            files_lens_rows(&lens_graph(kind, true)),
+            files_lens_rows(&lens_graph(kind, true), CONCEPT, 3),
             [
                 "whole src/a.rs 1",
                 "whole src/b.rs 2",
@@ -573,7 +546,7 @@ fn the_files_lens_folds_a_member_under_its_own_file_and_resolves_no_placeholder_
         );
     }
     assert_eq!(
-        files_lens_rows(&lens_graph("function", false)),
+        files_lens_rows(&lens_graph("function", false), CONCEPT, 3),
         [
             "whole src/a.rs 2",
             "whole src/c.rs 1",
@@ -624,13 +597,7 @@ fn coupling_beside(kind: &str) -> Vec<String> {
             edge("src/c.rs::caller", "src/c.rs::x", REL_CALLS, TIER_INFERRED),
         ],
     };
-    let coupling = Coupling::from_graph(&graph);
-    coupling
-        .nodes()
-        .iter()
-        .zip(coupling.degrees())
-        .map(|(node, degree)| format!("{node} {degree}"))
-        .collect()
+    coupling_rows(&graph)
 }
 
 /// GIVEN a bare placeholder whose leaf one field, property or declaration shares, WHEN the
