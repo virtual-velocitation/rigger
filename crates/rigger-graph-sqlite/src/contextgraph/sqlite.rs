@@ -8,21 +8,21 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
-use super::query::{leaf_of, name_suffix};
+use super::query::{leaf_of, node_leaf};
 use super::{
     CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch, EntryFold,
     Error, FoldAccess, Graph, Located, Node, Projection, CODE_KIND_PRECEDENCE, KIND_AGENT,
     KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
     KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
     KIND_LESSON, KIND_RATIONALE, KIND_STAGE, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
-    REBUILD_OWED, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES,
-    REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED, REL_REALIZES,
-    REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES,
-    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED,
-    TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
-    TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
-    TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    PLACEHOLDER_SIGIL, REBUILD_OWED, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS,
+    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED,
+    REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES,
+    REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED,
+    TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
+    TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
+    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
+    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Position, Revision};
 use crate::lockfile::HeldLock;
@@ -1055,11 +1055,12 @@ impl Projector {
     ///   distance from the seed, stable across polls. The left-to-right renderer draws the seed on the
     ///   RIGHT with callers flowing in from deeper layers.
     /// - **Reverse cross-file resolution (the mirror of the DOWN policy).** A caller of the seed's
-    ///   name is found through the reverse name-match: an edge that literally targets `cur` is a
+    ///   leaf is found through the reverse leaf-match: an edge that literally targets `cur` is a
     ///   SAME-FILE caller (its call already lands on the definition - always followed, unambiguous);
-    ///   an edge to a BARE placeholder, or to a named data member or declaration, whose entity-name
-    ///   equals `cur`'s name is a CROSS-FILE caller, attributed to `cur` only when that name has
-    ///   EXACTLY ONE call-target definition (`cur` itself). A `cur` that is itself a data member or
+    ///   an edge to a BARE placeholder, or to a named data member or declaration, whose target text
+    ///   binds `cur`'s leaf (spelled `<file>::<leaf>` or `<file>::%<leaf>`, spec 119) is a CROSS-FILE
+    ///   caller, attributed to `cur` only when that leaf has EXACTLY ONE call-target definition
+    ///   (`cur` itself). A `cur` that is itself a data member or
     ///   a declaration, as seed or as a node the walk reached, has no caller. When the
     ///   name has MORE THAN ONE definition the caller is a marked FRONTIER ([`CallNode::frontier`]
     ///   carrying the SORTED candidate definition ids) the walk does NOT ascend - honest by
@@ -1071,7 +1072,7 @@ impl Projector {
     ///   ascended a second time.
     /// - **Referenced-but-not-called.** Beyond the traversed caller DAG, the UP view carries a flat,
     ///   NON-traversed [`CallGraph::referenced_not_called`] list: the FILE nodes that reference the
-    ///   seed's name at file level but call it from no function within them (top-level imports / uses)
+    ///   seed's leaf at file level but call it from no function within them (top-level imports / uses)
     ///   - the who-uses-this sites the caller DAG deliberately excludes.
     /// - **Tier floor / determinism / isolation.** Identical to [`calls_down`](Projector::calls_down):
     ///   an edge is followed only at/above `tier_floor`; neighbor and candidate reads are `ORDER BY`
@@ -1651,21 +1652,24 @@ fn migrate_edge_tier(conn: &Connection) -> Result<(), Error> {
 ///   only LIVE edges, so restricting the index to `valid_to IS NULL` keeps it small and lets SQLite
 ///   seek by `rel` then `from_id` instead of scanning every historical edge. A query MUST carry the
 ///   exact `valid_to IS NULL` term for SQLite to use a partial index.
-/// - `idx_nodes_name_suffix` is an EXPRESSION index on `substr(id, instr(id, '::') + 2)` - the
-///   entity-name suffix of a `<file>::<name>` [`code_entity_id`], the SAME expression the edge side
-///   keys a target's text by (`substr(to_id, instr(to_id, '::') + 2)`).
 /// - `idx_nodes_leaf` is the LEAF index (spec 119) on `(project, <leaf>, id)`, `<leaf>` the pinned
 ///   [`node_leaf_sql`] expression: every node-side reader resolving a definition by its leaf
 ///   ([`definitions_with_suffix`], [`same_file_candidates`]) seeks it, the `id` column serving a
 ///   file's `<file>::` id range. SQLite uses an expression index only when the query's expression
 ///   MATCHES the indexed one, so every reader embeds [`node_leaf_sql`] verbatim or it silently
 ///   misses the index.
+/// - `idx_edges_live_to_name_suffix` is a PARTIAL EXPRESSION index on a live edge's target text,
+///   `substr(to_id, instr(to_id, '::') + 2)`, which every edge-side reader seeks by binding a leaf
+///   ([`edge_binds_leaf_sql`]).
+///
+/// The node name-suffix index `idx_nodes_name_suffix` an older open created on
+/// `substr(id, instr(id, '::') + 2)` is dropped: no reader keys a node by its id's rest since every
+/// node-side reader keys it by its leaf (spec 119).
 fn migrate_indexes(conn: &Connection) -> Result<(), Error> {
     conn.execute_batch(&format!(
         "CREATE INDEX IF NOT EXISTS idx_edges_live_rel_from
              ON edges(rel, from_id) WHERE valid_to IS NULL;
-         CREATE INDEX IF NOT EXISTS idx_nodes_name_suffix
-             ON nodes(substr(id, instr(id, '::') + 2));
+         DROP INDEX IF EXISTS idx_nodes_name_suffix;
          CREATE INDEX IF NOT EXISTS idx_nodes_leaf ON nodes(project, {}, id);
          CREATE INDEX IF NOT EXISTS idx_edges_live_to_name_suffix
              ON edges(substr(to_id, instr(to_id, '::') + 2)) WHERE valid_to IS NULL;",
@@ -2265,9 +2269,10 @@ fn definition_name(tx: &Transaction, id: &str, project: &str) -> Result<Option<S
 
 /// Undo what resolved against definition `id` of `name` now that it is no longer one (spec 101,
 /// "convergences undo with their definition"), the inverse of the definition arm's two
-/// convergences: every live cross-file reference to `name` tiered INFERRED because a definition of
-/// it existed is demoted to AMBIGUOUS when no other call target defines it ([`reference_tier`]'s own
-/// rule), and the test proofs of `name` are resolved again without it ([`resolve_proofs`]): what
+/// convergences: every live cross-file reference whose target text binds `name`
+/// ([`edge_binds_leaf_sql`], spelled `<file>::<name>` or `<file>::%<name>`) tiered INFERRED because
+/// a definition of it existed is demoted to AMBIGUOUS when no other call target has `name` as its
+/// leaf ([`node_leaf_sql`], nested or not: [`reference_tier`]'s own rule), and the test proofs of `name` are resolved again without it ([`resolve_proofs`]): what
 /// landed on `id` waits for, or moves to, the definition that now answers the name, and a retired
 /// `id` keeps no proof to come back with.
 fn definition_retired(tx: &Transaction, id: &str, name: &str, project: &str) -> Result<(), Error> {
@@ -2275,12 +2280,13 @@ fn definition_retired(tx: &Transaction, id: &str, name: &str, project: &str) -> 
         &format!(
             "UPDATE edges SET tier = ?1
               WHERE rel IN (?2, ?3) AND tier = ?4 AND project = ?5 AND valid_to IS NULL
-                AND substr(to_id, instr(to_id, '::') + 2) = ?6
+                AND {}
                 AND NOT EXISTS (
                   SELECT 1 FROM nodes n
-                   WHERE substr(n.id, instr(n.id, '::') + 2) = ?6
-                     AND n.kind = ?7 AND n.project = ?5 AND n.id != edges.to_id
-                     AND json_extract(n.attrs, '$.name') = ?6 AND {})",
+                   WHERE n.project = ?5 AND {} = ?6
+                     AND n.kind = ?7 AND n.id != edges.to_id AND {})",
+            edge_binds_leaf_sql("to_id", "?6"),
+            node_leaf_sql(),
             call_target_sql()
         ),
         params![
@@ -2736,9 +2742,10 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             // is a derived / transitive link, so promote it AMBIGUOUS -> INFERRED. This mirrors the
             // one-writer kind-promotion above: it makes the tier a pure function of the FINAL log,
             // independent of whether a reference or its definition folds first, so a rebuild
-            // re-derives byte-identical tiers. Matched exactly by the name suffix of the reference's
-            // target id (`<file>::<name>`, and a file path never contains `::`), never by a
-            // wildcard, so a symbol whose name contains any character still matches precisely. A
+            // re-derives byte-identical tiers. Matched exactly by the reference's target text
+            // binding this definition's name ([`edge_binds_leaf_sql`]: `<file>::<name>` or
+            // `<file>::%<name>`, a file path never containing `::`), never by a wildcard, so a
+            // symbol whose name contains any character still matches precisely. A
             // same-file reference already folded EXTRACTED (definitions emit before references), so
             // excluding this definition's own entity id leaves it untouched, never demoting it.
             //
@@ -2752,10 +2759,12 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             // or a declaration of this name upgrades no tier and takes no proof.
             if defines.is_some() {
                 tx.execute(
-                    "UPDATE edges SET tier = ?1
-                   WHERE rel IN (?2, ?7) AND tier = ?3 AND project = ?4 AND valid_to IS NULL
-                     AND to_id != ?5
-                     AND substr(to_id, instr(to_id, '::') + 2) = ?6",
+                    &format!(
+                        "UPDATE edges SET tier = ?1
+                       WHERE rel IN (?2, ?7) AND tier = ?3 AND project = ?4 AND valid_to IS NULL
+                         AND to_id != ?5 AND {}",
+                        edge_binds_leaf_sql("to_id", "?6")
+                    ),
                     params![
                         TIER_INFERRED,
                         REL_REFERENCES,
@@ -3297,8 +3306,9 @@ fn code_entity_id(file: &str, name: &str) -> String {
     format!("{file}::{name}")
 }
 
-/// The file prefix of a `<file>::<name>` id (spec 58): everything BEFORE the first `::` - the twin
-/// of [`name_suffix`]. A file path never contains `::`, so this is exactly the definition's file.
+/// The file prefix of a `<file>::<name>` id (spec 58): everything BEFORE the first `::`, the file
+/// half of [`split_id`](super::query::split_id) until spec 119's criterion 4 retires it. A file
+/// path never contains `::`, so this is exactly the definition's file.
 /// An id with no `::` (never a code-entity id) is returned whole.
 fn file_prefix(id: &str) -> &str {
     match id.find("::") {
@@ -3377,6 +3387,21 @@ fn call_target_sql() -> String {
 /// expression; `IS NOT NULL` over it is the store's one name-presence test.
 fn node_leaf_sql() -> &'static str {
     "NULLIF(json_extract(attrs, '$.name'), '')"
+}
+
+/// THE EDGE SIDE BINDS THE LEAF (spec 119): the live edge's target text, the
+/// `substr(<to_id>, instr(<to_id>, '::') + 2)` expression the partial index
+/// `idx_edges_live_to_name_suffix` ([`migrate_indexes`]) is built on, compared with the SQL value
+/// `leaf` and that value prefixed by [`PLACEHOLDER_SIGIL`]: two seeks of the index, the first
+/// matching a target spelled `<file>::<leaf>`, the second one spelled `<file>::%<leaf>`, so the
+/// binding holds under both spellings and decides nothing about where a reference lands. `to_id`
+/// names the edge's target column. The one spelling every edge-side reader embeds: the callers walk
+/// ([`callers_via_bare`]), the definition arm's tier upgrade, [`definition_retired`]'s demotion and
+/// both legs of [`referenced_not_called`].
+fn edge_binds_leaf_sql(to_id: &str, leaf: &str) -> String {
+    format!(
+        "substr({to_id}, instr({to_id}, '::') + 2) IN ({leaf}, '{PLACEHOLDER_SIGIL}' || {leaf})"
+    )
 }
 
 /// Whether the NAMED node `id` is a call target in `project` ([`call_target_sql`]): `Some(true)`
@@ -3547,34 +3572,41 @@ fn callers_direct(
     )
 }
 
-/// The live, caller-attributed `CALLS` edges into a BARE cross-file placeholder whose entity-name
-/// equals `name`, in `project`, as `(from_id, tier, valid_from, source)` sorted by caller (spec 52 -
+/// The live, caller-attributed `CALLS` edges into a BARE cross-file placeholder whose target text
+/// binds `leaf`, in `project`, as `(from_id, tier, valid_from, source)` sorted by caller (spec 52 -
 /// the reverse cross-file resolution). A cross-file call targets a bare placeholder in the CALLER's
 /// file namespace (no `name` attr - the definition lives elsewhere), so these are the callers that
-/// call `name` across a file boundary, an edge's target text read by the pinned
-/// `substr(to_id, instr(to_id,'::')+2)` expression the edge side compares; filtered to
+/// call `leaf` across a file boundary, an edge's target text spelled `<file>::<leaf>` or
+/// `<file>::%<leaf>` ([`edge_binds_leaf_sql`], THE EDGE SIDE BINDS THE LEAF); filtered to
 /// targets that are no call target (no non-empty `name`, [`node_leaf_sql`], or a named data member
 /// or declaration a same-file call naming its leaf lands on) so an edge that lands directly on a real definition (a same-file
 /// caller, or a call to a DIFFERENT same-named definition) is never miscounted here - those are
 /// covered by [`callers_direct`] on the exact definition, keeping the two caller sets disjoint.
 fn callers_via_bare(
     conn: &Connection,
-    name: &str,
+    leaf: &str,
     project: &str,
 ) -> Result<Vec<(String, String, i64, Position)>, Error> {
     call_edge_rows(
         conn,
-        &format!(
-            "SELECT e.from_id, e.tier, e.valid_from, e.source FROM edges e
-               JOIN nodes n ON n.id = e.to_id AND n.project = e.project
-              WHERE e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2
-                AND substr(e.to_id, instr(e.to_id, '::') + 2) = ?3
-                AND ({} IS NULL OR NOT ({}))
-              ORDER BY e.from_id",
-            node_leaf_sql(),
-            call_target_sql()
-        ),
-        params![REL_CALLS, project, name],
+        &callers_via_bare_sql(),
+        params![REL_CALLS, project, leaf],
+    )
+}
+
+/// The read [`callers_via_bare`] runs: `?1` the relation, `?2` the project and `?3` the leaf its
+/// target text binds ([`edge_binds_leaf_sql`]).
+fn callers_via_bare_sql() -> String {
+    format!(
+        "SELECT e.from_id, e.tier, e.valid_from, e.source FROM edges e
+           JOIN nodes n ON n.id = e.to_id AND n.project = e.project
+          WHERE e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2
+            AND {}
+            AND ({} IS NULL OR NOT ({}))
+          ORDER BY e.from_id",
+        edge_binds_leaf_sql("e.to_id", "?3"),
+        node_leaf_sql(),
+        call_target_sql()
     )
 }
 
@@ -3592,14 +3624,14 @@ type CallHop = (String, String, i64, Position, Option<Vec<String>>);
 ///
 /// - **Same-file callers** ([`callers_direct`]) whose edge literally targets `cur` - always an
 ///   unambiguous caller, no frontier.
-/// - **Cross-file callers** ([`callers_via_bare`]) that call `cur`'s NAME through a node that is
-///   no call target, attributed to `cur` only when that name resolves unambiguously: AT MOST ONE
-///   candidate definition -> a real caller, no frontier; MORE THAN ONE -> a marked frontier
-///   carrying the sorted candidate ids (the caller might be calling a same-named sibling, so the
-///   walk stops there). The candidates key by leaf ([`definitions_with_suffix`]) while the seed
-///   keys by its id's rest ([`name_suffix`]) until spec 119's criterion 2 binds its leaf, so for a
-///   flat seed `cur` is among them, and for a nested seed (`a.rs::T::new`, rest `T::new`) it is
-///   not. The cross-file source applies only when `cur` is a call-target
+/// - **Cross-file callers** ([`callers_via_bare`]) that call `cur`'s LEAF ([`node_leaf`] over its
+///   node row, `new` for a nested `a.rs::T::new`) through a node that is no call target, the
+///   call's target text bound to the leaf or the sigil-prefixed leaf (spec 119), attributed to
+///   `cur` only when that leaf resolves unambiguously: its candidates key by the same leaf
+///   ([`definitions_with_suffix`]), so `cur` is among them, and AT MOST ONE candidate definition
+///   -> a real caller, no frontier; MORE THAN ONE -> a marked frontier carrying the sorted
+///   candidate ids (the caller might be calling a same-named sibling, so the walk stops there).
+///   The cross-file source applies only when `cur` is a call-target
 ///   DEFINITION: a bare node is not a definition, so a cross-file call to its name resolves to the
 ///   real definitions elsewhere, never to it.
 fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallHop>, Error> {
@@ -3611,74 +3643,97 @@ fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallHop
     for (from, tier, vf, src) in callers_direct(conn, cur, project)? {
         out.push((from, tier, vf, src, None));
     }
-    if definition {
-        let name = name_suffix(cur);
-        let cands = definitions_with_suffix(conn, name, project, true, None)?;
-        // The candidates key by leaf, the seed by its id's rest until criterion 2: a flat `cur` is
-        // among them, a nested one is not. At most one is unambiguous, more than one a frontier.
+    let node = if definition {
+        node_row(conn, cur, project)?
+    } else {
+        None
+    };
+    // A definition's node carries a non-empty `name`, so its leaf is that name.
+    if let Some(leaf) = node.as_ref().and_then(node_leaf) {
+        let cands = definitions_with_suffix(conn, leaf, project, true, None)?;
+        // The candidates and the seed key by the same leaf, so `cur` is among them: at most one
+        // is unambiguous, more than one a frontier.
         let frontier = if cands.len() > 1 { Some(cands) } else { None };
-        for (from, tier, vf, src) in callers_via_bare(conn, name, project)? {
+        for (from, tier, vf, src) in callers_via_bare(conn, leaf, project)? {
             out.push((from, tier, vf, src, frontier.clone()));
         }
     }
     Ok(out)
 }
 
-/// The FILE nodes that reference the seed's name(s) at file level but call them from no function
+/// The referencing leg's projection of [`seed_leaf_leg_sql`]: the edge's source, a file container.
+const REFERENCING_FILE: &str = "e.from_id";
+
+/// The calling leg's projection of [`seed_leaf_leg_sql`]: the file half of the edge's
+/// `<file>::<caller>` source, cut in SQL.
+const CALLING_FILE: &str = "substr(e.from_id, 1, instr(e.from_id, '::') - 1)";
+
+/// One leg of [`referenced_not_called`]: `projected` over every live `?1` edge `e` in project `?2`
+/// whose target binds a leaf of the JSON array `?3`, a UNION of two seeks: the target text bound
+/// to the leaf ([`edge_binds_leaf_sql`] on `idx_edges_live_to_name_suffix`), or the target node
+/// named it ([`node_leaf_sql`] on the leaf index `idx_nodes_leaf`), since a target landed on a
+/// nested definition holds its path after the first `::`. The relation term is written `+e.rel`
+/// so the planner seeks by the bound leaf, never by `idx_edges_live_rel_from`'s every live edge of
+/// the relation.
+fn seed_leaf_leg_sql(projected: &str) -> String {
+    format!(
+        "SELECT {projected} FROM json_each(?3) j, edges e
+          WHERE +e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2 AND {}
+         UNION
+         SELECT {projected} FROM edges e
+          WHERE +e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2
+            AND e.to_id IN (SELECT id FROM nodes
+                             WHERE project = ?2 AND {} IN (SELECT value FROM json_each(?3)))",
+        edge_binds_leaf_sql("e.to_id", "j.value"),
+        node_leaf_sql()
+    )
+}
+
+/// The FILE nodes that reference the seed's leaves at file level but call them from no function
 /// within them (spec 52 criterion 3 - the UP direction's "referenced but not called" sidecar).
 /// Sorted by id, scoped to `project`.
 ///
-/// A file references a name when it carries a live `REFERENCES` edge to a `<file>::<name>` target
-/// whose entity-name matches; it CALLS the name when some caller inside it (a `<file>::<caller>`
-/// source) carries a live `CALLS` edge to such a target. The result is the set difference -
-/// files that reference but never call - the imports / uses a who-uses-this reader wants beside the
-/// caller DAG. The seed names are the entity-name suffixes of the seed ids that exist as nodes; a
-/// seed that is not a node contributes nothing. Empty when the seed has no such name (a bare or
-/// missing seed).
+/// A file references a leaf when it carries a live `REFERENCES` edge whose target binds it
+/// ([`seed_leaf_leg_sql`]: the target text spelled `<file>::<leaf>` or `<file>::%<leaf>`, or a
+/// target node named the leaf, as a reference landed on a nested `<file>::T::new` is for `new`);
+/// it CALLS the leaf when some caller inside it (a `<file>::<caller>` source) carries a live `CALLS`
+/// edge to such a target. The result is the set difference - files that reference but never call -
+/// the imports / uses a who-uses-this reader wants beside the caller DAG. The seed leaves are the
+/// [`node_leaf`]s of the seed ids that exist as nodes; a seed that is not a node, or a node with no
+/// leaf (no `name` and no `::` in its id), contributes nothing. Empty when no seed has a leaf.
 fn referenced_not_called(
     conn: &Connection,
     seed: &[String],
     project: &str,
 ) -> Result<Vec<Node>, Error> {
-    // The seed names to look up (entity-name suffixes of the seed ids that exist as nodes), deduped
-    // and sorted for a deterministic query.
-    let mut names: Vec<String> = Vec::new();
+    // The seed leaves to look up, deduped and sorted for a deterministic query.
+    let mut leaves: Vec<String> = Vec::new();
     for s in seed {
-        if node_row(conn, s, project)?.is_some() {
-            names.push(name_suffix(s).to_string());
+        if let Some(node) = node_row(conn, s, project)? {
+            leaves.extend(node_leaf(&node).map(str::to_string));
         }
     }
-    names.sort();
-    names.dedup();
-    if names.is_empty() {
+    leaves.sort();
+    leaves.dedup();
+    if leaves.is_empty() {
         return Ok(Vec::new());
     }
-    let names_json = serde_json::to_string(&names).map_err(be)?;
+    let leaves_json = serde_json::to_string(&leaves).map_err(be)?;
 
-    // Files that reference any seed name at file level (a REFERENCES edge from the file container).
+    // Files that reference any seed leaf at file level (a REFERENCES edge from the file container).
     let mut ref_stmt = conn
-        .prepare(
-            "SELECT DISTINCT from_id FROM edges
-              WHERE rel = ?1 AND valid_to IS NULL AND project = ?2
-                AND substr(to_id, instr(to_id, '::') + 2) IN (SELECT value FROM json_each(?3))",
-        )
+        .prepare(&seed_leaf_leg_sql(REFERENCING_FILE))
         .map_err(be)?;
     let referencing: Vec<String> = ref_stmt
-        .query_map(params![REL_REFERENCES, project, names_json], |r| r.get(0))
+        .query_map(params![REL_REFERENCES, project, leaves_json], |r| r.get(0))
         .map_err(be)?
         .collect::<Result<_, _>>()
         .map_err(be)?;
 
-    // Files that CALL any seed name from within (the file part of each caller-attributed CALLS edge).
-    let mut call_stmt = conn
-        .prepare(
-            "SELECT DISTINCT substr(from_id, 1, instr(from_id, '::') - 1) FROM edges
-              WHERE rel = ?1 AND valid_to IS NULL AND project = ?2
-                AND substr(to_id, instr(to_id, '::') + 2) IN (SELECT value FROM json_each(?3))",
-        )
-        .map_err(be)?;
+    // Files that CALL any seed leaf from within (the file part of each caller-attributed CALLS edge).
+    let mut call_stmt = conn.prepare(&seed_leaf_leg_sql(CALLING_FILE)).map_err(be)?;
     let calling: BTreeSet<String> = call_stmt
-        .query_map(params![REL_CALLS, project, names_json], |r| r.get(0))
+        .query_map(params![REL_CALLS, project, leaves_json], |r| r.get(0))
         .map_err(be)?
         .collect::<Result<_, _>>()
         .map_err(be)?;

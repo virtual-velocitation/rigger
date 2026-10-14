@@ -129,9 +129,9 @@ pub fn file_of(id: &str) -> Option<&str> {
 /// The ONE cut of a node id (spec 119): its file half, the text before its first `::` (the whole
 /// id when it holds none), and its rest half, the text after that `::` (`Some("")` for `a.rs::`,
 /// `None` when the id holds no `::`). The domain owns the id format `<file>::<path>`, and this is
-/// its in-memory cut: [`file_of`] and [`leaf_of`] read it, while [`name_suffix`] and the store's
-/// `file_prefix` still cut an id themselves until they give way to it (spec 119, criteria 2 and
-/// 4); the store spells the file half in SQL over its id range.
+/// its in-memory cut: [`file_of`] and [`leaf_of`] read it, while the store's `file_prefix` still
+/// cuts an id itself until it gives way to it (spec 119, criterion 4); the store spells the file
+/// half in SQL over its id range.
 pub fn split_id(id: &str) -> (&str, Option<&str>) {
     match id.split_once("::") {
         Some((file, rest)) => (file, Some(rest)),
@@ -164,17 +164,6 @@ pub fn node_name(node: &Node) -> Option<&str> {
 /// `node_leaf_sql()`, NULL exactly where this reads the id.
 pub fn node_leaf(node: &Node) -> Option<&str> {
     node_name(node).or_else(|| leaf_of(&node.id))
-}
-
-/// The entity-name SUFFIX of a `<file>::<name>` id (the part after the first `::`), or the whole id
-/// when it carries no `::`. The in-memory twin of the pinned `substr(id, instr(id, '::') + 2)`
-/// expression the store's edge-side readers compare an edge's target text with (spec 52), read by
-/// the store's callers walk and `referenced_not_called` to key a seed until they bind its leaf.
-pub fn name_suffix(id: &str) -> &str {
-    match id.find("::") {
-        Some(i) => &id[i + 2..],
-        None => id,
-    }
 }
 
 /// Index every code-entity DEFINITION a call resolves onto (a non-empty `name` attr,

@@ -920,9 +920,9 @@
     "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, landing an interleaved write) is already the one `record`/`land_interleaved` pair both call."
   },
   {
-    "id": "dup-340eefdbe122",
+    "id": "dup-aae9be3306c5",
     "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect) over different inputs."
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, the edge side's binding of a target column's text to a leaf and its sigil-prefixed form, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect) over different inputs."
   },
   {
     "id": "dup-da45cd3da239",

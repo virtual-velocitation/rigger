@@ -246,7 +246,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-340eefdbe122",
+    "id": "dup-aae9be3306c5",
     "classification": "near",
     "sites": [
       {
@@ -267,6 +267,11 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "code_entity_id",
+        "content_hash": "5d23ae9ae3e76aee"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "edge_binds_leaf_sql",
         "content_hash": "5d23ae9ae3e76aee"
       },
       {
