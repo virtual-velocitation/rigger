@@ -379,7 +379,7 @@ pub struct CallGraph {
 /// [`Projection::locate`] returns the same kind of type every sibling `Projection` method does,
 /// never a concrete adapter's own type): [`sqlite::Projector::locate`] resolves the query exactly
 /// the way the graph's other surfaces do - a full `<file>::<name>` node id, or a bare name matched
-/// by the pinned name-suffix expression - and returns one of three honest outcomes, never a guess
+/// as a definition's leaf (spec 119) - and returns one of three honest outcomes, never a guess
 /// among candidates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Located {
@@ -807,8 +807,8 @@ pub trait Projection: Send + Sync {
     /// `depth` clamps the hop distance; `tier_floor` is the LOWEST edge confidence tier the walk
     /// follows - [`TIER_INFERRED`] (the default the route passes) excludes the unresolved
     /// [`TIER_AMBIGUOUS`] tier, and passing [`TIER_AMBIGUOUS`] opts it in. A hop that lands on a
-    /// BARE placeholder node, or on a named field, property or declaration, resolves by the shared
-    /// name-suffix onto the call-target definition(s) of that name alone ([`is_call_target`]): a
+    /// BARE placeholder node, or on a named field, property or declaration, resolves by the leaf
+    /// its id names onto the call-target definition(s) of that leaf alone ([`is_call_target`]): a
     /// hop with EXACTLY ONE is auto-followed, a hop with more becomes a marked frontier the walk
     /// does NOT descend (honest by construction). Reached nodes dedup into a
     /// layered DAG; a recursion edge is marked ([`CallEdge::back`]) rather than duplicated.
@@ -838,7 +838,7 @@ pub trait Projection: Send + Sync {
     /// can serve it without reaching for the concrete [`sqlite::Projector`] across the crate
     /// boundary - the DI extension that retired the operator MCP surface's second read loop
     /// rather than adding one. Mirrors [`sqlite::Projector::locate`]: a full `<file>::<name>` id
-    /// resolves directly, a bare name matches by the pinned name-suffix expression, and the three
+    /// resolves directly, a bare name matches as a definition's leaf, and the three
     /// outcomes ([`Located`], a port-owned type - see its doc) are never a guess among candidates.
     /// The default returns `Located::None`, so a projection with no locate support (a test double)
     /// degrades honestly rather than erroring - the sqlite `Projector` OVERRIDES it with the real

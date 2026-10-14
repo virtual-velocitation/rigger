@@ -280,7 +280,7 @@ const CONCEPTS_LENS_TEXTS: DerivedLensTexts = DerivedLensTexts {
 /// admits NONE of them into any cluster - every node either falls outside [`KIND_CODE_ENTITY`] (a
 /// file's own node, a decision, a design-doc, ...) or is a bare cross-file placeholder
 /// [`whole_graph_lens_key`] could not honestly attribute to one file (zero or more than one
-/// name-suffix candidate). A TRULY EMPTY graph (`total == 0`) never reaches this message:
+/// leaf candidate). A TRULY EMPTY graph (`total == 0`) never reaches this message:
 /// [`clustered_overview`] leaves `empty_state` `None` there instead.
 pub const WHOLE_GRAPH_FILES_UNRESOLVED: &str = "no node resolves to a file";
 

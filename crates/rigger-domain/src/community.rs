@@ -902,7 +902,7 @@ mod tests {
 
     #[test]
     fn from_graph_leaves_an_ambiguous_bare_reference_unresolved() {
-        // Honest by construction: a bare `foo` reference whose simple name matches MORE THAN ONE
+        // Honest by construction: a bare `foo` reference whose leaf matches MORE THAN ONE
         // definition does NOT resolve (it would be a guess). The bare node stays itself, so it does
         // not spuriously fuse the two candidate definitions' subsystems.
         let g = Graph {

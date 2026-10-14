@@ -985,8 +985,8 @@ impl Projector {
     ///   minimum hop distance from the seed, stable across polls.
     /// - **Cross-file resolution.** A `CALLS` edge whose callee target is BARE (no `name` attr - the
     ///   definition is in another file), or a named node that is no call target (a data member or
-    ///   a declaration of the called leaf), is resolved by the pinned name-suffix expression over
-    ///   call-target DEFINITION nodes: EXACTLY ONE definition auto-continues (the edge is redirected
+    ///   a declaration of the called leaf), is resolved by the leaf its id names over the
+    ///   call-target DEFINITION nodes of that leaf: EXACTLY ONE definition auto-continues (the edge is redirected
     ///   onto the real definition); MORE THAN ONE becomes a marked frontier ([`CallNode::frontier`]
     ///   carrying the SORTED candidate ids) the walk does NOT descend - honest by construction, the
     ///   human re-seeds on a chosen candidate; ZERO leaves the bare node a terminal leaf. A same-file
@@ -1024,8 +1024,7 @@ impl Projector {
                     }
                     // Resolve the callee: a same-file call-target definition lands directly; a
                     // bare cross-file placeholder, or a named data member or declaration,
-                    // resolves by its name-suffix to the call-target definition(s) sharing the
-                    // name.
+                    // resolves by its leaf to the call-target definition(s) of that leaf.
                     let (target, frontier) = resolve_down_hop(&conn, &raw_to, &self.project)?;
                     hops.push((target, tier, valid_from, source, frontier));
                 }

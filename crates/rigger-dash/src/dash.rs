@@ -1670,7 +1670,7 @@ pub const REPROJECT_FILES_UNRESOLVED: &str = "no member resolves to a file";
 ///
 /// Under [`Lens::Files`] the fold resolves CROSS-GRAIN honestly ([`Reprojection::unresolved`]): a
 /// member that is a real definition (or a doc / file path) folds under its own file; a BARE cross-file
-/// placeholder (no `name` attr) resolves by name-suffix to the call-target DEFINITION sharing its name - EXACTLY
+/// placeholder (no `name` attr) resolves by its leaf to the call-target DEFINITION of that leaf - EXACTLY
 /// ONE folds under that definition's file, MORE THAN ONE (or zero) is surfaced as a marked-unresolved
 /// entry carrying the sorted candidate ids, never a wrong attribution to the referencing file its id
 /// encodes; a member with NO file identity at all (a rare dev-loop node) is marked unresolved with an

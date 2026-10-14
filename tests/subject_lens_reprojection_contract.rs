@@ -822,7 +822,7 @@ fn served_reproject_fires_for_a_file_subject_and_cluster_drill_takes_precedence(
 
 // --- the FILES honesty sentinels: a ZERO-candidate bare member + a NO-file-identity member ----------
 //
-// `reproject_files` resolves a BARE placeholder by name-suffix over the definitions: EXACTLY ONE
+// `reproject_files` resolves a BARE placeholder by its leaf over the definitions: EXACTLY ONE
 // auto-resolves and MORE THAN ONE is marked-unresolved with its candidates - both arms are covered by
 // the mechanics periphery (`helper` -> one, `run` -> two) and the serialize contract above. TWO
 // resolution arms remain that no fixture in either suite hits, yet each is a documented honesty

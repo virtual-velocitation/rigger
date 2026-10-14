@@ -161,7 +161,7 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 
 /// `rigger graph --show <entity>` (spec 58, criterion 1) - the TEXT half of graph lookup, beside
 /// `--around`'s structural neighborhood. It resolves the entity through [`Projector::locate`] (a
-/// full `<file>::<name>` id, or a bare name via the pinned name-suffix match), then:
+/// full `<file>::<name>` id, or a bare name matched as a definition's leaf), then:
 ///
 /// - ONE match: prints the definition SITE (`file:line`), the entity's KIND and one-hop DEGREE, and
 ///   the definition BODY read from the WORKING TREE at that location - line-numbered and bounded by

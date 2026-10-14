@@ -61,7 +61,7 @@ fn def(file: &str, name: &str) -> Event {
 }
 
 /// A caller-attributed `EdgeInferred` call (spec 37): `<file>::<caller> --CALLS--> <name>`, landing
-/// on a BARE same-file placeholder the detection pass resolves by unique name-suffix when `name` is
+/// on a BARE same-file placeholder the detection pass resolves by its unique leaf when `name` is
 /// defined in ANOTHER file - the cross-directory coupling detection spans.
 fn call(file: &str, name: &str, caller: &str) -> Event {
     event_of(TYPE_EDGE_INFERRED, call_json(file, name, caller))

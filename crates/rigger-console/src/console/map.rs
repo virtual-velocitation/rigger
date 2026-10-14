@@ -19,9 +19,9 @@
 //! named by PURPOSE: a curated module-path -> purpose table ([`district_purpose`]), falling back to
 //! the module's own bare name - NEVER to a file name - for a module this table does not cover
 //! ([`module_of`] never returns a string carrying `.` or `/`, so a fallback purpose can never look
-//! like a path). An entity's own display name is its code-entity `name` attr (its symbol name),
-//! falling back to its id's name-suffix (never its raw `<file>::<name>` id, which would leak the
-//! file) - see [`build`]'s own comment.
+//! like a path). An entity's own display name is its leaf (`node_leaf`: its non-empty `name` attr,
+//! its symbol name, else the leaf its id names; never its raw `<file>::<name>` id, which would leak
+//! the file) - see [`build`]'s own comment.
 //!
 //! **Three units share this ABI; this module owns exactly one slice of it** (the plan-critique
 //! record `adv-pc84-text-treatment-ownership-confirmed` / `op-pc84-approve-spec84-dag`): districts,
@@ -132,8 +132,8 @@ pub(crate) fn district_purpose(module: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct MapEntity {
     pub id: String,
-    /// The entity's display name - its `name` attr (the symbol name), or, absent that (a bare
-    /// cross-file placeholder), its id's name-suffix ([`name_suffix`]) - NEVER the raw
+    /// The entity's display name - its leaf ([`node_leaf`]: its non-empty `name` attr, the symbol
+    /// name, or, absent that (a bare cross-file placeholder), the leaf its id names) - NEVER the raw
     /// `<file>::<name>` id, which would leak the file it lives in onto the canvas.
     pub name: String,
     /// The definition kind (`function`, `type`, ...) - the map's "kind dot" colour key.

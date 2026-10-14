@@ -346,7 +346,7 @@ fn files_lens_merges_same_file_entities_and_keeps_different_files_apart() {
 
 /// THE WHOLE-GRAPH FOLD'S OWN RESOLUTION HONESTY (spec 63 c3, FILES-LENS PURITY): a BARE cross-file
 /// placeholder (no `name` attr) names the file that REFERENCES it in its own id, never the file that
-/// DEFINES it, so [`clustered_overview`] must resolve it by entity-name suffix over the graph's real
+/// DEFINES it, so [`clustered_overview`] must resolve it by its leaf over the graph's real
 /// definitions - the SAME resolution [`reproject`] already performs for the re-projection surface -
 /// rather than folding it to the wrong (referencing) file. Three shapes in one graph: a name with
 /// EXACTLY ONE definition resolves to that definition's file (and its coupling edge crosses files
