@@ -521,7 +521,7 @@ pub(crate) mod tests {
     /// `field_definition` ones, whose class field the TS grammars name a
     /// `public_field_definition`, then the TS types: the three signature types are
     /// declarations, and the last row, an enum member with no value, is read off the parsed
-    /// tree.
+    /// tree, its type column the member's own node, never its `enum_body` container.
     pub(crate) const TS_DEFINITION_TYPES: [(&str, Kind, &str); 30] = [
         ("function_declaration", Kind::Function, "host"),
         ("generator_function_declaration", Kind::Function, "gen"),
@@ -552,7 +552,7 @@ pub(crate) mod tests {
         ("internal_module", Kind::Module, "A.B"),
         ("enum_assignment", Kind::Variant, "Blue"),
         ("property_signature", Kind::Field, "prop"),
-        ("enum_body", Kind::Variant, "Red"),
+        ("property_identifier", Kind::Variant, "Red"),
     ];
 
     /// The definitions every one of the JS, TS and TSX definitions fixtures holds in its JS
