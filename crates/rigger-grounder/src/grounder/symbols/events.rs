@@ -1551,6 +1551,31 @@ mod tests {
         );
     }
 
+    /// A TEST REGION IS EVERY TEST-ATTRIBUTED RANGE (spec 116 criterion 11): a `mod x;` past
+    /// the first item of a file opening `#![cfg(test)]` is test code, so the file it declares
+    /// joins the out-of-line test module set, while a `mod z;` in a file opening an outer
+    /// `#[cfg(test)] use y;` leaves its file out.
+    #[test]
+    fn a_mod_declared_in_a_file_opening_an_inner_cfg_test_joins_the_out_of_line_test_module_files()
+    {
+        let mut idx = super::SymbolIndex::default();
+        for (path, src) in [
+            ("src/lib.rs", "#![cfg(test)]\nfn first() {}\nmod x;\n"),
+            ("src/x.rs", "fn y() {}\n"),
+            (
+                "src/main.rs",
+                "#[cfg(test)]\nuse y;\nfn first() {}\nmod z;\n",
+            ),
+            ("src/z.rs", "fn w() {}\n"),
+        ] {
+            idx.insert_file(path.to_string(), crate::symbol_index::extracted("rs", src));
+        }
+        assert_eq!(
+            super::out_of_line_test_module_files(&idx),
+            std::collections::BTreeSet::from(["src/x.rs".to_string()])
+        );
+    }
+
     #[test]
     fn extract_events_skips_is_test_items_and_the_fresh_boundary_lands_on_the_first_survivor() {
         // Spec 86 criterion 1, the in-file case: a definition/reference the extraction pass

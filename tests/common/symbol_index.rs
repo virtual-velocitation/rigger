@@ -1,7 +1,7 @@
 //! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file
 //! index, saving it through the real `store` boundary and reading the bytes back, loading a
 //! hand-authored legacy `index.json`, projecting a file's definitions, its test-marked
-//! definitions and its references with their callers, checking a language's definition
+//! definitions and references and its references with their callers, checking a language's definition
 //! types against a file's definitions, checking a language's definitions fixture whole,
 //! projecting a source's definition extents, and checking the variant names a file's kinds
 //! persist under.
@@ -200,18 +200,25 @@ pub fn assert_definitions_fixture(
     assert_eq!(refs_with_callers(&fs), refs);
 }
 
-/// Every definition of `fs` marked test code as `(line, name)`, sorted: the one projection the
-/// test-attribute tests of the extractor compare whole, so a definition wrongly marked and one
-/// wrongly left production both fail it.
-pub fn test_defs_by_line(fs: &FileSymbols) -> Vec<(u32, &str)> {
-    let mut defs: Vec<_> = fs
-        .defs
-        .iter()
-        .filter(|d| d.is_test)
-        .map(|d| (d.line, d.name.as_str()))
+/// Every definition and every reference of `fs` marked test code, each as `(line, name)`,
+/// sorted: the one projection the test-attribute tests of the extractor compare whole, so an
+/// item wrongly marked and one wrongly left production both fail it.
+pub fn test_code_by_line(fs: &FileSymbols) -> (Vec<(u32, &str)>, Vec<(u32, &str)>) {
+    (
+        test_by_line(fs.defs.iter().map(|d| (d.is_test, d.line, d.name.as_str()))),
+        test_by_line(fs.refs.iter().map(|r| (r.is_test, r.line, r.name.as_str()))),
+    )
+}
+
+/// The `(line, name)` of each `(is_test, line, name)` in `marked` that is test code, sorted:
+/// [`test_code_by_line`]'s projection of a file's definitions and of its references alike.
+fn test_by_line<'a>(marked: impl Iterator<Item = (bool, u32, &'a str)>) -> Vec<(u32, &'a str)> {
+    let mut lines: Vec<_> = marked
+        .filter(|(is_test, _, _)| *is_test)
+        .map(|(_, line, name)| (line, name))
         .collect();
-    defs.sort();
-    defs
+    lines.sort();
+    lines
 }
 
 /// Every reference of `fs` as `(line, name, caller)`, sorted: the one projection the caller-rule

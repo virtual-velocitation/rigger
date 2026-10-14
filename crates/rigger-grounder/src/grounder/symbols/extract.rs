@@ -1903,7 +1903,7 @@ setup!();
     fn a_test_attributed_rust_member_is_test_code_and_its_owner_and_siblings_stay_production() {
         let fs = crate::symbol_index::extracted("rs", RUST_DEFINITIONS_SOURCE);
         assert_eq!(
-            crate::symbol_index::test_defs_by_line(&fs),
+            crate::symbol_index::test_code_by_line(&fs).0,
             vec![
                 (5, "2"),
                 (6, "Probe"),
@@ -2041,8 +2041,109 @@ pub fn bang() {}
     fn a_definition_spanning_the_whole_file_is_still_read_for_its_inner_test_attribute() {
         let fs = crate::symbol_index::extracted("rs", "mod t { #![cfg(test)] fn h() {} }");
         assert_eq!(
-            crate::symbol_index::test_defs_by_line(&fs),
+            crate::symbol_index::test_code_by_line(&fs).0,
             vec![(1, "h"), (1, "t")]
+        );
+    }
+
+    crate::test_cases! {
+        /// A TEST REGION IS EVERY TEST-ATTRIBUTED RANGE (spec 116 criterion 11): a
+        /// `#[cfg(test)] const _` the name filter drops makes the fn it holds and that fn's
+        /// reference test, while an unattributed `const _`'s fn and a `#[cfg(unix)]` fn stay
+        /// production.
+        a_test_attributed_definition_the_name_filter_drops_makes_what_it_holds_test:
+            assert_test_code(
+                "\
+#[cfg(test)]
+const _: () = {
+    fn helper() {
+        real();
+    }
+};
+const _: () = {
+    fn kept() {
+        real();
+    }
+};
+fn real() {}
+#[cfg(unix)]
+fn f() {}
+",
+                &[(3, "helper")],
+                &[(4, "real")],
+            );
+        /// A TEST REGION IS EVERY TEST-ATTRIBUTED RANGE (spec 116 criterion 11): a
+        /// `#[cfg(test)] extern "C"` block, which yields no definition of its own, makes the
+        /// fn it holds test, while an unattributed extern block's fn stays production.
+        a_test_attributed_extern_block_makes_what_it_holds_test:
+            assert_test_code(
+                "\
+#[cfg(test)]
+extern \"C\" {
+    fn f();
+}
+extern \"C\" {
+    fn g();
+}
+",
+                &[(3, "f")],
+                &[],
+            );
+        /// A TEST REGION IS EVERY TEST-ATTRIBUTED RANGE (spec 116 criterion 11): a file opening
+        /// `#![cfg(test)]` is test code whole, its second fn, its `mod x;` and every reference
+        /// included, not only the item after the attribute.
+        a_file_opening_an_inner_cfg_test_is_test_code_whole:
+            assert_test_code(
+                "\
+#![cfg(test)]
+fn first() {}
+fn second() {
+    first();
+}
+mod x;
+",
+                &[(2, "first"), (3, "second"), (6, "x")],
+                &[(4, "first")],
+            );
+        /// A file opening an OUTER `#[cfg(test)] use x;` is no test region: the attribute
+        /// gates the `use` alone, so the fns after it and their references stay production.
+        a_file_opening_a_test_attributed_use_keeps_its_fns_production:
+            assert_test_code(
+                "\
+#[cfg(test)]
+use x;
+fn a() {}
+fn b() {
+    a();
+}
+",
+                &[],
+                &[],
+            );
+        /// A file opening an OUTER `#[cfg(test)] mod tests;` is no test region: the attribute
+        /// makes the `mod` test alone, so the fns after it and their references stay production.
+        a_file_opening_a_test_attributed_mod_declaration_keeps_its_fns_production:
+            assert_test_code(
+                "\
+#[cfg(test)]
+mod tests;
+fn a() {}
+fn b() {
+    a();
+}
+",
+                &[(2, "tests")],
+                &[],
+            );
+    }
+
+    /// The Rust source `src`, read through the registered grammar and query, marks exactly the
+    /// definitions `defs` and the references `refs` test code, each as `(line, name)`.
+    fn assert_test_code(src: &str, defs: &[(u32, &str)], refs: &[(u32, &str)]) {
+        let fs = crate::symbol_index::extracted("rs", src);
+        assert_eq!(
+            crate::symbol_index::test_code_by_line(&fs),
+            (defs.to_vec(), refs.to_vec())
         );
     }
 
