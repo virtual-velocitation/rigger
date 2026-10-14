@@ -24,7 +24,8 @@ pub struct Instruction {
 /// The built-in layer, in the order it is injected. The first entry is the engineering law
 /// the project holds every change to: Clean Architecture, SOLID, DRY, KISS, YAGNI, TDD and
 /// BDD where relevant. The second is the working discipline every agent follows: one pass by
-/// excellence, the hand-over an author's tree meets before it reports (each outcome with the
+/// excellence, a turn's end being the session's end (every job waited on inside the turn), the
+/// hand-over an author's tree meets before it reports (each outcome with the
 /// check that proves it), fanning mechanical work out to the `lookup` and `verify` helpers, and
 /// the rule that a surviving mutant is always a failure. A harness-wide rule lives here once,
 /// never copied into persona files; a persona carries only the project's anchors for it.

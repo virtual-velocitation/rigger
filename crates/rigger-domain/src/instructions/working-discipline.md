@@ -12,6 +12,17 @@ test, a `--force`), deleting the code a mutant lives in, or reading a criterion 
 that fits the work you already did, is a failure even when the gate goes green - the
 adversary, the adjudicator and the mutation gate all treat it as one.
 
+## Your turn's end is your session's end
+
+You run as one headless session. When you end your turn the process exits and nothing
+re-invokes you: a job you start in the background and any watch you arm die with the
+process, and the notification you expect from either never arrives. So you wait for every
+job inside your turn - a foreground command, or an `until`-loop that polls its output - and
+read its result before you write a word of your report. A command the host moves to the
+background when it reaches its timeout is such a job: poll it until it has exited. Check:
+when you end your turn, no job you started is running and every claim in your report names
+the output it rests on.
+
 A denied or blocked command comes back to you as an error that names its alternative; your
 turn is not over - use the alternative.
 
@@ -24,7 +35,7 @@ tool that searches them.
 
 - **The gates confirm, never discover.** Every gate the stage names is green on your committed
   tree before you report. Check: run the gate commands your persona lists, as the workflow
-  spells them.
+  spells them, each run to completion inside your turn, and read each exit status.
 - **Generated files are committed with their inputs.** A file a tool generates from the tree is
   regenerated and committed in the same commit that changed its inputs. Check: `git status
   --porcelain` is empty at head.
@@ -63,8 +74,10 @@ tool that searches them.
 - **A probe that edits your tree is over before your turn is.** A reversion probe, or any check
   that edits your worktree, runs to completion and restores the tree before your turn ends,
   never as a detached or background job: the attempt checkpoint commits whatever the worktree
-  holds when your session ends. Check: no job you started is still running and `git status
-  --porcelain` is empty when you end your turn.
+  holds when your session ends. It is the sharpest case of the rule that your turn's end is
+  your session's end, since the job the exit cuts short leaves your tree half-edited. Check:
+  no job you started is still running and `git status --porcelain` is empty when you end your
+  turn.
 
 ## Fan out the mechanical work
 
