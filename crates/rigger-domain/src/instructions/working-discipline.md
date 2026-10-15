@@ -79,7 +79,27 @@ tool that searches them.
   remaining occurrence as a deliberate mention with its reason. The record is owed on every
   change: one whole-tree DecisionMade naming the set walked by its generators (files, items,
   trait items, callers, lines counted) and every sentence FIXED with its location; a member
-  whose generator returned nothing is named as empty.
+  whose generator returned nothing is named as empty. A rule the change rewrites - a condition
+  the code decides by, such as what a call lands on or what a tier means - has spellings no
+  generator above reaches: prose that states it without naming a changed item. So every
+  spelling of each rewritten rule is walked too, and its search is an instrument, not a claim:
+  write down the distinguishing phrases of the rule's OLD statement and of the labels its cases
+  carried - the words a sentence stating it cannot be written without, and each name the docs,
+  test names and comments give a case the old rule decided (a "cross-file caller" for the calls
+  only the old rule sent across files); two phrases when one would miss a spelling - and run
+  one recorded search for each over every tracked text line: code, doc comments, body
+  comments, test names and docs, assertion messages, specs and operator docs. The record
+  carries each search's command, its hit count and every hit, each FIXED, or CHECKED with the
+  named way it is not a spelling of the retired rule (a spec's account of the pre-change
+  state, a history note, a different rule sharing the words). A rewritten rule with no search
+  is a record you cannot write; a change that rewrites no rule names the set empty. The SDET
+  lens re-derives each generator's set on the review tree from the diff and the graph - the
+  changed-file list; each hunk's identifiers, doc links (`[...]`) and constants included; the
+  body comments of each changed item; the impl headers; the depth-1 callers; the tracked lines
+  spelling a changed item's name - compares it with the walk record, and re-runs each recorded
+  rule-spelling search and re-reads every hit, CHECKED ones included, against the code at head:
+  a member the record omits, a hit the record does not carry, or a CHECKED hit whose reason does
+  not hold at head, is a BLOCKING finding on its own.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
   code reads after your change, on any feature lane, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
