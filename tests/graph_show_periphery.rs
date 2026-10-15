@@ -13,13 +13,14 @@
 //!     the body is unavailable. A further degrade arm lives inside extent derivation (the `symbols`
 //!     lane, past the pre-read guards): the file's EXTENSION has no registered grammar degrades to a
 //!     note with NO body.
-//!   - HEAL (spec 92, FRESH ON EVERY INTEGRATION): when the current tree holds no definition of that
-//!     name STARTING at the recorded line (a name/line drift - the definition moved within the file
-//!     since the graph was last indexed), the surface RE-LOCATES it by name within the SAME file
-//!     (never crossing files) and shows its LIVE body, with the header noting "recorded line N, now
-//!     M" - but ONLY when that name is UNAMBIGUOUS there: with more than one live candidate the surface
-//!     cannot tell which the caller meant, so it degrades to a note with NO body instead of guessing
-//!     (never a wrong body from a neighbor, or from an ambiguous same-named sibling).
+//!   - HEAL (spec 92, FRESH ON EVERY INTEGRATION): when the current tree holds no definition of
+//!     that name STARTING at the recorded line (a name/line drift - the definition moved within the
+//!     file since the graph was last indexed), the surface RE-LOCATES it by name and kind within
+//!     the SAME file (never crossing files) and shows its LIVE body, with the header noting
+//!     "recorded line N, now M" - but ONLY when that name and kind are UNAMBIGUOUS there: with more
+//!     than one live candidate the surface cannot tell which the caller meant, so it degrades to a
+//!     note with NO body instead of guessing (never a wrong body from a neighbor, or from an
+//!     ambiguous same-named sibling).
 //!   - EXTENT: a definition's line-numbered body is bounded by the definition's OWN extent, derived
 //!     through the shared multi-grammar symbols authority (the grammar's own tree-sitter node
 //!     boundary) - so a nested `fn`, a brace inside a string/comment/char, a signature that itself
@@ -797,15 +798,16 @@ fn graph_show_degrades_when_no_grammar_registered_for_the_file_extension() {
 }
 
 /// NAME/LINE-DRIFT HEAL (spec 92, FRESH ON EVERY INTEGRATION, the symbols lane): a definition whose
-/// file IS present and whose recorded line IS a real line of that file, but where the CURRENT working
-/// tree holds no definition of that name STARTING at the recorded line (the code was edited so the
-/// definition moved off its recorded site) - and the name is UNAMBIGUOUS elsewhere in the file. The
-/// surface RE-LOCATES it by name and shows its LIVE body, noting the drift in the site header, rather
-/// than refusing: a moved function must still resolve in the CURRENT tree. This is a distinct arm
-/// from the missing-file / past-EOF / line-0 degrades (all of which short-circuit BEFORE extent
-/// derivation): here every earlier guard passes and the exact name+start_line match misses, so the
-/// surface falls back to a name-only search of the same file. Reachable only in the `symbols` lane
-/// (the light lane never derives an extent, so it never attempts the fallback either).
+/// file IS present and whose recorded line IS a real line of that file, but where the CURRENT
+/// working tree holds no definition of that name STARTING at the recorded line (the code was edited
+/// so the definition moved off its recorded site) - and the name and kind are UNAMBIGUOUS elsewhere
+/// in the file. The surface RE-LOCATES it by name and kind and shows its LIVE body, noting the
+/// drift in the site header, rather than refusing: a moved function must still resolve in the
+/// CURRENT tree. This is a distinct arm from the missing-file / past-EOF / line-0 degrades (all of
+/// which short-circuit BEFORE extent derivation): here every earlier guard passes and the recorded
+/// name and line hold no definition, so the surface falls back to a search of the same file by name
+/// and kind. Reachable only in the `symbols` lane (the light lane never derives an extent, so it
+/// never attempts the fallback either).
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_show_heals_to_the_live_line_when_the_moved_name_is_unambiguous() {
@@ -815,10 +817,11 @@ fn graph_show_heals_to_the_live_line_when_the_moved_name_is_unambiguous() {
 
     // drift.rs: an UNRELATED `other` really sits at line 1 (with a distinctive body token), and the
     // queried `moved` really sits at line 4. The graph records `moved` at line 1 (a stale site: the
-    // definition was edited downward since the graph was built). Every pre-extent guard passes - the
-    // file exists, line 1 is a real line, it is not 0 and not past EOF - so the exact name+start_line
-    // match misses and the surface falls back to a name-only search: `moved` is UNAMBIGUOUS in this
-    // file (it occurs at exactly one line), so the fallback resolves it.
+    // definition was edited downward since the graph was built). Every pre-extent guard passes -
+    // the file exists, line 1 is a real line, it is not 0 and not past EOF - so the recorded name
+    // and line hold no definition and the surface falls back to a search by name and kind: the
+    // function `moved` is UNAMBIGUOUS in this file (it occurs at exactly one line), so the fallback
+    // resolves it.
     std::fs::write(
         root.join("drift.rs"),
         "fn other() {\n\
@@ -869,11 +872,11 @@ fn graph_show_heals_to_the_live_line_when_the_moved_name_is_unambiguous() {
     );
 }
 
-/// NAME/LINE-DRIFT, AMBIGUOUS (spec 92): when the queried name occurs at MORE than one live line in
-/// the file (none of them the recorded one), the surface cannot tell which the caller meant - it
-/// degrades to a note with NO body, exactly as the pre-heal behavior did for every drift, rather than
-/// guessing one of the candidates. This is the boundary the heal above must never cross: healing is
-/// safe only when the name is unambiguous in its file.
+/// NAME/LINE-DRIFT, AMBIGUOUS (spec 92): when the queried name, of its kind, occurs at MORE than
+/// one live line in the file (none of them the recorded one), the surface cannot tell which the
+/// caller meant - it degrades to a note with NO body, exactly as the pre-heal behavior did for
+/// every drift, rather than guessing one of the candidates. This is the boundary the heal above
+/// must never cross: healing is safe only when the name and kind are unambiguous in its file.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file() {
@@ -882,8 +885,8 @@ fn graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file() {
     seed_rigger_dir(root);
 
     // twins.rs: TWO live definitions named `dup` (lines 4 and 7), neither at the recorded line 1
-    // (where an unrelated `other` really sits). A name-only fallback with no tiebreak would have to
-    // guess between them - the surface must refuse instead.
+    // (where an unrelated `other` really sits). A fallback by name and kind with no tiebreak would
+    // have to guess between them - the surface must refuse instead.
     std::fs::write(
         root.join("twins.rs"),
         "fn other() {\n\

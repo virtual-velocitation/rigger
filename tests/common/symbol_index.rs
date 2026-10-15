@@ -3,7 +3,7 @@
 //! hand-authored legacy `index.json`, projecting a file's definitions, its test-marked
 //! definitions and references and its references with their callers, checking a language's definition
 //! types against a file's definitions, checking a language's definitions fixture whole,
-//! projecting a source's definitions' extents, and checking the variant names a file's kinds
+//! projecting a file's definition extents, and checking the variant names a file's kinds
 //! persist under.
 //! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention

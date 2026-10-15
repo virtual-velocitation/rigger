@@ -169,9 +169,9 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 ///   the definition BODY read from the WORKING TREE at that location - line-numbered and bounded by
 ///   the extent the shared multi-grammar symbols authority derives (the grammar's own node
 ///   boundary), clamped to a max window. A missing file, a recorded line past end-of-file, a drifted
-///   location the current tree no longer matches, or a build without the extraction grammar degrades
-///   to the site plus an explicit note, never an error (the recorded graph facts are still shown;
-///   only the body is unavailable, and the surface says so).
+///   location the current tree no longer matches, a nameless node, or a build without the
+///   extraction grammar degrades to the site plus an explicit note, never an error (the recorded
+///   graph facts are still shown; only the body is unavailable, and the surface says so).
 /// - MANY matches (an ambiguous bare name): LISTS the sorted candidates, each with its file, and
 ///   prints NO body - the graph's honesty rule is never to guess among candidates.
 /// - NONE: a one-line not-found note (never an error), mirroring `--around`'s empty result.
@@ -203,12 +203,12 @@ fn cmd_graph_show(entity: &str) -> Res {
 /// INTEGRATION, for the header; spec 119, SHOW IS ONE RENDERER): `show <id>`, the site/kind/degree
 /// header, one `  <entry> <value>` line per remaining [`contextgraph::site_fields`] entry, then the
 /// line-numbered body bounded through the shared multi-grammar symbols authority - or an explicit
-/// note (a drifted location this tree cannot resolve even by name, or a build without the
-/// extraction grammar) in place of the body, so the surface is never silently wrong (a graceful
-/// degrade, never an error). A node naming no file has no line: its header reads `  kind K
-/// degree D` with no `site:` part, and it prints no body and no note, [`definition_body`] never
-/// called. When [`definition_body`] HEALS a drifted recorded line to the entity's live one, the
-/// header prints the LIVE site with the recorded one noted alongside it (`"recorded line N, now
+/// note (a drifted location this tree cannot resolve even by name and kind, a nameless node, or a
+/// build without the extraction grammar) in place of the body, so the surface is never silently
+/// wrong (a graceful degrade, never an error). A node naming no file has no line: its header reads
+/// `  kind K degree D` with no `site:` part, and it prints no body and no note, [`definition_body`]
+/// never called. When [`definition_body`] HEALS a drifted recorded line to the entity's live one,
+/// the header prints the LIVE site with the recorded one noted alongside it (`"recorded line N, now
 /// M"`) rather than silently swapping one location for the other with no trace of the drift.
 ///
 /// The body is bounded by the node's `name` attr and its kind (spec 119, ONE EXTENT), never a cut
@@ -290,7 +290,7 @@ impl Unbounded {
 /// where the body actually came from (or, for a [`ShowBody::Note`], simply the recorded line -
 /// nothing was located). When it agrees with the entity's RECORDED line (`site.line`) - the
 /// overwhelmingly common case, and every case before spec 92 - the header is exactly the spec-58
-/// shape. When a name-only fallback healed a drifted recorded line to a different live one, the
+/// shape. When a drifted recorded line healed by name and kind to a different live one, the
 /// header shows the LIVE line as the site (it is what the body below is FROM) and notes the
 /// recorded line beside it, so the drift is visible rather than silently resolved.
 fn print_site_header(site: &contextgraph::EntitySite, file: &str, live_line: u32) {
@@ -325,12 +325,12 @@ fn print_site_entries(site: &contextgraph::EntitySite) {
 /// The outcome of bounding a located definition's body for `rigger graph --show` (spec 58; spec 92
 /// criterion 1).
 enum ShowBody {
-    /// The line-numbered body window `[start, end]`: `start` is where the body actually begins - the
-    /// entity's RECORDED line when it still holds the definition, or the LIVE line a name-only
-    /// fallback healed a drift to (spec 92) - so the caller always knows which line the printed body
-    /// is from. `omitted` is how many lines were dropped past the [`SHOW_MAX_BODY_LINES`] clamp (`0`
-    /// when the whole extent fit), and `extent_end` is the extent's true last line, so the caller can
-    /// print an honest clamp note when `omitted > 0`.
+    /// The line-numbered body window `[start, end]`: `start` is where the body actually begins -
+    /// the entity's RECORDED line when it still holds the definition, or the LIVE line a drift
+    /// healed to by name and kind (spec 92) - so the caller always knows which line the printed
+    /// body is from. `omitted` is how many lines were dropped past the [`SHOW_MAX_BODY_LINES`]
+    /// clamp (`0` when the whole extent fit), and `extent_end` is the extent's true last line, so
+    /// the caller can print an honest clamp note when `omitted > 0`.
     Lines {
         start: u32,
         lines: Vec<(u32, String)>,
@@ -338,7 +338,8 @@ enum ShowBody {
         extent_end: u32,
     },
     /// No body could be shown; the string is the human reason (a drifted working-tree location this
-    /// tree cannot resolve even by name, or a build compiled without the extraction grammar).
+    /// tree cannot resolve even by name and kind, a nameless node, or a build compiled without the
+    /// extraction grammar).
     /// Printed in place of the body so the show surface degrades honestly, never guessing or
     /// silently truncating.
     Note(String),

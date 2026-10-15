@@ -6734,13 +6734,13 @@
     "sites": [
       {
         "file": "src/cli/graph.rs",
-        "start_line": 685,
-        "end_line": 709
+        "start_line": 686,
+        "end_line": 710
       },
       {
         "file": "src/cli/graph.rs",
-        "start_line": 786,
-        "end_line": 810
+        "start_line": 787,
+        "end_line": 811
       }
     ]
   },
@@ -7214,8 +7214,8 @@
       },
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 96,
-        "end_line": 113
+        "start_line": 97,
+        "end_line": 114
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
@@ -7899,63 +7899,63 @@
     "sites": [
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 122,
-        "end_line": 177
+        "start_line": 123,
+        "end_line": 178
       },
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 187,
-        "end_line": 229
+        "start_line": 188,
+        "end_line": 230
       },
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 259,
-        "end_line": 293
+        "start_line": 260,
+        "end_line": 294
       },
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 302,
-        "end_line": 354
+        "start_line": 303,
+        "end_line": 355
       },
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 366,
-        "end_line": 441
+        "start_line": 367,
+        "end_line": 442
       },
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 452,
-        "end_line": 500
+        "start_line": 453,
+        "end_line": 501
       },
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 508,
-        "end_line": 550
+        "start_line": 509,
+        "end_line": 551
       },
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 560,
-        "end_line": 622
+        "start_line": 561,
+        "end_line": 623
       },
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 633,
-        "end_line": 673
+        "start_line": 634,
+        "end_line": 674
       },
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 744,
-        "end_line": 797
+        "start_line": 745,
+        "end_line": 798
       },
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 811,
-        "end_line": 870
+        "start_line": 813,
+        "end_line": 873
       },
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 879,
-        "end_line": 931
+        "start_line": 882,
+        "end_line": 934
       },
       {
         "file": "tests/graph_show_staleness.rs",
