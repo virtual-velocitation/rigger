@@ -42,8 +42,14 @@ against the code at head. A member the record omits is BLOCKING; a hit the recor
 carry is BLOCKING; a CHECKED hit whose reason does not hold at head - it is a spelling of the
 retired rule or of one of its case labels after all - is BLOCKING; a record naming no rule-spelling search and no empty set
 is BLOCKING, and so is a record that names the set empty while the diff rewrites a rule (a doc
-hunk restating what a call lands on, what a key binds or what a tier means). Each is a finding
-on its own, citing the sentence's file:line with the generator or the command that reaches it.
+hunk restating what a call lands on, what a key binds or what a tier means). You derive every
+set over the unit's whole range, `$(git merge-base rigger-run HEAD)..HEAD` run in your own
+worktree, never the round's delta your prompt carries, and you read every witness the record
+carries - the `file:line` beside each new or FIXED sentence - against the code at head. A
+sentence whose witness no longer makes it true is BLOCKING; a new or FIXED sentence with no
+witness is BLOCKING; a record whose sets are re-derived over a round's delta is BLOCKING. Each
+is a finding on its own, citing the sentence's file:line with the generator or the command
+that reaches it.
 
 ## Every test must survive mutation testing
 
