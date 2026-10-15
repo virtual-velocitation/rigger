@@ -1357,8 +1357,8 @@ pub enum Extent {
     /// body included: `start` the recorded line when a definition still sits there, else the live
     /// line a drifted one healed to.
     Bounded { start: u32, end: u32 },
-    /// No production definition of the name sits at the recorded line, nor one of the kind
-    /// anywhere in the file (deleted, not merely moved).
+    /// No production definition of the name and kind sits at the recorded line or anywhere else
+    /// in the file, nor a lone one of the name at that line (deleted, not merely moved).
     Missing,
     /// The recorded line drifted and production definitions of the name and kind sit at this many
     /// distinct lines, so which one moved cannot be told.
@@ -1381,8 +1381,9 @@ pub enum Extent {
 ///    [`Extent::Ambiguous`], none [`Extent::Missing`].
 ///
 /// The kind is compared through `kind_str`, so a field beside a same-named fn, or a variant
-/// inside its same-named enum, never widens or blocks a match. An `Err` is a grammar or query
-/// that cannot run over the source.
+/// inside its same-named enum, never widens or blocks a tier-1 or tier-3 match; at the recorded
+/// line tier 2 ignores the kind, so a lone same-named field there bounds the body. An `Err` is a
+/// grammar or query that cannot run over the source.
 pub fn locate_extent(
     source: &str,
     lang: Lang,

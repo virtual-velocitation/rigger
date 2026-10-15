@@ -229,7 +229,9 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
         .map(String::as_str)
         .filter(|name| !name.is_empty());
     let body = match name {
-        None if site.line != 0 => ShowBody::Note(Unbounded::Missing.note(&site.id, site.line)),
+        None if site.line != 0 => {
+            ShowBody::Note(Unbounded::Missing.note(&site.id, &site.kind, file, site.line))
+        }
         // A named node, or a nameless one at line 0, which `definition_body` refuses before it
         // reads a name.
         name => definition_body(file, site.line, name.unwrap_or_default(), &site.kind),
@@ -265,8 +267,9 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
 /// Why `rigger graph --show` bounds no body for a located definition (spec 119, ONE EXTENT),
 /// printed as one note in place of the body ([`Unbounded::note`]).
 enum Unbounded {
-    /// No definition of the label sits at its recorded line, nor one of its kind anywhere in the
-    /// file: a deleted definition, or a nameless node no definition can be sought for.
+    /// No definition of the label's name and kind sits at its recorded line or anywhere else in
+    /// the file, nor a lone one of the name at that line: a deleted definition, or a nameless node
+    /// no definition can be sought for.
     Missing,
     /// Any other reason, already worded: an ambiguous drift, no registered grammar, or a build
     /// without the extraction grammar.
@@ -274,12 +277,13 @@ enum Unbounded {
 }
 
 impl Unbounded {
-    /// The note for a definition labelled `label` - its name, or a nameless node's id - recorded
-    /// at `line`.
-    fn note(self, label: &str, line: u32) -> String {
+    /// The note for a definition labelled `label` - its name, or a nameless node's id - of kind
+    /// `kind` recorded at `line` of `file`.
+    fn note(self, label: &str, kind: &str, file: &str, line: u32) -> String {
         match self {
             Unbounded::Missing => format!(
-                "no definition named {label:?} at line {line} in the current working tree; the recorded location may be stale"
+                "no definition named {label:?} of kind {kind} at line {line} or elsewhere in {file} \
+                 in the current working tree; the recorded location may be stale"
             ),
             Unbounded::Note(why) => why,
         }
@@ -371,7 +375,8 @@ enum ShowBody {
 /// body cannot be shown honestly: the recorded `start` line is `0` or past end-of-file (a location
 /// that never named a real source line, or one that has drifted past the file itself, each refused
 /// before any search), the file cannot be read (a drifted or unknown location), the current tree
-/// holds no definition of that name and kind ANYWHERE in the file (deleted, not merely moved), the
+/// holds no definition of that name and kind ANYWHERE in the file nor a lone one of the name at
+/// the recorded line (deleted, not merely moved), the
 /// name and kind are ambiguous in the file (more than one live line - never guessed), or this build
 /// has no extraction grammar (the light, `--no-default-features` lane). It never GUESSES a body
 /// from a structural next-definition bound or from an ambiguous candidate.
@@ -409,7 +414,7 @@ fn definition_body(file: &str, start: u32, name: &str, kind: &str) -> ShowBody {
     // light-lane build with no grammar) is an explicit note, never a guessed body.
     let (live_start, extent_end) = match locate_definition_extent(file, &text, start, name, kind) {
         Ok((s, e)) => (s, e.min(total)),
-        Err(why) => return ShowBody::Note(why.note(name, start)),
+        Err(why) => return ShowBody::Note(why.note(name, kind, file, start)),
     };
     // The max window: never dump an unbounded body. A clamp keeps the extent's true end so the
     // caller can announce the omitted lines. The window is anchored at the RESOLVED start, so a
@@ -438,7 +443,8 @@ fn definition_body(file: &str, start: u32, name: &str, kind: &str) -> ShowBody {
 /// and line, else a drifted line by name and kind, healed only when one line holds them.
 ///
 /// Returns the [`Unbounded`] reason - the caller degrades to a note - when no definition of that
-/// name and kind exists anywhere in the file (deleted, not moved), and a worded one when no
+/// name and kind exists anywhere in the file nor a lone one of the name at the recorded line
+/// (deleted, not moved), and a worded one when no
 /// grammar is registered for the file's extension, the grammar cannot tag the source, or the name
 /// and kind sit at more than one live line and none at the recorded one.
 #[cfg(feature = "symbols")]
@@ -470,7 +476,7 @@ fn locate_definition_extent(
         Extent::Bounded { start, end } => Ok((start, end)),
         Extent::Missing => Err(Unbounded::Missing),
         Extent::Ambiguous(n) => Err(Unbounded::Note(format!(
-            "{n} definitions named {name:?} of kind {kind} exist in {file} and none starts at the \
+            "definitions named {name:?} of kind {kind} sit at {n} lines in {file} and none at the \
              recorded line {start}; the recorded location may be stale (cannot resolve which one moved)"
         ))),
     }
