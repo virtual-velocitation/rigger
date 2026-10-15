@@ -382,15 +382,17 @@ pub struct CallGraph {
 /// [`Projection::locate`] returns the same kind of type every sibling `Projection` method does,
 /// never a concrete adapter's own type): [`sqlite::Projector::locate`] resolves the query exactly
 /// the way the graph's other surfaces do - a full `<file>::<path>` node id, or a bare name matched
-/// as a definition's leaf (spec 119) - and returns one of three honest outcomes, never a guess
-/// among candidates.
+/// as a definition's leaf, a path by its id suffix and a flat `<file>::<name>` as a leaf in that
+/// file (spec 119, A BARE SHOW FINDS A LEAF OR PATH) - and returns one of three honest outcomes,
+/// never a guess among candidates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Located {
     /// Exactly one entity resolved: its definition site and graph facts, from which the CLI reads
     /// the line-numbered body out of the working tree.
     One(EntitySite),
-    /// An ambiguous bare name (several definitions share it): the SORTED candidate sites the caller
-    /// picks from. The show surface prints these and NO body (the call-views honesty rule).
+    /// An ambiguous query (several definitions answer one bare name, path or flat
+    /// `<file>::<name>`): the SORTED candidate sites the caller picks from. The show surface
+    /// prints these and NO body (the call-views honesty rule).
     Many(Vec<Candidate>),
     /// Nothing in the graph matched the query.
     None,
@@ -476,7 +478,7 @@ pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> 
     located.chain(graph).chain(attrs).collect()
 }
 
-/// One disambiguation candidate for an ambiguous bare name (spec 58): the full node id and its
+/// One disambiguation candidate for an ambiguous query (spec 58): the full node id and its
 /// file. [`sqlite::Projector::locate`] returns these SORTED by id, so the listing is deterministic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
@@ -903,8 +905,11 @@ pub trait Projection: Send + Sync {
     /// can serve it without reaching for the concrete [`sqlite::Projector`] across the crate
     /// boundary - the DI extension that retired the operator MCP surface's second read loop
     /// rather than adding one. Mirrors [`sqlite::Projector::locate`]: a full `<file>::<path>` id
-    /// resolves directly, a bare name matches as a definition's leaf, and the three
-    /// outcomes ([`Located`], a port-owned type - see its doc) are never a guess among candidates.
+    /// resolves directly (a nameless code entity's or artifact's only once nothing else does);
+    /// else a bare name matches as a definition's leaf, a path (`Struct.field`) by its id suffix
+    /// and a flat `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR
+    /// PATH); and the three outcomes ([`Located`], a port-owned type - see its doc) are never a
+    /// guess among candidates.
     /// The default returns `Located::None`, so a projection with no locate support (a test double)
     /// degrades honestly rather than erroring - the sqlite `Projector` OVERRIDES it with the real
     /// lookup.

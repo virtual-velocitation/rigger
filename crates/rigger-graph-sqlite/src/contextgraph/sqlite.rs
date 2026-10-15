@@ -8,7 +8,9 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
-use super::query::{entity_id, leaf_of, node_file, node_leaf, placeholder_id};
+use super::query::{
+    entity_id, leaf_of, node_file, node_leaf, node_name, path_leaf, placeholder_id, split_id,
+};
 use super::{
     entity_site, CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch,
     EntryFold, Error, FoldAccess, Graph, Located, Node, Projection, CODE_KIND_PRECEDENCE,
@@ -865,25 +867,34 @@ impl Projector {
     /// reads - reusing [`node_row`] and the pinned [`definitions_with_suffix`] leaf match - so the
     /// show surface never forks a second resolution authority.
     ///
-    /// Resolution order (the graph's existing surface convention): an EXACT node-id match first, so
-    /// a full id resolves directly; only on a miss is the input treated as a BARE name and matched
-    /// as a leaf (spec 119: `new` answers `a.rs::T::new`) over code-entity DEFINITION nodes, a data
-    /// member and a declaration among them (a lookup, never the walks' call-target test).
-    /// Zero candidates -> [`Located::None`]; exactly one -> [`Located::One`] (its site); more than
-    /// one -> [`Located::Many`] the SORTED candidates, never a guess among them.
+    /// Resolution order (spec 119, A BARE SHOW FINDS A LEAF OR PATH), each step taken only on zero
+    /// answers from the one before: the EXACT node id, unless its node is a knowledge-held flat
+    /// id's bare node ([`is_bare_flat_node`]); then [`shown_candidates`]' three forms over
+    /// code-entity definitions (the whole query as a leaf, the path form, the file-qualified
+    /// form), a data member and a declaration among them (a lookup, never the walks' call-target
+    /// test); then the bare node's exact id. Zero answers -> [`Located::None`]; exactly one ->
+    /// [`Located::One`] (its site); more than one -> [`Located::Many`] the SORTED candidates,
+    /// never a guess among them.
     ///
     /// Read-only over the projection; a missing / drifted working-tree location is NOT this method's
     /// concern (it reports the recorded graph site) - the CLI reads and, if stale, degrades the body.
     pub fn locate(&self, entity: &str) -> Result<Located, Error> {
         let conn = self.conn.lock().unwrap();
-        // Exact id first: a full `<file>::<path>` id resolves directly to its node.
-        if let Some(node) = node_row(&conn, entity, &self.project)? {
+        // Exact id first: a full `<file>::<path>` id resolves directly to its node, a bare flat
+        // node's only once no definition answers.
+        let (exact, deferred) = match node_row(&conn, entity, &self.project)? {
+            Some(node) if is_bare_flat_node(&node) => (None, Some(node)),
+            found => (found, None),
+        };
+        if let Some(node) = exact {
             return Ok(Located::One(self.site_of(&conn, node)?));
         }
-        // Else a bare name: the pinned leaf match over definition nodes (sorted by id).
-        let cands = definitions_with_suffix(&conn, entity, &self.project, Admitted::Named, None)?;
+        let cands = shown_candidates(&conn, entity, &self.project)?;
         match cands.as_slice() {
-            [] => Ok(Located::None),
+            [] => match deferred {
+                Some(node) => Ok(Located::One(self.site_of(&conn, node)?)),
+                None => Ok(Located::None),
+            },
             [only] => {
                 let node = node_row(&conn, only, &self.project)?.ok_or_else(|| {
                     Error(format!("locate: candidate {only:?} vanished between reads"))
@@ -3516,6 +3527,47 @@ fn definitions_with_suffix(
         .collect::<Result<_, _>>()
         .map_err(be)?;
     Ok(ids)
+}
+
+/// The definitions a show query names when no exact id answers it (spec 119, A BARE SHOW FINDS A
+/// LEAF OR PATH), sorted by id: the first non-empty of the whole `query` as a leaf
+/// ([`Admitted::Named`]); the leaf lookup of its [`path_leaf`] filtered on the id suffix
+/// `::<query>`, compared byte for byte (`Struct.field` answers `a.rs::Struct.field`); and the
+/// leaf lookup of its [`split_id`] rest half filtered to its file half's `<file>::` id range (the
+/// pre-spec flat `a.rs::new` answers `a.rs::T::new`), an empty or absent rest half naming no
+/// leaf, since [`node_leaf_sql`] is never empty.
+fn shown_candidates(conn: &Connection, query: &str, project: &str) -> Result<Vec<String>, Error> {
+    let by_leaf = definitions_with_suffix(conn, query, project, Admitted::Named, None)?;
+    if !by_leaf.is_empty() {
+        return Ok(by_leaf);
+    }
+    let suffix = entity_id("", query);
+    let by_path: Vec<String> =
+        definitions_with_suffix(conn, path_leaf(query), project, Admitted::Named, None)?
+            .into_iter()
+            .filter(|id| id.ends_with(&suffix))
+            .collect();
+    if !by_path.is_empty() {
+        return Ok(by_path);
+    }
+    let (file, rest) = split_id(query);
+    definitions_with_suffix(
+        conn,
+        rest.unwrap_or_default(),
+        project,
+        Admitted::Named,
+        Some(file),
+    )
+}
+
+/// Whether `node` is a knowledge-held flat id's bare node (spec 119, A BARE SHOW FINDS A LEAF OR
+/// PATH): a `code-entity` or `artifact` with no name ([`node_name`]) whose id holds `::` (a
+/// decision governing the pre-spec `a.rs::new`, an artifact `T::new`), which a show answers by
+/// its exact id only when no definition answers the query ([`Projector::locate`]).
+fn is_bare_flat_node(node: &Node) -> bool {
+    node_name(node).is_none()
+        && [KIND_CODE_ENTITY, KIND_ARTIFACT].contains(&node.kind.as_str())
+        && split_id(&node.id).1.is_some()
 }
 
 /// The call targets of `leaf` a live assertion defines in `file` ([`definitions_with_suffix`]

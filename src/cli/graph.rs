@@ -84,6 +84,10 @@ const AROUND_GOVERNANCE_CAP: usize = 10;
 ///   with - never an edge that merely touches the node as `to` (a superseded decision's
 ///   inbound `SUPERSEDES` edge carries its superseder's fresh position, which would let the
 ///   stale decision crowd a live one out of the cap if it counted).
+///
+/// An empty subgraph prints one note naming the seed form (spec 119, A BARE SHOW FINDS A LEAF OR
+/// PATH): a seed is an exact id, `<file>::<path>`, never resolved from a bare name, and
+/// `rigger graph --show <name>` is the verb that resolves one.
 fn print_around_subgraph(g: &contextgraph::Graph, around: &str) {
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -149,7 +153,10 @@ fn print_around_subgraph(g: &contextgraph::Graph, around: &str) {
     }
 
     if g.nodes.is_empty() {
-        println!("  (nothing found; has `rigger run` been run yet?)");
+        println!(
+            "  (nothing found; a seed is an exact id, `<file>::<path>`, and `rigger graph --show \
+             <name>` resolves a bare name; has `rigger run` been run yet?)"
+        );
     }
 }
 
@@ -161,7 +168,9 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 
 /// `rigger graph --show <entity>` (spec 58, criterion 1) - the TEXT half of graph lookup, beside
 /// `--around`'s structural neighborhood. It resolves the entity through [`Projector::locate`] (a
-/// full `<file>::<path>` id, or a bare name matched as a definition's leaf), then:
+/// full `<file>::<path>` id, a bare name matched as a definition's leaf, a path such as
+/// `Struct.field` matched by its id suffix, or a pre-spec flat `<file>::<name>` matched as a leaf
+/// in that file), then:
 ///
 /// - ONE match: prints the definition SITE (`file:line`), the entity's KIND and one-hop DEGREE, its
 ///   remaining `site_fields` entries one line each ([`print_entity_site`]; a node naming no file
@@ -172,8 +181,9 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 ///   location the current tree no longer matches, a nameless node, or a build without the
 ///   extraction grammar degrades to the site plus an explicit note, never an error (the recorded
 ///   graph facts are still shown; only the body is unavailable, and the surface says so).
-/// - MANY matches (an ambiguous bare name): LISTS the sorted candidates, each with its file, and
-///   prints NO body - the graph's honesty rule is never to guess among candidates.
+/// - MANY matches (an ambiguous bare name, path or flat `<file>::<name>`): LISTS the sorted
+///   candidates, each with its file, and prints NO body - the graph's honesty rule is never to
+///   guess among candidates.
 /// - NONE: a one-line not-found note (never an error), mirroring `--around`'s empty result.
 ///
 /// Read-only over the projection and the working tree; deterministic for a given tree and graph.
