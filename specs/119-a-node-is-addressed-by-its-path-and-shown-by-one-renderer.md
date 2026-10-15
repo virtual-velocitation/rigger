@@ -267,8 +267,8 @@ then by the `<file>::` range; a nameless node of graph kind `code-entity` or `ar
 summary and partial (`title` and `doc` the knowledge attrs `sqlite.rs:2896` writes, `by`, `unit`
 and `summary` a finding's, `:2644`), an empty string field giving no entry and an attr outside the
 list nothing (`proven_by` among them, whose entry spec 118 adds); a later field joins the list as one entry; the CLI's two
-transforms, the live healed line and a value's newlines collapsed, apply at print only, and the MCP object carries `id` and `site_fields`' entries as keys, compared without order, on `show` and on every
-`around` node. A NODE WITH NO `file` HAS NO `line`, on every
+transforms, the live healed line and a value's newlines collapsed, apply at print only, and the MCP object carries `id` and `site_fields`' entries as keys, compared without order, on `show`, and on every
+`around` node less its `summary` entry - the one unbounded attr, so a depth-1 `around` stays a list of sites and a reader wanting a finding's text calls `show` on its id; decided here, criterion 4's. A NODE WITH NO `file` HAS NO `line`, on every
 surface at once: `site_fields` gives neither entry, the MCP `show` neither key, the CLI header reads
 `  kind K   degree D` with no `site:` part, and the CLI prints no body and no note, never calling
 `definition_body` (`src/cli/graph.rs:322-330`); a node with a `file` gives its `line`, 0 meaning
