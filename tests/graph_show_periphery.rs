@@ -1012,4 +1012,27 @@ rigger::test_cases! {
         ],
         "an ambiguous drift notes the lines holding its kind and prints no body"
     );
+    /// Spec 119, ONE EXTENT, the deleted-definition note at the binary: GIVEN a function `g` the
+    /// graph records at line 1 of a file whose working tree holds a struct `g` and a constant `g`
+    /// at line 1 and no function `g` anywhere, WHEN the operator runs `rigger graph --show` on its
+    /// id, THEN no body is printed and the note names the definition by its name and kind, at its
+    /// line or elsewhere in its file, the two same-named definitions of other kinds never bounding
+    /// it.
+    #[cfg(feature = "symbols")]
+    graph_show_notes_a_definition_missing_by_name_and_kind: assert_eq!(
+        shown_function_recorded_at_line_1(
+            "missing.rs",
+            common::fixtures::TWO_OTHER_KINDS_AT_ONE_LINE_SOURCE,
+            "g",
+        ),
+        [
+            "show missing.rs::g",
+            "  site: missing.rs:1   kind function   degree 1",
+            "  name g",
+            "  lang rust",
+            "  (no definition named \"g\" of kind function at line 1 or elsewhere in missing.rs in \
+             the current working tree; the recorded location may be stale)",
+        ],
+        "a definition of its name and kind found nowhere notes it by both and prints no body"
+    );
 }

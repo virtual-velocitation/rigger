@@ -2969,7 +2969,7 @@ class K
         /// Two same-named definitions of other kinds at the recorded line, and none of the recorded
         /// kind anywhere, are missing: tier 2 takes exactly one, tier 3 finds no line.
         two_other_kinds_at_the_recorded_line_and_none_of_its_kind_are_missing: assert_eq!(
-            located("struct g {} const g: u8 = 0;\n", "g", Kind::Function, 1),
+            located(crate::extent_sources::TWO_OTHER_KINDS_AT_ONE_LINE_SOURCE, "g", Kind::Function, 1),
             Extent::Missing
         );
         /// A name no definition carries anywhere in the file is missing.
