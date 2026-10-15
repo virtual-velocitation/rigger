@@ -3,12 +3,12 @@
 //! hand-authored legacy `index.json`, projecting a file's definitions, its test-marked
 //! definitions and references and its references with their callers, checking a language's definition
 //! types against a file's definitions, checking a language's definitions fixture whole,
-//! projecting a file's definition extents, and checking the variant names a file's kinds
-//! persist under.
+//! projecting a file's definition extents, checking the variant names a file's kinds persist
+//! under, and looking up a registered language.
 //! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention
-//! `tests/common/mod.rs` keeps). Every lane compiles it; `extracted`, with
-//! `assert_definitions_fixture` through it, alone reaches the parser and is held by the `symbols`
+//! `tests/common/mod.rs` keeps). Every lane compiles it; `registered` and `extracted`, with
+//! `assert_definitions_fixture` through it, alone reach a grammar and are held by the `symbols`
 //! lane only.
 
 #![allow(dead_code)]
