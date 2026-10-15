@@ -160,7 +160,8 @@ tool that searches them.
   you report, or the code is reshaped so the token disappears (one `span.contains(&x)` in place
   of two comparisons, say) and the reshaped form probed. A token with no recorded probe is a
   record you cannot write. The enumeration is by hand and stands once the mutation gate runs
-  too, since cargo-mutants mutates no call argument and deletes no single statement of an arm.
+  too, since the mutation gate's tool mutates no call argument and deletes no single statement
+  of an arm.
   The SDET lens derives the token set itself from the production hunks over the unit's whole
   range and probes every token the record lacks: a probe that leaves every test green, or a
   token with no recorded probe, is a BLOCKING finding on its own.
