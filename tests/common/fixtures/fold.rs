@@ -14,9 +14,10 @@ use std::time::{Duration, UNIX_EPOCH};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     around, entity_site, site_fields, EntitySite, Graph, Located, Projection, CODE_KIND_CONSTANT,
-    CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION, KIND_COMMUNITY, KIND_DESIGN_DOC,
-    META_ACTOR, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES, TYPE_CODE_ENTITY_EXTRACTED,
-    TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_REVIEW_FINDING,
+    CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION, KIND_CODE_ENTITY, KIND_COMMUNITY,
+    KIND_DESIGN_DOC, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
+    TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::Event;
 use rigger::retention::GenerationIngested;
@@ -254,6 +255,21 @@ pub fn code_entity_json(
     lang: &str,
 ) -> serde_json::Value {
     serde_json::json!({ "file": file, "name": name, "kind": kind, "line": line, "lang": lang })
+}
+
+/// [`code_entity_json`] carrying `path`, the definition's id path in its file (spec 119, IDS
+/// FOLLOW THE LANGUAGE'S PATH), `name` staying its leaf.
+pub fn path_entity_json(
+    file: &str,
+    name: &str,
+    path: &str,
+    kind: &str,
+    line: u64,
+    lang: &str,
+) -> serde_json::Value {
+    let mut json = code_entity_json(file, name, kind, line, lang);
+    json["path"] = path.into();
+    json
 }
 
 /// The `CodeEntityExtracted` payload of one extraction batch's Rust function definition. `fresh`
@@ -647,6 +663,23 @@ pub fn live_node_ids(g: &Graph, kind: &str) -> Vec<String> {
         .iter()
         .filter(|n| n.kind == kind)
         .map(|n| n.id.clone())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Every definition `p`'s whole graph holds - a code entity carrying a non-empty `name`, never a
+/// placeholder or a bare node - as its id, sorted.
+pub fn definition_ids(p: &Projector) -> Vec<String> {
+    let mut ids: Vec<String> = p
+        .whole()
+        .unwrap()
+        .nodes
+        .into_iter()
+        .filter(|n| {
+            n.kind == KIND_CODE_ENTITY && n.attrs.get("name").is_some_and(|s| !s.is_empty())
+        })
+        .map(|n| n.id)
         .collect();
     ids.sort();
     ids

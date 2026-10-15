@@ -27175,6 +27175,38 @@ fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
     );
 }
 
+/// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a built graph of a file whose `impl T` and
+/// `impl U` each define `new`, WHEN the working tree moves both down two lines and the operator
+/// runs `rigger graph --show` on `T::new`'s exact id, THEN its body heals to `T::new`'s live
+/// lines alone, the path telling it from `U::new`, which shares its name and kind.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_heals_a_drifted_method_by_its_path_beside_a_same_named_one() {
+    let dir = temp_project();
+    let root = dir.path();
+    let source = "struct T;\nstruct U;\nimpl T {\n    fn new() -> T {\n        T\n    }\n}\n\
+                  impl U {\n    fn new() -> U {\n        U\n    }\n}\n";
+    common::fixtures::write_text(root, "src/pair.rs", source);
+    run_rigger_ok(root, &["graph", "build"]);
+    common::fixtures::write_text(root, "src/pair.rs", &format!("// one\n// two\n{source}"));
+
+    assert_eq!(
+        run_rigger_ok(root, &["graph", "--show", "src/pair.rs::T::new"])
+            .lines()
+            .collect::<Vec<_>>(),
+        [
+            "show src/pair.rs::T::new",
+            "  site: src/pair.rs:6   kind method   degree 1   (recorded line 4, now 6)",
+            "  name new",
+            "  lang rust",
+            "       6 |     fn new() -> T {",
+            "       7 |         T",
+            "       8 |     }",
+        ],
+        "the drifted T::new heals to its own body, never U::new's"
+    );
+}
+
 /// Spec 119, ONE EXTENT: GIVEN a code entity with a file and a non-zero line but no `name` attr,
 /// beside a definition of its leaf in the working tree, WHEN the operator runs `rigger graph
 /// --show` on its id, THEN it prints the "no production definition named" note with its id in place of the

@@ -2392,4 +2392,145 @@ mod tests {
             super::file_batches(dir.path().to_str().unwrap(), &["src/absent.rs".to_string()]);
         assert_eq!(wire_owned(&named[0].1), boundary("src/absent.rs"));
     }
+
+    /// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: each file's real extraction, folded, names every
+    /// definition `<file>::<path>` - its enclosing definitions' path, `::`, its leaf, `.` before a
+    /// field or property; an impl contributing its self type or `<T as Trait>`, a Go method its
+    /// receiver's base type, a C# file-scoped namespace every declaration after it - and equal-range
+    /// siblings, a name-filtered `_` and a named value equal to its declarator add nothing.
+    #[test]
+    fn each_extracted_definition_folds_at_its_language_path_id() {
+        use crate::event_fixtures::positioned;
+        use crate::test_support::{definition_ids, folds};
+
+        let cases: [(&str, &str, &[&str]); 7] = [
+            (
+                "a.rs",
+                "struct T;\nstruct U;\nimpl T {\n    fn new() -> T { T }\n    const NAME: u8 = 1;\n}\n\
+                 impl U {\n    fn new() -> U { U }\n}\ntrait Show {\n    fn show(&self);\n}\n\
+                 impl Show for T {\n    fn show(&self) {}\n}\nmod m {\n    struct V;\n    impl V {\n        \
+                 fn make() {}\n    }\n}\nenum E {\n    A,\n    B { a: u8 },\n}\nstruct S {\n    \
+                 field: u8,\n}\nstruct P(u8);\nfn outer() {\n    fn inner() {}\n}\nstruct Foo<X>(X);\n\
+                 impl Foo<u8> {\n    fn new() {}\n}\nconst _: () = {\n    fn a() {}\n};\n\
+                 const _: () = {\n    fn a() {}\n};\n",
+                &[
+                    "a.rs::<T as Show>::show",
+                    "a.rs::E",
+                    "a.rs::E::A",
+                    "a.rs::E::B",
+                    "a.rs::E::B.a",
+                    "a.rs::Foo",
+                    "a.rs::Foo.0",
+                    "a.rs::Foo<u8>::new",
+                    "a.rs::P",
+                    "a.rs::P.0",
+                    "a.rs::S",
+                    "a.rs::S.field",
+                    "a.rs::Show",
+                    "a.rs::Show::show",
+                    "a.rs::T",
+                    "a.rs::T::NAME",
+                    "a.rs::T::new",
+                    "a.rs::U",
+                    "a.rs::U::new",
+                    "a.rs::a",
+                    "a.rs::impl Foo<u8>",
+                    "a.rs::impl Show for T",
+                    "a.rs::impl T",
+                    "a.rs::impl U",
+                    "a.rs::m",
+                    "a.rs::m::V",
+                    "a.rs::m::V::make",
+                    "a.rs::m::impl V",
+                    "a.rs::outer",
+                    "a.rs::outer::inner",
+                ],
+            ),
+            (
+                "g.go",
+                "package g\n\ntype Recv struct{}\n\nfunc (r *Recv) Name() {}\n\nconst a, b = f(), g()\n",
+                &["g.go::Recv", "g.go::Recv::Name", "g.go::a", "g.go::b"],
+            ),
+            (
+                "h.go",
+                "package h\n\nvar a, b = func() { type T struct{} }(), 1\n",
+                &["h.go::T", "h.go::a", "h.go::b"],
+            ),
+            (
+                "c.ts",
+                "class C {\n    f = 1;\n}\nconst f = function f() {};\nconst Foo = class Foo {};\n\
+                 function g() {\n    return function g() {};\n}\n",
+                &["c.ts::C", "c.ts::C.f", "c.ts::Foo", "c.ts::f", "c.ts::g", "c.ts::g::g"],
+            ),
+            (
+                "n.cs",
+                "namespace N {\n    class Foo {\n        Foo() {}\n        int P { get; set; }\n    }\n}\n",
+                &["n.cs::N", "n.cs::N::Foo", "n.cs::N::Foo.P", "n.cs::N::Foo::Foo"],
+            ),
+            (
+                "s.cs",
+                "namespace N;\nclass Foo {}\n",
+                &["s.cs::N", "s.cs::N::Foo"],
+            ),
+            (
+                "p.py",
+                "def outer():\n    def inner():\n        pass\n",
+                &["p.py::outer", "p.py::outer::inner"],
+            ),
+        ];
+        for (file, source, ids) in cases {
+            let (_, ext) = file
+                .rsplit_once('.')
+                .expect("the fixture file has an extension");
+            let p = Projector::open(":memory:", "test").unwrap();
+            folds(
+                &p,
+                &positioned(extract_events(
+                    file,
+                    &crate::symbol_index::extracted(ext, source),
+                )),
+            );
+            assert_eq!(definition_ids(&p), ids, "{file}: each definition's path id");
+        }
+    }
+
+    /// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: the fold names a `CodeEntityExtracted` carrying a
+    /// `path` `<file>::<path>`, its `name` staying the leaf, and one without `path`, or whose
+    /// `path` is empty, `<file>::<name>`, as every event recorded before `path` existed folds.
+    #[test]
+    fn an_event_folds_at_its_path_and_at_its_name_without_one() {
+        use crate::event_fixtures::positioned;
+        use crate::test_support::{
+            attrs_of, code_entity_json, definition_ids, event_of, folds, path_entity_json,
+        };
+
+        let p = Projector::open(":memory:", "test").unwrap();
+        folds(
+            &p,
+            &positioned(vec![
+                event_of(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    path_entity_json("x.rs", "new", "T::new", "method", 2, "rust"),
+                ),
+                event_of(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    code_entity_json("x.rs", "run", "function", 5, "rust"),
+                ),
+                event_of(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    path_entity_json("x.rs", "go", "", "function", 7, "rust"),
+                ),
+            ]),
+        );
+        assert_eq!(
+            definition_ids(&p),
+            ["x.rs::T::new", "x.rs::go", "x.rs::run"],
+            "a path names its node; an absent or empty one the name"
+        );
+        assert_eq!(
+            attrs_of(&p, "x.rs::T::new").get("name").map(String::as_str),
+            Some("new"),
+            "the node's name stays its leaf"
+        );
+    }
 }

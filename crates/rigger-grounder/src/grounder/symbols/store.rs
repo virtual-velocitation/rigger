@@ -296,26 +296,29 @@ mod tests {
         );
     }
 
-    /// Spec 119 (ONE EXTENT): an index persisted before definitions carried `end_line` loads as
-    /// absent, so the grounder rebuilds it rather than serving definitions with no extent.
+    /// Spec 119 (ONE EXTENT; IDS FOLLOW THE LANGUAGE'S PATH): an index persisted before
+    /// definitions carried `end_line`, or `path`, loads as absent, so the grounder rebuilds it
+    /// rather than serving definitions with no extent or no id path.
     #[test]
-    fn an_index_whose_definition_lacks_end_line_loads_as_absent() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        save(&sample(), root).unwrap();
-        assert_eq!(load(root), Some(sample()), "a current index loads whole");
-        rewrite_persisted(root, |persisted| {
-            persisted["files"]["z.rs"]["defs"][0]
-                .as_object_mut()
-                .unwrap()
-                .remove("end_line")
-                .expect("a current definition persists its end_line");
-        });
-        assert_eq!(
-            load(root),
-            None,
-            "an index whose definition lacks end_line must load as absent"
-        );
+    fn an_index_whose_definition_lacks_end_line_or_path_loads_as_absent() {
+        for field in ["end_line", "path"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().to_str().unwrap();
+            save(&sample(), root).unwrap();
+            assert_eq!(load(root), Some(sample()), "a current index loads whole");
+            rewrite_persisted(root, |persisted| {
+                persisted["files"]["z.rs"]["defs"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(field)
+                    .unwrap_or_else(|| panic!("a current definition persists its {field}"));
+            });
+            assert_eq!(
+                load(root),
+                None,
+                "an index whose definition lacks {field} must load as absent"
+            );
+        }
     }
 
     #[test]

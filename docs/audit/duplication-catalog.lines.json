@@ -3024,48 +3024,48 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27228,
-        "end_line": 27228
+        "start_line": 27260,
+        "end_line": 27260
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27452,
-        "end_line": 27452
+        "start_line": 27484,
+        "end_line": 27484
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27507,
-        "end_line": 27507
+        "start_line": 27539,
+        "end_line": 27539
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27538,
-        "end_line": 27538
+        "start_line": 27570,
+        "end_line": 27570
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27542,
-        "end_line": 27542
+        "start_line": 27574,
+        "end_line": 27574
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27612,
-        "end_line": 27612
+        "start_line": 27644,
+        "end_line": 27644
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27650,
-        "end_line": 27650
+        "start_line": 27682,
+        "end_line": 27682
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28110,
-        "end_line": 28110
+        "start_line": 28142,
+        "end_line": 28142
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28128,
-        "end_line": 28128
+        "start_line": 28160,
+        "end_line": 28160
       },
       {
         "file": "tests/common/cli.rs",
@@ -6104,8 +6104,8 @@
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 374,
-        "end_line": 381
+        "start_line": 390,
+        "end_line": 397
       }
     ]
   },
@@ -7364,8 +7364,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27532,
-        "end_line": 27552
+        "start_line": 27564,
+        "end_line": 27584
       }
     ]
   },
@@ -7379,8 +7379,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27326,
-        "end_line": 27373
+        "start_line": 27358,
+        "end_line": 27405
       }
     ]
   },
@@ -7604,13 +7604,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 368,
-        "end_line": 370
+        "start_line": 384,
+        "end_line": 386
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 386,
-        "end_line": 388
+        "start_line": 402,
+        "end_line": 404
       }
     ]
   },
@@ -7619,8 +7619,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 644,
-        "end_line": 653
+        "start_line": 660,
+        "end_line": 669
       },
       {
         "file": "tests/community_resolution_knob.rs",
