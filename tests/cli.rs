@@ -2532,9 +2532,13 @@ fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
     );
     assert_eq!(
         run_rigger_ok(root, &["graph", "--show", "elapsed"]),
-        "show \"elapsed\": 2 candidates - the name is ambiguous, re-run --show on one id:\n\
-         \x20 src/clock.rs::elapsed   (src/clock.rs)\n\
-         \x20 src/kinds.rs::Moon.elapsed   (src/kinds.rs)\n",
+        common::cli::ambiguous_show(
+            "elapsed",
+            &[
+                ("src/clock.rs::elapsed", "src/clock.rs"),
+                ("src/kinds.rs::Moon.elapsed", "src/kinds.rs")
+            ]
+        ),
         "the second field's leaf lists the field beside the other file's fn"
     );
 

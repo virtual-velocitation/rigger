@@ -20,7 +20,7 @@
 
 mod common;
 
-use common::cli::{open_graph, run_rigger_ok, seed_rigger_dir, temp_project};
+use common::cli::{ambiguous_show, open_graph, run_rigger_ok, seed_rigger_dir, temp_project};
 use common::fixtures::{
     apply_call, apply_code_entity, apply_def, apply_edge_inferred_evidence, call_edge_pairs,
     call_frontiers, call_layer, call_node_ids, call_walk, edge, kinded_def_node, located_many,
@@ -466,9 +466,13 @@ fn graph_show_answers_a_fields_leaf() {
 
     assert_eq!(
         run_rigger_ok(root, &["graph", "--show", "open"]),
-        "show \"open\": 2 candidates - the name is ambiguous, re-run --show on one id:\n\
-         \x20 src/a.rs::open   (src/a.rs)\n\
-         \x20 src/b.rs::open   (src/b.rs)\n",
+        ambiguous_show(
+            "open",
+            &[
+                ("src/a.rs::open", "src/a.rs"),
+                ("src/b.rs::open", "src/b.rs")
+            ]
+        ),
         "a leaf a field and a fn share lists both"
     );
     let lone = run_rigger_ok(root, &["graph", "--show", "state"]);

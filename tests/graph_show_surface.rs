@@ -10,6 +10,9 @@
 //!   - SHOW BY ID: the full `<file>::<name>` id resolves to the SAME entity and body.
 //!   - AMBIGUOUS NAME: a bare name with several definitions LISTS them (sorted, with files) and
 //!     prints NO body - the call-views honesty rule (never guess among candidates).
+//!   - A PATH OR A FLAT ID (spec 119, A BARE SHOW FINDS A LEAF OR PATH): a path `T::new` and a
+//!     pre-spec flat `<file>::<name>` each list every definition they name, and a flat id a
+//!     decision holds shows the definition its file holds at its leaf, never the bare node.
 //!
 //! RESOLUTION is feature-lane independent (the code-entity fold is always compiled), so the site
 //! header and the ambiguous listing are asserted in BOTH lanes. The BODY is bounded through the
@@ -28,11 +31,16 @@ mod common;
 #[cfg(not(feature = "symbols"))]
 use common::cli::assert_light_lane_extent_note;
 
+use common::cli::ambiguous_show;
+use common::cli::open_graph;
 use common::cli::run_rigger;
+use common::cli::run_rigger_ok;
 use common::cli::run_stream_identity;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
 use common::fixtures::apply_code_entity;
+use common::fixtures::{apply_json, hold, path_entity_json};
+use rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
 
 #[test]
 fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
@@ -147,5 +155,80 @@ fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
     assert!(
         !out_amb.contains("marker_in_a") && !out_amb.contains("marker_in_b"),
         "an ambiguous name prints NO body (the honesty rule); got:\n{out_amb}"
+    );
+}
+
+/// Fold each `(pos, file, path, line)` of `defs` into `p` as a Rust method at its id path, named
+/// by the path's leaf `new`.
+fn fold_news(p: &Projector, defs: &[(u64, &str, &str, u64)]) {
+    for (pos, file, path, line) in defs {
+        let json = path_entity_json(file, "new", path, "method", *line, "rust");
+        apply_json(p, *pos, TYPE_CODE_ENTITY_EXTRACTED, json);
+    }
+}
+
+/// Spec 119, A BARE SHOW FINDS A LEAF OR PATH: GIVEN a project graph whose `a.rs` holds the
+/// methods `T::new` and `U::new` and whose `b.rs` holds a `T::new`, WHEN the operator runs `rigger
+/// graph --show` on the flat `a.rs::new` and on the path `T::new`, THEN each lists every
+/// definition it names, sorted, and prints no body: the flat id `a.rs`'s two, never `b.rs`'s, and
+/// the path both `T::new`, never `U::new`.
+#[test]
+fn graph_show_lists_every_definition_a_flat_id_or_a_path_names() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_rigger_dir(root);
+    fold_news(
+        &open_graph(root),
+        &[
+            (1, "a.rs", "T::new", 2),
+            (2, "a.rs", "U::new", 5),
+            (3, "b.rs", "T::new", 1),
+        ],
+    );
+
+    assert_eq!(
+        [
+            run_rigger_ok(root, &["graph", "--show", "a.rs::new"]),
+            run_rigger_ok(root, &["graph", "--show", "T::new"]),
+        ],
+        [
+            ambiguous_show(
+                "a.rs::new",
+                &[("a.rs::T::new", "a.rs"), ("a.rs::U::new", "a.rs")]
+            ),
+            ambiguous_show(
+                "T::new",
+                &[("a.rs::T::new", "a.rs"), ("b.rs::T::new", "b.rs")]
+            ),
+        ],
+        "a flat id lists its file's definitions of its leaf, a path every definition ending in it"
+    );
+}
+
+/// Spec 119, A BARE SHOW FINDS A LEAF OR PATH: GIVEN a project graph whose `a.rs` holds the method
+/// `T::new` and a decision holding the pre-spec flat id `a.rs::new`, WHEN the operator runs `rigger
+/// graph --show a.rs::new`, THEN it shows `a.rs::T::new` at its site, never the decision's bare
+/// node.
+#[test]
+fn graph_show_answers_a_flat_id_a_decision_holds_by_its_definition() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_rigger_dir(root);
+    {
+        let p = open_graph(root);
+        fold_news(&p, &[(1, "a.rs", "T::new", 2)]);
+        hold(&p, 2, &["a.rs::new"]);
+    }
+
+    assert_eq!(
+        run_rigger_ok(root, &["graph", "--show", "a.rs::new"])
+            .lines()
+            .take(2)
+            .collect::<Vec<_>>(),
+        [
+            "show a.rs::T::new",
+            "  site: a.rs:2   kind method   degree 1"
+        ],
+        "a held flat id shows the definition its file holds at its leaf"
     );
 }

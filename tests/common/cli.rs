@@ -391,6 +391,19 @@ pub fn insert_node(
     .unwrap();
 }
 
+/// The stdout `rigger graph --show <query>` prints when several definitions answer `query`: the
+/// candidate count, then each `(id, file)` of `cands` on its own line, in their order, and no body.
+pub fn ambiguous_show(query: &str, cands: &[(&str, &str)]) -> String {
+    let mut out = format!(
+        "show \"{query}\": {} candidates - the name is ambiguous, re-run --show on one id:\n",
+        cands.len()
+    );
+    for (id, file) in cands {
+        out.push_str(&format!("  {id}   ({file})\n"));
+    }
+    out
+}
+
 /// `rigger graph --show <file>::<path>`'s stdout over `root` seeded as a project whose working
 /// tree holds `source` at `file` and whose graph records the definition at the id path `path`
 /// (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), named by the text after the path's last `::`, of
