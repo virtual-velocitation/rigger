@@ -3743,8 +3743,9 @@ mod tests {
     /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
     /// command is BLOCKING; it derives the expression set itself from the unit's test hunks -
     /// each body's string literals in full and its outside calls with their first argument -
-    /// runs each with the authors' search, and an uncarried hit or a record of names only for a
-    /// body that spells either is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
+    /// runs each with the authors' search, every literal alone, and an uncarried hit, a record of
+    /// names only for a body that spells either, a literal the record never searched alone or a
+    /// statement or format string searched in a literal's place is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
     /// diff over the unit's whole range and the graph and compares it with the walk record,
     /// re-runs every rule-spelling search the record carries and re-reads every hit and every
     /// witness against head, and an omitted member, an uncarried hit, a CHECKED reason that
@@ -3787,6 +3788,12 @@ mod tests {
             "A hit the record does not carry is BLOCKING, and so is a record whose expressions \
              are names only - a fn name, the callee a helper wraps - for a body that spells a \
              literal or an outside call.",
+            "You run every literal of each derived body ALONE - its text in full with its \
+             quotes, `t='\"src/f.rs\"'`, nothing around it, however short - and compare the \
+             record's terms with that list: a literal the record never searched alone, or a \
+             record whose terms for a body are statements, bracketed expressions or format \
+             strings in place of its literals, is BLOCKING on its own, citing the literal, its \
+             hit count and the first hits the record does not carry.",
             "You are also the enforcement of the built-in rule that every sentence about the \
              changed behaviour is true at head.",
             "you re-derive each generator's set on the review tree from the diff and the graph",
