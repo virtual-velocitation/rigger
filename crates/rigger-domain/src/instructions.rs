@@ -301,8 +301,8 @@ mod tests {
     /// green commit, every mutable token of the production delta - an operator, an offset, an
     /// operand, a range argument, an arm's statement, a match arm, an early return - mutated by
     /// hand one at a time with the red test recorded, a green probe pinned or reshaped away, the
-    /// hand enumeration standing beside cargo-mutants and the SDET lens probing every token the
-    /// record lacks, and a probe that edits the tree - the sharpest case of a turn's end being
+    /// hand enumeration standing beside the mutation gate and the SDET lens probing every token
+    /// the record lacks, and a probe that edits the tree - the sharpest case of a turn's end being
     /// the session's end - run to completion and restored before the turn ends; the gates'
     /// check names each gate command run to completion inside the turn. Read by its words, so
     /// a rewrap never moves a verdict.
@@ -473,7 +473,8 @@ mod tests {
              report, or the code is reshaped so the token disappears",
             "and the reshaped form probed",
             "A token with no recorded probe is a record you cannot write.",
-            "cargo-mutants mutates no call argument and deletes no single statement of an arm",
+            "the mutation gate's tool mutates no call argument and deletes no single statement of an \
+             arm",
             "The SDET lens derives the token set itself from the production hunks over the \
              unit's whole range and probes every token the record lacks: a probe that leaves \
              every test green, or a token with no recorded probe, is a BLOCKING finding on its \
