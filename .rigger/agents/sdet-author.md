@@ -217,3 +217,7 @@ cargo-mutants makes of the code under test is caught:
   site so the mutable token disappears (a `max`, a saturating subtraction, a single early
   return) and pin the new shape with a test. "Equivalent mutant" is not a category that
   ends the work.
+
+The `<unit>-mutant-probes` record of the hand-over checks above is how you prove this before
+the mutation gate ever runs: each mutable token of the unit's production hunks, mutated by hand,
+turns a test you name red.
