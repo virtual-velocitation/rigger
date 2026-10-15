@@ -26,9 +26,11 @@ use rigger::contextgraph::{
 };
 
 /// GIVEN an id of each of the sixteen graph kinds, WHEN `node_file` reads it, THEN a code
-/// entity names its `::` file half whatever its shape and none without one, a file names its
-/// whole path whatever its last segment, a path-shaped kind names its file only by an
-/// extension, and every other kind names none, a dotted or `::`-bearing id included.
+/// entity names its `::` file half whatever its shape, and none when it holds no `::` or an empty
+/// file half; a file names its whole path whatever its last segment; a design doc, architecture
+/// decision, handbook rule, rationale or artifact names the part before its first `#` only when
+/// that part's last segment carries an extension; and every other kind names none, a dotted or
+/// `::`-bearing id included.
 #[test]
 fn node_file_names_the_file_of_every_graph_kind_by_its_kind_table() {
     let cases: [(&str, &str, Option<&str>); 29] = [
