@@ -3582,7 +3582,9 @@ mod tests {
     /// command that counts it, and the audit record owed for every added test-side shape with the
     /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
     /// the root crate's `src/` test modules included), run once per term of the statements of
-    /// each added or edited test-side body - each string literal alone and in full, quotes
+    /// each added test-side body and of the changed statements of each edited one over the
+    /// unit's whole range, a twin among untouched statements named as the tree's debt - each
+    /// string literal alone and in full, quotes
     /// inside the term and one run per literal however short, and each outside call with its
     /// first argument token, never the body's name - and the sentence
     /// walk's generators as commands over the unit's whole range on every round (the merge base
@@ -3679,6 +3681,10 @@ mod tests {
              makes outside the shared home with its first argument token \
              (`create_dir_all(root.join(`, `for_extension(\"rs\")`), the command run once per \
              term.",
+            "The bodies are read over the unit's whole range: a body you add whole, every \
+             statement, and a body you edit in the statements `git diff $(git merge-base \
+             rigger-run HEAD)..HEAD -- tests crates src` shows changed, a twin found only among \
+             statements you did not touch named in your hand-over as the tree's debt.",
             "A literal's term is the literal alone, its quotes inside the term \
              (`t='\"src/f.rs\"'`) and nothing around it - never the call, format string or \
              statement that spells it - one run per literal, none set aside as short or \
