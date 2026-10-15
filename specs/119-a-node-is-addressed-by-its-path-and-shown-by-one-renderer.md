@@ -93,8 +93,8 @@ line)`, taking the grammar and tags query injected as `extract` takes them (`ext
 runs `extract` over the working-tree bytes and applies three tiers in order: spec 92's first (exact name, kind and line), then name and line with kind ignored, when exactly one production definition matches (so a definition whose kind changed in place since the last ingest still bounds at its recorded line), then spec 92's second as the third (the drifted line re-located by name and kind), to `Def.end_line` over the definitions
 that are not `is_test`, as `extract_events` drops them (`events.rs:220`), since the extent resolves
 a graph node and the graph holds production ones only (`is_test` read as `extract` gives it: a file whose shebang hides its file-opening `#![cfg(test)]` from `test_regions` is spec 118's, which keeps tests out of every production view, not this spec's), `kind` compared through
-`kind_str`, so a field beside a same-named fn, or a variant inside its same-named enum, never widens
-or blocks a match; from criterion 6 `locate_extent` also takes `path: Option<&str>`, which `print_entity_site`
+`kind_str` in tiers 1 and 3, so a field beside a same-named fn, or a variant inside its same-named enum, never widens
+or blocks a match in those tiers, while in tier 2 the recorded line governs by design, so exactly one same-named definition of another kind at the recorded line bounds there even when one of the recorded kind sits elsewhere in the file, the kind-changed-in-place case the criterion pins; from criterion 6 `locate_extent` also takes `path: Option<&str>`, which `print_entity_site`
 passes as the rest half of the id's `query::split_id` (none for an id without `::`, matching by name, kind and
 line only), and every tier matches it against `Def.path`, so a drifted `T::new` never heals onto `U::new`, an id that carries a path being
 matched by it. Tier 1's tie keeps today's rule, the widest `end_line` winning

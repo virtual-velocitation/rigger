@@ -3568,7 +3568,9 @@ mod tests {
     /// searches them, the counted checks: the roots a retired spelling is counted over with the
     /// command that counts it, and the audit record owed for every added test-side shape with the
     /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
-    /// the root crate's `src/` test modules included), and the sentence
+    /// the root crate's `src/` test modules included), run once per term of the statements of
+    /// each added or edited test-side body - each string literal in full and each outside call
+    /// with its first argument token, never the body's name - and the sentence
     /// walk's generators as commands over the unit's whole range on every round (the merge base
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
     /// 1 with its counted fallback recorded as a gap, each FIXED or new line's `file:line`
@@ -3652,6 +3654,11 @@ mod tests {
              its one argument",
             "`git ls-files tests crates src | t='<expression>' xargs awk",
             "and the root crate's `src/` test modules the same way",
+            "The expressions are the statements' own terms, never a body's name: every string \
+             literal each test-side body you add or edit spells, in full, and every call it \
+             makes outside the shared home with its first argument token \
+             (`create_dir_all(root.join(`, `for_extension(\"rs\")`), the command run once per \
+             term.",
             "index($0, ENVIRON[\"t\"])",
             "END { print n + 0 \" hits\" }'`",
             "The record pastes each command as run, its hit count and every hit it printed, each \
@@ -3690,7 +3697,10 @@ mod tests {
     /// The `sdet` lens is the enforcement of two built-in rules. Of the shape rule: it re-runs
     /// every search the author's shape record carries on the review tree and compares the hit
     /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
-    /// command is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
+    /// command is BLOCKING; it derives the expression set itself from the unit's test hunks -
+    /// each body's string literals in full and its outside calls with their first argument -
+    /// runs each with the authors' search, and an uncarried hit or a record of names only for a
+    /// body that spells either is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
     /// diff over the unit's whole range and the graph and compares it with the walk record,
     /// re-runs every rule-spelling search the record carries and re-reads every hit and every
     /// witness against head, and an omitted member, an uncarried hit, a CHECKED reason that
@@ -3718,6 +3728,15 @@ mod tests {
             "a CHECKED hit whose reason does not hold - its shape does not differ in the way \
              the record names - is a twin and BLOCKING",
             "a record with no command is BLOCKING",
+            "You also derive the expression set yourself: list the unit's added or edited \
+             test-side bodies from `git diff $(git merge-base rigger-run HEAD)..HEAD -- tests \
+             crates src`",
+            "take every string literal each body spells, in full, and every call it makes \
+             outside the shared home with its first argument token, and run each with the \
+             authors' search, `git ls-files tests crates src | t='<expression>' xargs awk",
+            "A hit the record does not carry is BLOCKING, and so is a record whose expressions \
+             are names only - a fn name, the callee a helper wraps - for a body that spells a \
+             literal or an outside call.",
             "You are also the enforcement of the built-in rule that every sentence about the \
              changed behaviour is true at head.",
             "you re-derive each generator's set on the review tree from the diff and the graph",
