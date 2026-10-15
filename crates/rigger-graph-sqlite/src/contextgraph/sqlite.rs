@@ -11774,25 +11774,16 @@ mod tests {
     mod a_bare_show_finds_a_leaf_or_path {
         use super::leaf_keys_resolution::located;
         use super::*;
-        use crate::test_support::{hold, located_many, path_entity_json};
-
-        /// A definition `(file, leaf, path, kind)`, folded carrying its id path.
-        type PathDef<'a> = (&'a str, &'a str, &'a str, &'a str);
-
-        /// The method `a.rs::T::new`.
-        const T_NEW: PathDef<'static> = ("a.rs", "new", "T::new", "method");
+        use crate::test_support::{
+            fold_path_defs, hold, located_many, PathDef, A_RS_NEWS, T_NEW, U_NEW,
+        };
 
         /// Fold `defs` from position 1, each at its position's line, then `then` at the next
         /// position.
         fn folded(defs: &[PathDef], then: impl FnOnce(&Projector, u64)) -> Projector {
             let p = Projector::open(":memory:", "test").unwrap();
-            let mut pos = 0;
-            for (file, leaf, path, kind) in defs {
-                pos += 1;
-                let json = path_entity_json(file, leaf, path, kind, pos, "rust");
-                apply_json(&p, pos, TYPE_CODE_ENTITY_EXTRACTED, json);
-            }
-            then(&p, pos + 1);
+            let next = fold_path_defs(&p, defs);
+            then(&p, next);
             p
         }
 
@@ -11878,11 +11869,8 @@ mod tests {
 
         #[test]
         fn a_flat_id_naming_two_definitions_of_its_leaf_lists_both() {
-            let p = folded(&[T_NEW, ("a.rs", "new", "U::new", "method")], |_, _| {});
-            assert_eq!(
-                p.locate("a.rs::new").unwrap(),
-                located_many(&[("a.rs::T::new", "a.rs"), ("a.rs::U::new", "a.rs")])
-            );
+            let p = folded(&[T_NEW, U_NEW], |_, _| {});
+            assert_eq!(p.locate("a.rs::new").unwrap(), located_many(A_RS_NEWS));
         }
     }
 

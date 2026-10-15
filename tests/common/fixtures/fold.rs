@@ -284,6 +284,32 @@ pub fn path_entity_json(
     with_path(code_entity_json(file, name, kind, line, lang), Some(path))
 }
 
+/// A definition `(file, leaf, path, kind)`, folded carrying its id path (spec 119, IDS FOLLOW THE
+/// LANGUAGE'S PATH).
+pub type PathDef<'a> = (&'a str, &'a str, &'a str, &'a str);
+
+/// The method `a.rs::T::new`.
+pub const T_NEW: PathDef<'static> = ("a.rs", "new", "T::new", "method");
+
+/// The method `a.rs::U::new`, sharing [`T_NEW`]'s file and leaf.
+pub const U_NEW: PathDef<'static> = ("a.rs", "new", "U::new", "method");
+
+/// The candidates `(id, file)` a lookup of `a.rs`'s `new` lists over [`T_NEW`] and [`U_NEW`], in
+/// id order.
+pub const A_RS_NEWS: &[(&str, &str)] = &[("a.rs::T::new", "a.rs"), ("a.rs::U::new", "a.rs")];
+
+/// Fold each Rust definition of `defs` into `p` from position 1, each at its position's line, and
+/// return the next position.
+pub fn fold_path_defs(p: &Projector, defs: &[PathDef]) -> u64 {
+    let mut pos = 0;
+    for (file, leaf, path, kind) in defs {
+        pos += 1;
+        let json = path_entity_json(file, leaf, path, kind, pos, "rust");
+        apply_json(p, pos, TYPE_CODE_ENTITY_EXTRACTED, json);
+    }
+    pos + 1
+}
+
 /// `json` carrying `path` under its `path` key when one is given, an id path (spec 119, IDS
 /// FOLLOW THE LANGUAGE'S PATH), and unchanged when `None`.
 pub fn with_path(mut json: serde_json::Value, path: Option<&str>) -> serde_json::Value {

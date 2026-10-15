@@ -2929,7 +2929,7 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/graph_around_governance_boundaries.rs:154-154` `".rigger"`
 - `tests/graph_around_governance_boundaries.rs:173-173` `".rigger"`
 - `tests/graph_around_governance_boundaries.rs:226-226` `".rigger"`
-- `tests/graph_show_surface.rs:75-75` `".rigger"`
+- `tests/graph_show_surface.rs:74-74` `".rigger"`
 - `tests/halted_spawn_wip_recovery_periphery.rs:610-610` `".rigger"`
 - `tests/handbook_grounder_accuracy.rs:131-131` `".rigger"`
 - `tests/handbook_grounder_accuracy.rs:140-140` `".rigger/workflow.yml must carry a `grounder:` default (spec 57, criterion 4)"`
@@ -4048,7 +4048,7 @@ mandatory sweep: sqlite Connection::open call sites - 62 site(s), collected mech
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6016-6016` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10449-10449` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11212-11212` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13168-13168` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13156-13156` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1547-1547` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2160-2160` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2182-2182` `Connection::open_with_flags`
@@ -4117,7 +4117,7 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4547-4560` `subgraph_finds_the_governing_decision`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12345-12365` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12333-12353` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
 
 #### `dup-e45a2413a3f0` (near, 7 sites)
 
@@ -4194,8 +4194,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12389-12420` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12665-12696` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12377-12408` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12653-12684` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
 
 #### `dup-a34b5b595e15` (near, 2 sites)
 
@@ -4911,8 +4911,8 @@ Proposed home: `fold::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:458-460` `apply_ref`
-- `tests/common/fixtures/fold.rs:482-484` `apply_call`
+- `tests/common/fixtures/fold.rs:484-486` `apply_ref`
+- `tests/common/fixtures/fold.rs:508-510` `apply_call`
 
 #### `dup-9c3b5c80063e` (near, 3 sites)
 
@@ -4920,7 +4920,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/common/fixtures/f
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:751-760` `live_node_ids`
+- `tests/common/fixtures/fold.rs:777-786` `live_node_ids`
 - `tests/community_resolution_knob.rs:139-148` `live_memberships_of`
 - `tests/graph_superseded_prune.rs:32-41` `live_contains`
 

@@ -39,8 +39,7 @@ use common::cli::run_stream_identity;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
 use common::fixtures::apply_code_entity;
-use common::fixtures::{apply_json, hold, path_entity_json};
-use rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
+use common::fixtures::{fold_path_defs, hold, A_RS_NEWS, T_NEW, U_NEW};
 
 #[test]
 fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
@@ -158,15 +157,6 @@ fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
     );
 }
 
-/// Fold each `(pos, file, path, line)` of `defs` into `p` as a Rust method at its id path, named
-/// by the path's leaf `new`.
-fn fold_news(p: &Projector, defs: &[(u64, &str, &str, u64)]) {
-    for (pos, file, path, line) in defs {
-        let json = path_entity_json(file, "new", path, "method", *line, "rust");
-        apply_json(p, *pos, TYPE_CODE_ENTITY_EXTRACTED, json);
-    }
-}
-
 /// Spec 119, A BARE SHOW FINDS A LEAF OR PATH: GIVEN a project graph whose `a.rs` holds the
 /// methods `T::new` and `U::new` and whose `b.rs` holds a `T::new`, WHEN the operator runs `rigger
 /// graph --show` on the flat `a.rs::new` and on the path `T::new`, THEN each lists every
@@ -177,13 +167,9 @@ fn graph_show_lists_every_definition_a_flat_id_or_a_path_names() {
     let dir = temp_project();
     let root = dir.path();
     seed_rigger_dir(root);
-    fold_news(
+    fold_path_defs(
         &open_graph(root),
-        &[
-            (1, "a.rs", "T::new", 2),
-            (2, "a.rs", "U::new", 5),
-            (3, "b.rs", "T::new", 1),
-        ],
+        &[T_NEW, U_NEW, ("b.rs", "new", "T::new", "method")],
     );
 
     assert_eq!(
@@ -192,10 +178,7 @@ fn graph_show_lists_every_definition_a_flat_id_or_a_path_names() {
             run_rigger_ok(root, &["graph", "--show", "T::new"]),
         ],
         [
-            ambiguous_show(
-                "a.rs::new",
-                &[("a.rs::T::new", "a.rs"), ("a.rs::U::new", "a.rs")]
-            ),
+            ambiguous_show("a.rs::new", A_RS_NEWS),
             ambiguous_show(
                 "T::new",
                 &[("a.rs::T::new", "a.rs"), ("b.rs::T::new", "b.rs")]
@@ -216,8 +199,8 @@ fn graph_show_answers_a_flat_id_a_decision_holds_by_its_definition() {
     seed_rigger_dir(root);
     {
         let p = open_graph(root);
-        fold_news(&p, &[(1, "a.rs", "T::new", 2)]);
-        hold(&p, 2, &["a.rs::new"]);
+        let next = fold_path_defs(&p, &[T_NEW]);
+        hold(&p, next, &["a.rs::new"]);
     }
 
     assert_eq!(
@@ -227,7 +210,7 @@ fn graph_show_answers_a_flat_id_a_decision_holds_by_its_definition() {
             .collect::<Vec<_>>(),
         [
             "show a.rs::T::new",
-            "  site: a.rs:2   kind method   degree 1"
+            "  site: a.rs:1   kind method   degree 1"
         ],
         "a held flat id shows the definition its file holds at its leaf"
     );
