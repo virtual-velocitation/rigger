@@ -995,7 +995,7 @@ rigger::test_cases! {
     /// is printed and the note names the two lines its kind sits at, the same-named field's line
     /// never counted.
     #[cfg(feature = "symbols")]
-    graph_show_notes_an_ambiguous_drift_by_the_count_of_its_kind: assert_eq!(
+    graph_show_notes_an_ambiguous_drift_by_the_lines_holding_its_kind: assert_eq!(
         shown_function_recorded_at_line_1(
             "twins.rs",
             "fn other() {}\nstruct S {\n    dup: u8,\n}\nfn dup() {}\nfn dup() {}\n",
@@ -1010,6 +1010,6 @@ rigger::test_cases! {
              the recorded line 1; the recorded location may be stale (cannot resolve which one \
              moved))",
         ],
-        "an ambiguous drift notes the count of its kind and prints no body"
+        "an ambiguous drift notes the lines holding its kind and prints no body"
     );
 }
