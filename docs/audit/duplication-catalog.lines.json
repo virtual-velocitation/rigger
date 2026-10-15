@@ -6134,8 +6134,8 @@
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 372,
-        "end_line": 379
+        "start_line": 374,
+        "end_line": 381
       }
     ]
   },
@@ -7634,13 +7634,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 366,
-        "end_line": 368
+        "start_line": 368,
+        "end_line": 370
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 384,
-        "end_line": 386
+        "start_line": 386,
+        "end_line": 388
       }
     ]
   },
@@ -7649,8 +7649,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 605,
-        "end_line": 614
+        "start_line": 607,
+        "end_line": 616
       },
       {
         "file": "tests/community_resolution_knob.rs",

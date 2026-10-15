@@ -4138,7 +4138,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9748-9758` `apply_unit_integrated`
 - `tests/code_ingest_events.rs:841-848` `apply_ref_json`
 - `tests/code_ingest_events.rs:978-985` `apply_ref_fresh`
-- `tests/common/fixtures/fold.rs:372-379` `apply_edge_inferred_evidence`
+- `tests/common/fixtures/fold.rs:374-381` `apply_edge_inferred_evidence`
 
 #### `dup-b5bd50de3e2a` (near, 2 sites)
 
@@ -4918,8 +4918,8 @@ Proposed home: `fold::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:366-368` `apply_ref`
-- `tests/common/fixtures/fold.rs:384-386` `apply_call`
+- `tests/common/fixtures/fold.rs:368-370` `apply_ref`
+- `tests/common/fixtures/fold.rs:386-388` `apply_call`
 
 #### `dup-9c3b5c80063e` (near, 3 sites)
 
@@ -4927,7 +4927,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/common/fixtures/f
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:605-614` `live_node_ids`
+- `tests/common/fixtures/fold.rs:607-616` `live_node_ids`
 - `tests/community_resolution_knob.rs:139-148` `live_memberships_of`
 - `tests/graph_superseded_prune.rs:32-41` `live_contains`
 
