@@ -27208,6 +27208,38 @@ fn graph_show_heals_a_drifted_method_by_its_path_beside_a_same_named_one() {
     );
 }
 
+/// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a graph recording the method `T::new` at line 4
+/// of a file whose working tree has deleted it while `U::new`, of the same name and kind, sits at
+/// that line, WHEN the operator runs `rigger graph --show` on `T::new`'s id, THEN no body is
+/// printed and the note names the path it was sought at, `U::new` never bounding it.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_notes_a_deleted_method_at_its_path_beside_a_same_named_one() {
+    let dir = temp_project();
+    let out = common::cli::show_recorded(
+        dir.path(),
+        "src/pair.rs",
+        "struct T;\nstruct U;\nimpl U {\n    fn new() -> U {\n        U\n    }\n}\n",
+        "T::new",
+        "method",
+        4,
+        "rust",
+    );
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        [
+            "show src/pair.rs::T::new",
+            "  site: src/pair.rs:4   kind method   degree 1",
+            "  name new",
+            "  lang rust",
+            "  (no production definition named \"new\" at path \"T::new\" of kind method at line 4 \
+             or elsewhere in src/pair.rs in the current working tree; the recorded location may be \
+             stale)",
+        ],
+        "a deleted T::new is noted at its path, never bounded by U::new at its line"
+    );
+}
+
 /// Spec 119, ONE EXTENT: GIVEN a code entity with a file and a non-zero line but no `name` attr,
 /// beside a definition of its leaf in the working tree, WHEN the operator runs `rigger graph
 /// --show` on its id, THEN it prints the "no production definition named" note with its id in place of the

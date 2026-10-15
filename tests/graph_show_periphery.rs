@@ -1031,8 +1031,8 @@ rigger::test_cases! {
             "  site: twins.rs:1   kind function   degree 1",
             "  name dup",
             "  lang rust",
-            "  (production definitions named \"dup\" of kind function sit at 2 lines in twins.rs \
-             and none at the recorded line 1; the recorded location may be stale (cannot resolve \
+            "  (production definitions named \"dup\" at path \"dup\" of kind function sit at 2 \
+             lines in twins.rs and none at the recorded line 1; the recorded location may be stale (cannot resolve \
              which one moved))",
         ],
         "an ambiguous drift notes the lines holding its kind and prints no body"
@@ -1040,8 +1040,8 @@ rigger::test_cases! {
     /// Spec 119, ONE EXTENT, the deleted-definition note at the binary: GIVEN a function `g` the
     /// graph records at line 1 of a file whose working tree holds a struct `g` and a constant `g`
     /// at line 1 and no function `g` anywhere, WHEN the operator runs `rigger graph --show` on its
-    /// id, THEN no body is printed and the note names the definition by its name and kind, at its
-    /// line or elsewhere in its file, the two same-named definitions of other kinds never bounding
+    /// id, THEN no body is printed and the note names the definition by its name, id path and
+    /// kind, at its line or elsewhere in its file, the two same-named definitions of other kinds never bounding
     /// it.
     #[cfg(feature = "symbols")]
     graph_show_notes_a_definition_missing_by_name_and_kind: assert_eq!(
@@ -1055,8 +1055,8 @@ rigger::test_cases! {
             "  site: missing.rs:1   kind function   degree 1",
             "  name g",
             "  lang rust",
-            "  (no production definition named \"g\" of kind function at line 1 or elsewhere in \
-             missing.rs in the current working tree; the recorded location may be stale)",
+            "  (no production definition named \"g\" at path \"g\" of kind function at line 1 or \
+             elsewhere in missing.rs in the current working tree; the recorded location may be stale)",
         ],
         "a definition of its name and kind found nowhere notes it by both and prints no body"
     );
@@ -1077,8 +1077,8 @@ rigger::test_cases! {
             "  site: tested.rs:1   kind function   degree 1",
             "  name t",
             "  lang rust",
-            "  (no production definition named \"t\" of kind function at line 1 or elsewhere in \
-             tested.rs in the current working tree; the recorded location may be stale)",
+            "  (no production definition named \"t\" at path \"t\" of kind function at line 1 or \
+             elsewhere in tested.rs in the current working tree; the recorded location may be stale)",
         ],
         "a definition whose only same-named twin is test code is missing among production code"
     );
