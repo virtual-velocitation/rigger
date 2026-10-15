@@ -130,17 +130,18 @@ fn the_ingest_serves_a_ts_tags_v3_index_saved_with_a_leaf_caller_and_folds_from_
         common::fixtures::RUST_METHOD_CALLER_SOURCE,
     )
     .unwrap();
-    let mut index: serde_json::Value = serde_json::from_str(&symbol_index::rust_index_json(
-        "a.rs",
-        serde_json::json!([
-            { "kind": "Method", "name": "new", "line": 3, "end_line": 3, "path": "T::new" },
-            { "kind": "Function", "name": "helper", "line": 5, "end_line": 5, "path": "helper" },
-        ]),
-    ))
-    .unwrap();
-    index["files"]["a.rs"]["refs"] =
-        serde_json::json!([{ "name": "helper", "line": 3, "enclosing": "new" }]);
-    symbol_index::persist_stamped(root.to_str().unwrap(), "ts-tags-v3", &index.to_string());
+    symbol_index::persist_stamped(
+        root.to_str().unwrap(),
+        "ts-tags-v3",
+        &symbol_index::rust_index_json(
+            "a.rs",
+            serde_json::json!([
+                { "kind": "Method", "name": "new", "line": 3, "end_line": 3, "path": "T::new" },
+                { "kind": "Function", "name": "helper", "line": 5, "end_line": 5, "path": "helper" },
+            ]),
+            serde_json::json!([{ "name": "helper", "line": 3, "enclosing": "new" }]),
+        ),
+    );
 
     common::fixtures::assert_live_calls(
         &common::fixtures::fold_events(common::project_events(root.to_str().unwrap())),
@@ -168,6 +169,7 @@ fn opened_over_an_index_stamped(grammar: &str) -> (Vec<String>, String) {
             serde_json::json!([
                 { "kind": "Function", "name": "ghost", "line": 1, "end_line": 1, "path": "ghost" }
             ]),
+            serde_json::json!([]),
         ),
     );
 

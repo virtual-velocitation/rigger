@@ -122,7 +122,8 @@ fn emitted_over_an_index_whose_method_carries(path: Option<&str>) -> Vec<NameAnd
         serde_json::json!({ "kind": "Method", "name": "new", "line": 4, "end_line": 4 }),
         path,
     );
-    let index = symbol_index::rust_index_json("a.rs", serde_json::json!([method]));
+    let index =
+        symbol_index::rust_index_json("a.rs", serde_json::json!([method]), serde_json::json!([]));
     symbol_index::persist_current(tree.path().to_str().unwrap(), &index);
     names_and_paths(&code_entity_payloads(tree.path()))
 }

@@ -354,7 +354,11 @@ fn legacy_module_def(keys: &str, written_by: &str) -> Def {
         r#"{{ "kind": "Module", "name": "legacy_child", "line": 1{keys} }}"#
     ))
     .expect("the legacy definition is JSON");
-    let legacy = symbol_index::rust_index_json("legacy_mod.rs", serde_json::json!([def]));
+    let legacy = symbol_index::rust_index_json(
+        "legacy_mod.rs",
+        serde_json::json!([def]),
+        serde_json::json!([]),
+    );
     legacy_file(
         &legacy,
         "legacy_mod.rs",
