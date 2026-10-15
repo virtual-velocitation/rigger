@@ -397,8 +397,8 @@ pub enum Located {
 
 /// A single located node (spec 58; spec 119, SHOW IS ONE RENDERER): where it lives, how it sits in
 /// the graph and the attrs it carries, built by [`entity_site`] alone, so every show surface prints
-/// the one entry list [`site_fields`] gives and the CLI bounds the body it reads from the working
-/// tree.
+/// the entries [`site_fields`] gives, the MCP `around` less its `summary`, and the CLI bounds the
+/// body it reads from the working tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntitySite {
     /// The node id (`<file>::<path>` for a definition).
@@ -421,7 +421,8 @@ pub struct EntitySite {
 
 /// The attrs [`site_fields`] gives after the site entries, in their order: the closed list a show
 /// surface prints (`title` and `doc` a knowledge node's, `by`, `unit` and `summary` a finding's,
-/// `partial` a degraded parse's); an attr outside it is never printed.
+/// `partial` a degraded parse's; the MCP `around` drops `summary`); an attr outside it is never
+/// printed.
 const SITE_ATTRS: [&str; 8] = [
     "name", "lang", "title", "doc", "by", "unit", "summary", "partial",
 ];
@@ -1560,7 +1561,8 @@ mod around_neighborhood {
 }
 
 /// Spec 119, SHOW IS ONE RENDERER: the one rule set [`entity_site`] applies to a node and the one
-/// ordered closed entry list [`site_fields`] gives every show surface.
+/// ordered closed entry list [`site_fields`] gives every show surface, the MCP `around` dropping its
+/// `summary` after.
 #[cfg(test)]
 mod site_renderer {
     use super::*;

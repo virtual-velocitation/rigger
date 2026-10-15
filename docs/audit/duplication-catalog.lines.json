@@ -39,13 +39,13 @@
       },
       {
         "file": "crates/rigger-domain/src/contextgraph.rs",
-        "start_line": 751,
-        "end_line": 753
+        "start_line": 752,
+        "end_line": 754
       },
       {
         "file": "crates/rigger-domain/src/contextgraph.rs",
-        "start_line": 807,
-        "end_line": 809
+        "start_line": 808,
+        "end_line": 810
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
