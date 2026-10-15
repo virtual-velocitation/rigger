@@ -145,7 +145,10 @@ and each other file under `crates/*/src/` from its first `#[cfg(test)]` on, and 
 The expressions are the statements' own terms, never a body's name: every string literal each
 test-side body you add or edit spells, in full, and every call it makes outside the shared home
 with its first argument token (`create_dir_all(root.join(`, `for_extension("rs")`), the command
-run once per term. A `'` in the expression is written `'\''`. The record pastes each command as run, its hit
+run once per term. A literal's term is the literal alone, its quotes inside the term
+(`t='"src/f.rs"'`) and nothing around it - never the call, format string or statement that
+spells it - one run per literal, none set aside as short or conventional (`"x"`, `":memory:"`, a
+fixture path), and every hit the run prints listed under its disposition. A `'` in the expression is written `'\''`. The record pastes each command as run, its hit
 count and every hit it printed, each FIXED or CHECKED, and the `sdet` lens re-runs each on the
 review tree.
 

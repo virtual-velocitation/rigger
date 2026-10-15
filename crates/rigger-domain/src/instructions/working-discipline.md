@@ -54,7 +54,17 @@ tool that searches them.
   call into the shared test home is a shape of its own, and its distinguishing expressions are
   mechanical: every string literal it spells, in full (an assertion, expect or panic message, a
   fixture path, a query text), and every call it makes outside the shared home with its first
-  argument token (`create_dir_all(root.join(`, `for_extension("rs")`). Write each down and run
+  argument token (`create_dir_all(root.join(`, `for_extension("rs")`). A literal's term is the
+  literal alone - its text complete, quotes included, and nothing around it - never the call
+  that passes it, a format string that embeds it, the statement that spells it or two literals
+  joined; an expression wrapping a literal is a term of its own only where this rule names it,
+  the outside call with its first argument token. One search per literal, however short or
+  conventional it reads - a one-letter name, `":memory:"`, a fixture path - and every hit
+  dispositioned; hits may share one named reason, each hit still listed. A statement searched
+  whole finds only a twin spelled identically, while the literal finds the twin spelled
+  differently around the same value, which is the twin this rule exists for. A literal set aside
+  as a convention, a fixture name or an argument style, with no search of its own and no hit
+  list, is a search you did not run. Write each down and run
   one search for each over every test home; a hit in another home - an existing helper's body
   or another test's inline statement - is a twin, lifted to the shared home and called from
   both. The record is owed for every test-side shape you add, merged or not: one whole-tree
@@ -70,7 +80,10 @@ tool that searches them.
   hunks at head - every string literal and every outside call with its first argument in each
   test-side body the unit adds or edits - and runs each over every test home: a hit the record
   does not carry, or a record whose expressions are names only for a body that spells either,
-  is a BLOCKING finding on its own.
+  is a BLOCKING finding on its own. The lens compares the record's terms with the literals of
+  the bodies it derives, one search per literal alone: a literal with no search of its own, or a
+  term that is an expression wrapping a literal where the literal's own search is owed, is a
+  BLOCKING finding on its own.
 - **Every sentence about the changed behaviour is true at head.** The doc comments of each item
   you changed and of its callers, module docs, test names, test docs, assertion messages and
   operator docs say what the code at head does. Check: enumerate the walked set, each member

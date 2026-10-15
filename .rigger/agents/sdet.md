@@ -34,7 +34,12 @@ the authors' search,
 `git ls-files tests crates src | t='<expression>' xargs awk 'FNR == 1 { s = FILENAME ~ /(^|\/)tests\/.*\.rs$|\/contract\.rs$/ } FILENAME ~ /\.rs$/ && /^[[:space:]]*#\[cfg\((all\()?test/ { s = 1 } s && index($0, ENVIRON["t"]) { n++; print FILENAME ":" FNR ": " $0 } END { print n + 0 " hits" }'`.
 A hit the record does not carry is BLOCKING, and so is a record whose expressions are names
 only - a fn name, the callee a helper wraps - for a body that spells a literal or an outside
-call. Each is a finding on its own, citing the hit's file:line with the command and the output
+call. You run every literal of each derived body ALONE - its text in full with its quotes,
+`t='"src/f.rs"'`, nothing around it, however short - and compare the record's terms with that
+list: a literal the record never searched alone, or a record whose terms for a body are
+statements, bracketed expressions or format strings in place of its literals, is BLOCKING on its
+own, citing the literal, its hit count and the first hits the record does not carry. Each is a
+finding on its own, citing the hit's file:line with the command and the output
 you got.
 
 You are also the enforcement of the built-in rule that every sentence about the changed
