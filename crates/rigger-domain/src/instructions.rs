@@ -281,8 +281,11 @@ mod tests {
     /// with the check that proves it: the gates green in the author's worktree, generated files
     /// committed with their inputs, a test-side shape spelled once - any token two tests could
     /// spell, a named inline spelling included - with every added or named shape recorded in a
-    /// whole-tree audit whether merged or not, the audit a search by the shape's distinguishing
-    /// expression whose command and hits the record carries and the SDET lens re-runs, every
+    /// whole-tree audit whether merged or not, the audit one search per distinguishing
+    /// expression of each statement of every test-side body added or edited - each string
+    /// literal in full and each outside call with its first argument, never the body's name -
+    /// whose command and hits the record carries and the SDET lens re-runs and re-derives from
+    /// the test hunks, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators (an item's callers read from the graph at depth 1) over the unit's
     /// whole range on every round, never a round's delta, and records on every change, each new
@@ -327,10 +330,25 @@ mod tests {
             "every site that already spelled it inline calls it, the shared home itself and any \
              file you edit included",
             "The search is an instrument, not a claim:",
-            "its distinguishing expression - the token sequence its body cannot be written \
-             without (the cut, the literal, the struct pattern, the query text; two expressions \
-             when one would miss a spelling)",
+            "its unit is the statement, never the body's name",
+            "Walk every test-side body you add or edit - a test fn, a helper, a fixture \
+             builder, a table row's closure - statement by statement",
+            "each statement that is not a single call into the shared test home is a shape of \
+             its own",
+            "every string literal it spells, in full (an assertion, expect or panic message, a \
+             fixture path, a query text)",
+            "every call it makes outside the shared home with its first argument token",
             "run one search for each over every test home",
+            "a hit in another home - an existing helper's body or another test's inline \
+             statement - is a twin, lifted to the shared home and called from both",
+            "A record whose expressions are names only - a fn name, the callee a helper wraps - \
+             for a body that spells a literal or an outside call is a record you cannot write \
+             either.",
+            "The lens derives the expression set itself from the unit's test hunks at head - \
+             every string literal and every outside call with its first argument in each \
+             test-side body the unit adds or edits - and runs each over every test home: a hit \
+             the record does not carry, or a record whose expressions are names only for a body \
+             that spells either, is a BLOCKING finding on its own.",
             "carrying each search's command, its hit count and every hit",
             "CHECKED when kept apart, with the reason: the named way its shape differs",
             "A CHECKED hit whose shape does not differ is a twin.",
@@ -428,6 +446,12 @@ mod tests {
         assert!(
             !words.contains("(the project's graph, or your persona's fallback)"),
             "the caller generator must name the graph's depth"
+        );
+        // A shape's search terms are its statements' literals and outside calls, never the
+        // body's name, so the rule no longer sends the author to a whole-body token sequence.
+        assert!(
+            !words.contains("the token sequence its body cannot be written without"),
+            "the shape search's unit is the statement, not the whole body"
         );
     }
 
