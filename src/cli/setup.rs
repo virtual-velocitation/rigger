@@ -3582,8 +3582,9 @@ mod tests {
     /// command that counts it, and the audit record owed for every added test-side shape with the
     /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
     /// the root crate's `src/` test modules included), run once per term of the statements of
-    /// each added or edited test-side body - each string literal in full and each outside call
-    /// with its first argument token, never the body's name - and the sentence
+    /// each added or edited test-side body - each string literal alone and in full, quotes
+    /// inside the term and one run per literal however short, and each outside call with its
+    /// first argument token, never the body's name - and the sentence
     /// walk's generators as commands over the unit's whole range on every round (the merge base
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
     /// 1 with its counted fallback recorded as a gap, each FIXED or new line's `file:line`
@@ -3678,6 +3679,11 @@ mod tests {
              makes outside the shared home with its first argument token \
              (`create_dir_all(root.join(`, `for_extension(\"rs\")`), the command run once per \
              term.",
+            "A literal's term is the literal alone, its quotes inside the term \
+             (`t='\"src/f.rs\"'`) and nothing around it - never the call, format string or \
+             statement that spells it - one run per literal, none set aside as short or \
+             conventional (`\"x\"`, `\":memory:\"`, a fixture path), and every hit the run \
+             prints listed under its disposition.",
             "index($0, ENVIRON[\"t\"])",
             "END { print n + 0 \" hits\" }'`",
             "The record pastes each command as run, its hit count and every hit it printed, each \
@@ -3737,8 +3743,9 @@ mod tests {
     /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
     /// command is BLOCKING; it derives the expression set itself from the unit's test hunks -
     /// each body's string literals in full and its outside calls with their first argument -
-    /// runs each with the authors' search, and an uncarried hit or a record of names only for a
-    /// body that spells either is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
+    /// runs each with the authors' search, every literal alone, and an uncarried hit, a record of
+    /// names only for a body that spells either, a literal the record never searched alone or a
+    /// statement or format string searched in a literal's place is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
     /// diff over the unit's whole range and the graph and compares it with the walk record,
     /// re-runs every rule-spelling search the record carries and re-reads every hit and every
     /// witness against head, and an omitted member, an uncarried hit, a CHECKED reason that
@@ -3781,6 +3788,12 @@ mod tests {
             "A hit the record does not carry is BLOCKING, and so is a record whose expressions \
              are names only - a fn name, the callee a helper wraps - for a body that spells a \
              literal or an outside call.",
+            "You run every literal of each derived body ALONE - its text in full with its \
+             quotes, `t='\"src/f.rs\"'`, nothing around it, however short - and compare the \
+             record's terms with that list: a literal the record never searched alone, or a \
+             record whose terms for a body are statements, bracketed expressions or format \
+             strings in place of its literals, is BLOCKING on its own, citing the literal, its \
+             hit count and the first hits the record does not carry.",
             "You are also the enforcement of the built-in rule that every sentence about the \
              changed behaviour is true at head.",
             "you re-derive each generator's set on the review tree from the diff and the graph",

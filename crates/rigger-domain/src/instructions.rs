@@ -283,9 +283,10 @@ mod tests {
     /// spell, a named inline spelling included - with every added or named shape recorded in a
     /// whole-tree audit whether merged or not, the audit one search per distinguishing
     /// expression of each statement of every test-side body added or edited - each string
-    /// literal in full and each outside call with its first argument, never the body's name -
+    /// literal alone and in full, however short, and each outside call with its first argument,
+    /// never the body's name nor an expression wrapping a literal -
     /// whose command and hits the record carries and the SDET lens re-runs and re-derives from
-    /// the test hunks, every
+    /// the test hunks, one search per literal alone, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators (an item's callers read from the graph at depth 1) over the unit's
     /// whole range on every round, never a round's delta, and records on every change, each new
@@ -346,6 +347,23 @@ mod tests {
             "every string literal it spells, in full (an assertion, expect or panic message, a \
              fixture path, a query text)",
             "every call it makes outside the shared home with its first argument token",
+            "A literal's term is the literal alone - its text complete, quotes included, and \
+             nothing around it - never the call that passes it, a format string that embeds it, \
+             the statement that spells it or two literals joined; an expression wrapping a \
+             literal is a term of its own only where this rule names it, the outside call with \
+             its first argument token.",
+            "One search per literal, however short or conventional it reads - a one-letter \
+             name, `\":memory:\"`, a fixture path - and every hit dispositioned; hits may share \
+             one named reason, each hit still listed.",
+            "A statement searched whole finds only a twin spelled identically, while the literal \
+             finds the twin spelled differently around the same value, which is the twin this \
+             rule exists for.",
+            "A literal set aside as a convention, a fixture name or an argument style, with no \
+             search of its own and no hit list, is a search you did not run.",
+            "The lens compares the record's terms with the literals of the bodies it derives, \
+             one search per literal alone: a literal with no search of its own, or a term that \
+             is an expression wrapping a literal where the literal's own search is owed, is a \
+             BLOCKING finding on its own.",
             "run one search for each over every test home",
             "a hit in another home - an existing helper's body or another test's inline \
              statement - is a twin, lifted to the shared home and called from both",
