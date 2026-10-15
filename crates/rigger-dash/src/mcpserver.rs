@@ -2276,6 +2276,13 @@ mod tests {
             ],
             "each node's site object"
         );
+        assert_eq!(
+            crate::test_support::attrs_of(&graph, "src/limits.rs::LIMIT")
+                .get("proven_by")
+                .map(String::as_str),
+            Some("1"),
+            "the const carries proven_by, an attr outside the printed list"
+        );
         for (id, site) in SHOWN_IDS.iter().zip(&sites) {
             let Located::One(located) = graph.locate(id).unwrap() else {
                 panic!("{id} locates one node")

@@ -3024,48 +3024,48 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27153,
-        "end_line": 27153
+        "start_line": 27160,
+        "end_line": 27160
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27326,
-        "end_line": 27326
+        "start_line": 27333,
+        "end_line": 27333
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27381,
-        "end_line": 27381
+        "start_line": 27388,
+        "end_line": 27388
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27412,
-        "end_line": 27412
+        "start_line": 27419,
+        "end_line": 27419
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27416,
-        "end_line": 27416
+        "start_line": 27423,
+        "end_line": 27423
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27486,
-        "end_line": 27486
+        "start_line": 27493,
+        "end_line": 27493
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27524,
-        "end_line": 27524
+        "start_line": 27531,
+        "end_line": 27531
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27984,
-        "end_line": 27984
+        "start_line": 27991,
+        "end_line": 27991
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28002,
-        "end_line": 28002
+        "start_line": 28009,
+        "end_line": 28009
       },
       {
         "file": "tests/common/cli.rs",
@@ -6764,13 +6764,13 @@
     "sites": [
       {
         "file": "src/cli/graph.rs",
-        "start_line": 675,
-        "end_line": 699
+        "start_line": 676,
+        "end_line": 700
       },
       {
         "file": "src/cli/graph.rs",
-        "start_line": 776,
-        "end_line": 800
+        "start_line": 777,
+        "end_line": 801
       }
     ]
   },
@@ -7394,8 +7394,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27406,
-        "end_line": 27426
+        "start_line": 27413,
+        "end_line": 27433
       }
     ]
   },
@@ -7409,8 +7409,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27200,
-        "end_line": 27247
+        "start_line": 27207,
+        "end_line": 27254
       }
     ]
   },

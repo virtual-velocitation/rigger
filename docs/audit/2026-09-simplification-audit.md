@@ -2853,15 +2853,15 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:26658-26658` `".rigger"`
 - `tests/cli.rs:26850-26850` `".rigger"`
 - `tests/cli.rs:26883-26883` `".rigger"`
-- `tests/cli.rs:27153-27153` `".rigger"`
-- `tests/cli.rs:27326-27326` `".rigger"`
-- `tests/cli.rs:27381-27381` `".rigger"`
-- `tests/cli.rs:27412-27412` `"scaffolded .rigger/instructions/README.md"`
-- `tests/cli.rs:27416-27416` `".rigger/instructions/README.md"`
-- `tests/cli.rs:27486-27486` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:27524-27524` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:27984-27984` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28002-28002` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:27160-27160` `".rigger"`
+- `tests/cli.rs:27333-27333` `".rigger"`
+- `tests/cli.rs:27388-27388` `".rigger"`
+- `tests/cli.rs:27419-27419` `"scaffolded .rigger/instructions/README.md"`
+- `tests/cli.rs:27423-27423` `".rigger/instructions/README.md"`
+- `tests/cli.rs:27493-27493` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:27531-27531` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:27991-27991` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28009-28009` `"gw/.rigger/workflow.yml"`
 - `tests/common/cli.rs:250-250` `".rigger"`
 - `tests/common/cli.rs:261-261` `".rigger"`
 - `tests/common/cli.rs:282-282` `".rigger"`
@@ -4492,8 +4492,8 @@ Proposed home: `graph::support (consolidate these 2 sites into one function in t
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/graph.rs:675-699` `cmd_graph_communities`
-- `src/cli/graph.rs:776-800` `cmd_graph_concepts`
+- `src/cli/graph.rs:676-700` `cmd_graph_communities`
+- `src/cli/graph.rs:777-801` `cmd_graph_concepts`
 
 #### `dup-6b5ddf643eb6` (exact, 2 sites)
 
@@ -4780,7 +4780,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:16572-16583` `status_prints_no_dashboard_line_when_none_was_ever_recorded`
 - `tests/cli.rs:24230-24240` `prime_with_no_spec_path_never_mentions_the_spec_lint`
 - `tests/cli.rs:24651-24660` `workflow_with_no_spec_path_never_mentions_the_spec_lint`
-- `tests/cli.rs:27406-27426` `init_scaffolds_the_instructions_readme_and_names_it`
+- `tests/cli.rs:27413-27433` `init_scaffolds_the_instructions_readme_and_names_it`
 
 #### `dup-84fea880d212` (near, 2 sites)
 
@@ -4789,7 +4789,7 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:16871-16901` `docs_ships_three_verb_lookup_guidance_to_consumers`
-- `tests/cli.rs:27200-27247` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
+- `tests/cli.rs:27207-27254` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
 
 #### `dup-21b08556e493` (exact, 2 sites)
 

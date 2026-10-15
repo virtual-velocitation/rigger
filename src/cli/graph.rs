@@ -278,12 +278,13 @@ fn print_site_header(site: &contextgraph::EntitySite, file: &str, live_line: u32
 /// so each entry stays one line (the MCP key carrying it verbatim).
 fn print_site_entries(site: &contextgraph::EntitySite) {
     for (entry, value) in contextgraph::site_fields(site) {
-        let printed = match value {
-            _ if matches!(entry, "file" | "line" | "kind" | "degree") => continue,
-            serde_json::Value::String(text) => text.replace('\n', " "),
-            other => other.to_string(),
-        };
-        println!("  {entry} {printed}");
+        // The header's entries; every entry after them is a recorded string value.
+        if matches!(entry, "file" | "line" | "kind" | "degree") {
+            continue;
+        }
+        if let serde_json::Value::String(text) = value {
+            println!("  {entry} {}", text.replace('\n', " "));
+        }
     }
 }
 

@@ -27115,6 +27115,13 @@ fn graph_show_prints_each_node_through_the_one_site_renderer() {
             .collect()
     };
     let graph = common::cli::open_graph(root);
+    assert_eq!(
+        common::fixtures::attrs_of(&graph, "src/limits.rs::LIMIT")
+            .get("proven_by")
+            .map(String::as_str),
+        Some("1"),
+        "the const carries proven_by, an attr outside the printed list"
+    );
     for (id, out) in SHOWN_IDS.iter().zip(&shown) {
         let Located::One(site) = graph.locate(id).unwrap() else {
             panic!("{id} locates one node")
