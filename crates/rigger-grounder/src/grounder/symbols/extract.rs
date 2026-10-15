@@ -2972,7 +2972,7 @@ class K
             located("struct g {} const g: u8 = 0;\n", "g", Kind::Function, 1),
             Extent::Missing
         );
-        /// A name no definition of the kind carries anywhere in the file is missing.
+        /// A name no definition carries anywhere in the file is missing.
         a_name_defined_nowhere_is_missing: assert_eq!(
             located("fn other() {}\n", "gone", Kind::Function, 1),
             Extent::Missing
