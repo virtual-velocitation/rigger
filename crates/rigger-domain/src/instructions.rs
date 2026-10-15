@@ -283,7 +283,8 @@ mod tests {
     /// spell, a named inline spelling included - with every added or named shape recorded in a
     /// whole-tree audit whether merged or not, the audit one search per distinguishing
     /// expression of each statement of every test-side body added and of each edited statement
-    /// of a body edited, the hunks of the unit's whole range inside it - each string
+    /// of a body edited, the hunks of the unit's whole range inside it, a twin among untouched
+    /// statements named to the operator as the tree's debt - each string
     /// literal alone and in full, however short, and each outside call with its first argument,
     /// never the body's name nor an expression wrapping a literal -
     /// whose command and hits the record carries and the SDET lens re-runs and re-derives from
@@ -349,6 +350,9 @@ mod tests {
              edited statements, the hunks of the unit's whole range inside it - the merge base \
              with the run branch to head, the range the sentence walk and the mutant probes use \
              - since a statement you did not touch carries no shape you added.",
+            "A twin the search surfaces only among statements you did not touch, spelling no \
+             literal or call of yours, is the tree's duplication debt: your hand-over names it to \
+             the operator, and you do not lift it.",
             "every string literal it spells, in full (an assertion, expect or panic message, a \
              fixture path, a query text)",
             "every call it makes outside the shared home with its first argument token",
