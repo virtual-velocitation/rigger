@@ -2157,7 +2157,9 @@ fn settle_node(
 }
 
 /// Undo what resolved against node `id` ([`definition_retired`]) when it defined `defined`
-/// before a fold changed it and defines no name now, and answer the name it defines now.
+/// before a fold changed it and no longer defines that name now - it defines no name, or a
+/// different leaf (spec 119, A RENAMED PATH RETIRES ITS OLD LEAF: a definition refolded at its
+/// path under another leaf) - and answer the name it defines now.
 fn undo_what_resolved_against(
     tx: &Transaction,
     id: &str,
@@ -2165,7 +2167,7 @@ fn undo_what_resolved_against(
     project: &str,
 ) -> Result<Option<String>, Error> {
     let now = definition_name(tx, id, project)?;
-    if let (Some(name), None) = (&defined, &now) {
+    if let Some(name) = defined.as_ref().filter(|name| now.as_ref() != Some(*name)) {
         definition_retired(tx, id, name, project)?;
     }
     Ok(now)
@@ -2257,8 +2259,9 @@ fn definition_name(tx: &Transaction, id: &str, project: &str) -> Result<Option<S
     .map_err(be)
 }
 
-/// Undo what resolved against definition `id` of `name` now that it is no longer one (spec 101,
-/// "convergences undo with their definition"), the inverse of the definition arm's two
+/// Undo what resolved against definition `id` of `name` now that it no longer defines `name`
+/// (spec 101, "convergences undo with their definition"; spec 119, renamed to another leaf at its
+/// path), the inverse of the definition arm's two
 /// convergences: every live cross-file reference whose target text binds `name`
 /// ([`edge_binds_leaf_sql`], spelled `<file>::<name>` or `<file>::%<name>`) tiered INFERRED because
 /// a definition of it existed is demoted to AMBIGUOUS when no other call target has `name` as its
@@ -2693,9 +2696,11 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             // ([`settling_definition`]), passed to the one `ensure_node` call, and is a
             // definition only while that winner is a call target: a node that defined a name
             // before this fold and defines none after it (a fn that is only a field at its
-            // file's next generation, a field settling over a module of its leaf) undoes what
-            // resolved against it, as a node that stops being a definition does when it settles
-            // ([`settle_node`], which reads the node only after this arm has changed it).
+            // file's next generation, a field settling over a module of its leaf), or defines
+            // another leaf at its path after it (spec 119, A RENAMED PATH RETIRES ITS OLD LEAF:
+            // `B` refolded as `A.B`), undoes what resolved against the name it defined, as a
+            // node that stops being a definition does when it settles ([`settle_node`], which
+            // reads the node only after this arm has changed it).
             let defined = definition_name(tx, &entity, project)?;
             let (kind, line) = settling_definition(tx, by, &entity, &c.kind, c.line, project)?;
             let line = line.to_string();
