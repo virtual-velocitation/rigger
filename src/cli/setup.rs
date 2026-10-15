@@ -3543,7 +3543,8 @@ mod tests {
     }
 
     /// The roles that write or judge tests carry the mutation-proof test block exactly once;
-    /// no other role does.
+    /// no other role does. The two author roles' blocks name the hand probe record as the proof
+    /// they give before the mutation gate ever runs.
     #[test]
     fn the_test_roles_carry_the_mutation_test_block_exactly_once() {
         const HEADING: &str = "## Every test must survive mutation testing";
@@ -3557,6 +3558,18 @@ mod tests {
                 want,
                 "{file}: the test block appears {want} time(s)"
             );
+            if matches!(file.as_str(), "rust-engineer.md" | "sdet-author.md") {
+                let block = rigger::wave::normalize_ws(&text[text.find(HEADING).unwrap()..]);
+                assert!(
+                    block.contains(
+                        "The `<unit>-mutant-probes` record of the hand-over checks above is how \
+                         you prove this before the mutation gate ever runs: each mutable token \
+                         of the unit's production hunks, mutated by hand, turns a test you name \
+                         red."
+                    ),
+                    "{file}: the test block names the hand probe record as its proof"
+                );
+            }
         }
     }
 
