@@ -282,7 +282,8 @@ mod tests {
     /// committed with their inputs, a test-side shape spelled once - any token two tests could
     /// spell, a named inline spelling included - with every added or named shape recorded in a
     /// whole-tree audit whether merged or not, the audit one search per distinguishing
-    /// expression of each statement of every test-side body added or edited - each string
+    /// expression of each statement of every test-side body added and of each edited statement
+    /// of a body edited, the hunks of the unit's whole range inside it - each string
     /// literal alone and in full, however short, and each outside call with its first argument,
     /// never the body's name nor an expression wrapping a literal -
     /// whose command and hits the record carries and the SDET lens re-runs and re-derives from
@@ -344,6 +345,10 @@ mod tests {
              builder, a table row's closure - statement by statement",
             "each statement that is not a single call into the shared test home is a shape of \
              its own",
+            "A body you add is walked whole, every statement; a body you edit is walked in its \
+             edited statements, the hunks of the unit's whole range inside it - the merge base \
+             with the run branch to head, the range the sentence walk and the mutant probes use \
+             - since a statement you did not touch carries no shape you added.",
             "every string literal it spells, in full (an assertion, expect or panic message, a \
              fixture path, a query text)",
             "every call it makes outside the shared home with its first argument token",
