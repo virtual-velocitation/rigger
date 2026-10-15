@@ -1038,15 +1038,17 @@ pub struct EdgeInferred {
     pub fresh: bool,
     /// The enclosing definition this reference was attributed to during extraction (spec 37): the
     /// caller's path in its file (spec 119 criterion 8: `T::new`; a payload recorded before
-    /// paths carries its leaf, folding to that flat id as its definition then did), same-file,
-    /// the innermost enclosing function before any other definition (spec 116). `None` for a top-level reference outside every definition (an import or a
-    /// module-level call; a file-level impl header's trait and type attribute to the impl block,
-    /// a definition of its own). The emit pass carries what extraction attributed onto the
-    /// `SymRef`; the fold, when it is present, adds a `<file>::<caller> --CALLS--> <callee>` edge
-    /// ALONGSIDE the existing file-level `REFERENCES` edge (a later criterion owns that fold).
-    /// Serde-defaulted and omitted when `None`, so a pre-37 log folds as caller-less and a
-    /// caller-less reference serializes byte-identically to before - the CALLS edge is purely
-    /// additive to the code layer.
+    /// paths carries its leaf, folding to that flat id as its definition then did, and so does
+    /// one lowered from a `ts-tags-v3` index persisted before criterion 8, which loads as current
+    /// until criterion 9 bumps the index version to `ts-tags-v4`), same-file, the innermost
+    /// enclosing function before any other definition (spec 116). `None` for a top-level
+    /// reference outside every definition (an import or a module-level call; a file-level impl
+    /// header's trait and type attribute to the impl block, a definition of its own). The emit
+    /// pass carries what extraction attributed onto the `SymRef`; the fold, when it is present,
+    /// adds a `<file>::<caller> --CALLS--> <callee>` edge ALONGSIDE the existing file-level
+    /// `REFERENCES` edge (a later criterion owns that fold). Serde-defaulted and omitted when
+    /// `None`, so a pre-37 log folds as caller-less and a caller-less reference serializes
+    /// byte-identically to before - the CALLS edge is purely additive to the code layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<String>,
     /// The reference's 1-based source line (spec 86 criterion 2). Unused by a STRUCTURAL reference

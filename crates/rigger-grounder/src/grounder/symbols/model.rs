@@ -191,8 +191,11 @@ pub struct FileSymbols {
 /// is distinguishable on replay from one the current set would produce, and so a persisted
 /// [`SymbolIndex`] built under an older set loads as absent and is rebuilt (gap 104); so does a
 /// change to what extraction records under an unchanged query, the caller a reference carries
-/// (`SymRef::enclosing`) included. Parser-free, so it lives in the model both feature lanes
-/// compile.
+/// (`SymRef::enclosing`) included - save one staged change: spec 119 criterion 8's caller path
+/// in place of its name shares `ts-tags-v3` with the leaf-caller index before it, until criterion
+/// 9 bumps the version to `ts-tags-v4` (spec 119, GENERATIONS: one bump at the index's last shape
+/// change), so a v3 index persisted before criterion 8 still loads, its callers by leaf.
+/// Parser-free, so it lives in the model both feature lanes compile.
 pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v3";
 
 /// The whole-project index. Deterministic containers only (`BTreeMap`): iterating it for
