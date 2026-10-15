@@ -2535,8 +2535,8 @@ fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
         common::cli::ambiguous_show(
             "elapsed",
             &[
-                ("src/clock.rs::elapsed", "src/clock.rs"),
-                ("src/kinds.rs::Moon.elapsed", "src/kinds.rs")
+                ("src/clock.rs::elapsed", OLDER_STORE_CLOCK_PATH),
+                ("src/kinds.rs::Moon.elapsed", OLDER_STORE_KINDS_PATH)
             ]
         ),
         "the second field's leaf lists the field beside the other file's fn"
