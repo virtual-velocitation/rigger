@@ -2868,9 +2868,13 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             // Callee resolution is UNCHANGED - the SAME `target` and `tier` the REFERENCES edge uses,
             // so the CALLS edge is a faithful caller-keyed twin (the definition arm's convergent
             // upgrade promotes both rels together, keeping the twin's tier in lock-step). The caller
-            // entity node is `ensure_node`d bare like the target: in real extraction the enclosing
-            // definition folded first (defs emit before refs) so this is a no-op that keeps its
-            // attrs, and a reverse fold order still never leaves the CALLS edge dangling.
+            // entity node is `ensure_node`d bare like the target, at `<file>::<caller>`, the
+            // caller's leaf: for a file-level caller that is its definition's own id (its path
+            // being its name), folded first in real extraction (defs emit before refs), so this
+            // is a no-op that keeps its attrs; for a nested caller (`T::new`, whose definition
+            // folds at its path) it is a nameless node apart from the definition, until spec 119
+            // criterion 8 gives a caller its path. Either way a reverse fold order never
+            // leaves the CALLS edge dangling.
             if let Some(caller) = &r.caller {
                 let caller_id = code_entity_id(&file, caller);
                 ensure_node(tx, by, &caller_id, KIND_CODE_ENTITY, &[], project)?;

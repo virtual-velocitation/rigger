@@ -239,6 +239,13 @@ pub fn refs_with_callers(fs: &FileSymbols) -> Vec<(u32, &str, Option<&str>)> {
     refs
 }
 
+/// A hand-authored `index.json` body holding `file` alone, a Rust file of the definitions `defs`
+/// (a JSON array) and no references, for [`persist_stamped`] or [`persist_current`] to write.
+pub fn rust_index_json(file: &str, defs: serde_json::Value) -> String {
+    serde_json::json!({ "files": { file: { "lang": "Rust", "defs": defs, "refs": [] } } })
+        .to_string()
+}
+
 /// Writes `body`, a hand-authored `index.json`, as the persisted index of `root`, stamped as
 /// built under the extraction generation `grammar`.
 pub fn persist_stamped(root: &str, grammar: &str, body: &str) {

@@ -1085,7 +1085,10 @@ fn container_of(spans: &[std::ops::Range<usize>], i: usize) -> Option<usize> {
     spans
         .iter()
         .enumerate()
-        .filter(|(_, span)| *span != inner && span.start <= inner.start && inner.end <= span.end)
+        .filter(|(_, span)| {
+            let holds = |at: &usize| (span.start..=span.end).contains(at);
+            *span != inner && holds(&inner.start) && holds(&inner.end)
+        })
         .filter(|(_, span)| spans.iter().filter(|other| other == span).count() == 1)
         .min_by_key(|(_, span)| span.len())
         .map(|(j, _)| j)
@@ -1555,8 +1558,9 @@ pub struct Recorded<'a> {
 ///
 /// The kind is compared through `kind_str`, so a field beside a same-named fn, or a variant
 /// inside its same-named enum, never widens or blocks a tier-1 or tier-3 match; at the recorded
-/// line tier 2 ignores the kind, so a lone same-named field there bounds the body. An `Err` is a
-/// grammar or query that cannot run over the source.
+/// line tier 2 ignores the kind, so with no `path` given a lone same-named field there bounds the
+/// body, while with one a field's own path (`S.h`) never matches a function's (`h`), so it never
+/// does. An `Err` is a grammar or query that cannot run over the source.
 pub fn locate_extent(
     source: &str,
     lang: Lang,
@@ -3157,5 +3161,15 @@ class K
             located("fn other() {}\n", "gone", Kind::Function, 1),
             Extent::Missing
         );
+    }
+
+    /// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: two definitions with no byte between them, the
+    /// second starting where the first ends, are siblings at file level, neither one holding the
+    /// other although each holds one end of the other's range.
+    #[test]
+    fn adjacent_definitions_are_siblings_never_each_others_container() {
+        let symbols = crate::symbol_index::extracted("rs", "fn a(){}fn b(){}\n");
+        let paths: Vec<&str> = symbols.defs.iter().map(|d| d.path.as_str()).collect();
+        assert_eq!(paths, ["a", "b"], "adjacent definitions sit side by side");
     }
 }
