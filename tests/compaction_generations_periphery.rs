@@ -48,6 +48,7 @@ use common::cli::{
     UNFINISHED_REBUILD_REFUSAL,
 };
 use common::fixtures::cleanup;
+use common::fixtures::f_rs_batch_def;
 use common::fixtures::files_open_by;
 use common::fixtures::wait_until_for;
 use common::git::temp_git_project_with_commit;
@@ -131,17 +132,6 @@ fn fold_in_batches(graph_db: &Path, project: &str, batches: &[Vec<Event>]) -> St
         common::fixtures::folds(&open(), batch);
     }
     serde_json::to_string(&open().whole().unwrap()).unwrap()
-}
-
-/// A code batch head: `CodeEntityExtracted` for `name` at `line`, carrying the `fresh` boundary
-/// and, when `partial`, the degraded-parse marker.
-fn head(name: &str, line: u32, partial: bool) -> Vec<u8> {
-    let mut v: serde_json::Value = serde_json::from_slice(&entity(name, line)).unwrap();
-    v["fresh"] = serde_json::Value::Bool(true);
-    if partial {
-        v["partial"] = serde_json::Value::Bool(true);
-    }
-    serde_json::to_vec(&v).unwrap()
 }
 
 /// Events folded into a graph AFTER the state under test is reached, so a divergence latent in its
@@ -341,24 +331,14 @@ fn one_projects_generations_never_supersede_anothers_in_a_shared_graph() {
         &[(
             rigger::conductor::STREAM,
             vec![
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    head("alpha", 1, false),
-                    "gc/src/f.rs@h1#0",
-                    10,
-                ),
+                f_rs_batch_def(0, "h1", 0, ("alpha", "function", 1), None, 10),
                 keyed(
                     TYPE_CODE_ENTITY_EXTRACTED,
                     entity("gone", 9),
                     "gc/src/f.rs@h1#1",
                     10,
                 ),
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    head("alpha", 2, false),
-                    "gc/src/f.rs@h2#0",
-                    20,
-                ),
+                f_rs_batch_def(0, "h2", 0, ("alpha", "function", 2), None, 20),
             ],
         )],
     );
@@ -371,24 +351,14 @@ fn one_projects_generations_never_supersede_anothers_in_a_shared_graph() {
             rigger::conductor::STREAM,
             ExpectedRevision::Any,
             &[
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    head("beta", 1, false),
-                    "gc/src/f.rs@h1#0",
-                    11,
-                ),
+                f_rs_batch_def(0, "h1", 0, ("beta", "function", 1), None, 11),
                 keyed(
                     TYPE_CODE_ENTITY_EXTRACTED,
                     entity("kept", 3),
                     "gc/src/f.rs@h9#1",
                     12,
                 ),
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    head("beta", 2, false),
-                    "gc/src/f.rs@h9#0",
-                    12,
-                ),
+                f_rs_batch_def(0, "h9", 0, ("beta", "function", 2), None, 12),
             ],
         )
         .unwrap();
@@ -429,12 +399,7 @@ fn one_projects_generations_never_supersede_anothers_in_a_shared_graph() {
 /// facts a graph folded before the generation rule keeps and a rebuild does not.
 fn two_generations_dropping_facts() -> Vec<Event> {
     vec![
-        keyed(
-            TYPE_CODE_ENTITY_EXTRACTED,
-            head("alpha", 1, false),
-            "gc/src/f.rs@h1#0",
-            10,
-        ),
+        f_rs_batch_def(0, "h1", 0, ("alpha", "function", 1), None, 10),
         keyed(
             TYPE_CODE_ENTITY_EXTRACTED,
             entity("gone", 9),
@@ -447,12 +412,7 @@ fn two_generations_dropping_facts() -> Vec<Event> {
             "gd/docs/f.md@h1#0",
             10,
         ),
-        keyed(
-            TYPE_CODE_ENTITY_EXTRACTED,
-            head("alpha", 2, false),
-            "gc/src/f.rs@h2#0",
-            20,
-        ),
+        f_rs_batch_def(0, "h2", 0, ("alpha", "function", 2), None, 20),
         keyed(
             TYPE_DOC_LINK_EXTRACTED,
             link("src/a.rs"),
@@ -999,12 +959,7 @@ fn pruning_superseded_edges_keeps_what_the_fold_may_revive() {
         &[(
             rigger::conductor::STREAM,
             vec![
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    head("alpha", 1, false),
-                    "gc/src/f.rs@h1#0",
-                    10,
-                ),
+                f_rs_batch_def(0, "h1", 0, ("alpha", "function", 1), None, 10),
                 keyed(
                     TYPE_CODE_ENTITY_EXTRACTED,
                     entity("gone", 9),
@@ -1022,12 +977,7 @@ fn pruning_superseded_edges_keeps_what_the_fold_may_revive() {
                     community_of("src/f.rs::gone"),
                 )
                 .with_valid_from(at),
-                keyed(
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    head("alpha", 2, false),
-                    "gc/src/f.rs@h2#0",
-                    20,
-                ),
+                f_rs_batch_def(0, "h2", 0, ("alpha", "function", 2), None, 20),
                 keyed(
                     TYPE_DOC_LINK_EXTRACTED,
                     link("src/a.rs"),
@@ -1227,7 +1177,6 @@ impl ReleaseEraStore {
     /// folded: its ledgers are the current ones, it records rule 1, and the node the two
     /// definitions share, with its file's assertion of it, holds the one folded last, the field.
     fn folded_at_rule_1() -> Self {
-        use common::fixtures::f_rs_batch_def;
         use rigger::contextgraph::sqlite::Projector;
         let store = Self::logging(
             true,
@@ -2035,9 +1984,10 @@ fn the_live_selection_is_one_projects_stream_with_that_streams_head() {
     };
     let other = "proj-other";
     let generation = |key: &str, line| {
-        vec![keyed(
+        vec![common::fixtures::keyed_event(
+            0,
             TYPE_CODE_ENTITY_EXTRACTED,
-            head("alpha", line, false),
+            common::fixtures::def_json("src/f.rs", "alpha", line, true),
             key,
             10,
         )]
@@ -2210,13 +2160,13 @@ rigger::test_cases! {
     /// `src/f.rs` moves on to a third content that adds `delta`.
     a_resumed_rebuild_folds_a_generation_the_log_gained_as_the_whole_log_does:
         a_resumed_rebuild_after_the_log_gained_a_generation_is_the_whole_logs(vec![
-            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 3, false), "gc/src/f.rs@h3#0", 30),
+            f_rs_batch_def(0, "h3", 0, ("alpha", "function", 3), None, 30),
             keyed(TYPE_CODE_ENTITY_EXTRACTED, entity("delta", 5), "gc/src/f.rs@h3#1", 30),
         ]);
     /// `src/f.rs` returns to h1, bringing `gone` back.
     a_resumed_rebuild_folds_a_revert_the_log_gained_as_the_whole_log_does:
         a_resumed_rebuild_after_the_log_gained_a_generation_is_the_whole_logs(vec![
-            keyed(TYPE_CODE_ENTITY_EXTRACTED, head("alpha", 1, false), "gc/src/f.rs@h1#0", 30),
+            f_rs_batch_def(0, "h1", 0, ("alpha", "function", 1), None, 30),
             keyed(TYPE_CODE_ENTITY_EXTRACTED, entity("gone", 9), "gc/src/f.rs@h1#1", 30),
         ]);
 }
