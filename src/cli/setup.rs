@@ -3580,7 +3580,10 @@ mod tests {
     /// lens to re-run, each boolean term a production hunk adds to or removes from a filter,
     /// guard or predicate read as a rewritten rule whose consumer phrases - the notes, Returns
     /// paragraphs, variant docs and oracles of the function's depth-1 callers - that search
-    /// runs, and the record the walk owes, and the foreground wait for
+    /// runs, and the record the walk owes, the hand probe of every mutable token of the
+    /// production hunks over the unit's whole range - one mutation at a time, the owning crate's
+    /// unit tests and the touched root test binaries run, the file restored - with the
+    /// `<unit>-mutant-probes` record the `sdet` lens completes, and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
     /// line when the host backgrounds one.
     #[test]
@@ -3691,6 +3694,16 @@ mod tests {
              docs of the variants the answer maps to and the oracles asserting them - and each \
              such consumer phrase is a phrase of the search above, run once, every hit FIXED \
              with the new qualifier or CHECKED with the reason it does not reach it.",
+            "Every mutable token of your production delta is probed on your committed tree: list \
+             the tokens from the production hunks of `git diff $(git merge-base rigger-run \
+             HEAD)..HEAD -- crates src` with the test regions left out",
+            "after each single mutation run the owning crate's unit tests, `cargo test -p \
+             <crate> --lib` for a file under `crates/` or `cargo test --lib --bin rigger` for one \
+             under `src/`, and each root test binary the unit touched by `cargo test --test \
+             <name>`, then restore the file with `git checkout -- <file>` before the next",
+            "The `<unit>-mutant-probes` DecisionMade, beside the other two records, pastes each \
+             token's `file:line`, the mutation, each command as run and the test that went red \
+             with its assertion; the `sdet` lens probes every token it lacks.",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
