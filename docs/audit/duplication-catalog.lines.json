@@ -5774,8 +5774,8 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "start_line": 13007,
-        "end_line": 13007
+        "start_line": 13009,
+        "end_line": 13009
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
@@ -6065,7 +6065,7 @@
     ]
   },
   {
-    "id": "dup-2c822fd14970",
+    "id": "dup-e45a2413a3f0",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -6101,11 +6101,6 @@
         "file": "tests/code_ingest_events.rs",
         "start_line": 978,
         "end_line": 985
-      },
-      {
-        "file": "tests/common/fixtures/fold.rs",
-        "start_line": 397,
-        "end_line": 404
       }
     ]
   },
@@ -7604,13 +7599,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 391,
-        "end_line": 393
+        "start_line": 468,
+        "end_line": 470
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 409,
-        "end_line": 411
+        "start_line": 492,
+        "end_line": 494
       }
     ]
   },
@@ -7619,8 +7614,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 667,
-        "end_line": 676
+        "start_line": 750,
+        "end_line": 759
       },
       {
         "file": "tests/community_resolution_knob.rs",

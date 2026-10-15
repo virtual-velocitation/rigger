@@ -12782,11 +12782,10 @@ mod tests {
             use super::*;
             use crate::contextgraph::CODE_KIND_PRECEDENCE;
             use crate::test_support::{
-                attrs_of, call_json, definition, kind_def_json, ref_json, with_path,
+                attrs_of, call_json, cross_file_call_and_proof, definition, f_rs_batch_def, folds,
+                kind_def_json, ref_json, DefRow as Def, NEW_LEAF_MODULE, OLD_LEAF_FN, RENAMED_NODE,
+                RENAMED_PATH,
             };
-
-            /// One definition of `src/f.rs` as `(name, kind, line)`.
-            type Def<'a> = (&'a str, &'a str, u64);
 
             const X: &str = "src/f.rs::x";
             const FN_AT_1: &[Def] = &[("x", "function", 1)];
@@ -12808,14 +12807,17 @@ mod tests {
                 defs: &[Def],
                 path: Option<&str>,
             ) {
-                for (i, (name, kind, line)) in defs.iter().enumerate() {
-                    apply_keyed(
+                for (i, def) in defs.iter().enumerate() {
+                    folds(
                         p,
-                        pos + i as u64,
-                        TYPE_CODE_ENTITY_EXTRACTED,
-                        with_path(kind_def_json("src/f.rs", name, kind, *line, i == 0), path),
-                        &format!("gc/src/f.rs@{generation}#{i}"),
-                        secs,
+                        &[f_rs_batch_def(
+                            pos + i as u64,
+                            generation,
+                            i,
+                            *def,
+                            path,
+                            secs,
+                        )],
                     );
                 }
             }
@@ -12828,9 +12830,9 @@ mod tests {
 
             /// [`fold_a_cross_file_call_and_a_proof`] to the leaf `name`.
             fn fold_a_cross_file_call_and_a_proof_of(p: &Projector, pos: u64, name: &str) {
-                apply_def(p, pos, "src/b.rs", "g", 1, true);
-                apply_call(p, pos + 1, "src/b.rs", name, "g");
-                apply_edge_inferred_evidence(p, pos + 2, "tests/t.rs", name, 3);
+                for e in cross_file_call_and_proof(pos, name) {
+                    folds(p, std::slice::from_ref(&e));
+                }
             }
 
             /// `defs`, the definitions of one leaf, settle their node as a `kind` at `line`
@@ -13150,14 +13152,14 @@ mod tests {
                     );
             }
 
-            /// The id path `A.B` the renamed definitions share.
-            const PATH_A_B: Option<&str> = Some("A.B");
+            /// The id path `A.B` the renamed definitions share, as [`fold_path_defs`] takes it.
+            const PATH_A_B: Option<&str> = Some(RENAMED_PATH);
             /// The one node the id path `A.B` gives `src/f.rs`'s definitions.
-            const A_B: &str = "src/f.rs::A.B";
+            const A_B: &str = RENAMED_NODE;
             /// The fn `B` at line 2, the old leaf of the id path `A.B`.
-            const FN_B_AT_2: &[Def] = &[("B", "function", 2)];
+            const FN_B_AT_2: &[Def] = &[OLD_LEAF_FN];
             /// The module `A.B` at line 1, the new leaf of the id path `A.B`.
-            const MODULE_A_B_AT_1: &[Def] = &[("A.B", "module", 1)];
+            const MODULE_A_B_AT_1: &[Def] = &[NEW_LEAF_MODULE];
 
             /// `src/f.rs::A.B` carries `attrs`, the cross-file call to `B` is ambiguous and its
             /// test reference names no target: what a graph holding no call target of the leaf

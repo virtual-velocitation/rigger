@@ -123,11 +123,25 @@ pub fn landed(p: &Projector) -> Vec<(String, String, String, String)> {
 }
 
 /// The `(from, rel, to, tier)` rows of `f.rs`'s reference and of `f.rs::main`'s call, both
-/// landed on `to` at `tier`, in [`landed`]'s order.
+/// landed on `to` at `tier`, in [`landed`]'s order ([`a_call_from`]).
 pub fn a_call_from_main(to: &str, tier: &str) -> Vec<(String, String, String, String)> {
-    [("f.rs", REL_REFERENCES), ("f.rs::main", REL_CALLS)]
-        .map(|(from, rel)| (from.into(), rel.into(), to.into(), tier.into()))
-        .to_vec()
+    a_call_from("f.rs", "main", to, tier)
+}
+
+/// The `(from, rel, to, tier)` rows of `file`'s reference and of `<file>::<caller>`'s call, both
+/// landed on `to` at `tier`, in [`landed`]'s order.
+pub fn a_call_from(
+    file: &str,
+    caller: &str,
+    to: &str,
+    tier: &str,
+) -> Vec<(String, String, String, String)> {
+    [
+        (file.to_string(), REL_REFERENCES),
+        (format!("{file}::{caller}"), REL_CALLS),
+    ]
+    .map(|(from, rel)| (from, rel.into(), to.into(), tier.into()))
+    .to_vec()
 }
 
 /// Fold `events` into `p` through the public fold, and insist they landed: the one spelling of
@@ -139,10 +153,15 @@ pub fn folds(p: &dyn Projection, events: &[Event]) {
     );
 }
 
-/// Fold `e` onto `p` at log position `pos`.
-fn fold_at(p: &Projector, pos: u64, mut e: Event) {
+/// `e` stamped at log position `pos`.
+pub fn at_position(pos: u64, mut e: Event) -> Event {
     e.position = pos;
-    folds(p, std::slice::from_ref(&e));
+    e
+}
+
+/// Fold `e` onto `p` at log position `pos`.
+fn fold_at(p: &Projector, pos: u64, e: Event) {
+    folds(p, &[at_position(pos, e)]);
 }
 
 /// A `type_` event carrying `data`, replay-keyed `key` and valid from `secs` after the epoch.
@@ -154,9 +173,10 @@ pub fn keyed(type_: &str, data: Vec<u8>, key: &str, secs: u64) -> Event {
 
 /// One derived event stamped with replay key `key`, valid from `secs`, at `pos`.
 pub fn keyed_event(pos: u64, type_: &str, json: serde_json::Value, key: &str, secs: u64) -> Event {
-    let mut e = keyed(type_, serde_json::to_vec(&json).unwrap(), key, secs);
-    e.position = pos;
-    e
+    at_position(
+        pos,
+        keyed(type_, serde_json::to_vec(&json).unwrap(), key, secs),
+    )
 }
 
 /// Fold one [`keyed_event`] onto `p`.
@@ -279,6 +299,63 @@ pub fn with_path(mut json: serde_json::Value, path: Option<&str>) -> serde_json:
     json
 }
 
+/// One definition as `(name, kind, line)`.
+pub type DefRow<'a> = (&'a str, &'a str, u64);
+
+/// The id path the renamed definitions of `src/f.rs` share (spec 119, A RENAMED PATH RETIRES ITS
+/// OLD LEAF).
+pub const RENAMED_PATH: &str = "A.B";
+/// The one node [`RENAMED_PATH`] gives `src/f.rs`'s definitions.
+pub const RENAMED_NODE: &str = "src/f.rs::A.B";
+/// The fn `B` at line 2, the old leaf of [`RENAMED_PATH`].
+pub const OLD_LEAF_FN: DefRow<'static> = ("B", "function", 2);
+/// The module `A.B` at line 1, the new leaf of [`RENAMED_PATH`].
+pub const NEW_LEAF_MODULE: DefRow<'static> = ("A.B", "module", 1);
+
+/// The `CodeEntityExtracted` event of the Rust `def` in `src/f.rs` at log position `pos`: event
+/// `index` of generation `generation`'s batch, its head when `index` is 0, valid from `secs`, and
+/// carrying the id path `path` when one is given ([`with_path`]).
+pub fn f_rs_batch_def(
+    pos: u64,
+    generation: &str,
+    index: usize,
+    (name, kind, line): DefRow,
+    path: Option<&str>,
+    secs: u64,
+) -> Event {
+    keyed_event(
+        pos,
+        TYPE_CODE_ENTITY_EXTRACTED,
+        with_path(
+            kind_def_json("src/f.rs", name, kind, line, index == 0),
+            path,
+        ),
+        &format!("gc/src/f.rs@{generation}#{index}"),
+        secs,
+    )
+}
+
+/// From log position `pos`, one event each: `src/b.rs`'s fn `g`, the call it makes to `leaf`
+/// across files and `tests/t.rs`'s test reference to `leaf` at line 3
+/// ([`edge_inferred_evidence_json`]).
+pub fn cross_file_call_and_proof(pos: u64, leaf: &str) -> Vec<Event> {
+    [
+        (
+            TYPE_CODE_ENTITY_EXTRACTED,
+            def_json("src/b.rs", "g", 1, true),
+        ),
+        (TYPE_EDGE_INFERRED, call_json("src/b.rs", leaf, "g")),
+        (
+            TYPE_EDGE_INFERRED,
+            edge_inferred_evidence_json("tests/t.rs", leaf, 3),
+        ),
+    ]
+    .into_iter()
+    .zip(pos..)
+    .map(|((type_, json), at)| at_position(at, event_of(type_, json)))
+    .collect()
+}
+
 /// The `CodeEntityExtracted` payload of one extraction batch's Rust function definition. `fresh`
 /// marks the FIRST event of a file's batch: the fold supersedes the file's prior structural edges
 /// before folding it, so a re-extraction replaces rather than accretes.
@@ -392,14 +469,20 @@ pub fn apply_ref(p: &Projector, pos: u64, file: &str, name: &str) {
     apply_json(p, pos, TYPE_EDGE_INFERRED, ref_json(file, name));
 }
 
+/// The test-origin `EdgeInferred` payload: `file` references `name` at line `line` from a test,
+/// the evidence a test's reference to a definition records.
+pub fn edge_inferred_evidence_json(file: &str, name: &str, line: u32) -> serde_json::Value {
+    serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true })
+}
+
 /// Fold into `p`, at log position `pos`, one test-origin reference from `file` line `line` to
-/// `name`: the evidence event a test's reference to a definition records, as raw on-log JSON.
+/// `name` ([`edge_inferred_evidence_json`]), as raw on-log JSON.
 pub fn apply_edge_inferred_evidence(p: &Projector, pos: u64, file: &str, name: &str, line: u32) {
     apply_json(
         p,
         pos,
         TYPE_EDGE_INFERRED,
-        serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true }),
+        edge_inferred_evidence_json(file, name, line),
     );
 }
 
