@@ -3543,7 +3543,8 @@ mod tests {
     }
 
     /// The roles that write or judge tests carry the mutation-proof test block exactly once;
-    /// no other role does.
+    /// no other role does. The two author roles' blocks name the hand probe record as the proof
+    /// they give before the mutation gate ever runs.
     #[test]
     fn the_test_roles_carry_the_mutation_test_block_exactly_once() {
         const HEADING: &str = "## Every test must survive mutation testing";
@@ -3557,6 +3558,18 @@ mod tests {
                 want,
                 "{file}: the test block appears {want} time(s)"
             );
+            if matches!(file.as_str(), "rust-engineer.md" | "sdet-author.md") {
+                let block = rigger::wave::normalize_ws(&text[text.find(HEADING).unwrap()..]);
+                assert!(
+                    block.contains(
+                        "The `<unit>-mutant-probes` record of the hand-over checks above is how \
+                         you prove this before the mutation gate ever runs: each mutable token \
+                         of the unit's production hunks, mutated by hand, turns a test you name \
+                         red."
+                    ),
+                    "{file}: the test block names the hand probe record as its proof"
+                );
+            }
         }
     }
 
@@ -3580,7 +3593,10 @@ mod tests {
     /// lens to re-run, each boolean term a production hunk adds to or removes from a filter,
     /// guard or predicate read as a rewritten rule whose consumer phrases - the notes, Returns
     /// paragraphs, variant docs and oracles of the function's depth-1 callers - that search
-    /// runs, and the record the walk owes, and the foreground wait for
+    /// runs, and the record the walk owes, the hand probe of every mutable token of the
+    /// production hunks over the unit's whole range - one mutation at a time, the owning crate's
+    /// unit tests and the touched root test binaries run, the file restored - with the
+    /// `<unit>-mutant-probes` record the `sdet` lens completes, and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
     /// line when the host backgrounds one.
     #[test]
@@ -3691,6 +3707,16 @@ mod tests {
              docs of the variants the answer maps to and the oracles asserting them - and each \
              such consumer phrase is a phrase of the search above, run once, every hit FIXED \
              with the new qualifier or CHECKED with the reason it does not reach it.",
+            "Every mutable token of your production delta is probed on your committed tree: list \
+             the tokens from the production hunks of `git diff $(git merge-base rigger-run \
+             HEAD)..HEAD -- crates src` with the test regions left out",
+            "after each single mutation run the owning crate's unit tests, `cargo test -p \
+             <crate> --lib` for a file under `crates/` or `cargo test --lib --bin rigger` for one \
+             under `src/`, and each root test binary the unit touched by `cargo test --test \
+             <name>`, then restore the file with `git checkout -- <file>` before the next",
+            "The `<unit>-mutant-probes` DecisionMade, beside the other two records, pastes each \
+             token's `file:line`, the mutation, each command as run and the test that went red \
+             with its assertion; the `sdet` lens probes every token it lacks.",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
@@ -3721,9 +3747,12 @@ mod tests {
     /// round's delta is BLOCKING; it derives the changed-condition set itself - each boolean
     /// term the unit's production hunks add to or remove from a filter, guard or predicate -
     /// and reads every consumer sentence of that function against it, and one stating the
-    /// pre-change answer that the record does not carry is BLOCKING. Both records
-    /// are the author's instruments, never a gate, so the lens's rule against re-running a green
-    /// gate does not reach them.
+    /// pre-change answer that the record does not carry is BLOCKING. Of the mutable-token rule:
+    /// it derives the token set from the production hunks over the unit's whole range, probes
+    /// every token the author's `<unit>-mutant-probes` record lacks in a scratch worktree it
+    /// restores and removes in-turn, and a green probe or an unrecorded token is BLOCKING. The
+    /// records are the author's instruments, never a gate, so the lens's rule against re-running
+    /// a green gate does not reach them.
     #[test]
     fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
         const HEADING: &str = "## Re-run the author's searches and re-derive its walk";
@@ -3785,6 +3814,17 @@ mod tests {
              them - against the condition at head",
             "A consumer sentence stating the pre-change answer that the record does not carry \
              FIXED or CHECKED is BLOCKING",
+            "You are also the enforcement of the built-in rule that every mutable token of the \
+             production delta is pinned.",
+            "You derive the token set yourself from the production hunks of `git diff \
+             $(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out",
+            "compare it with the author's `<unit>-mutant-probes` record",
+            "Every token the record lacks you probe yourself in a scratch worktree (`git \
+             worktree add <scratch> HEAD`), one mutation at a time",
+            "restoring each file with `git checkout -- <file>` and removing the scratch worktree \
+             with `git worktree remove <scratch>` before your turn ends",
+            "A probe that leaves every test green is BLOCKING, and so is a token the record \
+             carries no probe for",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }

@@ -298,7 +298,11 @@ mod tests {
     /// each search and re-reading every hit against head, deriving the changed-condition set
     /// itself and reading every consumer sentence against it, with a renamed name's old spelling
     /// counted to zero, nothing added that nothing reads, the red test's body untouched by the
-    /// green commit, and a probe that edits the tree - the sharpest case of a turn's end being
+    /// green commit, every mutable token of the production delta - an operator, an offset, an
+    /// operand, a range argument, an arm's statement, a match arm, an early return - mutated by
+    /// hand one at a time with the red test recorded, a green probe pinned or reshaped away, the
+    /// hand enumeration standing beside the mutation gate and the SDET lens probing every token
+    /// the record lacks, and a probe that edits the tree - the sharpest case of a turn's end being
     /// the session's end - run to completion and restored before the turn ends; the gates'
     /// check names each gate command run to completion inside the turn. Read by its words, so
     /// a rewrap never moves a verdict.
@@ -453,6 +457,28 @@ mod tests {
              reason",
             "Nothing is added that nothing reads.",
             "makes the red test pass without rewriting its body",
+            "Every mutable token of your production delta is pinned.",
+            "the list is open: a comparison operator (flip its bound), an arithmetic offset \
+             (drop the +1 or -1), a boolean operand (negate or remove it), a call argument that \
+             is a range, index or bound (degenerate it), a statement in one arm of a branch \
+             (delete it), a match arm (swap it with a sibling), an early return or continue \
+             (remove it)",
+            "enumerate the tokens from your production hunks over the unit's whole range, the \
+             merge base with the run branch to head",
+            "apply each mutation in your worktree one at a time, run the crate's tests and the \
+             touched test binaries, read the red, and restore the tree",
+            "one whole-tree `<unit>-mutant-probes` DecisionMade carrying, for each token, its \
+             `file:line`, the mutation applied, and the test that went red with its assertion",
+            "A token whose probe leaves every test green is pinned by a new test before you \
+             report, or the code is reshaped so the token disappears",
+            "and the reshaped form probed",
+            "A token with no recorded probe is a record you cannot write.",
+            "the mutation gate's tool mutates no call argument and deletes no single statement of an \
+             arm",
+            "The SDET lens derives the token set itself from the production hunks over the \
+             unit's whole range and probes every token the record lacks: a probe that leaves \
+             every test green, or a token with no recorded probe, is a BLOCKING finding on its \
+             own.",
             "A probe that edits your tree is over before your turn is.",
             "runs to completion and restores the tree before your turn ends, never as a \
              detached or background job",
