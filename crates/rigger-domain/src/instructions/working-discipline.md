@@ -58,7 +58,9 @@ tool that searches them.
   whole, every statement; a body you edit is walked in its edited statements, the hunks of the
   unit's whole range inside it - the merge base with the run branch to head, the range the
   sentence walk and the mutant probes use - since a statement you did not touch carries no
-  shape you added. A literal's term is the
+  shape you added. A twin the search surfaces only among statements you did not touch,
+  spelling no literal or call of yours, is the tree's duplication debt: your hand-over names it
+  to the operator, and you do not lift it. A literal's term is the
   literal alone - its text complete, quotes included, and nothing around it - never the call
   that passes it, a format string that embeds it, the statement that spells it or two literals
   joined; an expression wrapping a literal is a term of its own only where this rule names it,
