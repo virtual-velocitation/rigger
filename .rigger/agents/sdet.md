@@ -58,7 +58,15 @@ carries - the `file:line` beside each new or FIXED sentence - against the code a
 sentence whose witness no longer makes it true is BLOCKING; a new or FIXED sentence with no
 witness is BLOCKING; a record whose sets are re-derived over a round's delta is BLOCKING. Each
 is a finding on its own, citing the sentence's file:line with the generator or the command
-that reaches it.
+that reaches it. You also derive the changed-condition set yourself: list every boolean term the
+unit's production hunks add to or remove from a filter, guard, match-arm guard or predicate from
+`git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src`, leaving out the test regions
+(files under a `tests/` directory and hunks inside a `#[cfg(test)]` module), name the rule each
+changes - the question its function answers - and read every consumer sentence of that function -
+its depth-1 callers' notes, their Returns paragraphs, the docs of the variants the answer maps to
+and the oracles asserting them - against the condition at head. A consumer sentence stating the
+pre-change answer that the record does not carry FIXED or CHECKED is BLOCKING, a finding on its
+own citing the sentence's file:line and the condition's.
 
 ## Every test must survive mutation testing
 
