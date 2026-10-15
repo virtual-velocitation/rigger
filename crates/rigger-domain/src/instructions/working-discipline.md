@@ -78,8 +78,18 @@ tool that searches them.
   docs, test comments and assertion messages are sentences too), or your hand-over names each
   remaining occurrence as a deliberate mention with its reason. The record is owed on every
   change: one whole-tree DecisionMade naming the set walked by its generators (files, items,
-  trait items, callers, lines counted) and every sentence FIXED with its location; a member
-  whose generator returned nothing is named as empty. A rule the change rewrites - a condition
+  trait items, callers, lines counted) and every sentence FIXED with its location, each
+  sentence the change writes marked new with its location; a member whose generator returned
+  nothing is named as empty. The walk's range is the unit's whole range, the merge base with
+  the run branch to head, on every round, never a round's delta alone: a sentence you wrote in
+  an earlier round is a member again whenever a later round changes the behaviour it states,
+  so a record, or a round's addendum, whose sets are re-derived over a round's delta is a
+  record you cannot write. Every sentence the record marks new or FIXED carries its witness,
+  the `file:line` of the code at head that makes it true - the arm, the guard, the call, the
+  constant; two witnesses when one would not make the whole sentence true - and a sentence
+  with no witness is a claim, not a record; a CHECKED sentence whose truth rests on code names
+  its witness the same way, and one CHECKED as a different rule sharing the words names that
+  rule instead. A rule the change rewrites - a condition
   the code decides by, such as what a call lands on or what a tier means - has spellings no
   generator above reaches: prose that states it without naming a changed item. So every
   spelling of each rewritten rule is walked too, and its search is an instrument, not a claim:
@@ -99,7 +109,11 @@ tool that searches them.
   spelling a changed item's name - compares it with the walk record, and re-runs each recorded
   rule-spelling search and re-reads every hit, CHECKED ones included, against the code at head:
   a member the record omits, a hit the record does not carry, or a CHECKED hit whose reason does
-  not hold at head, is a BLOCKING finding on its own.
+  not hold at head, is a BLOCKING finding on its own. The lens derives every set over the
+  unit's whole range, as the record does, never the round's delta its prompt carries, and
+  reads every witness the record carries against the code at head: a sentence whose witness no
+  longer makes it true, a new or FIXED sentence with no witness, or a record whose sets are
+  re-derived over a round's delta, is a BLOCKING finding on its own.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
   code reads after your change, on any feature lane, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without

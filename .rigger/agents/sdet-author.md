@@ -155,9 +155,13 @@ each of its callers names the trait item it implements; `rigger graph --around
 default depth answers the item's whole file neighbourhood, never its callers), and when it
 answers nothing the callers are the lines the count above prints for the item's name, each
 read, with a `GAP:` clause naming the item in the record; and the count above with `t='<name>'` prints every tracked line spelling each changed
-item's name, each read. The walk is recorded as one `<unit>-sentence-walk` DecisionMade
+item's name, each read. On every round, the first and each later one alike, `<base>` is the
+unit's merge base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is
+`$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the round's delta your
+prompt carries. The walk is recorded as one `<unit>-sentence-walk` DecisionMade
 beside the `<unit>-test-shape-audit` one, naming what each generator returned and every
-sentence FIXED with its location.
+sentence FIXED with its location. Each FIXED or new line of the record carries its witness
+beside that location: the `file:line` of the code at head that makes the sentence true.
 
 Each rule the change rewrites is searched by the distinguishing phrase of its old statement
 and of each label its cases carried (a name a doc, test or comment gives a case the old rule

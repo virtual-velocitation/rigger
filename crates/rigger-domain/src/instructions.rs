@@ -284,11 +284,12 @@ mod tests {
     /// whole-tree audit whether merged or not, the audit a search by the shape's distinguishing
     /// expression whose command and hits the record carries and the SDET lens re-runs, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
-    /// from its generators (an item's callers read from the graph at depth 1) and records on
-    /// every change, each spelling of a rule the change rewrites found by a recorded search per
+    /// from its generators (an item's callers read from the graph at depth 1) over the unit's
+    /// whole range on every round, never a round's delta, and records on every change, each new
+    /// or FIXED sentence with the `file:line` witness that makes it true, each spelling of a rule the change rewrites found by a recorded search per
     /// distinguishing phrase of its old statement and of each label its cases carried, the SDET
-    /// lens re-deriving each generator's set, re-running each search and re-reading every hit
-    /// against head, with a renamed name's old spelling
+    /// lens re-deriving each generator's set over that range, reading every witness, re-running
+    /// each search and re-reading every hit against head, with a renamed name's old spelling
     /// counted to zero, nothing added that nothing reads, the red test's body untouched by the
     /// green commit, and a probe that edits the tree - the sharpest case of a turn's end being
     /// the session's end - run to completion and restored before the turn ends; the gates'
@@ -357,6 +358,20 @@ mod tests {
              walked by its generators",
             "every sentence FIXED with its location",
             "a member whose generator returned nothing is named as empty",
+            "each sentence the change writes marked new with its location",
+            "The walk's range is the unit's whole range, the merge base with the run branch to \
+             head, on every round, never a round's delta alone",
+            "a sentence you wrote in an earlier round is a member again whenever a later round \
+             changes the behaviour it states",
+            "a record, or a round's addendum, whose sets are re-derived over a round's delta is \
+             a record you cannot write",
+            "Every sentence the record marks new or FIXED carries its witness, the `file:line` \
+             of the code at head that makes it true",
+            "the arm, the guard, the call, the constant; two witnesses when one would not make \
+             the whole sentence true",
+            "a sentence with no witness is a claim, not a record",
+            "a CHECKED sentence whose truth rests on code names its witness the same way, and \
+             one CHECKED as a different rule sharing the words names that rule instead",
             "has spellings no generator above reaches: prose that states it without naming a \
              changed item",
             "every spelling of each rewritten rule is walked too",
@@ -382,6 +397,11 @@ mod tests {
              and re-reads every hit, CHECKED ones included, against the code at head: a member \
              the record omits, a hit the record does not carry, or a CHECKED hit whose reason \
              does not hold at head, is a BLOCKING finding on its own.",
+            "The lens derives every set over the unit's whole range, as the record does, never \
+             the round's delta its prompt carries, and reads every witness the record carries \
+             against the code at head: a sentence whose witness no longer makes it true, a new \
+             or FIXED sentence with no witness, or a record whose sets are re-derived over a \
+             round's delta, is a BLOCKING finding on its own.",
             "when you rename or retire a name, walk every spelling of the old term through the \
              tree",
             "The old spelling occurs zero times in the tree outside git history, counted over \
