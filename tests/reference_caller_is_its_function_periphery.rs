@@ -13,6 +13,10 @@
 //!    `declaration`: the kind string a code entity event carries and the variant name the
 //!    persisted index carries.
 //!
+//! It also guards, on the graph `rigger graph build` folds, spec 119 criterion 8, A CALLER IS
+//! NAMED BY ITS PATH: a call in a Rust method of `impl T` and one in a Go receiver method each
+//! hang off the method's own definition node at its path, never a nameless node at its leaf.
+//!
 //! It also holds the wire form of the eight older kinds (spec 116 criterion 4 moved their kind
 //! strings onto shared constants): the emit pass still lowers each to the string it always did.
 
@@ -61,6 +65,49 @@ fn graph_build_hangs_each_call_off_its_innermost_enclosing_function() {
         ],
         "every CALLS edge of the built graph, each from the caller the function-first rule names",
     );
+}
+
+/// GIVEN a project whose one file calls `helper` from a method: a Rust `new` of `impl T`, or a Go
+/// receiver method `name` of `*Recv`,
+/// WHEN the operator runs `rigger graph build`,
+/// THEN every `CALLS` edge of the method hangs off its own definition node at its path,
+/// `a.rs::T::new` or `g.go::Recv::name`, the node carrying its leaf, kind and line, never a
+/// nameless node at its leaf `a.rs::new` or `g.go::name` (spec 119 criterion 8, A CALLER IS
+/// NAMED BY ITS PATH).
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_hangs_a_method_s_calls_off_the_method_s_path() {
+    let cases = [
+        (
+            ("a.rs", "rust", common::fixtures::RUST_METHOD_CALLER_SOURCE),
+            &[
+                ("T", "T", "type", 1),
+                ("T::new", "new", "method", 3),
+                ("helper", "helper", "function", 5),
+                ("impl T", "impl T", "impl", 2),
+            ][..],
+            common::fixtures::RUST_METHOD_CALLER_CALLS,
+        ),
+        (
+            ("g.go", "go", common::fixtures::GO_RECEIVER_CALLER_SOURCE),
+            &[
+                ("Recv", "Recv", "type", 3),
+                ("Recv::name", "name", "method", 5),
+                ("helper", "helper", "function", 7),
+            ][..],
+            common::fixtures::GO_RECEIVER_CALLER_CALLS,
+        ),
+    ];
+    for (file, definitions, calls) in cases {
+        common::cli::assert_built_graph_holds(
+            file,
+            definitions,
+            &[],
+            calls,
+            "every code entity of the built graph is a definition at its path, the method's caller \
+             node among them",
+        );
+    }
 }
 
 /// The definition names the persisted index of `root` holds for `lib.rs`, with the extraction

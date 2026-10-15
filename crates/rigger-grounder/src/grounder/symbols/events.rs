@@ -2556,23 +2556,20 @@ mod tests {
     /// hand-built caller naming a leaf folds from `<file>::<leaf>`.
     #[test]
     fn a_call_folds_its_calls_edge_from_its_caller_s_path() {
-        use crate::caller_sources::{GO_RECEIVER_CALLER_SOURCE, RUST_METHOD_CALLER_SOURCE};
+        use crate::caller_sources::{
+            GO_RECEIVER_CALLER_CALLS, GO_RECEIVER_CALLER_SOURCE, RUST_METHOD_CALLER_CALLS,
+            RUST_METHOD_CALLER_SOURCE,
+        };
         use crate::test_support::{apply_call, assert_live_calls, def};
 
         assert_live_calls(
             &folded_extraction("a.rs", RUST_METHOD_CALLER_SOURCE),
-            &[
-                ("a.rs::T::new", "a.rs::helper"),
-                ("a.rs::impl T", "a.rs::T"),
-            ],
+            RUST_METHOD_CALLER_CALLS,
             "the call in `impl T { fn new() }` folds from `T::new`'s path",
         );
         assert_live_calls(
             &folded_extraction("g.go", GO_RECEIVER_CALLER_SOURCE),
-            &[
-                ("g.go::Recv::name", "g.go::Recv"),
-                ("g.go::Recv::name", "g.go::helper"),
-            ],
+            GO_RECEIVER_CALLER_CALLS,
             "the calls in the receiver method `name` fold from `Recv::name`'s path",
         );
 
