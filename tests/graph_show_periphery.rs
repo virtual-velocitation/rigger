@@ -1006,9 +1006,9 @@ rigger::test_cases! {
             "  site: twins.rs:1   kind function   degree 1",
             "  name dup",
             "  lang rust",
-            "  (definitions named \"dup\" of kind function sit at 2 lines in twins.rs and none at \
-             the recorded line 1; the recorded location may be stale (cannot resolve which one \
-             moved))",
+            "  (production definitions named \"dup\" of kind function sit at 2 lines in twins.rs \
+             and none at the recorded line 1; the recorded location may be stale (cannot resolve \
+             which one moved))",
         ],
         "an ambiguous drift notes the lines holding its kind and prints no body"
     );
@@ -1030,9 +1030,31 @@ rigger::test_cases! {
             "  site: missing.rs:1   kind function   degree 1",
             "  name g",
             "  lang rust",
-            "  (no definition named \"g\" of kind function at line 1 or elsewhere in missing.rs in \
-             the current working tree; the recorded location may be stale)",
+            "  (no production definition named \"g\" of kind function at line 1 or elsewhere in \
+             missing.rs in the current working tree; the recorded location may be stale)",
         ],
         "a definition of its name and kind found nowhere notes it by both and prints no body"
+    );
+    /// Spec 119, ONE EXTENT, the production scope of the deleted-definition note: GIVEN a function
+    /// `t` the graph records at line 1 of a file whose working tree holds an unrelated `other` at
+    /// line 1 and only a `#[cfg(test)]` function `t` at line 3, WHEN the operator runs `rigger
+    /// graph --show` on its id, THEN no body is printed and the note says no PRODUCTION definition
+    /// of its name and kind exists, the test-code twin never bounding it nor falsifying the note.
+    #[cfg(feature = "symbols")]
+    graph_show_notes_a_definition_whose_only_twin_is_test_code_as_missing: assert_eq!(
+        shown_function_recorded_at_line_1(
+            "tested.rs",
+            "fn other() {}\n#[cfg(test)]\nfn t() {}\n",
+            "t",
+        ),
+        [
+            "show tested.rs::t",
+            "  site: tested.rs:1   kind function   degree 1",
+            "  name t",
+            "  lang rust",
+            "  (no production definition named \"t\" of kind function at line 1 or elsewhere in \
+             tested.rs in the current working tree; the recorded location may be stale)",
+        ],
+        "a definition whose only same-named twin is test code is missing among production code"
     );
 }

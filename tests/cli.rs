@@ -27177,7 +27177,7 @@ fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
 
 /// Spec 119, ONE EXTENT: GIVEN a code entity with a file and a non-zero line but no `name` attr,
 /// beside a definition of its leaf in the working tree, WHEN the operator runs `rigger graph
-/// --show` on its id, THEN it prints the "no definition named" note with its id in place of the
+/// --show` on its id, THEN it prints the "no production definition named" note with its id in place of the
 /// name and no body, on every lane, never bounding a body by a cut of the id.
 #[test]
 fn graph_show_notes_a_nameless_node_by_its_id() {
@@ -27200,9 +27200,9 @@ fn graph_show_notes_a_nameless_node_by_its_id() {
 
     assert_eq!(
         run_rigger_ok(root, &["graph", "--show", "src/x.rs::thing"]),
-        "show src/x.rs::thing\n  site: src/x.rs:1   kind function   degree 0\n  (no definition \
-         named \"src/x.rs::thing\" of kind function at line 1 or elsewhere in src/x.rs in the \
-         current working tree; the recorded location may be stale)\n",
+        "show src/x.rs::thing\n  site: src/x.rs:1   kind function   degree 0\n  (no production \
+         definition named \"src/x.rs::thing\" of kind function at line 1 or elsewhere in src/x.rs \
+         in the current working tree; the recorded location may be stale)\n",
         "a nameless node at a line is noted by its id"
     );
 }
