@@ -3569,8 +3569,10 @@ mod tests {
     /// command that counts it, and the audit record owed for every added test-side shape with the
     /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
     /// the root crate's `src/` test modules included), and the sentence
-    /// walk's generators as commands, the graph's caller lookup at depth 1 with its counted
-    /// fallback recorded as a gap, the rule-spelling search over every tracked text file, one
+    /// walk's generators as commands over the unit's whole range on every round (the merge base
+    /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
+    /// 1 with its counted fallback recorded as a gap, each FIXED or new line's `file:line`
+    /// witness, the rule-spelling search over every tracked text file, one
     /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
     /// phrase in another case or split by a rewrap still a hit) whose command and hits the walk pastes for the `sdet`
     /// lens to re-run, and the record the walk owes, and the foreground wait for
@@ -3640,6 +3642,12 @@ mod tests {
             "a `GAP:` clause naming the item in the record",
             "the count above with `t='<name>'`",
             "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
+            "On every round, the first and each later one alike, `<base>` is the unit's merge \
+             base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
+             `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the \
+             round's delta your prompt carries.",
+            "Each FIXED or new line of the record carries its witness beside that location: the \
+             `file:line` of the code at head that makes the sentence true.",
             "The search is this command, one run per distinguishing expression, the expression \
              its one argument",
             "`git ls-files tests crates src | t='<expression>' xargs awk",
