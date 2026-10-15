@@ -178,6 +178,15 @@ The `<unit>-sentence-walk` record pastes each command as run, its hit count and 
 printed, each FIXED or CHECKED with its reason, or names the rewritten-rule set empty; the
 `sdet` lens re-derives the generators' sets and re-runs each search on the review tree.
 
+A changed condition rewrites a rule too: every boolean term your production hunks in `crates/`
+and `src/` add to or remove from a filter, guard or predicate, listed from
+`git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src` with the test regions left out,
+changes the rule its function answers. Its old statement is what the function's callers from
+`rigger graph --around <file>::<fn> --depth 1` spell - the notes they print, their Returns
+paragraphs, the docs of the variants the answer maps to and the oracles asserting them - and
+each such consumer phrase is a phrase of the search above, run once, every hit FIXED with the
+new qualifier or CHECKED with the reason it does not reach it.
+
 ## Every test must survive mutation testing
 
 A test that only proves the code runs is not a test. Write every test so that every mutant

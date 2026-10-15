@@ -113,7 +113,17 @@ tool that searches them.
   carries each search's command, its hit count and every hit, each FIXED, or CHECKED with the
   named way it is not a spelling of the retired rule (a spec's account of the pre-change
   state, a history note, a different rule sharing the words). A rewritten rule with no search
-  is a record you cannot write; a change that rewrites no rule names the set empty. The SDET
+  is a record you cannot write; a change that rewrites no rule names the set empty. A rule is
+  rewritten whenever a condition of it changes - a boolean term your production hunks add to or
+  remove from a filter, guard, match-arm guard or predicate a function applies - even when no
+  sentence of yours moves, and its old statement is what the function's consumers spell: the
+  notes they print, their Returns paragraphs, the docs of the variants the answer maps to and
+  the oracles that assert them, read from the function's callers at depth 1 in the project's
+  graph and their callers' output sentences. For each changed condition write down the rule it
+  changes - the question the function answers - and the distinguishing phrases of the old answer
+  as the consumers spell them, and run the rule search for each: every hit is FIXED, carrying the
+  new qualifier, or CHECKED with the named reason the qualifier does not reach it (a call that
+  passes no path, say). The SDET
   lens re-derives each generator's set on the review tree from the diff and the graph - the
   changed-file list; each hunk's identifiers, doc links (`[...]`) and constants included; the
   body comments of each changed item; the impl headers; the depth-1 callers; the tracked lines
@@ -124,7 +134,13 @@ tool that searches them.
   unit's whole range, as the record does, never the round's delta its prompt carries, and
   reads every witness the record carries against the code at head: a sentence whose witness no
   longer makes it true, a new or FIXED sentence with no witness, or a record whose sets are
-  re-derived over a round's delta, is a BLOCKING finding on its own.
+  re-derived over a round's delta, is a BLOCKING finding on its own. The lens derives the
+  changed-condition set itself from the unit's production hunks over the whole range - every
+  added or removed boolean term inside a filter, guard or predicate - names the rule each
+  changes, and reads every consumer sentence of that function - its depth-1 callers' notes,
+  Returns paragraphs, variant docs and oracles - against the condition at head: a consumer
+  sentence stating the pre-change answer that the record does not carry FIXED or CHECKED is a
+  BLOCKING finding on its own.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
   code reads after your change, on any feature lane, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
