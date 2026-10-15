@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
+use crate::contextgraph::query::whole_graph_degree;
 use crate::contextgraph::{entity_site, site_fields, wired, EntitySite, Fold, Located, Projection};
 use crate::driver::workflow::Driver;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
@@ -694,19 +695,13 @@ impl<'a> Server<'a> {
         }
         let g = crate::contextgraph::around(graph, &[around.to_string()], depth)
             .map_err(|e| e.to_string())?;
-        // Each loaded node through the one renderer, its degree its edges in this merged graph:
-        // no node is read a second time from the store.
-        let degree = |id: &str| {
-            g.edges
-                .iter()
-                .filter(|e| e.from == id || e.to == id)
-                .count()
-        };
+        // Each loaded node through the one renderer, its degree its edges in this merged graph
+        // (`whole_graph_degree` over it): no node is read a second time from the store.
         Ok(json!({
             "nodes": g
                 .nodes
                 .iter()
-                .map(|n| site_object(&entity_site(n, degree(&n.id))))
+                .map(|n| site_object(&entity_site(n, whole_graph_degree(&g, &n.id))))
                 .collect::<Vec<_>>(),
             "edges": g.edges.iter().map(|e| json!({"from": e.from, "rel": e.rel, "to": e.to})).collect::<Vec<_>>(),
         }))
@@ -2254,13 +2249,7 @@ mod tests {
             ],
             "each node's site object"
         );
-        assert_eq!(
-            crate::test_support::attrs_of(&graph, "src/limits.rs::LIMIT")
-                .get("proven_by")
-                .map(String::as_str),
-            Some("1"),
-            "the const carries proven_by, an attr outside the printed list"
-        );
+        crate::test_support::assert_the_shown_const_carries_proven_by(&graph);
         crate::test_support::assert_shows_are_site_fields(&graph, &sites);
     }
 

@@ -1304,8 +1304,9 @@ pub struct Card {
 /// `id`'s degree over the WHOLE graph (every currently-valid edge incident to it, either
 /// direction; a self-loop counts once) - the card's own degree fact, distinct from
 /// [`NeighborhoodNode::degree`]'s view-bounded count because a card is fetched on demand for one
-/// subject, independent of any currently-drawn neighborhood.
-pub(crate) fn whole_graph_degree(graph: &Graph, id: &str) -> usize {
+/// subject, independent of any currently-drawn neighborhood; and the degree the MCP `around`
+/// gives each node of the merged `Graph` it loaded (spec 119, SHOW IS ONE RENDERER).
+pub fn whole_graph_degree(graph: &Graph, id: &str) -> usize {
     graph
         .edges
         .iter()

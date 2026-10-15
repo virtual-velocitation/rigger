@@ -637,16 +637,69 @@ pub fn hold_the_rebuild(root: &Path) -> rigger::contextgraph::sqlite::RebuildLoc
     Projector::lock_rebuild(rigger_file(root, "graph.db").to_str().unwrap()).unwrap()
 }
 
+/// Whether `line` is a numbered source line (`<n> | <text>`) of a `rigger graph --show` body.
+pub fn is_body_line(line: &str) -> bool {
+    line.trim_start()
+        .split_once(" | ")
+        .map(|(pre, _)| pre.trim().parse::<u32>().is_ok())
+        .unwrap_or(false)
+}
+
 /// The number of numbered source lines (`<n> | <text>`) in a `rigger graph --show` body.
 pub fn body_line_count(out: &str) -> usize {
-    out.lines()
-        .filter(|l| {
-            l.trim_start()
-                .split_once(" | ")
-                .map(|(pre, _)| pre.trim().parse::<u32>().is_ok())
-                .unwrap_or(false)
+    out.lines().filter(|l| is_body_line(l)).count()
+}
+
+/// The entry and value pairs a `rigger graph --show` output prints, in order (spec 119, SHOW IS
+/// ONE RENDERER): the header's `file`, `line`, `kind` and `degree` (no `site:` part for a node with
+/// no file), then one `  <entry> <value>` line each until the body or the note.
+pub fn printed_site_entries(out: &str) -> Vec<(String, String)> {
+    let mut lines = out.lines().skip(1);
+    let header = lines.next().expect("a header line");
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    let rest = match header.strip_prefix("  site: ") {
+        Some(site) => {
+            let (at, rest) = site.split_once("   ").expect("a site part");
+            let (file, line) = at.rsplit_once(':').expect("a file:line site");
+            pairs.extend([("file", file), ("line", line)]);
+            rest
+        }
+        None => header.trim_start(),
+    };
+    pairs.extend(
+        rest.split("   ")
+            .take_while(|part| !part.starts_with('('))
+            .map(|part| part.split_once(' ').expect("an entry")),
+    );
+    pairs.extend(
+        lines
+            .take_while(|line| !line.starts_with("  (") && !is_body_line(line))
+            .map(|line| line.trim_start().split_once(' ').expect("an entry line")),
+    );
+    pairs
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
+/// The [`site_fields`](rigger::contextgraph::site_fields) entries of `site` after the CLI's two
+/// print transforms (spec 119, SHOW IS ONE RENDERER): `line` the live line the body came from,
+/// and each string value's newlines spaces - the pairs [`printed_site_entries`] reads back.
+pub fn site_entries_as_printed(
+    site: &rigger::contextgraph::EntitySite,
+    live_line: u32,
+) -> Vec<(String, String)> {
+    rigger::contextgraph::site_fields(site)
+        .into_iter()
+        .map(|(key, value)| {
+            let text = match value {
+                _ if key == "line" => live_line.to_string(),
+                serde_json::Value::String(text) => text.replace('\n', " "),
+                number => number.to_string(),
+            };
+            (key.to_string(), text)
         })
-        .count()
+        .collect()
 }
 
 /// The line `rigger graph build` prints for a build that counted `events` batch events, with

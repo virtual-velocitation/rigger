@@ -540,17 +540,42 @@ fn fields_of(site: &EntitySite) -> BTreeMap<String, serde_json::Value> {
         .collect()
 }
 
+/// The one site `graph` locates for `id`.
+pub fn located_site(graph: &Projector, id: &str) -> EntitySite {
+    let Located::One(site) = graph.locate(id).unwrap() else {
+        panic!("{id} locates one node")
+    };
+    site
+}
+
+/// Each of [`SHOWN_IDS`] beside the one site `graph` locates for it, in their order.
+pub fn shown_sites(graph: &Projector) -> Vec<(&'static str, EntitySite)> {
+    SHOWN_IDS
+        .into_iter()
+        .map(|id| (id, located_site(graph, id)))
+        .collect()
+}
+
+/// Spec 119, SHOW IS ONE RENDERER: the seed's const holds `proven_by`, so a surface printing no
+/// `proven_by` excludes an attr the node carries, never one it lacks.
+pub fn assert_the_shown_const_carries_proven_by(graph: &Projector) {
+    assert_eq!(
+        attrs_of(graph, "src/limits.rs::LIMIT")
+            .get("proven_by")
+            .map(String::as_str),
+        Some("1"),
+        "the const carries proven_by, an attr outside the printed list"
+    );
+}
+
 /// Spec 119, SHOW IS ONE RENDERER: each of `sites`, the `rigger_graph` `show` site objects of
 /// [`SHOWN_IDS`] in their order, is its node's `id` beside the [`site_fields`] entries of the site
 /// `graph` locates for it, compared without order.
 pub fn assert_shows_are_site_fields(graph: &Projector, sites: &[serde_json::Value]) {
-    for (id, site) in SHOWN_IDS.iter().zip(sites) {
-        let Located::One(located) = graph.locate(id).unwrap() else {
-            panic!("{id} locates one node")
-        };
+    for ((id, located), site) in shown_sites(graph).iter().zip(sites) {
         assert_eq!(
             site_keys(site, id),
-            fields_of(&located),
+            fields_of(located),
             "{id}: show is site_fields"
         );
     }

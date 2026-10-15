@@ -27027,7 +27027,6 @@ fn mcp_survives_a_malformed_json_line_and_keeps_answering_afterward() {
 #[test]
 fn graph_show_prints_each_node_through_the_one_site_renderer() {
     use common::fixtures::{seed_shown_nodes, SHOWN_IDS};
-    use rigger::contextgraph::{site_fields, Located};
 
     let dir = temp_project();
     let root = dir.path();
@@ -27085,59 +27084,63 @@ fn graph_show_prints_each_node_through_the_one_site_renderer() {
         "each node's show output"
     );
 
-    // The header's `file`, `line`, `kind` and `degree` (no `site:` part for a node with no file),
-    // then one `  <entry> <value>` line each until the note: the pairs the CLI printed, in order.
-    let printed = |out: &str| -> Vec<(String, String)> {
-        let mut lines = out.lines().skip(1);
-        let header = lines.next().expect("a header line");
-        let mut pairs: Vec<(&str, &str)> = Vec::new();
-        let rest = match header.strip_prefix("  site: ") {
-            Some(site) => {
-                let (at, rest) = site.split_once("   ").expect("a site part");
-                let (file, line) = at.rsplit_once(':').expect("a file:line site");
-                pairs.extend([("file", file), ("line", line)]);
-                rest
-            }
-            None => header.trim_start(),
-        };
-        pairs.extend(
-            rest.split("   ")
-                .map(|part| part.split_once(' ').expect("an entry")),
-        );
-        pairs.extend(
-            lines
-                .take_while(|line| !line.starts_with("  ("))
-                .map(|line| line.trim_start().split_once(' ').expect("an entry line")),
-        );
-        pairs
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value.to_string()))
-            .collect()
-    };
     let graph = common::cli::open_graph(root);
-    assert_eq!(
-        common::fixtures::attrs_of(&graph, "src/limits.rs::LIMIT")
-            .get("proven_by")
-            .map(String::as_str),
-        Some("1"),
-        "the const carries proven_by, an attr outside the printed list"
-    );
-    for (id, out) in SHOWN_IDS.iter().zip(&shown) {
-        let Located::One(site) = graph.locate(id).unwrap() else {
-            panic!("{id} locates one node")
-        };
-        let expected: Vec<(String, String)> = site_fields(&site)
-            .into_iter()
-            .map(|(key, value)| {
-                let text = match value {
-                    serde_json::Value::String(text) => text.replace('\n', " "),
-                    number => number.to_string(),
-                };
-                (key.to_string(), text)
-            })
-            .collect();
-        assert_eq!(printed(out), expected, "{id}: the CLI prints site_fields");
+    common::fixtures::assert_the_shown_const_carries_proven_by(&graph);
+    for ((id, site), out) in common::fixtures::shown_sites(&graph).iter().zip(&shown) {
+        assert_eq!(
+            common::cli::printed_site_entries(out),
+            common::cli::site_entries_as_printed(site, site.line),
+            "{id}: the CLI prints site_fields"
+        );
     }
+}
+
+/// Spec 119, SHOW IS ONE RENDERER: GIVEN a definition the graph records at line 1 of a file whose
+/// working tree now holds it at line 3, WHEN the operator runs `rigger graph --show` on its id,
+/// THEN it prints `show <id>`, the healed `site:` header with its `(recorded line 1, now 3)` note,
+/// its `name` and `lang` entry lines, then the body from the live line; and the header and entry
+/// lines read back equal `site_fields` after both CLI transforms, the live line among them.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_prints_the_entry_lines_between_a_healed_header_and_the_body() {
+    let dir = temp_project();
+    let root = dir.path();
+    common::cli::seed_rigger_dir(root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/heal.rs"),
+        "\n\nfn healed() -> u8 {\n    1\n}\n",
+    )
+    .unwrap();
+    common::fixtures::apply_code_entity(
+        &common::cli::open_graph(root),
+        1,
+        "src/heal.rs",
+        "healed",
+        "function",
+        1,
+        "rust",
+    );
+
+    let out = run_rigger_ok(root, &["graph", "--show", "src/heal.rs::healed"]);
+    assert_eq!(
+        out.lines().take(5).collect::<Vec<_>>(),
+        [
+            "show src/heal.rs::healed",
+            "  site: src/heal.rs:3   kind function   degree 1   (recorded line 1, now 3)",
+            "  name healed",
+            "  lang rust",
+            "       3 | fn healed() -> u8 {",
+        ],
+        "the entry lines sit between the healed header and the body"
+    );
+    let site =
+        common::fixtures::located_site(&common::cli::open_graph(root), "src/heal.rs::healed");
+    assert_eq!(
+        common::cli::printed_site_entries(&out),
+        common::cli::site_entries_as_printed(&site, 3),
+        "the healed show prints site_fields at the live line"
+    );
 }
 
 /// `rigger_graph`'s `show` selector - its JSON wiring (`Server::tool_graph`'s `show` arm, the
