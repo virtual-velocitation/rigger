@@ -380,11 +380,12 @@ pub struct CallGraph {
 /// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup).
 /// A PORT-owned type (spec 92's fix round moved it here from the sqlite adapter, so
 /// [`Projection::locate`] returns the same kind of type every sibling `Projection` method does,
-/// never a concrete adapter's own type): [`sqlite::Projector::locate`] resolves the query exactly
-/// the way the graph's other surfaces do - a full `<file>::<path>` node id, or a bare name matched
-/// as a definition's leaf, a path by its id suffix and a flat `<file>::<name>` as a leaf in that
-/// file (spec 119, A BARE SHOW FINDS A LEAF OR PATH) - and returns one of three honest outcomes,
-/// never a guess among candidates.
+/// never a concrete adapter's own type): [`sqlite::Projector::locate`] resolves the query for the
+/// show surfaces (`rigger graph --show` and `rigger_graph`'s `show`) - a full `<file>::<path>` node
+/// id, a bare name matched as a definition's leaf, a path by its id suffix or a flat
+/// `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR PATH), where an
+/// `--around` seed is an exact id only - and returns one of three honest outcomes, never a guess
+/// among candidates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Located {
     /// Exactly one entity resolved: its definition site and graph facts, from which the CLI reads
