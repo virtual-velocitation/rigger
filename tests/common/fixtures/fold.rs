@@ -300,7 +300,7 @@ pub const A_RS_NEWS: &[(&str, &str)] = &[("a.rs::T::new", "a.rs"), ("a.rs::U::ne
 
 /// Fold each Rust definition of `defs` into `p` from position 1, each at its position's line, and
 /// return the next position.
-pub fn fold_path_defs(p: &Projector, defs: &[PathDef]) -> u64 {
+pub fn fold_path_def_rows(p: &Projector, defs: &[PathDef]) -> u64 {
     let mut pos = 0;
     for (file, leaf, path, kind) in defs {
         pos += 1;

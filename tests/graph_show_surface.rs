@@ -39,7 +39,7 @@ use common::cli::run_stream_identity;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
 use common::fixtures::apply_code_entity;
-use common::fixtures::{fold_path_defs, hold, A_RS_NEWS, T_NEW, U_NEW};
+use common::fixtures::{fold_path_def_rows, hold, A_RS_NEWS, T_NEW, U_NEW};
 
 #[test]
 fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
@@ -167,7 +167,7 @@ fn graph_show_lists_every_definition_a_flat_id_or_a_path_names() {
     let dir = temp_project();
     let root = dir.path();
     seed_rigger_dir(root);
-    fold_path_defs(
+    fold_path_def_rows(
         &open_graph(root),
         &[T_NEW, U_NEW, ("b.rs", "new", "T::new", "method")],
     );
@@ -199,7 +199,7 @@ fn graph_show_answers_a_flat_id_a_decision_holds_by_its_definition() {
     seed_rigger_dir(root);
     {
         let p = open_graph(root);
-        let next = fold_path_defs(&p, &[T_NEW]);
+        let next = fold_path_def_rows(&p, &[T_NEW]);
         hold(&p, next, &["a.rs::new"]);
     }
 

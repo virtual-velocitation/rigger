@@ -11775,14 +11775,14 @@ mod tests {
         use super::leaf_keys_resolution::located;
         use super::*;
         use crate::test_support::{
-            fold_path_defs, hold, located_many, PathDef, A_RS_NEWS, T_NEW, U_NEW,
+            fold_path_def_rows, hold, located_many, PathDef, A_RS_NEWS, T_NEW, U_NEW,
         };
 
         /// Fold `defs` from position 1, each at its position's line, then `then` at the next
         /// position.
         fn folded(defs: &[PathDef], then: impl FnOnce(&Projector, u64)) -> Projector {
             let p = Projector::open(":memory:", "test").unwrap();
-            let next = fold_path_defs(&p, defs);
+            let next = fold_path_def_rows(&p, defs);
             then(&p, next);
             p
         }
