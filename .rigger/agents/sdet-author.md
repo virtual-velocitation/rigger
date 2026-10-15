@@ -145,7 +145,10 @@ and each other file under `crates/*/src/` from its first `#[cfg(test)]` on, and 
 The expressions are the statements' own terms, never a body's name: every string literal each
 test-side body you add or edit spells, in full, and every call it makes outside the shared home
 with its first argument token (`create_dir_all(root.join(`, `for_extension("rs")`), the command
-run once per term. A `'` in the expression is written `'\''`. The record pastes each command as run, its hit
+run once per term. A literal's term is the literal alone, its quotes inside the term
+(`t='"src/f.rs"'`) and nothing around it - never the call, format string or statement that
+spells it - one run per literal, none set aside as short or conventional (`"x"`, `":memory:"`, a
+fixture path), and every hit the run prints listed under its disposition. A `'` in the expression is written `'\''`. The record pastes each command as run, its hit
 count and every hit it printed, each FIXED or CHECKED, and the `sdet` lens re-runs each on the
 review tree.
 
@@ -187,6 +190,17 @@ paragraphs, the docs of the variants the answer maps to and the oracles assertin
 each such consumer phrase is a phrase of the search above, run once, every hit FIXED with the
 new qualifier or CHECKED with the reason it does not reach it.
 
+Every mutable token of your production delta is probed on your committed tree: list the tokens
+from the production hunks of `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src`
+with the test regions left out (files under a `tests/` directory and hunks inside a
+`#[cfg(test)]` module); after each single mutation run the owning crate's unit tests,
+`cargo test -p <crate> --lib` for a file under `crates/` or `cargo test --lib --bin rigger` for
+one under `src/`, and each root test binary the unit touched by `cargo test --test <name>`, then
+restore the file with `git checkout -- <file>` before the next. The `<unit>-mutant-probes`
+DecisionMade, beside the other two records, pastes each token's `file:line`, the mutation, each
+command as run and the test that went red with its assertion; the `sdet` lens probes every token
+it lacks.
+
 ## Every test must survive mutation testing
 
 A test that only proves the code runs is not a test. Write every test so that every mutant
@@ -206,3 +220,7 @@ cargo-mutants makes of the code under test is caught:
   site so the mutable token disappears (a `max`, a saturating subtraction, a single early
   return) and pin the new shape with a test. "Equivalent mutant" is not a category that
   ends the work.
+
+The `<unit>-mutant-probes` record of the hand-over checks above is how you prove this before
+the mutation gate ever runs: each mutable token of the unit's production hunks, mutated by hand,
+turns a test you name red.

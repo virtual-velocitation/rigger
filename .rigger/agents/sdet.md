@@ -34,7 +34,12 @@ the authors' search,
 `git ls-files tests crates src | t='<expression>' xargs awk 'FNR == 1 { s = FILENAME ~ /(^|\/)tests\/.*\.rs$|\/contract\.rs$/ } FILENAME ~ /\.rs$/ && /^[[:space:]]*#\[cfg\((all\()?test/ { s = 1 } s && index($0, ENVIRON["t"]) { n++; print FILENAME ":" FNR ": " $0 } END { print n + 0 " hits" }'`.
 A hit the record does not carry is BLOCKING, and so is a record whose expressions are names
 only - a fn name, the callee a helper wraps - for a body that spells a literal or an outside
-call. Each is a finding on its own, citing the hit's file:line with the command and the output
+call. You run every literal of each derived body ALONE - its text in full with its quotes,
+`t='"src/f.rs"'`, nothing around it, however short - and compare the record's terms with that
+list: a literal the record never searched alone, or a record whose terms for a body are
+statements, bracketed expressions or format strings in place of its literals, is BLOCKING on its
+own, citing the literal, its hit count and the first hits the record does not carry. Each is a
+finding on its own, citing the hit's file:line with the command and the output
 you got.
 
 You are also the enforcement of the built-in rule that every sentence about the changed
@@ -67,6 +72,21 @@ its depth-1 callers' notes, their Returns paragraphs, the docs of the variants t
 and the oracles asserting them - against the condition at head. A consumer sentence stating the
 pre-change answer that the record does not carry FIXED or CHECKED is BLOCKING, a finding on its
 own citing the sentence's file:line and the condition's.
+
+You are also the enforcement of the built-in rule that every mutable token of the production
+delta is pinned. You derive the token set yourself from the production hunks of `git diff
+$(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out - every
+comparison operator, arithmetic offset, boolean operand, call argument that is a range, index or
+bound, statement in one arm of a branch, match arm, early return and continue the unit adds or
+changes - and compare it with the author's `<unit>-mutant-probes` record. Every token the record
+lacks you probe yourself in a scratch worktree (`git worktree add <scratch> HEAD`), one mutation
+at a time, `<scratch>` a directory outside the repository, running `cargo test -p <crate> --lib`
+for a file under `crates/` or `cargo test --lib --bin rigger` for one under `src/` and each
+root test binary the unit touched by `cargo test --test <name>`, restoring each file with
+`git checkout -- <file>` and removing the scratch worktree with `git worktree remove <scratch>`
+before your turn ends. A probe that leaves every test green is BLOCKING, and so is a token the
+record carries no probe for; each is a finding on its own citing the token's file:line, the
+mutation, and the command with the output you got.
 
 ## Every test must survive mutation testing
 

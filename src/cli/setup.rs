@@ -3543,7 +3543,8 @@ mod tests {
     }
 
     /// The roles that write or judge tests carry the mutation-proof test block exactly once;
-    /// no other role does.
+    /// no other role does. The two author roles' blocks name the hand probe record as the proof
+    /// they give before the mutation gate ever runs.
     #[test]
     fn the_test_roles_carry_the_mutation_test_block_exactly_once() {
         const HEADING: &str = "## Every test must survive mutation testing";
@@ -3557,6 +3558,18 @@ mod tests {
                 want,
                 "{file}: the test block appears {want} time(s)"
             );
+            if matches!(file.as_str(), "rust-engineer.md" | "sdet-author.md") {
+                let block = rigger::wave::normalize_ws(&text[text.find(HEADING).unwrap()..]);
+                assert!(
+                    block.contains(
+                        "The `<unit>-mutant-probes` record of the hand-over checks above is how \
+                         you prove this before the mutation gate ever runs: each mutable token \
+                         of the unit's production hunks, mutated by hand, turns a test you name \
+                         red."
+                    ),
+                    "{file}: the test block names the hand probe record as its proof"
+                );
+            }
         }
     }
 
@@ -3569,8 +3582,9 @@ mod tests {
     /// command that counts it, and the audit record owed for every added test-side shape with the
     /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
     /// the root crate's `src/` test modules included), run once per term of the statements of
-    /// each added or edited test-side body - each string literal in full and each outside call
-    /// with its first argument token, never the body's name - and the sentence
+    /// each added or edited test-side body - each string literal alone and in full, quotes
+    /// inside the term and one run per literal however short, and each outside call with its
+    /// first argument token, never the body's name - and the sentence
     /// walk's generators as commands over the unit's whole range on every round (the merge base
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
     /// 1 with its counted fallback recorded as a gap, each FIXED or new line's `file:line`
@@ -3580,7 +3594,10 @@ mod tests {
     /// lens to re-run, each boolean term a production hunk adds to or removes from a filter,
     /// guard or predicate read as a rewritten rule whose consumer phrases - the notes, Returns
     /// paragraphs, variant docs and oracles of the function's depth-1 callers - that search
-    /// runs, and the record the walk owes, and the foreground wait for
+    /// runs, and the record the walk owes, the hand probe of every mutable token of the
+    /// production hunks over the unit's whole range - one mutation at a time, the owning crate's
+    /// unit tests and the touched root test binaries run, the file restored - with the
+    /// `<unit>-mutant-probes` record the `sdet` lens completes, and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
     /// line when the host backgrounds one.
     #[test]
@@ -3662,6 +3679,11 @@ mod tests {
              makes outside the shared home with its first argument token \
              (`create_dir_all(root.join(`, `for_extension(\"rs\")`), the command run once per \
              term.",
+            "A literal's term is the literal alone, its quotes inside the term \
+             (`t='\"src/f.rs\"'`) and nothing around it - never the call, format string or \
+             statement that spells it - one run per literal, none set aside as short or \
+             conventional (`\"x\"`, `\":memory:\"`, a fixture path), and every hit the run \
+             prints listed under its disposition.",
             "index($0, ENVIRON[\"t\"])",
             "END { print n + 0 \" hits\" }'`",
             "The record pastes each command as run, its hit count and every hit it printed, each \
@@ -3691,6 +3713,16 @@ mod tests {
              docs of the variants the answer maps to and the oracles asserting them - and each \
              such consumer phrase is a phrase of the search above, run once, every hit FIXED \
              with the new qualifier or CHECKED with the reason it does not reach it.",
+            "Every mutable token of your production delta is probed on your committed tree: list \
+             the tokens from the production hunks of `git diff $(git merge-base rigger-run \
+             HEAD)..HEAD -- crates src` with the test regions left out",
+            "after each single mutation run the owning crate's unit tests, `cargo test -p \
+             <crate> --lib` for a file under `crates/` or `cargo test --lib --bin rigger` for one \
+             under `src/`, and each root test binary the unit touched by `cargo test --test \
+             <name>`, then restore the file with `git checkout -- <file>` before the next",
+            "The `<unit>-mutant-probes` DecisionMade, beside the other two records, pastes each \
+             token's `file:line`, the mutation, each command as run and the test that went red \
+             with its assertion; the `sdet` lens probes every token it lacks.",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
@@ -3711,8 +3743,9 @@ mod tests {
     /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
     /// command is BLOCKING; it derives the expression set itself from the unit's test hunks -
     /// each body's string literals in full and its outside calls with their first argument -
-    /// runs each with the authors' search, and an uncarried hit or a record of names only for a
-    /// body that spells either is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
+    /// runs each with the authors' search, every literal alone, and an uncarried hit, a record of
+    /// names only for a body that spells either, a literal the record never searched alone or a
+    /// statement or format string searched in a literal's place is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
     /// diff over the unit's whole range and the graph and compares it with the walk record,
     /// re-runs every rule-spelling search the record carries and re-reads every hit and every
     /// witness against head, and an omitted member, an uncarried hit, a CHECKED reason that
@@ -3721,9 +3754,12 @@ mod tests {
     /// round's delta is BLOCKING; it derives the changed-condition set itself - each boolean
     /// term the unit's production hunks add to or remove from a filter, guard or predicate -
     /// and reads every consumer sentence of that function against it, and one stating the
-    /// pre-change answer that the record does not carry is BLOCKING. Both records
-    /// are the author's instruments, never a gate, so the lens's rule against re-running a green
-    /// gate does not reach them.
+    /// pre-change answer that the record does not carry is BLOCKING. Of the mutable-token rule:
+    /// it derives the token set from the production hunks over the unit's whole range, probes
+    /// every token the author's `<unit>-mutant-probes` record lacks in a scratch worktree it
+    /// restores and removes in-turn, and a green probe or an unrecorded token is BLOCKING. The
+    /// records are the author's instruments, never a gate, so the lens's rule against re-running
+    /// a green gate does not reach them.
     #[test]
     fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
         const HEADING: &str = "## Re-run the author's searches and re-derive its walk";
@@ -3752,6 +3788,12 @@ mod tests {
             "A hit the record does not carry is BLOCKING, and so is a record whose expressions \
              are names only - a fn name, the callee a helper wraps - for a body that spells a \
              literal or an outside call.",
+            "You run every literal of each derived body ALONE - its text in full with its \
+             quotes, `t='\"src/f.rs\"'`, nothing around it, however short - and compare the \
+             record's terms with that list: a literal the record never searched alone, or a \
+             record whose terms for a body are statements, bracketed expressions or format \
+             strings in place of its literals, is BLOCKING on its own, citing the literal, its \
+             hit count and the first hits the record does not carry.",
             "You are also the enforcement of the built-in rule that every sentence about the \
              changed behaviour is true at head.",
             "you re-derive each generator's set on the review tree from the diff and the graph",
@@ -3785,6 +3827,17 @@ mod tests {
              them - against the condition at head",
             "A consumer sentence stating the pre-change answer that the record does not carry \
              FIXED or CHECKED is BLOCKING",
+            "You are also the enforcement of the built-in rule that every mutable token of the \
+             production delta is pinned.",
+            "You derive the token set yourself from the production hunks of `git diff \
+             $(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out",
+            "compare it with the author's `<unit>-mutant-probes` record",
+            "Every token the record lacks you probe yourself in a scratch worktree (`git \
+             worktree add <scratch> HEAD`), one mutation at a time",
+            "restoring each file with `git checkout -- <file>` and removing the scratch worktree \
+             with `git worktree remove <scratch>` before your turn ends",
+            "A probe that leaves every test green is BLOCKING, and so is a token the record \
+             carries no probe for",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
