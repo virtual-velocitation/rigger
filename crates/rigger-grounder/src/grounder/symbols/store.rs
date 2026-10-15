@@ -215,6 +215,7 @@ mod tests {
                         kind: Kind::Function,
                         name: "b".into(),
                         line: 2,
+                        end_line: 2,
                         is_test: false,
                         is_out_of_line_module: false,
                         path_override: None,
@@ -224,6 +225,7 @@ mod tests {
                         kind: Kind::Function,
                         name: "a".into(),
                         line: 1,
+                        end_line: 1,
                         is_test: false,
                         is_out_of_line_module: false,
                         path_override: None,
@@ -235,6 +237,15 @@ mod tests {
             },
         );
         idx
+    }
+
+    /// Rewrite the index persisted under `root` through `edit`, over its JSON.
+    fn rewrite_persisted(root: &str, edit: impl FnOnce(&mut serde_json::Value)) {
+        let path = index_path(root);
+        let mut persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        edit(&mut persisted);
+        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
     }
 
     #[test]
@@ -269,20 +280,41 @@ mod tests {
         let root = dir.path().to_str().unwrap();
         save(&sample(), root).unwrap();
         assert!(load(root).is_some(), "a current-generation index loads");
-        let path = index_path(root);
-        let mut persisted: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        persisted["grammar"] = serde_json::Value::String("ts-tags-v0".into());
-        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+        rewrite_persisted(root, |persisted| {
+            persisted["grammar"] = serde_json::Value::String("ts-tags-v0".into());
+        });
         assert!(
             load(root).is_none(),
             "an index from another extraction generation must load as absent"
         );
-        persisted.as_object_mut().unwrap().remove("grammar");
-        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+        rewrite_persisted(root, |persisted| {
+            persisted.as_object_mut().unwrap().remove("grammar");
+        });
         assert!(
             load(root).is_none(),
             "an index predating the generation stamp must load as absent"
+        );
+    }
+
+    /// Spec 119 (ONE EXTENT): an index persisted before definitions carried `end_line` loads as
+    /// absent, so the grounder rebuilds it rather than serving definitions with no extent.
+    #[test]
+    fn an_index_whose_definition_lacks_end_line_loads_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        save(&sample(), root).unwrap();
+        assert_eq!(load(root), Some(sample()), "a current index loads whole");
+        rewrite_persisted(root, |persisted| {
+            persisted["files"]["z.rs"]["defs"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("end_line")
+                .expect("a current definition persists its end_line");
+        });
+        assert_eq!(
+            load(root),
+            None,
+            "an index whose definition lacks end_line must load as absent"
         );
     }
 

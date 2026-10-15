@@ -214,6 +214,30 @@ pub fn table_declares_key(manifest: &str, header: &str, key: &str) -> bool {
     })
 }
 
+/// Every production `.rs` file under `root`'s `src/` and each `crates/*/src/`, as
+/// `(repo-relative path, text)`.
+pub fn production_sources(root: &Path) -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src"), &mut files);
+    collect_rs_files(&root.join("crates"), &mut files);
+    files
+        .into_iter()
+        .map(|p| {
+            let rel = p
+                .strip_prefix(root)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .replace('\\', "/");
+            (rel, p)
+        })
+        .filter(|(rel, _)| rel.starts_with("src/") || rel.split('/').nth(2) == Some("src"))
+        .map(|(rel, p)| {
+            let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            (rel, text)
+        })
+        .collect()
+}
+
 /// Every `.rs` file strictly under `dir`, recursively, appended to `out` in sorted (deterministic)
 /// order regardless of readdir order; an unreadable `dir` contributes nothing.
 pub fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {

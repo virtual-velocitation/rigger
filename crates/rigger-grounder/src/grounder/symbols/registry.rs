@@ -1426,28 +1426,42 @@ pub(crate) mod tests {
                     (19, "f", None),
                 ],
             );
-        /// The Python query bounds a single-target module-level assignment by the whole
-        /// assignment (`z = 1`, `w: int`, and one of each other value type the grammar admits)
-        /// and every def and class by its block, and gives a
-        /// chained assignment's targets (`x = y = f()`) and every other bound or read-off name
-        /// no extent, the binding walk and the read-offs alone making them.
-        the_python_query_bounds_a_single_target_assignment_and_no_chained_one: assert_eq!(
-            crate::symbol_index::extents_by_line("py", PYTHON_DEFINITIONS_SOURCE),
+        /// Every Python definition carries its extent (spec 119, ONE EXTENT): a single-target
+        /// module-level assignment (`z = 1`, `w: int`, and one of each other value type the
+        /// grammar admits) is bounded by the whole assignment and every def and class by its
+        /// block, while a chained assignment's targets (`x = y = f()`) and every other bound or
+        /// read-off name, each read off a one-line range, end on their own line.
+        the_python_query_bounds_an_assignment_whole_and_a_chained_target_by_its_own_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "py", PYTHON_DEFINITIONS_SOURCE)),
             [
                 (1, 5, "host"),
                 (3, 5, "Local"),
                 (4, 5, "run"),
                 (6, 16, "Shape"),
+                (7, 7, "h"),
+                (8, 8, "e"),
+                (8, 8, "g"),
+                (9, 9, "k"),
                 (10, 13, "area"),
                 (12, 13, "inner"),
                 (15, 16, "deco"),
+                (17, 17, "a"),
+                (17, 17, "b"),
+                (18, 18, "c"),
+                (18, 18, "d"),
+                (19, 19, "x"),
+                (19, 19, "y"),
                 (20, 20, "z"),
                 (21, 21, "w"),
+                (24, 24, "X"),
                 (25, 25, "u"),
                 (26, 26, "m"),
                 (27, 27, "n"),
+                (28, 28, "j"),
+                (28, 28, "q"),
+                (29, 29, "Y"),
             ]
-            .map(|(start, end, name): (u32, u32, &str)| (start, end, name.to_string()))
         );
         /// The JS query's constant enumeration is the JS grammar's `expression` subtypes,
         /// flattened through `primary_expression`, but the four the function and class

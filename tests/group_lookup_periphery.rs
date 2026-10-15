@@ -224,7 +224,7 @@ mod ingest_sinks {
     /// A raw connection of its own to `root`'s events file, for planting what the store's API
     /// never writes.
     fn events_db(root: &Path) -> rusqlite::Connection {
-        rusqlite::Connection::open(common::cli::rigger_file(root, "events.db")).unwrap()
+        common::cli::rigger_db(root, "events.db")
     }
 
     /// Run `sql` against `root`'s events file on a raw connection of its own.

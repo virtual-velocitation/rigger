@@ -24,7 +24,7 @@ mod common;
 use common::cli::derived_menu_line_naming;
 use common::cli::derived_menu_lines;
 use common::cli::emit;
-use common::cli::rigger_file;
+use common::cli::rigger_db;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
 use common::cli::temp_store_project;
@@ -59,11 +59,11 @@ fn seed_one_dead_run_node(root: &Path) {
 /// Raw row counts of a store's two files, read directly (never through the command under test),
 /// so a before/after comparison proves the bare menu is read-only.
 fn store_row_counts(root: &Path) -> (i64, i64, i64) {
-    let ev = rusqlite::Connection::open(rigger_file(root, "events.db")).unwrap();
+    let ev = rigger_db(root, "events.db");
     let events: i64 = ev
         .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
         .unwrap();
-    let gr = rusqlite::Connection::open(rigger_file(root, "graph.db")).unwrap();
+    let gr = rigger_db(root, "graph.db");
     let nodes: i64 = gr
         .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))
         .unwrap();

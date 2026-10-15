@@ -2587,34 +2587,25 @@ fn product() {}
         // side by every extraction here and by `extracts_a_rust_definition_and_a_reference`.
     }
 
-    /// Fetch the single extent named `name` from a `(source, grammar, query)` run, failing loudly
-    /// if the grammar did not tag it - so an extent assertion never silently passes on a miss.
-    fn extent_of(
-        source: &str,
-        ts_language: &tree_sitter::Language,
-        tags_query: &str,
-        name: &str,
-    ) -> DefExtent {
-        definition_extents(source, ts_language, tags_query)
-            .unwrap_or_else(|e| panic!("definition_extents failed: {e}"))
+    /// The `(line, end_line)` of the one definition named `name` the grammar and query registered
+    /// for the extension `ext` extract from `source`, failing loudly when there is none, so an
+    /// extent assertion never silently passes on a miss.
+    fn extent_of(ext: &str, source: &str, name: &str) -> (u32, u32) {
+        let symbols = crate::symbol_index::extracted(ext, source);
+        crate::symbol_index::extents_by_line(&symbols)
             .into_iter()
-            .find(|d| d.name == name)
-            .unwrap_or_else(|| panic!("no extent named {name:?} in the tagged source"))
+            .find(|(_, _, extent_name)| *extent_name == name)
+            .map(|(line, end_line, _)| (line, end_line))
+            .unwrap_or_else(|| panic!("no definition named {name:?} in the extracted source"))
     }
 
-    /// Each `(name, start_line, end_line, why)` of `expected` is the extent `(language, query)`
-    /// tags for that definition of `source`.
-    fn assert_extents(
-        source: &str,
-        language: tree_sitter::Language,
-        query: &str,
-        expected: &[(&str, u32, u32, &str)],
-    ) {
-        for (name, start_line, end_line, why) in expected {
-            let e = extent_of(source, &language, query, name);
+    /// Each `(name, line, end_line, why)` of `expected` is the extent the extension `ext`'s
+    /// registered grammar and query give that definition of `source`.
+    fn assert_extents(ext: &str, source: &str, expected: &[(&str, u32, u32, &str)]) {
+        for (name, line, end_line, why) in expected {
             assert_eq!(
-                (e.start_line, e.end_line),
-                (*start_line, *end_line),
+                extent_of(ext, source, name),
+                (*line, *end_line),
                 "{name}: {why}"
             );
         }
@@ -2630,14 +2621,13 @@ fn product() {}
             // `config` on line 1 destructures a `Point { x, y }` param (a brace ON the
             // signature); its body runs to the closing brace on line 4.
             assert_extents(
+                "rs",
                 "\
 fn config(Point { x, y }: Point) -> u32 {
     let sum = x + y;
     sum
 }
 ",
-                tree_sitter_rust::LANGUAGE.into(),
-                tree_sitter_rust::TAGS_QUERY,
                 &[(
                     "config",
                     1,
@@ -2649,14 +2639,13 @@ fn config(Point { x, y }: Point) -> u32 {
             // The `= {}` default-argument shape of the same defect: a brace that opens and closes
             // on the signature line still must not bound the body.
             assert_extents(
+                "rs",
                 "\
 fn with_default(opts: Opts) {
     let empty = Opts {};
     use_it(empty);
 }
 ",
-                tree_sitter_rust::LANGUAGE.into(),
-                tree_sitter_rust::TAGS_QUERY,
                 &[(
                     "with_default",
                     1,
@@ -2674,6 +2663,7 @@ fn with_default(opts: Opts) {
             // brace and falls back to the next-def-by-line, truncating the outer body at its
             // nested child; Python's block boundary is the dedent, which the grammar resolves.
             assert_extents(
+                "py",
                 "\
 def outer(n):
     def inner(k):
@@ -2681,8 +2671,6 @@ def outer(n):
     total = inner(n)
     return total
 ",
-                tree_sitter_python::LANGUAGE.into(),
-                tree_sitter_python::TAGS_QUERY,
                 &[
                     (
                         "outer",
@@ -2705,6 +2693,7 @@ def outer(n):
             // is a string. The following function is a DISTINCT extent, proving `open` did not
             // swallow it.
             assert_extents(
+                "js",
                 "\
 function open() {
     const brace = '{';
@@ -2714,8 +2703,6 @@ function next() {
     return 2;
 }
 ",
-                tree_sitter_javascript::LANGUAGE.into(),
-                tree_sitter_javascript::TAGS_QUERY,
                 &[
                     (
                         "open",
@@ -2732,15 +2719,196 @@ function next() {
 
     #[test]
     fn extent_of_a_one_line_definition_is_a_single_line() {
-        // A one-line body: start and end lines coincide. Guards the `end_line.max(start_line)`
-        // floor and the end-byte-to-line mapping on the smallest construct.
-        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let e = extent_of(
-            "fn tiny() {}\n",
-            &language,
-            tree_sitter_rust::TAGS_QUERY,
-            "tiny",
+        // A one-line body: its line and end line coincide. Guards the end-byte-to-line mapping on
+        // the smallest construct.
+        assert_eq!(extent_of("rs", "fn tiny() {}\n", "tiny"), (1, 1));
+    }
+
+    /// The `end_line` [`def_of`] gives a definition at `line` spanning `range` of `text`.
+    fn end_line_of(text: &str, range: std::ops::Range<usize>, line: u32) -> u32 {
+        def_of(&Source::new(text), range, Kind::Function, "f".into(), line).end_line
+    }
+
+    crate::test_cases! {
+        /// A range ends on its last byte's line: `ab\ncd` ends on line 2.
+        a_range_ends_on_the_line_of_its_last_byte: assert_eq!(end_line_of("ab\ncd\nef", 0..5, 1), 2);
+        /// A range whose last byte is a newline ends on the line that newline closes, never the
+        /// next one.
+        a_range_ending_with_a_newline_ends_on_the_line_it_closes:
+            assert_eq!(end_line_of("ab\ncd\n", 0..3, 1), 1);
+        /// A zero-length range gives `end_line` = `line`, though the byte before it sits on a
+        /// later line.
+        a_zero_length_range_ends_on_its_own_line: assert_eq!(end_line_of("a\nb\nc\n", 5..5, 1), 1);
+        /// An empty source gives `end_line` = `line`.
+        an_empty_source_ends_on_its_own_line: assert_eq!(end_line_of("", 0..0, 3), 3);
+        /// A range whose last byte sits above `line` ends on `line`, never below it.
+        a_range_ending_above_its_line_ends_on_its_line: assert_eq!(end_line_of("a\nb\nc\n", 0..1, 3), 3);
+    }
+
+    crate::test_cases! {
+        /// Rust: the tagged `tagged` ends on its closing brace and its `line` is its name row, below
+        /// its attribute and its visibility; the read-off tuple fields `0` and `1` end on their own
+        /// type's line.
+        every_rust_definition_ends_on_its_constructs_last_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "rs", "\
+#[derive(Debug)]
+pub struct Pair(u8, u16);
+
+#[inline]
+pub(crate)
+fn tagged() {
+    let _ = 1;
+}
+",
+            )),
+            [(2, 2, "0"), (2, 2, "1"), (2, 2, "Pair"), (6, 8, "tagged")]
         );
-        assert_eq!((e.start_line, e.end_line), (1, 1));
+        /// Go: the tagged `S` and `Run` end on their closing braces; the read-off embedded field
+        /// `Base` ends on its own line.
+        every_go_definition_ends_on_its_constructs_last_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "go", "\
+package p
+
+type S struct {
+	Base
+	n int
+}
+
+func Run() {
+}
+",
+            )),
+            [(3, 6, "S"), (4, 4, "Base"), (5, 5, "n"), (8, 9, "Run")]
+        );
+        /// Python: the decorated `tagged`'s `line` is its name row below its decorator and it ends
+        /// on its block's last line; the read-off class-body name `slot` ends on its own line.
+        every_python_definition_ends_on_its_constructs_last_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "py", "\
+@decorator
+def tagged():
+    return 1
+
+class K:
+    slot: int
+",
+            )),
+            [(2, 3, "tagged"), (5, 6, "K"), (6, 6, "slot")]
+        );
+        /// JS: the tagged class `C` and method `m` end on their closing braces; the read-off class
+        /// field `f` ends on its own line.
+        every_js_definition_ends_on_its_constructs_last_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "js", "\
+class C {
+  f = 1;
+  m() {
+    return 2;
+  }
+}
+",
+            )),
+            [(1, 6, "C"), (2, 2, "f"), (3, 5, "m")]
+        );
+        /// TS: the decorated class `D`'s `line` is its name row below its decorator; the tagged
+        /// enum `E` ends on its closing brace and its read-off member `A` on its own line.
+        every_ts_definition_ends_on_its_constructs_last_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "ts", "\
+@sealed
+class D {}
+enum E {
+  A,
+}
+",
+            )),
+            [(2, 2, "D"), (3, 5, "E"), (4, 4, "A")]
+        );
+        /// C#: the attributed method `M`'s `line` is its name row below its attribute and its
+        /// return type; the tagged class `K` ends on its closing brace and the read-off operator
+        /// `+` on its own line.
+        every_csharp_definition_ends_on_its_constructs_last_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "cs", "\
+class K
+{
+    [Obsolete]
+    public void
+    M() { }
+    public static K operator +(K a, K b) => a;
+}
+",
+            )),
+            [(1, 7, "K"), (5, 5, "M"), (6, 6, "+")]
+        );
+    }
+
+    /// Where [`locate_extent`] bounds the Rust definition named `name` of kind `kind` recorded at
+    /// `line` in `source`, under the registered Rust grammar and query.
+    fn located(source: &str, name: &str, kind: Kind, line: u32) -> Extent {
+        let entry = crate::grounder::symbols::registry::for_extension("rs")
+            .expect("the extension is registered");
+        locate_extent(
+            source,
+            entry.lang,
+            &entry.language,
+            entry.tags_query,
+            name,
+            kind_str(kind),
+            line,
+        )
+        .expect("the registered query runs over the source")
+    }
+
+    crate::test_cases! {
+        /// Tier 1: two definitions of the recorded name and kind at the recorded line bound by the
+        /// wider.
+        two_tier_one_matches_bound_by_the_wider: assert_eq!(
+            located("fn a() {} fn a() {\n}\n", "a", Kind::Function, 1),
+            Extent::Bounded { start: 1, end: 2 }
+        );
+        /// Tier 1 reads the kind: a variant inside its same-named enum, both on the recorded line,
+        /// bounds to the variant, never the wider enum.
+        a_variant_inside_its_same_named_enum_bounds_to_the_variant: assert_eq!(
+            located("enum V { V {\n    a: u8,\n},\n}\n", "V", Kind::Variant, 1),
+            Extent::Bounded { start: 1, end: 3 }
+        );
+        /// Tier 2: a definition whose kind changed at its recorded name and line bounds there,
+        /// beside a same-named definition of the recorded kind elsewhere in the file.
+        a_definition_whose_kind_changed_in_place_bounds_at_its_recorded_line: assert_eq!(
+            located("const f: u8 =\n    0;\nfn f() {\n}\n", "f", Kind::Function, 1),
+            Extent::Bounded { start: 1, end: 2 }
+        );
+        /// Tier 2 takes exactly one: two same-named definitions of other kinds at the recorded line
+        /// fall to tier 3, which heals to the one of the recorded kind.
+        two_other_kinds_at_the_recorded_line_fall_to_the_third_tier: assert_eq!(
+            located("struct g {} const g: u8 = 0;\nfn g() {\n}\n", "g", Kind::Function, 1),
+            Extent::Bounded { start: 2, end: 3 }
+        );
+        /// Tier 3: a drifted fn beside a same-named field heals to the fn, the field never making
+        /// the name ambiguous.
+        a_drifted_fn_beside_a_same_named_field_heals: assert_eq!(
+            located("struct S {\n    h: u8,\n}\n\nfn h() {\n}\n", "h", Kind::Function, 1),
+            Extent::Bounded { start: 5, end: 6 }
+        );
+        /// Tier 3 reads production definitions only: a drifted fn beside its `#[cfg(test)]` twin
+        /// heals to the production one.
+        a_drifted_production_fn_beside_a_cfg_test_twin_bounds_to_the_production_one: assert_eq!(
+            located("\nfn x() {\n}\n#[cfg(test)]\nfn x() {}\n", "x", Kind::Function, 1),
+            Extent::Bounded { start: 2, end: 3 }
+        );
+        /// Tier 3 refuses an ambiguous name: two drifted definitions of the name and kind at two
+        /// lines are left unbounded.
+        an_ambiguous_drifted_name_is_left_unbounded: assert_eq!(
+            located("fn other() {}\nfn dup() {}\nfn dup() {}\n", "dup", Kind::Function, 1),
+            Extent::Ambiguous(2)
+        );
+        /// A name no definition of the kind carries anywhere in the file is missing.
+        a_name_defined_nowhere_is_missing: assert_eq!(
+            located("fn other() {}\n", "gone", Kind::Function, 1),
+            Extent::Missing
+        );
     }
 }

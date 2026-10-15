@@ -91,6 +91,12 @@ pub fn rigger_file(root: &Path, name: &str) -> PathBuf {
     root.join(RIGGER_DIR).join(name)
 }
 
+/// A raw connection of its own to the store file `name` under `root`'s rigger dir, for reading or
+/// planting what the store's API never writes.
+pub fn rigger_db(root: &Path, name: &str) -> rusqlite::Connection {
+    rusqlite::Connection::open(rigger_file(root, name)).unwrap()
+}
+
 /// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success).
 pub fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     run_rigger_envs(cwd, args, &[])
@@ -366,6 +372,23 @@ pub fn run_payloads(root: &Path, type_: &str) -> Vec<serde_json::Value> {
         .filter(|e| e.type_ == type_)
         .map(|e| serde_json::from_slice(&e.data).unwrap())
         .collect()
+}
+
+/// Write the `nodes` row `id` of graph kind `kind` under `project` straight into the graph store
+/// `conn` holds open, its `attrs` the JSON object text given, else NULL: a row no fold writes
+/// (a nameless node at a line, an older store's node).
+pub fn insert_node(
+    conn: &rusqlite::Connection,
+    project: &str,
+    id: &str,
+    kind: &str,
+    attrs: Option<&str>,
+) {
+    conn.execute(
+        "INSERT INTO nodes (id, kind, attrs, project) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![id, kind, attrs, project],
+    )
+    .unwrap();
 }
 
 /// Hold `graph_db` under another writer's write lock while `run` runs, past every busy timeout

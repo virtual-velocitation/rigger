@@ -2188,7 +2188,7 @@ mod tests {
         );
     }
 
-    /// Test-only fixture: a definition at `line`, real fields elsewhere immaterial to
+    /// Test-only fixture: a one-line definition at `line`, real fields elsewhere immaterial to
     /// [`scored_hits`]'s tie-break (`is_test`/`is_out_of_line_module`/`path_override`/
     /// `enclosing_inline_module_path` all left at their inert defaults).
     fn hand_def(name: &str, line: u32) -> Def {
@@ -2196,6 +2196,7 @@ mod tests {
             kind: Kind::Function,
             name: name.to_string(),
             line,
+            end_line: line,
             is_test: false,
             is_out_of_line_module: false,
             path_override: None,

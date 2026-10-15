@@ -27138,6 +27138,87 @@ fn graph_show_prints_the_entry_lines_between_a_healed_header_and_the_body() {
     );
 }
 
+/// Spec 119, ONE EXTENT: GIVEN a `.tsx` file whose constant `v` holds a JSX element, which only
+/// the TSX grammar parses as one, WHEN the operator runs `rigger graph --show` on its id, THEN its
+/// body is bounded to its own line under the TSX grammar (the plain TypeScript grammar would bound
+/// it through the next line); and no `definition_extents` or `DefExtent`, the retired second
+/// extent reader, remains in any crate or the binary's source.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
+    let dir = temp_project();
+    let root = dir.path();
+    common::cli::seed_rigger_dir(root);
+    common::fixtures::write_text(
+        root,
+        "src/App.tsx",
+        "export function App() {\n  const v = <b>x</b>;\n  return v;\n}\n",
+    );
+    common::fixtures::apply_code_entity(
+        &common::cli::open_graph(root),
+        1,
+        "src/App.tsx",
+        "v",
+        "constant",
+        2,
+        "ts",
+    );
+
+    let out = run_rigger_ok(root, &["graph", "--show", "src/App.tsx::v"]);
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        [
+            "show src/App.tsx::v",
+            "  site: src/App.tsx:2   kind constant   degree 1",
+            "  name v",
+            "  lang ts",
+            "       2 |   const v = <b>x</b>;",
+        ],
+        "the TSX grammar bounds the constant to its own line"
+    );
+    let retired: Vec<_> = common::repo::production_sources(&common::repo::repo_root())
+        .into_iter()
+        .filter(|(_, text)| text.contains("definition_extents") || text.contains("DefExtent"))
+        .map(|(rel, _)| rel)
+        .collect();
+    assert!(
+        retired.is_empty(),
+        "the second extent reader is retired, yet these sources name it: {retired:?}"
+    );
+}
+
+/// Spec 119, ONE EXTENT: GIVEN a code entity with a file and a non-zero line but no `name` attr,
+/// beside a definition of its leaf in the working tree, WHEN the operator runs `rigger graph
+/// --show` on its id, THEN it prints the "no definition named" note with its id in place of the
+/// name and no body, on every lane, never bounding a body by a cut of the id.
+#[test]
+fn graph_show_notes_a_nameless_node_by_its_id() {
+    let dir = temp_project();
+    let root = dir.path();
+    common::cli::seed_rigger_dir(root);
+    common::fixtures::write_text(root, "src/x.rs", "fn thing() {}\n");
+    {
+        let _schema = common::cli::open_graph(root);
+        let conn = common::cli::rigger_db(root, "graph.db");
+        let project = run_stream_identity(root);
+        common::cli::insert_node(
+            &conn,
+            &project,
+            "src/x.rs::thing",
+            "code-entity",
+            Some(r#"{"kind":"function","line":"1"}"#),
+        );
+    }
+
+    assert_eq!(
+        run_rigger_ok(root, &["graph", "--show", "src/x.rs::thing"]),
+        "show src/x.rs::thing\n  site: src/x.rs:1   kind function   degree 0\n  (no definition \
+         named \"src/x.rs::thing\" at line 1 in the current working tree; the recorded location \
+         may be stale)\n",
+        "a nameless node at a line is noted by its id"
+    );
+}
+
 /// `rigger_graph`'s `show` selector - its JSON wiring (`Server::tool_graph`'s `show` arm, the
 /// site object built from `site_fields`) on a bare-name resolution, where the happy-path test above
 /// only ever tries `around` on an unknown entity (the show-renderer test below drives every

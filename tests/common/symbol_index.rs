@@ -3,27 +3,29 @@
 //! hand-authored legacy `index.json`, projecting a file's definitions, its test-marked
 //! definitions and references and its references with their callers, checking a language's definition
 //! types against a file's definitions, checking a language's definitions fixture whole,
-//! projecting a source's definition extents, and checking the variant names a file's kinds
+//! projecting a source's definitions' extents, and checking the variant names a file's kinds
 //! persist under.
 //! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention
 //! `tests/common/mod.rs` keeps). Every lane compiles it; `extracted`, with
-//! `assert_definitions_fixture` through it, and `extents_by_line` alone reach the parser and are
-//! held by the `symbols` lane only.
+//! `assert_definitions_fixture` through it, alone reaches the parser and is held by the `symbols`
+//! lane only.
 
 #![allow(dead_code)]
 
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
 use rigger::grounder::symbols::store;
 
-/// A line-1 definition of `kind` named `name` with every optional field unset - the shape a
-/// product-only definition persists as; a caller sets the one field its case is about with
-/// struct-update syntax.
+/// A line-1 definition of `kind` named `name` with every optional field unset and `end_line` 0,
+/// the end line [`legacy_file`] stamps on a legacy definition - the shape a product-only
+/// definition persists as; a caller sets the one field its case is about with struct-update
+/// syntax.
 pub fn def(kind: Kind, name: &str) -> Def {
     Def {
         kind,
         name: name.into(),
         line: 1,
+        end_line: 0,
         is_test: false,
         is_out_of_line_module: false,
         path_override: None,
@@ -135,22 +137,14 @@ pub fn extracted(ext: &str, src: &str) -> FileSymbols {
         .expect("the registered query extracts the source")
 }
 
-/// Every definition extent the grammar and query registered for the extension `ext` bound in
-/// `src`, as `(start line, end line, name)`, sorted: the one projection of `definition_extents`
-/// the registry's tests compare whole. Only the `symbols` lane holds it, as it does `extracted`.
-#[cfg(feature = "symbols")]
-pub fn extents_by_line(ext: &str, src: &str) -> Vec<(u32, u32, String)> {
-    let entry = rigger::grounder::symbols::registry::for_extension(ext)
-        .expect("the extension is registered");
-    let mut extents: Vec<_> = rigger::grounder::symbols::extract::definition_extents(
-        src,
-        &entry.language,
-        entry.tags_query,
-    )
-    .expect("the registered query bounds the source")
-    .into_iter()
-    .map(|e| (e.start_line, e.end_line, e.name))
-    .collect();
+/// Every definition of `fs` as `(line, end line, name)`, sorted: the one projection of each
+/// `Def`'s extent the extent tests compare whole.
+pub fn extents_by_line(fs: &FileSymbols) -> Vec<(u32, u32, &str)> {
+    let mut extents: Vec<_> = fs
+        .defs
+        .iter()
+        .map(|d| (d.line, d.end_line, d.name.as_str()))
+        .collect();
     extents.sort();
     extents
 }
@@ -249,16 +243,35 @@ pub fn persist_stamped(root: &str, grammar: &str, body: &str) {
 
 /// The `file` entry of a hand-authored legacy `index.json` (`legacy`) loaded through the real
 /// `store::load`, which must succeed (`must_load` names the back-compat promise) and hold it.
-/// The legacy form is stamped with the CURRENT extraction generation first, so what it proves is
-/// the per-field default alone: an index from another generation loads as absent by design (it
-/// is rebuilt), a separate contract pinned beside `store::load` itself.
+/// The legacy form is stamped with the CURRENT extraction generation first, and each of its
+/// definitions lacking `end_line` with 0, the shape a current index holds, so what it proves is
+/// the per-field default alone: an index from another generation, or one lacking `end_line`,
+/// loads as absent by design (it is rebuilt), a separate contract pinned beside `store::load`
+/// itself.
 pub fn legacy_file(legacy: &str, file: &str, must_load: &str) -> FileSymbols {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_str().unwrap();
+    let mut current: serde_json::Value =
+        serde_json::from_str(legacy).expect("the hand-authored index is JSON");
+    for symbols in current["files"]
+        .as_object_mut()
+        .expect("the legacy index holds files")
+        .values_mut()
+    {
+        for def in symbols["defs"]
+            .as_array_mut()
+            .expect("a legacy file holds defs")
+        {
+            def.as_object_mut()
+                .expect("a legacy definition is an object")
+                .entry("end_line")
+                .or_insert(0.into());
+        }
+    }
     persist_stamped(
         root,
         rigger::grounder::symbols::model::GRAMMAR_TAGS_VERSION,
-        legacy,
+        &current.to_string(),
     );
     store::load(root)
         .expect(must_load)

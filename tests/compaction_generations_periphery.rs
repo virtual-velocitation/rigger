@@ -23,6 +23,7 @@ use common::cli::fold_state;
 use common::cli::graph_files;
 use common::cli::graph_identity;
 use common::cli::hold_the_rebuild;
+use common::cli::insert_node;
 use common::cli::keyed;
 use common::cli::log_and_graph_files;
 use common::cli::migrated_lines;
@@ -31,6 +32,7 @@ use common::cli::no_progress;
 use common::cli::read_run_events;
 use common::cli::refused_derived_reset;
 use common::cli::rigger_command;
+use common::cli::rigger_db;
 use common::cli::rigger_file;
 use common::cli::run_log;
 use common::cli::run_rigger;
@@ -1203,11 +1205,7 @@ impl ReleaseEraStore {
             ("docs/f.md", "artifact"),
             ("src/old.rs", "artifact"),
         ] {
-            conn.execute(
-                "INSERT INTO nodes (id, kind, attrs, project) VALUES (?1, ?2, NULL, ?3)",
-                [id, kind, project.as_str()],
-            )
-            .unwrap();
+            insert_node(&conn, &project, id, kind, None);
         }
         conn.execute(
             "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
@@ -4667,8 +4665,7 @@ fn a_rebuild_whose_process_is_gone_leaves_no_lock_and_the_next_setup_resumes_its
     )
     .map_err(|e| e.to_string());
     drop(live);
-    let cursor: u64 = rusqlite::Connection::open(rigger_file(root, "graph.db.rebuild"))
-        .unwrap()
+    let cursor: u64 = rigger_db(root, "graph.db.rebuild")
         .query_row("SELECT position FROM rebuild_cursor", [], |r| r.get(0))
         .unwrap();
     // Its process holds the lock until it is gone.
@@ -4974,7 +4971,7 @@ fn a_graph_db_lock_that_cannot_be_opened_is_named_by_setup_and_by_reset_runs_ove
 /// that reads the shadow - that setup would wait on it - not as a lock a rebuild holds through its
 /// fold: a second setup is refused at `graph.db.lock` ([`hold_the_rebuild`]).
 fn hold_shadow(root: &Path) -> rusqlite::Connection {
-    let rebuilding = rusqlite::Connection::open(rigger_file(root, "graph.db.rebuild")).unwrap();
+    let rebuilding = rigger_db(root, "graph.db.rebuild");
     rebuilding
         .execute_batch("PRAGMA locking_mode = EXCLUSIVE; CREATE TABLE folding (x);")
         .unwrap();

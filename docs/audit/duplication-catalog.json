@@ -6088,7 +6088,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b0eacaf3c6ba",
+    "id": "dup-a12c42d5d9c5",
     "classification": "semantic",
     "sites": [
       {
@@ -6219,6 +6219,11 @@
       {
         "file": "tests/common/cli.rs",
         "name": "Connection::open",
+        "content_hash": "9155e3ee6c9ff13a"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "Connection::open",
         "content_hash": "21e10304a9cde36f"
       },
       {
@@ -6322,16 +6327,6 @@
         "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "85ca4da2a9583ec9"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "e7e57a0fdf78bcfe"
-      },
-      {
         "file": "tests/graph_additive_indexes_persist.rs",
         "name": "Connection::open",
         "content_hash": "a26e651ef0fda2a7"
@@ -6352,19 +6347,9 @@
         "content_hash": "21e10304a9cde36f"
       },
       {
-        "file": "tests/group_lookup_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "3e9483c78f23ac0d"
-      },
-      {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
         "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
-      },
-      {
-        "file": "tests/one_shot_reads_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "e7e57a0fdf78bcfe"
       },
       {
         "file": "tests/reclaim_space_periphery.rs",
@@ -6397,21 +6382,6 @@
         "content_hash": "67b8cdc67801523b"
       },
       {
-        "file": "tests/reset_menu.rs",
-        "name": "Connection::open",
-        "content_hash": "e7e57a0fdf78bcfe"
-      },
-      {
-        "file": "tests/reset_menu.rs",
-        "name": "Connection::open",
-        "content_hash": "e7e57a0fdf78bcfe"
-      },
-      {
-        "file": "tests/reset_menu_identity_migration_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "e7e57a0fdf78bcfe"
-      },
-      {
         "file": "tests/run_boundary_lookup_periphery.rs",
         "name": "Connection::open",
         "content_hash": "a26e651ef0fda2a7"
@@ -6433,7 +6403,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 68 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 62 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

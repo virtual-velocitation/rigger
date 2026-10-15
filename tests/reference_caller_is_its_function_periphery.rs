@@ -80,7 +80,7 @@ fn opened_over_an_index_stamped(grammar: &str) -> (Vec<String>, String) {
     symbol_index::persist_stamped(
         root,
         grammar,
-        r#"{"files":{"lib.rs":{"lang":"Rust","defs":[{"kind":"Function","name":"ghost","line":1}],"refs":[]}}}"#,
+        r#"{"files":{"lib.rs":{"lang":"Rust","defs":[{"kind":"Function","name":"ghost","line":1,"end_line":1}],"refs":[]}}}"#,
     );
 
     let _grounder = Symbols::open(root, None);

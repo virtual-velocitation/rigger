@@ -23,6 +23,8 @@
 //! on-disk-reopen precedent. It names no feature-gated symbol, so it compiles and runs identically
 //! on the default and `--no-default-features` lanes.
 
+mod common;
+
 use rigger::contextgraph::sqlite::Projector;
 
 /// The number of user-defined indexes named `name` on the db at `conn` (the implicit
@@ -104,13 +106,13 @@ fn additive_indexes_persist_and_a_foreign_reader_uses_them_across_a_reopen() {
         ("b.rs::T::Foo", "Foo"),
         ("c.rs::Bar", "Bar"),
     ] {
-        reader
-            .execute(
-                "INSERT INTO nodes (id, kind, attrs, project)
-                 VALUES (?1, 'code-entity', json_object('name', ?2), 'test')",
-                [id, name],
-            )
-            .unwrap();
+        common::cli::insert_node(
+            &reader,
+            "test",
+            id,
+            "code-entity",
+            Some(&serde_json::json!({ "name": name }).to_string()),
+        );
     }
 
     // 1. IDEMPOTENT PERSISTENCE: each additive index survived on disk across the two opens, exactly

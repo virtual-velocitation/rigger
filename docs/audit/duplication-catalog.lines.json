@@ -274,8 +274,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3541,
-        "end_line": 3546
+        "start_line": 3539,
+        "end_line": 3544
       },
       {
         "file": "tests/new_run_critique_refusal_periphery.rs",
@@ -824,8 +824,8 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 272,
-        "end_line": 272
+        "start_line": 278,
+        "end_line": 278
       },
       {
         "file": "tests/common/fixtures/conductor.rs",
@@ -879,8 +879,8 @@
       },
       {
         "file": "tests/common/repo.rs",
-        "start_line": 356,
-        "end_line": 356
+        "start_line": 380,
+        "end_line": 380
       },
       {
         "file": "tests/common/served.rs",
@@ -1949,8 +1949,8 @@
       },
       {
         "file": "tests/boundary_audit.rs",
-        "start_line": 858,
-        "end_line": 858
+        "start_line": 836,
+        "end_line": 836
       },
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -3024,98 +3024,98 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27159,
-        "end_line": 27159
+        "start_line": 27240,
+        "end_line": 27240
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27383,
-        "end_line": 27383
+        "start_line": 27464,
+        "end_line": 27464
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27438,
-        "end_line": 27438
+        "start_line": 27519,
+        "end_line": 27519
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27469,
-        "end_line": 27469
+        "start_line": 27550,
+        "end_line": 27550
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27473,
-        "end_line": 27473
+        "start_line": 27554,
+        "end_line": 27554
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27543,
-        "end_line": 27543
+        "start_line": 27624,
+        "end_line": 27624
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27581,
-        "end_line": 27581
+        "start_line": 27662,
+        "end_line": 27662
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28041,
-        "end_line": 28041
+        "start_line": 28122,
+        "end_line": 28122
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28059,
-        "end_line": 28059
+        "start_line": 28140,
+        "end_line": 28140
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 250,
-        "end_line": 250
+        "start_line": 256,
+        "end_line": 256
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 261,
-        "end_line": 261
+        "start_line": 267,
+        "end_line": 267
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 282,
-        "end_line": 282
+        "start_line": 288,
+        "end_line": 288
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 299,
-        "end_line": 299
+        "start_line": 305,
+        "end_line": 305
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 623,
-        "end_line": 623
+        "start_line": 646,
+        "end_line": 646
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 708,
-        "end_line": 708
+        "start_line": 731,
+        "end_line": 731
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 934,
-        "end_line": 934
+        "start_line": 957,
+        "end_line": 957
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 935,
-        "end_line": 935
+        "start_line": 958,
+        "end_line": 958
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1048,
-        "end_line": 1048
+        "start_line": 1071,
+        "end_line": 1071
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1145,
-        "end_line": 1145
+        "start_line": 1168,
+        "end_line": 1168
       },
       {
         "file": "tests/common/fixtures/config.rs",
@@ -3159,23 +3159,23 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1277,
-        "end_line": 1277
+        "start_line": 1275,
+        "end_line": 1275
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1373,
-        "end_line": 1373
+        "start_line": 1371,
+        "end_line": 1371
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2574,
-        "end_line": 2574
+        "start_line": 2572,
+        "end_line": 2572
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3876,
-        "end_line": 3876
+        "start_line": 3874,
+        "end_line": 3874
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
@@ -4024,13 +4024,13 @@
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 245,
-        "end_line": 245
+        "start_line": 246,
+        "end_line": 246
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 604,
-        "end_line": 604
+        "start_line": 605,
+        "end_line": 605
       },
       {
         "file": "tests/validate_footprint_default_scratch_root_periphery.rs",
@@ -5524,8 +5524,8 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 707,
-        "end_line": 709
+        "start_line": 730,
+        "end_line": 732
       }
     ]
   },
@@ -5720,7 +5720,7 @@
     ]
   },
   {
-    "id": "dup-b0eacaf3c6ba",
+    "id": "dup-a12c42d5d9c5",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5849,28 +5849,33 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 374,
-        "end_line": 374
+        "start_line": 97,
+        "end_line": 97
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 387,
-        "end_line": 387
+        "start_line": 397,
+        "end_line": 397
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 445,
-        "end_line": 445
+        "start_line": 410,
+        "end_line": 410
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 455,
-        "end_line": 455
+        "start_line": 468,
+        "end_line": 468
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1156,
-        "end_line": 1156
+        "start_line": 478,
+        "end_line": 478
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "start_line": 1179,
+        "end_line": 1179
       },
       {
         "file": "tests/common/fixtures/sqlite.rs",
@@ -5889,113 +5894,93 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 473,
-        "end_line": 473
+        "start_line": 475,
+        "end_line": 475
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 957,
-        "end_line": 957
+        "start_line": 959,
+        "end_line": 959
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1055,
-        "end_line": 1055
+        "start_line": 1057,
+        "end_line": 1057
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1071,
-        "end_line": 1071
+        "start_line": 1073,
+        "end_line": 1073
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1193,
-        "end_line": 1193
+        "start_line": 1195,
+        "end_line": 1195
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1258,
-        "end_line": 1258
+        "start_line": 1256,
+        "end_line": 1256
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1379,
-        "end_line": 1379
+        "start_line": 1377,
+        "end_line": 1377
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2360,
-        "end_line": 2360
+        "start_line": 2358,
+        "end_line": 2358
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2420,
-        "end_line": 2420
+        "start_line": 2418,
+        "end_line": 2418
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2636,
-        "end_line": 2636
+        "start_line": 2634,
+        "end_line": 2634
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2934,
-        "end_line": 2934
+        "start_line": 2932,
+        "end_line": 2932
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3194,
-        "end_line": 3194
+        "start_line": 3192,
+        "end_line": 3192
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4328,
-        "end_line": 4328
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4670,
-        "end_line": 4670
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4977,
-        "end_line": 4977
+        "start_line": 4326,
+        "end_line": 4326
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
-        "start_line": 84,
-        "end_line": 84
+        "start_line": 86,
+        "end_line": 86
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
-        "start_line": 98,
-        "end_line": 98
+        "start_line": 100,
+        "end_line": 100
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
-        "start_line": 211,
-        "end_line": 211
+        "start_line": 213,
+        "end_line": 213
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
-        "start_line": 235,
-        "end_line": 235
-      },
-      {
-        "file": "tests/group_lookup_periphery.rs",
-        "start_line": 227,
-        "end_line": 227
+        "start_line": 237,
+        "end_line": 237
       },
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
         "start_line": 126,
         "end_line": 126
-      },
-      {
-        "file": "tests/one_shot_reads_periphery.rs",
-        "start_line": 299,
-        "end_line": 299
       },
       {
         "file": "tests/reclaim_space_periphery.rs",
@@ -6026,21 +6011,6 @@
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
         "start_line": 69,
         "end_line": 69
-      },
-      {
-        "file": "tests/reset_menu.rs",
-        "start_line": 62,
-        "end_line": 62
-      },
-      {
-        "file": "tests/reset_menu.rs",
-        "start_line": 66,
-        "end_line": 66
-      },
-      {
-        "file": "tests/reset_menu_identity_migration_periphery.rs",
-        "start_line": 97,
-        "end_line": 97
       },
       {
         "file": "tests/run_boundary_lookup_periphery.rs",
@@ -6469,8 +6439,8 @@
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/store.rs",
-        "start_line": 257,
-        "end_line": 261
+        "start_line": 268,
+        "end_line": 272
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
@@ -6799,23 +6769,23 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 577,
-        "end_line": 584
+        "start_line": 600,
+        "end_line": 607
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 591,
-        "end_line": 596
+        "start_line": 614,
+        "end_line": 619
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1209,
-        "end_line": 1214
+        "start_line": 1232,
+        "end_line": 1237
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5008,
-        "end_line": 5013
+        "start_line": 5005,
+        "end_line": 5010
       }
     ]
   },
@@ -7394,8 +7364,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27463,
-        "end_line": 27483
+        "start_line": 27544,
+        "end_line": 27564
       }
     ]
   },
@@ -7409,8 +7379,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27257,
-        "end_line": 27304
+        "start_line": 27338,
+        "end_line": 27385
       }
     ]
   },
@@ -7499,13 +7469,13 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 147,
-        "end_line": 151
+        "start_line": 153,
+        "end_line": 157
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 155,
-        "end_line": 159
+        "start_line": 161,
+        "end_line": 165
       },
       {
         "file": "tests/courier_registry_refresh_boundary_periphery.rs",
@@ -7519,18 +7489,18 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 602,
-        "end_line": 604
+        "start_line": 625,
+        "end_line": 627
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1203,
-        "end_line": 1205
+        "start_line": 1226,
+        "end_line": 1228
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1218,
-        "end_line": 1220
+        "start_line": 1241,
+        "end_line": 1243
       }
     ]
   },
@@ -7539,8 +7509,8 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 994,
-        "end_line": 1001
+        "start_line": 1017,
+        "end_line": 1024
       },
       {
         "file": "tests/common/workflow_probe.rs",
@@ -7554,13 +7524,13 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1030,
-        "end_line": 1050
+        "start_line": 1053,
+        "end_line": 1073
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1054,
-        "end_line": 1070
+        "start_line": 1077,
+        "end_line": 1093
       },
       {
         "file": "tests/store_secrets.rs",
@@ -7749,8 +7719,8 @@
     "sites": [
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1805,
-        "end_line": 1810
+        "start_line": 1803,
+        "end_line": 1808
       },
       {
         "file": "tests/product_binary_authority_periphery.rs",
@@ -7764,8 +7734,8 @@
     "sites": [
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2232,
-        "end_line": 2238
+        "start_line": 2230,
+        "end_line": 2236
       },
       {
         "file": "tests/one_shot_reads_periphery.rs",
@@ -8039,8 +8009,8 @@
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 655,
-        "end_line": 664
+        "start_line": 656,
+        "end_line": 665
       }
     ]
   },

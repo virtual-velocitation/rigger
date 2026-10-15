@@ -19,7 +19,9 @@
 //! work queue and never outlives the work.
 
 mod common;
-use common::repo::{collect_files, collect_rs_files, production_part, repo_root, table_lines};
+use common::repo::{
+    collect_files, collect_rs_files, production_part, production_sources, repo_root, table_lines,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -592,30 +594,6 @@ const CONSTRUCTOR_ALLOWLIST: &[(&str, &str)] = &[];
 
 /// The pinned size of [`CONSTRUCTOR_ALLOWLIST`]: it may only fall.
 const CONSTRUCTOR_ALLOWLIST_PIN: usize = 0;
-
-/// Every production `.rs` file under `root`'s `src/` and each `crates/*/src/`, as
-/// `(repo-relative path, text)`.
-fn production_sources(root: &Path) -> Vec<(String, String)> {
-    let mut files = Vec::new();
-    collect_rs_files(&root.join("src"), &mut files);
-    collect_rs_files(&root.join("crates"), &mut files);
-    files
-        .into_iter()
-        .map(|p| {
-            let rel = p
-                .strip_prefix(root)
-                .unwrap_or(&p)
-                .to_string_lossy()
-                .replace('\\', "/");
-            (rel, p)
-        })
-        .filter(|(rel, _)| rel.starts_with("src/") || rel.split('/').nth(2) == Some("src"))
-        .map(|(rel, p)| {
-            let text = fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {rel}: {e}"));
-            (rel, text)
-        })
-        .collect()
-}
 
 /// The name of the function declared on `line` (the identifier after `fn `).
 fn fn_name(line: &str) -> String {
