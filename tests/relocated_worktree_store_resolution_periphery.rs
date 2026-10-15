@@ -113,15 +113,6 @@ fn owning_graph_with_relocated_worktree(root: &Path, worktree: &Path, branch: &s
     .expect("write the worktree's workflow");
 }
 
-/// The structured answer of one `rigger_graph` tool call with `arguments` over `mcp`.
-fn graph_tool(mcp: &mut McpSession, arguments: serde_json::Value) -> serde_json::Value {
-    let resp = mcp.call(
-        "tools/call",
-        serde_json::json!({"name": "rigger_graph", "arguments": arguments}),
-    );
-    resp["result"]["structuredContent"].clone()
-}
-
 /// The node ids of a `rigger_graph` `around` answer.
 fn node_ids(around: &serde_json::Value) -> Vec<String> {
     around["nodes"]
@@ -253,12 +244,12 @@ fn rigger_mcp_spawn_from_a_relocated_worktree_serves_and_folds_into_the_owning_r
     owning_graph_with_relocated_worktree(root, &worktree, "rigger/u/m");
 
     let mut mcp = McpSession::start_with(&worktree, &["mcp", "--spawn", "u/implementer#0"]);
-    let show = graph_tool(&mut mcp, serde_json::json!({"show": "alpha"}));
+    let show = mcp.graph_tool(serde_json::json!({"show": "alpha"}));
     assert_eq!(
         show["site"]["id"], "a.rs::alpha",
         "rigger_graph show from the worktree must find the owning graph's entity; got:\n{show}"
     );
-    let around = graph_tool(&mut mcp, serde_json::json!({"around": "a.rs"}));
+    let around = mcp.graph_tool(serde_json::json!({"around": "a.rs"}));
     assert!(
         node_ids(&around).contains(&"a.rs::alpha".to_string()),
         "rigger_graph around from the worktree must answer the owning graph's neighbourhood; \

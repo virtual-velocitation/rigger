@@ -2278,8 +2278,7 @@ mod tests {
         seed_shown_nodes(&graph);
         let answer = shown_graph_answer(&graph, json!({"around": SHOWN_FILE, "depth": 1}));
         let shown = |id: &str| shown_graph_answer(&graph, json!({"show": id}))["site"].clone();
-        let mut nodes = answer["nodes"].as_array().expect("a node list").clone();
-        nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        let nodes = crate::test_support::around_nodes(&answer);
         assert_eq!(
             nodes,
             [
@@ -2294,11 +2293,7 @@ mod tests {
             "every loaded node at its degree in the merged graph, each definition as show gives it"
         );
         crate::test_support::assert_around_is_entity_sites(&graph, &nodes);
-        assert_eq!(
-            shown("f-shown")["degree"],
-            2,
-            "show reads the finding's degree from the store, past the depth bound"
-        );
+        crate::test_support::assert_finding_shows_past_the_depth_bound(&shown("f-shown"));
     }
 
     /// Spec 101: a wired graph that owes its rebuild is refused by every tool whose answer depends

@@ -554,6 +554,23 @@ pub fn assert_shows_are_site_fields(graph: &Projector, sites: &[serde_json::Valu
     }
 }
 
+/// The node objects of a `rigger_graph` `around` answer, sorted by id.
+pub fn around_nodes(answer: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut nodes = answer["nodes"].as_array().expect("a node list").clone();
+    nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    nodes
+}
+
+/// Spec 119, SHOW IS ONE RENDERER: `finding`, the `rigger_graph` `show` site of the seed's
+/// finding, carries the two `ABOUT` edges the store holds, where an `around` of [`SHOWN_FILE`]
+/// at depth 1 loads one of them.
+pub fn assert_finding_shows_past_the_depth_bound(finding: &serde_json::Value) {
+    assert_eq!(
+        finding["degree"], 2,
+        "show reads the finding's degree from the store, past the depth bound"
+    );
+}
+
 /// Spec 119, SHOW IS ONE RENDERER: each of `nodes`, the `rigger_graph` `around` node objects of
 /// [`SHOWN_FILE`] at depth 1, is [`entity_site`] over the `Node` [`around`] loads from `graph`
 /// at the degree the object carries, compared without order.

@@ -2854,14 +2854,14 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:26850-26850` `".rigger"`
 - `tests/cli.rs:26883-26883` `".rigger"`
 - `tests/cli.rs:27161-27161` `".rigger"`
-- `tests/cli.rs:27395-27395` `".rigger"`
-- `tests/cli.rs:27450-27450` `".rigger"`
-- `tests/cli.rs:27481-27481` `"scaffolded .rigger/instructions/README.md"`
-- `tests/cli.rs:27485-27485` `".rigger/instructions/README.md"`
-- `tests/cli.rs:27555-27555` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:27593-27593` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28053-28053` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28071-28071` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:27384-27384` `".rigger"`
+- `tests/cli.rs:27439-27439` `".rigger"`
+- `tests/cli.rs:27470-27470` `"scaffolded .rigger/instructions/README.md"`
+- `tests/cli.rs:27474-27474` `".rigger/instructions/README.md"`
+- `tests/cli.rs:27544-27544` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:27582-27582` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28042-28042` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28060-28060` `"gw/.rigger/workflow.yml"`
 - `tests/common/cli.rs:250-250` `".rigger"`
 - `tests/common/cli.rs:261-261` `".rigger"`
 - `tests/common/cli.rs:282-282` `".rigger"`
@@ -3019,10 +3019,10 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/relocated_worktree_store_resolution_periphery.rs:108-108` `".rigger"`
 - `tests/relocated_worktree_store_resolution_periphery.rs:108-108` `"create the worktree's .rigger"`
 - `tests/relocated_worktree_store_resolution_periphery.rs:110-110` `".rigger"`
-- `tests/relocated_worktree_store_resolution_periphery.rs:143-143` `".rigger"`
-- `tests/relocated_worktree_store_resolution_periphery.rs:195-195` `".rigger"`
-- `tests/relocated_worktree_store_resolution_periphery.rs:238-238` `".rigger"`
-- `tests/relocated_worktree_store_resolution_periphery.rs:288-288` `".rigger"`
+- `tests/relocated_worktree_store_resolution_periphery.rs:134-134` `".rigger"`
+- `tests/relocated_worktree_store_resolution_periphery.rs:186-186` `".rigger"`
+- `tests/relocated_worktree_store_resolution_periphery.rs:229-229` `".rigger"`
+- `tests/relocated_worktree_store_resolution_periphery.rs:279-279` `".rigger"`
 - `tests/reset_build_cache_periphery.rs:425-425` `".rigger"`
 - `tests/reset_build_cache_periphery.rs:504-504` `".rigger"`
 - `tests/reset_derived_compaction_periphery.rs:605-605` `"the partition holding .rigger/ needs about the compacted size of the log free"`
@@ -4780,7 +4780,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:16572-16583` `status_prints_no_dashboard_line_when_none_was_ever_recorded`
 - `tests/cli.rs:24230-24240` `prime_with_no_spec_path_never_mentions_the_spec_lint`
 - `tests/cli.rs:24651-24660` `workflow_with_no_spec_path_never_mentions_the_spec_lint`
-- `tests/cli.rs:27475-27495` `init_scaffolds_the_instructions_readme_and_names_it`
+- `tests/cli.rs:27464-27484` `init_scaffolds_the_instructions_readme_and_names_it`
 
 #### `dup-84fea880d212` (near, 2 sites)
 
@@ -4789,7 +4789,7 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:16871-16901` `docs_ships_three_verb_lookup_guidance_to_consumers`
-- `tests/cli.rs:27269-27316` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
+- `tests/cli.rs:27258-27305` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
 
 #### `dup-21b08556e493` (exact, 2 sites)
 
@@ -4927,7 +4927,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/common/fixtures/f
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:588-597` `live_node_ids`
+- `tests/common/fixtures/fold.rs:605-614` `live_node_ids`
 - `tests/community_resolution_knob.rs:139-148` `live_memberships_of`
 - `tests/graph_superseded_prune.rs:32-41` `live_contains`
 
@@ -5265,7 +5265,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9260 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9262 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4996-5037` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15080-15102` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

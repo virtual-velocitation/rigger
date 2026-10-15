@@ -3029,43 +3029,43 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27395,
-        "end_line": 27395
+        "start_line": 27384,
+        "end_line": 27384
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27450,
-        "end_line": 27450
+        "start_line": 27439,
+        "end_line": 27439
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27481,
-        "end_line": 27481
+        "start_line": 27470,
+        "end_line": 27470
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27485,
-        "end_line": 27485
+        "start_line": 27474,
+        "end_line": 27474
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27555,
-        "end_line": 27555
+        "start_line": 27544,
+        "end_line": 27544
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27593,
-        "end_line": 27593
+        "start_line": 27582,
+        "end_line": 27582
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28053,
-        "end_line": 28053
+        "start_line": 28042,
+        "end_line": 28042
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28071,
-        "end_line": 28071
+        "start_line": 28060,
+        "end_line": 28060
       },
       {
         "file": "tests/common/cli.rs",
@@ -3709,23 +3709,23 @@
       },
       {
         "file": "tests/relocated_worktree_store_resolution_periphery.rs",
-        "start_line": 143,
-        "end_line": 143
+        "start_line": 134,
+        "end_line": 134
       },
       {
         "file": "tests/relocated_worktree_store_resolution_periphery.rs",
-        "start_line": 195,
-        "end_line": 195
+        "start_line": 186,
+        "end_line": 186
       },
       {
         "file": "tests/relocated_worktree_store_resolution_periphery.rs",
-        "start_line": 238,
-        "end_line": 238
+        "start_line": 229,
+        "end_line": 229
       },
       {
         "file": "tests/relocated_worktree_store_resolution_periphery.rs",
-        "start_line": 288,
-        "end_line": 288
+        "start_line": 279,
+        "end_line": 279
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
@@ -7394,8 +7394,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27475,
-        "end_line": 27495
+        "start_line": 27464,
+        "end_line": 27484
       }
     ]
   },
@@ -7409,8 +7409,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27269,
-        "end_line": 27316
+        "start_line": 27258,
+        "end_line": 27305
       }
     ]
   },
@@ -7649,8 +7649,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 588,
-        "end_line": 597
+        "start_line": 605,
+        "end_line": 614
       },
       {
         "file": "tests/community_resolution_knob.rs",

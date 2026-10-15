@@ -27208,8 +27208,8 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
 #[test]
 fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
     use common::fixtures::{
-        assert_around_is_entity_sites, assert_shows_are_site_fields, seed_shown_nodes, SHOWN_FILE,
-        SHOWN_IDS,
+        around_nodes, assert_around_is_entity_sites, assert_finding_shows_past_the_depth_bound,
+        assert_shows_are_site_fields, seed_shown_nodes, SHOWN_FILE, SHOWN_IDS,
     };
 
     let dir = temp_store_project();
@@ -27218,20 +27218,12 @@ fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
     seed_shown_nodes(&common::cli::open_graph(root));
 
     let mut mcp = McpSession::start(root);
-    let mut graph_tool = |arguments: serde_json::Value| {
-        mcp.call(
-            "tools/call",
-            serde_json::json!({"name": "rigger_graph", "arguments": arguments}),
-        )["result"]["structuredContent"]
-            .clone()
-    };
-    let sites = SHOWN_IDS.map(|id| graph_tool(serde_json::json!({"show": id}))["site"].clone());
-    let answer = graph_tool(serde_json::json!({"around": SHOWN_FILE, "depth": 1}));
+    let sites = SHOWN_IDS.map(|id| mcp.graph_tool(serde_json::json!({"show": id}))["site"].clone());
+    let nodes =
+        around_nodes(&mcp.graph_tool(serde_json::json!({"around": SHOWN_FILE, "depth": 1})));
     let out = mcp.finish();
     assert!(out.status.success(), "rigger mcp exits cleanly");
 
-    let mut nodes = answer["nodes"].as_array().expect("a node list").clone();
-    nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     assert_eq!(
         nodes
             .iter()
@@ -27250,10 +27242,7 @@ fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
         "every loaded node at its edge count in the merged graph"
     );
     let finding = SHOWN_IDS.iter().position(|id| *id == "f-shown").unwrap();
-    assert_eq!(
-        sites[finding]["degree"], 2,
-        "show reads the finding's degree from the store, past the depth bound"
-    );
+    assert_finding_shows_past_the_depth_bound(&sites[finding]);
     let graph = common::cli::open_graph(root);
     assert_shows_are_site_fields(&graph, &sites);
     assert_around_is_entity_sites(&graph, &nodes);

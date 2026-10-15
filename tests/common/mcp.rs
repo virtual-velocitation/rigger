@@ -99,6 +99,11 @@ impl McpSession {
         )
     }
 
+    /// The structured answer of one `rigger_graph` tool call with `arguments`.
+    pub fn graph_tool(&mut self, arguments: serde_json::Value) -> serde_json::Value {
+        self.tool_call("rigger_graph", arguments)["result"]["structuredContent"].clone()
+    }
+
     /// The `initialize` handshake a well-behaved MCP client (the shim's SDK client included)
     /// performs first, once per session; it must succeed.
     pub fn initialize(&mut self) {
