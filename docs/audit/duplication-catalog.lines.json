@@ -6314,8 +6314,8 @@
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
-        "start_line": 260,
-        "end_line": 483
+        "start_line": 261,
+        "end_line": 484
       },
       {
         "file": "tests/common/source_audit.rs",

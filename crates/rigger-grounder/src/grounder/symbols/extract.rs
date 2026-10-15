@@ -235,9 +235,10 @@ fn record_def(
 /// supplies the grammar and its query (unit 2's registry decides WHICH), and everything it
 /// returns is the parser-free `FileSymbols`.
 ///
-/// A tagged definition is named by its leaf ([`def_leaf`]), in `defs` and as a caller alike. A
-/// definition tag whose leaf names nothing ([`is_nameless`]) makes no `Def`, and the references
-/// in its body take the next enclosing definition by the caller rule, else the file. A
+/// A tagged definition is named by its leaf ([`def_leaf`]), in `defs` and in its caller range
+/// alike, and as a caller by its path (`Def.path`, spec 119 criterion 8). A definition tag
+/// whose leaf names nothing ([`is_nameless`]) makes no `Def`, and the references in its body
+/// take the next enclosing definition by the caller rule, else the file. A
 /// definition read off the tree by `lang` is put to that filter too, so a Go `type _ = B` makes
 /// none. An impl block is not: its name is its header, `impl ..`, never empty and never `_`.
 ///
@@ -306,7 +307,7 @@ pub fn extract(
         let line = tag.span.start.row as u32 + 1;
         if tag.is_definition {
             // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the name a
-            // definition is filtered by, recorded under and named as a caller by is one.
+            // definition is filtered by, recorded under and ranked by as a caller is one.
             let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
             dropped.extend(record_def(
                 lang,
@@ -1948,8 +1949,8 @@ setup!();
         );
     }
 
-    /// The caller [`enclosing_def`] gives `pos` over hand-built `(range, leaf, kind)`
-    /// definition ranges.
+    /// The leaf of the caller [`enclosing_def`] picks for `pos` over hand-built
+    /// `(range, leaf, kind)` definition ranges.
     fn caller(ranges: &[(std::ops::Range<usize>, &str, Kind)], pos: usize) -> Option<String> {
         let ranges: Vec<_> = ranges
             .iter()
