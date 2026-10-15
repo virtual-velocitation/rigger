@@ -12893,7 +12893,7 @@
     "is_test": true,
     "proposed_module": "dash::tests::call_target_c4",
     "reason": "defined inside `call_target_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "1b36b1548522cb6b"
+    "content_hash": "6e20dd35a5e9d38f"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12901,7 +12901,7 @@
     "is_test": true,
     "proposed_module": "dash::tests::leaf_keys_c1",
     "reason": "defined inside `leaf_keys_c1`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "c20c69e1c46c5a1e"
+    "content_hash": "f100077aed8d6b86"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12909,6 +12909,6 @@
     "is_test": true,
     "proposed_module": "dash::tests::file_half_c13",
     "reason": "defined inside `file_half_c13`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "0741a61ec8cd644b"
+    "content_hash": "be79bae82f4920d7"
   }
 ]

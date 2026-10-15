@@ -10335,9 +10335,6 @@ mod metadata_card_c2 {
 mod reprojection_views {
     use super::Reprojection;
 
-    /// The community whose members a files re-projection test folds.
-    pub(super) const COM: &str = "community/1/0";
-
     /// Each cluster's `(key, count)`, in the re-projection's order.
     pub(super) fn cluster_counts(re: &Reprojection) -> Vec<(&str, usize)> {
         re.clusters
@@ -10358,9 +10355,9 @@ mod reprojection_views {
 /// Spec 116 criterion 4, A DATA MEMBER IS NO CALL TARGET, at the files re-projection.
 #[cfg(test)]
 mod call_target_c4 {
-    use super::reprojection_views::{cluster_counts, unresolved_frontiers, COM};
+    use super::reprojection_views::{cluster_counts, unresolved_frontiers};
     use super::*;
-    use crate::test_support::{kinded_def_node, one_community_graph, plain};
+    use crate::test_support::{kinded_def_node, one_community_graph, plain, ONE_COMMUNITY};
 
     /// A community holds the data member `src/a.rs::x` of kind `member`
     /// and the bare placeholder `src/b.rs::%x`, `src/c.rs` defining the fn `x` when `with_fn`.
@@ -10373,7 +10370,7 @@ mod call_target_c4 {
         unresolved: &[(&str, &[&str])],
     ) {
         let mut g = one_community_graph(
-            COM,
+            ONE_COMMUNITY,
             vec![
                 kinded_def_node("src/a.rs::x", member),
                 plain("src/b.rs::%x", KIND_CODE_ENTITY),
@@ -10382,7 +10379,7 @@ mod call_target_c4 {
         if with_fn {
             g.nodes.push(kinded_def_node("src/c.rs::x", "function"));
         }
-        let re = reproject(&g, COM, &Lens::Files);
+        let re = reproject(&g, ONE_COMMUNITY, &Lens::Files);
         assert_eq!(
             cluster_counts(&re),
             files.iter().map(|f| (*f, 1)).collect::<Vec<_>>()
@@ -10419,16 +10416,18 @@ mod call_target_c4 {
 /// Spec 119 criterion 1, THE LEAF KEYS RESOLUTION, at the files re-projection.
 #[cfg(test)]
 mod leaf_keys_c1 {
-    use super::reprojection_views::{cluster_counts, COM};
+    use super::reprojection_views::cluster_counts;
     use super::*;
     use crate::contextgraph::KIND_FILE;
-    use crate::test_support::{def_node, empty_named_node, one_community_graph, plain};
+    use crate::test_support::{
+        def_node, empty_named_node, one_community_graph, plain, ONE_COMMUNITY,
+    };
 
     #[test]
     fn reproject_files_resolves_a_placeholder_onto_the_nested_definition_of_its_leaf() {
         // The file member `d.rs` is no placeholder: it folds under itself.
         let g = one_community_graph(
-            COM,
+            ONE_COMMUNITY,
             vec![
                 def_node("a.rs::T::new", "new"),
                 plain("b.rs::%new", KIND_CODE_ENTITY),
@@ -10436,7 +10435,7 @@ mod leaf_keys_c1 {
                 plain("d.rs", KIND_FILE),
             ],
         );
-        let re = reproject(&g, COM, &Lens::Files);
+        let re = reproject(&g, ONE_COMMUNITY, &Lens::Files);
         assert_eq!(cluster_counts(&re), vec![("a.rs", 3), ("d.rs", 1)]);
         assert_eq!(re.unresolved, Vec::new());
     }
@@ -10445,10 +10444,10 @@ mod leaf_keys_c1 {
 /// Spec 119 criterion 13, THE FILE HALF IS ONE READ, at the files re-projection.
 #[cfg(test)]
 mod file_half_c13 {
-    use super::reprojection_views::{cluster_counts, unresolved_frontiers, COM};
+    use super::reprojection_views::{cluster_counts, unresolved_frontiers};
     use super::*;
     use crate::contextgraph::{KIND_DECISION, KIND_FILE};
-    use crate::test_support::{def_node, one_community_graph, plain};
+    use crate::test_support::{def_node, one_community_graph, plain, ONE_COMMUNITY};
 
     /// An extensionless file's definition `Makefile::all` and the placeholder another file
     /// folds for its leaf fold under `Makefile`, a `file` node under its own path whatever its
@@ -10456,7 +10455,7 @@ mod file_half_c13 {
     #[test]
     fn reproject_files_folds_an_extensionless_files_entity_under_its_file() {
         let g = one_community_graph(
-            COM,
+            ONE_COMMUNITY,
             vec![
                 def_node("Makefile::all", "all"),
                 plain("src/b.rs::%all", KIND_CODE_ENTITY),
@@ -10464,7 +10463,7 @@ mod file_half_c13 {
                 plain("v1.2-choice", KIND_DECISION),
             ],
         );
-        let re = reproject(&g, COM, &Lens::Files);
+        let re = reproject(&g, ONE_COMMUNITY, &Lens::Files);
         assert_eq!(
             cluster_counts(&re),
             vec![("Makefile", 2), ("src/utils/Makefile", 1)]

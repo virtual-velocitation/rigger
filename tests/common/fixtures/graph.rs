@@ -365,6 +365,9 @@ pub fn kinded_def_node(id: &str, kind: &str) -> Node {
     node
 }
 
+/// The community a test built by [`one_community_graph`] holds its members in.
+pub const ONE_COMMUNITY: &str = "community/1/0";
+
 /// A graph of the one community node `community` followed by `members`, each held by a live
 /// inferred `IN_COMMUNITY` edge in `members` order: the subject a re-projection folds.
 pub fn one_community_graph(community: &str, members: Vec<Node>) -> Graph {
