@@ -89,7 +89,8 @@ fn graph_show_degrades_gracefully_when_the_recorded_file_is_missing() {
 /// sits at the entity's recorded site. The criterion's sharpest clause - "never wrong text
 /// presented as current" - means the surface must NEVER lift that NEIGHBOUR's body under the
 /// drifted entity's header. Under spec 92 the drifted entity's OWN body is a different matter: when
-/// its name and kind are unambiguous elsewhere in the file, the `symbols` lane now HEALS to it and
+/// its name and kind are unambiguous among the file's production definitions elsewhere, the
+/// `symbols` lane now HEALS to it and
 /// shows the live body (never refuses); the light lane still cannot derive any extent at all, so it
 /// still shows no body for anything. Both lanes still EXIT SUCCESS.
 ///

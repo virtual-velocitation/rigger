@@ -17,8 +17,9 @@
 //!     that name STARTING at the recorded line (a name/line drift - the definition moved within the
 //!     file since the graph was last indexed), the surface RE-LOCATES it by name and kind within
 //!     the SAME file (never crossing files) and shows its LIVE body, with the header noting
-//!     "recorded line N, now M" - but ONLY when that name and kind are UNAMBIGUOUS there: with more
-//!     than one live candidate the surface cannot tell which the caller meant, so it degrades to a
+//!     "recorded line N, now M" - but ONLY when that name and kind are UNAMBIGUOUS among the file's
+//!     production definitions (test code never counts): with more than one live production
+//!     candidate the surface cannot tell which the caller meant, so it degrades to a
 //!     note with NO body instead of guessing (never a wrong body from a neighbor, or from an
 //!     ambiguous same-named sibling).
 //!   - EXTENT: a definition's line-numbered body is bounded by the definition's OWN extent, derived
@@ -872,11 +873,12 @@ fn graph_show_heals_to_the_live_line_when_the_moved_name_is_unambiguous() {
     );
 }
 
-/// NAME/LINE-DRIFT, AMBIGUOUS (spec 92): when the queried name, of its kind, occurs at MORE than
-/// one live line in the file (none of them the recorded one), the surface cannot tell which the
-/// caller meant - it degrades to a note with NO body, exactly as the pre-heal behavior did for
-/// every drift, rather than guessing one of the candidates. This is the boundary the heal above
-/// must never cross: healing is safe only when the name and kind are unambiguous in its file.
+/// NAME/LINE-DRIFT, AMBIGUOUS (spec 92): when the queried name, of its kind, occurs in production
+/// code at MORE than one live line in the file (none of them the recorded one), the surface cannot
+/// tell which the caller meant - it degrades to a note with NO body, exactly as the pre-heal
+/// behavior did for every drift, rather than guessing one of the candidates. This is the boundary
+/// the heal above must never cross: healing is safe only when the name and kind are unambiguous
+/// among its file's production definitions.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file() {
