@@ -6,7 +6,7 @@
 //! backend-agnostic contract test `passes_the_contract` in
 //! `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs`, which drives `eventstore::contract::assert_contract`
 //! against a real KurrentDB container. That test now compiles into EVERY lane's
-//! `cargo test`, and it must keep two properties, neither of which any other test pins:
+//! `cargo test`, and it must keep three properties, none of which any other test pins:
 //!
 //!   1. UN-GATED IN EVERY LANE. The adapter file carries no `#[cfg(feature = ...)]`
 //!      gate, so both the adapter AND its contract test compile and run in the default
@@ -34,14 +34,20 @@
 //!      test runner hides a passing test's stderr. These guards fail at `cargo test` time
 //!      instead.
 //!
+//!   3. A PINNED SERVER IMAGE. The fixture's image (`KURRENTDB_IMAGE`) carries a release tag,
+//!      never a floating one such as `latest`: a floating tag proves the contract against
+//!      whatever the registry serves that day, and a failed pull of it turns the suite red with
+//!      no change in the tree.
+//!
 //! Deliberately NOT feature-gated and it touches no backend symbol: it reads the adapter
-//! source as text (resolved from `CARGO_MANIFEST_DIR`, so it is CWD-independent) and drives
-//! the fixture's decision on the client errors a failed start returns, identically in both
+//! source as text (resolved from `CARGO_MANIFEST_DIR`, so it is CWD-independent), drives
+//! the fixture's decision on the client errors a failed start returns and reads the fixture's
+//! image constant, identically in both
 //! feature lanes, a real member of each lane's `cargo test` battery.
 
 mod common;
 
-use common::fixtures::{container_runtime, start_failure, StartFailure};
+use common::fixtures::{container_runtime, start_failure, StartFailure, KURRENTDB_IMAGE};
 use common::repo::repo_text;
 use testcontainers::bollard::errors::Error as BollardError;
 use testcontainers::bollard::{Docker, API_DEFAULT_VERSION};
@@ -198,6 +204,22 @@ fn the_contract_test_skips_only_without_a_container_runtime() {
     );
 }
 
+/// The fixture's server image is a pinned release, a dotted numeric version tag: a floating tag
+/// such as `latest` proves the contract against whatever the registry serves that day, and a
+/// failed pull of it turns the suite red with no change in the tree.
+#[test]
+fn the_fixture_image_is_pinned_to_a_release_tag() {
+    let (name, tag) = KURRENTDB_IMAGE;
+    assert!(
+        !tag.is_empty()
+            && tag
+                .split('.')
+                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())),
+        "the KurrentDB image `{name}:{tag}` must be pinned to a release tag (digits and dots, \
+         e.g. `26.2.2`), never a floating tag"
+    );
+}
+
 /// The DOCKER_HOST the test gate's container snippet exports when it finds the podman socket.
 const GATE_DOCKER_HOST: &str = "unix:///run/user/1000/podman/podman.sock";
 
@@ -234,7 +256,7 @@ fn reachable_runtime_failures() -> [TestcontainersError; 4] {
     [
         TestcontainersError::WaitContainer(WaitContainerError::StartupTimeout),
         TestcontainersError::Client(ClientError::PullImage {
-            descriptor: "kurrentplatform/kurrentdb:latest".to_string(),
+            descriptor: format!("{}:{}", KURRENTDB_IMAGE.0, KURRENTDB_IMAGE.1),
             err: daemon("pull access denied"),
         }),
         TestcontainersError::Client(ClientError::StartContainer(daemon(

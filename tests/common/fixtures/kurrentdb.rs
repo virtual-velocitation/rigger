@@ -15,6 +15,10 @@ use testcontainers::{ContainerAsync, GenericImage, ImageExt, TestcontainersError
 /// The server's gRPC port inside its container.
 const KURRENTDB_PORT: u16 = 2113;
 
+/// The server's image, name then tag. The tag is a pinned release, so every run proves the
+/// contract against the same server and a registry hiccup on a floating tag never fails a test.
+pub const KURRENTDB_IMAGE: (&str, &str) = ("kurrentplatform/kurrentdb", "26.2.2");
+
 /// The label, key then value, on every container a test fixture starts. The test gate's container
 /// snippet (`.rigger/gates/container-env.sh`) removes each container carrying this key once it is
 /// older than RIGGER_TEST_CONTAINER_MAX_AGE_S, so a server left running by a test a signal ended
@@ -96,7 +100,8 @@ pub fn container_runtime() -> tokio::runtime::Runtime {
 /// container runtime is reachable, and panics with the error on any other failed start
 /// ([`start_failure`]).
 fn start_kurrentdb(rt: &tokio::runtime::Runtime) -> Option<(ContainerAsync<GenericImage>, String)> {
-    let image = GenericImage::new("kurrentplatform/kurrentdb", "latest")
+    let (name, tag) = KURRENTDB_IMAGE;
+    let image = GenericImage::new(name, tag)
         .with_exposed_port(KURRENTDB_PORT.tcp())
         .with_wait_for(WaitFor::message_on_stdout("IS LEADER"))
         .with_env_var("KURRENTDB_INSECURE", "true")
