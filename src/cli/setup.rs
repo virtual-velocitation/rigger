@@ -3748,7 +3748,9 @@ mod tests {
     /// every search the author's shape record carries on the review tree and compares the hit
     /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
     /// command is BLOCKING; it derives the expression set itself from the unit's test hunks -
-    /// each body's string literals in full and its outside calls with their first argument -
+    /// the string literals in full and the outside calls with their first argument of every
+    /// statement of an added body and of the changed statements of an edited one, a literal of
+    /// an untouched statement named to the operator as debt and never BLOCKING -
     /// runs each with the authors' search, every literal alone, and an uncarried hit, a record of
     /// names only for a body that spells either, a literal the record never searched alone or a
     /// statement or format string searched in a literal's place is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
@@ -3788,9 +3790,15 @@ mod tests {
             "You also derive the expression set yourself: list the unit's added or edited \
              test-side bodies from `git diff $(git merge-base rigger-run HEAD)..HEAD -- tests \
              crates src`",
-            "take every string literal each body spells, in full, and every call it makes \
-             outside the shared home with its first argument token, and run each with the \
+            "the hunks inside the test homes the authors' search reads, and the statements each \
+             body owes: every statement of an added body, and of an edited body the statements \
+             those hunks change.",
+            "Take every string literal those statements spell, in full, and every call they \
+             make outside the shared home with its first argument token, and run each with the \
              authors' search, `git ls-files tests crates src | t='<expression>' xargs awk",
+            "A literal of a statement the unit did not touch is the tree's duplication debt, \
+             never a BLOCKING finding: you name it to the operator in your review as debt, with \
+             its hit count.",
             "A hit the record does not carry is BLOCKING, and so is a record whose expressions \
              are names only - a fn name, the callee a helper wraps - for a body that spells a \
              literal or an outside call.",
