@@ -54,7 +54,11 @@ tool that searches them.
   call into the shared test home is a shape of its own, and its distinguishing expressions are
   mechanical: every string literal it spells, in full (an assertion, expect or panic message, a
   fixture path, a query text), and every call it makes outside the shared home with its first
-  argument token (`create_dir_all(root.join(`, `for_extension("rs")`). A literal's term is the
+  argument token (`create_dir_all(root.join(`, `for_extension("rs")`). A body you add is walked
+  whole, every statement; a body you edit is walked in its edited statements, the hunks of the
+  unit's whole range inside it - the merge base with the run branch to head, the range the
+  sentence walk and the mutant probes use - since a statement you did not touch carries no
+  shape you added. A literal's term is the
   literal alone - its text complete, quotes included, and nothing around it - never the call
   that passes it, a format string that embeds it, the statement that spells it or two literals
   joined; an expression wrapping a literal is a term of its own only where this rule names it,
