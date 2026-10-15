@@ -452,7 +452,8 @@ pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
 /// JSON numbers, every other entry its recorded value verbatim. A node with no `file` has no
 /// `line` entry either; `kind` and `degree` are always given; an attr whose value is empty gives
 /// no entry. The CLI prints it (its live healed line and a value's newlines collapsed at print
-/// only), the MCP `show` and `around` carry it as keys beside the node's `id`.
+/// only), the MCP `show` carries it as keys beside the node's `id`, and the MCP `around` the same
+/// less its `summary` entry.
 pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> {
     let located = site.file.iter().flat_map(|file| {
         [

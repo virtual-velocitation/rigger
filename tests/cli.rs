@@ -27106,12 +27106,7 @@ fn graph_show_prints_the_entry_lines_between_a_healed_header_and_the_body() {
     let dir = temp_project();
     let root = dir.path();
     common::cli::seed_rigger_dir(root);
-    std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(
-        root.join("src/heal.rs"),
-        "\n\nfn healed() -> u8 {\n    1\n}\n",
-    )
-    .unwrap();
+    common::fixtures::write_text(root, "src/heal.rs", "\n\nfn healed() -> u8 {\n    1\n}\n");
     common::fixtures::apply_code_entity(
         &common::cli::open_graph(root),
         1,
@@ -27205,9 +27200,10 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
 /// folded into the project's `graph.db`, WHEN an MCP client calls `rigger_graph` with `show` on
 /// each exact id and with `around` on the seed file at depth 1, THEN each `show` site is the
 /// node's `id` beside the `site_fields` entries of the site the graph locates, and every `around`
-/// node is `entity_site` over the `Node` the merged graph loads, at its edge count there - the
-/// file at 4, each definition and the finding at 1 - so the finding, at the depth bound, shows
-/// one edge fewer than the 2 `show` gives it.
+/// node is `entity_site` over the `Node` the merged graph loads, less its `summary`, at its edge
+/// count there - the file at 4, each definition and the finding at 1 - so the finding, at the
+/// depth bound, shows one edge fewer than the 2 `show` gives it and no summary, which `show`
+/// keeps.
 #[test]
 fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
     use common::fixtures::{

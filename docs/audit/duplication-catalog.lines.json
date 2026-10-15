@@ -39,13 +39,13 @@
       },
       {
         "file": "crates/rigger-domain/src/contextgraph.rs",
-        "start_line": 750,
-        "end_line": 752
+        "start_line": 751,
+        "end_line": 753
       },
       {
         "file": "crates/rigger-domain/src/contextgraph.rs",
-        "start_line": 806,
-        "end_line": 808
+        "start_line": 807,
+        "end_line": 809
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
@@ -3024,18 +3024,23 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27164,
-        "end_line": 27164
+        "start_line": 27159,
+        "end_line": 27159
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27387,
-        "end_line": 27387
+        "start_line": 27383,
+        "end_line": 27383
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27442,
-        "end_line": 27442
+        "start_line": 27438,
+        "end_line": 27438
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 27469,
+        "end_line": 27469
       },
       {
         "file": "tests/cli.rs",
@@ -3044,28 +3049,23 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27477,
-        "end_line": 27477
+        "start_line": 27543,
+        "end_line": 27543
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27547,
-        "end_line": 27547
+        "start_line": 27581,
+        "end_line": 27581
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27585,
-        "end_line": 27585
+        "start_line": 28041,
+        "end_line": 28041
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28045,
-        "end_line": 28045
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 28063,
-        "end_line": 28063
+        "start_line": 28059,
+        "end_line": 28059
       },
       {
         "file": "tests/common/cli.rs",
@@ -7394,8 +7394,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27467,
-        "end_line": 27487
+        "start_line": 27463,
+        "end_line": 27483
       }
     ]
   },
@@ -7409,8 +7409,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27261,
-        "end_line": 27308
+        "start_line": 27257,
+        "end_line": 27304
       }
     ]
   },
@@ -7649,8 +7649,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 632,
-        "end_line": 641
+        "start_line": 644,
+        "end_line": 653
       },
       {
         "file": "tests/community_resolution_knob.rs",

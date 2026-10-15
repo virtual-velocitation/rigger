@@ -1711,8 +1711,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:666-668` `deferred_gate_verdict_key`
 - `crates/rigger-conductor/src/conductor.rs:677-679` `deferred_gate_failed_key`
 - `crates/rigger-conductor/src/conductor.rs:12506-12513` `review_protocol`
-- `crates/rigger-domain/src/contextgraph.rs:750-752` `not_folded`
-- `crates/rigger-domain/src/contextgraph.rs:806-808` `rebuild_owed_refusal`
+- `crates/rigger-domain/src/contextgraph.rs:751-753` `not_folded`
+- `crates/rigger-domain/src/contextgraph.rs:807-809` `rebuild_owed_refusal`
 - `crates/rigger-domain/src/review.rs:387-389` `critique_unit`
 - `crates/rigger-domain/src/spawn.rs:115-117` `lens_role`
 - `crates/rigger-domain/src/spawn.rs:207-209` `speculation_group_id`
@@ -2853,15 +2853,15 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:26658-26658` `".rigger"`
 - `tests/cli.rs:26850-26850` `".rigger"`
 - `tests/cli.rs:26883-26883` `".rigger"`
-- `tests/cli.rs:27164-27164` `".rigger"`
-- `tests/cli.rs:27387-27387` `".rigger"`
-- `tests/cli.rs:27442-27442` `".rigger"`
-- `tests/cli.rs:27473-27473` `"scaffolded .rigger/instructions/README.md"`
-- `tests/cli.rs:27477-27477` `".rigger/instructions/README.md"`
-- `tests/cli.rs:27547-27547` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:27585-27585` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28045-28045` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28063-28063` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:27159-27159` `".rigger"`
+- `tests/cli.rs:27383-27383` `".rigger"`
+- `tests/cli.rs:27438-27438` `".rigger"`
+- `tests/cli.rs:27469-27469` `"scaffolded .rigger/instructions/README.md"`
+- `tests/cli.rs:27473-27473` `".rigger/instructions/README.md"`
+- `tests/cli.rs:27543-27543` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:27581-27581` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28041-28041` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28059-28059` `"gw/.rigger/workflow.yml"`
 - `tests/common/cli.rs:250-250` `".rigger"`
 - `tests/common/cli.rs:261-261` `".rigger"`
 - `tests/common/cli.rs:282-282` `".rigger"`
@@ -4780,7 +4780,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:16572-16583` `status_prints_no_dashboard_line_when_none_was_ever_recorded`
 - `tests/cli.rs:24230-24240` `prime_with_no_spec_path_never_mentions_the_spec_lint`
 - `tests/cli.rs:24651-24660` `workflow_with_no_spec_path_never_mentions_the_spec_lint`
-- `tests/cli.rs:27467-27487` `init_scaffolds_the_instructions_readme_and_names_it`
+- `tests/cli.rs:27463-27483` `init_scaffolds_the_instructions_readme_and_names_it`
 
 #### `dup-84fea880d212` (near, 2 sites)
 
@@ -4789,7 +4789,7 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:16871-16901` `docs_ships_three_verb_lookup_guidance_to_consumers`
-- `tests/cli.rs:27261-27308` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
+- `tests/cli.rs:27257-27304` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
 
 #### `dup-21b08556e493` (exact, 2 sites)
 
@@ -4927,7 +4927,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/common/fixtures/f
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:632-641` `live_node_ids`
+- `tests/common/fixtures/fold.rs:644-653` `live_node_ids`
 - `tests/community_resolution_knob.rs:139-148` `live_memberships_of`
 - `tests/graph_superseded_prune.rs:32-41` `live_contains`
 

@@ -668,8 +668,9 @@ impl<'a> Server<'a> {
     /// trait's [`Projection::subgraph`] plus the seed's callers), `show` the trait's
     /// [`Projection::locate`] added alongside this fix, so no second graph-reading implementation
     /// is needed for either selector. Both render a node through [`site_object`] (spec 119, SHOW
-    /// IS ONE RENDERER): `show` the located site, `around` every node of the loaded `Graph` by
-    /// [`entity_site`] at its edge count there. Only reachable on the lookup surface;
+    /// IS ONE RENDERER): `show` the located site whole, `around` every node of the loaded `Graph`
+    /// by [`entity_site`] at its edge count there, less the [`AROUND_OMITTED`] `summary` entry.
+    /// Only reachable on the lookup surface;
     /// [`call_tool`] never dispatches here otherwise.
     fn tool_graph(&self, args: &Value) -> Result<Value, ToolError> {
         let show = args.get("show").and_then(Value::as_str).unwrap_or("");
@@ -690,7 +691,7 @@ impl<'a> Server<'a> {
                     "status": "many",
                     "candidates": cands.iter().map(|c| json!({"id": c.id, "file": c.file})).collect::<Vec<_>>(),
                 }),
-                Located::One(site) => json!({"status": "one", "site": site_object(&site)}),
+                Located::One(site) => json!({"status": "one", "site": site_object(&site, &[])}),
             });
         }
         let g = crate::contextgraph::around(graph, &[around.to_string()], depth)
@@ -701,7 +702,12 @@ impl<'a> Server<'a> {
             "nodes": g
                 .nodes
                 .iter()
-                .map(|n| site_object(&entity_site(n, whole_graph_degree(&g, &n.id))))
+                .map(|n| {
+                    site_object(
+                        &entity_site(n, whole_graph_degree(&g, &n.id)),
+                        &AROUND_OMITTED,
+                    )
+                })
                 .collect::<Vec<_>>(),
             "edges": g.edges.iter().map(|e| json!({"from": e.from, "rel": e.rel, "to": e.to})).collect::<Vec<_>>(),
         }))
@@ -1026,15 +1032,21 @@ fn err(id: Value, code: i64, message: &str) -> String {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}).to_string()
 }
 
+/// The [`site_fields`] entries an `around` node leaves out (spec 119, the operator ruling
+/// `spec-119-around-omits-summary`): `summary`, the one unbounded attr, so a neighbourhood hands
+/// back ids and site facts, never every finding's prose; `show` keeps it.
+const AROUND_OMITTED: [&str; 1] = ["summary"];
+
 /// A located node as the `rigger_graph` tool renders it on `show` and on every `around` node
-/// (spec 119, SHOW IS ONE RENDERER): its `id` beside each [`site_fields`] entry as a key, the
-/// values as `site_fields` gives them (`line` and `degree` JSON numbers, every other entry
-/// verbatim).
-fn site_object(site: &EntitySite) -> Value {
+/// (spec 119, SHOW IS ONE RENDERER): its `id` beside each [`site_fields`] entry not in `omitted`
+/// as a key, the values as `site_fields` gives them (`line` and `degree` JSON numbers, every
+/// other entry verbatim). `show` omits nothing, `around` [`AROUND_OMITTED`].
+fn site_object(site: &EntitySite, omitted: &[&str]) -> Value {
     let mut object = serde_json::Map::from_iter([("id".to_string(), json!(site.id))]);
     object.extend(
         site_fields(site)
             .into_iter()
+            .filter(|(entry, _)| !omitted.contains(entry))
             .map(|(entry, value)| (entry.to_string(), value)),
     );
     Value::Object(object)
@@ -2255,9 +2267,10 @@ mod tests {
 
     /// Spec 119, SHOW IS ONE RENDERER: the MCP `around` renders every node of the `Graph` it
     /// loaded - the seed file and the definitions and finding one hop from it - as `entity_site`
-    /// over the loaded `Node`, its degree the node's edges in that merged graph, with no
-    /// per-node `site_of` or `one_hop_degree` read: the finding, at the depth bound, shows the
-    /// one `ABOUT` edge the graph holds, where `show` gives it the two the store holds.
+    /// over the loaded `Node` less its `summary` entry, its degree the node's edges in that
+    /// merged graph, with no per-node `site_of` or `one_hop_degree` read: the finding, at the
+    /// depth bound, shows the one `ABOUT` edge the graph holds and no `summary`, where `show`
+    /// gives it the two edges the store holds and its `summary`.
     #[test]
     fn rigger_graph_around_renders_each_loaded_node_with_its_degree_in_the_merged_graph() {
         use crate::contextgraph::sqlite::Projector;
@@ -2272,7 +2285,7 @@ mod tests {
             nodes,
             [
                 json!({"id": "f-shown", "kind": "finding", "degree": 1, "by": "lens:sdet",
-                       "unit": "u7", "summary": "the width overflows"}),
+                       "unit": "u7"}),
                 json!({"id": "src/limits.rs", "file": "src/limits.rs", "line": 0,
                        "kind": "file", "degree": 4, "lang": "rust"}),
                 shown("src/limits.rs::LIMIT"),

@@ -590,17 +590,22 @@ pub fn around_nodes(answer: &serde_json::Value) -> Vec<serde_json::Value> {
 
 /// Spec 119, SHOW IS ONE RENDERER: `finding`, the `rigger_graph` `show` site of the seed's
 /// finding, carries the two `ABOUT` edges the store holds, where an `around` of [`SHOWN_FILE`]
-/// at depth 1 loads one of them.
+/// at depth 1 loads one of them, and its `summary`, which every `around` node omits.
 pub fn assert_finding_shows_past_the_depth_bound(finding: &serde_json::Value) {
     assert_eq!(
         finding["degree"], 2,
         "show reads the finding's degree from the store, past the depth bound"
     );
+    assert_eq!(
+        finding["summary"], "the width overflows",
+        "show keeps the finding's summary"
+    );
 }
 
 /// Spec 119, SHOW IS ONE RENDERER: each of `nodes`, the `rigger_graph` `around` node objects of
-/// [`SHOWN_FILE`] at depth 1, is [`entity_site`] over the `Node` [`around`] loads from `graph`
-/// at the degree the object carries, compared without order.
+/// [`SHOWN_FILE`] at depth 1, carries no `summary` key and is [`entity_site`] over the `Node`
+/// [`around`] loads from `graph` at the degree the object carries less its `summary` entry,
+/// compared without order.
 pub fn assert_around_is_entity_sites(graph: &Projector, nodes: &[serde_json::Value]) {
     let loaded = around(graph, &[SHOWN_FILE.to_string()], 1).unwrap();
     for node in nodes {
@@ -612,9 +617,16 @@ pub fn assert_around_is_entity_sites(graph: &Projector, nodes: &[serde_json::Val
             .find(|n| n.id == id)
             .expect("a loaded node");
         assert_eq!(
+            node.get("summary"),
+            None,
+            "{id}: an around node omits summary"
+        );
+        let mut fields = fields_of(&entity_site(held, degree));
+        fields.remove("summary");
+        assert_eq!(
             site_keys(node, id),
-            fields_of(&entity_site(held, degree)),
-            "{id}: an around node is entity_site over its loaded Node"
+            fields,
+            "{id}: an around node is entity_site over its loaded Node, less its summary"
         );
     }
 }
