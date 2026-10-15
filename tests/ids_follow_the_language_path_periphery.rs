@@ -55,14 +55,20 @@ fn names_and_paths(payloads: &[serde_json::Value]) -> Vec<NameAndPath> {
         .collect()
 }
 
+/// The [`NameAndPath`] of the method `new`'s payload: its `path`, `T::new`.
+#[cfg(feature = "symbols")]
+fn new_at_its_path() -> NameAndPath {
+    ("new".to_string(), Some("T::new".into()))
+}
+
 /// The [`NameAndPath`] of each payload [`source_tree`]'s own extraction emits, in emit order: the
-/// method `new` alone carries a `path`, `T::new`.
+/// method `new` alone carries a `path` ([`new_at_its_path`]).
 #[cfg(feature = "symbols")]
 fn source_names_and_paths() -> Vec<NameAndPath> {
     vec![
         ("T".to_string(), None),
         ("impl T".to_string(), None),
-        ("new".to_string(), Some("T::new".into())),
+        new_at_its_path(),
         ("run".to_string(), None),
     ]
 }
@@ -139,7 +145,7 @@ fn the_ingest_rebuilds_an_index_persisted_before_path_and_emits_its_path() {
     );
     assert_eq!(
         emitted_over_an_index_whose_method_carries(Some("T::new")),
-        [("new".to_string(), Some("T::new".into()))],
+        [new_at_its_path()],
         "an index carrying path is served as persisted"
     );
 }
