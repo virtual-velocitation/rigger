@@ -4329,8 +4329,8 @@
     "sites": [
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 1245,
-        "end_line": 1247
+        "start_line": 1246,
+        "end_line": 1248
       },
       {
         "file": "tests/files_lens_view_periphery.rs",
@@ -4344,13 +4344,13 @@
     "sites": [
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 1252,
-        "end_line": 1255
+        "start_line": 1253,
+        "end_line": 1256
       },
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 1284,
-        "end_line": 1288
+        "start_line": 1285,
+        "end_line": 1289
       },
       {
         "file": "crates/rigger-domain/src/ledger.rs",
@@ -4394,8 +4394,8 @@
     "sites": [
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 1267,
-        "end_line": 1281
+        "start_line": 1268,
+        "end_line": 1282
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
@@ -4409,8 +4409,8 @@
     "sites": [
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 1982,
-        "end_line": 1997
+        "start_line": 1983,
+        "end_line": 1998
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
@@ -4425,37 +4425,22 @@
     ]
   },
   {
-    "id": "dup-30a334181642",
-    "sites": [
-      {
-        "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 2131,
-        "end_line": 2143
-      },
-      {
-        "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 2471,
-        "end_line": 2485
-      }
-    ]
-  },
-  {
     "id": "dup-b8d5ee4b6f2b",
     "sites": [
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 2488,
-        "end_line": 2495
+        "start_line": 2489,
+        "end_line": 2496
       },
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 2592,
-        "end_line": 2597
+        "start_line": 2593,
+        "end_line": 2598
       },
       {
         "file": "crates/rigger-console/src/console/map.rs",
-        "start_line": 2606,
-        "end_line": 2614
+        "start_line": 2607,
+        "end_line": 2615
       }
     ]
   },
@@ -7739,8 +7724,8 @@
       },
       {
         "file": "tests/community_fold_periphery.rs",
-        "start_line": 39,
-        "end_line": 49
+        "start_line": 40,
+        "end_line": 50
       }
     ]
   },
@@ -7749,28 +7734,13 @@
     "sites": [
       {
         "file": "tests/community_fold_periphery.rs",
-        "start_line": 169,
-        "end_line": 202
+        "start_line": 170,
+        "end_line": 203
       },
       {
         "file": "tests/concepts_fold_periphery.rs",
         "start_line": 190,
         "end_line": 235
-      }
-    ]
-  },
-  {
-    "id": "dup-ddaf372936d3",
-    "sites": [
-      {
-        "file": "tests/community_fold_periphery.rs",
-        "start_line": 205,
-        "end_line": 239
-      },
-      {
-        "file": "tests/concepts_fold_periphery.rs",
-        "start_line": 238,
-        "end_line": 280
       }
     ]
   },
@@ -8289,8 +8259,8 @@
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells.rs",
-        "start_line": 72,
-        "end_line": 108
+        "start_line": 73,
+        "end_line": 109
       },
       {
         "file": "tests/subject_lens_defined_cells.rs",

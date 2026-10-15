@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use rigger::contextgraph::query::split_id;
+use rigger::contextgraph::query::{card, split_id};
 use rigger::contextgraph::{
     CallEdge, CallGraph, Direction, Edge, Graph, Node, Projection, KIND_CODE_ENTITY,
     KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, KIND_UNIT,
@@ -378,4 +378,10 @@ pub fn one_community_graph(community: &str, members: Vec<Node>) -> Graph {
     let mut nodes = vec![plain(community, KIND_COMMUNITY)];
     nodes.extend(members);
     Graph { nodes, edges }
+}
+
+/// The `file` row of the card [`card`] gives `id` in `graph`: `None` when `id` has no card or its
+/// card names no file.
+pub fn card_file(graph: &Graph, id: &str) -> Option<String> {
+    card(graph, id).and_then(|c| c.file)
 }

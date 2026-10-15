@@ -4569,25 +4569,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-30a334181642",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-console/src/console/map.rs",
-        "name": "caller_callee_graph",
-        "content_hash": "f9eb97323a92b752"
-      },
-      {
-        "file": "crates/rigger-console/src/console/map.rs",
-        "name": "cross_district_graph",
-        "content_hash": "12bd84d421abea99"
-      }
-    ],
-    "proposed_home": "map::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-b8d5ee4b6f2b",
     "classification": "near",
     "sites": [
@@ -8485,25 +8466,6 @@
         "file": "tests/concepts_fold_periphery.rs",
         "name": "a_concept_derived_event_without_a_fresh_key_is_a_non_boundary_and_never_supersedes",
         "content_hash": "2e978887593253b8"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/community_fold_periphery.rs, tests/concepts_fold_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-ddaf372936d3",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/community_fold_periphery.rs",
-        "name": "the_community_layer_serialized_literals_are_stable_and_the_fold_matches_the_on_log_type",
-        "content_hash": "ab7e27a153168e5f"
-      },
-      {
-        "file": "tests/concepts_fold_periphery.rs",
-        "name": "the_concept_layer_serialized_literals_are_stable_and_the_fold_matches_the_on_log_type",
-        "content_hash": "d47e64702f88a210"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/community_fold_periphery.rs, tests/concepts_fold_periphery.rs)",

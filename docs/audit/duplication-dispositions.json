@@ -225,11 +225,6 @@
     "reason": "Both already read through the shared `raw_rows`; one selects every edge row's project tag, the other the schema's own index names from `sqlite_master`."
   },
   {
-    "id": "dup-30a334181642",
-    "disposition": "not-a-duplicate",
-    "reason": "Both already build through the shared `community_graph`; they are two different fixtures (one three-function district with a caller and a callee, two districts joined by one cross-district call)."
-  },
-  {
     "id": "dup-b8d5ee4b6f2b",
     "disposition": "not-a-duplicate",
     "reason": "Three different map queries over one fixture: landmark ranking by degree, case-insensitive name search, and the kind/degree fields a search hit carries."
@@ -853,11 +848,6 @@
     "id": "dup-c51171ae2133",
     "disposition": "not-a-duplicate",
     "reason": "Non-boundary tests for two different layers (community assignment versus concept derivation) with different event types and folds."
-  },
-  {
-    "id": "dup-ddaf372936d3",
-    "disposition": "not-a-duplicate",
-    "reason": "Serialized-literal stability tests for two different layers (community versus concept) with different literals."
   },
   {
     "id": "dup-5f6fcac3a66f",

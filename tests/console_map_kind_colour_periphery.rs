@@ -24,6 +24,9 @@
 //! independently, never against `LegendEntry`'s own field (which would only prove `serde`
 //! didn't mangle a string - already implied by the existing key-set test).
 
+mod common;
+
+use common::fixtures::ONE_COMMUNITY;
 use rigger::console::map;
 use rigger::contextgraph::{Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED};
 use rigger::eventstore::Position;
@@ -52,7 +55,7 @@ fn six_kind_graph() -> Graph {
             .iter()
             .map(|kind| Edge {
                 from: format!("src/fixture.rs::{kind}"),
-                to: "community/1/0".to_string(),
+                to: ONE_COMMUNITY.to_string(),
                 rel: REL_IN_COMMUNITY.to_string(),
                 valid_from: 0,
                 valid_to: None,

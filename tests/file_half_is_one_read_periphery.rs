@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::fixtures::{kinded_def_node, one_community_graph, plain, ONE_COMMUNITY};
+use common::fixtures::{card_file, kinded_def_node, one_community_graph, plain, ONE_COMMUNITY};
 use common::lens::files_lens_rows;
 use rigger::console::map;
 use rigger::contextgraph::query::node_file;
@@ -21,7 +21,6 @@ use rigger::contextgraph::{
     KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
     KIND_LESSON, KIND_RATIONALE, KIND_STAGE, KIND_UNIT,
 };
-use rigger::dash::card;
 
 /// GIVEN an id of each of the sixteen graph kinds, WHEN `node_file` reads it, THEN a code
 /// entity names its `::` file half whatever its shape and none without one, a file names its
@@ -83,7 +82,7 @@ fn node_file_names_the_file_of_every_graph_kind_by_its_kind_table() {
 /// districts, THEN the files lens and the re-grain fold the two definitions and the placeholder
 /// under `Makefile` and leave the decision under no file, the card gives `Makefile::all` the file
 /// `Makefile`, and the map counts its definitions in `Makefile`'s district, which their two
-/// members win over the one `aaa` member.
+/// members win over the one `aaa` member, so the one district holds all three named members.
 #[test]
 fn every_file_reader_folds_an_extensionless_files_entity_under_its_file() {
     let g = one_community_graph(
@@ -108,7 +107,7 @@ fn every_file_reader_folds_an_extensionless_files_entity_under_its_file() {
         "an extensionless file's entities fold under it; a dotted decision under no file"
     );
     assert_eq!(
-        card(&g, "Makefile::all").and_then(|c| c.file),
+        card_file(&g, "Makefile::all"),
         Some("Makefile".to_string()),
         "the card gives an extensionless file's entity its file"
     );
@@ -116,9 +115,9 @@ fn every_file_reader_folds_an_extensionless_files_entity_under_its_file() {
         map::build(&g)
             .districts
             .iter()
-            .map(|d| d.purpose.as_str())
+            .map(|d| (d.purpose.as_str(), d.population))
             .collect::<Vec<_>>(),
-        ["Makefile"],
-        "the two `Makefile` members outvote the one `aaa` member for the district"
+        [("Makefile", 3)],
+        "the two `Makefile` members outvote the one `aaa` member for the district of all three"
     );
 }

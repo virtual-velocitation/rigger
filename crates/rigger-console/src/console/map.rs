@@ -1218,6 +1218,7 @@ mod tests {
     use super::*;
     use crate::contextgraph::{CommunityAssigned, Edge, Node, REL_IN_COMMUNITY, TIER_EXTRACTED};
     use crate::eventstore::Position;
+    use crate::test_support::ONE_COMMUNITY;
 
     fn code_node(id: &str, name: &str, kind: &str) -> Node {
         let mut attrs = std::collections::BTreeMap::new();
@@ -1444,7 +1445,7 @@ mod tests {
     /// The `members` of one community build into exactly one district, whose purpose is
     /// `purpose` (`why` says which rule decided it).
     fn assert_one_district_purpose(members: &[&str], purpose: &str, why: &str) {
-        let members: Vec<(&str, &str)> = members.iter().map(|id| (*id, "community/1/0")).collect();
+        let members: Vec<(&str, &str)> = members.iter().map(|id| (*id, ONE_COMMUNITY)).collect();
         let model = build(&community_graph(&members, &[]));
         assert_eq!(model.districts.len(), 1, "{:?}", model.districts);
         assert_eq!(model.districts[0].purpose, purpose, "{why}");
@@ -1569,8 +1570,8 @@ mod tests {
             code_node("src/a.rs::c_fn", "c_fn", "function"),
         ];
         let edges = vec![
-            in_community("src/a.rs::a_fn", "community/1/0"),
-            in_community("src/a.rs::b_fn", "community/1/0"),
+            in_community("src/a.rs::a_fn", ONE_COMMUNITY),
+            in_community("src/a.rs::b_fn", ONE_COMMUNITY),
             live_edge("src/a.rs::a_fn", "src/a.rs::b_fn", REL_CALLS),
             live_edge("src/a.rs::b_fn", "src/a.rs::a_fn", REL_REFERENCES),
             // neither CALLS nor REFERENCES: dropped despite both endpoints being mapped.
@@ -1680,7 +1681,7 @@ mod tests {
         // never a raw event this pure module would have to parse itself.
         let _ = CommunityAssigned {
             node: "x".to_string(),
-            community: "community/1/0".to_string(),
+            community: ONE_COMMUNITY.to_string(),
             resolution: 1.0,
             hash: String::new(),
             fresh: true,
@@ -2131,9 +2132,9 @@ mod tests {
     fn caller_callee_graph() -> Graph {
         community_graph(
             &[
-                ("src/a.rs::a_fn", "community/1/0"),
-                ("src/a.rs::b_fn", "community/1/0"),
-                ("src/a.rs::c_fn", "community/1/0"),
+                ("src/a.rs::a_fn", ONE_COMMUNITY),
+                ("src/a.rs::b_fn", ONE_COMMUNITY),
+                ("src/a.rs::c_fn", ONE_COMMUNITY),
             ],
             &[
                 ("src/a.rs::a_fn", "src/a.rs::b_fn"),
@@ -2319,11 +2320,11 @@ mod tests {
         // degree leaf whose only edge is to the hub. Selecting the hub must still draw the
         // leaf even though its rank alone would never clear the zoom-0 budget.
         let mut nodes = vec![code_node("src/a.rs::hub", "hub", "function")];
-        let mut edges = vec![in_community("src/a.rs::hub", "community/1/0")];
+        let mut edges = vec![in_community("src/a.rs::hub", ONE_COMMUNITY)];
         for i in 0..9 {
             let id = format!("src/a.rs::leaf_{i}");
             nodes.push(code_node(&id, &format!("leaf_{i}"), "function"));
-            edges.push(in_community(&id, "community/1/0"));
+            edges.push(in_community(&id, ONE_COMMUNITY));
             edges.push(live_edge("src/a.rs::hub", &id, REL_CALLS));
         }
         let model = build(&Graph { nodes, edges });
@@ -2368,11 +2369,11 @@ mod tests {
         // A hub with 30 callees (CARD_NEIGHBOR_CAP is 20) - the card's own `degree` must be the
         // TRUE count (30), while `calls` is capped to the top 20 by degree.
         let mut nodes = vec![code_node("src/a.rs::hub", "hub", "function")];
-        let mut edges = vec![in_community("src/a.rs::hub", "community/1/0")];
+        let mut edges = vec![in_community("src/a.rs::hub", ONE_COMMUNITY)];
         for i in 0..30 {
             let id = format!("src/a.rs::callee_{i:02}");
             nodes.push(code_node(&id, &format!("callee_{i:02}"), "function"));
-            edges.push(in_community(&id, "community/1/0"));
+            edges.push(in_community(&id, ONE_COMMUNITY));
             edges.push(live_edge("src/a.rs::hub", &id, REL_CALLS));
         }
         let model = build(&Graph { nodes, edges });

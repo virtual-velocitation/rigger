@@ -2230,7 +2230,7 @@ mod cluster_detail_budget_ranking_tests {
     use super::*;
     use crate::contextgraph::TIER_EXTRACTED;
     use crate::test_support::edge_valid_to;
-    use crate::test_support::plain;
+    use crate::test_support::{plain, ONE_COMMUNITY};
 
     /// `cluster_detail`'s INTRA-CLUSTER degree fold only ever shows up in the OUTPUT through
     /// WHICH members survive an over-budget cluster's truncation - under budget every member
@@ -2245,13 +2245,12 @@ mod cluster_detail_budget_ranking_tests {
     ///   no-op silently drops it).
     #[test]
     fn an_over_budget_cluster_ranks_members_by_the_real_intra_cluster_degree() {
-        const COM: &str = "community/1/0";
         let lens = Lens::Code {
             resolution: "1".to_string(),
         };
 
         let mut nodes = vec![Node {
-            id: COM.to_string(),
+            id: ONE_COMMUNITY.to_string(),
             kind: KIND_COMMUNITY.to_string(),
             attrs: BTreeMap::new(),
         }];
@@ -2262,7 +2261,7 @@ mod cluster_detail_budget_ranking_tests {
         nodes.push(plain("a0-anchor", KIND_CODE_ENTITY));
         edges.push(edge_valid_to(
             "a0-anchor",
-            COM,
+            ONE_COMMUNITY,
             REL_IN_COMMUNITY,
             TIER_EXTRACTED,
             None,
@@ -2270,7 +2269,7 @@ mod cluster_detail_budget_ranking_tests {
         nodes.push(plain("zzz-receiver", KIND_CODE_ENTITY));
         edges.push(edge_valid_to(
             "zzz-receiver",
-            COM,
+            ONE_COMMUNITY,
             REL_IN_COMMUNITY,
             TIER_EXTRACTED,
             None,
@@ -2285,7 +2284,7 @@ mod cluster_detail_budget_ranking_tests {
         nodes.push(plain("zzz-victim", KIND_CODE_ENTITY));
         edges.push(edge_valid_to(
             "zzz-victim",
-            COM,
+            ONE_COMMUNITY,
             REL_IN_COMMUNITY,
             TIER_EXTRACTED,
             None,
@@ -2303,7 +2302,7 @@ mod cluster_detail_budget_ranking_tests {
             let id = format!("f{i:05}");
             edges.push(edge_valid_to(
                 &id,
-                COM,
+                ONE_COMMUNITY,
                 REL_IN_COMMUNITY,
                 TIER_EXTRACTED,
                 None,
@@ -2314,7 +2313,7 @@ mod cluster_detail_budget_ranking_tests {
         // exactly 2.
 
         let g = Graph { nodes, edges };
-        let drill = cluster_detail(&g, COM, &lens);
+        let drill = cluster_detail(&g, ONE_COMMUNITY, &lens);
         assert_eq!(drill.truncated, Some(62));
         assert_eq!(drill.nodes.len(), 60);
         let kept: BTreeSet<&str> = drill.nodes.iter().map(|n| n.id.as_str()).collect();
@@ -2539,7 +2538,7 @@ mod file_half_tests {
     use super::lens_views::files_lens_keys;
     use super::*;
     use crate::contextgraph::{KIND_DESIGN_DOC, KIND_FILE};
-    use crate::test_support::{def_node, plain};
+    use crate::test_support::{card_file, def_node, plain};
 
     #[test]
     fn cluster_key_folds_an_id_by_the_file_its_kind_names() {
@@ -2578,9 +2577,6 @@ mod file_half_tests {
             edges: Vec::new(),
         };
         assert_eq!(files_lens_keys(&g), vec![Some("Makefile".to_string()); 2]);
-        assert_eq!(
-            card(&g, "Makefile::all").and_then(|c| c.file),
-            Some("Makefile".to_string())
-        );
+        assert_eq!(card_file(&g, "Makefile::all"), Some("Makefile".to_string()));
     }
 }

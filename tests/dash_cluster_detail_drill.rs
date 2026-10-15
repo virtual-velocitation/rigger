@@ -43,17 +43,14 @@ use std::collections::BTreeMap;
 
 use common::fixtures::edge;
 use common::fixtures::spoke_id;
+use common::fixtures::ONE_COMMUNITY;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, REL_IN_COMMUNITY, REL_REFERENCES,
     TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{cluster_detail, neighborhood, Lens, CLUSTER_RENDER_BUDGET};
 
-/// The one coupling community every fixture member joins, so a set of them forms one drillable
-/// bucket with the key `COMMUNITY`.
-const COMMUNITY: &str = "community/1/0";
-
-/// The default code lens at resolution 1 (the grain [`COMMUNITY`] is derived at).
+/// The default code lens at resolution 1 (the grain [`ONE_COMMUNITY`] is derived at).
 fn code_lens() -> Lens {
     Lens::Code {
         resolution: "1".to_string(),
@@ -64,14 +61,14 @@ fn code_lens() -> Lens {
 /// per spec 63 c1's purity gate).
 fn community_node() -> Node {
     Node {
-        id: COMMUNITY.to_string(),
+        id: ONE_COMMUNITY.to_string(),
         kind: KIND_COMMUNITY.to_string(),
         attrs: BTreeMap::new(),
     }
 }
 
-/// A code entity `cl/f.rs::<name>` carrying a live `IN_COMMUNITY` membership to [`COMMUNITY`], so a
-/// set of them forms one drillable community bucket with the key [`COMMUNITY`].
+/// A code entity `cl/f.rs::<name>` carrying a live `IN_COMMUNITY` membership to
+/// [`ONE_COMMUNITY`], so a set of them forms one drillable community bucket with that key.
 fn member(name: &str) -> Node {
     Node {
         id: format!("cl/f.rs::{name}"),
@@ -80,11 +77,11 @@ fn member(name: &str) -> Node {
     }
 }
 
-/// The `IN_COMMUNITY` membership spoke a [`member`] id needs to fold under [`COMMUNITY`].
+/// The `IN_COMMUNITY` membership spoke a [`member`] id needs to fold under [`ONE_COMMUNITY`].
 fn membership(id: &str) -> Edge {
     Edge {
         from: id.to_string(),
-        to: COMMUNITY.to_string(),
+        to: ONE_COMMUNITY.to_string(),
         rel: REL_IN_COMMUNITY.to_string(),
         valid_from: 0,
         valid_to: None,
@@ -102,9 +99,9 @@ fn cluster_detail_and_budget_are_reachable_over_the_public_crate_boundary() {
         nodes: vec![community_node(), member("only")],
         edges: vec![membership("cl/f.rs::only")],
     };
-    let drill = cluster_detail(&g, COMMUNITY, &code_lens());
+    let drill = cluster_detail(&g, ONE_COMMUNITY, &code_lens());
     assert_eq!(
-        drill.seed, COMMUNITY,
+        drill.seed, ONE_COMMUNITY,
         "the drill echoes the drilled cluster key as its seed, so the panel can label it"
     );
     assert_eq!(drill.depth, 0, "a cluster drill is not a hop-bounded walk");
@@ -138,7 +135,7 @@ fn cluster_detail_renders_whole_at_budget_and_caps_one_over() {
         nodes: at,
         edges: at_edges,
     };
-    let drill_at = cluster_detail(&g_at, COMMUNITY, &code_lens());
+    let drill_at = cluster_detail(&g_at, ONE_COMMUNITY, &code_lens());
     assert_eq!(
         drill_at.nodes.len(),
         CLUSTER_RENDER_BUDGET,
@@ -166,7 +163,7 @@ fn cluster_detail_renders_whole_at_budget_and_caps_one_over() {
         nodes: over,
         edges: over_edges,
     };
-    let drill_over = cluster_detail(&g_over, COMMUNITY, &code_lens());
+    let drill_over = cluster_detail(&g_over, ONE_COMMUNITY, &code_lens());
     assert_eq!(
         drill_over.nodes.len(),
         CLUSTER_RENDER_BUDGET,
@@ -204,8 +201,8 @@ fn cluster_detail_is_a_pure_stable_drill_that_never_dangles_an_edge() {
     let total = nodes.len() - 1; // hub + (budget + 2) spokes = budget + 3 members (excl. community node)
     let g = Graph { nodes, edges };
 
-    let first = cluster_detail(&g, COMMUNITY, &code_lens());
-    let second = cluster_detail(&g, COMMUNITY, &code_lens());
+    let first = cluster_detail(&g, ONE_COMMUNITY, &code_lens());
+    let second = cluster_detail(&g, ONE_COMMUNITY, &code_lens());
     assert_eq!(
         first, second,
         "cluster_detail is a pure function of the graph: repeated drills agree (poll-stable)"
@@ -297,7 +294,7 @@ fn cluster_detail_degrades_gracefully_on_unknown_empty_key_and_empty_graph() {
         nodes: Vec::new(),
         edges: Vec::new(),
     };
-    let none = cluster_detail(&empty_graph, COMMUNITY, &code_lens());
+    let none = cluster_detail(&empty_graph, ONE_COMMUNITY, &code_lens());
     assert!(
         none.nodes.is_empty() && none.edges.is_empty() && none.truncated.is_none(),
         "an empty graph yields an empty, untruncated drill for any key"
@@ -341,7 +338,7 @@ fn truncated_serializes_only_when_the_drill_capped_preserving_neighborhood_backc
             edge("cl/f.rs::a", "cl/f.rs::b", REL_REFERENCES, TIER_EXTRACTED),
         ],
     };
-    let under = serde_json::to_value(cluster_detail(&g_community, COMMUNITY, &code_lens()))
+    let under = serde_json::to_value(cluster_detail(&g_community, ONE_COMMUNITY, &code_lens()))
         .expect("a drill Neighborhood serializes to JSON");
     assert!(
         under.get("truncated").is_none(),
@@ -360,7 +357,7 @@ fn truncated_serializes_only_when_the_drill_capped_preserving_neighborhood_backc
         nodes: big,
         edges: big_edges,
     };
-    let over = serde_json::to_value(cluster_detail(&g_big, COMMUNITY, &code_lens()))
+    let over = serde_json::to_value(cluster_detail(&g_big, ONE_COMMUNITY, &code_lens()))
         .expect("an over-budget drill serializes to JSON");
     assert_eq!(
         over.get("truncated").and_then(|v| v.as_u64()),

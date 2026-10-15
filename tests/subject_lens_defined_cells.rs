@@ -35,6 +35,7 @@ mod common;
 use common::fixtures::def_node as def;
 use common::fixtures::edge;
 use common::fixtures::node_with_optional_attrs;
+use common::fixtures::ONE_COMMUNITY;
 use common::lens::{lens, shared_member_graph, OTHER_D, SHARED_MEMBER, SUB_C};
 use common::served::served_json;
 use rigger::contextgraph::TIER_EXTRACTED;
@@ -208,7 +209,6 @@ fn the_code_lens_empty_cell_and_the_files_lens_resolving_its_one_member_carry_no
 // --- THE PARTIAL (MIXED-MEMBERSHIP) CELL: at least one, but not every, member folds derived ----------
 
 const MIXED_FILE: &str = "src/mix/mod.rs";
-const MIXED_COMM: &str = "community/1/0";
 const MIXED_CONCEPT: &str = "concept/1/0";
 
 /// A file subject with two contained entities where EXACTLY ONE folds into a derived bucket: `e1` is
@@ -220,7 +220,7 @@ fn mixed_membership_graph() -> Graph {
     Graph {
         nodes: vec![
             node_with_optional_attrs(MIXED_FILE, KIND_FILE, &[("label", None)]),
-            node_with_optional_attrs(MIXED_COMM, KIND_COMMUNITY, &[("label", Some("cx"))]),
+            node_with_optional_attrs(ONE_COMMUNITY, KIND_COMMUNITY, &[("label", Some("cx"))]),
             node_with_optional_attrs(MIXED_CONCEPT, KIND_CONCEPT, &[("label", Some("cc"))]),
             def("src/mix/mod.rs::e1", "e1"),
             def("src/mix/mod.rs::e2", "e2"),
@@ -241,7 +241,7 @@ fn mixed_membership_graph() -> Graph {
             // e1 folds into a derived bucket under BOTH lenses; e2 folds into neither.
             edge(
                 "src/mix/mod.rs::e1",
-                MIXED_COMM,
+                ONE_COMMUNITY,
                 REL_IN_COMMUNITY,
                 TIER_EXTRACTED,
             ),
@@ -285,7 +285,7 @@ fn a_partially_membered_derived_cell_is_full_under_both_derived_lenses() {
             // e2 keeps its kind-fallback bucket ("code-entity" sorts before "community/..").
             kind_bucket(1),
             Cluster {
-                key: MIXED_COMM.to_string(),
+                key: ONE_COMMUNITY.to_string(),
                 count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: Some("cx".to_string()),

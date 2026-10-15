@@ -22,6 +22,7 @@
 
 mod common;
 
+use common::fixtures::ONE_COMMUNITY;
 use common::json_object_keys;
 use rigger::console::map;
 use rigger::contextgraph::{Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED};
@@ -44,7 +45,7 @@ fn one_entity_graph() -> Graph {
         }],
         edges: vec![Edge {
             from: "src/worktree.rs::hub".to_string(),
-            to: "community/1/0".to_string(),
+            to: ONE_COMMUNITY.to_string(),
             rel: REL_IN_COMMUNITY.to_string(),
             valid_from: 0,
             valid_to: None,
