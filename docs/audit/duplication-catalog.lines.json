@@ -6764,13 +6764,13 @@
     "sites": [
       {
         "file": "src/cli/graph.rs",
-        "start_line": 673,
-        "end_line": 697
+        "start_line": 675,
+        "end_line": 699
       },
       {
         "file": "src/cli/graph.rs",
-        "start_line": 774,
-        "end_line": 798
+        "start_line": 776,
+        "end_line": 800
       }
     ]
   },

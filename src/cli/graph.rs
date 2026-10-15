@@ -163,7 +163,9 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 /// `--around`'s structural neighborhood. It resolves the entity through [`Projector::locate`] (a
 /// full `<file>::<name>` id, or a bare name matched as a definition's leaf), then:
 ///
-/// - ONE match: prints the definition SITE (`file:line`), the entity's KIND and one-hop DEGREE, and
+/// - ONE match: prints the definition SITE (`file:line`), the entity's KIND and one-hop DEGREE, its
+///   remaining `site_fields` entries one line each ([`print_entity_site`]; a node naming no file
+///   prints no site, no body and no note), and
 ///   the definition BODY read from the WORKING TREE at that location - line-numbered and bounded by
 ///   the extent the shared multi-grammar symbols authority derives (the grammar's own node
 ///   boundary), clamped to a max window. A missing file, a recorded line past end-of-file, a drifted

@@ -4492,8 +4492,8 @@ Proposed home: `graph::support (consolidate these 2 sites into one function in t
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/graph.rs:673-697` `cmd_graph_communities`
-- `src/cli/graph.rs:774-798` `cmd_graph_concepts`
+- `src/cli/graph.rs:675-699` `cmd_graph_communities`
+- `src/cli/graph.rs:776-800` `cmd_graph_concepts`
 
 #### `dup-6b5ddf643eb6` (exact, 2 sites)
 
