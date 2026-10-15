@@ -288,7 +288,8 @@ mod tests {
     /// literal alone and in full, however short, and each outside call with its first argument,
     /// never the body's name nor an expression wrapping a literal -
     /// whose command and hits the record carries and the SDET lens re-runs and re-derives from
-    /// the test hunks, one search per literal alone, every
+    /// the test hunks over the same statements, one search per literal alone, a literal of an
+    /// untouched statement named to the operator as debt and never blocking, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators (an item's callers read from the graph at depth 1) over the unit's
     /// whole range on every round, never a round's delta, and records on every change, each new
@@ -380,10 +381,13 @@ mod tests {
              for a body that spells a literal or an outside call is a record you cannot write \
              either.",
             "The lens derives the expression set itself from the unit's test hunks at head - \
-             every string literal and every outside call with its first argument in each \
-             test-side body the unit adds or edits - and runs each over every test home: a hit \
-             the record does not carry, or a record whose expressions are names only for a body \
-             that spells either, is a BLOCKING finding on its own.",
+             every string literal and every outside call with its first argument in every \
+             statement of each test-side body the unit adds and in the edited statements of each \
+             body it edits, over the unit's whole range - and runs each over every test home: a \
+             hit the record does not carry, or a record whose expressions are names only for a \
+             body that spells either, is a BLOCKING finding on its own.",
+            "A literal of a statement the unit did not touch is the tree's duplication debt, \
+             which the lens names to the operator, never a BLOCKING finding.",
             "carrying each search's command, its hit count and every hit",
             "CHECKED when kept apart, with the reason: the named way its shape differs",
             "A CHECKED hit whose shape does not differ is a twin.",
