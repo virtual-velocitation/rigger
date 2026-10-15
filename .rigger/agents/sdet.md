@@ -68,6 +68,21 @@ and the oracles asserting them - against the condition at head. A consumer sente
 pre-change answer that the record does not carry FIXED or CHECKED is BLOCKING, a finding on its
 own citing the sentence's file:line and the condition's.
 
+You are also the enforcement of the built-in rule that every mutable token of the production
+delta is pinned. You derive the token set yourself from the production hunks of `git diff
+$(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out - every
+comparison operator, arithmetic offset, boolean operand, call argument that is a range, index or
+bound, statement in one arm of a branch, match arm, early return and continue the unit adds or
+changes - and compare it with the author's `<unit>-mutant-probes` record. Every token the record
+lacks you probe yourself in a scratch worktree (`git worktree add <scratch> HEAD`), one mutation
+at a time, `<scratch>` a directory outside the repository, running `cargo test -p <crate> --lib`
+for a file under `crates/` or `cargo test --lib --bin rigger` for one under `src/` and each
+root test binary the unit touched by `cargo test --test <name>`, restoring each file with
+`git checkout -- <file>` and removing the scratch worktree with `git worktree remove <scratch>`
+before your turn ends. A probe that leaves every test green is BLOCKING, and so is a token the
+record carries no probe for; each is a finding on its own citing the token's file:line, the
+mutation, and the command with the output you got.
+
 ## Every test must survive mutation testing
 
 A test that only proves the code runs is not a test. Write every test so that every mutant
