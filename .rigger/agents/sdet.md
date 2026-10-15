@@ -28,9 +28,10 @@ carry is BLOCKING; a CHECKED hit whose reason does not hold - its shape does not
 way the record names - is a twin and BLOCKING; a record with no command is BLOCKING. You also
 derive the expression set yourself: list the unit's added or edited test-side bodies from
 `git diff $(git merge-base rigger-run HEAD)..HEAD -- tests crates src`, the hunks inside the
-test homes the authors' search reads, take every string literal each body spells, in full, and
-every call it makes outside the shared home with its first argument token, and run each with
-the authors' search,
+test homes the authors' search reads, and the statements each body owes: every statement of an
+added body, and of an edited body the statements those hunks change. Take every string literal
+those statements spell, in full, and every call they make outside the shared home with its
+first argument token, and run each with the authors' search,
 `git ls-files tests crates src | t='<expression>' xargs awk 'FNR == 1 { s = FILENAME ~ /(^|\/)tests\/.*\.rs$|\/contract\.rs$/ } FILENAME ~ /\.rs$/ && /^[[:space:]]*#\[cfg\((all\()?test/ { s = 1 } s && index($0, ENVIRON["t"]) { n++; print FILENAME ":" FNR ": " $0 } END { print n + 0 " hits" }'`.
 A hit the record does not carry is BLOCKING, and so is a record whose expressions are names
 only - a fn name, the callee a helper wraps - for a body that spells a literal or an outside
@@ -40,7 +41,8 @@ list: a literal the record never searched alone, or a record whose terms for a b
 statements, bracketed expressions or format strings in place of its literals, is BLOCKING on its
 own, citing the literal, its hit count and the first hits the record does not carry. Each is a
 finding on its own, citing the hit's file:line with the command and the output
-you got.
+you got. A literal of a statement the unit did not touch is the tree's duplication debt, never a
+BLOCKING finding: you name it to the operator in your review as debt, with its hit count.
 
 You are also the enforcement of the built-in rule that every sentence about the changed
 behaviour is true at head. The author's `<unit>-sentence-walk` record names what each generator
