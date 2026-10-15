@@ -85,7 +85,7 @@ fn declared_type(statement: &str) -> Option<String> {
     if right.len() >= 2 && right.starts_with('"') && right.ends_with('"') {
         return Some(right[1..right.len() - 1].to_string());
     }
-    let last = right.rsplit("::").next().unwrap_or(right);
+    let last = common::last_path_segment(right);
     let is_path = right
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':');

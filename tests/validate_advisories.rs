@@ -59,6 +59,7 @@ fn persist_index(root: &Path, entries: &[(&str, &str)]) {
                     name: "f".into(),
                     line: 1,
                     end_line: 1,
+                    path: "f".into(),
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,

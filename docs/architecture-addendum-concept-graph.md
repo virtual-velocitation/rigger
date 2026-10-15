@@ -20,7 +20,7 @@ stream**, and it only exists once rigger has run its loop on the project. Three 
 current surface:
 
 - **There is no concept layer — grouping collapses to the filesystem.** Nodes are code entities
-  (`<file>::<name>`), files, docs, and dev-loop artifacts (decisions, findings, units). A human
+  (`<file>::<path>`), files, docs, and dev-loop artifacts (decisions, findings, units). A human
   exploring "what does this project *know*" thinks in **ideas** — "context pruning", "the
   knowledge graph", "bounded remediation" — not in files. Those ideas are **sub-document and
   cross-document**: one spec can define *context-pruning* AND *the knowledge graph* (two distinct

@@ -87,7 +87,7 @@ pub const CLUSTER_ROOT: &str = "(root)";
 /// A node whose id NAMES A FILE clusters by that file's DIRECTORY (its module); a directory-less
 /// (repo-root) file falls back to [`CLUSTER_ROOT`]. Every other node clusters by its `kind`. The
 /// file an id names is [`node_file`]'s, read by its kind's arm of that table: a code entity
-/// `<file>::<name>` names the part before the first `::` whatever it looks like (`Makefile::all`
+/// `<file>::<path>` names the part before the first `::` whatever it looks like (`Makefile::all`
 /// names `Makefile`) and a `::`-less one names none; a file node names its whole path; a
 /// design-doc, arch-decision, handbook-rule, rationale or artifact id names the part before its
 /// first `#` when its last segment carries an extension, and none otherwise; every other kind

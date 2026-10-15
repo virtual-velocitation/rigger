@@ -492,3 +492,9 @@ pub fn spawn_request(
         ..Default::default()
     }
 }
+
+/// The text after the last `::` of `path` (`a::b::T` -> `T`), the whole of it when it holds none:
+/// the leaf of a definition's id path, a Rust type path or a module path.
+pub fn last_path_segment(path: &str) -> &str {
+    &path[path.rfind("::").map_or(0, |at| at + "::".len())..]
+}

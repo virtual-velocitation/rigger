@@ -2197,6 +2197,7 @@ mod tests {
             name: name.to_string(),
             line,
             end_line: line,
+            path: name.to_string(),
             is_test: false,
             is_out_of_line_module: false,
             path_override: None,

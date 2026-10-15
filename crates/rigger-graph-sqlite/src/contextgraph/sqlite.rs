@@ -876,7 +876,7 @@ impl Projector {
     /// concern (it reports the recorded graph site) - the CLI reads and, if stale, degrades the body.
     pub fn locate(&self, entity: &str) -> Result<Located, Error> {
         let conn = self.conn.lock().unwrap();
-        // Exact id first: a full `<file>::<name>` id resolves directly to its node.
+        // Exact id first: a full `<file>::<path>` id resolves directly to its node.
         if let Some(node) = node_row(&conn, entity, &self.project)? {
             return Ok(Located::One(self.site_of(&conn, node)?));
         }
@@ -2688,7 +2688,7 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                 file_attrs.push(("partial", "true"));
             }
             ensure_node(tx, by, &file, KIND_FILE, &file_attrs, project)?;
-            let entity = code_entity_id(&file, &c.name);
+            let entity = code_entity_id(&file, c.id_path());
             // A node its file's definitions share takes ONE kind and line
             // ([`settling_definition`]), passed to the one `ensure_node` call, and is a
             // definition only while that winner is a call target: a node that defined a name
@@ -3302,14 +3302,15 @@ fn resolve_in_tx(tx: &Transaction, mention: &str) -> String {
     .unwrap_or_else(|| mention.to_string())
 }
 
-/// The stable node id for a code entity (spec 29a): `<file>::<name>`, the domain's one join
-/// ([`entity_id`]). File-scoped so two files defining the same name are distinct located
-/// entities, and stable across re-extraction (it carries no line, which an edit shifts) so a
-/// later supersede-on-re-extract criterion can key a file's edges by this from-side identity. It
-/// derives a definition's node and a caller's, while a reference lands on its file's one
-/// candidate or on its placeholder ([`placeholder_id`]).
-fn code_entity_id(file: &str, name: &str) -> String {
-    entity_id(file, name)
+/// The stable node id for a code entity (spec 29a): `<file>::<path>`, the domain's one join
+/// ([`entity_id`]), `path` a definition's id path in its file (spec 119, IDS FOLLOW THE
+/// LANGUAGE'S PATH) or a caller's name. File-scoped so two files defining the same name are
+/// distinct located entities, and stable across re-extraction (it carries no line, which an edit
+/// shifts) so a later supersede-on-re-extract criterion can key a file's edges by this from-side
+/// identity. It derives a definition's node and a caller's, while a reference lands on its file's
+/// one candidate or on its placeholder ([`placeholder_id`]).
+fn code_entity_id(file: &str, path: &str) -> String {
+    entity_id(file, path)
 }
 
 /// The one-hop degree of a node (spec 58): the count of currently-LIVE edges (`valid_to IS NULL`)
@@ -4135,7 +4136,7 @@ fn ensure_node(
 
 /// The specific kinds that PROMOTE a bare [`KIND_ARTIFACT`] path node ([`ensure_node`]): each
 /// proves what the path is - a source file, a code entity in one (spec 101: a decision may name
-/// `<file>::<name>` before or after the definition folds), or a design-intent document.
+/// `<file>::<path>` before or after the definition folds), or a design-intent document.
 const PROMOTING_KINDS: [&str; 6] = [
     KIND_FILE,
     KIND_CODE_ENTITY,
@@ -7281,7 +7282,7 @@ mod tests {
     }
 
     /// spec 58 criterion 1: `locate` is the show surface's single resolution authority. Over the
-    /// SAME node/edge tables every graph surface reads, it resolves a full `<file>::<name>` id and a
+    /// SAME node/edge tables every graph surface reads, it resolves a full `<file>::<path>` id and a
     /// unique bare name to the SAME site (carrying kind and one-hop degree), LISTS the SORTED
     /// candidates for an ambiguous bare name (never guessing), and returns `None` for an unknown
     /// query. The code-entity fold it reads is always compiled, so this holds in BOTH feature lanes.

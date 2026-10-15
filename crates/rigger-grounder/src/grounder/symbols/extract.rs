@@ -176,11 +176,11 @@ impl<'s> Source<'s> {
 /// definition [`extract`] records, in every language. `line` is the 1-based line its pass gives
 /// it (a tagged definition's name row, a read-off's as its reader gives it) and `end_line` the
 /// 1-based line of `range`'s last byte, `range` the definition's whole byte range, never below
-/// `line`; a zero-length `range` gives `line`. It is built ahead of the passes over the whole file
-/// that resolve the rest: `is_test` needs every definition's range (`test_regions` decides
-/// containment over the whole set), and the out-of-line module facts are read from the parsed
-/// tree once every definition is known (only a `Module`-kind definition ever carries them; see
-/// `Def::is_out_of_line_module`).
+/// `line`; a zero-length `range` gives `line`. Its `path` is its `name` here. It is built ahead of
+/// the passes over the whole file that resolve the rest: `path` needs every definition's range
+/// ([`def_paths`] decides containment over the whole set), as `is_test` does (`test_regions`),
+/// and the out-of-line module facts are read from the parsed tree once every definition is known
+/// (only a `Module`-kind definition ever carries them; see `Def::is_out_of_line_module`).
 fn def_of(
     source: &Source,
     range: std::ops::Range<usize>,
@@ -195,6 +195,7 @@ fn def_of(
     };
     Def {
         kind,
+        path: name.clone(),
         name,
         line,
         end_line,
@@ -251,7 +252,7 @@ fn record_def(
 /// binds, class-body names and type aliases ([`assigned_names`], [`class_body_names`],
 /// [`type_aliases`]), each recorded as a tagged definition is ([`record_def`]). Every definition,
 /// an impl block's included, is built by [`def_of`] from its byte range, which gives its
-/// `end_line`.
+/// `end_line`, and takes its id path from [`def_paths`].
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -398,6 +399,14 @@ pub fn extract(
                 &mut def_ranges,
             ));
         }
+    }
+    // Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH): each definition's id path, decided over every
+    // definition's range at once, so a container recorded after what it holds still prefixes it.
+    for (d, path) in defs
+        .iter_mut()
+        .zip(def_paths(root, source.as_bytes(), &def_ranges))
+    {
+        d.path = path;
     }
     // Attribute each reference to its caller (`enclosing_def`: the innermost enclosing function,
     // else the innermost enclosing definition; spec 116). The
@@ -564,16 +573,24 @@ fn preceded_by_test_attribute(
     root: tree_sitter::Node,
     range: &std::ops::Range<usize>,
 ) -> bool {
-    let Some(mut node) = root.descendant_for_byte_range(range.start, range.end) else {
-        return false;
-    };
+    outermost_node(root, range).is_some_and(|node| node_preceded_by_test_attribute(node, source))
+}
+
+/// The OUTERMOST node below `root` spanning what `range` spans: `descendant_for_byte_range`
+/// answers the deepest node holding `range`, and every parent of that same range is climbed,
+/// stopping below the root, whose range a file of one item shares.
+fn outermost_node<'t>(
+    root: tree_sitter::Node<'t>,
+    range: &std::ops::Range<usize>,
+) -> Option<tree_sitter::Node<'t>> {
+    let mut node = root.descendant_for_byte_range(range.start, range.end)?;
     while let Some(parent) = node
         .parent()
         .filter(|p| p.parent().is_some() && p.byte_range() == node.byte_range())
     {
         node = parent;
     }
-    node_preceded_by_test_attribute(node, source)
+    Some(node)
 }
 
 /// The core [`preceded_by_test_attribute`] applies once a candidate node is in hand, and
@@ -945,21 +962,19 @@ fn nodes_of_kind<'t>(root: tree_sitter::Node<'t>, kind: &str) -> Vec<tree_sitter
 /// The [`ImplBlock`] for one `impl_item` node, or `None` when its self type cannot be read (a
 /// syntax-error recovery shape).
 fn impl_block(node: tree_sitter::Node, source: &[u8]) -> Option<ImplBlock> {
-    let text =
-        |n: tree_sitter::Node| -> Option<String> { Some(normalize_ws(n.utf8_text(source).ok()?)) };
-    let self_type = node.child_by_field_name("type")?;
-    let trait_node = node.child_by_field_name("trait");
-    let name = match trait_node {
-        Some(t) => format!("impl {} for {}", text(t)?, text(self_type)?),
-        None => format!("impl {}", text(self_type)?),
+    let (self_type, trait_name) = impl_halves(node, source)?;
+    let name = match trait_name {
+        Some(t) => format!("impl {t} for {self_type}"),
+        None => format!("impl {self_type}"),
     };
-    let targets = trait_node
+    let targets = node
+        .child_by_field_name("trait")
         .into_iter()
-        .chain(std::iter::once(self_type))
+        .chain(node.child_by_field_name("type"))
         .filter_map(base_type_identifier)
         .filter_map(|id| {
             Some((
-                text(id)?,
+                collapsed(id, source)?,
                 id.start_position().row as u32 + 1,
                 id.start_byte(),
             ))
@@ -973,8 +988,148 @@ fn impl_block(node: tree_sitter::Node, source: &[u8]) -> Option<ImplBlock> {
     })
 }
 
+/// The two halves of the `impl_item` `node`'s header, each as written with its whitespace
+/// collapsed ([`collapsed`]): its self type and, for a trait impl, its trait; `None` when its
+/// self type, or the trait it names, cannot be read (a syntax-error recovery shape).
+fn impl_halves(node: tree_sitter::Node, source: &[u8]) -> Option<(String, Option<String>)> {
+    let self_type = collapsed(node.child_by_field_name("type")?, source)?;
+    let trait_name = match node.child_by_field_name("trait") {
+        Some(t) => Some(collapsed(t, source)?),
+        None => None,
+    };
+    Some((self_type, trait_name))
+}
+
+/// The source text of `node` with each whitespace run one space and its ends trimmed
+/// ([`normalize_ws`]); `None` when that text is no UTF-8.
+fn collapsed(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    Some(normalize_ws(node.utf8_text(source).ok()?))
+}
+
+/// THE PATH PASS (spec 119, IDS FOLLOW THE LANGUAGE'S PATH): each definition's id path in its
+/// file, index-aligned with `def_ranges`, the ranges THE NAME FILTER leaves, so a definition it
+/// drops (`const _: () = { .. }`) contributes nothing and what it held takes the next container.
+/// A definition's container is the innermost definition whose range STRICTLY holds its own
+/// ([`container_of`]), a range two definitions share holding nothing (Go's `const a, b = f(), g()`
+/// makes siblings, and what both hold is their sibling), and a C# file-scoped namespace, whose
+/// node holds only its name, holds every declaration after it. Its path is the container's
+/// prefix, `::`, its leaf, `.` before a `Field` or `Property` leaf; at file level, its leaf. A
+/// container's prefix is its own path, but that an impl gives its self type, or `<T as Trait>`,
+/// in place of its header ([`impl_halves`]), so `impl T { fn new() }` gives `impl T` and
+/// `T::new`. Two definitions take a path of their own: a Go method is `<receiver base
+/// type>::<name>` ([`go_receiver`]), and a JS or TS named function, generator or class value
+/// whose name is the leaf of the declarator, assignment, pair or class field holding it
+/// ([`is_named_value`]) takes that container's path (`const f = function f() {}` is `f`).
+fn def_paths(
+    root: tree_sitter::Node,
+    source: &[u8],
+    def_ranges: &[(std::ops::Range<usize>, String, Kind)],
+) -> Vec<String> {
+    let nodes: Vec<_> = def_ranges
+        .iter()
+        .map(|(range, _, _)| outermost_node(root, range).filter(|n| n.byte_range() == *range))
+        .collect();
+    let spans: Vec<_> = def_ranges
+        .iter()
+        .zip(&nodes)
+        .map(|((range, _, _), node)| match node {
+            Some(n) if n.kind() == "file_scoped_namespace_declaration" => range.start..source.len(),
+            _ => range.clone(),
+        })
+        .collect();
+    let containers: Vec<_> = (0..spans.len()).map(|i| container_of(&spans, i)).collect();
+    // A container's span strictly holds what it contains, so the longest spans are resolved first.
+    let mut order: Vec<usize> = (0..spans.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(spans[i].len()));
+    let mut paths = vec![String::new(); def_ranges.len()];
+    let mut prefixes = vec![String::new(); def_ranges.len()];
+    for i in order {
+        let (_, leaf, kind) = &def_ranges[i];
+        let under = |prefix: Option<&str>, sep: &str, leaf: &str| match prefix {
+            Some(prefix) => format!("{prefix}{sep}{leaf}"),
+            None => leaf.to_string(),
+        };
+        let prefix = containers[i].map(|c| prefixes[c].as_str());
+        let sep = if matches!(kind, Kind::Field | Kind::Property) {
+            "."
+        } else {
+            "::"
+        };
+        let path = match (nodes[i], containers[i]) {
+            (Some(n), Some(c)) if is_named_value(n, leaf, &def_ranges[c].1) => paths[c].clone(),
+            (Some(n), _) => match go_receiver(n, source) {
+                Some(receiver) => format!("{receiver}::{leaf}"),
+                None => under(prefix, sep, leaf),
+            },
+            (None, _) => under(prefix, sep, leaf),
+        };
+        let prefix_out = match nodes[i]
+            .filter(|n| n.kind() == "impl_item")
+            .and_then(|n| impl_halves(n, source))
+        {
+            Some((self_type, Some(t))) => under(prefix, "::", &format!("<{self_type} as {t}>")),
+            Some((self_type, None)) => under(prefix, "::", &self_type),
+            None => path.clone(),
+        };
+        paths[i] = path;
+        prefixes[i] = prefix_out;
+    }
+    paths
+}
+
+/// The index of the definition whose span STRICTLY holds span `i` of `spans` most narrowly - the
+/// innermost container, a span equal to `i`'s never one - among the spans exactly one definition
+/// has, a span two equal-range siblings share holding nothing; `None` at file level.
+fn container_of(spans: &[std::ops::Range<usize>], i: usize) -> Option<usize> {
+    let inner = &spans[i];
+    spans
+        .iter()
+        .enumerate()
+        .filter(|(_, span)| *span != inner && span.start <= inner.start && inner.end <= span.end)
+        .filter(|(_, span)| spans.iter().filter(|other| other == span).count() == 1)
+        .min_by_key(|(_, span)| span.len())
+        .map(|(j, _)| j)
+}
+
+/// Whether `node`, a definition named `leaf`, is a NAMED VALUE (spec 119): a JS or TS
+/// `function_expression`, `generator_function` or `class` (node types no other registered grammar
+/// has) that is the value of a declarator, an assignment, a pair or a class field whose
+/// definition, its container, is named `leaf` too (`container_leaf`), so the two are one
+/// definition at the container's path.
+fn is_named_value(node: tree_sitter::Node, leaf: &str, container_leaf: &str) -> bool {
+    matches!(
+        node.kind(),
+        "function_expression" | "generator_function" | "class"
+    ) && node.parent().is_some_and(|p| {
+        matches!(
+            p.kind(),
+            "variable_declarator"
+                | "assignment_expression"
+                | "pair"
+                | "field_definition"
+                | "public_field_definition"
+        )
+    }) && leaf == container_leaf
+}
+
+/// The receiver base type of `node` when it holds a `receiver`, which only a Go
+/// `method_declaration` does among the registered grammars: the type of its receiver's parameter
+/// by its base identifier ([`base_type_identifier`]), pointer, package qualifier and type
+/// arguments stripped (`(r *pkg.T[K])` gives `T`); `None` for any other node, or a receiver naming
+/// no single type.
+fn go_receiver(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let receiver = node.child_by_field_name("receiver")?;
+    let mut cursor = receiver.walk();
+    let parameter = receiver
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "parameter_declaration")?;
+    let base = base_type_identifier(parameter.child_by_field_name("type")?)?;
+    Some(base.utf8_text(source).ok()?.to_string())
+}
+
 /// The identifier a type names, through its path (`a::b::T` -> `T`, Go's `pkg.T` -> `T`),
-/// generic arguments (`T<U>` -> `T`, Go's `T[U]` -> `T`) and reference or pointer (`&T` -> `T`);
+/// generic arguments (`T<U>` -> `T`, Go's `T[U]` -> `T`) and reference or pointer (`&T` -> `T`,
+/// Go's `*T` -> `T`, whose grammar holds its pointee as its one named child, under no field);
 /// `None` for a shape that names no single type (a tuple, a slice, a function type).
 fn base_type_identifier(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     let mut cur = node;
@@ -982,9 +1137,10 @@ fn base_type_identifier(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
         cur = match cur.kind() {
             "type_identifier" => return Some(cur),
             "scoped_type_identifier" | "qualified_type" => cur.child_by_field_name("name")?,
-            "generic_type" | "reference_type" | "pointer_type" => {
-                cur.child_by_field_name("type")?
-            }
+            "generic_type" | "reference_type" => cur.child_by_field_name("type")?,
+            "pointer_type" => cur
+                .child_by_field_name("type")
+                .or_else(|| cur.named_child(0))?,
             _ => return None,
         };
     }
@@ -1350,7 +1506,8 @@ fn enclosing_def(
         .map(|(_, name, _)| name.clone())
 }
 
-/// Where [`locate_extent`] bounds a definition's body.
+/// Where [`locate_extent`] bounds a definition's body. Each variant counts only the definitions
+/// at the recorded path, when one is given ([`Recorded::path`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Extent {
     /// The 1-based, inclusive line range `[start, end]` of the definition's whole construct, its
@@ -1365,12 +1522,28 @@ pub enum Extent {
     Ambiguous(usize),
 }
 
+/// A definition as its graph node records it, the one [`locate_extent`] bounds.
+#[derive(Clone, Copy, Debug)]
+pub struct Recorded<'a> {
+    /// Its leaf, the node's `name`.
+    pub name: &'a str,
+    /// Its id path in its file, the node id's text after the file (spec 119, IDS FOLLOW THE
+    /// LANGUAGE'S PATH); `None` for an id holding no `::`, found by name, kind and line alone.
+    pub path: Option<&'a str>,
+    /// Its kind, a `kind_str` rendering, as the node carries it.
+    pub kind: &'a str,
+    /// Its recorded 1-based line.
+    pub line: u32,
+}
+
 /// THE ONE EXTENT a `rigger graph --show` body is bounded by (spec 119, ONE EXTENT): [`extract`]
 /// runs over `source` under the INJECTED grammar and tags query, exactly as the code graph is
-/// extracted, and the definition named `name` of kind `kind` (a `kind_str` rendering, as the
-/// graph node carries it) recorded at `line` is found among the production definitions - those
-/// not `is_test`, as `extract_events` drops them, since the graph holds no other - by three
-/// tiers, in order, its [`Def::end_line`] bounding the body:
+/// extracted, and the `recorded` definition - named `name`, of kind `kind`, recorded at `line`,
+/// and, when its `path` is given, at that id path ([`Def::path`]), so a drifted `T::new` never
+/// heals onto `U::new` - is found among the production definitions - those not `is_test`, as
+/// `extract_events` drops them, since the graph holds no other - by three tiers, in order, its
+/// [`Def::end_line`] bounding the body, every tier reading only the definitions of the name at
+/// the given path:
 ///
 /// 1. name, kind and line: the recorded site still holds it; when several do, the widest
 ///    `end_line` wins.
@@ -1389,15 +1562,19 @@ pub fn locate_extent(
     lang: Lang,
     ts_language: &tree_sitter::Language,
     tags_query: &str,
-    name: &str,
-    kind: &str,
-    line: u32,
+    recorded: Recorded,
 ) -> Result<Extent, String> {
+    let Recorded {
+        name,
+        path,
+        kind,
+        line,
+    } = recorded;
     let symbols = extract(source, lang, ts_language, tags_query)?;
     let named: Vec<&Def> = symbols
         .defs
         .iter()
-        .filter(|d| !d.is_test && d.name == name)
+        .filter(|d| !d.is_test && d.name == name && path.is_none_or(|path| d.path == path))
         .collect();
     // The widest end of each line holding a definition of the name and kind: tier 1 reads the
     // recorded line's, tier 3 the one line's when one is all there is.
@@ -2908,7 +3085,7 @@ class K
     }
 
     /// Where [`locate_extent`] bounds the Rust definition named `name` of kind `kind` recorded at
-    /// `line` in `source`, under the registered Rust grammar and query.
+    /// `line` in `source`, at no path, under the registered Rust grammar and query.
     fn located(source: &str, name: &str, kind: Kind, line: u32) -> Extent {
         let entry = crate::symbol_index::registered("rs");
         locate_extent(
@@ -2916,9 +3093,12 @@ class K
             entry.lang,
             &entry.language,
             entry.tags_query,
-            name,
-            kind_str(kind),
-            line,
+            Recorded {
+                name,
+                path: None,
+                kind: kind_str(kind),
+                line,
+            },
         )
         .expect("the registered query runs over the source")
     }

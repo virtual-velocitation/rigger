@@ -391,22 +391,36 @@ pub fn insert_node(
     .unwrap();
 }
 
-/// `rigger graph --show <file>::<name>`'s stdout over `root` seeded as a project whose working
-/// tree holds `source` at `file` and whose graph records the definition `name` of kind `kind` at
-/// `line` in `lang`.
+/// `rigger graph --show <file>::<path>`'s stdout over `root` seeded as a project whose working
+/// tree holds `source` at `file` and whose graph records the definition at the id path `path`
+/// (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), named by the text after the path's last `::`, of
+/// kind `kind` at `line` in `lang`.
 pub fn show_recorded(
     root: &Path,
     file: &str,
     source: &str,
-    name: &str,
+    path: &str,
     kind: &str,
     line: u64,
     lang: &str,
 ) -> String {
     seed_rigger_dir(root);
     super::fixtures::write_text(root, file, source);
-    super::fixtures::apply_code_entity(&open_graph(root), 1, file, name, kind, line, lang);
-    run_rigger_ok(root, &["graph", "--show", &format!("{file}::{name}")])
+    let name = super::last_path_segment(path);
+    super::fixtures::apply_json(
+        &open_graph(root),
+        1,
+        rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+        super::fixtures::path_entity_json(file, name, path, kind, line, lang),
+    );
+    run_rigger_ok(
+        root,
+        &[
+            "graph",
+            "--show",
+            &rigger::contextgraph::query::entity_id(file, path),
+        ],
+    )
 }
 
 /// Hold `graph_db` under another writer's write lock while `run` runs, past every busy timeout
@@ -528,44 +542,49 @@ pub fn rebuilt_graph(root: &Path, files: &[(&str, &str)]) -> Projector {
 }
 
 /// GIVEN a project whose one file `path`, in the language `lang`, holds `source`, WHEN the
-/// operator runs `rigger graph build`, THEN the built graph's code entities are exactly one
-/// node per `definitions` row, a (leaf, kind, line) triple, each carrying exactly that kind and
-/// line, and one placeholder `<path>::%<leaf>` ([`placeholder_id`]) per `placeholders` leaf, a
-/// name a reference reaches that no one same-file call target gives (`entities_why` says what
-/// makes no node), and its `CALLS` edges are exactly `calls`.
+/// operator runs `rigger graph build`, THEN the built graph's definitions and placeholders are
+/// exactly one node `<path>::<id path>` per `definitions` row, an (id path, leaf, kind, line)
+/// quadruple (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), each carrying exactly that leaf as its
+/// name, kind and line, and one placeholder `<path>::%<leaf>` ([`placeholder_id`]) per
+/// `placeholders` leaf, a name a reference reaches that no one same-file call target gives
+/// (`entities_why` says what makes no node), and its `CALLS` edges are exactly `calls`. Any other
+/// code entity is the nameless node a call folds from, named in `calls`.
 ///
 /// [`placeholder_id`]: rigger::contextgraph::query::placeholder_id
 pub fn assert_built_graph_holds(
     (path, lang, source): (&str, &str, &str),
-    definitions: &[(&str, &str, u64)],
+    definitions: &[(&str, &str, &str, u64)],
     placeholders: &[&str],
     calls: &[(&str, &str)],
     entities_why: &str,
 ) {
-    use super::fixtures::{attrs_of, definition_in, live_calls, live_node_ids};
-    use rigger::contextgraph::query::placeholder_id;
+    use super::fixtures::{attrs_of, definition_ids, definition_in, live_calls, live_node_ids};
+    use rigger::contextgraph::query::{entity_id, leaf_of, placeholder_id};
     use rigger::contextgraph::KIND_CODE_ENTITY;
 
     let (_project, graph) = built_graph(&[(path, source)]);
-    let id = |leaf: &str| format!("{path}::{leaf}");
-    let mut entities: Vec<String> = definitions
+    let held: std::collections::BTreeSet<String> = definition_ids(&graph)
+        .into_iter()
+        .chain(
+            live_node_ids(&graph.whole().unwrap(), KIND_CODE_ENTITY)
+                .into_iter()
+                .filter(|node| leaf_of(node).is_some()),
+        )
+        .collect();
+    let ids: Vec<String> = definitions
         .iter()
-        .map(|(name, _, _)| id(name))
+        .map(|(id_path, _, _, _)| entity_id(path, id_path))
+        .collect();
+    let entities: std::collections::BTreeSet<String> = ids
+        .iter()
+        .cloned()
         .chain(placeholders.iter().map(|leaf| placeholder_id(path, leaf)))
         .collect();
-    entities.sort();
-    assert_eq!(
-        live_node_ids(&graph.whole().unwrap(), KIND_CODE_ENTITY),
-        entities,
-        "{entities_why}"
-    );
-    let carried: Vec<_> = definitions
-        .iter()
-        .map(|(name, _, _)| attrs_of(&graph, &id(name)))
-        .collect();
+    assert_eq!(held, entities, "{entities_why}");
+    let carried: Vec<_> = ids.iter().map(|id| attrs_of(&graph, id)).collect();
     let expected: Vec<_> = definitions
         .iter()
-        .map(|(name, kind, line)| definition_in(lang, name, kind, *line))
+        .map(|(_, name, kind, line)| definition_in(lang, name, kind, *line))
         .collect();
     assert_eq!(
         carried, expected,

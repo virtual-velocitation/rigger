@@ -597,8 +597,8 @@ fn ingesting_product_and_test_code_through_the_public_api_graphs_only_the_produc
     // contributed no batch - the concrete reason the files lens can never list it as a subject).
     let must_be_absent: BTreeSet<&str> = BTreeSet::from([
         "widget.rs::tests",
-        "widget.rs::drive",
-        "widget.rs::widget_works",
+        "widget.rs::tests::drive",
+        "widget.rs::tests::widget_works",
         "tests/widget_periphery.rs::an_outside_in_test",
         "tests/widget_periphery.rs",
     ]);
@@ -793,8 +793,8 @@ rigger::test_cases! {
             NoneGraphed(
                 &[
                     "trailingcomment.rs::tests",
-                    "trailingcomment.rs::helper",
-                    "trailingcomment.rs::it_works",
+                    "trailingcomment.rs::tests::helper",
+                    "trailingcomment.rs::tests::it_works",
                 ],
                 "a #[cfg(test)] module with a trailing same-line comment on its own \
                  attribute, and everything nested inside it, must still be excluded from \
@@ -882,8 +882,8 @@ rigger::test_cases! {
             NoneGraphed(
                 &[
                     "multiline.rs::tests",
-                    "multiline.rs::helper",
-                    "multiline.rs::it_works",
+                    "multiline.rs::tests::helper",
+                    "multiline.rs::tests::it_works",
                 ],
                 "a #[cfg(\\n test\\n)] attribute wrapped across three physical lines must \
                  still gate the module it decorates, and everything nested inside it, out \
@@ -971,8 +971,8 @@ rigger::test_cases! {
             NoneGraphed(
                 &[
                     "trailingcomma.rs::tests",
-                    "trailingcomma.rs::helper",
-                    "trailingcomma.rs::it_works",
+                    "trailingcomma.rs::tests::helper",
+                    "trailingcomma.rs::tests::it_works",
                 ],
                 "a #[cfg(any(\\n    test,\\n))] attribute - a single-element predicate \
                  with a rustfmt-style trailing comma - must still gate the module it \
@@ -1023,8 +1023,8 @@ rigger::test_cases! {
             NoneGraphed(
                 &[
                     "innerattr.rs::tests",
-                    "innerattr.rs::helper",
-                    "innerattr.rs::it_works",
+                    "innerattr.rs::tests::helper",
+                    "innerattr.rs::tests::it_works",
                 ],
                 "a mod gated by the INNER #![cfg(test)] attribute form (the attribute as \
                  the first node inside the mod's own body, not a sibling preceding it) \
@@ -1455,7 +1455,7 @@ rigger::test_cases! {
                  elsewhere",
             ),
             NoneGraphed(
-                &["widgetimpl.rs::helper", "widgetimpl.rs::it_works"],
+                &["widgetimpl.rs::Widget::helper", "widgetimpl.rs::Widget::it_works"],
                 "every method inside a #[cfg(test)]-attributed impl block is test code, \
                  whether or not it carries an attribute of its own - exactly as a plain \
                  helper inside a #[cfg(test)] mod already is by containment - since an \
@@ -1473,7 +1473,7 @@ rigger::test_cases! {
             // an ordinary impl block); only a method inside a genuinely ordinary impl block
             // catches it.
             Graphed(
-                "widgetimpl.rs::ordinary_method",
+                "widgetimpl.rs::Ordinary::ordinary_method",
                 "a method inside an ORDINARY (non-test) impl block must stay graphed even \
                  though the same file also has a #[cfg(test)]-attributed impl block \
                  elsewhere; got {:?}",
@@ -1525,7 +1525,7 @@ rigger::test_cases! {
                  elsewhere",
             ),
             NoneGraphed(
-                &["innerimpl.rs::helper", "innerimpl.rs::it_works"],
+                &["innerimpl.rs::Widget::helper", "innerimpl.rs::Widget::it_works"],
                 "an impl block gated by its OWN inner #![cfg(test)] attribute must exclude \
                  its methods exactly like the outer-attribute form already does",
             ),
@@ -2033,14 +2033,15 @@ const DEV_ONLY_FILES: &[(&str, &str, &str, u32)] = &[
     ),
 ];
 
-/// The spec's production controls, each `(path, source, the definitions it holds)`: a path
-/// that reads close to a pattern and is production. Each calls `by_production_only`.
+/// The spec's production controls, each `(path, source, the id paths of the definitions it
+/// holds)`: a path that reads close to a pattern and is production. Each calls
+/// `by_production_only`.
 #[cfg(feature = "symbols")]
 const PRODUCTION_CONTROLS: &[(&str, &str, &[&str])] = &[
     (
         "Contest/a.cs",
         "class Contest {\n    void Run() {\n        Lib.by_production_only();\n    }\n}\n",
-        &["Contest", "Run"],
+        &["Contest", "Contest::Run"],
     ),
     (
         "FooTests/lib.rs",

@@ -15,10 +15,11 @@
 //!     note with NO body.
 //!   - HEAL (spec 92, FRESH ON EVERY INTEGRATION): when the current tree holds no definition of
 //!     that name STARTING at the recorded line (a name/line drift - the definition moved within the
-//!     file since the graph was last indexed), the surface RE-LOCATES it by name and kind within
-//!     the SAME file (never crossing files) and shows its LIVE body, with the header noting
-//!     "recorded line N, now M" - but ONLY when that name and kind are UNAMBIGUOUS among the file's
-//!     production definitions (test code never counts): with more than one live production
+//!     file since the graph was last indexed), the surface RE-LOCATES it by name and kind, and by
+//!     the id's path when the id carries one (spec 119: `T::new` apart from a same-named
+//!     `U::new`), within the SAME file (never crossing files) and shows its LIVE body, with the
+//!     header noting "recorded line N, now M" - but ONLY when that definition is UNAMBIGUOUS among
+//!     the file's production definitions (test code never counts): with more than one live production
 //!     candidate the surface cannot tell which the caller meant, so it degrades to a
 //!     note with NO body instead of guessing (never a wrong body from a neighbor, or from an
 //!     ambiguous same-named sibling).
@@ -54,6 +55,10 @@ use common::cli::run_rigger;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
 use common::fixtures::apply_code_entity;
+#[cfg(feature = "symbols")]
+use common::fixtures::{apply_json, path_entity_json};
+#[cfg(feature = "symbols")]
+use rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
 
 /// NONE face: an unknown query is not an error. The show surface prints a one-line not-found note
 /// (never guessing, never a stack trace), prints NO body, and EXITS SUCCESS - mirroring
@@ -372,7 +377,8 @@ fn graph_show_shows_full_body_past_nested_definition() {
 
     // outer.rs: `outer` (lines 1-6) CONTAINS a nested `helper` (lines 2-4) and calls it (line 5);
     // then a blank + doc-comment separator, then a top-level `sibling` at line 9. The graph records
-    // outer@1, helper@2 (the next definition by line - nested inside outer), sibling@9. A
+    // outer@1, helper@2 (the next definition by line - nested inside outer, at its path
+    // `outer::helper`), sibling@9. A
     // next-def-by-line bound would truncate outer's body to line 1 alone (`fn outer() {`) because
     // helper begins on line 2; the node-range extent spans outer's whole body through line 6.
     std::fs::write(
@@ -393,7 +399,12 @@ fn graph_show_shows_full_body_past_nested_definition() {
     {
         let p = open_graph(root);
         apply_code_entity(&p, 1, "outer.rs", "outer", "function", 1, "rust");
-        apply_code_entity(&p, 2, "outer.rs", "helper", "function", 2, "rust");
+        apply_json(
+            &p,
+            2,
+            TYPE_CODE_ENTITY_EXTRACTED,
+            path_entity_json("outer.rs", "helper", "outer::helper", "function", 2, "rust"),
+        );
         apply_code_entity(&p, 3, "outer.rs", "sibling", "function", 9, "rust");
     }
 
@@ -565,7 +576,7 @@ fn graph_show_shows_full_body_of_a_python_nested_def() {
     seed_rigger_dir(root);
 
     // nested.py: `outer` (lines 1-5) CONTAINS a nested `inner` (lines 2-3); the blocks are bounded
-    // by indentation, not braces. The graph records outer@1, inner@2.
+    // by indentation, not braces. The graph records outer@1, inner@2 at its path `outer::inner`.
     std::fs::write(
         root.join("nested.py"),
         "def outer(n):\n\
@@ -578,7 +589,19 @@ fn graph_show_shows_full_body_of_a_python_nested_def() {
     {
         let p = open_graph(root);
         apply_code_entity(&p, 1, "nested.py", "outer", "function", 1, "python");
-        apply_code_entity(&p, 2, "nested.py", "inner", "function", 2, "python");
+        apply_json(
+            &p,
+            2,
+            TYPE_CODE_ENTITY_EXTRACTED,
+            path_entity_json(
+                "nested.py",
+                "inner",
+                "outer::inner",
+                "function",
+                2,
+                "python",
+            ),
+        );
     }
 
     // `--show outer`: the FULL indented block is shown, INCLUDING the nested `inner`, then outer's

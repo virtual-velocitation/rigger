@@ -193,8 +193,8 @@ The inspector must work on a cold checkout of any repository, with no build hist
   indexed-but-never-built repo shows an empty panel. The seeded-neighbourhood, whole-graph, and call
   views all read the projection through the section-6 provider, so none of them dead-end on a repo with
   no run history.
-- The call views use only `CALLS`/`REFERENCES` and the `<file>::<name>` id scheme the extractor produces
-  for every supported grammar; name resolution is language-neutral, and object-oriented method-name
+- The call views use only `CALLS`/`REFERENCES` and the `<file>::<path>` id scheme the extractor produces
+  for every supported grammar, a definition's path its enclosing definitions' path and its own name; name resolution is language-neutral, and object-oriented method-name
   collision is handled by the conservative traversal (section 3), not by pretending precision.
 - `FILES` needs only code ingest; `CODE` needs the community pass; `CONCEPTS` needs the concept pass;
   the rationale overlay is simply empty on a project with no decisions. Each degrades independently.

@@ -16,16 +16,17 @@
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
 use rigger::grounder::symbols::store;
 
-/// A line-1 definition of `kind` named `name` with every optional field unset and `end_line` 0,
-/// the end line [`legacy_file`] stamps on a legacy definition - the shape a product-only
-/// definition persists as; a caller sets the one field its case is about with struct-update
-/// syntax.
+/// A line-1 file-level definition of `kind` named `name` with every optional field unset,
+/// `end_line` 0 and `path` its name, the end line and path [`legacy_file`] stamps on a legacy
+/// definition - the shape a product-only definition persists as; a caller sets the one field its
+/// case is about with struct-update syntax.
 pub fn def(kind: Kind, name: &str) -> Def {
     Def {
         kind,
         name: name.into(),
         line: 1,
         end_line: 0,
+        path: name.into(),
         is_test: false,
         is_out_of_line_module: false,
         path_override: None,
@@ -251,10 +252,10 @@ pub fn persist_stamped(root: &str, grammar: &str, body: &str) {
 /// The `file` entry of a hand-authored legacy `index.json` (`legacy`) loaded through the real
 /// `store::load`, which must succeed (`must_load` names the back-compat promise) and hold it.
 /// The legacy form is stamped with the CURRENT extraction generation first, and each of its
-/// definitions lacking `end_line` with 0, the shape a current index holds, so what it proves is
-/// the per-field default alone: an index from another generation, or one lacking `end_line`,
-/// loads as absent by design (it is rebuilt), a separate contract pinned beside `store::load`
-/// itself.
+/// definitions lacking `end_line` with 0 and lacking `path` with its `name`, the shape a current
+/// index holds, so what it proves is the per-field default alone: an index from another
+/// generation, or one lacking `end_line` or `path`, loads as absent by design (it is rebuilt), a
+/// separate contract pinned beside `store::load` itself.
 pub fn legacy_file(legacy: &str, file: &str, must_load: &str) -> FileSymbols {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_str().unwrap();
@@ -269,10 +270,12 @@ pub fn legacy_file(legacy: &str, file: &str, must_load: &str) -> FileSymbols {
             .as_array_mut()
             .expect("a legacy file holds defs")
         {
-            def.as_object_mut()
-                .expect("a legacy definition is an object")
-                .entry("end_line")
-                .or_insert(0.into());
+            let def = def
+                .as_object_mut()
+                .expect("a legacy definition is an object");
+            let name = def["name"].clone();
+            def.entry("end_line").or_insert(0.into());
+            def.entry("path").or_insert(name);
         }
     }
     persist_stamped(

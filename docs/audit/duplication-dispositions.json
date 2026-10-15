@@ -350,7 +350,7 @@
     "reason": "Each ingest half's own file-batch entry point over a different source: the design pass walks the tree for concept and link events, the symbols pass parses code at the default parse width, and the workflow pass lowers `.rigger/workflow.yml` into one batch."
   },
   {
-    "id": "dup-c1d968c10781",
+    "id": "dup-710503cb82f8",
     "disposition": "not-a-duplicate",
     "reason": "Two different lowerings sharing a name: symbols lowers one file's parsed `FileSymbols` into code-entity and edge events, while workflowdef lowers the workflow definition's stages, gates and roles into concept and link events."
   },
@@ -650,7 +650,7 @@
     "reason": "Two dedup tests over different scenarios (repeated governs edges versus arrival-order independence) with different assertions."
   },
   {
-    "id": "dup-269f626ea28e",
+    "id": "dup-cb84d409b08d",
     "disposition": "not-a-duplicate",
     "reason": "`graph show` face tests over different degraded states that call the already-shared helpers with different arguments and assert different notes."
   },

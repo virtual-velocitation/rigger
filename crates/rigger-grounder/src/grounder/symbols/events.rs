@@ -170,8 +170,8 @@ fn lower_file(path: &str, symbols: &FileSymbols, excluded: bool) -> Vec<Event> {
     events
 }
 
-/// Emit one file's extracted symbols as events: one `CodeEntityExtracted` per definition, then
-/// one `EdgeInferred` per reference. Each set is emitted in a sorted, deterministic order (defs by
+/// Emit one file's extracted symbols as events: one `CodeEntityExtracted` per definition, carrying
+/// its id path when that differs from its name (spec 119), then one `EdgeInferred` per reference. Each set is emitted in a sorted, deterministic order (defs by
 /// name/line/kind, refs by name/line) so identical source yields byte-identical events - the
 /// determinism-by-construction spec 29a requires. Definitions are emitted before references so the
 /// fold can land a same-file reference on its already-folded definition entity.
@@ -228,6 +228,10 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
         let payload = CodeEntityExtracted {
             file: file.to_string(),
             name: d.name.clone(),
+            // Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH): the id path, carried only when it differs
+            // from the name, so a file-level definition's event stays byte-identical to the form
+            // recorded before the field existed.
+            path: (d.path != d.name).then(|| d.path.clone()),
             kind: kind_str(d.kind).to_string(),
             line: d.line,
             lang: lang.to_string(),
@@ -943,6 +947,7 @@ mod tests {
                     name: "beta".to_string(),
                     line: 9,
                     end_line: 9,
+                    path: "beta".to_string(),
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
@@ -953,6 +958,7 @@ mod tests {
                     name: "alpha".to_string(),
                     line: 3,
                     end_line: 3,
+                    path: "alpha".to_string(),
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
@@ -1056,6 +1062,7 @@ mod tests {
                 name: "F".to_string(),
                 line: 1,
                 end_line: 1,
+                path: "F".to_string(),
                 is_test: false,
                 is_out_of_line_module: false,
                 path_override: None,
@@ -1201,6 +1208,7 @@ mod tests {
                 name: "product_fn".into(),
                 line: 1,
                 end_line: 1,
+                path: "product_fn".into(),
                 is_test: false,
                 is_out_of_line_module: false,
                 path_override: None,
@@ -1597,6 +1605,7 @@ mod tests {
                     name: "aaa_test_item".into(),
                     line: 5,
                     end_line: 5,
+                    path: "aaa_test_item".into(),
                     is_test: true,
                     is_out_of_line_module: false,
                     path_override: None,
@@ -1607,6 +1616,7 @@ mod tests {
                     name: "product_fn".into(),
                     line: 1,
                     end_line: 1,
+                    path: "product_fn".into(),
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,

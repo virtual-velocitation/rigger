@@ -2415,7 +2415,8 @@ const OLDER_STORE_KINDS_BATCH: [(&str, &str); 5] = [
 /// Go, C# and JS files no entry names, holding a package-level `var`, a property and a class's
 /// `constructor` method,
 /// WHEN the operator runs `rigger setup` then `rigger graph build`,
-/// THEN `rigger graph --show` of each new kind's leaf prints its kind, a call naming the second
+/// THEN `rigger graph --show` of each new kind's leaf prints its path id and kind, a call naming
+/// the second
 /// field's leaf walks down past the field to the other file's fn, the kept entry stands while the
 /// unreproduced one folds nothing at the rebuild and its file is extracted again by the build.
 #[cfg(feature = "symbols")]
@@ -2519,21 +2520,21 @@ fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
         .map(shown),
         [
             expected("src/kinds.rs::ORIGIN", "static"),
-            expected("src/kinds.rs::Waxing", "variant"),
-            expected("src/kinds.rs::radius", "field"),
+            expected("src/kinds.rs::Phase::Waxing", "variant"),
+            expected("src/kinds.rs::Moon.radius", "field"),
             expected("src/kinds.rs::orbit", "macro"),
-            expected("src/kinds.rs::ebb", "declaration"),
+            expected("src/kinds.rs::Tide::ebb", "declaration"),
             expected("lunar.go::Albedo", "variable"),
-            expected("crater.cs::Depth", "property"),
-            expected("probe.js::constructor", "constructor"),
+            expected("crater.cs::Crater.Depth", "property"),
+            expected("probe.js::Probe::constructor", "constructor"),
         ],
-        "each new kind's leaf is shown at its own site with its kind"
+        "each new kind's leaf is shown at its own site, its path id, with its kind"
     );
     assert_eq!(
         run_rigger_ok(root, &["graph", "--show", "elapsed"]),
         "show \"elapsed\": 2 candidates - the name is ambiguous, re-run --show on one id:\n\
          \x20 src/clock.rs::elapsed   (src/clock.rs)\n\
-         \x20 src/kinds.rs::elapsed   (src/kinds.rs)\n",
+         \x20 src/kinds.rs::Moon.elapsed   (src/kinds.rs)\n",
         "the second field's leaf lists the field beside the other file's fn"
     );
 
@@ -27134,10 +27135,10 @@ fn graph_show_prints_the_entry_lines_between_a_healed_header_and_the_body() {
     );
 }
 
-/// Spec 119, ONE EXTENT: GIVEN a `.tsx` file whose constant `v` holds a JSX element, which only
-/// the TSX grammar parses as one, WHEN the operator runs `rigger graph --show` on its id, THEN its
-/// body is bounded to its own line under the TSX grammar (the plain TypeScript grammar would bound
-/// it through the next line); and no `definition_extents` or `DefExtent`, the retired second
+/// Spec 119, ONE EXTENT: GIVEN a `.tsx` file whose constant `App::v` holds a JSX element, which
+/// only the TSX grammar parses as one, WHEN the operator runs `rigger graph --show` on its id, THEN
+/// its body is bounded to its own line under the TSX grammar (the plain TypeScript grammar would
+/// bound it through the next line); and no `definition_extents` or `DefExtent`, the retired second
 /// extent reader, remains in any crate or the binary's source.
 #[cfg(feature = "symbols")]
 #[test]
@@ -27148,7 +27149,7 @@ fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
         root,
         "src/App.tsx",
         "export function App() {\n  const v = <b>x</b>;\n  return v;\n}\n",
-        "v",
+        "App::v",
         "constant",
         2,
         "ts",
@@ -27156,7 +27157,7 @@ fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
     assert_eq!(
         out.lines().collect::<Vec<_>>(),
         [
-            "show src/App.tsx::v",
+            "show src/App.tsx::App::v",
             "  site: src/App.tsx:2   kind constant   degree 1",
             "  name v",
             "  lang ts",

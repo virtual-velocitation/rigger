@@ -40,8 +40,9 @@ pub const KIND_FINDING: &str = "finding";
 /// A definition site extracted from source (a function, type, module, and so on): the code
 /// half of the one graph (spec 29a). Folded from a `CodeEntityExtracted` event, so code
 /// structure is a rebuildable projection over the log, not a mutable side index. Its id is
-/// `<file>::<name>`; its attrs carry the name, the rigger `Kind` string, the 1-based line, and
-/// the language it was parsed as.
+/// `<file>::<path>`, the path its language gives it in the file (spec 119, IDS FOLLOW THE
+/// LANGUAGE'S PATH: `T::new`, `S.field`, a file-level definition's own name); its attrs carry the
+/// name, its leaf, the rigger `Kind` string, the 1-based line, and the language it was parsed as.
 pub const KIND_CODE_ENTITY: &str = "code-entity";
 /// The sigil that marks a placeholder's leaf in its id, `<file>::%<leaf>` (spec 119): `%`
 /// begins no identifier in any registered grammar. [`query::leaf_of`] strips exactly one.
@@ -380,7 +381,7 @@ pub struct CallGraph {
 /// A PORT-owned type (spec 92's fix round moved it here from the sqlite adapter, so
 /// [`Projection::locate`] returns the same kind of type every sibling `Projection` method does,
 /// never a concrete adapter's own type): [`sqlite::Projector::locate`] resolves the query exactly
-/// the way the graph's other surfaces do - a full `<file>::<name>` node id, or a bare name matched
+/// the way the graph's other surfaces do - a full `<file>::<path>` node id, or a bare name matched
 /// as a definition's leaf (spec 119) - and returns one of three honest outcomes, never a guess
 /// among candidates.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -573,7 +574,7 @@ pub const TYPE_CONCEPT_REALIZED: &str = "ConceptRealized";
 /// re-derives it byte-identically.
 #[derive(Serialize, Deserialize)]
 pub struct CommunityAssigned {
-    /// The member node id being assigned: an existing code-entity (`<file>::<name>`) or file node.
+    /// The member node id being assigned: an existing code-entity (`<file>::<path>`) or file node.
     pub node: String,
     /// The community id this member joins: `community/<resolution>/<n>`. Encodes the resolution
     /// grain, so distinct grains coexist as distinct communities and the `fresh` reset can scope
@@ -646,7 +647,7 @@ pub struct ConceptDerived {
 #[derive(Serialize, Deserialize)]
 pub struct ConceptRealized {
     /// The member node id joining the concept: a design-doc / handbook-rule / spec / rationale node,
-    /// or the code entity (`<file>::<name>`) / file the intent layer attaches to.
+    /// or the code entity (`<file>::<path>`) / file the intent layer attaches to.
     pub node: String,
     /// The concept id this member realizes: `concept/<resolution>/<n>`.
     pub concept: String,
@@ -901,7 +902,7 @@ pub trait Projection: Send + Sync {
     /// [`with_graph`](crate::mcpserver::Server::with_graph) exactly like [`subgraph`] already is)
     /// can serve it without reaching for the concrete [`sqlite::Projector`] across the crate
     /// boundary - the DI extension that retired the operator MCP surface's second read loop
-    /// rather than adding one. Mirrors [`sqlite::Projector::locate`]: a full `<file>::<name>` id
+    /// rather than adding one. Mirrors [`sqlite::Projector::locate`]: a full `<file>::<path>` id
     /// resolves directly, a bare name matches as a definition's leaf, and the three
     /// outcomes ([`Located`], a port-owned type - see its doc) are never a guess among candidates.
     /// The default returns `Located::None`, so a projection with no locate support (a test double)
@@ -952,8 +953,14 @@ pub fn around(p: &dyn Projection, seed: &[String], depth: i64) -> Result<Graph, 
 pub struct CodeEntityExtracted {
     /// The definition's file, as a normalized relative path (the file container node id).
     pub file: String,
-    /// The defined symbol's name.
+    /// The defined symbol's name, its leaf.
     pub name: String,
+    /// Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH): the definition's id path in its file when it
+    /// differs from `name` (`T::new`, `S.field`), so its node is `<file>::<path>`. Absent or empty
+    /// reads as `name` ([`CodeEntityExtracted::id_path`]), the form every event recorded before
+    /// the field existed replays as; serde-defaulted and omitted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     /// The rigger `Kind` of the definition, lowercased (e.g. `function`, `type`, `module`).
     pub kind: String,
     /// The 1-based line of the definition site.
@@ -984,6 +991,19 @@ pub struct CodeEntityExtracted {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
 }
+
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // read only by contextgraph::sqlite's fold, gated out under core-only
+impl CodeEntityExtracted {
+    /// The definition's id path in its file (spec 119, IDS FOLLOW THE LANGUAGE'S PATH): `path`
+    /// when it is present and non-empty, else `name`.
+    pub fn id_path(&self) -> &str {
+        self.path
+            .as_deref()
+            .filter(|path| !path.is_empty())
+            .unwrap_or(&self.name)
+    }
+}
+
 /// The `EdgeInferred` payload (spec 29a): one reference the extraction pass emits. Shares the
 /// same one-contract discipline as [`CodeEntityExtracted`]: emitted by the feature-gated pass,
 /// folded by the always-compiled arm.

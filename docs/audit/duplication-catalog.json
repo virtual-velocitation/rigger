@@ -6713,13 +6713,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c1d968c10781",
+    "id": "dup-710503cb82f8",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
         "name": "extract_events",
-        "content_hash": "3c3bfb09d86e247e"
+        "content_hash": "56c9fce19c77f40b"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
@@ -6751,13 +6751,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-fcd493b4497e",
+    "id": "dup-0ff100b77a65",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
         "name": "extract",
-        "content_hash": "544350935d9c1eeb"
+        "content_hash": "7b20055ee6bcaeb5"
       },
       {
         "file": "tests/common/source_audit.rs",
@@ -8667,7 +8667,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-269f626ea28e",
+    "id": "dup-cb84d409b08d",
     "classification": "near",
     "sites": [
       {
@@ -8693,7 +8693,7 @@
       {
         "file": "tests/graph_show_periphery.rs",
         "name": "graph_show_shows_full_body_past_nested_definition",
-        "content_hash": "dd7d2ad7f2233ec1"
+        "content_hash": "3d2d16b57adb4a16"
       },
       {
         "file": "tests/graph_show_periphery.rs",
@@ -8708,7 +8708,7 @@
       {
         "file": "tests/graph_show_periphery.rs",
         "name": "graph_show_shows_full_body_of_a_python_nested_def",
-        "content_hash": "dd994a50d32baa61"
+        "content_hash": "28d3f05e5fd17b7b"
       },
       {
         "file": "tests/graph_show_periphery.rs",

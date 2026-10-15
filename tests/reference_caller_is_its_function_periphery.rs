@@ -53,7 +53,7 @@ fn graph_build_hangs_each_call_off_its_innermost_enclosing_function() {
         ("lib.rs::host", "lib.rs::%declare"),
         ("lib.rs::host", "lib.rs::%setup"),
         ("lib.rs::host", "lib.rs::Draw"),
-        ("lib.rs::host", "lib.rs::Local"),
+        ("lib.rs::host", "lib.rs::host::Local"),
         ("lib.rs::impl Draw for Widget", "lib.rs::Draw"),
         ("lib.rs::impl Draw for Widget", "lib.rs::Widget"),
         ("lib.rs::outer", "lib.rs::%boot"),
@@ -80,7 +80,7 @@ fn opened_over_an_index_stamped(grammar: &str) -> (Vec<String>, String) {
     symbol_index::persist_stamped(
         root,
         grammar,
-        r#"{"files":{"lib.rs":{"lang":"Rust","defs":[{"kind":"Function","name":"ghost","line":1,"end_line":1}],"refs":[]}}}"#,
+        r#"{"files":{"lib.rs":{"lang":"Rust","defs":[{"kind":"Function","name":"ghost","line":1,"end_line":1,"path":"ghost"}],"refs":[]}}}"#,
     );
 
     let _grounder = Symbols::open(root, None);

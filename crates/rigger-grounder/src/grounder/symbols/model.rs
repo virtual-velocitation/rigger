@@ -59,6 +59,13 @@ pub struct Def {
     /// deserialize, so [`crate::grounder::symbols::store::load`] answers it absent and it is
     /// rebuilt, never a live index mixing a defaulted 0 with real values.
     pub end_line: u32,
+    /// Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH): the definition's id path in its file - the path
+    /// of the definitions enclosing it, `::`, its leaf (`.` before a field or property), `name`
+    /// itself at file level - so its node is `<file>::<path>`
+    /// ([`crate::grounder::symbols::extract::extract`] sets it on every definition). No serde
+    /// default, as `end_line`: an index persisted before it existed loads as absent and is
+    /// rebuilt.
+    pub path: String,
     /// Spec 86 criterion 1: whether this definition is TEST code - directly annotated
     /// `#[test]`/`#[cfg(test)]` (or any `cfg(...)` predicate naming the `test` token, e.g.
     /// `#[cfg(all(test, feature = "x"))]`), or nested inside such a definition (a plain helper
@@ -333,6 +340,7 @@ mod tests {
                     name: "apply_damage".into(),
                     line: 1,
                     end_line: 1,
+                    path: "apply_damage".into(),
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
@@ -430,6 +438,7 @@ mod tests {
                     name: "apply_damage".into(),
                     line: 7,
                     end_line: 7,
+                    path: "apply_damage".into(),
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
