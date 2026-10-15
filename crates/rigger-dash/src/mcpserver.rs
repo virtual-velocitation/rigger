@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use crate::contextgraph::{wired, Fold, Located, Projection};
+use crate::contextgraph::{entity_site, site_fields, wired, EntitySite, Fold, Located, Projection};
 use crate::driver::workflow::Driver;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::grounder::Grounder;
@@ -666,8 +666,10 @@ impl<'a> Server<'a> {
     /// for the workflow bridge's event fold - `around` serves [`crate::contextgraph::around`] (the
     /// trait's [`Projection::subgraph`] plus the seed's callers), `show` the trait's
     /// [`Projection::locate`] added alongside this fix, so no second graph-reading implementation
-    /// is needed for either selector. Only reachable on the lookup surface; [`call_tool`] never
-    /// dispatches here otherwise.
+    /// is needed for either selector. Both render a node through [`site_object`] (spec 119, SHOW
+    /// IS ONE RENDERER): `show` the located site, `around` every node of the loaded `Graph` by
+    /// [`entity_site`] at its edge count there. Only reachable on the lookup surface;
+    /// [`call_tool`] never dispatches here otherwise.
     fn tool_graph(&self, args: &Value) -> Result<Value, ToolError> {
         let show = args.get("show").and_then(Value::as_str).unwrap_or("");
         let around = args.get("around").and_then(Value::as_str).unwrap_or("");
@@ -687,22 +689,25 @@ impl<'a> Server<'a> {
                     "status": "many",
                     "candidates": cands.iter().map(|c| json!({"id": c.id, "file": c.file})).collect::<Vec<_>>(),
                 }),
-                Located::One(site) => json!({
-                    "status": "one",
-                    "site": {
-                        "id": site.id,
-                        "file": site.file,
-                        "line": site.line,
-                        "kind": if site.kind.is_empty() { "?" } else { site.kind.as_str() },
-                        "degree": site.degree,
-                    },
-                }),
+                Located::One(site) => json!({"status": "one", "site": site_object(&site)}),
             });
         }
         let g = crate::contextgraph::around(graph, &[around.to_string()], depth)
             .map_err(|e| e.to_string())?;
+        // Each loaded node through the one renderer, its degree its edges in this merged graph:
+        // no node is read a second time from the store.
+        let degree = |id: &str| {
+            g.edges
+                .iter()
+                .filter(|e| e.from == id || e.to == id)
+                .count()
+        };
         Ok(json!({
-            "nodes": g.nodes.iter().map(|n| json!({"id": n.id, "kind": n.kind})).collect::<Vec<_>>(),
+            "nodes": g
+                .nodes
+                .iter()
+                .map(|n| site_object(&entity_site(n, degree(&n.id))))
+                .collect::<Vec<_>>(),
             "edges": g.edges.iter().map(|e| json!({"from": e.from, "rel": e.rel, "to": e.to})).collect::<Vec<_>>(),
         }))
     }
@@ -1024,6 +1029,20 @@ fn ok(id: Value, result: Value) -> String {
 /// The JSON-RPC 2.0 error envelope; see [`ok`]'s doc comment for why this is private.
 fn err(id: Value, code: i64, message: &str) -> String {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}).to_string()
+}
+
+/// A located node as the `rigger_graph` tool renders it on `show` and on every `around` node
+/// (spec 119, SHOW IS ONE RENDERER): its `id` beside each [`site_fields`] entry as a key, the
+/// values as `site_fields` gives them (`line` and `degree` JSON numbers, every other entry
+/// verbatim).
+fn site_object(site: &EntitySite) -> Value {
+    let mut object = serde_json::Map::from_iter([("id".to_string(), json!(site.id))]);
+    object.extend(
+        site_fields(site)
+            .into_iter()
+            .map(|(entry, value)| (entry.to_string(), value)),
+    );
+    Value::Object(object)
 }
 
 #[cfg(test)]

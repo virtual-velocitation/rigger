@@ -433,13 +433,17 @@ const SITE_ATTRS: [&str; 8] = [
 /// degree, and the MCP `around` over each node of the `Graph` it loaded with the node's edge count
 /// there, so neither reads a node twice.
 pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
+    let attr = |key: &str| node.attrs.get(key).map(String::as_str);
     EntitySite {
         id: node.id.clone(),
-        kind: String::new(),
-        file: None,
-        line: 0,
+        kind: attr("kind")
+            .filter(|kind| !kind.is_empty())
+            .unwrap_or(&node.kind)
+            .to_string(),
+        file: query::node_file(&node.kind, &node.id).map(str::to_string),
+        line: attr("line").and_then(|line| line.parse().ok()).unwrap_or(0),
         degree,
-        attrs: BTreeMap::new(),
+        attrs: node.attrs.clone(),
     }
 }
 
@@ -450,17 +454,32 @@ pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
 /// no entry. The CLI prints it (its live healed line and a value's newlines collapsed at print
 /// only), the MCP `show` and `around` carry it as keys beside the node's `id`.
 pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> {
-    let _ = (site, SITE_ATTRS);
-    Vec::new()
+    let located = site.file.iter().flat_map(|file| {
+        [
+            ("file", serde_json::Value::from(file.as_str())),
+            ("line", serde_json::Value::from(site.line)),
+        ]
+    });
+    let graph = [
+        ("kind", serde_json::Value::from(site.kind.as_str())),
+        ("degree", serde_json::Value::from(site.degree)),
+    ];
+    let attrs = SITE_ATTRS.into_iter().filter_map(|key| {
+        site.attrs
+            .get(key)
+            .filter(|value| !value.is_empty())
+            .map(|value| (key, serde_json::Value::from(value.as_str())))
+    });
+    located.chain(graph).chain(attrs).collect()
 }
 
 /// One disambiguation candidate for an ambiguous bare name (spec 58): the full node id and its
 /// file. [`sqlite::Projector::locate`] returns these SORTED by id, so the listing is deterministic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
-    /// The candidate's full `<file>::<name>` node id.
+    /// The candidate's full `<file>::<path>` node id.
     pub id: String,
-    /// The candidate's file (the id prefix before `::`).
+    /// The candidate's file: the file a code-entity id names ([`query::node_file`]).
     pub file: String,
 }
 

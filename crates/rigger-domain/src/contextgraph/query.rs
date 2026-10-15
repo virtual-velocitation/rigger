@@ -156,9 +156,9 @@ pub fn file_of(id: &str) -> Option<&str> {
 /// The ONE cut of a node id (spec 119): its file half, the text before its first `::` (the whole
 /// id when it holds none), and its rest half, the text after that `::` (`Some("")` for `a.rs::`,
 /// `None` when the id holds no `::`). The domain owns the id format `<file>::<path>`, and this is
-/// its in-memory cut: [`node_file`], [`file_of`] and [`leaf_of`] read it, while the store's `file_prefix` still
-/// cuts an id itself until it gives way to it (spec 119, criterion 4); the store spells the file
-/// half in SQL over its id range.
+/// its in-memory cut: [`node_file`], [`file_of`] and [`leaf_of`] read it, the store's show site
+/// and candidates taking their file from [`node_file`]; the store spells the file half in SQL
+/// over its id range.
 pub fn split_id(id: &str) -> (&str, Option<&str>) {
     match id.split_once("::") {
         Some((file, rest)) => (file, Some(rest)),

@@ -197,19 +197,23 @@ fn cmd_graph_show(entity: &str) -> Res {
     Ok(())
 }
 
-/// Print one located entity for `rigger graph --show` (spec 58; spec 92 criterion 1, FRESH ON EVERY
-/// INTEGRATION, for the header): the site/kind/degree header, then the line-numbered body bounded
-/// through the shared multi-grammar symbols authority - or an explicit note (a drifted location this
-/// tree cannot resolve even by name, or a build without the extraction grammar) in place of the body,
-/// so the surface is never silently wrong (a graceful degrade, never an error). When
-/// [`definition_body`] HEALS a drifted recorded line to the entity's live one, the header prints the
-/// LIVE site with the recorded one noted alongside it (`"recorded line N, now M"`) rather than
-/// silently swapping one location for the other with no trace of the drift.
+/// Print one located node for `rigger graph --show` (spec 58; spec 92 criterion 1, FRESH ON EVERY
+/// INTEGRATION, for the header; spec 119, SHOW IS ONE RENDERER): `show <id>`, the site/kind/degree
+/// header, one `  <entry> <value>` line per remaining [`contextgraph::site_fields`] entry, then the
+/// line-numbered body bounded through the shared multi-grammar symbols authority - or an explicit
+/// note (a drifted location this tree cannot resolve even by name, or a build without the
+/// extraction grammar) in place of the body, so the surface is never silently wrong (a graceful
+/// degrade, never an error). A node naming no file has no line: its header reads `  kind K
+/// degree D` with no `site:` part, and it prints no body and no note, [`definition_body`] never
+/// called. When [`definition_body`] HEALS a drifted recorded line to the entity's live one, the
+/// header prints the LIVE site with the recorded one noted alongside it (`"recorded line N, now
+/// M"`) rather than silently swapping one location for the other with no trace of the drift.
 fn print_entity_site(site: &contextgraph::EntitySite) {
-    let kind = if site.kind.is_empty() {
-        "?"
-    } else {
-        site.kind.as_str()
+    println!("show {}", site.id);
+    let Some(file) = site.file.as_deref() else {
+        println!("  kind {}   degree {}", site.kind, site.degree);
+        print_site_entries(site);
+        return;
     };
     // The definition name is the id's suffix after the first `::` (a file path never contains one),
     // the twin of the `<file>::<name>` id `locate` resolved - used to match the working-tree extent.
@@ -218,15 +222,15 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
         .split_once("::")
         .map(|(_, n)| n)
         .unwrap_or(site.id.as_str());
-    println!("show {}", site.id);
-    match definition_body(site.file.as_deref().unwrap_or_default(), site.line, name) {
+    match definition_body(file, site.line, name) {
         ShowBody::Lines {
             start,
             lines,
             omitted,
             extent_end,
         } => {
-            print_site_header(site, kind, start);
+            print_site_header(site, file, start);
+            print_site_entries(site);
             for (n, text) in lines {
                 println!("  {n:>6} | {text}");
             }
@@ -239,38 +243,45 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
             }
         }
         ShowBody::Note(reason) => {
-            print_site_header(site, kind, site.line);
+            print_site_header(site, file, site.line);
+            print_site_entries(site);
             println!("  ({reason})");
         }
     }
 }
 
-/// The site/kind/degree header line (spec 92 criterion 1): `live_line` is where the body actually
-/// came from (or, for a [`ShowBody::Note`], simply the recorded line - nothing was located). When it
-/// agrees with the entity's RECORDED line (`site.line`) - the overwhelmingly common case, and every
-/// case before spec 92 - the header is exactly the spec-58 shape. When a name-only fallback healed a
-/// drifted recorded line to a different live one, the header shows the LIVE line as the site (it is
-/// what the body below is FROM) and notes the recorded line beside it, so the drift is visible rather
-/// than silently resolved.
-fn print_site_header(site: &contextgraph::EntitySite, kind: &str, live_line: u32) {
+/// The site/kind/degree header line of a node naming `file` (spec 92 criterion 1): `live_line` is
+/// where the body actually came from (or, for a [`ShowBody::Note`], simply the recorded line -
+/// nothing was located). When it agrees with the entity's RECORDED line (`site.line`) - the
+/// overwhelmingly common case, and every case before spec 92 - the header is exactly the spec-58
+/// shape. When a name-only fallback healed a drifted recorded line to a different live one, the
+/// header shows the LIVE line as the site (it is what the body below is FROM) and notes the
+/// recorded line beside it, so the drift is visible rather than silently resolved.
+fn print_site_header(site: &contextgraph::EntitySite, file: &str, live_line: u32) {
     if live_line != site.line {
         println!(
             "  site: {}:{}   kind {}   degree {}   (recorded line {}, now {})",
-            site.file.as_deref().unwrap_or_default(),
-            live_line,
-            kind,
-            site.degree,
-            site.line,
-            live_line
+            file, live_line, site.kind, site.degree, site.line, live_line
         );
     } else {
         println!(
             "  site: {}:{}   kind {}   degree {}",
-            site.file.as_deref().unwrap_or_default(),
-            site.line,
-            kind,
-            site.degree
+            file, site.line, site.kind, site.degree
         );
+    }
+}
+
+/// One `  <entry> <value>` line per [`contextgraph::site_fields`] entry the header does not print
+/// (spec 119, SHOW IS ONE RENDERER), in the list's order, a value's newlines collapsed to spaces
+/// so each entry stays one line (the MCP key carrying it verbatim).
+fn print_site_entries(site: &contextgraph::EntitySite) {
+    for (entry, value) in contextgraph::site_fields(site) {
+        let printed = match value {
+            _ if matches!(entry, "file" | "line" | "kind" | "degree") => continue,
+            serde_json::Value::String(text) => text.replace('\n', " "),
+            other => other.to_string(),
+        };
+        println!("  {entry} {printed}");
     }
 }
 

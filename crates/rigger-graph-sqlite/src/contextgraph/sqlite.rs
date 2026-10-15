@@ -8,11 +8,11 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
-use super::query::{entity_id, leaf_of, node_leaf, placeholder_id};
+use super::query::{entity_id, leaf_of, node_file, node_leaf, placeholder_id};
 use super::{
-    CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch, EntryFold,
-    Error, FoldAccess, Graph, Located, Node, Projection, CODE_KIND_PRECEDENCE, KIND_AGENT,
-    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
+    entity_site, CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch,
+    EntryFold, Error, FoldAccess, Graph, Located, Node, Projection, CODE_KIND_PRECEDENCE,
+    KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
     KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
     KIND_LESSON, KIND_RATIONALE, KIND_STAGE, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
     PLACEHOLDER_SIGIL, REBUILD_OWED, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS,
@@ -893,7 +893,9 @@ impl Projector {
             many => Ok(Located::Many(
                 many.iter()
                     .map(|id| Candidate {
-                        file: file_prefix(id).to_string(),
+                        file: node_file(KIND_CODE_ENTITY, id)
+                            .unwrap_or_default()
+                            .to_string(),
                         id: id.clone(),
                     })
                     .collect(),
@@ -901,32 +903,14 @@ impl Projector {
         }
     }
 
-    /// Build an [`EntitySite`] from a resolved node: its file (the id prefix), its recorded line and
-    /// kind (attrs), and its one-hop live-edge degree. Read-only; used by
-    /// [`locate`](Projector::locate). The body's extent is NOT bounded here: the show surface derives
-    /// it from the working tree through the shared multi-grammar symbols authority (the grammar's own
-    /// node boundary), so the graph adapter carries no structural end-line guess.
+    /// Build an [`EntitySite`] from a resolved node: [`entity_site`]'s rules over the row read,
+    /// at its one-hop live-edge degree. Read-only; used by [`locate`](Projector::locate). The
+    /// body's extent is NOT bounded here: the show surface derives it from the working tree
+    /// through the shared multi-grammar symbols authority (the grammar's own node boundary), so
+    /// the graph adapter carries no structural end-line guess.
     fn site_of(&self, conn: &Connection, node: Node) -> Result<EntitySite, Error> {
-        let file = file_prefix(&node.id).to_string();
-        let line = node
-            .attrs
-            .get("line")
-            .and_then(|l| l.parse::<u32>().ok())
-            .unwrap_or(0);
-        let kind = node
-            .attrs
-            .get("kind")
-            .cloned()
-            .unwrap_or_else(|| node.kind.clone());
         let degree = one_hop_degree(conn, &node.id, &self.project)?;
-        Ok(EntitySite {
-            id: node.id,
-            kind,
-            file: Some(file),
-            line,
-            degree,
-            attrs: BTreeMap::new(),
-        })
+        Ok(entity_site(&node, degree))
     }
 
     /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE, VALIDATE ADVISORY): the count of
@@ -3326,17 +3310,6 @@ fn resolve_in_tx(tx: &Transaction, mention: &str) -> String {
 /// candidate or on its placeholder ([`placeholder_id`]).
 fn code_entity_id(file: &str, name: &str) -> String {
     entity_id(file, name)
-}
-
-/// The file prefix of a `<file>::<name>` id (spec 58): everything BEFORE the first `::`, the file
-/// half of [`split_id`](super::query::split_id) until spec 119's criterion 4 retires it. A file
-/// path never contains `::`, so this is exactly the definition's file.
-/// An id with no `::` (never a code-entity id) is returned whole.
-fn file_prefix(id: &str) -> &str {
-    match id.find("::") {
-        Some(i) => &id[..i],
-        None => id,
-    }
 }
 
 /// The one-hop degree of a node (spec 58): the count of currently-LIVE edges (`valid_to IS NULL`)
