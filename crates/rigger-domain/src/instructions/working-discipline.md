@@ -83,10 +83,13 @@ tool that searches them.
   record you cannot write either. The SDET lens re-runs each recorded search on the review
   tree: a hit the record does not carry, or a CHECKED hit whose reason does not hold, is a
   BLOCKING finding on its own. The lens derives the expression set itself from the unit's test
-  hunks at head - every string literal and every outside call with its first argument in each
-  test-side body the unit adds or edits - and runs each over every test home: a hit the record
+  hunks at head - every string literal and every outside call with its first argument in every
+  statement of each test-side body the unit adds and in the edited statements of each body it
+  edits, over the unit's whole range - and runs each over every test home: a hit the record
   does not carry, or a record whose expressions are names only for a body that spells either,
-  is a BLOCKING finding on its own. The lens compares the record's terms with the literals of
+  is a BLOCKING finding on its own. A literal of a statement the unit did not touch is the
+  tree's duplication debt, which the lens names to the operator, never a BLOCKING finding. The
+  lens compares the record's terms with the literals of
   the bodies it derives, one search per literal alone: a literal with no search of its own, or a
   term that is an expression wrapping a literal where the literal's own search is owed, is a
   BLOCKING finding on its own.
