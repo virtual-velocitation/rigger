@@ -6,7 +6,7 @@
 //! backend-agnostic contract test `passes_the_contract` in
 //! `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs`, which drives `eventstore::contract::assert_contract`
 //! against a real KurrentDB container. That test now compiles into EVERY lane's
-//! `cargo test`, and it must keep two properties, neither of which any other test pins:
+//! `cargo test`, and it must keep three properties, none of which any other test pins:
 //!
 //!   1. UN-GATED IN EVERY LANE. The adapter file carries no `#[cfg(feature = ...)]`
 //!      gate, so both the adapter AND its contract test compile and run in the default
@@ -34,9 +34,15 @@
 //!      test runner hides a passing test's stderr. These guards fail at `cargo test` time
 //!      instead.
 //!
+//!   3. A PINNED SERVER IMAGE. The fixture's image (`KURRENTDB_IMAGE`) carries a release tag,
+//!      never a floating one such as `latest`: a floating tag proves the contract against
+//!      whatever the registry serves that day, and a failed pull of it turns the suite red with
+//!      no change in the tree.
+//!
 //! Deliberately NOT feature-gated and it touches no backend symbol: it reads the adapter
-//! source as text (resolved from `CARGO_MANIFEST_DIR`, so it is CWD-independent) and drives
-//! the fixture's decision on the client errors a failed start returns, identically in both
+//! source as text (resolved from `CARGO_MANIFEST_DIR`, so it is CWD-independent), drives
+//! the fixture's decision on the client errors a failed start returns and reads the fixture's
+//! image constant, identically in both
 //! feature lanes, a real member of each lane's `cargo test` battery.
 
 mod common;
