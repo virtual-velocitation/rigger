@@ -350,19 +350,11 @@ fn a_pre86_persisted_index_with_no_is_test_key_loads_defaulting_every_item_to_fa
 /// the shared fixture of the per-round back-compat checks below, each of which simulates an
 /// index written before one more additive field existed. `written_by` names that binary.
 fn legacy_module_def(keys: &str, written_by: &str) -> Def {
-    let legacy = format!(
-        r#"{{
-  "files": {{
-    "legacy_mod.rs": {{
-      "lang": "Rust",
-      "defs": [
-        {{ "kind": "Module", "name": "legacy_child", "line": 1{keys} }}
-      ],
-      "refs": []
-    }}
-  }}
-}}"#
-    );
+    let def: serde_json::Value = serde_json::from_str(&format!(
+        r#"{{ "kind": "Module", "name": "legacy_child", "line": 1{keys} }}"#
+    ))
+    .expect("the legacy definition is JSON");
+    let legacy = symbol_index::rust_index_json("legacy_mod.rs", serde_json::json!([def]));
     legacy_file(
         &legacy,
         "legacy_mod.rs",

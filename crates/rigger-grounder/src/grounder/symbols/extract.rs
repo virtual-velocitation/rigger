@@ -1558,9 +1558,12 @@ pub struct Recorded<'a> {
 ///
 /// The kind is compared through `kind_str`, so a field beside a same-named fn, or a variant
 /// inside its same-named enum, never widens or blocks a tier-1 or tier-3 match; at the recorded
-/// line tier 2 ignores the kind, so with no `path` given a lone same-named field there bounds the
-/// body, while with one a field's own path (`S.h`) never matches a function's (`h`), so it never
-/// does. An `Err` is a grammar or query that cannot run over the source.
+/// line tier 2 ignores the kind, so a lone same-named field there bounds the body when it sits at
+/// the path sought: with no `path` given, any such field; with one, only a field whose own path is
+/// that path - a field under a named container (`S.h`) never matches a function's (`h`), while a
+/// file-level field, under an anonymous class or a binding the name filter drops (Go's `var _`),
+/// has its leaf as its path and does. An `Err` is a grammar or query that cannot run over the
+/// source.
 pub fn locate_extent(
     source: &str,
     lang: Lang,
