@@ -3582,8 +3582,9 @@ mod tests {
     /// command that counts it, and the audit record owed for every added test-side shape with the
     /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
     /// the root crate's `src/` test modules included), run once per term of the statements of
-    /// each added or edited test-side body - each string literal in full and each outside call
-    /// with its first argument token, never the body's name - and the sentence
+    /// each added or edited test-side body - each string literal alone and in full, quotes
+    /// inside the term and one run per literal however short, and each outside call with its
+    /// first argument token, never the body's name - and the sentence
     /// walk's generators as commands over the unit's whole range on every round (the merge base
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
     /// 1 with its counted fallback recorded as a gap, each FIXED or new line's `file:line`
@@ -3678,6 +3679,11 @@ mod tests {
              makes outside the shared home with its first argument token \
              (`create_dir_all(root.join(`, `for_extension(\"rs\")`), the command run once per \
              term.",
+            "A literal's term is the literal alone, its quotes inside the term \
+             (`t='\"src/f.rs\"'`) and nothing around it - never the call, format string or \
+             statement that spells it - one run per literal, none set aside as short or \
+             conventional (`\"x\"`, `\":memory:\"`, a fixture path), and every hit the run \
+             prints listed under its disposition.",
             "index($0, ENVIRON[\"t\"])",
             "END { print n + 0 \" hits\" }'`",
             "The record pastes each command as run, its hit count and every hit it printed, each \
