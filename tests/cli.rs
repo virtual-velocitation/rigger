@@ -27240,6 +27240,58 @@ fn graph_show_notes_a_deleted_method_at_its_path_beside_a_same_named_one() {
     );
 }
 
+/// Spec 119, A BARE SHOW FINDS A LEAF OR PATH: GIVEN a built graph of a Rust file whose structs
+/// `Struct` and `Other` each hold a `field`, WHEN the operator runs `rigger graph --show
+/// Struct.field`, THEN it shows `Struct`'s field alone, the leaf `field` filtered on the id
+/// suffix `::Struct.field`, never listing `Other`'s.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_answers_a_struct_field_by_its_path() {
+    let dir = temp_project();
+    let root = dir.path();
+    common::fixtures::write_text(
+        root,
+        "src/shape.rs",
+        "pub struct Struct {\n    pub field: u8,\n}\npub struct Other {\n    pub field: u8,\n}\n",
+    );
+    run_rigger_ok(root, &["graph", "build"]);
+    assert_eq!(
+        run_rigger_ok(root, &["graph", "--show", "Struct.field"])
+            .lines()
+            .collect::<Vec<_>>(),
+        [
+            "show src/shape.rs::Struct.field",
+            "  site: src/shape.rs:2   kind field   degree 1",
+            "  name field",
+            "  lang rust",
+            "       2 |     pub field: u8,",
+        ],
+        "the path form shows Struct's field alone"
+    );
+}
+
+/// Spec 119, A BARE SHOW FINDS A LEAF OR PATH: GIVEN a project, WHEN the operator runs `rigger
+/// graph --around new`, a bare name where a seed is an exact id, THEN the empty answer's note
+/// names the exact-id seed form `<file>::<path>` and `rigger graph --show`, which resolves a bare
+/// name.
+#[test]
+fn graph_around_a_bare_name_notes_the_seed_form_and_show() {
+    let dir = temp_project();
+    let root = dir.path();
+    common::cli::seed_rigger_dir(root);
+    assert_eq!(
+        run_rigger_ok(root, &["graph", "--around", "new"])
+            .lines()
+            .collect::<Vec<_>>(),
+        [
+            "subgraph around \"new\" (depth 2):",
+            "  (nothing found; a seed is an exact id, `<file>::<path>`, and `rigger graph --show \
+             <name>` resolves a bare name; has `rigger run` been run yet?)",
+        ],
+        "an empty around names the seed form and --show"
+    );
+}
+
 /// Spec 119, ONE EXTENT: GIVEN a code entity with a file and a non-zero line but no `name` attr,
 /// beside a definition of its leaf in the working tree, WHEN the operator runs `rigger graph
 /// --show` on its id, THEN it prints the "no production definition named" note with its id in place of the

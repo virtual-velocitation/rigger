@@ -11507,7 +11507,7 @@ mod tests {
         }
 
         /// The id `p.locate(query)` resolves to, insisting it resolves to exactly one.
-        fn located(p: &Projector, query: &str) -> String {
+        pub(super) fn located(p: &Projector, query: &str) -> String {
             match p.locate(query).unwrap() {
                 Located::One(site) => site.id,
                 other => panic!("{query} resolves to one node; got {other:?}"),
@@ -11712,6 +11712,132 @@ mod tests {
                     "{plan:?}"
                 );
             }
+        }
+    }
+
+    /// Spec 119 criterion 7 (A BARE SHOW FINDS A LEAF OR PATH): after the exact id and the leaf,
+    /// `locate` answers the leaf lookup filtered on the id, by the suffix `::<query>`, then by the
+    /// query's `<file>::` range, and last the exact id of a nameless `code-entity` or `artifact`
+    /// whose id holds `::`, over hand-built events.
+    mod a_bare_show_finds_a_leaf_or_path {
+        use super::leaf_keys_resolution::located;
+        use super::*;
+        use crate::test_support::{hold, path_entity_json};
+
+        /// A definition `(file, leaf, path, kind)`, folded carrying its id path.
+        type PathDef<'a> = (&'a str, &'a str, &'a str, &'a str);
+
+        /// The method `a.rs::T::new`.
+        const T_NEW: PathDef<'static> = ("a.rs", "new", "T::new", "method");
+
+        /// Fold `defs` from position 1, each at its position's line, then `then` at the next
+        /// position.
+        fn folded(defs: &[PathDef], then: impl FnOnce(&Projector, u64)) -> Projector {
+            let p = Projector::open(":memory:", "test").unwrap();
+            let mut pos = 0;
+            for (file, leaf, path, kind) in defs {
+                pos += 1;
+                let json = path_entity_json(file, leaf, path, kind, pos, "rust");
+                apply_json(&p, pos, TYPE_CODE_ENTITY_EXTRACTED, json);
+            }
+            then(&p, pos + 1);
+            p
+        }
+
+        /// Once `defs` and then `then` fold, each `(query, id)` of `shown` shows the one node `id`.
+        fn shows(defs: &[PathDef], then: impl FnOnce(&Projector, u64), shown: &[(&str, &str)]) {
+            let p = folded(defs, then);
+            for (query, id) in shown {
+                assert_eq!(located(&p, query), *id, "{query}");
+            }
+        }
+
+        crate::test_cases! {
+            a_path_query_answers_the_definition_whose_id_ends_in_it: shows(
+                &[
+                    ("a.rs", "method", "Type::method", "method"),
+                    ("a.rs", "field", "Struct.field", "field"),
+                    ("a.rs", "Constant", "Kind::Constant", "constant"),
+                    ("b.rs", "method", "method", "function"),
+                    ("c.rs", "method", "xType::method", "method"),
+                ],
+                |_, _| {},
+                &[
+                    ("Type::method", "a.rs::Type::method"),
+                    ("Struct.field", "a.rs::Struct.field"),
+                    ("Kind::Constant", "a.rs::Kind::Constant"),
+                ],
+            );
+            a_dotted_query_answers_the_namespace_it_names_before_a_field_at_its_path: shows(
+                &[("s.rs", "B", "A.B", "field")],
+                |p, pos| apply_code_entity(p, pos, "n.cs", "A.B", "namespace", pos, "csharp"),
+                &[("A.B", "n.cs::A.B")],
+            );
+            a_path_query_answers_its_path_before_a_file_named_by_its_first_segment: shows(
+                &[T_NEW, ("T", "new", "U::new", "method")],
+                |_, _| {},
+                &[("T::new", "a.rs::T::new")],
+            );
+            a_flat_id_answers_the_definition_its_file_holds_at_its_leaf: shows(
+                &[
+                    T_NEW,
+                    ("a.rs", "field", "S.field", "field"),
+                    ("a.rs", "m", "Trait::m", "declaration"),
+                    ("b.rs", "new", "new", "function"),
+                ],
+                |_, _| {},
+                &[
+                    ("a.rs::new", "a.rs::T::new"),
+                    ("a.rs::field", "a.rs::S.field"),
+                    ("a.rs::m", "a.rs::Trait::m"),
+                ],
+            );
+            a_flat_id_a_decision_holds_answers_the_definition_its_file_holds_at_its_leaf: shows(
+                &[T_NEW],
+                |p, pos| hold(p, pos, &["a.rs::new"]),
+                &[("a.rs::new", "a.rs::T::new")],
+            );
+            a_flat_id_a_caller_holds_answers_the_definition_its_file_holds_at_its_leaf: shows(
+                &[T_NEW],
+                |p, pos| apply_call(p, pos, "a.rs", "go", "new"),
+                &[("a.rs::new", "a.rs::T::new")],
+            );
+            a_flat_id_a_definition_holds_answers_itself: shows(
+                &[T_NEW, ("a.rs", "new", "new", "function")],
+                |_, _| {},
+                &[("a.rs::new", "a.rs::new")],
+            );
+            an_artifact_spelling_a_path_answers_where_no_definition_does: shows(
+                &[],
+                |p, pos| hold(p, pos, &["T::new"]),
+                &[("T::new", "T::new")],
+            );
+            a_path_query_answers_the_definition_beside_an_artifact_spelling_it: shows(
+                &[T_NEW],
+                |p, pos| hold(p, pos, &["T::new"]),
+                &[("T::new", "a.rs::T::new")],
+            );
+            an_artifact_spelling_a_bare_leaf_answers_before_the_definition_of_that_leaf: shows(
+                &[T_NEW],
+                |p, pos| hold(p, pos, &["new"]),
+                &[("new", "new")],
+            );
+        }
+
+        #[test]
+        fn a_flat_id_naming_two_definitions_of_its_leaf_lists_both() {
+            let p = folded(&[T_NEW, ("a.rs", "new", "U::new", "method")], |_, _| {});
+            assert_eq!(
+                p.locate("a.rs::new").unwrap(),
+                Located::Many(
+                    ["a.rs::T::new", "a.rs::U::new"]
+                        .map(|id| Candidate {
+                            file: "a.rs".to_string(),
+                            id: id.to_string(),
+                        })
+                        .to_vec()
+                )
+            );
         }
     }
 
