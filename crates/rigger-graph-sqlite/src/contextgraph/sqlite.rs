@@ -12673,7 +12673,7 @@ mod tests {
         /// A live edge as `(from, to, rel, valid-from, source)`.
         type LiveEdge = (String, String, String, i64, Position);
 
-        use crate::test_support::{apply_generation_head, apply_keyed, keyed_event};
+        use crate::test_support::{apply_generation_head, apply_keyed, f_rs_batch_def, folds};
 
         fn def(name: &str, line: u64, fresh: bool) -> serde_json::Value {
             crate::test_support::def_json("src/f.rs", name, line, fresh)
@@ -12713,22 +12713,22 @@ mod tests {
         /// 1, 2, ... - and require exactly `edges` live, exactly `nodes` held, and `retired`
         /// retired code entities.
         fn defs_fold_to(
-            defs: &[(&str, u64, bool, &str, u64)],
+            defs: &[(&str, u64, &str, usize, u64)],
             edges: &[LiveEdge],
             nodes: &[&str],
             retired: usize,
         ) {
             let p = Projector::open(":memory:", "test").unwrap();
-            for (i, (name, line, fresh, key, secs)) in defs.iter().enumerate() {
-                let json = def(name, *line, *fresh);
-                apply_keyed(
-                    &p,
+            for (i, (name, line, generation, index, secs)) in defs.iter().enumerate() {
+                let def = f_rs_batch_def(
                     i as u64 + 1,
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    json,
-                    key,
+                    generation,
+                    *index,
+                    (name, "function", *line),
+                    None,
                     *secs,
                 );
+                folds(&p, &[def]);
             }
             assert_eq!(live_edges(&p), edges);
             assert_eq!(node_ids(&p), nodes);
@@ -12782,9 +12782,9 @@ mod tests {
             use super::*;
             use crate::contextgraph::CODE_KIND_PRECEDENCE;
             use crate::test_support::{
-                attrs_of, call_json, cross_file_call_and_proof, definition, f_rs_batch_def, folds,
-                kind_def_json, proven_by_attr, ref_json, DefRow as Def, NEW_LEAF_MODULE,
-                OLD_LEAF_FN, RENAMED_NODE, RENAMED_PATH,
+                attrs_of, call_json, cross_file_call_and_proof, definition, kind_def_json,
+                proven_by_attr, ref_json, DefRow as Def, NEW_LEAF_MODULE, OLD_LEAF_FN,
+                RENAMED_NODE, RENAMED_PATH,
             };
 
             const X: &str = "src/f.rs::x";
@@ -12985,20 +12985,8 @@ mod tests {
             #[test]
             fn a_rebuild_discards_a_shadow_folded_under_another_fold_rule() {
                 let log = [
-                    keyed_event(
-                        1,
-                        TYPE_CODE_ENTITY_EXTRACTED,
-                        kind_def_json("src/f.rs", "x", "function", 3, true),
-                        "gc/src/f.rs@h1#0",
-                        10,
-                    ),
-                    keyed_event(
-                        2,
-                        TYPE_CODE_ENTITY_EXTRACTED,
-                        kind_def_json("src/f.rs", "x", "field", 7, false),
-                        "gc/src/f.rs@h1#1",
-                        10,
-                    ),
+                    f_rs_batch_def(1, "h1", 0, ("x", "function", 3), None, 10),
+                    f_rs_batch_def(2, "h1", 1, ("x", "field", 7), None, 10),
                     decision_at("d1", "a.rs", 3),
                 ];
                 let dir = tempfile::tempdir().unwrap();
@@ -13126,15 +13114,7 @@ mod tests {
                 let p = Projector::open(":memory:", "test").unwrap();
                 fold_defs(&p, 1, "h1", 10, &defs[..1]);
                 fold_a_cross_file_call_and_a_proof(&p, 2);
-                let second = kind_def_json("src/f.rs", "x", defs[1].1, defs[1].2, false);
-                apply_keyed(
-                    &p,
-                    5,
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    second,
-                    "gc/src/f.rs@h1#1",
-                    10,
-                );
+                folds(&p, &[f_rs_batch_def(5, "h1", 1, defs[1], None, 10)]);
                 x_is_a_field_no_call_resolves_onto(&p, "the module and the field folded");
             }
 
@@ -13248,25 +13228,13 @@ mod tests {
                 let p = Projector::open(":memory:", "test").unwrap();
                 let reference = ref_json("src/f.rs", "x");
                 apply_keyed(&p, 1, TYPE_EDGE_INFERRED, reference, "gc/src/f.rs@h1#0", 10);
-                let field = kind_def_json("src/f.rs", "x", "field", 4, false);
-                apply_keyed(
+                folds(
                     &p,
-                    2,
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    field,
-                    "gc/src/f.rs@h1#1",
-                    10,
+                    &[f_rs_batch_def(2, "h1", 1, ("x", "field", 4), None, 10)],
                 );
                 assert_eq!(attrs_of(&p, X), definition("x", "field", 4));
-                let function = kind_def_json("src/f.rs", "x", "function", 9, false);
-                apply_keyed(
-                    &p,
-                    3,
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    function,
-                    "gc/src/f.rs@h1#2",
-                    10,
-                );
+                let function = f_rs_batch_def(3, "h1", 2, ("x", "function", 9), None, 10);
+                folds(&p, &[function]);
                 assert_eq!(attrs_of(&p, X), definition("x", "function", 9));
             }
         }
@@ -13332,9 +13300,9 @@ mod tests {
             /// The dropped definition is retired, and counted as a retired code entity.
             a_code_generation_that_drops_an_entity_retires_its_node: defs_fold_to(
                 &[
-                    ("alpha", 1, true, "gc/src/f.rs@h1#0", 10),
-                    ("gone", 9, false, "gc/src/f.rs@h1#1", 10),
-                    ("alpha", 2, true, "gc/src/f.rs@h2#0", 20),
+                    ("alpha", 1, "h1", 0, 10),
+                    ("gone", 9, "h1", 1, 10),
+                    ("alpha", 2, "h2", 0, 20),
                 ],
                 &[edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 20, 3)],
                 &["src/f.rs", "src/f.rs::alpha"],
@@ -13343,9 +13311,9 @@ mod tests {
             /// `gone` returns with h1, and `alpha`, which only h2 defined, is the retired one.
             an_entity_that_returns_after_a_generation_dropped_it_is_live_again: defs_fold_to(
                 &[
-                    ("gone", 9, true, "gc/src/f.rs@h1#0", 10),
-                    ("alpha", 1, true, "gc/src/f.rs@h2#0", 20),
-                    ("gone", 9, true, "gc/src/f.rs@h1#0", 30),
+                    ("gone", 9, "h1", 0, 10),
+                    ("alpha", 1, "h2", 0, 20),
+                    ("gone", 9, "h1", 0, 30),
                 ],
                 &[edge("src/f.rs", "src/f.rs::gone", REL_CONTAINS, 30, 3)],
                 &["src/f.rs", "src/f.rs::gone"],
@@ -13376,13 +13344,16 @@ mod tests {
         fn a_dropped_entity_a_decision_still_governs_stays_live() {
             let p = Projector::open(":memory:", "test").unwrap();
             apply_generation_head(&p, 1, "src/f.rs", "h1", "alpha", 10);
-            apply_keyed(
+            folds(
                 &p,
-                2,
-                TYPE_CODE_ENTITY_EXTRACTED,
-                def("gone", 9, false),
-                "gc/src/f.rs@h1#1",
-                10,
+                &[f_rs_batch_def(
+                    2,
+                    "h1",
+                    1,
+                    ("gone", "function", 9),
+                    None,
+                    10,
+                )],
             );
             apply_json(
                 &p,
@@ -13390,13 +13361,16 @@ mod tests {
                 TYPE_DECISION_MADE,
                 decision_json("d1", "keep it", &["src/f.rs::gone"], ""),
             );
-            apply_keyed(
+            folds(
                 &p,
-                4,
-                TYPE_CODE_ENTITY_EXTRACTED,
-                def("alpha", 2, true),
-                "gc/src/f.rs@h2#0",
-                20,
+                &[f_rs_batch_def(
+                    4,
+                    "h2",
+                    0,
+                    ("alpha", "function", 2),
+                    None,
+                    20,
+                )],
             );
             assert_eq!(
                 node_ids(&p),
@@ -13423,13 +13397,16 @@ mod tests {
             // h2's first event defines another name, so `alpha` is retired at the boundary and
             // comes back with the event after it.
             apply_generation_head(&p, 3, "src/f.rs", "h2", "beta", 20);
-            apply_keyed(
+            folds(
                 &p,
-                4,
-                TYPE_CODE_ENTITY_EXTRACTED,
-                def("alpha", 2, false),
-                "gc/src/f.rs@h2#1",
-                20,
+                &[f_rs_batch_def(
+                    4,
+                    "h2",
+                    1,
+                    ("alpha", "function", 2),
+                    None,
+                    20,
+                )],
             );
             let alpha = p
                 .whole()

@@ -1227,17 +1227,13 @@ impl ReleaseEraStore {
     /// folded: its ledgers are the current ones, it records rule 1, and the node the two
     /// definitions share, with its file's assertion of it, holds the one folded last, the field.
     fn folded_at_rule_1() -> Self {
-        use common::fixtures::kind_def_json;
+        use common::fixtures::f_rs_batch_def;
         use rigger::contextgraph::sqlite::Projector;
-        let def = |kind, line, fresh, key| {
-            let data = serde_json::to_vec(&kind_def_json("src/f.rs", "x", kind, line, fresh));
-            keyed(TYPE_CODE_ENTITY_EXTRACTED, data.unwrap(), key, 10)
-        };
         let store = Self::logging(
             true,
             &[
-                def("function", 3, true, "gc/src/f.rs@h1#0"),
-                def("field", 7, false, "gc/src/f.rs@h1#1"),
+                f_rs_batch_def(1, "h1", 0, ("x", "function", 3), None, 10),
+                f_rs_batch_def(2, "h1", 1, ("x", "field", 7), None, 10),
             ],
         );
         common::fixtures::folds(

@@ -11,8 +11,11 @@
 //!  - a differing-name pair at one id path folded as ONE batch, the one transaction a file's
 //!    extraction batch folds in, live and in a rebuild folding the whole log as one batch.
 //!
-//! No grammar yields one id path under two leaves from a tree, so the log is hand-built, as the
-//! criterion names; every test runs on both lanes.
+//! A tree yields one id path under two leaves as a twin, a TypeScript `namespace A.B` (leaf
+//! `A.B`) beside `class A { B }` (leaf `B`), which shares the path until criterion 10's dedup
+//! keeps one, and across two generations of a file, the namespace alone and then the class
+//! alone. The log is hand-built, as the criterion names, so each case folds exactly the leaves,
+//! kinds and order it pins; every test runs on both lanes.
 
 mod common;
 
