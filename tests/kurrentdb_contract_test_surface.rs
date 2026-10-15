@@ -25,10 +25,12 @@
 //!      through `start_kurrentdb` and hands a failed start to the one decision `start_failure`.
 //!      It skips - a stderr notice, `None`, and `with_kurrentdb` RETURNS without running the
 //!      test's body - only when no runtime is reachable: DOCKER_HOST unset and no socket where
-//!      the client looks for one, or a socket that refuses the connection. Every other failure
-//!      (a startup timeout, an image pull, a port binding, a daemon error) fails the test with
-//!      its error, and so does every failure once DOCKER_HOST names a runtime, since the test
-//!      gate's container snippet exports it exactly when it found one. Both regressions are
+//!      the client looks for one, or a socket that refuses the connection. An image pull whose
+//!      stream to the runtime broke is retried, up to `START_ATTEMPTS` starts in all. Every other
+//!      failure (a startup timeout, a pull the runtime refused, a port binding, a daemon error,
+//!      a broken pull on the last attempt) fails the test with its error, and so does every
+//!      failure once DOCKER_HOST names a runtime, since the test gate's container snippet
+//!      exports it exactly when it found one. Both regressions are
 //!      SILENT: a skip turned into a panic reds only on the boxes that lack a runtime, and a
 //!      failure turned into a skip stays green everywhere with the suites unrun, because the
 //!      test runner hides a passing test's stderr. These guards fail at `cargo test` time
@@ -47,7 +49,9 @@
 
 mod common;
 
-use common::fixtures::{container_runtime, start_failure, StartFailure, KURRENTDB_IMAGE};
+use common::fixtures::{
+    container_runtime, start_failure, StartFailure, KURRENTDB_IMAGE, START_ATTEMPTS,
+};
 use common::repo::repo_text;
 use testcontainers::bollard::errors::Error as BollardError;
 use testcontainers::bollard::{Docker, API_DEFAULT_VERSION};
@@ -113,11 +117,12 @@ fn the_contract_test_is_present_and_never_gated_on_a_cargo_feature() {
 /// CRITERION 3, part two - the contract test SKIPS ONLY WITHOUT A CONTAINER RUNTIME. Every
 /// KurrentDB-backed test runs through the one shared fixture `with_kurrentdb`, which boots its
 /// server through `start_kurrentdb` (tests/common/fixtures/kurrentdb.rs): the start is never
-/// force-unwrapped, a failed one goes to `start_failure` with the DOCKER_HOST the process sees,
-/// that decision's `Skip` arm is the fixture's ONLY skip - the one no-runtime notice and the one
-/// `None` - and its `Fail` arm panics with the start's error. `with_kurrentdb` returns on that
-/// `None`, and `passes_the_contract` runs through `with_kurrentdb`. A regression in any of them is
-/// SILENT (see the module header), so it is pinned here at `cargo test` time.
+/// force-unwrapped, a failed one goes to `start_failure` with the DOCKER_HOST the process sees and
+/// the attempt it was, that decision's `Retry` arm starts again, its `Skip` arm is the fixture's
+/// ONLY skip - the one no-runtime notice and the one `None` - and its `Fail` arm panics with the
+/// start's error. `with_kurrentdb` returns on that `None`, and `passes_the_contract` runs through
+/// `with_kurrentdb`. A regression in any of them is SILENT (see the module header), so it is
+/// pinned here at `cargo test` time.
 #[test]
 fn the_contract_test_skips_only_without_a_container_runtime() {
     let squeeze = |text: &str| -> String { text.chars().filter(|c| !c.is_whitespace()).collect() };
@@ -143,17 +148,38 @@ fn the_contract_test_skips_only_without_a_container_runtime() {
         );
     }
 
-    // Within the start's `match`, from the call to the `};` that closes it, the error goes to
-    // the one decision with the DOCKER_HOST the process sees; its `Skip` arm prints the
-    // no-runtime notice and returns `None`, and its `Fail` arm panics with the error.
+    // Within the loop around the start, the start's error - from every failed start, none
+    // dropped - goes straight to the one decision with the DOCKER_HOST the process sees and the
+    // attempt it was; from there to the `};` that closes the loop, its `Retry` arm waits and
+    // starts again, its `Skip` arm prints the no-runtime notice and returns `None`, and its
+    // `Fail` arm panics with the error.
+    let handled = "image.start()){Ok(c)=>breakc,Err(e)=>e,};";
+    let decision = "matchstart_failure(std::env::var(\"DOCKER_HOST\").ok().as_deref(),&e,attempt){";
     let rest = &fixture[start_at..];
-    let window = &rest[..rest.find("};").unwrap_or(rest.len())];
     assert!(
-        window.contains(
-            "Err(e)=>matchstart_failure(std::env::var(\"DOCKER_HOST\").ok().as_deref(),&e){"
-        ),
+        rest.starts_with(handled) && rest[handled.len()..].starts_with(decision),
         "a failed container start must go to the one decision `start_failure`, handed the \
-         DOCKER_HOST this process sees and the start's error; the start handling is:\n{window}"
+         DOCKER_HOST this process sees, the start's error and the attempt it was; the start \
+         handling is:\n{rest}"
+    );
+    let rest = &rest[handled.len()..];
+    let window = &rest[..rest.find("};").unwrap_or(rest.len())];
+    let retry = window
+        .split_once("StartFailure::Retry=>")
+        .and_then(|(_, arms)| arms.split_once("StartFailure::Skip=>"))
+        .map(|(retry, _)| retry)
+        .unwrap_or_else(|| {
+            panic!(
+                "the decision's `Retry` arm must come before its `Skip` arm; the start handling \
+                 is:\n{window}"
+            )
+        });
+    assert!(
+        fixture[..start_at].contains("loop{")
+            && retry.contains("std::thread::sleep(START_RETRY_BACKOFF);")
+            && retry.contains("attempt+=1;"),
+        "the `Retry` arm must wait the backoff and start again, inside the loop around the \
+         start; it is:\n{retry}"
     );
     let (skip, fail) = window
         .split_once("StartFailure::Skip=>")
@@ -246,8 +272,8 @@ fn no_runtime_failures() -> [TestcontainersError; 2] {
 }
 
 /// Failed starts on a runtime the client reached, one per way a start fails there: the server
-/// never reports ready in time, the image does not pull, the port does not bind, the daemon
-/// refuses to create the container.
+/// never reports ready in time, the runtime refuses the image's pull, the port does not bind, the
+/// daemon refuses to create the container.
 fn reachable_runtime_failures() -> [TestcontainersError; 4] {
     let daemon = |message: &str| BollardError::DockerResponseServerError {
         status_code: 500,
@@ -275,7 +301,7 @@ fn the_fixture_skips_a_start_that_reaches_no_container_runtime() {
     for error in no_runtime_failures() {
         for unset in [None, Some("")] {
             assert_eq!(
-                start_failure(unset, &error),
+                start_failure(unset, &error, 1),
                 StartFailure::Skip,
                 "DOCKER_HOST {unset:?}: {error}"
             );
@@ -287,7 +313,11 @@ fn the_fixture_skips_a_start_that_reaches_no_container_runtime() {
 #[test]
 fn the_fixture_fails_a_start_that_fails_on_a_reachable_runtime() {
     for error in reachable_runtime_failures() {
-        assert_eq!(start_failure(None, &error), StartFailure::Fail, "{error}");
+        assert_eq!(
+            start_failure(None, &error, 1),
+            StartFailure::Fail,
+            "{error}"
+        );
     }
 }
 
@@ -300,9 +330,85 @@ fn the_fixture_never_skips_once_docker_host_names_a_runtime() {
         .chain(reachable_runtime_failures())
     {
         assert_eq!(
-            start_failure(Some(GATE_DOCKER_HOST), &error),
+            start_failure(Some(GATE_DOCKER_HOST), &error, 1),
             StartFailure::Fail,
             "{error}"
         );
+    }
+}
+
+/// Failed pulls whose stream to a reachable runtime broke before the image arrived, each as the
+/// client returns it: the response body ending inside a JSON line (tokio-util's "bytes remaining
+/// on stream", the CI flake), and the request outliving the client's timeout.
+fn transient_pull_failures() -> [TestcontainersError; 2] {
+    let pull = |err: BollardError| {
+        TestcontainersError::Client(ClientError::PullImage {
+            descriptor: format!("{}:{}", KURRENTDB_IMAGE.0, KURRENTDB_IMAGE.1),
+            err,
+        })
+    };
+    [
+        pull(BollardError::IOError {
+            err: std::io::Error::other("bytes remaining on stream"),
+        }),
+        pull(BollardError::RequestTimeoutError),
+    ]
+}
+
+/// A pull whose stream broke is retried on every attempt before the last, whatever DOCKER_HOST
+/// says: the runtime answered the start, so the next pull can complete.
+#[test]
+fn the_fixture_retries_a_pull_whose_stream_broke() {
+    for error in transient_pull_failures() {
+        for docker_host in [None, Some(""), Some(GATE_DOCKER_HOST)] {
+            for attempt in 1..START_ATTEMPTS {
+                assert_eq!(
+                    start_failure(docker_host, &error, attempt),
+                    StartFailure::Retry,
+                    "DOCKER_HOST {docker_host:?}, attempt {attempt}: {error}"
+                );
+            }
+        }
+    }
+}
+
+/// The retry is bounded: a pull whose stream broke on the last of `START_ATTEMPTS` starts fails
+/// the test with that error.
+#[test]
+fn the_fixture_fails_a_broken_pull_on_its_last_attempt() {
+    assert_eq!(
+        START_ATTEMPTS, 3,
+        "the fixture starts its server at most three times"
+    );
+    for error in transient_pull_failures() {
+        for docker_host in [None, Some(GATE_DOCKER_HOST)] {
+            assert_eq!(
+                start_failure(docker_host, &error, START_ATTEMPTS),
+                StartFailure::Fail,
+                "DOCKER_HOST {docker_host:?}: {error}"
+            );
+        }
+    }
+}
+
+/// A start the runtime refused or never reached is not retried on any attempt: a denied pull, a
+/// startup timeout or a daemon error fails at once, and no runtime skips at once.
+#[test]
+fn the_fixture_never_retries_a_start_the_runtime_refused_or_never_reached() {
+    for attempt in 1..=START_ATTEMPTS {
+        for error in reachable_runtime_failures() {
+            assert_eq!(
+                start_failure(None, &error, attempt),
+                StartFailure::Fail,
+                "attempt {attempt}: {error}"
+            );
+        }
+        for error in no_runtime_failures() {
+            assert_eq!(
+                start_failure(None, &error, attempt),
+                StartFailure::Skip,
+                "attempt {attempt}: {error}"
+            );
+        }
     }
 }

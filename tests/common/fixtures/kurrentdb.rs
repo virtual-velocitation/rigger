@@ -26,24 +26,64 @@ pub const KURRENTDB_IMAGE: (&str, &str) = ("kurrentplatform/kurrentdb", "26.2.2"
 /// `tests/principle_gates_wiring.rs` pins that spelling to this constant.
 pub const TEST_CONTAINER_LABEL: (&str, &str) = ("rigger.test", "true");
 
+/// How many times [`start_kurrentdb`] starts the server's container before a start whose image
+/// pull broke in transit fails the test ([`start_failure`]).
+pub const START_ATTEMPTS: u32 = 3;
+
+/// How long [`start_kurrentdb`] waits after a start whose image pull broke in transit before it
+/// starts again.
+pub const START_RETRY_BACKOFF: Duration = Duration::from_secs(5);
+
 /// What a failed container start means for the test that asked for the server.
 #[derive(Debug, PartialEq, Eq)]
 pub enum StartFailure {
+    /// The container is started again, after [`START_RETRY_BACKOFF`].
+    Retry,
     /// The test passes as skipped, its body never run.
     Skip,
     /// The test fails with the start's error.
     Fail,
 }
 
-/// What [`start_kurrentdb`] does with a container start that failed, given the DOCKER_HOST the
-/// test process sees. It skips only when no container runtime is reachable: DOCKER_HOST unset
-/// (or empty, which the test gate's container snippet reads as unset too) and either no socket
-/// where the client looks for one, or a socket that refuses the connection - which arrives as
-/// the failure of the start's first call to the runtime, the container's creation. Every other
-/// failure - a startup timeout, an image pull, a port binding, any daemon error - fails the
-/// test, and so does every failure once DOCKER_HOST names a runtime: the snippet exports it
-/// exactly when it found one, so a test the gate runs never skips.
-pub fn start_failure(docker_host: Option<&str>, error: &TestcontainersError) -> StartFailure {
+/// What [`start_kurrentdb`] does with a container start that failed on its `attempt`-th try
+/// (counted from 1), given the DOCKER_HOST the test process sees.
+///
+/// It retries, on every attempt before [`START_ATTEMPTS`], an image pull whose stream to a
+/// reachable runtime broke before the image arrived: the pull's bollard error is a transport
+/// one - `IOError` (the response body ending inside a JSON line, tokio-util's "bytes remaining
+/// on stream", or any other read failure on the connection), `HyperResponseError` or
+/// `HyperLegacyError` (the HTTP exchange failing mid-response) or `RequestTimeoutError`. A pull
+/// the runtime answered with an error - `DockerResponseServerError` or `DockerStreamError`,
+/// such as "pull access denied" or a missing tag - stands, since a second pull gets the same
+/// answer.
+///
+/// It skips only when no container runtime is reachable: DOCKER_HOST unset (or empty, which
+/// the test gate's container snippet reads as unset too) and either no socket where the client
+/// looks for one, or a socket that refuses the connection - which arrives as the failure of the
+/// start's first call to the runtime, the container's creation. Every other failure - a
+/// startup timeout, a pull the runtime refused, a broken pull on the last attempt, a port
+/// binding, any daemon error - fails the test, and so does every failure once DOCKER_HOST
+/// names a runtime: the snippet exports it exactly when it found one, so a test the gate runs
+/// never skips.
+pub fn start_failure(
+    docker_host: Option<&str>,
+    error: &TestcontainersError,
+    attempt: u32,
+) -> StartFailure {
+    if attempt < START_ATTEMPTS
+        && matches!(
+            error,
+            TestcontainersError::Client(ClientError::PullImage {
+                err: BollardError::IOError { .. }
+                    | BollardError::HyperResponseError { .. }
+                    | BollardError::HyperLegacyError { .. }
+                    | BollardError::RequestTimeoutError,
+                ..
+            })
+        )
+    {
+        return StartFailure::Retry;
+    }
     let no_runtime = match error {
         TestcontainersError::Client(ClientError::Init(BollardError::SocketNotFoundError(_))) => {
             true
@@ -96,36 +136,52 @@ pub fn container_runtime() -> tokio::runtime::Runtime {
 /// the adapter already accepts. The host side of the port is whichever one the container
 /// runtime picks, read back from the container, so runs that overlap (a mutation sweep's
 /// parallel copies, two units testing at once, two tests of one binary) never compete for
-/// one. Returns `None` - after saying why on stderr, so the caller skips cleanly - when no
+/// one. Starts the container again, up to [`START_ATTEMPTS`] times, while its image pull breaks
+/// in transit. Returns `None` - after saying why on stderr, so the caller skips cleanly - when no
 /// container runtime is reachable, and panics with the error on any other failed start
 /// ([`start_failure`]).
 fn start_kurrentdb(rt: &tokio::runtime::Runtime) -> Option<(ContainerAsync<GenericImage>, String)> {
     let (name, tag) = KURRENTDB_IMAGE;
-    let image = GenericImage::new(name, tag)
-        .with_exposed_port(KURRENTDB_PORT.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("IS LEADER"))
-        .with_env_var("KURRENTDB_INSECURE", "true")
-        .with_env_var("KURRENTDB_MEM_DB", "true")
-        .with_env_var("KURRENTDB_RUN_PROJECTIONS", "None")
-        .with_env_var("KURRENTDB_NODE_PORT", KURRENTDB_PORT.to_string())
-        // An empty host port lets the runtime pick one. The address is explicit because podman
-        // reports a picked port's address as empty unless one was asked for, and testcontainers
-        // reads back only a binding whose address parses.
-        .with_host_config_modifier(|host| {
-            host.publish_all_ports = Some(false);
-            host.port_bindings = Some(HashMap::from([(
-                KURRENTDB_PORT.tcp().to_string(),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(String::new()),
-                }]),
-            )]));
-        })
-        // The test gate's container snippet removes a labelled container a signal left behind.
-        .with_labels([TEST_CONTAINER_LABEL]);
-    let container = match rt.block_on(image.start()) {
-        Ok(c) => c,
-        Err(e) => match start_failure(std::env::var("DOCKER_HOST").ok().as_deref(), &e) {
+    let request = || {
+        GenericImage::new(name, tag)
+            .with_exposed_port(KURRENTDB_PORT.tcp())
+            .with_wait_for(WaitFor::message_on_stdout("IS LEADER"))
+            .with_env_var("KURRENTDB_INSECURE", "true")
+            .with_env_var("KURRENTDB_MEM_DB", "true")
+            .with_env_var("KURRENTDB_RUN_PROJECTIONS", "None")
+            .with_env_var("KURRENTDB_NODE_PORT", KURRENTDB_PORT.to_string())
+            // An empty host port lets the runtime pick one. The address is explicit because podman
+            // reports a picked port's address as empty unless one was asked for, and testcontainers
+            // reads back only a binding whose address parses.
+            .with_host_config_modifier(|host| {
+                host.publish_all_ports = Some(false);
+                host.port_bindings = Some(HashMap::from([(
+                    KURRENTDB_PORT.tcp().to_string(),
+                    Some(vec![PortBinding {
+                        host_ip: Some("0.0.0.0".to_string()),
+                        host_port: Some(String::new()),
+                    }]),
+                )]));
+            })
+            // The test gate's container snippet removes a labelled container a signal left behind.
+            .with_labels([TEST_CONTAINER_LABEL])
+    };
+    let mut attempt = 1;
+    let container = loop {
+        let image = request();
+        let e = match rt.block_on(image.start()) {
+            Ok(c) => break c,
+            Err(e) => e,
+        };
+        match start_failure(std::env::var("DOCKER_HOST").ok().as_deref(), &e, attempt) {
+            StartFailure::Retry => {
+                eprintln!(
+                    "the KurrentDB container did not start (attempt {attempt} of \
+                     {START_ATTEMPTS}), starting again: {e}"
+                );
+                std::thread::sleep(START_RETRY_BACKOFF);
+                attempt += 1;
+            }
             StartFailure::Skip => {
                 eprintln!(
                     "skipping: no KurrentDB container (no container runtime is reachable): {e}"
@@ -133,7 +189,7 @@ fn start_kurrentdb(rt: &tokio::runtime::Runtime) -> Option<(ContainerAsync<Gener
                 return None;
             }
             StartFailure::Fail => panic!("the KurrentDB container did not start: {e}"),
-        },
+        }
     };
     match rt
         .block_on(container.get_host_port_ipv4(KURRENTDB_PORT))
