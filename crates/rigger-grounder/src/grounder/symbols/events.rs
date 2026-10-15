@@ -870,11 +870,7 @@ mod tests {
             "a reference emits an EdgeInferred event"
         );
 
-        let p = Projector::open(":memory:", "test").unwrap();
-        for (i, mut e) in events.into_iter().enumerate() {
-            e.position = (i + 1) as u64;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-        }
+        let p = crate::test_support::fold_events(events);
 
         let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
         assert!(
@@ -1723,11 +1719,7 @@ fn an_integration_test() {
 
         let events = project_events(dir.path().to_str().unwrap());
 
-        let p = Projector::open(":memory:", "test").unwrap();
-        for (i, mut e) in events.into_iter().enumerate() {
-            e.position = (i + 1) as u64;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-        }
+        let p = crate::test_support::fold_events(events);
 
         let g = p
             .subgraph(
@@ -1834,11 +1826,7 @@ fn an_integration_test() {
 
         let events = project_events(dir.path().to_str().unwrap());
 
-        let p = Projector::open(":memory:", "test").unwrap();
-        for (i, mut e) in events.into_iter().enumerate() {
-            e.position = (i + 1) as u64;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-        }
+        let p = crate::test_support::fold_events(events);
 
         let g = p
             .subgraph(
@@ -2000,11 +1988,7 @@ fn an_integration_test() {
 
         let events = project_events(dir.path().to_str().unwrap());
 
-        let p = Projector::open(":memory:", "test").unwrap();
-        for (i, mut e) in events.into_iter().enumerate() {
-            e.position = (i + 1) as u64;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-        }
+        let p = crate::test_support::fold_events(events);
 
         let g = p
             .subgraph(&["broken.js".to_string(), "clean.js".to_string()], 1)

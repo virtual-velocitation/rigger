@@ -19552,13 +19552,13 @@ mod tests {
     /// Fold `payloads` as `type_` events into a fresh graph, in order so each event's position
     /// increases (older first), and return `seed`'s depth-2 subgraph.
     fn fold_subgraph(type_: &str, payloads: Vec<Value>, seed: &[String]) -> Graph {
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        for (i, payload) in payloads.iter().enumerate() {
-            let mut e = Event::new(type_, serde_json::to_vec(payload).unwrap());
-            e.position = (i as u64) + 1;
-            crate::test_support::folds(&graph, std::slice::from_ref(&e));
-        }
-        graph.subgraph(seed, 2).unwrap()
+        crate::test_support::fold_events(
+            payloads
+                .iter()
+                .map(|payload| Event::new(type_, serde_json::to_vec(payload).unwrap())),
+        )
+        .subgraph(seed, 2)
+        .unwrap()
     }
 
     /// The capped section `write` renders for the [`fold_subgraph`] of `payloads`.

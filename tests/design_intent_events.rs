@@ -35,19 +35,7 @@ use rigger::eventstore::Event;
 mod common;
 use common::fixtures::apply_json;
 
-/// A fresh in-memory projector with `events` folded onto it in order, their log positions
-/// numbered from 1.
-#[cfg(feature = "symbols")]
-fn fold(events: impl IntoIterator<Item = Event>) -> Projector {
-    let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in events.into_iter().enumerate() {
-        e.position = (i + 1) as u64;
-        common::fixtures::folds(&p, std::slice::from_ref(&e));
-    }
-    p
-}
-
-/// [`fold`]s `events`, which must be exactly one event of `event_type` - what one emitted
+/// [`common::fixtures::fold_events`]s `events`, which must be exactly one event of `event_type` - what one emitted
 /// `item` lowers to.
 #[cfg(feature = "symbols")]
 fn fold_the_one_event(events: Vec<Event>, item: &str, event_type: &str) -> Projector {
@@ -56,7 +44,7 @@ fn fold_the_one_event(events: Vec<Event>, item: &str, event_type: &str) -> Proje
         events[0].type_, event_type,
         "the emitted event is a {event_type}"
     );
-    fold(events)
+    common::fixtures::fold_events(events)
 }
 
 /// The kind of the node with `id` in `g`, if it folded at all.
@@ -324,12 +312,8 @@ fn the_public_extraction_pipeline_is_a_deterministic_reproducible_rebuild() {
 
     // Fold the emitted stream and confirm the four design-intent kinds all land - the reference
     // architecture becomes a set of queryable design-intent nodes in the very graph it specifies.
-    let p = Projector::open(":memory:", "test").unwrap();
+    let p = common::fixtures::fold_events(first);
     let mut seeds = Vec::new();
-    for (i, mut e) in first.into_iter().enumerate() {
-        e.position = (i + 1) as u64;
-        common::fixtures::folds(&p, std::slice::from_ref(&e));
-    }
     for path in ["docs/architecture.md", "docs/adr/0001-code-as-events.md"] {
         seeds.push(path.to_string());
     }
@@ -586,15 +570,11 @@ fn the_public_link_pipeline_folds_edges_that_emanate_from_their_typed_design_int
 fn fold_edge_set(order: &[(&str, &str)]) -> Vec<(String, String, String, String)> {
     use rigger::grounder::design::events::link_events;
     use rigger::grounder::design::extract::extract_links;
-    let p = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-    for &(path, contents) in order {
-        for mut e in link_events(&extract_links(path, contents)) {
-            pos += 1;
-            e.position = pos;
-            common::fixtures::folds(&p, std::slice::from_ref(&e));
-        }
-    }
+    let p = common::fixtures::fold_events(
+        order
+            .iter()
+            .flat_map(|&(path, contents)| link_events(&extract_links(path, contents))),
+    );
     // Seed at every possible from-node (each source doc, and the rationale comment site) so the
     // depth-1 subgraph captures every folded design-intent edge.
     let mut seeds: Vec<String> = order.iter().map(|&(path, _)| path.to_string()).collect();
@@ -688,7 +668,7 @@ fn the_scope_gate_ingests_a_design_doc_and_drops_a_usage_doc() {
     );
     events.extend(usage_events);
 
-    let p = fold(events);
+    let p = common::fixtures::fold_events(events);
 
     // The design doc is present as a design-doc node; the usage doc is absent from the graph -
     // neither as a design-intent node nor as a bare-artifact edge endpoint.
@@ -781,7 +761,7 @@ fn a_structural_design_doc_carrying_a_usage_word_is_never_dropped_and_folds_its_
             !events.is_empty(),
             "a structural design doc is never gated as usage; {path} emitted nothing"
         );
-        let p = fold(events);
+        let p = common::fixtures::fold_events(events);
         let g = p.subgraph(&[path.to_string()], 1).unwrap();
         assert_eq!(
             kind_of(&g, path),
@@ -816,7 +796,7 @@ fn assert_dropped_beside_one_kept_doc(
     let (kept_path, kept_contents) = kept;
     all_events.extend(concept_events(&extract_concepts(kept_path, kept_contents)));
 
-    let p = fold(all_events);
+    let p = common::fixtures::fold_events(all_events);
     let mut seeds: Vec<String> = dropped.iter().map(|&(path, _)| path.to_string()).collect();
     seeds.push(kept_path.to_string());
     let g = p.subgraph(&seeds, 1).unwrap();
@@ -892,7 +872,7 @@ fn the_scope_gate_never_suppresses_source_file_rationale_even_under_a_usage_path
         !events.is_empty(),
         "a source file's rationale is never gated by the doc scope gate; got nothing"
     );
-    let p = fold(events);
+    let p = common::fixtures::fold_events(events);
     let rationale_id = format!("{path}#L2");
     let g = p.subgraph(std::slice::from_ref(&rationale_id), 1).unwrap();
     assert_eq!(
@@ -948,7 +928,7 @@ fn under_a_handbook_path_a_design_rule_doc_stays_but_a_pure_end_user_guide_is_dr
         "a loop-discipline / spec-shape rule doc under a handbook path is ingested; got nothing"
     );
     events.extend(guide_events);
-    let p = fold(events);
+    let p = common::fixtures::fold_events(events);
     let g = p
         .subgraph(&[rule.to_string(), guide.to_string()], 1)
         .unwrap();

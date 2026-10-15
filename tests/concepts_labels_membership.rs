@@ -30,7 +30,6 @@ use common::fixtures::edge;
 use common::fixtures::node_with_optional_attrs;
 use common::fixtures::pair_map;
 use rigger::concepts::{derive, events, intent_layer, Derivation, DEFAULT_RESOLUTION};
-use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     Graph, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_HANDBOOK_RULE,
     KIND_RATIONALE, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES, TIER_EXTRACTED,
@@ -52,13 +51,9 @@ fn label_of(d: &Derivation, member: &str) -> String {
 /// Fold `events` into a FRESH in-memory projection (positions assigned in order, as a rebuild replays
 /// them) and return the whole live graph - so a test can read what the fold actually persisted.
 fn fold(events: &[Event]) -> Graph {
-    let p = Projector::open(":memory:", "test").unwrap();
-    for (i, e) in events.iter().enumerate() {
-        let mut e = e.clone();
-        e.position = i as u64 + 1;
-        common::fixtures::folds(&p, std::slice::from_ref(&e));
-    }
-    p.whole().unwrap()
+    common::fixtures::fold_events(events.iter().cloned())
+        .whole()
+        .unwrap()
 }
 
 /// A concept holding a titled design-doc AND a MORE-CENTRAL rationale in ONE connected region. The
