@@ -2302,6 +2302,7 @@ mod tests {
         let graph = Projector::open(":memory:", "test").unwrap();
         seed_shown_nodes(&graph);
         let answer = shown_graph_answer(&graph, json!({"around": SHOWN_FILE, "depth": 1}));
+        let shown = |id: &str| shown_graph_answer(&graph, json!({"show": id}))["site"].clone();
         let mut nodes = answer["nodes"].as_array().expect("a node list").clone();
         nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
         assert_eq!(
@@ -2311,14 +2312,11 @@ mod tests {
                        "unit": "u7", "summary": "the width overflows"}),
                 json!({"id": "src/limits.rs", "file": "src/limits.rs", "line": 0,
                        "kind": "file", "degree": 4, "lang": "rust"}),
-                json!({"id": "src/limits.rs::LIMIT", "file": "src/limits.rs", "line": 3,
-                       "kind": "constant", "degree": 1, "name": "LIMIT", "lang": "rust"}),
-                json!({"id": "src/limits.rs::blank", "file": "src/limits.rs", "line": 7,
-                       "kind": "code-entity", "degree": 1, "name": "blank", "lang": "rust"}),
-                json!({"id": "src/limits.rs::width", "file": "src/limits.rs", "line": 5,
-                       "kind": "field", "degree": 1, "name": "width"}),
+                shown("src/limits.rs::LIMIT"),
+                shown("src/limits.rs::blank"),
+                shown("src/limits.rs::width"),
             ],
-            "every loaded node, each at its degree in the merged graph"
+            "every loaded node at its degree in the merged graph, each definition as show gives it"
         );
         let loaded = around(&graph, &[SHOWN_FILE.to_string()], 1).unwrap();
         for node in &nodes {
@@ -2336,7 +2334,7 @@ mod tests {
             );
         }
         assert_eq!(
-            shown_graph_answer(&graph, json!({"show": "f-shown"}))["site"]["degree"],
+            shown("f-shown")["degree"],
             2,
             "show reads the finding's degree from the store, past the depth bound"
         );
