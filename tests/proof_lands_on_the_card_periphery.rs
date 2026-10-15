@@ -93,7 +93,6 @@ fn an_outside_combat_test() {
 #[test]
 fn proof_lands_through_the_public_pipeline_independent_of_the_implementers_own_fixture() {
     use rigger::contextgraph::query::card;
-    use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::{Projection, KIND_FILE};
 
     let root = tempfile::tempdir().unwrap();
@@ -106,12 +105,7 @@ fn proof_lands_through_the_public_pipeline_independent_of_the_implementers_own_f
     )
     .unwrap();
 
-    let mut events = common::project_events(root.path().to_str().unwrap());
-    let p = Projector::open(":memory:", "test").unwrap();
-    for (zero_based, event) in events.iter_mut().enumerate() {
-        event.position = zero_based as u64 + 1;
-        common::fixtures::folds(&p, std::slice::from_ref(event));
-    }
+    let p = common::fixtures::fold_events(common::project_events(root.path().to_str().unwrap()));
 
     let seed_files = [
         "combat.rs".to_string(),
@@ -199,7 +193,6 @@ fn checks_finisher() {
 fn forward_referenced_evidence_through_the_public_pipeline_is_reconciled_once_its_definition_later_folds(
 ) {
     use rigger::contextgraph::query::card;
-    use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
     use rigger::grounder::symbols::build_index;
 
@@ -218,12 +211,7 @@ fn forward_referenced_evidence_through_the_public_pipeline_is_reconciled_once_it
         idx.files().keys().collect::<Vec<_>>()
     );
 
-    let mut events = common::project_events(root.path().to_str().unwrap());
-    let p = Projector::open(":memory:", "test").unwrap();
-    for (zero_based, event) in events.iter_mut().enumerate() {
-        event.position = zero_based as u64 + 1;
-        common::fixtures::folds(&p, std::slice::from_ref(event));
-    }
+    let p = common::fixtures::fold_events(common::project_events(root.path().to_str().unwrap()));
 
     let g = p
         .subgraph(

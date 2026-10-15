@@ -15,7 +15,10 @@
 //!
 //! It also guards, on the graph `rigger graph build` folds, spec 119 criterion 8, A CALLER IS
 //! NAMED BY ITS PATH: a call in a Rust method of `impl T` and one in a Go receiver method each
-//! hang off the method's own definition node at its path, never a nameless node at its leaf.
+//! hang off the method's own definition node at its path, never a nameless node at its leaf. On
+//! the persisted symbol index, a `ts-tags-v3` index saved before that criterion, its callers by
+//! leaf, is still served, the caller path sharing that generation until criterion 9 bumps it, so
+//! its call folds from the flat id `<file>::<leaf>`.
 //!
 //! It also holds the wire form of the eight older kinds (spec 116 criterion 4 moved their kind
 //! strings onto shared constants): the emit pass still lowers each to the string it always did.
@@ -108,6 +111,42 @@ fn graph_build_hangs_a_method_s_calls_off_the_method_s_path() {
              node among them",
         );
     }
+}
+
+/// GIVEN a project whose `a.rs` calls `helper` from `impl T { fn new() }` and whose persisted
+/// symbol index, stamped `ts-tags-v3`, was saved before spec 119 criterion 8 named a caller by
+/// its path: the method at its path `T::new`, the call attributed to the method's leaf `new`,
+/// WHEN the production whole-project ingest emits the project and the graph folds its events,
+/// THEN the index is served as persisted, the caller path sharing `ts-tags-v3` until criterion 9
+/// bumps the index version: the call's `CALLS` edge folds from the flat id `a.rs::new`, never
+/// from the `a.rs::T::new` a rebuild from the tree would name.
+#[cfg(feature = "symbols")]
+#[test]
+fn the_ingest_serves_a_ts_tags_v3_index_saved_with_a_leaf_caller_and_folds_from_that_leaf() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    std::fs::write(
+        root.join("a.rs"),
+        common::fixtures::RUST_METHOD_CALLER_SOURCE,
+    )
+    .unwrap();
+    let mut index: serde_json::Value = serde_json::from_str(&symbol_index::rust_index_json(
+        "a.rs",
+        serde_json::json!([
+            { "kind": "Method", "name": "new", "line": 3, "end_line": 3, "path": "T::new" },
+            { "kind": "Function", "name": "helper", "line": 5, "end_line": 5, "path": "helper" },
+        ]),
+    ))
+    .unwrap();
+    index["files"]["a.rs"]["refs"] =
+        serde_json::json!([{ "name": "helper", "line": 3, "enclosing": "new" }]);
+    symbol_index::persist_stamped(root.to_str().unwrap(), "ts-tags-v3", &index.to_string());
+
+    common::fixtures::assert_live_calls(
+        &common::fixtures::fold_events(common::project_events(root.to_str().unwrap())),
+        &[("a.rs::new", "a.rs::helper")],
+        "a ts-tags-v3 index saved with a leaf caller folds its call from that leaf",
+    );
 }
 
 /// The definition names the persisted index of `root` holds for `lib.rs`, with the extraction

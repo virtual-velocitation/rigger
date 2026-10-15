@@ -169,6 +169,16 @@ fn fold_at(p: &Projector, pos: u64, mut e: Event) {
     folds(p, std::slice::from_ref(&e));
 }
 
+/// A fresh in-memory projector with `events` folded onto it one at a time, in order, their log
+/// positions numbered from 1 - the shape a real ingest's append gives them.
+pub fn fold_events(events: impl IntoIterator<Item = Event>) -> Projector {
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.into_iter().enumerate() {
+        fold_at(&p, zero_based as u64 + 1, event);
+    }
+    p
+}
+
 /// A `type_` event carrying `data`, replay-keyed `key` and valid from `secs` after the epoch.
 pub fn keyed(type_: &str, data: Vec<u8>, key: &str, secs: u64) -> Event {
     Event::new(type_, data)

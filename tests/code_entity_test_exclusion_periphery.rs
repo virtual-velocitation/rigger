@@ -449,20 +449,6 @@ mod tests {
 }
 ";
 
-/// A fresh in-memory projector with `events` folded onto it in order, their log positions
-/// numbered from 1 - the shape a real ingest's append gives them.
-#[cfg(feature = "symbols")]
-fn fold_events(
-    events: impl IntoIterator<Item = rigger::eventstore::Event>,
-) -> rigger::contextgraph::sqlite::Projector {
-    let p = rigger::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-    for (zero_based, mut event) in events.into_iter().enumerate() {
-        event.position = zero_based as u64 + 1;
-        common::fixtures::folds(&p, std::slice::from_ref(&event));
-    }
-    p
-}
-
 /// Writes each `(path, source)` pair (parent directories created) under a fresh temp root,
 /// folds that tree's whole-project ingest onto a fresh projector and returns the subgraph
 /// `depth` hops around `seeds` - the public `project_batches` -> `Projector` path every
@@ -482,7 +468,7 @@ fn ingested_subgraph(
         std::fs::write(path, source).unwrap();
     }
     let seeds: Vec<String> = seeds.iter().map(|s| s.to_string()).collect();
-    fold_events(common::project_events(root.path().to_str().unwrap()))
+    common::fixtures::fold_events(common::project_events(root.path().to_str().unwrap()))
         .subgraph(&seeds, depth)
         .unwrap()
 }
@@ -1237,7 +1223,7 @@ fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_
          and no named EdgeInferred; got {contract_batch:?}"
     );
 
-    let g = fold_events(batches.into_iter().flat_map(|(_, events, _)| events))
+    let g = common::fixtures::fold_events(batches.into_iter().flat_map(|(_, events, _)| events))
         .subgraph(&["lib.rs".to_string(), "contract.rs".to_string()], 3)
         .unwrap();
     assert!(
@@ -1381,7 +1367,7 @@ fn a_non_module_definitions_stray_out_of_line_flag_never_triggers_cross_file_exc
     let root = root.path().to_str().unwrap();
     store::save(&idx, root).unwrap();
 
-    let g = fold_events(common::project_events(root))
+    let g = common::fixtures::fold_events(common::project_events(root))
         .subgraph(&["host/excluded_file/victim.rs".to_string()], 3)
         .unwrap();
     assert!(
@@ -1811,7 +1797,7 @@ fn design_doc_graph(md: &str) -> rigger::contextgraph::Graph {
 
     let mut events = concept_events(&extract_concepts("docs/architecture.md", md));
     events.extend(link_events(&extract_links("docs/architecture.md", md)));
-    fold_events(events)
+    common::fixtures::fold_events(events)
         .subgraph(&["docs/architecture.md".to_string()], 3)
         .unwrap()
 }
