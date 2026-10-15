@@ -13,9 +13,9 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    around, entity_site, site_fields, EntitySite, Graph, Located, Projection, CODE_KIND_CONSTANT,
-    CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION, KIND_CODE_ENTITY, KIND_COMMUNITY,
-    KIND_DESIGN_DOC, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
+    around, entity_site, site_fields, Candidate, EntitySite, Graph, Located, Projection,
+    CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION, KIND_CODE_ENTITY,
+    KIND_COMMUNITY, KIND_DESIGN_DOC, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
     TYPE_REVIEW_FINDING,
 };
@@ -642,6 +642,19 @@ pub fn located_site(graph: &Projector, id: &str) -> EntitySite {
         panic!("{id} locates one node")
     };
     site
+}
+
+/// The [`Located::Many`] a lookup answers with the candidates `(id, file)`, in their order.
+pub fn located_many(cands: &[(&str, &str)]) -> Located {
+    Located::Many(
+        cands
+            .iter()
+            .map(|(id, file)| Candidate {
+                id: id.to_string(),
+                file: file.to_string(),
+            })
+            .collect(),
+    )
 }
 
 /// Each of [`SHOWN_IDS`] beside the one site `graph` locates for it, in their order.

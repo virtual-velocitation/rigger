@@ -23,18 +23,18 @@ mod common;
 use common::cli::{open_graph, run_rigger_ok, seed_rigger_dir, temp_project};
 use common::fixtures::{
     apply_call, apply_code_entity, apply_def, apply_edge_inferred_evidence, call_edge_pairs,
-    call_frontiers, call_layer, call_node_ids, call_walk, edge, kinded_def_node,
+    call_frontiers, call_layer, call_node_ids, call_walk, edge, kinded_def_node, located_many,
     node_with_optional_attrs, plain,
 };
 use common::lens::{coupling_rows, files_lens_rows, SUB_C as CONCEPT, SUB_C_FILES_ROUTE};
 use common::served::served_json;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    is_call_target, CallGraph, Candidate, Direction, Graph, Located, Projection,
-    CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_METHOD,
-    CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_TRAIT, CODE_KIND_TYPE,
-    KIND_CODE_ENTITY, KIND_CONCEPT, NON_TARGET_KINDS, REL_CALLS, REL_CONTAINS, REL_REALIZES,
-    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
+    is_call_target, CallGraph, Direction, Graph, Projection, CODE_KIND_CONSTANT, CODE_KIND_FIELD,
+    CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_METHOD, CODE_KIND_MODULE, CODE_KIND_OTHER,
+    CODE_KIND_PROPERTY, CODE_KIND_TRAIT, CODE_KIND_TYPE, KIND_CODE_ENTITY, KIND_CONCEPT,
+    NON_TARGET_KINDS, REL_CALLS, REL_CONTAINS, REL_REALIZES, TIER_AMBIGUOUS, TIER_EXTRACTED,
+    TIER_INFERRED,
 };
 
 /// The three kind strings no call resolves onto, as an entity event spells them.
@@ -218,15 +218,9 @@ fn a_call_naming_a_members_leaf_walks_to_the_other_files_fn_in_both_directions()
 
         assert_eq!(
             p.locate("open").unwrap(),
-            Located::Many(vec![
-                Candidate {
-                    id: "src/a.rs::open".to_string(),
-                    file: "src/a.rs".to_string(),
-                },
-                Candidate {
-                    id: "src/b.rs::open".to_string(),
-                    file: "src/b.rs".to_string(),
-                },
+            located_many(&[
+                ("src/a.rs::open", "src/a.rs"),
+                ("src/b.rs::open", "src/b.rs")
             ]),
             "{kind}: a lookup by name lists the member beside the fn"
         );

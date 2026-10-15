@@ -11774,7 +11774,7 @@ mod tests {
     mod a_bare_show_finds_a_leaf_or_path {
         use super::leaf_keys_resolution::located;
         use super::*;
-        use crate::test_support::{hold, path_entity_json};
+        use crate::test_support::{hold, located_many, path_entity_json};
 
         /// A definition `(file, leaf, path, kind)`, folded carrying its id path.
         type PathDef<'a> = (&'a str, &'a str, &'a str, &'a str);
@@ -11881,14 +11881,7 @@ mod tests {
             let p = folded(&[T_NEW, ("a.rs", "new", "U::new", "method")], |_, _| {});
             assert_eq!(
                 p.locate("a.rs::new").unwrap(),
-                Located::Many(
-                    ["a.rs::T::new", "a.rs::U::new"]
-                        .map(|id| Candidate {
-                            file: "a.rs".to_string(),
-                            id: id.to_string(),
-                        })
-                        .to_vec()
-                )
+                located_many(&[("a.rs::T::new", "a.rs"), ("a.rs::U::new", "a.rs")])
             );
         }
     }
