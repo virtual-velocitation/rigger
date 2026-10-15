@@ -3577,7 +3577,10 @@ mod tests {
     /// witness, the rule-spelling search over every tracked text file, one
     /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
     /// phrase in another case or split by a rewrap still a hit) whose command and hits the walk pastes for the `sdet`
-    /// lens to re-run, and the record the walk owes, and the foreground wait for
+    /// lens to re-run, each boolean term a production hunk adds to or removes from a filter,
+    /// guard or predicate read as a rewritten rule whose consumer phrases - the notes, Returns
+    /// paragraphs, variant docs and oracles of the function's depth-1 callers - that search
+    /// runs, and the record the walk owes, and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
     /// line when the host backgrounds one.
     #[test]
@@ -3679,6 +3682,15 @@ mod tests {
              every hit it printed, each FIXED or CHECKED with its reason, or names the \
              rewritten-rule set empty; the `sdet` lens re-derives the generators' sets and \
              re-runs each search on the review tree.",
+            "A changed condition rewrites a rule too: every boolean term your production hunks \
+             in `crates/` and `src/` add to or remove from a filter, guard or predicate, listed \
+             from `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src` with the test \
+             regions left out, changes the rule its function answers.",
+            "Its old statement is what the function's callers from `rigger graph --around \
+             <file>::<fn> --depth 1` spell - the notes they print, their Returns paragraphs, the \
+             docs of the variants the answer maps to and the oracles asserting them - and each \
+             such consumer phrase is a phrase of the search above, run once, every hit FIXED \
+             with the new qualifier or CHECKED with the reason it does not reach it.",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
