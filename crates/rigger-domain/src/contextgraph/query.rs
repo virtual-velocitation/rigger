@@ -2495,6 +2495,24 @@ mod leaf_tests {
     }
 
     #[test]
+    fn a_path_query_is_looked_up_by_the_text_after_its_last_separator() {
+        assert_eq!(
+            [
+                "T::new",
+                "S.field",
+                "a::b.c",
+                "a.b::c",
+                "a.rs::T::new",
+                "new",
+                "T::%",
+                "T::"
+            ]
+            .map(path_leaf),
+            ["new", "field", "c", "c", "new", "new", "%", ""]
+        );
+    }
+
+    #[test]
     fn a_placeholder_is_its_file_and_its_leaf_behind_one_sigil() {
         assert_eq!(
             [("b.rs", "new"), ("b.rs", "%x"), ("Makefile", "")].map(|(f, l)| placeholder_id(f, l)),
