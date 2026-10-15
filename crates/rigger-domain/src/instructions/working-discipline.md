@@ -54,7 +54,13 @@ tool that searches them.
   call into the shared test home is a shape of its own, and its distinguishing expressions are
   mechanical: every string literal it spells, in full (an assertion, expect or panic message, a
   fixture path, a query text), and every call it makes outside the shared home with its first
-  argument token (`create_dir_all(root.join(`, `for_extension("rs")`). A literal's term is the
+  argument token (`create_dir_all(root.join(`, `for_extension("rs")`). A body you add is walked
+  whole, every statement; a body you edit is walked in its edited statements, the hunks of the
+  unit's whole range inside it - the merge base with the run branch to head, the range the
+  sentence walk and the mutant probes use - since a statement you did not touch carries no
+  shape you added. A twin the search surfaces only among statements you did not touch,
+  spelling no literal or call of yours, is the tree's duplication debt: your hand-over names it
+  to the operator, and you do not lift it. A literal's term is the
   literal alone - its text complete, quotes included, and nothing around it - never the call
   that passes it, a format string that embeds it, the statement that spells it or two literals
   joined; an expression wrapping a literal is a term of its own only where this rule names it,
@@ -77,10 +83,13 @@ tool that searches them.
   record you cannot write either. The SDET lens re-runs each recorded search on the review
   tree: a hit the record does not carry, or a CHECKED hit whose reason does not hold, is a
   BLOCKING finding on its own. The lens derives the expression set itself from the unit's test
-  hunks at head - every string literal and every outside call with its first argument in each
-  test-side body the unit adds or edits - and runs each over every test home: a hit the record
+  hunks at head - every string literal and every outside call with its first argument in every
+  statement of each test-side body the unit adds and in the edited statements of each body it
+  edits, over the unit's whole range - and runs each over every test home: a hit the record
   does not carry, or a record whose expressions are names only for a body that spells either,
-  is a BLOCKING finding on its own. The lens compares the record's terms with the literals of
+  is a BLOCKING finding on its own. A literal of a statement the unit did not touch is the
+  tree's duplication debt, which the lens names to the operator, never a BLOCKING finding. The
+  lens compares the record's terms with the literals of
   the bodies it derives, one search per literal alone: a literal with no search of its own, or a
   term that is an expression wrapping a literal where the literal's own search is owed, is a
   BLOCKING finding on its own.
