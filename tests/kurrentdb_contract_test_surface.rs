@@ -148,20 +148,22 @@ fn the_contract_test_skips_only_without_a_container_runtime() {
         );
     }
 
-    // Within the loop around the start, from the call to the `};` that closes the loop, the error
-    // goes to the one decision with the DOCKER_HOST the process sees and the attempt it was; its
-    // `Retry` arm waits and starts again, its `Skip` arm prints the no-runtime notice and returns
-    // `None`, and its `Fail` arm panics with the error.
+    // Within the loop around the start, the start's error - from every failed start, none
+    // dropped - goes straight to the one decision with the DOCKER_HOST the process sees and the
+    // attempt it was; from there to the `};` that closes the loop, its `Retry` arm waits and
+    // starts again, its `Skip` arm prints the no-runtime notice and returns `None`, and its
+    // `Fail` arm panics with the error.
+    let handled = "image.start()){Ok(c)=>breakc,Err(e)=>e,};";
+    let decision = "matchstart_failure(std::env::var(\"DOCKER_HOST\").ok().as_deref(),&e,attempt){";
     let rest = &fixture[start_at..];
-    let window = &rest[..rest.find("};").unwrap_or(rest.len())];
     assert!(
-        window.contains(
-            "Err(e)=>matchstart_failure(std::env::var(\"DOCKER_HOST\").ok().as_deref(),&e,attempt){"
-        ),
+        rest.starts_with(handled) && rest[handled.len()..].starts_with(decision),
         "a failed container start must go to the one decision `start_failure`, handed the \
          DOCKER_HOST this process sees, the start's error and the attempt it was; the start \
-         handling is:\n{window}"
+         handling is:\n{rest}"
     );
+    let rest = &rest[handled.len()..];
+    let window = &rest[..rest.find("};").unwrap_or(rest.len())];
     let retry = window
         .split_once("StartFailure::Retry=>")
         .and_then(|(_, arms)| arms.split_once("StartFailure::Skip=>"))
@@ -311,7 +313,11 @@ fn the_fixture_skips_a_start_that_reaches_no_container_runtime() {
 #[test]
 fn the_fixture_fails_a_start_that_fails_on_a_reachable_runtime() {
     for error in reachable_runtime_failures() {
-        assert_eq!(start_failure(None, &error, 1), StartFailure::Fail, "{error}");
+        assert_eq!(
+            start_failure(None, &error, 1),
+            StartFailure::Fail,
+            "{error}"
+        );
     }
 }
 
@@ -370,7 +376,10 @@ fn the_fixture_retries_a_pull_whose_stream_broke() {
 /// the test with that error.
 #[test]
 fn the_fixture_fails_a_broken_pull_on_its_last_attempt() {
-    assert_eq!(START_ATTEMPTS, 3, "the fixture starts its server at most three times");
+    assert_eq!(
+        START_ATTEMPTS, 3,
+        "the fixture starts its server at most three times"
+    );
     for error in transient_pull_failures() {
         for docker_host in [None, Some(GATE_DOCKER_HOST)] {
             assert_eq!(
