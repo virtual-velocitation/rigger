@@ -145,6 +145,26 @@ tool that searches them.
   code reads after your change, on any feature lane, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
   rewriting its body. Check: diff the test between its red commit and head.
+- **Every mutable token of your production delta is pinned.** Every token of the production
+  code you add or change whose mutation would leave the behaviour wrong turns some test red when
+  it is mutated; the list is open: a comparison operator (flip its bound), an arithmetic offset
+  (drop the +1 or -1), a boolean operand (negate or remove it), a call argument that is a range,
+  index or bound (degenerate it), a statement in one arm of a branch (delete it), a match arm
+  (swap it with a sibling), an early return or continue (remove it). Check: enumerate the tokens
+  from your production hunks over the unit's whole range, the merge base with the run branch to
+  head; apply each mutation in your worktree one at a time, run the crate's tests and the
+  touched test binaries, read the red, and restore the tree - a probe is over before your turn
+  is, as the rule below says. The record is one whole-tree `<unit>-mutant-probes` DecisionMade
+  carrying, for each token, its `file:line`, the mutation applied, and the test that went red
+  with its assertion. A token whose probe leaves every test green is pinned by a new test before
+  you report, or the code is reshaped so the token disappears (one `span.contains(&x)` in place
+  of two comparisons, say) and the reshaped form probed. A token with no recorded probe is a
+  record you cannot write. The enumeration is by hand and stands once the mutation gate runs
+  too, since the mutation gate's tool mutates no call argument and deletes no single statement
+  of an arm.
+  The SDET lens derives the token set itself from the production hunks over the unit's whole
+  range and probes every token the record lacks: a probe that leaves every test green, or a
+  token with no recorded probe, is a BLOCKING finding on its own.
 - **A probe that edits your tree is over before your turn is.** A reversion probe, or any check
   that edits your worktree, runs to completion and restores the tree before your turn ends,
   never as a detached or background job: the attempt checkpoint commits whatever the worktree
