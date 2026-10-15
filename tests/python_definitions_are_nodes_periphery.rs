@@ -30,9 +30,10 @@ rigger::test_cases! {
     ///  - `t` under `if TYPE_CHECKING:`, the attribute target `self.x`, the augmented target `o`
     ///    and the type parameter `T` are no node.
     ///
-    /// Its `CALLS` edges are exactly: `probe()` from `host`, `make()` from `k`, the class-body
-    /// assignment of one target spanning its whole value, and `paint()` from `inner`, each from
-    /// the node of its caller's leaf, `<file>::<leaf>`. The `f()` of the list pattern and of the
+    /// Its `CALLS` edges are exactly: `probe()` from `host`, `make()` from `Shape.k`, the
+    /// class-body assignment of one target spanning its whole value, and `paint()` from
+    /// `Shape::area::inner`, each from the node of its caller's path, `<file>::<path>` (spec 119
+    /// criterion 8). The `f()` of the list pattern and of the
     /// chain take the file as caller and so are no edge.
     #[cfg(feature = "symbols")]
     graph_build_makes_each_python_definition_a_node_of_its_kind_and_none_under_type_checking:
@@ -68,9 +69,9 @@ rigger::test_cases! {
             ],
             &["f", "make", "paint", "probe"],
             &[
+                ("f.py::Shape.k", "f.py::%make"),
+                ("f.py::Shape::area::inner", "f.py::%paint"),
                 ("f.py::host", "f.py::%probe"),
-                ("f.py::inner", "f.py::%paint"),
-                ("f.py::k", "f.py::%make"),
             ],
             "every definition of the built graph at its path, none under if TYPE_CHECKING: or for \
              an attribute, augmented or type-parameter name, one placeholder per undefined name a \

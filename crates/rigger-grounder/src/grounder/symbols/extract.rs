@@ -1693,7 +1693,7 @@ pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>()
         for expected in [
             ("EventStore", 3, Some("impl EventStore for Sqlite")),
             ("Sqlite", 3, Some("impl EventStore for Sqlite")),
-            ("helper", 3, Some("append")),
+            ("helper", 3, Some("<Sqlite as EventStore>::append")),
             (
                 "EventStore",
                 4,
@@ -1707,7 +1707,7 @@ pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>()
             ("EventStore", 5, Some("impl EventStore for Wrapper<T>")),
             ("Wrapper", 5, Some("impl EventStore for Wrapper<T>")),
             ("Sqlite", 6, Some("impl Sqlite")),
-            ("open_connection", 6, Some("open")),
+            ("open_connection", 6, Some("Sqlite::open")),
             ("open", 7, Some("open_store")),
             ("append", 7, Some("open_store")),
             ("make", 7, Some("open_store")),
@@ -1883,7 +1883,8 @@ setup!();
         }
 
         // The call inside the NESTED `fn inner` (line 13) attributes to the INNERMOST function
-        // `inner`, not the outer `outer` - proving innermost containment, not merely any encloser.
+        // `inner`, not the outer `outer` - proving innermost containment, not merely any encloser -
+        // named by its path `outer::inner` (spec 119 criterion 8).
         let g_nested = fs
             .refs
             .iter()
@@ -1891,7 +1892,7 @@ setup!();
             .expect("G() inside the nested inner fn is extracted");
         assert_eq!(
             g_nested.enclosing.as_deref(),
-            Some("inner"),
+            Some("outer::inner"),
             "a call in a nested function attributes to the innermost enclosing function"
         );
     }
@@ -1904,24 +1905,44 @@ setup!();
     /// function enclosing them; and a top-level reference has the file, no caller.
     #[test]
     fn a_reference_s_caller_is_its_innermost_enclosing_function_else_definition_else_file() {
-        let fs = crate::symbol_index::extracted("rs", crate::caller_sources::RUST_CALLER_SOURCE);
-        assert_eq!(
-            crate::symbol_index::refs_with_callers(&fs),
-            vec![
+        crate::symbol_index::assert_callers(
+            "rs",
+            crate::caller_sources::RUST_CALLER_SOURCE,
+            &[
                 (3, "Draw", Some("impl Draw for Widget")),
                 (3, "Widget", Some("impl Draw for Widget")),
-                (3, "paint", Some("draw")),
+                (3, "paint", Some("<Widget as Draw>::draw")),
                 (6, "Draw", Some("host")),
                 (6, "Local", Some("host")),
-                (6, "brush", Some("draw")),
+                (6, "brush", Some("host::<Local as Draw>::draw")),
                 (7, "declare", Some("host")),
-                (7, "measure", Some("area")),
-                (8, "dig", Some("deep")),
+                (7, "measure", Some("host::Shape::area")),
+                (8, "dig", Some("host::inner::deep")),
                 (8, "setup", Some("host")),
                 (10, "boot", Some("outer")),
                 (11, "announce", Some("Top")),
                 (12, "start", None),
-            ]
+            ],
+        );
+    }
+
+    /// A CALLER IS NAMED BY ITS PATH (spec 119 criterion 8): a reference's `enclosing` is its
+    /// caller's `Def.path`, never its leaf - a call in `impl T { fn new() }` is `T::new`'s and one
+    /// in a Go receiver method `Recv::name`'s.
+    #[test]
+    fn a_reference_s_enclosing_is_its_caller_s_path() {
+        crate::symbol_index::assert_callers(
+            "rs",
+            crate::caller_sources::RUST_METHOD_CALLER_SOURCE,
+            &[(2, "T", Some("impl T")), (3, "helper", Some("T::new"))],
+        );
+        crate::symbol_index::assert_callers(
+            "go",
+            crate::caller_sources::GO_RECEIVER_CALLER_SOURCE,
+            &[
+                (5, "Recv", Some("Recv::name")),
+                (5, "helper", Some("Recv::name")),
+            ],
         );
     }
 
@@ -2192,16 +2213,16 @@ setup!();
     /// header's self type stays the impl's.
     #[test]
     fn a_call_in_a_rust_data_definition_is_its_function_s_else_the_definition_s() {
-        let fs = crate::symbol_index::extracted("rs", RUST_DEFINITIONS_SOURCE);
-        assert_eq!(
-            crate::symbol_index::refs_with_callers(&fs),
-            vec![
+        crate::symbol_index::assert_callers(
+            "rs",
+            RUST_DEFINITIONS_SOURCE,
+            &[
                 (4, "build", Some("TABLE")),
                 (10, "Pair", Some("impl Pair")),
                 (13, "seed", Some("derive")),
                 (14, "compute", Some("host")),
                 (23, "X", Some("impl X")),
-            ]
+            ],
         );
     }
 

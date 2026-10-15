@@ -3,13 +3,13 @@
 //! hand-authored `index.json` under the current extraction generation and loading a legacy one
 //! through the real `store::load`, projecting a file's definitions, its test-marked
 //! definitions and references and its references with their callers, checking a language's definition
-//! types against a file's definitions, checking a language's definitions fixture whole,
+//! types against a file's definitions, checking a language's definitions fixture whole and a source's callers whole,
 //! projecting a file's definition extents, checking the variant names a file's kinds persist
 //! under, and looking up a registered language.
 //! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention
 //! `tests/common/mod.rs` keeps). Every lane compiles it; `registered` and `extracted`, with
-//! `assert_definitions_fixture` through it, alone reach a grammar and are held by the `symbols`
+//! `assert_definitions_fixture` and `assert_callers` through it, alone reach a grammar and are held by the `symbols`
 //! lane only.
 
 #![allow(dead_code)]
@@ -200,7 +200,14 @@ pub fn assert_definitions_fixture(
     assert_eq!(defs_by_line(&fs), defs);
     assert!(!fs.partial, "the fixture parses whole");
     assert_one_def_per_row(&fs, rows);
-    assert_eq!(refs_with_callers(&fs), refs);
+    assert_callers(ext, src, refs);
+}
+
+/// The references the registered query for `ext` extracts from `src`, each with its caller, are
+/// exactly `refs` ([`refs_with_callers`]): the one check of a source text's callers whole.
+#[cfg(feature = "symbols")]
+pub fn assert_callers(ext: &str, src: &str, refs: &[(u32, &str, Option<&str>)]) {
+    assert_eq!(refs_with_callers(&extracted(ext, src)), refs);
 }
 
 /// The `(line, name)` of each item marked test code, sorted: [`test_code_by_line`]'s halves.

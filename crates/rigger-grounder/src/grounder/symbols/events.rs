@@ -2403,6 +2403,23 @@ mod tests {
         assert_eq!(wire_owned(&named[0].1), boundary("src/absent.rs"));
     }
 
+    /// A fresh graph holding `file`'s real extraction of `source`, the registered query its
+    /// extension names, lowered by `extract_events` and folded.
+    fn folded_extraction(file: &str, source: &str) -> Projector {
+        let (_, ext) = file
+            .rsplit_once('.')
+            .expect("the fixture file has an extension");
+        let p = Projector::open(":memory:", "test").unwrap();
+        crate::test_support::folds(
+            &p,
+            &crate::event_fixtures::positioned(extract_events(
+                file,
+                &crate::symbol_index::extracted(ext, source),
+            )),
+        );
+        p
+    }
+
     /// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: each file's real extraction, folded, names every
     /// definition `<file>::<path>` - its enclosing definitions' path, `::`, its leaf, `.` before a
     /// field or property; an impl contributing its self type or `<T as Trait>`, a Go method its
@@ -2410,8 +2427,7 @@ mod tests {
     /// siblings, a name-filtered `_` and a named value equal to its declarator add nothing.
     #[test]
     fn each_extracted_definition_folds_at_its_language_path_id() {
-        use crate::event_fixtures::positioned;
-        use crate::test_support::{definition_ids, folds};
+        use crate::test_support::definition_ids;
 
         let cases: [(&str, &str, &[&str]); 7] = [
             (
@@ -2489,17 +2505,7 @@ mod tests {
             ),
         ];
         for (file, source, ids) in cases {
-            let (_, ext) = file
-                .rsplit_once('.')
-                .expect("the fixture file has an extension");
-            let p = Projector::open(":memory:", "test").unwrap();
-            folds(
-                &p,
-                &positioned(extract_events(
-                    file,
-                    &crate::symbol_index::extracted(ext, source),
-                )),
-            );
+            let p = folded_extraction(file, source);
             assert_eq!(definition_ids(&p), ids, "{file}: each definition's path id");
         }
     }
@@ -2541,6 +2547,42 @@ mod tests {
             attrs_of(&p, "x.rs::T::new").get("name").map(String::as_str),
             Some("new"),
             "the node's name stays its leaf"
+        );
+    }
+
+    /// A CALLER IS NAMED BY ITS PATH (spec 119 criterion 8): `extract_events` copies the caller's
+    /// path into `EdgeInferred.caller`, so a call in `impl T { fn new() }` folds its `CALLS` from
+    /// `<file>::T::new` and one in a Go receiver method from `<file>::Recv::name`, while a
+    /// hand-built caller naming a leaf folds from `<file>::<leaf>`.
+    #[test]
+    fn a_call_folds_its_calls_edge_from_its_caller_s_path() {
+        use crate::caller_sources::{GO_RECEIVER_CALLER_SOURCE, RUST_METHOD_CALLER_SOURCE};
+        use crate::test_support::{apply_call, assert_live_calls, def};
+
+        assert_live_calls(
+            &folded_extraction("a.rs", RUST_METHOD_CALLER_SOURCE),
+            &[
+                ("a.rs::T::new", "a.rs::helper"),
+                ("a.rs::impl T", "a.rs::T"),
+            ],
+            "the call in `impl T { fn new() }` folds from `T::new`'s path",
+        );
+        assert_live_calls(
+            &folded_extraction("g.go", GO_RECEIVER_CALLER_SOURCE),
+            &[
+                ("g.go::Recv::name", "g.go::Recv"),
+                ("g.go::Recv::name", "g.go::helper"),
+            ],
+            "the calls in the receiver method `name` fold from `Recv::name`'s path",
+        );
+
+        let p = Projector::open(":memory:", "test").unwrap();
+        def(&p, 1, "x.rs", "go");
+        apply_call(&p, 2, "x.rs", "go", "run");
+        assert_live_calls(
+            &p,
+            &[("x.rs::run", "x.rs::go")],
+            "a hand-built leaf caller folds from <file>::<leaf>",
         );
     }
 }

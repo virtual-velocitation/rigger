@@ -587,7 +587,9 @@ pub fn assert_built_graph_holds(
     calls: &[(&str, &str)],
     entities_why: &str,
 ) {
-    use super::fixtures::{attrs_of, definition_ids, definition_in, live_calls, live_node_ids};
+    use super::fixtures::{
+        assert_live_calls, attrs_of, definition_ids, definition_in, live_node_ids,
+    };
     use rigger::contextgraph::query::{entity_id, leaf_of, placeholder_id};
     use rigger::contextgraph::KIND_CODE_ENTITY;
 
@@ -619,14 +621,10 @@ pub fn assert_built_graph_holds(
         carried, expected,
         "each definition node carries its kind and line, and nothing else"
     );
-    let calls: Vec<(String, String)> = calls
-        .iter()
-        .map(|(from, to)| (from.to_string(), to.to_string()))
-        .collect();
-    assert_eq!(
-        live_calls(&graph),
+    assert_live_calls(
+        &graph,
         calls,
-        "every CALLS edge of the built graph, each from the caller the fixture gives it"
+        "every CALLS edge of the built graph, each from the caller the fixture gives it",
     );
 }
 

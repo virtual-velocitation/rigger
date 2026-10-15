@@ -40,29 +40,26 @@ fn graph_build_hangs_each_call_off_its_innermost_enclosing_function() {
         ("a.js", common::fixtures::JS_CALLER_SOURCE),
     ]);
 
-    let calls = common::fixtures::live_calls(&graph);
-    let expected: Vec<(String, String)> = [
-        ("a.js::h", "a.js::%k"),
-        ("a.js::outer", "a.js::%f"),
-        ("a.js::y", "a.js::%g"),
-        ("lib.rs::Top", "lib.rs::%announce"),
-        ("lib.rs::area", "lib.rs::%measure"),
-        ("lib.rs::deep", "lib.rs::%dig"),
-        ("lib.rs::draw", "lib.rs::%brush"),
-        ("lib.rs::draw", "lib.rs::%paint"),
-        ("lib.rs::host", "lib.rs::%declare"),
-        ("lib.rs::host", "lib.rs::%setup"),
-        ("lib.rs::host", "lib.rs::Draw"),
-        ("lib.rs::host", "lib.rs::host::Local"),
-        ("lib.rs::impl Draw for Widget", "lib.rs::Draw"),
-        ("lib.rs::impl Draw for Widget", "lib.rs::Widget"),
-        ("lib.rs::outer", "lib.rs::%boot"),
-    ]
-    .map(|(from, to)| (from.to_string(), to.to_string()))
-    .to_vec();
-    assert_eq!(
-        calls, expected,
-        "every CALLS edge of the built graph, each from the caller the function-first rule names"
+    common::fixtures::assert_live_calls(
+        &graph,
+        &[
+            ("a.js::h", "a.js::%k"),
+            ("a.js::outer", "a.js::%f"),
+            ("a.js::y", "a.js::%g"),
+            ("lib.rs::<Widget as Draw>::draw", "lib.rs::%paint"),
+            ("lib.rs::Top", "lib.rs::%announce"),
+            ("lib.rs::host", "lib.rs::%declare"),
+            ("lib.rs::host", "lib.rs::%setup"),
+            ("lib.rs::host", "lib.rs::Draw"),
+            ("lib.rs::host", "lib.rs::host::Local"),
+            ("lib.rs::host::<Local as Draw>::draw", "lib.rs::%brush"),
+            ("lib.rs::host::Shape::area", "lib.rs::%measure"),
+            ("lib.rs::host::inner::deep", "lib.rs::%dig"),
+            ("lib.rs::impl Draw for Widget", "lib.rs::Draw"),
+            ("lib.rs::impl Draw for Widget", "lib.rs::Widget"),
+            ("lib.rs::outer", "lib.rs::%boot"),
+        ],
+        "every CALLS edge of the built graph, each from the caller the function-first rule names",
     );
 }
 

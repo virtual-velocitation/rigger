@@ -1,7 +1,8 @@
-//! THE CALLER SOURCES: the two source texts the caller rule (a reference's caller is its
-//! innermost enclosing function, else its innermost enclosing definition, else its file) is
-//! proven over, once on the extracted references and once on the graph a build folds. It names
-//! no crate, so every lane compiles it.
+//! THE CALLER SOURCES: the source texts the caller rule (a reference's caller is its innermost
+//! enclosing function, else its innermost enclosing definition, else its file) is proven over,
+//! once on the extracted references and once on the graph a build folds, and the two a caller's
+//! path (spec 119: a caller is named by its definition's path) is proven over the same two ways.
+//! It names no crate, so every lane compiles it.
 
 /// A Rust file holding every placement the rule tells apart: a file-level impl with a method
 /// (line 3); `fn host` holding a local impl with a method (line 6), a trait with a macro call and
@@ -20,6 +21,28 @@ fn host() {
 mod outer { boot!(); }
 trait Top { announce!(); }
 start!();
+";
+
+/// A Rust file calling `helper` from the method `new` of `impl T` (line 3), whose caller is named
+/// by its path `T::new`.
+pub const RUST_METHOD_CALLER_SOURCE: &str = "\
+struct T;
+impl T {
+    fn new() -> T { helper(); T }
+}
+fn helper() {}
+";
+
+/// A Go file calling `helper` from the receiver method `name` of `*Recv` (line 5), whose caller
+/// is named by its path `Recv::name`.
+pub const GO_RECEIVER_CALLER_SOURCE: &str = "\
+package g
+
+type Recv struct{}
+
+func (r *Recv) name() { helper() }
+
+func helper() {}
 ";
 
 /// A JS file binding a call to a const inside a function declaration (line 2), at the top level

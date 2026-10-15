@@ -107,6 +107,16 @@ pub fn live_calls(p: &Projector) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Every live `CALLS` edge `p` serves ([`live_calls`]) is exactly `calls`, `(caller, callee)`
+/// ids in that sorted order, `why` naming the rule the edges follow.
+pub fn assert_live_calls(p: &Projector, calls: &[(&str, &str)], why: &str) {
+    let calls: Vec<(String, String)> = calls
+        .iter()
+        .map(|(from, to)| (from.to_string(), to.to_string()))
+        .collect();
+    assert_eq!(live_calls(p), calls, "{why}");
+}
+
 /// Every live `REFERENCES` and `CALLS` edge `p` serves, as `(from, rel, to, tier)`, sorted:
 /// where each reference landed and at what tier.
 pub fn landed(p: &Projector) -> Vec<(String, String, String, String)> {

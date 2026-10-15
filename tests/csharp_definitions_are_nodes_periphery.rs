@@ -51,7 +51,8 @@ rigger::test_cases! {
     /// destructor's, the operator's two, the conversion operator's and the indexer's each from that
     /// member; and the local function's from the local function, the method keeping its own. Each
     /// lands on the one same-file definition of its leaf (`S.T::A.B.C::Probe`,
-    /// `S.T::A.B.C::Probe::Go`) and hangs off the node of its caller's leaf, `<file>::<leaf>`.
+    /// `S.T::A.B.C::Probe::Go`) and hangs off the node of its caller's path, `<file>::<path>`
+    /// (spec 119 criterion 8).
     #[cfg(feature = "symbols")]
     graph_build_makes_each_csharp_definition_a_node_of_its_kind_and_none_of_a_method_local_variable:
         common::cli::assert_built_graph_holds(
@@ -97,18 +98,18 @@ rigger::test_cases! {
             ],
             &[],
             &[
-                ("f.cs::+", "f.cs::S.T::A.B.C::Probe"),
-                ("f.cs::+", "f.cs::S.T::A.B.C::Probe::Go"),
-                ("f.cs::Cell", "f.cs::S.T::A.B.C::Probe"),
-                ("f.cs::Foo", "f.cs::S.T::A.B.C::Probe"),
-                ("f.cs::Inner", "f.cs::S.T::A.B.C::Probe"),
-                ("f.cs::Moved", "f.cs::S.T::A.B.C::Probe"),
-                ("f.cs::Run", "f.cs::S.T::A.B.C::Probe"),
-                ("f.cs::Size", "f.cs::S.T::A.B.C::Probe"),
-                ("f.cs::implicit operator int", "f.cs::S.T::A.B.C::Probe"),
-                ("f.cs::made", "f.cs::S.T::A.B.C::Probe"),
-                ("f.cs::this", "f.cs::S.T::A.B.C::Probe"),
-                ("f.cs::~Foo", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Cell", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Cell.made", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo.Moved", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo.Size", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::+", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::+", "f.cs::S.T::A.B.C::Probe::Go"),
+                ("f.cs::S.T::Foo::Foo", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::Run", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::Run::Inner", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::implicit operator int", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::this", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::~Foo", "f.cs::S.T::A.B.C::Probe"),
             ],
             "every definition of the built graph at its path, none for a method-local variable or \
              const, and no placeholder",

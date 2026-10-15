@@ -119,22 +119,22 @@ const JS_LINES_NODES: [(&str, &str, &str, u64); 42] = [
 const JS_LINES_PLACEHOLDERS: [&str; 8] =
     ["f", "init", "make", "paint", "probe", "spin", "tick", "use"];
 
-/// The `CALLS` edges of the JS lines, `(caller leaf, callee leaf)`, each from the node of its
-/// caller's leaf, `<file>::<leaf>`: the calls in `host`'s local
+/// The `CALLS` edges of the JS lines, `(caller path, callee leaf)`, each from the node of its
+/// caller's path, `<file>::<path>` (spec 119 criterion 8): the calls in `host`'s local
 /// const and loop from `host`, the two in the constructor's body and in its local const from
-/// `constructor`, the generator value's from `g`, the static field initializer's from `s`, the
-/// method's from `area` and the assigned function's from `handler`. `f()`, the initializer of a
+/// `Shape::constructor`, the generator value's from `g`, the static field initializer's from
+/// `Foo.s`, the method's from `Shape::area` and the assigned function's from `handler`. `f()`, the initializer of a
 /// pattern declarator, takes the file as caller and so is no edge.
 #[cfg(feature = "symbols")]
 const JS_LINES_CALLS: [(&str, &str); 8] = [
-    ("area", "paint"),
-    ("constructor", "init"),
-    ("constructor", "make"),
+    ("Foo.s", "tick"),
+    ("Shape::area", "paint"),
+    ("Shape::constructor", "init"),
+    ("Shape::constructor", "make"),
     ("g", "spin"),
     ("handler", "run"),
     ("host", "probe"),
     ("host", "use"),
-    ("s", "tick"),
 ];
 
 /// The nodes the TS lines (16-23) of the TS and TSX definitions fixtures fold to, as
@@ -186,28 +186,29 @@ const TS_LINES_PLACEHOLDERS: [&str; 11] = [
     "Arg", "FT", "PQ", "PType", "Ret", "Two", "V", "boot", "mk", "run", "setup",
 ];
 
-/// The `CALLS` edges of the TS lines, `(caller leaf, callee leaf)`: each property signature's
-/// and field's type reference from that member (`p-q`, `2`, `prop`, `fld`), the method and
-/// index signatures' from their interface, the enum member value's call from `Blue`, and the
+/// The `CALLS` edges of the TS lines, `(caller path, callee leaf)`: each property signature's
+/// and field's type reference from that member (`Shape2.p-q`, `Shape2.2`, `Shape2.prop`,
+/// `Abs.fld`), the method and index signatures' from their interface, the enum member value's
+/// call from `Color::Blue`, and the
 /// module's and the namespace's body calls from `x` and `A.B`. The ambient function's types
 /// take the file as caller and so are no edge.
 #[cfg(feature = "symbols")]
 const TS_LINES_CALLS: [(&str, &str); 9] = [
-    ("2", "Two"),
     ("A.B", "setup"),
-    ("Blue", "mk"),
+    ("Abs.fld", "FT"),
+    ("Color::Blue", "mk"),
     ("Shape2", "Ret"),
     ("Shape2", "V"),
-    ("fld", "FT"),
-    ("p-q", "PQ"),
-    ("prop", "PType"),
+    ("Shape2.2", "Two"),
+    ("Shape2.p-q", "PQ"),
+    ("Shape2.prop", "PType"),
     ("x", "boot"),
 ];
 
 /// The graph `rigger graph build` folds from a project whose one file, `path`, is `source`, a JS
 /// or TS definitions fixture, holds exactly the JS lines' nodes, placeholders and `CALLS` edges
 /// and the `nodes`, `placeholders` and `calls` the fixture adds, each caller id the file and its
-/// leaf, each callee the placeholder of its leaf, and each node of the language the extension
+/// path, each callee the placeholder of its leaf, and each node of the language the extension
 /// names.
 #[cfg(feature = "symbols")]
 fn assert_definitions_graph(
