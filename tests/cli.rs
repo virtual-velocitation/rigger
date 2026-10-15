@@ -27141,8 +27141,9 @@ fn graph_show_prints_each_node_through_the_one_site_renderer() {
 }
 
 /// `rigger_graph`'s `show` selector - its JSON wiring (`Server::tool_graph`'s `show` arm, the
-/// site object built from `site_fields`) that no test anywhere else exercises: the happy-path test above
-/// only ever tries `around` on an unknown entity. Seeds one real code-entity definition into
+/// site object built from `site_fields`) on a bare-name resolution, where the happy-path test above
+/// only ever tries `around` on an unknown entity (the show-renderer test below drives every
+/// exact id and a resolving `around`). Seeds one real code-entity definition into
 /// `graph.db` (the same `CodeEntityExtracted` fold a real extraction pass would produce, the
 /// ALWAYS-compiled arm so this holds in both feature lanes) and proves a SUCCESSFUL resolution
 /// serializes its site fields correctly over the wire, and an unresolved `show` still answers
@@ -27195,6 +27196,67 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
 
     let out = mcp.finish();
     assert!(out.status.success());
+}
+
+/// Spec 119, SHOW IS ONE RENDERER, at the `rigger mcp` binary: GIVEN the show-renderer seed
+/// folded into the project's `graph.db`, WHEN an MCP client calls `rigger_graph` with `show` on
+/// each exact id and with `around` on the seed file at depth 1, THEN each `show` site is the
+/// node's `id` beside the `site_fields` entries of the site the graph locates, and every `around`
+/// node is `entity_site` over the `Node` the merged graph loads, at its edge count there - the
+/// file at 4, each definition and the finding at 1 - so the finding, at the depth bound, shows
+/// one edge fewer than the 2 `show` gives it.
+#[test]
+fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
+    use common::fixtures::{
+        assert_around_is_entity_sites, assert_shows_are_site_fields, seed_shown_nodes, SHOWN_FILE,
+        SHOWN_IDS,
+    };
+
+    let dir = temp_store_project();
+    let root = dir.path();
+    common::cli::seed_rigger_dir(root);
+    seed_shown_nodes(&common::cli::open_graph(root));
+
+    let mut mcp = McpSession::start(root);
+    let mut graph_tool = |arguments: serde_json::Value| {
+        mcp.call(
+            "tools/call",
+            serde_json::json!({"name": "rigger_graph", "arguments": arguments}),
+        )["result"]["structuredContent"]
+            .clone()
+    };
+    let sites = SHOWN_IDS.map(|id| graph_tool(serde_json::json!({"show": id}))["site"].clone());
+    let answer = graph_tool(serde_json::json!({"around": SHOWN_FILE, "depth": 1}));
+    let out = mcp.finish();
+    assert!(out.status.success(), "rigger mcp exits cleanly");
+
+    let mut nodes = answer["nodes"].as_array().expect("a node list").clone();
+    nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    assert_eq!(
+        nodes
+            .iter()
+            .map(|node| (
+                node["id"].as_str().unwrap(),
+                node["degree"].as_u64().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("f-shown", 1),
+            ("src/limits.rs", 4),
+            ("src/limits.rs::LIMIT", 1),
+            ("src/limits.rs::blank", 1),
+            ("src/limits.rs::width", 1),
+        ],
+        "every loaded node at its edge count in the merged graph"
+    );
+    let finding = SHOWN_IDS.iter().position(|id| *id == "f-shown").unwrap();
+    assert_eq!(
+        sites[finding]["degree"], 2,
+        "show reads the finding's degree from the store, past the depth bound"
+    );
+    let graph = common::cli::open_graph(root);
+    assert_shows_are_site_fields(&graph, &sites);
+    assert_around_is_entity_sites(&graph, &nodes);
 }
 
 /// The shipped skill's lookup section states the graph-first rule for a human reader

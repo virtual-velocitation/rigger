@@ -11,10 +11,10 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION,
-    KIND_COMMUNITY, KIND_DESIGN_DOC, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
-    TYPE_REVIEW_FINDING,
+    around, entity_site, site_fields, EntitySite, Graph, Located, Projection, CODE_KIND_CONSTANT,
+    CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION, KIND_COMMUNITY, KIND_DESIGN_DOC,
+    META_ACTOR, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES, TYPE_CODE_ENTITY_EXTRACTED,
+    TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::Event;
 use rigger::retention::GenerationIngested;
@@ -516,6 +516,63 @@ pub fn seed_shown_nodes(p: &Projector) {
             "kind": KIND_DESIGN_DOC, "id": "docs/x.md#sec", "title": "Sec", "doc": "docs/x.md",
         }),
     );
+}
+
+/// A rendered node object's keys less its `id`, which must be `id`: the entries the object
+/// carries, compared without order against [`site_fields`].
+fn site_keys(object: &serde_json::Value, id: &str) -> BTreeMap<String, serde_json::Value> {
+    let mut keys = object.as_object().expect("a node object").clone();
+    assert_eq!(
+        keys.remove("id"),
+        Some(serde_json::json!(id)),
+        "the object names its node"
+    );
+    keys.into_iter().collect()
+}
+
+/// The entries [`site_fields`] gives `site`, keyed for an unordered comparison.
+fn fields_of(site: &EntitySite) -> BTreeMap<String, serde_json::Value> {
+    site_fields(site)
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect()
+}
+
+/// Spec 119, SHOW IS ONE RENDERER: each of `sites`, the `rigger_graph` `show` site objects of
+/// [`SHOWN_IDS`] in their order, is its node's `id` beside the [`site_fields`] entries of the site
+/// `graph` locates for it, compared without order.
+pub fn assert_shows_are_site_fields(graph: &Projector, sites: &[serde_json::Value]) {
+    for (id, site) in SHOWN_IDS.iter().zip(sites) {
+        let Located::One(located) = graph.locate(id).unwrap() else {
+            panic!("{id} locates one node")
+        };
+        assert_eq!(
+            site_keys(site, id),
+            fields_of(&located),
+            "{id}: show is site_fields"
+        );
+    }
+}
+
+/// Spec 119, SHOW IS ONE RENDERER: each of `nodes`, the `rigger_graph` `around` node objects of
+/// [`SHOWN_FILE`] at depth 1, is [`entity_site`] over the `Node` [`around`] loads from `graph`
+/// at the degree the object carries, compared without order.
+pub fn assert_around_is_entity_sites(graph: &Projector, nodes: &[serde_json::Value]) {
+    let loaded = around(graph, &[SHOWN_FILE.to_string()], 1).unwrap();
+    for node in nodes {
+        let id = node["id"].as_str().unwrap();
+        let degree = node["degree"].as_u64().unwrap() as usize;
+        let held = loaded
+            .nodes
+            .iter()
+            .find(|n| n.id == id)
+            .expect("a loaded node");
+        assert_eq!(
+            site_keys(node, id),
+            fields_of(&entity_site(held, degree)),
+            "{id}: an around node is entity_site over its loaded Node"
+        );
+    }
 }
 
 /// The live `rel` targets of `member` in `g` (whole() returns only live edges), as a set.

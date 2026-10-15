@@ -1051,7 +1051,6 @@ mod tests {
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, Filter};
     use crate::spawn::SpawnEvent;
-    use std::collections::BTreeMap;
     use std::io::Cursor;
 
     /// Send one JSON-RPC request line to `server` and parse its one reply.
@@ -2219,26 +2218,6 @@ mod tests {
         call(&server, &tools_call("rigger_graph", arguments))["result"]["structuredContent"].clone()
     }
 
-    /// A rendered node object's keys less its `id`, which must be `id`: the entries the object
-    /// carries, compared without order against [`site_fields`](crate::contextgraph::site_fields).
-    fn site_keys(object: &Value, id: &str) -> BTreeMap<String, Value> {
-        let mut keys = object.as_object().expect("a node object").clone();
-        assert_eq!(
-            keys.remove("id"),
-            Some(json!(id)),
-            "the object names its node"
-        );
-        keys.into_iter().collect()
-    }
-
-    /// The entries `site_fields` gives `site`, keyed for an unordered comparison.
-    fn fields_of(site: &crate::contextgraph::EntitySite) -> BTreeMap<String, Value> {
-        crate::contextgraph::site_fields(site)
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value))
-            .collect()
-    }
-
     /// Spec 119, SHOW IS ONE RENDERER: the MCP `show` gives each node by exact id as its `id` and
     /// the `site_fields` entries as keys - `line` and `degree` JSON numbers, a `doc` holding a
     /// newline verbatim, an empty `lang` and the `proven_by` attr giving no key, an empty `kind`
@@ -2247,7 +2226,6 @@ mod tests {
     #[test]
     fn rigger_graph_show_gives_each_node_its_id_and_its_site_fields_as_keys() {
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::Located;
         use crate::test_support::{seed_shown_nodes, SHOWN_IDS};
 
         let graph = Projector::open(":memory:", "test").unwrap();
@@ -2283,16 +2261,7 @@ mod tests {
             Some("1"),
             "the const carries proven_by, an attr outside the printed list"
         );
-        for (id, site) in SHOWN_IDS.iter().zip(&sites) {
-            let Located::One(located) = graph.locate(id).unwrap() else {
-                panic!("{id} locates one node")
-            };
-            assert_eq!(
-                site_keys(site, id),
-                fields_of(&located),
-                "{id}: show is site_fields"
-            );
-        }
+        crate::test_support::assert_shows_are_site_fields(&graph, &sites);
     }
 
     /// Spec 119, SHOW IS ONE RENDERER: the MCP `around` renders every node of the `Graph` it
@@ -2303,7 +2272,6 @@ mod tests {
     #[test]
     fn rigger_graph_around_renders_each_loaded_node_with_its_degree_in_the_merged_graph() {
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::{around, entity_site};
         use crate::test_support::{seed_shown_nodes, SHOWN_FILE};
 
         let graph = Projector::open(":memory:", "test").unwrap();
@@ -2325,21 +2293,7 @@ mod tests {
             ],
             "every loaded node at its degree in the merged graph, each definition as show gives it"
         );
-        let loaded = around(&graph, &[SHOWN_FILE.to_string()], 1).unwrap();
-        for node in &nodes {
-            let id = node["id"].as_str().unwrap();
-            let degree = node["degree"].as_u64().unwrap() as usize;
-            let held = loaded
-                .nodes
-                .iter()
-                .find(|n| n.id == id)
-                .expect("a loaded node");
-            assert_eq!(
-                site_keys(node, id),
-                fields_of(&entity_site(held, degree)),
-                "{id}: an around node is entity_site over its loaded Node"
-            );
-        }
+        crate::test_support::assert_around_is_entity_sites(&graph, &nodes);
         assert_eq!(
             shown("f-shown")["degree"],
             2,
