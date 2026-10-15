@@ -186,7 +186,7 @@ pub fn path_leaf(path: &str) -> &str {
 
 /// The ONE join of a code-entity id (spec 119), the inverse of [`split_id`]: `<file>::<rest>`,
 /// the rest a definition's id path in its file (spec 119, IDS FOLLOW THE LANGUAGE'S PATH: `T::new`,
-/// `S.field`, a file-level definition's own name), a caller's name, or a placeholder's sigiled
+/// `S.field`, a file-level definition's own name), a caller's path, or a placeholder's sigiled
 /// leaf ([`placeholder_id`]).
 pub fn entity_id(file: &str, rest: &str) -> String {
     format!("{file}::{rest}")

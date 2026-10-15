@@ -259,10 +259,10 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
             // The first event of the file's batch marks the re-extraction boundary; set below.
             fresh: false,
             // The enclosing definition this reference was attributed to during extraction (spec
-            // 37): the caller, same-file. Read straight off the `SymRef` in the already-fixed
-            // sorted order, never a new sort key, so the deterministic refs emission is unchanged;
-            // `None` (a top-level reference) is omitted on the wire, keeping the event
-            // byte-identical to the pre-37 form.
+            // 37): the caller, same-file, by its path (spec 119 criterion 8). Read straight off the
+            // `SymRef` in the already-fixed sorted order, never a new sort key, so the
+            // deterministic refs emission is unchanged; `None` (a top-level reference) is omitted
+            // on the wire, keeping the event byte-identical to the pre-37 form.
             caller: r.enclosing.clone(),
             // A STRUCTURAL reference's edge carries no line (spec 86 criterion 2 introduces `line`
             // for evidence only); leaving it 0 keeps this event's wire form byte-identical to

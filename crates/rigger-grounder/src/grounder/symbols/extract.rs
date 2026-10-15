@@ -409,11 +409,12 @@ pub fn extract(
         d.path = path;
     }
     // Attribute each reference to its caller (`enclosing_def`: the innermost enclosing function,
-    // else the innermost enclosing definition; spec 116). The
+    // else the innermost enclosing definition; spec 116), named by that definition's path (spec
+    // 119 criterion 8: `T::new`, never the leaf `new`). The
     // reference order is unchanged - `enclosing` is a derived per-reference attribute, never a new
     // sort key, so identical source still yields byte-identical downstream events.
     for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
-        r.enclosing = enclosing_def(&def_ranges, pos);
+        r.enclosing = enclosing_def(&def_ranges, pos).map(|i| defs[i].path.clone());
     }
     // Spec 86 criterion 1: mark every definition and reference that falls inside a TEST REGION -
     // every test-attributed range (`test_regions`: a definition directly annotated
@@ -1479,7 +1480,8 @@ fn comma_separated_groups(tt: tree_sitter::Node) -> Vec<Vec<tree_sitter::Node>> 
     groups
 }
 
-/// The name of the reference at `pos`'s CALLER: the innermost FUNCTION-LIKE definition
+/// The index in `def_ranges` of the reference at `pos`'s CALLER, whose `defs` entry at that
+/// index names it by its path (spec 119 criterion 8): the innermost FUNCTION-LIKE definition
 /// (`Function`, `Method`, `Constructor`, `Macro`) whose byte range contains `pos`, else the
 /// innermost definition of any other kind that does, else `None` when `pos` lies outside every
 /// definition (a top-level reference such as an import or a module-level call), the file then
@@ -1494,19 +1496,19 @@ fn comma_separated_groups(tt: tree_sitter::Node) -> Vec<Vec<tree_sitter::Node>> 
 fn enclosing_def(
     def_ranges: &[(std::ops::Range<usize>, String, Kind)],
     pos: usize,
-) -> Option<String> {
+) -> Option<usize> {
     def_ranges
         .iter()
-        .filter(|(range, _, kind)| *kind != Kind::Declaration && range.contains(&pos))
-        .min_by_key(|entry| {
-            let (range, name, kind) = *entry;
+        .enumerate()
+        .filter(|(_, (range, _, kind))| *kind != Kind::Declaration && range.contains(&pos))
+        .min_by_key(|(_, (range, name, kind))| {
             let function_like = matches!(
                 kind,
                 Kind::Function | Kind::Method | Kind::Constructor | Kind::Macro
             );
             (!function_like, range.end - range.start, range.start, name)
         })
-        .map(|(_, name, _)| name.clone())
+        .map(|(i, _)| i)
 }
 
 /// Where [`locate_extent`] bounds a definition's body. Each variant counts only the definitions
@@ -1953,7 +1955,7 @@ setup!();
             .iter()
             .map(|(range, leaf, kind)| (range.clone(), leaf.to_string(), *kind))
             .collect();
-        enclosing_def(&ranges, pos)
+        enclosing_def(&ranges, pos).map(|i| ranges[i].1.clone())
     }
 
     /// THE NAME FILTER DROPS A NAMELESS DEFINITION (spec 116 criterion 3), pinned per language

@@ -181,7 +181,8 @@ pub const REL_CONTAINS: &str = "CONTAINS";
 /// criterion; this criterion only makes the structural edge exist.
 pub const REL_REFERENCES: &str = "REFERENCES";
 /// A caller-attributed call edge (spec 37): `<file>::<caller> --CALLS--> <callee>`, folded from an
-/// `EdgeInferred` whose `caller` is set - the enclosing definition the reference was attributed to.
+/// `EdgeInferred` whose `caller` is set - the path of the enclosing definition the reference was
+/// attributed to.
 /// It is added ALONGSIDE the file-level [`REL_REFERENCES`] edge (purely additive; the same callee
 /// resolution the REFERENCES edge uses), so one `subgraph` around a symbol answers "who calls it" by
 /// function, not merely "referenced from which file". A reference outside every definition
@@ -1036,8 +1037,9 @@ pub struct EdgeInferred {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh: bool,
     /// The enclosing definition this reference was attributed to during extraction (spec 37): the
-    /// caller's name, same-file, the innermost enclosing function before any other definition
-    /// (spec 116). `None` for a top-level reference outside every definition (an import or a
+    /// caller's path in its file (spec 119 criterion 8: `T::new`; a payload recorded before
+    /// paths carries its leaf, folding to that flat id as its definition then did), same-file,
+    /// the innermost enclosing function before any other definition (spec 116). `None` for a top-level reference outside every definition (an import or a
     /// module-level call; a file-level impl header's trait and type attribute to the impl block,
     /// a definition of its own). The emit pass carries what extraction attributed onto the
     /// `SymRef`; the fold, when it is present, adds a `<file>::<caller> --CALLS--> <callee>` edge

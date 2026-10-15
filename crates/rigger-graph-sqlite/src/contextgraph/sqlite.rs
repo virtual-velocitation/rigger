@@ -2885,12 +2885,11 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             // so the CALLS edge is a faithful caller-keyed twin (the definition arm's convergent
             // upgrade promotes both rels together, keeping the twin's tier in lock-step). The caller
             // entity node is `ensure_node`d bare like the target, at `<file>::<caller>`, the
-            // caller's leaf: for a file-level caller that is its definition's own id (its path
-            // being its name), folded first in real extraction (defs emit before refs), so this
-            // is a no-op that keeps its attrs; for a nested caller (`T::new`, whose definition
-            // folds at its path) it is a nameless node apart from the definition, until spec 119
-            // criterion 8 gives a caller its path. Either way a reverse fold order never
-            // leaves the CALLS edge dangling.
+            // caller's path (spec 119 criterion 8): its definition's own id, nested (`T::new`) or
+            // file-level, folded first in real extraction (defs emit before refs), so this is a
+            // no-op that keeps its attrs; a payload recorded before paths carries the caller's
+            // leaf and folds to that flat id, as its definition then did. Either way a reverse
+            // fold order never leaves the CALLS edge dangling.
             if let Some(caller) = &r.caller {
                 let caller_id = code_entity_id(&file, caller);
                 ensure_node(tx, by, &caller_id, KIND_CODE_ENTITY, &[], project)?;
@@ -3324,7 +3323,7 @@ fn resolve_in_tx(tx: &Transaction, mention: &str) -> String {
 
 /// The stable node id for a code entity (spec 29a): `<file>::<path>`, the domain's one join
 /// ([`entity_id`]), `path` a definition's id path in its file (spec 119, IDS FOLLOW THE
-/// LANGUAGE'S PATH) or a caller's name. File-scoped so two files defining the same name are
+/// LANGUAGE'S PATH) or a caller's path. File-scoped so two files defining the same name are
 /// distinct located entities, and stable across re-extraction (it carries no line, which an edit
 /// shifts) so a later supersede-on-re-extract criterion can key a file's edges by this from-side
 /// identity. It derives a definition's node and a caller's, while a reference lands on its file's

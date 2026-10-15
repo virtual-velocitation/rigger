@@ -138,7 +138,8 @@ pub struct Def {
 }
 
 /// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
-/// reference occurs inside (the caller). `None` for a top-level reference outside every
+/// reference occurs inside (the caller), named by its path ([`Def::path`], spec 119 criterion 8:
+/// `T::new`, `outer::inner`). `None` for a top-level reference outside every
 /// definition - an import or a module-level call; a file-level impl header's trait and type
 /// attribute to the impl block, a definition of its own. Set during extraction by attributing the
 /// reference to the innermost function-like definition whose range contains it, else the
