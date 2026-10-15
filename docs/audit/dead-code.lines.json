@@ -1,1 +1,68 @@
-[]
+[
+  {
+    "file": "crates/rigger-domain/src/contextgraph.rs",
+    "name": "entity_site",
+    "line": 435,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-dash/src/mcpserver.rs",
+        "line": 2280
+      },
+      {
+        "file": "crates/rigger-dash/src/mcpserver.rs",
+        "line": 2315
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "line": 1567
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "line": 1579
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "line": 1637
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "line": 1672
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "line": 1673
+      }
+    ]
+  },
+  {
+    "file": "crates/rigger-domain/src/contextgraph.rs",
+    "name": "site_fields",
+    "line": 452,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-dash/src/mcpserver.rs",
+        "line": 2217
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "line": 1637
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "line": 1672
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "line": 1673
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 27030
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 27122
+      }
+    ]
+  }
+]

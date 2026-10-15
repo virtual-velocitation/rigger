@@ -219,7 +219,7 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
         .map(|(_, n)| n)
         .unwrap_or(site.id.as_str());
     println!("show {}", site.id);
-    match definition_body(&site.file, site.line, name) {
+    match definition_body(site.file.as_deref().unwrap_or_default(), site.line, name) {
         ShowBody::Lines {
             start,
             lines,
@@ -256,12 +256,20 @@ fn print_site_header(site: &contextgraph::EntitySite, kind: &str, live_line: u32
     if live_line != site.line {
         println!(
             "  site: {}:{}   kind {}   degree {}   (recorded line {}, now {})",
-            site.file, live_line, kind, site.degree, site.line, live_line
+            site.file.as_deref().unwrap_or_default(),
+            live_line,
+            kind,
+            site.degree,
+            site.line,
+            live_line
         );
     } else {
         println!(
             "  site: {}:{}   kind {}   degree {}",
-            site.file, site.line, kind, site.degree
+            site.file.as_deref().unwrap_or_default(),
+            site.line,
+            kind,
+            site.degree
         );
     }
 }

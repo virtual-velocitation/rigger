@@ -16,7 +16,9 @@
 
 mod common;
 
-use common::fixtures::{apply_code_entity, apply_def, def_node, edge, empty_named_node, plain};
+use common::fixtures::{
+    apply_code_entity, apply_def, def_node, definition, edge, empty_named_node, plain,
+};
 use common::lens::{coupling_rows, files_lens_rows, SUB_C, SUB_C_FILES_ROUTE};
 use common::served::served_json;
 use rigger::contextgraph::sqlite::Projector;
@@ -228,9 +230,10 @@ fn an_entity_of_an_empty_name_answers_no_bare_lookup() {
         Located::One(EntitySite {
             id: "src/b.rs::open".to_string(),
             kind: "function".to_string(),
-            file: "src/b.rs".to_string(),
+            file: Some("src/b.rs".to_string()),
             line: 1,
             degree: 1,
+            attrs: definition("open", "function", 1),
         }),
         "a named fn answers its leaf"
     );

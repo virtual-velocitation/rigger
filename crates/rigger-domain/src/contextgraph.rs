@@ -395,22 +395,63 @@ pub enum Located {
     None,
 }
 
-/// A single located code entity (spec 58): where its definition lives and how it sits in the graph,
-/// so the show surface can print the site header and bound the body it reads from the working tree.
+/// A single located node (spec 58; spec 119, SHOW IS ONE RENDERER): where it lives, how it sits in
+/// the graph and the attrs it carries, built by [`entity_site`] alone, so every show surface prints
+/// the one entry list [`site_fields`] gives and the CLI bounds the body it reads from the working
+/// tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntitySite {
-    /// The full `<file>::<name>` node id.
+    /// The node id (`<file>::<path>` for a definition).
     pub id: String,
     /// The definition kind (`function`, `type`, ...), from the node's `kind` attr; falls back to
-    /// the node's graph kind when a bare placeholder carries no definition attr.
+    /// the node's graph kind when the attr is absent or empty, so it is always given.
     pub kind: String,
-    /// The definition's file (the id prefix before `::`) - the working-tree path the body reads.
-    pub file: String,
-    /// The 1-based line of the definition site, from the node's `line` attr (`0` when unknown).
+    /// The file the node names ([`query::node_file`]), the working-tree path the body reads; `None`
+    /// for a node naming no file (a finding, a decision), which has no `line` either.
+    pub file: Option<String>,
+    /// The 1-based line of the definition site, from the node's `line` attr (`0` when absent or
+    /// unparseable, meaning unknown).
     pub line: u32,
-    /// The entity's one-hop degree: the count of currently-live edges incident to it, so the reader
-    /// knows how connected the entity is.
+    /// The node's degree: the count of live edges incident to it in the graph it was read from,
+    /// so the reader knows how connected it is.
     pub degree: usize,
+    /// The node's attrs, whole; [`site_fields`] gives the closed list of them a surface prints.
+    pub attrs: BTreeMap<String, String>,
+}
+
+/// The attrs [`site_fields`] gives after the site entries, in their order: the closed list a show
+/// surface prints (`title` and `doc` a knowledge node's, `by`, `unit` and `summary` a finding's,
+/// `partial` a degraded parse's); an attr outside it is never printed.
+const SITE_ATTRS: [&str; 8] = [
+    "name", "lang", "title", "doc", "by", "unit", "summary", "partial",
+];
+
+/// The [`EntitySite`] of `node` at `degree` (spec 119, SHOW IS ONE RENDERER): the ONE rule set
+/// every show surface applies to a node - its file by [`query::node_file`], its `line` attr parsed
+/// (`0` when absent or unparseable), its `kind` attr when non-empty else its graph kind, and its
+/// attrs whole. The adapter's `site_of` calls it over the row it read with that row's one-hop
+/// degree, and the MCP `around` over each node of the `Graph` it loaded with the node's edge count
+/// there, so neither reads a node twice.
+pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
+    EntitySite {
+        id: node.id.clone(),
+        kind: String::new(),
+        file: None,
+        line: 0,
+        degree,
+        attrs: BTreeMap::new(),
+    }
+}
+
+/// The ordered closed list of entries a show surface prints for `site` (spec 119, SHOW IS ONE
+/// RENDERER): `file`, `line`, `kind`, `degree`, then [`SITE_ATTRS`]' order - `line` and `degree`
+/// JSON numbers, every other entry its recorded value verbatim. A node with no `file` has no
+/// `line` entry either; `kind` and `degree` are always given; an attr whose value is empty gives
+/// no entry. The CLI prints it (its live healed line and a value's newlines collapsed at print
+/// only), the MCP `show` and `around` carry it as keys beside the node's `id`.
+pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> {
+    let _ = (site, SITE_ATTRS);
+    Vec::new()
 }
 
 /// One disambiguation candidate for an ambiguous bare name (spec 58): the full node id and its
@@ -1494,6 +1535,158 @@ mod around_neighborhood {
             *p.requests.lock().unwrap(),
             vec![(Direction::Up, 2, TIER_INFERRED.to_string())],
             "the callers walk runs up to the neighborhood's depth at the resolvable tier floor"
+        );
+    }
+}
+
+/// Spec 119, SHOW IS ONE RENDERER: the one rule set [`entity_site`] applies to a node and the one
+/// ordered closed entry list [`site_fields`] gives every show surface.
+#[cfg(test)]
+mod site_renderer {
+    use super::*;
+    use crate::test_support::{node_with_attrs, plain};
+    use serde_json::json;
+
+    /// A node's site takes its file from the kind table, its `line` attr parsed (`0` when absent
+    /// or unparseable), its `kind` attr when non-empty (the graph kind for an empty or absent
+    /// one), the degree it is handed and its attrs whole, an attr outside the printed list
+    /// (`proven_by`) included.
+    #[test]
+    fn entity_site_applies_the_file_line_and_kind_rules_to_a_node() {
+        let all = node_with_attrs(
+            "Makefile::all",
+            KIND_CODE_ENTITY,
+            &[
+                ("name", "all"),
+                ("kind", CODE_KIND_FUNCTION),
+                ("line", "12"),
+                ("proven_by", "1"),
+            ],
+        );
+        assert_eq!(
+            entity_site(&all, 3),
+            EntitySite {
+                id: "Makefile::all".to_string(),
+                kind: CODE_KIND_FUNCTION.to_string(),
+                file: Some("Makefile".to_string()),
+                line: 12,
+                degree: 3,
+                attrs: all.attrs.clone(),
+            },
+            "an extensionless file's definition names its file and keeps every attr"
+        );
+        let site = |node: &Node| {
+            let s = entity_site(node, 0);
+            (s.kind, s.file, s.line)
+        };
+        let named = |file: Option<&str>| file.map(str::to_string);
+        assert_eq!(
+            [
+                node_with_attrs(
+                    "src/a.rs::blank",
+                    KIND_CODE_ENTITY,
+                    &[("kind", ""), ("line", "x")]
+                ),
+                plain("src/a.rs::bare", KIND_CODE_ENTITY),
+                node_with_attrs("f-1", KIND_FINDING, &[("line", "4")]),
+                plain("docs/x.md#sec", KIND_DESIGN_DOC),
+                plain("docs/decisions/one.md", KIND_ARCH_DECISION),
+            ]
+            .iter()
+            .map(site)
+            .collect::<Vec<_>>(),
+            [
+                (KIND_CODE_ENTITY.to_string(), named(Some("src/a.rs")), 0),
+                (KIND_CODE_ENTITY.to_string(), named(Some("src/a.rs")), 0),
+                (KIND_FINDING.to_string(), None, 4),
+                (KIND_DESIGN_DOC.to_string(), named(Some("docs/x.md")), 0),
+                (
+                    KIND_ARCH_DECISION.to_string(),
+                    named(Some("docs/decisions/one.md")),
+                    0
+                ),
+            ],
+            "an empty or absent kind attr gives the graph kind, an unparseable or absent line 0, \
+             and a finding no file"
+        );
+    }
+
+    /// Every entry of the closed list, in its order whatever order the attrs hold them: `file`,
+    /// `line` and `degree` as JSON numbers, a value holding a newline verbatim, and an attr
+    /// outside the list given nothing.
+    #[test]
+    fn site_fields_gives_the_closed_list_in_order_with_line_and_degree_as_numbers() {
+        let node = node_with_attrs(
+            "a.rs::f",
+            KIND_CODE_ENTITY,
+            &[
+                ("partial", "true"),
+                ("summary", "s"),
+                ("unit", "u7"),
+                ("by", "lens"),
+                ("doc", "first\nsecond"),
+                ("title", "t"),
+                ("lang", "rust"),
+                ("name", "f"),
+                ("kind", CODE_KIND_FUNCTION),
+                ("line", "7"),
+                ("proven_by", "1"),
+            ],
+        );
+        assert_eq!(
+            site_fields(&entity_site(&node, 2)),
+            [
+                ("file", json!("a.rs")),
+                ("line", json!(7)),
+                ("kind", json!(CODE_KIND_FUNCTION)),
+                ("degree", json!(2)),
+                ("name", json!("f")),
+                ("lang", json!("rust")),
+                ("title", json!("t")),
+                ("doc", json!("first\nsecond")),
+                ("by", json!("lens")),
+                ("unit", json!("u7")),
+                ("summary", json!("s")),
+                ("partial", json!("true")),
+            ]
+        );
+    }
+
+    /// A node with no file gives neither a `file` nor a `line` entry whatever its `line` attr, an
+    /// empty attr gives no entry, and a node with a file but no line gives line 0.
+    #[test]
+    fn site_fields_gives_no_line_without_a_file_and_no_entry_for_an_empty_value() {
+        let finding = node_with_attrs(
+            "f-1",
+            KIND_FINDING,
+            &[
+                ("line", "4"),
+                ("by", "lens"),
+                ("unit", ""),
+                ("summary", "s"),
+            ],
+        );
+        let section = node_with_attrs("docs/x.md#sec", KIND_DESIGN_DOC, &[("title", "Sec")]);
+        assert_eq!(
+            [
+                site_fields(&entity_site(&finding, 1)),
+                site_fields(&entity_site(&section, 0)),
+            ],
+            [
+                vec![
+                    ("kind", json!(KIND_FINDING)),
+                    ("degree", json!(1)),
+                    ("by", json!("lens")),
+                    ("summary", json!("s")),
+                ],
+                vec![
+                    ("file", json!("docs/x.md")),
+                    ("line", json!(0)),
+                    ("kind", json!(KIND_DESIGN_DOC)),
+                    ("degree", json!(0)),
+                    ("title", json!("Sec")),
+                ],
+            ]
         );
     }
 }

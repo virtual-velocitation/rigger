@@ -11,8 +11,10 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, KIND_COMMUNITY, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
+    Graph, Projection, CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION,
+    KIND_COMMUNITY, KIND_DESIGN_DOC, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
+    TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::Event;
 use rigger::retention::GenerationIngested;
@@ -458,6 +460,62 @@ pub fn seed_two_subsystems(p: &Projector) -> u64 {
     // A single weak bridge from A to B (one call): too thin to merge the two subsystems.
     apply_call(p, 19, "src/combat/hit.rs", "paint", "strike");
     20
+}
+
+/// The file the show-renderer seed's three definitions live in ([`seed_shown_nodes`]).
+pub const SHOWN_FILE: &str = "src/limits.rs";
+
+/// The ids [`seed_shown_nodes`] folds, each shown by exact id (spec 119, SHOW IS ONE RENDERER): a
+/// const, a field, a definition whose `kind` attr is empty, the extensionless file's definition
+/// `Makefile::all`, a finding, an architecture decision and a doc section.
+pub const SHOWN_IDS: [&str; 7] = [
+    "src/limits.rs::LIMIT",
+    "src/limits.rs::width",
+    "src/limits.rs::blank",
+    "Makefile::all",
+    "f-shown",
+    "docs/decisions/one-renderer.md",
+    "docs/x.md#sec",
+];
+
+/// Fold the nodes of [`SHOWN_IDS`] into `p`: in [`SHOWN_FILE`] a field `width` whose `lang` is
+/// empty (folded first, so the file keeps the `lang` its later definitions give it), the const
+/// `LIMIT` a same-file test reference proves (so it carries `proven_by`, an attr outside the
+/// printed list) and `blank`, whose `kind` attr is empty; `Makefile::all`; the finding `f-shown`
+/// ABOUT [`SHOWN_FILE`] and `Makefile`; an architecture decision whose `doc` holds a newline; and
+/// the section `docs/x.md#sec`.
+pub fn seed_shown_nodes(p: &Projector) {
+    apply_code_entity(p, 1, SHOWN_FILE, "width", CODE_KIND_FIELD, 5, "");
+    apply_code_entity(p, 2, SHOWN_FILE, "LIMIT", CODE_KIND_CONSTANT, 3, "rust");
+    apply_code_entity(p, 3, SHOWN_FILE, "blank", "", 7, "rust");
+    apply_edge_inferred_evidence(p, 4, SHOWN_FILE, "LIMIT", 9);
+    apply_code_entity(p, 5, "Makefile", "all", CODE_KIND_FUNCTION, 1, "make");
+    apply_json(
+        p,
+        6,
+        TYPE_REVIEW_FINDING,
+        serde_json::json!({
+            "id": "f-shown", "by": "lens:sdet", "unit": "u7",
+            "summary": "the width overflows", "about": [SHOWN_FILE, "Makefile"],
+        }),
+    );
+    apply_json(
+        p,
+        7,
+        TYPE_DOC_CONCEPT_EXTRACTED,
+        serde_json::json!({
+            "kind": KIND_ARCH_DECISION, "id": "docs/decisions/one-renderer.md",
+            "title": "One renderer", "doc": "the decision log\nits second line",
+        }),
+    );
+    apply_json(
+        p,
+        8,
+        TYPE_DOC_CONCEPT_EXTRACTED,
+        serde_json::json!({
+            "kind": KIND_DESIGN_DOC, "id": "docs/x.md#sec", "title": "Sec", "doc": "docs/x.md",
+        }),
+    );
 }
 
 /// The live `rel` targets of `member` in `g` (whole() returns only live edges), as a set.

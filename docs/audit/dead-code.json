@@ -1,1 +1,72 @@
-[]
+[
+  {
+    "name": "entity_site",
+    "file": "crates/rigger-domain/src/contextgraph.rs",
+    "content_hash": "3743c0f2f5b3fe96",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-dash/src/mcpserver.rs",
+        "content_hash": "2872dd2eb1691e66"
+      },
+      {
+        "file": "crates/rigger-dash/src/mcpserver.rs",
+        "content_hash": "275662b5bf012285"
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "content_hash": "0f4a631e559750aa"
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "content_hash": "130093a6d00a6735"
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "content_hash": "dcbcbded97a6616d"
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "content_hash": "dcbcbded97a6616d"
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "content_hash": "dcbcbded97a6616d"
+      }
+    ]
+  },
+  {
+    "name": "site_fields",
+    "file": "crates/rigger-domain/src/contextgraph.rs",
+    "content_hash": "d39082f0e2f506ae",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-dash/src/mcpserver.rs",
+        "content_hash": "a0dcf5dcbc91df58"
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "content_hash": "dcbcbded97a6616d"
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "content_hash": "dcbcbded97a6616d"
+      },
+      {
+        "file": "crates/rigger-domain/src/contextgraph.rs",
+        "content_hash": "dcbcbded97a6616d"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "5f68f405133b66eb"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "b08a51e21f21dc5b"
+      }
+    ]
+  }
+]

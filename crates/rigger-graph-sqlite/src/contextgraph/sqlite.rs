@@ -922,9 +922,10 @@ impl Projector {
         Ok(EntitySite {
             id: node.id,
             kind,
-            file,
+            file: Some(file),
             line,
             degree,
+            attrs: BTreeMap::new(),
         })
     }
 
@@ -7327,7 +7328,7 @@ mod tests {
             other => panic!("expected One for a unique name, got {other:?}"),
         };
         assert_eq!(alpha.id, "a.rs::alpha");
-        assert_eq!(alpha.file, "a.rs");
+        assert_eq!(alpha.file.as_deref(), Some("a.rs"));
         assert_eq!(alpha.line, 1);
         assert_eq!(alpha.kind, "function");
         // The only edge incident to alpha is the file's CONTAINS edge -> one-hop degree 1.

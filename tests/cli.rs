@@ -26455,9 +26455,9 @@ fn guard_write_denies_every_malformed_payload_shape_completely() {
 // rigger", "malformed input degrades to allow") that no test anywhere exercised, the built-in
 // `Grep` tool call driven through the compiled binary (previously proven only against the pure
 // decision function), `rigger mcp`'s API edges (an unknown tool, missing required arguments, a
-// malformed JSON-RPC line) which the happy-path test never sends, the brand-new
-// `operator_tool_graph`/`entity_site_json` JSON wiring on a SUCCESSFUL `show` resolution (never
-// exercised anywhere - the happy-path test only tries `around` on an unknown entity), and the
+// malformed JSON-RPC line) which the happy-path test never sends, the `rigger_graph` tool's
+// JSON wiring on a SUCCESSFUL `show` resolution (never exercised anywhere - the happy-path test
+// only tries `around` on an unknown entity), and the
 // installed skill/handbook text proven only against the in-process render function, never
 // against the file `rigger docs` actually writes.
 // ===========================================================================================
@@ -27015,8 +27015,126 @@ fn mcp_survives_a_malformed_json_line_and_keeps_answering_afterward() {
     assert!(out.status.success());
 }
 
-/// `rigger_graph`'s `show` selector - brand new JSON wiring (`operator_tool_graph`'s `show`
-/// arm and `entity_site_json`) that no test anywhere else exercises: the happy-path test above
+/// Spec 119, SHOW IS ONE RENDERER: GIVEN a graph holding a const, a field, a definition whose
+/// `kind` attr is empty, `Makefile::all`, a finding, an architecture decision and a doc section,
+/// WHEN the operator runs `rigger graph --show` on each exact id, THEN a node with a file prints
+/// today's `site:` header line, one line per remaining `site_fields` entry (a `doc` holding a
+/// newline on one line with spaces; an empty `lang` and the `proven_by` attr printing nothing)
+/// and its body note, while the finding prints its kind, degree, `by`, `unit` and `summary` with
+/// no `site:`, no body and no note; and each output's header and entry lines, read back as
+/// ordered entry and value pairs, equal `site_fields` of the located site after the CLI's newline
+/// transform.
+#[test]
+fn graph_show_prints_each_node_through_the_one_site_renderer() {
+    use common::fixtures::{seed_shown_nodes, SHOWN_IDS};
+    use rigger::contextgraph::{site_fields, Located};
+
+    let dir = temp_project();
+    let root = dir.path();
+    common::cli::seed_rigger_dir(root);
+    seed_shown_nodes(&common::cli::open_graph(root));
+
+    let shown = SHOWN_IDS.map(|id| run_rigger_ok(root, &["graph", "--show", id]));
+    let stale =
+        |at: &str| format!("  (source unavailable at {at}; the recorded location may be stale)\n");
+    assert_eq!(
+        shown,
+        [
+            "show src/limits.rs::LIMIT\n\
+             \x20 site: src/limits.rs:3   kind constant   degree 1\n\
+             \x20 name LIMIT\n\
+             \x20 lang rust\n"
+                .to_string()
+                + &stale("src/limits.rs:3"),
+            "show src/limits.rs::width\n\
+             \x20 site: src/limits.rs:5   kind field   degree 1\n\
+             \x20 name width\n"
+                .to_string()
+                + &stale("src/limits.rs:5"),
+            "show src/limits.rs::blank\n\
+             \x20 site: src/limits.rs:7   kind code-entity   degree 1\n\
+             \x20 name blank\n\
+             \x20 lang rust\n"
+                .to_string()
+                + &stale("src/limits.rs:7"),
+            "show Makefile::all\n\
+             \x20 site: Makefile:1   kind function   degree 1\n\
+             \x20 name all\n\
+             \x20 lang make\n"
+                .to_string()
+                + &stale("Makefile:1"),
+            "show f-shown\n\
+             \x20 kind finding   degree 2\n\
+             \x20 by lens:sdet\n\
+             \x20 unit u7\n\
+             \x20 summary the width overflows\n"
+                .to_string(),
+            "show docs/decisions/one-renderer.md\n\
+             \x20 site: docs/decisions/one-renderer.md:0   kind arch-decision   degree 0\n\
+             \x20 title One renderer\n\
+             \x20 doc the decision log its second line\n"
+                .to_string()
+                + &stale("docs/decisions/one-renderer.md:0"),
+            "show docs/x.md#sec\n\
+             \x20 site: docs/x.md:0   kind design-doc   degree 0\n\
+             \x20 title Sec\n\
+             \x20 doc docs/x.md\n"
+                .to_string()
+                + &stale("docs/x.md:0"),
+        ],
+        "each node's show output"
+    );
+
+    // The header's `file`, `line`, `kind` and `degree` (no `site:` part for a node with no file),
+    // then one `  <entry> <value>` line each until the note: the pairs the CLI printed, in order.
+    let printed = |out: &str| -> Vec<(String, String)> {
+        let mut lines = out.lines().skip(1);
+        let header = lines.next().expect("a header line");
+        let mut pairs: Vec<(&str, &str)> = Vec::new();
+        let rest = match header.strip_prefix("  site: ") {
+            Some(site) => {
+                let (at, rest) = site.split_once("   ").expect("a site part");
+                let (file, line) = at.rsplit_once(':').expect("a file:line site");
+                pairs.extend([("file", file), ("line", line)]);
+                rest
+            }
+            None => header.trim_start(),
+        };
+        pairs.extend(
+            rest.split("   ")
+                .map(|part| part.split_once(' ').expect("an entry")),
+        );
+        pairs.extend(
+            lines
+                .take_while(|line| !line.starts_with("  ("))
+                .map(|line| line.trim_start().split_once(' ').expect("an entry line")),
+        );
+        pairs
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    };
+    let graph = common::cli::open_graph(root);
+    for (id, out) in SHOWN_IDS.iter().zip(&shown) {
+        let Located::One(site) = graph.locate(id).unwrap() else {
+            panic!("{id} locates one node")
+        };
+        let expected: Vec<(String, String)> = site_fields(&site)
+            .into_iter()
+            .map(|(key, value)| {
+                let text = match value {
+                    serde_json::Value::String(text) => text.replace('\n', " "),
+                    number => number.to_string(),
+                };
+                (key.to_string(), text)
+            })
+            .collect();
+        assert_eq!(printed(out), expected, "{id}: the CLI prints site_fields");
+    }
+}
+
+/// `rigger_graph`'s `show` selector - its JSON wiring (`Server::tool_graph`'s `show` arm, the
+/// site object built from `site_fields`) that no test anywhere else exercises: the happy-path test above
 /// only ever tries `around` on an unknown entity. Seeds one real code-entity definition into
 /// `graph.db` (the same `CodeEntityExtracted` fold a real extraction pass would produce, the
 /// ALWAYS-compiled arm so this holds in both feature lanes) and proves a SUCCESSFUL resolution
