@@ -37,6 +37,7 @@ use common::cli::run_rigger;
 use common::cli::run_rigger_ok;
 use common::cli::run_stream_identity;
 use common::cli::seed_rigger_dir;
+use common::cli::show_head;
 use common::cli::temp_project;
 use common::fixtures::apply_code_entity;
 use common::fixtures::{fold_path_def_rows, hold, A_RS_NEWS, T_NEW, U_NEW};
@@ -204,10 +205,7 @@ fn graph_show_answers_a_flat_id_a_decision_holds_by_its_definition() {
     }
 
     assert_eq!(
-        run_rigger_ok(root, &["graph", "--show", "a.rs::new"])
-            .lines()
-            .take(2)
-            .collect::<Vec<_>>(),
+        show_head(root, "a.rs::new"),
         [
             "show a.rs::T::new",
             "  site: a.rs:1   kind method   degree 1"

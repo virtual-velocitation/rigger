@@ -20,7 +20,9 @@
 
 mod common;
 
-use common::cli::{ambiguous_show, open_graph, run_rigger_ok, seed_rigger_dir, temp_project};
+use common::cli::{
+    ambiguous_show, open_graph, run_rigger_ok, seed_rigger_dir, show_head, temp_project,
+};
 use common::fixtures::{
     apply_call, apply_code_entity, apply_def, apply_edge_inferred_evidence, call_edge_pairs,
     call_frontiers, call_layer, call_node_ids, call_walk, edge, kinded_def_node, located_many,
@@ -475,14 +477,13 @@ fn graph_show_answers_a_fields_leaf() {
         ),
         "a leaf a field and a fn share lists both"
     );
-    let lone = run_rigger_ok(root, &["graph", "--show", "state"]);
     assert_eq!(
-        lone.lines().take(2).collect::<Vec<_>>(),
+        show_head(root, "state"),
         [
             "show src/a.rs::state",
             "  site: src/a.rs:3   kind field   degree 1"
         ],
-        "a lone field's leaf is located at the field's own site; got:\n{lone}"
+        "a lone field's leaf is located at the field's own site"
     );
 }
 

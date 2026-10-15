@@ -404,6 +404,16 @@ pub fn ambiguous_show(query: &str, cands: &[(&str, &str)]) -> String {
     out
 }
 
+/// The first two lines `rigger graph --show <query>` prints over `root`: the header naming the id
+/// it shows and that definition's site line.
+pub fn show_head(root: &Path, query: &str) -> Vec<String> {
+    run_rigger_ok(root, &["graph", "--show", query])
+        .lines()
+        .take(2)
+        .map(str::to_string)
+        .collect()
+}
+
 /// `rigger graph --show <file>::<path>`'s stdout over `root` seeded as a project whose working
 /// tree holds `source` at `file` and whose graph records the definition at the id path `path`
 /// (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), named by the text after the path's last `::`, of

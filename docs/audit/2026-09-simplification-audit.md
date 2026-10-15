@@ -2866,16 +2866,16 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/cli.rs:267-267` `".rigger"`
 - `tests/common/cli.rs:288-288` `".rigger"`
 - `tests/common/cli.rs:305-305` `".rigger"`
-- `tests/common/cli.rs:696-696` `"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
+- `tests/common/cli.rs:706-706` `"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
      vacuums the file, which is a mechanic of the embedded .rigger/events.db store; this project \
      is configured for the server-backed store, where the migration does not run. Re-run it \
      against a project on the sqlite backend. Refusing rather than reporting a migration that did \
      not happen.\n"`
-- `tests/common/cli.rs:781-781` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
-- `tests/common/cli.rs:1007-1007` `".rigger"`
-- `tests/common/cli.rs:1008-1008` `"create .rigger/agents"`
-- `tests/common/cli.rs:1121-1121` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
-- `tests/common/cli.rs:1218-1218` `".rigger"`
+- `tests/common/cli.rs:791-791` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
+- `tests/common/cli.rs:1017-1017` `".rigger"`
+- `tests/common/cli.rs:1018-1018` `"create .rigger/agents"`
+- `tests/common/cli.rs:1131-1131` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
+- `tests/common/cli.rs:1228-1228` `".rigger"`
 - `tests/common/fixtures/config.rs:102-102` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/fixtures/extraction_tree.rs:76-76` `".rigger/workflow.yml"`
 - `tests/common/layer_cli.rs:22-22` `".rigger"`
@@ -2929,7 +2929,7 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/graph_around_governance_boundaries.rs:154-154` `".rigger"`
 - `tests/graph_around_governance_boundaries.rs:173-173` `".rigger"`
 - `tests/graph_around_governance_boundaries.rs:226-226` `".rigger"`
-- `tests/graph_show_surface.rs:74-74` `".rigger"`
+- `tests/graph_show_surface.rs:75-75` `".rigger"`
 - `tests/halted_spawn_wip_recovery_periphery.rs:610-610` `".rigger"`
 - `tests/handbook_grounder_accuracy.rs:131-131` `".rigger"`
 - `tests/handbook_grounder_accuracy.rs:140-140` `".rigger/workflow.yml must carry a `grounder:` default (spec 57, criterion 4)"`
@@ -3920,7 +3920,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/spec.rs:2643-2645` `f11`
-- `tests/common/cli.rs:780-782` `graph_build_line`
+- `tests/common/cli.rs:790-792` `graph_build_line`
 
 #### `dup-d340e212490f` (exact, 2 sites)
 
@@ -4064,11 +4064,11 @@ mandatory sweep: sqlite Connection::open call sites - 62 site(s), collected mech
 - `tests/cli.rs:2468-2468` `Connection::open`
 - `tests/cli.rs:9348-9348` `Connection::open`
 - `tests/common/cli.rs:97-97` `Connection::open`
-- `tests/common/cli.rs:442-442` `Connection::open`
-- `tests/common/cli.rs:455-455` `Connection::open`
-- `tests/common/cli.rs:513-513` `Connection::open`
+- `tests/common/cli.rs:452-452` `Connection::open`
+- `tests/common/cli.rs:465-465` `Connection::open`
 - `tests/common/cli.rs:523-523` `Connection::open`
-- `tests/common/cli.rs:1229-1229` `Connection::open`
+- `tests/common/cli.rs:533-533` `Connection::open`
+- `tests/common/cli.rs:1239-1239` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:8-8` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:22-22` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:51-51` `Connection::open`
@@ -4504,9 +4504,9 @@ Proposed home: `a new shared module (sites span 3 files: src/cli/hygiene.rs, tes
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/hygiene.rs:252-254` `derived_count_phrase`
-- `tests/common/cli.rs:650-657` `migrated_lines`
-- `tests/common/cli.rs:664-669` `derived_menu_line_naming`
-- `tests/common/cli.rs:1282-1287` `bloat_advisory_naming`
+- `tests/common/cli.rs:660-667` `migrated_lines`
+- `tests/common/cli.rs:674-679` `derived_menu_line_naming`
+- `tests/common/cli.rs:1292-1297` `bloat_advisory_naming`
 - `tests/compaction_generations_periphery.rs:4951-4956` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
@@ -4846,9 +4846,9 @@ Proposed home: `cli::support (consolidate these 3 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:675-677` `derived_menu_lines`
-- `tests/common/cli.rs:1276-1278` `index_lag_lines`
-- `tests/common/cli.rs:1291-1293` `bloat_lines`
+- `tests/common/cli.rs:685-687` `derived_menu_lines`
+- `tests/common/cli.rs:1286-1288` `index_lag_lines`
+- `tests/common/cli.rs:1301-1303` `bloat_lines`
 
 #### `dup-8dd44d643a5c` (semantic, 2 sites)
 
@@ -4856,7 +4856,7 @@ Proposed home: `one shared `write_workflow` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/common/cli.rs:1067-1074` `write_workflow`
+- `tests/common/cli.rs:1077-1084` `write_workflow`
 - `tests/common/workflow_probe.rs:21-23` `write_workflow`
 
 #### `dup-b58b0ff72b22` (near, 3 sites)
@@ -4865,8 +4865,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:1103-1123` `assert_selected_server`
-- `tests/common/cli.rs:1127-1143` `assert_selected_sqlite`
+- `tests/common/cli.rs:1113-1133` `assert_selected_server`
+- `tests/common/cli.rs:1137-1153` `assert_selected_sqlite`
 - `tests/store_secrets.rs:69-107` `assert_server_reached_and_credentials_redacted`
 
 #### `dup-c82a46fd1fec` (exact, 2 sites)
@@ -5258,7 +5258,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9348 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9349 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4996-5037` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15080-15102` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
