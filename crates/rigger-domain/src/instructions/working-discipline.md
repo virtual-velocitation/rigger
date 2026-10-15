@@ -48,18 +48,29 @@ tool that searches them.
   shared home itself and any file you edit included. Check: look it up where the project's
   test helpers live before you write it; when a second home needs one the first already
   spells, move it to the shared home and have both call it, changing no assertion or expected
-  value. The search is an instrument, not a claim: for each shape you add or name, write down
-  its distinguishing expression - the token sequence its body cannot be written without (the
-  cut, the literal, the struct pattern, the query text; two expressions when one would miss a
-  spelling) - and run one search for each over every test home. The record is owed for every
-  test-side shape you add, merged or not: one whole-tree audit DecisionMade naming every site
-  of its shape FIXED or CHECKED, carrying each search's command, its hit count and every hit -
-  FIXED when moved to the shared home with both calling it and no assertion or expected value
-  changed, CHECKED when kept apart, with the reason: the named way its shape differs. A
-  CHECKED hit whose shape does not differ is a twin. A search you did not run is a record you
-  cannot write. The SDET lens re-runs each recorded search on the review tree: a hit the
-  record does not carry, or a CHECKED hit whose reason does not hold, is a BLOCKING finding on
-  its own.
+  value. The search is an instrument, not a claim: its unit is the statement, never the
+  body's name. Walk every test-side body you add or edit - a test fn, a helper, a fixture
+  builder, a table row's closure - statement by statement; each statement that is not a single
+  call into the shared test home is a shape of its own, and its distinguishing expressions are
+  mechanical: every string literal it spells, in full (an assertion, expect or panic message, a
+  fixture path, a query text), and every call it makes outside the shared home with its first
+  argument token (`create_dir_all(root.join(`, `for_extension("rs")`). Write each down and run
+  one search for each over every test home; a hit in another home - an existing helper's body
+  or another test's inline statement - is a twin, lifted to the shared home and called from
+  both. The record is owed for every test-side shape you add, merged or not: one whole-tree
+  audit DecisionMade naming every site of its shape FIXED or CHECKED, carrying each search's
+  command, its hit count and every hit - FIXED when moved to the shared home with both calling
+  it and no assertion or expected value changed, CHECKED when kept apart, with the reason: the
+  named way its shape differs. A CHECKED hit whose shape does not differ is a twin. A search
+  you did not run is a record you cannot write. A record whose expressions are names only - a
+  fn name, the callee a helper wraps - for a body that spells a literal or an outside call is a
+  record you cannot write either. The SDET lens re-runs each recorded search on the review
+  tree: a hit the record does not carry, or a CHECKED hit whose reason does not hold, is a
+  BLOCKING finding on its own. The lens derives the expression set itself from the unit's test
+  hunks at head - every string literal and every outside call with its first argument in each
+  test-side body the unit adds or edits - and runs each over every test home: a hit the record
+  does not carry, or a record whose expressions are names only for a body that spells either,
+  is a BLOCKING finding on its own.
 - **Every sentence about the changed behaviour is true at head.** The doc comments of each item
   you changed and of its callers, module docs, test names, test docs, assertion messages and
   operator docs say what the code at head does. Check: enumerate the walked set, each member
