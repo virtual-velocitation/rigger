@@ -27201,8 +27201,8 @@ fn graph_show_notes_a_nameless_node_by_its_id() {
     assert_eq!(
         run_rigger_ok(root, &["graph", "--show", "src/x.rs::thing"]),
         "show src/x.rs::thing\n  site: src/x.rs:1   kind function   degree 0\n  (no definition \
-         named \"src/x.rs::thing\" at line 1 in the current working tree; the recorded location \
-         may be stale)\n",
+         named \"src/x.rs::thing\" of kind function at line 1 or elsewhere in src/x.rs in the \
+         current working tree; the recorded location may be stale)\n",
         "a nameless node at a line is noted by its id"
     );
 }

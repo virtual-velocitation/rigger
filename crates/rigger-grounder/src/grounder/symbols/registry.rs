@@ -861,9 +861,7 @@ pub(crate) mod tests {
     /// expression, an arrow function, a generator function and a class: the node types the
     /// last `value: [..]` alternation of the query lists, its constant pattern composing last.
     fn assert_constant_enumeration(ext: &str, node_types: &str) {
-        let query = for_extension(ext)
-            .expect("the extension is registered")
-            .tags_query;
+        let query = crate::symbol_index::registered(ext).tags_query;
         let at = query
             .rfind("value: [")
             .expect("the query holds a value alternation");
@@ -968,8 +966,7 @@ pub(crate) mod tests {
             ("py", "def compute():\n    return 1\n", "compute"),
         ];
         for (ext, src, expected) in cases {
-            let entry = for_extension(ext)
-                .unwrap_or_else(|| panic!("extension {ext} should be registered"));
+            let entry = crate::symbol_index::registered(ext);
             let fs = extract(src, entry.lang, &entry.language, entry.tags_query)
                 .unwrap_or_else(|e| panic!("extraction failed for .{ext}: {e}"));
             assert!(

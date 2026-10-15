@@ -2108,7 +2108,7 @@ pub fn bang() {}
         lines: &[u32],
         expected: &[(u32, &str, Kind)],
     ) {
-        let entry = crate::grounder::symbols::registry::for_extension(ext).unwrap();
+        let entry = crate::symbol_index::registered(ext);
         let fs = extract(src, lang, &entry.language, entry.tags_query).unwrap();
         let on_lines: Vec<_> = crate::symbol_index::defs_by_line(&fs)
             .into_iter()
@@ -2797,7 +2797,8 @@ function next() {
     crate::test_cases! {
         /// Rust: the tagged `tagged` ends on its closing brace and its `line` is its name row, below
         /// its attribute and its visibility; the read-off tuple fields `0` and `1` end on their own
-        /// type's line.
+        /// type's line; the impl block ends on its closing brace and its method `get` on its own
+        /// line.
         every_rust_definition_ends_on_its_constructs_last_line: assert_eq!(
             crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
                 "rs", "\
@@ -2809,9 +2810,20 @@ pub(crate)
 fn tagged() {
     let _ = 1;
 }
+
+impl Pair {
+    fn get(&self) {}
+}
 ",
             )),
-            [(2, 2, "0"), (2, 2, "1"), (2, 2, "Pair"), (6, 8, "tagged")]
+            [
+                (2, 2, "0"),
+                (2, 2, "1"),
+                (2, 2, "Pair"),
+                (6, 8, "tagged"),
+                (10, 12, "impl Pair"),
+                (11, 11, "get")
+            ]
         );
         /// Go: the tagged `S` and `Run` end on their closing braces; the read-off embedded field
         /// `Base` ends on its own line.
@@ -2897,8 +2909,7 @@ class K
     /// Where [`locate_extent`] bounds the Rust definition named `name` of kind `kind` recorded at
     /// `line` in `source`, under the registered Rust grammar and query.
     fn located(source: &str, name: &str, kind: Kind, line: u32) -> Extent {
-        let entry = crate::grounder::symbols::registry::for_extension("rs")
-            .expect("the extension is registered");
+        let entry = crate::symbol_index::registered("rs");
         locate_extent(
             source,
             entry.lang,
@@ -2953,6 +2964,12 @@ class K
         an_ambiguous_drifted_name_is_left_unbounded: assert_eq!(
             located("fn other() {}\nfn dup() {}\nfn dup() {}\n", "dup", Kind::Function, 1),
             Extent::Ambiguous(2)
+        );
+        /// Two same-named definitions of other kinds at the recorded line, and none of the recorded
+        /// kind anywhere, are missing: tier 2 takes exactly one, tier 3 finds no line.
+        two_other_kinds_at_the_recorded_line_and_none_of_its_kind_are_missing: assert_eq!(
+            located("struct g {} const g: u8 = 0;\n", "g", Kind::Function, 1),
+            Extent::Missing
         );
         /// A name no definition of the kind carries anywhere in the file is missing.
         a_name_defined_nowhere_is_missing: assert_eq!(

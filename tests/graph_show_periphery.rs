@@ -992,8 +992,8 @@ rigger::test_cases! {
     /// Spec 119, ONE EXTENT, the ambiguity note at the binary: GIVEN a function `dup` the graph
     /// records at line 1 of a file whose working tree holds a struct field `dup` and two functions
     /// `dup`, none at line 1, WHEN the operator runs `rigger graph --show` on its id, THEN no body
-    /// is printed and the note names the two definitions of its kind, the same-named field never
-    /// counted.
+    /// is printed and the note names the two lines its kind sits at, the same-named field's line
+    /// never counted.
     #[cfg(feature = "symbols")]
     graph_show_notes_an_ambiguous_drift_by_the_count_of_its_kind: assert_eq!(
         shown_function_recorded_at_line_1(
@@ -1006,7 +1006,7 @@ rigger::test_cases! {
             "  site: twins.rs:1   kind function   degree 1",
             "  name dup",
             "  lang rust",
-            "  (2 definitions named \"dup\" of kind function exist in twins.rs and none starts at \
+            "  (definitions named \"dup\" of kind function sit at 2 lines in twins.rs and none at \
              the recorded line 1; the recorded location may be stale (cannot resolve which one \
              moved))",
         ],

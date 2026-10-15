@@ -125,14 +125,21 @@ pub fn saved_with_key(path: &str, symbols: FileSymbols, key: &str, why: &str) ->
     saved.reload()
 }
 
+/// The grammar and query entry registered for the extension `ext`: the one lookup of a registered
+/// language, for a test that reads a source under it. It names the grammar, so only the
+/// `symbols` lane holds it.
+#[cfg(feature = "symbols")]
+pub fn registered(ext: &str) -> rigger::grounder::symbols::registry::LanguageEntry {
+    rigger::grounder::symbols::registry::for_extension(ext).expect("the extension is registered")
+}
+
 /// The symbols the grammar and query registered for the extension `ext` extract from `src`: the
 /// one read of a source text through the registry, for a test that asserts what a registered
 /// query yields. It is the one fixture here that reaches the parser, so only the `symbols` lane
 /// holds it.
 #[cfg(feature = "symbols")]
 pub fn extracted(ext: &str, src: &str) -> FileSymbols {
-    let entry = rigger::grounder::symbols::registry::for_extension(ext)
-        .expect("the extension is registered");
+    let entry = registered(ext);
     rigger::grounder::symbols::extract::extract(src, entry.lang, &entry.language, entry.tags_query)
         .expect("the registered query extracts the source")
 }
