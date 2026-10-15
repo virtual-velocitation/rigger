@@ -5,8 +5,9 @@
 //!
 //!  - the public kind table: `rigger::contextgraph::query::node_file` over all sixteen graph
 //!    kinds, each arm from both sides (an id it names a file for, and one it names none for);
-//!  - the readers agreeing across crates over one in-memory graph: the files lens whole and
-//!    re-grained and the card (`dash`), and the console map's district (`console`).
+//!  - the readers agreeing across crates over one in-memory graph: the files lens whole and the
+//!    card (`contextgraph::query`), the files lens re-grained (`dash`), and the console map's
+//!    district (`console`).
 //!
 //! Every test runs on both lanes.
 
