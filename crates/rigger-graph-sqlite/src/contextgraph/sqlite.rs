@@ -11845,6 +11845,11 @@ mod tests {
                 |p, pos| apply_call(p, pos, "a.rs", "go", "new"),
                 &[("a.rs::new", "a.rs::T::new")],
             );
+            a_flat_id_a_decision_is_named_by_answers_that_decision: shows(
+                &[T_NEW],
+                |p, pos| apply_decision(p, pos, "a.rs::new", "flat", &[], ""),
+                &[("a.rs::new", "a.rs::new")],
+            );
             a_flat_id_a_definition_holds_answers_itself: shows(
                 &[T_NEW, ("a.rs", "new", "new", "function")],
                 |_, _| {},

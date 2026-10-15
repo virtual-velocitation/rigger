@@ -27196,9 +27196,7 @@ fn graph_show_heals_a_drifted_method_by_its_path_beside_a_same_named_one() {
     common::fixtures::write_text(root, "src/pair.rs", &format!("// one\n// two\n{source}"));
 
     assert_eq!(
-        run_rigger_ok(root, &["graph", "--show", "src/pair.rs::T::new"])
-            .lines()
-            .collect::<Vec<_>>(),
+        common::cli::show_lines(root, "src/pair.rs::T::new"),
         [
             "show src/pair.rs::T::new",
             "  site: src/pair.rs:6   kind method   degree 1   (recorded line 4, now 6)",
@@ -27260,9 +27258,7 @@ fn graph_show_answers_a_struct_field_by_its_path() {
     );
     run_rigger_ok(root, &["graph", "build"]);
     assert_eq!(
-        run_rigger_ok(root, &["graph", "--show", "Struct.field"])
-            .lines()
-            .collect::<Vec<_>>(),
+        common::cli::show_lines(root, "Struct.field"),
         [
             "show src/shape.rs::Struct.field",
             "  site: src/shape.rs:2   kind field   degree 1",

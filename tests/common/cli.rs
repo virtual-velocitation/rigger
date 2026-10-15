@@ -404,14 +404,20 @@ pub fn ambiguous_show(query: &str, cands: &[(&str, &str)]) -> String {
     out
 }
 
-/// The first two lines `rigger graph --show <query>` prints over `root`: the header naming the id
-/// it shows and that definition's site line.
-pub fn show_head(root: &Path, query: &str) -> Vec<String> {
+/// Every line `rigger graph --show <query>` prints over `root`, in order.
+pub fn show_lines(root: &Path, query: &str) -> Vec<String> {
     run_rigger_ok(root, &["graph", "--show", query])
         .lines()
-        .take(2)
         .map(str::to_string)
         .collect()
+}
+
+/// The first two lines `rigger graph --show <query>` prints over `root` ([`show_lines`]): the
+/// header naming the id it shows and that definition's site line.
+pub fn show_head(root: &Path, query: &str) -> Vec<String> {
+    let mut lines = show_lines(root, query);
+    lines.truncate(2);
+    lines
 }
 
 /// `rigger graph --show <file>::<path>`'s stdout over `root` seeded as a project whose working
