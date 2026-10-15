@@ -1,6 +1,7 @@
 //! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file
-//! index, saving it through the real `store` boundary and reading the bytes back, loading a
-//! hand-authored legacy `index.json`, projecting a file's definitions, its test-marked
+//! index, saving it through the real `store` boundary and reading the bytes back, writing a
+//! hand-authored `index.json` under the current extraction generation and loading a legacy one
+//! through the real `store::load`, projecting a file's definitions, its test-marked
 //! definitions and references and its references with their callers, checking a language's definition
 //! types against a file's definitions, checking a language's definitions fixture whole,
 //! projecting a file's definition extents, checking the variant names a file's kinds persist
@@ -249,6 +250,16 @@ pub fn persist_stamped(root: &str, grammar: &str, body: &str) {
     std::fs::write(&path, serde_json::to_vec(&stamped).unwrap()).unwrap();
 }
 
+/// Writes `body`, a hand-authored `index.json`, as the persisted index of `root`, stamped as
+/// built under the current extraction generation, so only its own shape decides whether it loads.
+pub fn persist_current(root: &str, body: &str) {
+    persist_stamped(
+        root,
+        rigger::grounder::symbols::model::GRAMMAR_TAGS_VERSION,
+        body,
+    );
+}
+
 /// The `file` entry of a hand-authored legacy `index.json` (`legacy`) loaded through the real
 /// `store::load`, which must succeed (`must_load` names the back-compat promise) and hold it.
 /// The legacy form is stamped with the CURRENT extraction generation first, and each of its
@@ -278,11 +289,7 @@ pub fn legacy_file(legacy: &str, file: &str, must_load: &str) -> FileSymbols {
             def.entry("path").or_insert(name);
         }
     }
-    persist_stamped(
-        root,
-        rigger::grounder::symbols::model::GRAMMAR_TAGS_VERSION,
-        &current.to_string(),
-    );
+    persist_current(root, &current.to_string());
     store::load(root)
         .expect(must_load)
         .files()
