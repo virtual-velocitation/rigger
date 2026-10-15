@@ -3718,7 +3718,10 @@ mod tests {
     /// witness against head, and an omitted member, an uncarried hit, a CHECKED reason that
     /// does not hold, a record naming no search and no empty set, a witness that no longer makes
     /// its sentence true, a new or FIXED sentence with no witness, or sets re-derived over a
-    /// round's delta is BLOCKING. Both records
+    /// round's delta is BLOCKING; it derives the changed-condition set itself - each boolean
+    /// term the unit's production hunks add to or remove from a filter, guard or predicate -
+    /// and reads every consumer sentence of that function against it, and one stating the
+    /// pre-change answer that the record does not carry is BLOCKING. Both records
     /// are the author's instruments, never a gate, so the lens's rule against re-running a green
     /// gate does not reach them.
     #[test]
@@ -3771,6 +3774,17 @@ mod tests {
             "A sentence whose witness no longer makes it true is BLOCKING; a new or FIXED \
              sentence with no witness is BLOCKING; a record whose sets are re-derived over a \
              round's delta is BLOCKING.",
+            "You also derive the changed-condition set yourself: list every boolean term the \
+             unit's production hunks add to or remove from a filter, guard, match-arm guard or \
+             predicate from `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src`, \
+             leaving out the test regions (files under a `tests/` directory and hunks inside a \
+             `#[cfg(test)]` module)",
+            "name the rule each changes - the question its function answers - and read every \
+             consumer sentence of that function - its depth-1 callers' notes, their Returns \
+             paragraphs, the docs of the variants the answer maps to and the oracles asserting \
+             them - against the condition at head",
+            "A consumer sentence stating the pre-change answer that the record does not carry \
+             FIXED or CHECKED is BLOCKING",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
