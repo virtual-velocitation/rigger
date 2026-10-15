@@ -249,8 +249,8 @@
       },
       {
         "file": "crates/rigger-domain/src/contextgraph/query.rs",
-        "start_line": 182,
-        "end_line": 184
+        "start_line": 191,
+        "end_line": 193
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
@@ -354,8 +354,8 @@
       },
       {
         "file": "crates/rigger-domain/src/contextgraph/query.rs",
-        "start_line": 530,
-        "end_line": 532
+        "start_line": 539,
+        "end_line": 541
       }
     ]
   },
@@ -4289,8 +4289,8 @@
       },
       {
         "file": "crates/rigger-domain/src/contextgraph/query.rs",
-        "start_line": 2012,
-        "end_line": 2014
+        "start_line": 2021,
+        "end_line": 2023
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
@@ -5044,8 +5044,8 @@
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 180,
-        "end_line": 182
+        "start_line": 181,
+        "end_line": 183
       },
       {
         "file": "src/cli/mod.rs",
@@ -6334,8 +6334,8 @@
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 74,
-        "end_line": 97
+        "start_line": 75,
+        "end_line": 98
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
@@ -6349,13 +6349,13 @@
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 318,
-        "end_line": 320
+        "start_line": 313,
+        "end_line": 315
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 333,
-        "end_line": 335
+        "start_line": 328,
+        "end_line": 330
       }
     ]
   },
@@ -6364,13 +6364,13 @@
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 996,
-        "end_line": 1049
+        "start_line": 991,
+        "end_line": 1044
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 1448,
-        "end_line": 1485
+        "start_line": 1443,
+        "end_line": 1480
       }
     ]
   },
@@ -6379,18 +6379,18 @@
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 1128,
-        "end_line": 1138
+        "start_line": 1123,
+        "end_line": 1133
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 1174,
-        "end_line": 1184
+        "start_line": 1169,
+        "end_line": 1179
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 1189,
-        "end_line": 1199
+        "start_line": 1184,
+        "end_line": 1194
       }
     ]
   },
@@ -6399,13 +6399,13 @@
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 1588,
-        "end_line": 1599
+        "start_line": 1583,
+        "end_line": 1594
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 1838,
-        "end_line": 1852
+        "start_line": 1833,
+        "end_line": 1847
       }
     ]
   },
@@ -6414,18 +6414,18 @@
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 1755,
-        "end_line": 1801
+        "start_line": 1750,
+        "end_line": 1796
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 1804,
-        "end_line": 1830
+        "start_line": 1799,
+        "end_line": 1825
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 2129,
-        "end_line": 2156
+        "start_line": 2124,
+        "end_line": 2151
       }
     ]
   },

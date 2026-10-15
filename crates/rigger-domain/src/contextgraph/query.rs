@@ -175,6 +175,15 @@ pub fn leaf_of(id: &str) -> Option<&str> {
     split_id(id).1?.strip_prefix(PLACEHOLDER_SIGIL)
 }
 
+/// The leaf a path query names (spec 119, A BARE SHOW FINDS A LEAF OR PATH): the text after its
+/// last `::` or `.`, the whole text when it holds neither (`T::new` and `a.rs::T::new` give `new`,
+/// `S.field` gives `field`). The show lookup's path form and the grounder's symbol of a
+/// path-shaped term both read it.
+pub fn path_leaf(path: &str) -> &str {
+    let tail = path.rsplit("::").next().unwrap_or(path);
+    tail.rsplit('.').next().unwrap_or(tail)
+}
+
 /// The ONE join of a code-entity id (spec 119), the inverse of [`split_id`]: `<file>::<rest>`,
 /// the rest a definition's id path in its file (spec 119, IDS FOLLOW THE LANGUAGE'S PATH: `T::new`,
 /// `S.field`, a file-level definition's own name), a caller's name, or a placeholder's sigiled
