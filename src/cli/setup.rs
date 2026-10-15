@@ -3747,9 +3747,12 @@ mod tests {
     /// round's delta is BLOCKING; it derives the changed-condition set itself - each boolean
     /// term the unit's production hunks add to or remove from a filter, guard or predicate -
     /// and reads every consumer sentence of that function against it, and one stating the
-    /// pre-change answer that the record does not carry is BLOCKING. Both records
-    /// are the author's instruments, never a gate, so the lens's rule against re-running a green
-    /// gate does not reach them.
+    /// pre-change answer that the record does not carry is BLOCKING. Of the mutable-token rule:
+    /// it derives the token set from the production hunks over the unit's whole range, probes
+    /// every token the author's `<unit>-mutant-probes` record lacks in a scratch worktree it
+    /// restores and removes in-turn, and a green probe or an unrecorded token is BLOCKING. The
+    /// records are the author's instruments, never a gate, so the lens's rule against re-running
+    /// a green gate does not reach them.
     #[test]
     fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
         const HEADING: &str = "## Re-run the author's searches and re-derive its walk";
@@ -3811,6 +3814,17 @@ mod tests {
              them - against the condition at head",
             "A consumer sentence stating the pre-change answer that the record does not carry \
              FIXED or CHECKED is BLOCKING",
+            "You are also the enforcement of the built-in rule that every mutable token of the \
+             production delta is pinned.",
+            "You derive the token set yourself from the production hunks of `git diff \
+             $(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out",
+            "compare it with the author's `<unit>-mutant-probes` record",
+            "Every token the record lacks you probe yourself in a scratch worktree (`git \
+             worktree add <scratch> HEAD`), one mutation at a time",
+            "restoring each file with `git checkout -- <file>` and removing the scratch worktree \
+             with `git worktree remove <scratch>` before your turn ends",
+            "A probe that leaves every test green is BLOCKING, and so is a token the record \
+             carries no probe for",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
