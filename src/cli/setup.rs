@@ -3697,7 +3697,10 @@ mod tests {
     /// The `sdet` lens is the enforcement of two built-in rules. Of the shape rule: it re-runs
     /// every search the author's shape record carries on the review tree and compares the hit
     /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
-    /// command is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
+    /// command is BLOCKING; it derives the expression set itself from the unit's test hunks -
+    /// each body's string literals in full and its outside calls with their first argument -
+    /// runs each with the authors' search, and an uncarried hit or a record of names only for a
+    /// body that spells either is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
     /// diff over the unit's whole range and the graph and compares it with the walk record,
     /// re-runs every rule-spelling search the record carries and re-reads every hit and every
     /// witness against head, and an omitted member, an uncarried hit, a CHECKED reason that
@@ -3725,6 +3728,15 @@ mod tests {
             "a CHECKED hit whose reason does not hold - its shape does not differ in the way \
              the record names - is a twin and BLOCKING",
             "a record with no command is BLOCKING",
+            "You also derive the expression set yourself: list the unit's added or edited \
+             test-side bodies from `git diff $(git merge-base rigger-run HEAD)..HEAD -- tests \
+             crates src`",
+            "take every string literal each body spells, in full, and every call it makes \
+             outside the shared home with its first argument token, and run each with the \
+             authors' search, `git ls-files tests crates src | t='<expression>' xargs awk",
+            "A hit the record does not carry is BLOCKING, and so is a record whose expressions \
+             are names only - a fn name, the callee a helper wraps - for a body that spells a \
+             literal or an outside call.",
             "You are also the enforcement of the built-in rule that every sentence about the \
              changed behaviour is true at head.",
             "you re-derive each generator's set on the review tree from the diff and the graph",
