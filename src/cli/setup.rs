@@ -3568,7 +3568,9 @@ mod tests {
     /// searches them, the counted checks: the roots a retired spelling is counted over with the
     /// command that counts it, and the audit record owed for every added test-side shape with the
     /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
-    /// the root crate's `src/` test modules included), and the sentence
+    /// the root crate's `src/` test modules included), run once per term of the statements of
+    /// each added or edited test-side body - each string literal in full and each outside call
+    /// with its first argument token, never the body's name - and the sentence
     /// walk's generators as commands over the unit's whole range on every round (the merge base
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
     /// 1 with its counted fallback recorded as a gap, each FIXED or new line's `file:line`
@@ -3652,6 +3654,11 @@ mod tests {
              its one argument",
             "`git ls-files tests crates src | t='<expression>' xargs awk",
             "and the root crate's `src/` test modules the same way",
+            "The expressions are the statements' own terms, never a body's name: every string \
+             literal each test-side body you add or edit spells, in full, and every call it \
+             makes outside the shared home with its first argument token \
+             (`create_dir_all(root.join(`, `for_extension(\"rs\")`), the command run once per \
+             term.",
             "index($0, ENVIRON[\"t\"])",
             "END { print n + 0 \" hits\" }'`",
             "The record pastes each command as run, its hit count and every hit it printed, each \
