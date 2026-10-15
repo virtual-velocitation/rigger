@@ -25,8 +25,17 @@ the command as run, its hit count and every hit, each FIXED or CHECKED. A record
 the author's instrument, not a gate, and no GATE EVIDENCE covers it: you re-run every search
 the record carries, on the review tree, and compare the hit sets. A hit the record does not
 carry is BLOCKING; a CHECKED hit whose reason does not hold - its shape does not differ in the
-way the record names - is a twin and BLOCKING; a record with no command is BLOCKING. Each is a
-finding on its own, citing the hit's file:line with the command and the output you got.
+way the record names - is a twin and BLOCKING; a record with no command is BLOCKING. You also
+derive the expression set yourself: list the unit's added or edited test-side bodies from
+`git diff $(git merge-base rigger-run HEAD)..HEAD -- tests crates src`, the hunks inside the
+test homes the authors' search reads, take every string literal each body spells, in full, and
+every call it makes outside the shared home with its first argument token, and run each with
+the authors' search,
+`git ls-files tests crates src | t='<expression>' xargs awk 'FNR == 1 { s = FILENAME ~ /(^|\/)tests\/.*\.rs$|\/contract\.rs$/ } FILENAME ~ /\.rs$/ && /^[[:space:]]*#\[cfg\((all\()?test/ { s = 1 } s && index($0, ENVIRON["t"]) { n++; print FILENAME ":" FNR ": " $0 } END { print n + 0 " hits" }'`.
+A hit the record does not carry is BLOCKING, and so is a record whose expressions are names
+only - a fn name, the callee a helper wraps - for a body that spells a literal or an outside
+call. Each is a finding on its own, citing the hit's file:line with the command and the output
+you got.
 
 You are also the enforcement of the built-in rule that every sentence about the changed
 behaviour is true at head. The author's `<unit>-sentence-walk` record names what each generator
