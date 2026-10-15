@@ -3691,9 +3691,12 @@ mod tests {
     /// every search the author's shape record carries on the review tree and compares the hit
     /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
     /// command is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
-    /// diff and the graph and compares it with the walk record, re-runs every rule-spelling
-    /// search the record carries and re-reads every hit against head, and an omitted member, an uncarried hit, a CHECKED reason that
-    /// does not hold, or a record naming no search and no empty set is BLOCKING. Both records
+    /// diff over the unit's whole range and the graph and compares it with the walk record,
+    /// re-runs every rule-spelling search the record carries and re-reads every hit and every
+    /// witness against head, and an omitted member, an uncarried hit, a CHECKED reason that
+    /// does not hold, a record naming no search and no empty set, a witness that no longer makes
+    /// its sentence true, a new or FIXED sentence with no witness, or sets re-derived over a
+    /// round's delta is BLOCKING. Both records
     /// are the author's instruments, never a gate, so the lens's rule against re-running a green
     /// gate does not reach them.
     #[test]
@@ -3730,6 +3733,13 @@ mod tests {
              rule or of one of its case labels after all - is BLOCKING",
             "a record naming no rule-spelling search and no empty set is BLOCKING",
             "a record that names the set empty while the diff rewrites a rule",
+            "You derive every set over the unit's whole range, `$(git merge-base rigger-run \
+             HEAD)..HEAD` run in your own worktree, never the round's delta your prompt carries",
+            "you read every witness the record carries - the `file:line` beside each new or \
+             FIXED sentence - against the code at head",
+            "A sentence whose witness no longer makes it true is BLOCKING; a new or FIXED \
+             sentence with no witness is BLOCKING; a record whose sets are re-derived over a \
+             round's delta is BLOCKING.",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
