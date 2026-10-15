@@ -2927,7 +2927,7 @@ class K
         /// Tier 2: a definition whose kind changed at its recorded name and line bounds there,
         /// beside a same-named definition of the recorded kind elsewhere in the file.
         a_definition_whose_kind_changed_in_place_bounds_at_its_recorded_line: assert_eq!(
-            located("const f: u8 =\n    0;\nfn f() {\n}\n", "f", Kind::Function, 1),
+            located(crate::extent_sources::KIND_CHANGED_IN_PLACE_SOURCE, "f", Kind::Function, 1),
             Extent::Bounded { start: 1, end: 2 }
         );
         /// Tier 2 takes exactly one: two same-named definitions of other kinds at the recorded line
@@ -2939,7 +2939,7 @@ class K
         /// Tier 3: a drifted fn beside a same-named field heals to the fn, the field never making
         /// the name ambiguous.
         a_drifted_fn_beside_a_same_named_field_heals: assert_eq!(
-            located("struct S {\n    h: u8,\n}\n\nfn h() {\n}\n", "h", Kind::Function, 1),
+            located(crate::extent_sources::FN_BESIDE_SAME_NAMED_FIELD_SOURCE, "h", Kind::Function, 1),
             Extent::Bounded { start: 5, end: 6 }
         );
         /// Tier 3 reads production definitions only: a drifted fn beside its `#[cfg(test)]` twin

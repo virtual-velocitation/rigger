@@ -27105,19 +27105,15 @@ fn graph_show_prints_each_node_through_the_one_site_renderer() {
 fn graph_show_prints_the_entry_lines_between_a_healed_header_and_the_body() {
     let dir = temp_project();
     let root = dir.path();
-    common::cli::seed_rigger_dir(root);
-    common::fixtures::write_text(root, "src/heal.rs", "\n\nfn healed() -> u8 {\n    1\n}\n");
-    common::fixtures::apply_code_entity(
-        &common::cli::open_graph(root),
-        1,
+    let out = common::cli::show_recorded(
+        root,
         "src/heal.rs",
+        "\n\nfn healed() -> u8 {\n    1\n}\n",
         "healed",
         "function",
         1,
         "rust",
     );
-
-    let out = run_rigger_ok(root, &["graph", "--show", "src/heal.rs::healed"]);
     assert_eq!(
         out.lines().take(5).collect::<Vec<_>>(),
         [
@@ -27148,23 +27144,15 @@ fn graph_show_prints_the_entry_lines_between_a_healed_header_and_the_body() {
 fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
     let dir = temp_project();
     let root = dir.path();
-    common::cli::seed_rigger_dir(root);
-    common::fixtures::write_text(
+    let out = common::cli::show_recorded(
         root,
         "src/App.tsx",
         "export function App() {\n  const v = <b>x</b>;\n  return v;\n}\n",
-    );
-    common::fixtures::apply_code_entity(
-        &common::cli::open_graph(root),
-        1,
-        "src/App.tsx",
         "v",
         "constant",
         2,
         "ts",
     );
-
-    let out = run_rigger_ok(root, &["graph", "--show", "src/App.tsx::v"]);
     assert_eq!(
         out.lines().collect::<Vec<_>>(),
         [

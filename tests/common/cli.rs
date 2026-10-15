@@ -391,6 +391,24 @@ pub fn insert_node(
     .unwrap();
 }
 
+/// `rigger graph --show <file>::<name>`'s stdout over `root` seeded as a project whose working
+/// tree holds `source` at `file` and whose graph records the definition `name` of kind `kind` at
+/// `line` in `lang`.
+pub fn show_recorded(
+    root: &Path,
+    file: &str,
+    source: &str,
+    name: &str,
+    kind: &str,
+    line: u64,
+    lang: &str,
+) -> String {
+    seed_rigger_dir(root);
+    super::fixtures::write_text(root, file, source);
+    super::fixtures::apply_code_entity(&open_graph(root), 1, file, name, kind, line, lang);
+    run_rigger_ok(root, &["graph", "--show", &format!("{file}::{name}")])
+}
+
 /// Hold `graph_db` under another writer's write lock while `run` runs, past every busy timeout
 /// the binary waits on, and hand back what `run` returned once the lock is released.
 pub fn with_graph_locked<T>(graph_db: &Path, run: impl FnOnce() -> T) -> T {

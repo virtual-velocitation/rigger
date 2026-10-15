@@ -932,3 +932,84 @@ fn graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file() {
         "no line-numbered body is printed for an ambiguous drift; got:\n{out}"
     );
 }
+
+/// The stdout lines of `rigger graph --show` on the Rust function `name` the graph records at line 1
+/// of `file`, in a project whose working tree holds `source` there (spec 119, ONE EXTENT: the
+/// node's recorded kind reaches the extent search).
+#[cfg(feature = "symbols")]
+fn shown_function_recorded_at_line_1(file: &str, source: &str, name: &str) -> Vec<String> {
+    let dir = temp_project();
+    common::cli::show_recorded(dir.path(), file, source, name, "function", 1, "rust")
+        .lines()
+        .map(String::from)
+        .collect()
+}
+
+rigger::test_cases! {
+    /// Spec 119, ONE EXTENT, the kind seam: GIVEN a function `h` the graph records at line 1 of a
+    /// file whose working tree holds a struct field `h` at line 2 and the function `h` at lines
+    /// 5-6, WHEN the operator runs `rigger graph --show` on its id, THEN the drift heals to the
+    /// function alone, the field never making the name ambiguous.
+    #[cfg(feature = "symbols")]
+    graph_show_heals_a_drifted_fn_beside_a_same_named_field: assert_eq!(
+        shown_function_recorded_at_line_1(
+            "field.rs",
+            common::fixtures::FN_BESIDE_SAME_NAMED_FIELD_SOURCE,
+            "h",
+        ),
+        [
+            "show field.rs::h",
+            "  site: field.rs:5   kind function   degree 1   (recorded line 1, now 5)",
+            "  name h",
+            "  lang rust",
+            "       5 | fn h() {",
+            "       6 | }",
+        ],
+        "the drift heals to the function, never ambiguous with the same-named field"
+    );
+    /// Spec 119, ONE EXTENT, the second tier at the binary: GIVEN a function `f` the graph records
+    /// at line 1 of a file whose working tree now holds a constant `f` spanning lines 1-2 and a
+    /// function `f` at lines 3-4, WHEN the operator runs `rigger graph --show` on its id, THEN the
+    /// definition whose kind changed in place bounds the body at the recorded line, ahead of
+    /// healing to the function.
+    #[cfg(feature = "symbols")]
+    graph_show_bounds_a_definition_whose_kind_changed_at_its_recorded_line: assert_eq!(
+        shown_function_recorded_at_line_1(
+            "changed.rs",
+            common::fixtures::KIND_CHANGED_IN_PLACE_SOURCE,
+            "f",
+        ),
+        [
+            "show changed.rs::f",
+            "  site: changed.rs:1   kind function   degree 1",
+            "  name f",
+            "  lang rust",
+            "       1 | const f: u8 =",
+            "       2 |     0;",
+        ],
+        "the recorded line's definition of another kind bounds the body, unhealed"
+    );
+    /// Spec 119, ONE EXTENT, the ambiguity note at the binary: GIVEN a function `dup` the graph
+    /// records at line 1 of a file whose working tree holds a struct field `dup` and two functions
+    /// `dup`, none at line 1, WHEN the operator runs `rigger graph --show` on its id, THEN no body
+    /// is printed and the note names the two definitions of its kind, the same-named field never
+    /// counted.
+    #[cfg(feature = "symbols")]
+    graph_show_notes_an_ambiguous_drift_by_the_count_of_its_kind: assert_eq!(
+        shown_function_recorded_at_line_1(
+            "twins.rs",
+            "fn other() {}\nstruct S {\n    dup: u8,\n}\nfn dup() {}\nfn dup() {}\n",
+            "dup",
+        ),
+        [
+            "show twins.rs::dup",
+            "  site: twins.rs:1   kind function   degree 1",
+            "  name dup",
+            "  lang rust",
+            "  (2 definitions named \"dup\" of kind function exist in twins.rs and none starts at \
+             the recorded line 1; the recorded location may be stale (cannot resolve which one \
+             moved))",
+        ],
+        "an ambiguous drift notes the count of its kind and prints no body"
+    );
+}
