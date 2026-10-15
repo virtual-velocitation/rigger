@@ -213,7 +213,8 @@ fn cmd_graph_show(entity: &str) -> Res {
 ///
 /// The body is bounded by the node's `name` attr and its kind (spec 119, ONE EXTENT), never a cut
 /// of the id, since a file id holds a `.` and an impl header id a `::`. A node with no `name` at a
-/// non-zero line gets the "no definition named" note with its id in place of the name, here, ahead
+/// non-zero line gets the "no production definition named" note with its id in place of the name,
+/// here, ahead
 /// of the feature-gated [`locate_definition_extent`], so both lanes print the same note; one at line
 /// 0 keeps [`definition_body`]'s `source unavailable`.
 fn print_entity_site(site: &contextgraph::EntitySite) {
@@ -267,9 +268,9 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
 /// Why `rigger graph --show` bounds no body for a located definition (spec 119, ONE EXTENT),
 /// printed as one note in place of the body ([`Unbounded::note`]).
 enum Unbounded {
-    /// No definition of the label's name and kind sits at its recorded line or anywhere else in
-    /// the file, nor a lone one of the name at that line: a deleted definition, or a nameless node
-    /// no definition can be sought for.
+    /// No production definition (one outside test code) of the label's name and kind sits at its
+    /// recorded line or anywhere else in the file, nor a lone production one of the name at that
+    /// line: a deleted definition, or a nameless node no definition can be sought for.
     Missing,
     /// Any other reason, already worded: an ambiguous drift, no registered grammar, or a build
     /// without the extraction grammar.
@@ -282,8 +283,8 @@ impl Unbounded {
     fn note(self, label: &str, kind: &str, file: &str, line: u32) -> String {
         match self {
             Unbounded::Missing => format!(
-                "no definition named {label:?} of kind {kind} at line {line} or elsewhere in {file} \
-                 in the current working tree; the recorded location may be stale"
+                "no production definition named {label:?} of kind {kind} at line {line} or elsewhere \
+                 in {file} in the current working tree; the recorded location may be stale"
             ),
             Unbounded::Note(why) => why,
         }
@@ -368,18 +369,19 @@ enum ShowBody {
 /// The recorded `start` no longer holding the definition (the graph has not been reindexed since the
 /// code moved) is not, by itself, a reason to refuse: [`locate_definition_extent`] falls back to
 /// locating `name` of `kind` by a search of the SAME file, healing to the live line when that name
-/// and kind are UNAMBIGUOUS there. [`ShowBody::Lines::start`] then carries that LIVE line rather
+/// and kind are UNAMBIGUOUS among its production definitions, those outside test code. [`ShowBody::Lines::start`] then carries that LIVE line rather
 /// than the recorded one, so the caller's header can show the drift instead of hiding it.
 ///
 /// Returns [`ShowBody::Note`] - the caller prints it in place of the body, never an error - when the
 /// body cannot be shown honestly: the recorded `start` line is `0` or past end-of-file (a location
 /// that never named a real source line, or one that has drifted past the file itself, each refused
 /// before any search), the file cannot be read (a drifted or unknown location), the current tree
-/// holds no definition of that name and kind ANYWHERE in the file nor a lone one of the name at
-/// the recorded line (deleted, not merely moved), the
-/// name and kind are ambiguous in the file (more than one live line - never guessed), or this build
-/// has no extraction grammar (the light, `--no-default-features` lane). It never GUESSES a body
-/// from a structural next-definition bound or from an ambiguous candidate.
+/// holds no production definition (one outside test code) of that name and kind ANYWHERE in the
+/// file nor a lone production one of the name at the recorded line (deleted, not merely moved),
+/// the name and kind are ambiguous in the file (production definitions at more than one live
+/// line, never guessed), or this build has no extraction grammar (the light,
+/// `--no-default-features` lane). It never GUESSES a body from a structural next-definition bound
+/// or from an ambiguous candidate.
 fn definition_body(file: &str, start: u32, name: &str, kind: &str) -> ShowBody {
     // A recorded line of 0 never named a real source line: degrade before any read. (Also covers a
     // reference-only graph entity with no definition site of its own to search from, so a hard,
@@ -440,13 +442,14 @@ fn definition_body(file: &str, start: u32, name: &str, kind: &str) -> ShowBody {
 /// EXTENT). It resolves the file's grammar by its path through the symbols registry, so a `.tsx`
 /// file keeps its TSX grammar, and only calls [`extract::locate_extent`], the ONE extent authority,
 /// whose three tiers decide the bound: the recorded name, kind and line, else the recorded name
-/// and line, else a drifted line by name and kind, healed only when one line holds them.
+/// and line, else a drifted line by name and kind, healed only when one line holds them; each tier
+/// reads production definitions only, those outside test code.
 ///
-/// Returns the [`Unbounded`] reason - the caller degrades to a note - when no definition of that
-/// name and kind exists anywhere in the file nor a lone one of the name at the recorded line
-/// (deleted, not moved), and a worded one when no
-/// grammar is registered for the file's extension, the grammar cannot tag the source, or the name
-/// and kind sit at more than one live line and none at the recorded one.
+/// Returns the [`Unbounded`] reason - the caller degrades to a note - when no production
+/// definition of that name and kind exists anywhere in the file nor a lone production one of the
+/// name at the recorded line (deleted, not moved), and a worded one when no grammar is registered
+/// for the file's extension, the grammar cannot tag the source, or production definitions of the
+/// name and kind sit at more than one live line and none at the recorded one.
 #[cfg(feature = "symbols")]
 fn locate_definition_extent(
     file: &str,
@@ -476,8 +479,9 @@ fn locate_definition_extent(
         Extent::Bounded { start, end } => Ok((start, end)),
         Extent::Missing => Err(Unbounded::Missing),
         Extent::Ambiguous(n) => Err(Unbounded::Note(format!(
-            "definitions named {name:?} of kind {kind} sit at {n} lines in {file} and none at the \
-             recorded line {start}; the recorded location may be stale (cannot resolve which one moved)"
+            "production definitions named {name:?} of kind {kind} sit at {n} lines in {file} and \
+             none at the recorded line {start}; the recorded location may be stale (cannot resolve \
+             which one moved)"
         ))),
     }
 }
