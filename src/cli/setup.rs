@@ -3569,8 +3569,10 @@ mod tests {
     /// command that counts it, and the audit record owed for every added test-side shape with the
     /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
     /// the root crate's `src/` test modules included), and the sentence
-    /// walk's generators as commands, the graph's caller lookup at depth 1 with its counted
-    /// fallback recorded as a gap, the rule-spelling search over every tracked text file, one
+    /// walk's generators as commands over the unit's whole range on every round (the merge base
+    /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
+    /// 1 with its counted fallback recorded as a gap, each FIXED or new line's `file:line`
+    /// witness, the rule-spelling search over every tracked text file, one
     /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
     /// phrase in another case or split by a rewrap still a hit) whose command and hits the walk pastes for the `sdet`
     /// lens to re-run, and the record the walk owes, and the foreground wait for
@@ -3640,6 +3642,12 @@ mod tests {
             "a `GAP:` clause naming the item in the record",
             "the count above with `t='<name>'`",
             "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
+            "On every round, the first and each later one alike, `<base>` is the unit's merge \
+             base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
+             `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the \
+             round's delta your prompt carries.",
+            "Each FIXED or new line of the record carries its witness beside that location: the \
+             `file:line` of the code at head that makes the sentence true.",
             "The search is this command, one run per distinguishing expression, the expression \
              its one argument",
             "`git ls-files tests crates src | t='<expression>' xargs awk",
@@ -3683,9 +3691,12 @@ mod tests {
     /// every search the author's shape record carries on the review tree and compares the hit
     /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
     /// command is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
-    /// diff and the graph and compares it with the walk record, re-runs every rule-spelling
-    /// search the record carries and re-reads every hit against head, and an omitted member, an uncarried hit, a CHECKED reason that
-    /// does not hold, or a record naming no search and no empty set is BLOCKING. Both records
+    /// diff over the unit's whole range and the graph and compares it with the walk record,
+    /// re-runs every rule-spelling search the record carries and re-reads every hit and every
+    /// witness against head, and an omitted member, an uncarried hit, a CHECKED reason that
+    /// does not hold, a record naming no search and no empty set, a witness that no longer makes
+    /// its sentence true, a new or FIXED sentence with no witness, or sets re-derived over a
+    /// round's delta is BLOCKING. Both records
     /// are the author's instruments, never a gate, so the lens's rule against re-running a green
     /// gate does not reach them.
     #[test]
@@ -3722,6 +3733,13 @@ mod tests {
              rule or of one of its case labels after all - is BLOCKING",
             "a record naming no rule-spelling search and no empty set is BLOCKING",
             "a record that names the set empty while the diff rewrites a rule",
+            "You derive every set over the unit's whole range, `$(git merge-base rigger-run \
+             HEAD)..HEAD` run in your own worktree, never the round's delta your prompt carries",
+            "you read every witness the record carries - the `file:line` beside each new or \
+             FIXED sentence - against the code at head",
+            "A sentence whose witness no longer makes it true is BLOCKING; a new or FIXED \
+             sentence with no witness is BLOCKING; a record whose sets are re-derived over a \
+             round's delta is BLOCKING.",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
