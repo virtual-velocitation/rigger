@@ -4048,7 +4048,7 @@ mandatory sweep: sqlite Connection::open call sites - 62 site(s), collected mech
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5959-5959` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10392-10392` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11155-11155` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12975-12975` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13002-13002` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1547-1547` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2160-2160` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2182-2182` `Connection::open_with_flags`
@@ -4132,7 +4132,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9753-9763` `apply_unit_integrated`
 - `tests/code_ingest_events.rs:841-848` `apply_ref_json`
 - `tests/code_ingest_events.rs:978-985` `apply_ref_fresh`
-- `tests/common/fixtures/fold.rs:390-397` `apply_edge_inferred_evidence`
+- `tests/common/fixtures/fold.rs:397-404` `apply_edge_inferred_evidence`
 
 #### `dup-b5bd50de3e2a` (near, 2 sites)
 
@@ -4912,8 +4912,8 @@ Proposed home: `fold::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:384-386` `apply_ref`
-- `tests/common/fixtures/fold.rs:402-404` `apply_call`
+- `tests/common/fixtures/fold.rs:391-393` `apply_ref`
+- `tests/common/fixtures/fold.rs:409-411` `apply_call`
 
 #### `dup-9c3b5c80063e` (near, 3 sites)
 
@@ -4921,7 +4921,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/common/fixtures/f
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:660-669` `live_node_ids`
+- `tests/common/fixtures/fold.rs:667-676` `live_node_ids`
 - `tests/community_resolution_knob.rs:139-148` `live_memberships_of`
 - `tests/graph_superseded_prune.rs:32-41` `live_contains`
 
@@ -5259,7 +5259,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9314 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9323 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4996-5037` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15080-15102` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

@@ -267,8 +267,15 @@ pub fn path_entity_json(
     line: u64,
     lang: &str,
 ) -> serde_json::Value {
-    let mut json = code_entity_json(file, name, kind, line, lang);
-    json["path"] = path.into();
+    with_path(code_entity_json(file, name, kind, line, lang), Some(path))
+}
+
+/// `json` carrying `path` under its `path` key when one is given, an id path (spec 119, IDS
+/// FOLLOW THE LANGUAGE'S PATH), and unchanged when `None`.
+pub fn with_path(mut json: serde_json::Value, path: Option<&str>) -> serde_json::Value {
+    if let Some(path) = path {
+        json["path"] = path.into();
+    }
     json
 }
 

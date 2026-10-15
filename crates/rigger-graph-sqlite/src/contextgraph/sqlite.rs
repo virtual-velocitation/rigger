@@ -12730,6 +12730,12 @@ mod tests {
             assert_eq!(p.retired_code_entity_count().unwrap(), retired);
         }
 
+        /// The tiers of the call `src/b.rs`'s `g` makes to `leaf` across files, landed on its
+        /// placeholder `src/b.rs::%<leaf>` ([`call_tiers`]).
+        fn cross_file_call_tiers(p: &Projector, leaf: &str) -> [String; 2] {
+            call_tiers(p, &format!("src/b.rs::%{leaf}"))
+        }
+
         /// Spec 116 criterion 4: `src/f.rs`'s fn `x` retires at its file's next generation
         /// while `src/a.rs` keeps a definition of that leaf of kind `beside` (none when `None`).
         /// The call `src/b.rs`'s `g` makes to `x`, inferred while the fn stood, ends at `tier`:
@@ -12742,7 +12748,7 @@ mod tests {
             }
             apply_def(&p, 3, "src/b.rs", "g", 1, true);
             apply_call(&p, 4, "src/b.rs", "x", "g");
-            let tiers = |p: &Projector| call_tiers(p, "src/b.rs::%x");
+            let tiers = |p: &Projector| cross_file_call_tiers(p, "x");
             assert_eq!(tiers(&p), [TIER_INFERRED, TIER_INFERRED]);
 
             apply_generation_head(&p, 5, "src/f.rs", "h2", "y", 20);
@@ -12767,9 +12773,12 @@ mod tests {
         /// the lower line and then the lesser kind string breaking a tie, whatever order they
         /// fold in, and the node is a definition only while that winner is a call target.
         mod shared_node {
+            use super::super::leaf_keys_resolution::proof_targets;
             use super::*;
             use crate::contextgraph::CODE_KIND_PRECEDENCE;
-            use crate::test_support::{attrs_of, call_json, definition, kind_def_json, ref_json};
+            use crate::test_support::{
+                attrs_of, call_json, definition, kind_def_json, ref_json, with_path,
+            };
 
             /// One definition of `src/f.rs` as `(name, kind, line)`.
             type Def<'a> = (&'a str, &'a str, u64);
@@ -12781,12 +12790,25 @@ mod tests {
             /// Fold `defs` from `pos` as the first events of generation `generation` of
             /// `src/f.rs`, at `secs`.
             fn fold_defs(p: &Projector, pos: u64, generation: &str, secs: u64, defs: &[Def]) {
+                fold_path_defs(p, pos, generation, secs, defs, None);
+            }
+
+            /// [`fold_defs`], each definition carrying the id path `path` when one is given
+            /// (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), so differing names share one node.
+            fn fold_path_defs(
+                p: &Projector,
+                pos: u64,
+                generation: &str,
+                secs: u64,
+                defs: &[Def],
+                path: Option<&str>,
+            ) {
                 for (i, (name, kind, line)) in defs.iter().enumerate() {
                     apply_keyed(
                         p,
                         pos + i as u64,
                         TYPE_CODE_ENTITY_EXTRACTED,
-                        kind_def_json("src/f.rs", name, kind, *line, i == 0),
+                        with_path(kind_def_json("src/f.rs", name, kind, *line, i == 0), path),
                         &format!("gc/src/f.rs@{generation}#{i}"),
                         secs,
                     );
@@ -12796,9 +12818,14 @@ mod tests {
             /// Fold, from `pos`, the call `src/b.rs`'s fn `g` makes to `x` and the test
             /// reference `tests/t.rs` holds to it.
             fn fold_a_cross_file_call_and_a_proof(p: &Projector, pos: u64) {
+                fold_a_cross_file_call_and_a_proof_of(p, pos, "x");
+            }
+
+            /// [`fold_a_cross_file_call_and_a_proof`] to the leaf `name`.
+            fn fold_a_cross_file_call_and_a_proof_of(p: &Projector, pos: u64, name: &str) {
                 apply_def(p, pos, "src/b.rs", "g", 1, true);
-                apply_call(p, pos + 1, "src/b.rs", "x", "g");
-                apply_edge_inferred_evidence(p, pos + 2, "tests/t.rs", "x", 3);
+                apply_call(p, pos + 1, "src/b.rs", name, "g");
+                apply_edge_inferred_evidence(p, pos + 2, "tests/t.rs", name, 3);
             }
 
             /// `defs`, the definitions of one leaf, settle their node as a `kind` at `line`
@@ -12873,7 +12900,7 @@ mod tests {
                 fold_a_cross_file_call_and_a_proof(&p, 6);
                 assert_eq!(call_tiers(&p, X), [TIER_EXTRACTED, TIER_EXTRACTED]);
                 assert_eq!(
-                    call_tiers(&p, "src/b.rs::%x"),
+                    cross_file_call_tiers(&p, "x"),
                     [TIER_INFERRED, TIER_INFERRED]
                 );
             }
@@ -12921,7 +12948,7 @@ mod tests {
                     assert_eq!(attrs_of(p, X), proven, "{why}");
                     assert_eq!(call_tiers(p, X), [TIER_EXTRACTED, TIER_EXTRACTED], "{why}");
                     assert_eq!(
-                        call_tiers(p, "src/b.rs::%x"),
+                        cross_file_call_tiers(p, "x"),
                         [TIER_INFERRED, TIER_INFERRED],
                         "{why}"
                     );
@@ -13004,9 +13031,21 @@ mod tests {
             /// `x` ends as a field at line 1 carrying no proof, and the cross-file call to it
             /// ambiguous: what a graph holding a field `x` and no fn of that leaf gives.
             fn x_is_a_field_no_call_resolves_onto(p: &Projector, why: &str) {
-                assert_eq!(attrs_of(p, X), definition("x", "field", 1), "{why}");
+                no_call_resolves_onto(p, X, "x", definition("x", "field", 1), why);
+            }
+
+            /// Node `id` carries `attrs`, and the cross-file call `src/b.rs`'s `g` makes to
+            /// `leaf` is ambiguous: what a graph holding no call target of the leaf gives.
+            fn no_call_resolves_onto(
+                p: &Projector,
+                id: &str,
+                leaf: &str,
+                attrs: BTreeMap<String, String>,
+                why: &str,
+            ) {
+                assert_eq!(attrs_of(p, id), attrs, "{why}");
                 assert_eq!(
-                    call_tiers(p, "src/b.rs::%x"),
+                    cross_file_call_tiers(p, leaf),
                     [TIER_AMBIGUOUS, TIER_AMBIGUOUS],
                     "{why}"
                 );
@@ -13019,24 +13058,45 @@ mod tests {
             fn a_fn_that_is_only_a_field_at_the_next_generation_stops_being_a_definition(
                 second: &[Def],
             ) {
+                the_next_generation_retires_a_leaf(
+                    FN_AT_1,
+                    second,
+                    None,
+                    (X, "x"),
+                    x_is_a_field_no_call_resolves_onto,
+                );
+            }
+
+            /// `src/f.rs` holds `first` at generation 1, at the id path `path` when one is
+            /// given, defining the leaf of `(id, leaf)` on node `id`, inferred by a cross-file
+            /// call and proven by a test reference, and `second` at generation 2, which defines
+            /// no call target of that leaf: `ends` holds of the graph folded onto generation 1
+            /// and of a rebuild folding generation 2 alone.
+            fn the_next_generation_retires_a_leaf(
+                first: &[Def],
+                second: &[Def],
+                path: Option<&str>,
+                (id, leaf): (&str, &str),
+                ends: fn(&Projector, &str),
+            ) {
                 let p = Projector::open(":memory:", "test").unwrap();
-                fold_defs(&p, 1, "h1", 10, FN_AT_1);
-                fold_a_cross_file_call_and_a_proof(&p, 2);
+                fold_path_defs(&p, 1, "h1", 10, first, path);
+                fold_a_cross_file_call_and_a_proof_of(&p, 2, leaf);
                 assert_eq!(
-                    call_tiers(&p, "src/b.rs::%x"),
+                    cross_file_call_tiers(&p, leaf),
                     [TIER_INFERRED, TIER_INFERRED]
                 );
                 assert_eq!(
-                    attrs_of(&p, X).get("proven_by").map(String::as_str),
+                    attrs_of(&p, id).get("proven_by").map(String::as_str),
                     Some("1")
                 );
-                fold_defs(&p, 5, "h2", 20, second);
-                x_is_a_field_no_call_resolves_onto(&p, "folded onto generation 1");
+                fold_path_defs(&p, 5, "h2", 20, second, path);
+                ends(&p, "folded onto generation 1");
 
                 let rebuilt = Projector::open(":memory:", "test").unwrap();
-                fold_defs(&rebuilt, 1, "h2", 20, second);
-                fold_a_cross_file_call_and_a_proof(&rebuilt, 5);
-                x_is_a_field_no_call_resolves_onto(&rebuilt, "a rebuild of generation 2");
+                fold_path_defs(&rebuilt, 1, "h2", 20, second, path);
+                fold_a_cross_file_call_and_a_proof_of(&rebuilt, 5, leaf);
+                ends(&rebuilt, "a rebuild of generation 2");
             }
 
             crate::test_cases! {
@@ -13083,6 +13143,62 @@ mod tests {
                     a_module_and_a_field_of_one_leaf_leave_references_as_a_field_does(
                         &[("x", "module", 2), ("x", "field", 1)],
                     );
+            }
+
+            /// The id path `A.B` the renamed definitions share.
+            const PATH_A_B: Option<&str> = Some("A.B");
+            /// The one node the id path `A.B` gives `src/f.rs`'s definitions.
+            const A_B: &str = "src/f.rs::A.B";
+            /// The fn `B` at line 2, the old leaf of the id path `A.B`.
+            const FN_B_AT_2: &[Def] = &[("B", "function", 2)];
+            /// The module `A.B` at line 1, the new leaf of the id path `A.B`.
+            const MODULE_A_B_AT_1: &[Def] = &[("A.B", "module", 1)];
+
+            /// `src/f.rs::A.B` carries `attrs`, the cross-file call to `B` is ambiguous and its
+            /// test reference names no target: what a graph holding no call target of the leaf
+            /// `B` gives.
+            fn b_resolves_onto_nothing(p: &Projector, attrs: BTreeMap<String, String>, why: &str) {
+                no_call_resolves_onto(p, A_B, "B", attrs, why);
+                assert_eq!(proof_targets(p), vec![None], "{why}");
+            }
+
+            /// Spec 119 criterion 15, A RENAMED PATH RETIRES ITS OLD LEAF: the fn `B` at the id
+            /// path `A.B`, inferred by a cross-file call and proven by a test reference at
+            /// generation 1, is refolded as the module `A.B` on the same node at generation
+            /// 2's batch head. The node still defines a name, but no longer `B`, so the call
+            /// turns ambiguous and the proof moves off, as a rebuild folding generation 2 alone
+            /// gives.
+            #[test]
+            fn a_fn_b_refolded_as_a_b_at_the_next_generations_head_retires_the_leaf_b() {
+                the_next_generation_retires_a_leaf(
+                    FN_B_AT_2,
+                    MODULE_A_B_AT_1,
+                    PATH_A_B,
+                    (A_B, "B"),
+                    |p, why| b_resolves_onto_nothing(p, definition("A.B", "module", 1), why),
+                );
+            }
+
+            /// Spec 119 criterion 15: a hand-built differing-name pair at the id path `A.B` in
+            /// one batch, the fn `B` then the module `A.B`, settles the node on the fn's kind
+            /// and line under the last-folded name `A.B`, so the call and the test reference
+            /// to `B` end as they do folded after the batch, whether they folded before it or
+            /// after it.
+            #[test]
+            fn a_differing_name_pair_in_one_batch_retires_the_first_leaf_at_any_position() {
+                let pair: &[Def] = &[FN_B_AT_2[0], MODULE_A_B_AT_1[0]];
+                let before = Projector::open(":memory:", "test").unwrap();
+                fold_a_cross_file_call_and_a_proof_of(&before, 1, "B");
+                fold_path_defs(&before, 4, "h1", 10, pair, PATH_A_B);
+                let after = Projector::open(":memory:", "test").unwrap();
+                fold_path_defs(&after, 1, "h1", 10, pair, PATH_A_B);
+                fold_a_cross_file_call_and_a_proof_of(&after, 3, "B");
+                for (p, why) in [
+                    (&before, "the references folded before the pair"),
+                    (&after, "the references folded after the pair"),
+                ] {
+                    b_resolves_onto_nothing(p, definition("A.B", "function", 2), why);
+                }
             }
 
             /// An unkeyed definition is asserted by no generation, so the node takes the last

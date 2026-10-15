@@ -118,11 +118,10 @@ fn the_extracted_event_carries_path_only_off_file_level_and_round_trips() {
 #[cfg(feature = "symbols")]
 fn emitted_over_an_index_whose_method_carries(path: Option<&str>) -> Vec<NameAndPath> {
     let tree = source_tree();
-    let mut method =
-        serde_json::json!({ "kind": "Method", "name": "new", "line": 4, "end_line": 4 });
-    if let Some(path) = path {
-        method["path"] = path.into();
-    }
+    let method = common::fixtures::with_path(
+        serde_json::json!({ "kind": "Method", "name": "new", "line": 4, "end_line": 4 }),
+        path,
+    );
     let index = symbol_index::rust_index_json("a.rs", serde_json::json!([method]));
     symbol_index::persist_current(tree.path().to_str().unwrap(), &index);
     names_and_paths(&code_entity_payloads(tree.path()))
