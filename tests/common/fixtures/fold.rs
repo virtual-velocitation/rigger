@@ -153,15 +153,10 @@ pub fn folds(p: &dyn Projection, events: &[Event]) {
     );
 }
 
-/// `e` stamped at log position `pos`.
-pub fn at_position(pos: u64, mut e: Event) -> Event {
-    e.position = pos;
-    e
-}
-
 /// Fold `e` onto `p` at log position `pos`.
-fn fold_at(p: &Projector, pos: u64, e: Event) {
-    folds(p, &[at_position(pos, e)]);
+fn fold_at(p: &Projector, pos: u64, mut e: Event) {
+    e.position = pos;
+    folds(p, std::slice::from_ref(&e));
 }
 
 /// A `type_` event carrying `data`, replay-keyed `key` and valid from `secs` after the epoch.
@@ -173,10 +168,9 @@ pub fn keyed(type_: &str, data: Vec<u8>, key: &str, secs: u64) -> Event {
 
 /// One derived event stamped with replay key `key`, valid from `secs`, at `pos`.
 pub fn keyed_event(pos: u64, type_: &str, json: serde_json::Value, key: &str, secs: u64) -> Event {
-    at_position(
-        pos,
-        keyed(type_, serde_json::to_vec(&json).unwrap(), key, secs),
-    )
+    let mut e = keyed(type_, serde_json::to_vec(&json).unwrap(), key, secs);
+    e.position = pos;
+    e
 }
 
 /// Fold one [`keyed_event`] onto `p`.
@@ -335,10 +329,10 @@ pub fn f_rs_batch_def(
     )
 }
 
-/// From log position `pos`, one event each: `src/b.rs`'s fn `g`, the call it makes to `leaf`
-/// across files and `tests/t.rs`'s test reference to `leaf` at line 3
+/// The `(type, payload)` of each event, in fold order, of `src/b.rs`'s fn `g`, the call it makes
+/// to `leaf` across files and `tests/t.rs`'s test reference to `leaf` at line 3
 /// ([`edge_inferred_evidence_json`]).
-pub fn cross_file_call_and_proof(pos: u64, leaf: &str) -> Vec<Event> {
+pub fn cross_file_call_and_proof(leaf: &str) -> [(&'static str, serde_json::Value); 3] {
     [
         (
             TYPE_CODE_ENTITY_EXTRACTED,
@@ -350,10 +344,6 @@ pub fn cross_file_call_and_proof(pos: u64, leaf: &str) -> Vec<Event> {
             edge_inferred_evidence_json("tests/t.rs", leaf, 3),
         ),
     ]
-    .into_iter()
-    .zip(pos..)
-    .map(|((type_, json), at)| at_position(at, event_of(type_, json)))
-    .collect()
 }
 
 /// The `CodeEntityExtracted` payload of one extraction batch's Rust function definition. `fresh`
@@ -666,9 +656,7 @@ pub fn shown_sites(graph: &Projector) -> Vec<(&'static str, EntitySite)> {
 /// `proven_by` excludes an attr the node carries, never one it lacks.
 pub fn assert_the_shown_const_carries_proven_by(graph: &Projector) {
     assert_eq!(
-        attrs_of(graph, "src/limits.rs::LIMIT")
-            .get("proven_by")
-            .map(String::as_str),
+        proven_by_attr(graph, "src/limits.rs::LIMIT").as_deref(),
         Some("1"),
         "the const carries proven_by, an attr outside the printed list"
     );
@@ -780,6 +768,12 @@ pub fn attrs_of(p: &Projector, id: &str) -> BTreeMap<String, String> {
     let nodes = p.whole().unwrap().nodes;
     let node = nodes.into_iter().find(|n| n.id == id);
     node.unwrap_or_else(|| panic!("{id} is held")).attrs
+}
+
+/// The `proven_by` attr node `id` carries in `p`'s whole graph ([`attrs_of`]), `None` when it
+/// carries no proof.
+pub fn proven_by_attr(p: &Projector, id: &str) -> Option<String> {
+    attrs_of(p, id).get("proven_by").cloned()
 }
 
 /// The attrs of a Rust definition `name`, a `kind` at `line`, and of nothing else: a node

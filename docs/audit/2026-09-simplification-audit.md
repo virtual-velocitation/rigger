@@ -4911,8 +4911,8 @@ Proposed home: `fold::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:468-470` `apply_ref`
-- `tests/common/fixtures/fold.rs:492-494` `apply_call`
+- `tests/common/fixtures/fold.rs:458-460` `apply_ref`
+- `tests/common/fixtures/fold.rs:482-484` `apply_call`
 
 #### `dup-9c3b5c80063e` (near, 3 sites)
 
@@ -4920,7 +4920,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/common/fixtures/f
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:750-759` `live_node_ids`
+- `tests/common/fixtures/fold.rs:738-747` `live_node_ids`
 - `tests/community_resolution_knob.rs:139-148` `live_memberships_of`
 - `tests/graph_superseded_prune.rs:32-41` `live_contains`
 

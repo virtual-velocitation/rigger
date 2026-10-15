@@ -12783,8 +12783,8 @@ mod tests {
             use crate::contextgraph::CODE_KIND_PRECEDENCE;
             use crate::test_support::{
                 attrs_of, call_json, cross_file_call_and_proof, definition, f_rs_batch_def, folds,
-                kind_def_json, ref_json, DefRow as Def, NEW_LEAF_MODULE, OLD_LEAF_FN, RENAMED_NODE,
-                RENAMED_PATH,
+                kind_def_json, proven_by_attr, ref_json, DefRow as Def, NEW_LEAF_MODULE,
+                OLD_LEAF_FN, RENAMED_NODE, RENAMED_PATH,
             };
 
             const X: &str = "src/f.rs::x";
@@ -12830,8 +12830,8 @@ mod tests {
 
             /// [`fold_a_cross_file_call_and_a_proof`] to the leaf `name`.
             fn fold_a_cross_file_call_and_a_proof_of(p: &Projector, pos: u64, name: &str) {
-                for e in cross_file_call_and_proof(pos, name) {
-                    folds(p, std::slice::from_ref(&e));
+                for (i, (type_, json)) in cross_file_call_and_proof(name).into_iter().enumerate() {
+                    apply_json(p, pos + i as u64, type_, json);
                 }
             }
 
@@ -13093,10 +13093,7 @@ mod tests {
                     cross_file_call_tiers(&p, leaf),
                     [TIER_INFERRED, TIER_INFERRED]
                 );
-                assert_eq!(
-                    attrs_of(&p, id).get("proven_by").map(String::as_str),
-                    Some("1")
-                );
+                assert_eq!(proven_by_attr(&p, id).as_deref(), Some("1"));
                 fold_path_defs(&p, 5, "h2", 20, second, path);
                 ends(&p, "folded onto generation 1");
 

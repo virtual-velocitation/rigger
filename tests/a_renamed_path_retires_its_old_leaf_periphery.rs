@@ -19,8 +19,9 @@ mod common;
 use std::path::Path;
 
 use common::fixtures::{
-    a_call_from, attrs_of, cross_file_call_and_proof, definition, f_rs_batch_def, folds, landed,
-    rebuild_from_the_log, DefRow, NEW_LEAF_MODULE, OLD_LEAF_FN, RENAMED_NODE, RENAMED_PATH,
+    a_call_from, attrs_of, cross_file_call_and_proof, definition, ev_at, f_rs_batch_def, folds,
+    landed, proven_by_attr, rebuild_from_the_log, DefRow, NEW_LEAF_MODULE, OLD_LEAF_FN,
+    RENAMED_NODE, RENAMED_PATH,
 };
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{TIER_AMBIGUOUS, TIER_INFERRED};
@@ -35,7 +36,11 @@ fn at_the_path(pos: u64, generation: &str, index: usize, def: DefRow<'static>) -
 /// From log position `pos`, `src/b.rs`'s fn `g`, the call it makes to the old leaf `B` and
 /// `tests/t.rs`'s test reference to it ([`cross_file_call_and_proof`]).
 fn the_references_from(pos: u64) -> Vec<Event> {
-    cross_file_call_and_proof(pos, OLD_LEAF_FN.0)
+    cross_file_call_and_proof(OLD_LEAF_FN.0)
+        .into_iter()
+        .zip(pos..)
+        .map(|((type_, json), at)| ev_at(at, type_, json))
+        .collect()
 }
 
 /// The reference and the call `src/b.rs` makes to `B`, landed on its placeholder `src/b.rs::%B`
@@ -85,9 +90,7 @@ fn a_fn_refolded_as_another_leaf_at_its_path_retires_the_old_leaf_live_and_in_a_
         "premise: the fn `B` infers the reference and the call to its leaf"
     );
     assert_eq!(
-        attrs_of(&live, RENAMED_NODE)
-            .get("proven_by")
-            .map(String::as_str),
+        proven_by_attr(&live, RENAMED_NODE).as_deref(),
         Some("1"),
         "premise: the test reference proves the fn `B`"
     );
