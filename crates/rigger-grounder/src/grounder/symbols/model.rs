@@ -45,13 +45,20 @@ pub enum Kind {
     Other,
 }
 
-/// A definition site: kind, name, and 1-based line. The span is a plain integer, never a
-/// `tree_sitter::Range` (dependency direction, 5.5.2).
+/// A definition site: kind, name, 1-based line and 1-based end line. The span is plain integers,
+/// never a `tree_sitter::Range` (dependency direction, 5.5.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Def {
     pub kind: Kind,
     pub name: String,
     pub line: u32,
+    /// Spec 119 (ONE EXTENT): the 1-based line the definition's whole construct ends on, its body
+    /// included - the row of the last byte of its byte range plus one, never below `line`, and
+    /// `line` itself for a zero-length range ([`crate::grounder::symbols::extract::extract`] sets
+    /// it on every definition). No serde default: an index persisted before it existed fails to
+    /// deserialize, so [`crate::grounder::symbols::store::load`] answers it absent and it is
+    /// rebuilt, never a live index mixing a defaulted 0 with real values.
+    pub end_line: u32,
     /// Spec 86 criterion 1: whether this definition is TEST code - directly annotated
     /// `#[test]`/`#[cfg(test)]` (or any `cfg(...)` predicate naming the `test` token, e.g.
     /// `#[cfg(all(test, feature = "x"))]`), or nested inside such a definition (a plain helper

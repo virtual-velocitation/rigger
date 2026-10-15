@@ -6751,13 +6751,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-407ca2a3c019",
+    "id": "dup-fcd493b4497e",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
         "name": "extract",
-        "content_hash": "cd14c566270d05bb"
+        "content_hash": "544350935d9c1eeb"
       },
       {
         "file": "tests/common/source_audit.rs",

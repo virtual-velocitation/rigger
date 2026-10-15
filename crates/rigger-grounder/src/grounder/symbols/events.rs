@@ -791,7 +791,7 @@ pub fn out_of_line_test_module_files(idx: &SymbolIndex) -> BTreeSet<String> {
 
 /// The lowercase, stable string for a rigger definition `Kind`, carried on the emitted event and
 /// folded onto the code-entity node's `kind` attr. A rigger-owned rendering, never a grammar tag.
-fn kind_str(k: Kind) -> &'static str {
+pub(crate) fn kind_str(k: Kind) -> &'static str {
     match k {
         Kind::Function => CODE_KIND_FUNCTION,
         Kind::Method => CODE_KIND_METHOD,

@@ -6,6 +6,7 @@
 //! already holds that node as a reference) also adds a read-off here, selected by the language
 //! `extract` is given.
 
+use crate::grounder::symbols::events::kind_str;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 use rigger_domain::wave::normalize_ws;
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
@@ -154,16 +155,49 @@ fn lowered_kind(lang: Lang, tagged: Kind, node: Option<tree_sitter::Node>, sourc
     }
 }
 
-/// A definition as the tag pass and the read-offs record it, ahead of the passes over the whole
-/// file that resolve the rest: `is_test` needs every definition's range (`test_regions` decides
+/// One file's source text with the byte offset each of its lines begins at, computed once per
+/// [`extract`] so [`def_of`] maps a definition's last byte to its line by one binary search
+/// rather than rescanning the text per definition.
+struct Source<'s> {
+    text: &'s str,
+    line_starts: Vec<usize>,
+}
+
+impl<'s> Source<'s> {
+    fn new(text: &'s str) -> Self {
+        Source {
+            text,
+            line_starts: line_start_offsets(text),
+        }
+    }
+}
+
+/// THE ONE CONSTRUCTOR of a `Def` (spec 119, ONE EXTENT): every tagged, read-off and impl
+/// definition [`extract`] records, in every language. `line` is the 1-based line its pass gives
+/// it (a tagged definition's name row, a read-off's as its reader gives it) and `end_line` the
+/// 1-based line of `range`'s last byte, `range` the definition's whole byte range, never below
+/// `line`; a zero-length `range` gives `line`. It is built ahead of the passes over the whole file
+/// that resolve the rest: `is_test` needs every definition's range (`test_regions` decides
 /// containment over the whole set), and the out-of-line module facts are read from the parsed
 /// tree once every definition is known (only a `Module`-kind definition ever carries them; see
 /// `Def::is_out_of_line_module`).
-fn unresolved_def(kind: Kind, name: String, line: u32) -> Def {
+fn def_of(
+    source: &Source,
+    range: std::ops::Range<usize>,
+    kind: Kind,
+    name: String,
+    line: u32,
+) -> Def {
+    let end_line = if range.is_empty() {
+        line
+    } else {
+        (line_of_byte(&source.line_starts, range.end - 1) + 1).max(line)
+    };
     Def {
         kind,
         name,
         line,
+        end_line,
         is_test: false,
         is_out_of_line_module: false,
         path_override: None,
@@ -179,7 +213,7 @@ fn unresolved_def(kind: Kind, name: String, line: u32) -> Def {
 /// `None`.
 fn record_def(
     lang: Lang,
-    source: &[u8],
+    source: &Source,
     node: Option<tree_sitter::Node>,
     tagged: Kind,
     (range, name, line): ReadOff,
@@ -189,9 +223,9 @@ fn record_def(
     if is_nameless(lang, &name) {
         return Some(range);
     }
-    let kind = lowered_kind(lang, tagged, node, source);
-    def_ranges.push((range, name.clone(), kind));
-    defs.push(unresolved_def(kind, name, line));
+    let kind = lowered_kind(lang, tagged, node, source.text.as_bytes());
+    defs.push(def_of(source, range.clone(), kind, name.clone(), line));
+    def_ranges.push((range, name, kind));
     None
 }
 
@@ -215,7 +249,9 @@ fn record_def(
 /// pattern declarator or a declaring `for .. in`/`for .. of` binds ([`class_fields`],
 /// [`enum_members`], [`js_bindings`]), and Python's module-level names a pattern or a chain
 /// binds, class-body names and type aliases ([`assigned_names`], [`class_body_names`],
-/// [`type_aliases`]), each recorded as a tagged definition is ([`record_def`]).
+/// [`type_aliases`]), each recorded as a tagged definition is ([`record_def`]). Every definition,
+/// an impl block's included, is built by [`def_of`] from its byte range, which gives its
+/// `end_line`.
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -248,6 +284,7 @@ pub fn extract(
         .parse(source, None)
         .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
     let root = tree.root_node();
+    let text = Source::new(source);
     let mut defs = Vec::new();
     let mut refs = Vec::new();
     // Each definition's byte range (the whole construct, body included - the tag's node range,
@@ -272,7 +309,7 @@ pub fn extract(
             let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
             dropped.extend(record_def(
                 lang,
-                source.as_bytes(),
+                &text,
                 node,
                 kind_of(config.syntax_type_name(tag.syntax_type_id)),
                 (tag.range.clone(), def_leaf(node, name), line),
@@ -295,8 +332,14 @@ pub fn extract(
     // function encloses the impl, which then is their caller, while a reference inside one of its
     // methods still attributes to the method, the innermost function.
     for block in impl_blocks(root, source.as_bytes()) {
-        def_ranges.push((block.range, block.name.clone(), Kind::Impl));
-        defs.push(unresolved_def(Kind::Impl, block.name, block.line));
+        defs.push(def_of(
+            &text,
+            block.range.clone(),
+            Kind::Impl,
+            block.name.clone(),
+            block.line,
+        ));
+        def_ranges.push((block.range, block.name, Kind::Impl));
         for (name, line, pos) in block.targets {
             ref_positions.push(pos);
             refs.push(SymRef {
@@ -347,7 +390,7 @@ pub fn extract(
             let node = root.descendant_for_byte_range(found.0.start, found.0.end);
             dropped.extend(record_def(
                 lang,
-                source.as_bytes(),
+                &text,
                 node,
                 kind,
                 found,
@@ -1307,77 +1350,83 @@ fn enclosing_def(
         .map(|(_, name, _)| name.clone())
 }
 
-/// A definition's 1-based inclusive LINE extent: its site line and the last line of the WHOLE
-/// tagged construct (its body included). Both are derived from the tree-sitter tag range, so the
-/// end is the grammar's OWN node boundary - the closing brace of a braced language, the dedent of a
-/// Python block, the closing backtick of a Go raw string - never a hand-rolled per-language guess.
+/// Where [`locate_extent`] bounds a definition's body.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DefExtent {
-    /// The definition name (the same name the `<file>::<name>` graph id carries).
-    pub name: String,
-    /// The 1-based site line: the definition's name row - IDENTICAL to the `line` [`Def`] records
-    /// and the graph persists, so a located entity's recorded line matches this extent's start.
-    pub start_line: u32,
-    /// The 1-based, inclusive line the whole construct (body included) ends on - the last line of
-    /// the tree-sitter node range. Always `>= start_line`.
-    pub end_line: u32,
+pub enum Extent {
+    /// The 1-based, inclusive line range `[start, end]` of the definition's whole construct, its
+    /// body included: `start` the recorded line when a definition still sits there, else the live
+    /// line a drifted one healed to.
+    Bounded { start: u32, end: u32 },
+    /// No production definition of the name sits at the recorded line, nor one of the kind
+    /// anywhere in the file (deleted, not merely moved).
+    Missing,
+    /// The recorded line drifted and production definitions of the name and kind sit at this many
+    /// distinct lines, so which one moved cannot be told.
+    Ambiguous(usize),
 }
 
-/// The 1-based line extent of every definition in `source`, under the INJECTED grammar (the SAME
-/// `(grammar, tag query)` pair [`extract`] runs and the registry supplies). This is the ONE
-/// multi-grammar extent authority the show surface bounds a body with: because the end line is read
-/// from the grammar's own tree-sitter node range, it generalizes across every ingested grammar
-/// (Rust, Python, Go, JS/TS, C#) instead of a Rust-only brace lexer - so a destructuring parameter
-/// (`fn f(Point { x, y }: Point) {`), a Python nested `def`, a Go backtick raw string, and a JS
-/// single-quote string carrying a lone `{` are all bounded by the parser, never a lexer that
-/// mis-reads them. It shares the tag mechanism ([`tree_sitter_tags`]) with `extract`; it projects
-/// the node's END line rather than lowering the persisted `Def`, so it records nothing and changes
-/// no serialized form. A definition whose byte range cannot be mapped is skipped (the same
-/// defensive guard `extract` uses), never a panic.
-pub fn definition_extents(
+/// THE ONE EXTENT a `rigger graph --show` body is bounded by (spec 119, ONE EXTENT): [`extract`]
+/// runs over `source` under the INJECTED grammar and tags query, exactly as the code graph is
+/// extracted, and the definition named `name` of kind `kind` (a `kind_str` rendering, as the
+/// graph node carries it) recorded at `line` is found among the production definitions - those
+/// not `is_test`, as `extract_events` drops them, since the graph holds no other - by three
+/// tiers, in order, its [`Def::end_line`] bounding the body:
+///
+/// 1. name, kind and line: the recorded site still holds it; when several do, the widest
+///    `end_line` wins.
+/// 2. name and line, the kind ignored, when exactly one definition matches: a definition whose
+///    kind changed in place since the last ingest still bounds at its recorded line.
+/// 3. name and kind at any line (spec 92): the recorded line drifted, and healing is safe only
+///    when one distinct line holds them (the widest `end_line` there winning); more lines are
+///    [`Extent::Ambiguous`], none [`Extent::Missing`].
+///
+/// The kind is compared through `kind_str`, so a field beside a same-named fn, or a variant
+/// inside its same-named enum, never widens or blocks a match. An `Err` is a grammar or query
+/// that cannot run over the source.
+pub fn locate_extent(
     source: &str,
+    lang: Lang,
     ts_language: &tree_sitter::Language,
     tags_query: &str,
-) -> Result<Vec<DefExtent>, String> {
-    let config = TagsConfiguration::new(ts_language.clone(), tags_query, "")
-        .map_err(|e| format!("symbols: tags config: {e}"))?;
-    let mut ctx = TagsContext::new();
-    let (tags, _) = ctx
-        .generate_tags(&config, source.as_bytes(), None)
-        .map_err(|e| format!("symbols: generate tags: {e}"))?;
-    // Byte offset at which each 0-based line begins, so a construct's end byte maps to its end line
-    // by one binary search rather than rescanning the source per definition.
-    let line_starts = line_start_offsets(source);
-    let mut out = Vec::new();
-    for tag in tags {
-        let tag = tag.map_err(|e| format!("symbols: tag: {e}"))?;
-        if !tag.is_definition {
-            continue;
-        }
-        let Some(name) = source.get(tag.name_range.start..tag.name_range.end) else {
-            continue;
-        };
-        // The site line is the name row, exactly as `extract` records it into `Def::line`.
-        let start_line = tag.span.start.row as u32 + 1;
-        // The construct's LAST byte (the tag range is exclusive at its end); its line is the extent
-        // end. Empty source or a zero-length range degrades to `start_line` via the `.max` below.
-        let last_byte = tag
-            .range
-            .end
-            .saturating_sub(1)
-            .min(source.len().saturating_sub(1));
-        let end_line = (line_of_byte(&line_starts, last_byte) + 1).max(start_line);
-        out.push(DefExtent {
-            name: name.to_string(),
-            start_line,
-            end_line,
+    name: &str,
+    kind: &str,
+    line: u32,
+) -> Result<Extent, String> {
+    let symbols = extract(source, lang, ts_language, tags_query)?;
+    let named: Vec<&Def> = symbols
+        .defs
+        .iter()
+        .filter(|d| !d.is_test && d.name == name)
+        .collect();
+    // The widest end of each line holding a definition of the name and kind: tier 1 reads the
+    // recorded line's, tier 3 the one line's when one is all there is.
+    let mut of_kind: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    for d in named.iter().filter(|d| kind_str(d.kind) == kind) {
+        let end = of_kind.entry(d.line).or_insert(d.end_line);
+        *end = (*end).max(d.end_line);
+    }
+    if let Some(&end) = of_kind.get(&line) {
+        return Ok(Extent::Bounded { start: line, end });
+    }
+    if let [only] = named.iter().filter(|d| d.line == line).collect::<Vec<_>>()[..] {
+        return Ok(Extent::Bounded {
+            start: line,
+            end: only.end_line,
         });
     }
-    Ok(out)
+    Ok(match of_kind.len() {
+        0 => Extent::Missing,
+        1 => {
+            let (start, end) = of_kind.into_iter().next().expect("one line");
+            Extent::Bounded { start, end }
+        }
+        n => Extent::Ambiguous(n),
+    })
 }
 
 /// The byte offset at which each 0-based line begins. `offsets[0]` is always `0`; each `\n` opens
-/// the next line at the byte after it. Used to map a tree-sitter node's end byte to its end line.
+/// the next line at the byte after it. [`Source`] holds them, so [`def_of`] maps a definition's
+/// last byte to its end line.
 fn line_start_offsets(source: &str) -> Vec<usize> {
     let mut offsets = vec![0usize];
     for (i, b) in source.bytes().enumerate() {

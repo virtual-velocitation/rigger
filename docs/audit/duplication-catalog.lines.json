@@ -6315,12 +6315,12 @@
     ]
   },
   {
-    "id": "dup-407ca2a3c019",
+    "id": "dup-fcd493b4497e",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
-        "start_line": 223,
-        "end_line": 430
+        "start_line": 259,
+        "end_line": 473
       },
       {
         "file": "tests/common/source_audit.rs",
@@ -6734,13 +6734,13 @@
     "sites": [
       {
         "file": "src/cli/graph.rs",
-        "start_line": 676,
-        "end_line": 700
+        "start_line": 685,
+        "end_line": 709
       },
       {
         "file": "src/cli/graph.rs",
-        "start_line": 777,
-        "end_line": 801
+        "start_line": 786,
+        "end_line": 810
       }
     ]
   },
