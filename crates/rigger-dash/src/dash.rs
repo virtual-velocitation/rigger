@@ -1325,14 +1325,14 @@ pub struct Reprojection {
     /// NOT the whole-graph node count.
     pub total: usize,
     /// The MARKED-UNRESOLVED members (spec 55 c1 honesty rule, extended by spec 63 c3's FILES-LENS
-    /// PURITY), set only under [`Lens::Files`]: a bare placeholder member whose name
-    /// resolves to MORE THAN ONE call-target definition (or to none) cannot be attributed to a single defining
-    /// file, so it is surfaced here - each carrying its SORTED candidate definition ids - rather than
-    /// folded into the WRONG file bucket its (referencing-file) id would encode; a member with NO file
-    /// identity at all (a rare dev-loop node) is surfaced here too, with an EMPTY candidate frontier,
-    /// rather than folded into its raw storage-schema KIND as a cluster label. Ordered by member id.
-    /// Empty (and omitted from the JSON) under [`Lens::Code`] / [`Lens::Concepts`] and for a
-    /// fully-resolvable FILES re-grain, so those bodies stay lean.
+    /// PURITY), set only under [`Lens::Files`]: a bare placeholder member whose name resolves to
+    /// MORE THAN ONE call-target definition (or to none) cannot be attributed to a single defining
+    /// file, so it is surfaced here - each carrying its SORTED candidate definition ids - rather
+    /// than folded into the WRONG file bucket its (referencing-file) id would encode; a member
+    /// naming NO file under its kind's arm of `node_file` is surfaced here too, with an EMPTY
+    /// candidate frontier, rather than folded into its raw storage-schema KIND as a cluster label.
+    /// Ordered by member id. Empty (and omitted from the JSON) under [`Lens::Code`] /
+    /// [`Lens::Concepts`] and for a fully-resolvable FILES re-grain, so those bodies stay lean.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unresolved: Vec<UnresolvedMember>,
     /// The member ids flagged SHARED (spec 55 c2): a member realizing MORE THAN ONE concept folds
@@ -1669,15 +1669,15 @@ pub const REPROJECT_FILES_UNRESOLVED: &str = "no member resolves to a file";
 /// derived concept under [`Lens::Concepts`], and the DISTINCT DEFINING FILE under [`Lens::Files`].
 ///
 /// Under [`Lens::Files`] the fold resolves CROSS-GRAIN honestly ([`Reprojection::unresolved`]): a
-/// member that is a real definition (or a doc / file path) folds under its own file; a BARE cross-file
-/// placeholder (no `name` attr) resolves by its leaf to the call-target DEFINITION of that leaf - EXACTLY
-/// ONE folds under that definition's file, MORE THAN ONE (or zero) is surfaced as a marked-unresolved
-/// entry carrying the sorted candidate ids, never a wrong attribution to the referencing file its id
-/// encodes; a member with NO file identity at all (a rare dev-loop node) is marked unresolved with an
-/// EMPTY frontier too, never folded to its raw storage-schema KIND (spec 63 c3, FILES-LENS PURITY) - a
-/// member set that resolves to no file bucket at all carries [`REPROJECT_FILES_UNRESOLVED`] rather
-/// than a blank canvas. A pure read over the already-projected graph: no store touch, no new event
-/// type, and deterministic by construction.
+/// member that is a real definition (or a doc / file path) folds under its own file; a BARE
+/// cross-file placeholder (no `name` attr) resolves by its leaf to the call-target DEFINITION of
+/// that leaf - EXACTLY ONE folds under that definition's file, MORE THAN ONE (or zero) is surfaced
+/// as a marked-unresolved entry carrying the sorted candidate ids, never a wrong attribution to the
+/// referencing file its id encodes; a member naming NO file under its kind's arm of [`node_file`]
+/// is marked unresolved with an EMPTY frontier too, never folded to its raw storage-schema KIND
+/// (spec 63 c3, FILES-LENS PURITY) - a member set that resolves to no file bucket at all carries
+/// [`REPROJECT_FILES_UNRESOLVED`] rather than a blank canvas. A pure read over the
+/// already-projected graph: no store touch, no new event type, and deterministic by construction.
 pub fn reproject(graph: &Graph, subject: &str, lens: &Lens) -> Reprojection {
     let members = member_set(graph, subject);
     let mut re = match lens {
@@ -1808,12 +1808,12 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 ///   leaf ([`node_leaf`]) over the call-target DEFINITION nodes sharing it (never a data member or a declaration, which
 ///   folds under its own file as every definition does): EXACTLY ONE folds under that definition's file; MORE THAN ONE
 ///   (or zero) is marked-unresolved with the sorted candidate ids;
-/// - a member with NO file identity at all (a rare dev-loop node, e.g. a decision) is marked
-///   unresolved too, with an EMPTY candidate frontier - the same honesty shape a zero-candidate bare
-///   placeholder already carries - rather than falling back to its raw KIND as a cluster/group label:
-///   no storage-schema name is ever a cluster key here, mirroring [`whole_graph_lens_key`]'s identical
-///   rule for the whole-graph fold. Nothing is silently DROPPED (`total` still counts it, and
-///   `unresolved` still names it), only never mis-labeled.
+/// - a member naming NO file under its kind's arm of [`node_file`] (a decision, or a `::`-less code
+///   entity) is marked unresolved too, with an EMPTY candidate frontier - the same honesty shape a
+///   zero-candidate bare placeholder already carries - rather than falling back to its raw KIND as
+///   a cluster/group label: no storage-schema name is ever a cluster key here, mirroring
+///   [`whole_graph_lens_key`]'s identical rule for the whole-graph fold. Nothing is silently
+///   DROPPED (`total` still counts it, and `unresolved` still names it), only never mis-labeled.
 ///
 /// The resolved keys feed the shared [`fold_buckets`] authority (no bucket label under files), so the
 /// file buckets are sized, dominant-kind coloured, and cross-file coupling edges weighted exactly as
@@ -1854,10 +1854,11 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
             }
             continue;
         }
-        // A definition / doc / file-path member folds under its OWN file; a member with NO file
-        // identity (a rare dev-loop node) is marked unresolved with an EMPTY frontier - the honesty
-        // shape a zero-candidate bare placeholder already uses - never its raw KIND as a cluster
-        // label (spec 63 c3: no storage-schema name is ever a cluster key or group label here).
+        // A definition / doc / file-path member folds under its OWN file; a member naming NO file
+        // under its kind's arm of `node_file` is marked unresolved with an EMPTY frontier - the
+        // honesty shape a zero-candidate bare placeholder already uses - never its raw KIND as a
+        // cluster label (spec 63 c3: no storage-schema name is ever a cluster key or group label
+        // here).
         match node_file(&m.kind, &m.id) {
             Some(file) => {
                 resolved.insert(m.id.as_str(), file.to_string());
@@ -5771,13 +5772,14 @@ mod tests {
         assert!(!new.superseded, "the superseding decision is not");
     }
 
-    /// Spec 42 c1: [`cluster_key`] folds every node into ONE super-node bucket. A node whose id NAMES
-    /// A FILE by its kind (a code entity `<file>::<name>`, a file's path, a rationale anchor
-    /// `<file>#L<n>`, or a design-doc path whose last segment carries an extension) clusters by that
-    /// file's DIRECTORY (its module); a directory-less repo-root path falls back to the
-    /// [`CLUSTER_ROOT`] bucket; every other node - a dev-loop node, whose kind names no file -
-    /// clusters by its KIND. The mapping is deterministic. This test
-    /// OWNS the fold key; it does not exercise the overview/drill aggregations (c2, c3).
+    /// Spec 42 c1: [`cluster_key`] folds every node into ONE super-node bucket. A node whose id
+    /// NAMES A FILE under its kind's arm of [`node_file`]'s table (a code entity `<file>::<name>`,
+    /// a file's path, a rationale anchor `<file>#L<n>`, or a design-doc path whose last segment
+    /// carries an extension) clusters by that file's DIRECTORY (its module); a directory-less
+    /// repo-root path falls back to the [`CLUSTER_ROOT`] bucket; every node whose id names no file
+    /// under its kind's arm - a dev-loop node among them - clusters by its KIND. The mapping is
+    /// deterministic. This test OWNS the fold key; it does not exercise the overview/drill
+    /// aggregations (c2, c3).
     #[test]
     fn cluster_key_folds_paths_by_directory_and_dev_loop_nodes_by_kind() {
         // A code entity `<file>::<name>` folds to its file's DIRECTORY (its module) - the `::name`
@@ -5820,7 +5822,8 @@ mod tests {
             cluster_key("README.md#usage", KIND_DESIGN_DOC),
             CLUSTER_ROOT
         );
-        // A dev-loop node (a decision / finding / agent, whose kind names no file) folds to its KIND.
+        // A decision / finding / agent id names no file under its kind's arm, so it folds to its
+        // KIND.
         assert_eq!(
             cluster_key("adj-u41c1-approve", KIND_DECISION),
             KIND_DECISION
@@ -5833,8 +5836,9 @@ mod tests {
             cluster_key("adjudicator/plan-critique", KIND_AGENT),
             KIND_AGENT
         );
-        // A dev-loop id carrying slashes AND a `#` (e.g. a spawn-style agent id) is still NOT a path:
-        // an agent's kind names no file, so it folds by kind, never mistaken for a file.
+        // A dev-loop id carrying slashes AND a `#` (e.g. a spawn-style agent id) is still NOT a
+        // path: an agent id names no file under its kind's arm, so it folds by kind, never mistaken
+        // for a file.
         assert_eq!(cluster_key("u42-c1/implementer#0", KIND_AGENT), KIND_AGENT);
         // Determinism: two entities in the SAME file fold to one identical module bucket.
         assert_eq!(

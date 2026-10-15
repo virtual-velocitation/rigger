@@ -11261,7 +11261,7 @@
     "is_test": false,
     "proposed_module": "dash::reproject",
     "reason": "name contains \"reproject\" (graph reprojection); grouped under `dash::reproject`.",
-    "content_hash": "4a46319c85dc518e"
+    "content_hash": "c271b460043ce8c4"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12101,7 +12101,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "71d73b71104b80f1"
+    "content_hash": "8c4bc6f0a2a58c1c"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

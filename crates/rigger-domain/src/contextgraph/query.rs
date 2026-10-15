@@ -67,14 +67,14 @@ pub fn node_label(node: &Node) -> String {
 // ---------------------------------------------------------------------------
 // The whole-graph exploration fold (spec 42 c1): [`cluster_key`] folds EVERY graph node into one
 // super-node bucket, so the KG panel can render a 7k-node graph as a few dozen clusters instead of
-// node-for-node. A node whose id NAMES A FILE by its kind ([`node_file`]) - a code entity
-// (`<file>::<name>`), a file (its path), a rationale anchor (`<file>#L<n>`), or a design-doc path
-// whose last segment carries an extension - clusters by that file's DIRECTORY (its module); a
-// directory-less (repo-root) path falls back to the `(root)` bucket. Every other node - the
-// dev-loop nodes, whose kind names no file (a decision, finding, unit, agent, gate, lesson) -
-// clusters by its KIND. The fold is a pure function of `(id, kind)`, so
-// a given graph yields one stable overview (the determinism the spec requires by construction). This
-// is the fold KEY only; the overview and drill aggregations (c2, c3) consume it.
+// node-for-node. A node whose id NAMES A FILE under its kind's arm of [`node_file`]'s table
+// clusters by that file's DIRECTORY (its module); a directory-less (repo-root) path falls back to
+// the `(root)` bucket. Every node whose id names no file under its kind's arm - every dev-loop
+// node, and an id of a file-naming kind that names none (a `::`-less code entity, an
+// extensionless design doc) - clusters by its KIND. The fold is a pure function of `(id, kind)`,
+// so a given graph yields one stable overview (the determinism the spec requires by
+// construction). This is the fold KEY only; the overview and drill aggregations (c2, c3) consume
+// it.
 // ---------------------------------------------------------------------------
 
 /// The bucket a directory-less (repo-root) path id folds to, since it names a file with no parent
@@ -86,13 +86,14 @@ pub const CLUSTER_ROOT: &str = "(root)";
 ///
 /// A node whose id NAMES A FILE clusters by that file's DIRECTORY (its module); a directory-less
 /// (repo-root) file falls back to [`CLUSTER_ROOT`]. Every other node clusters by its `kind`. The
-/// file an id names is [`node_file`]'s, read by its kind: a code entity `<file>::<name>` names the
-/// part before the first `::` whatever it looks like (`Makefile::all` names `Makefile`); a file
-/// node names its whole path; a rationale anchor `<file>#L<n>` or a design-doc section
-/// `<doc>#<slug>` names the part before the first `#` when its last segment carries an extension;
-/// a dev-loop node (a decision / finding / unit / agent / gate / lesson) names none, a dotted id
-/// (`v1.2-choice`) included. The fold is a pure, total function of `(id, kind)`, so a given graph
-/// folds to one stable set of buckets (the determinism the exploration view relies on).
+/// file an id names is [`node_file`]'s, read by its kind's arm of that table: a code entity
+/// `<file>::<name>` names the part before the first `::` whatever it looks like (`Makefile::all`
+/// names `Makefile`) and a `::`-less one names none; a file node names its whole path; a
+/// design-doc, arch-decision, handbook-rule, rationale or artifact id names the part before its
+/// first `#` when its last segment carries an extension, and none otherwise; every other kind
+/// names none, a dotted id (`v1.2-choice`) included. The fold is a pure, total function of
+/// `(id, kind)`, so a given graph folds to one stable set of buckets (the determinism the
+/// exploration view relies on).
 pub fn cluster_key(id: &str, kind: &str) -> String {
     match node_file(kind, id) {
         // A file-bearing id clusters by the file's DIRECTORY (its module); a directory-less repo-root
@@ -101,7 +102,7 @@ pub fn cluster_key(id: &str, kind: &str) -> String {
             Some((dir, _)) if !dir.is_empty() => dir.to_string(),
             _ => CLUSTER_ROOT.to_string(),
         },
-        // Every other node is a dev-loop node, whose kind names no file: cluster by its KIND.
+        // An id naming no file under its kind's arm of `node_file`: cluster by its KIND.
         None => kind.to_string(),
     }
 }
@@ -2337,8 +2338,6 @@ mod cluster_detail_budget_ranking_tests {
     }
 }
 
-/// Spec 116 criterion 4, A DATA MEMBER IS NO CALL TARGET, at the files lens: a bare placeholder
-/// never resolves onto a data member, which folds under its own file.
 /// The lens views the files-lens tests compare.
 #[cfg(test)]
 mod lens_views {
@@ -2354,6 +2353,8 @@ mod lens_views {
     }
 }
 
+/// Spec 116 criterion 4, A DATA MEMBER IS NO CALL TARGET, at the files lens: a bare placeholder
+/// never resolves onto a data member, which folds under its own file.
 #[cfg(test)]
 mod call_target_tests {
     use super::lens_views::files_lens_keys;

@@ -4,7 +4,9 @@
 //! crate; these run OUTSIDE the crates and guard the boundaries the rule crosses:
 //!
 //!  - the public kind table: `rigger::contextgraph::query::node_file` over all sixteen graph
-//!    kinds, each arm from both sides (an id it names a file for, and one it names none for);
+//!    kinds, each conditional arm from both sides (an id it names a file for, and one it names
+//!    none for), the unconditional `file` arm by the ids its last segment would otherwise refuse,
+//!    and the arm naming no file by every other kind;
 //!  - the readers agreeing across crates over one in-memory graph: the files lens whole and the
 //!    card (`contextgraph::query`), the files lens re-grained (`dash`), and the console map's
 //!    district (`console`).

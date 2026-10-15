@@ -1,9 +1,10 @@
 //! Periphery (API) test for the whole-graph exploration FOLD KEY (spec 42, criterion c1):
 //! [`rigger::dash::cluster_key`] folds every knowledge-graph node `(id, kind)` into one exploration
 //! super-node bucket, so the KG panel can render a ~7k-node graph as a few dozen clusters. A node
-//! whose id NAMES A FILE by its kind clusters by that file's DIRECTORY (its module); a
-//! directory-less repo-root file falls back to [`rigger::dash::CLUSTER_ROOT`]; every other node - a
-//! dev-loop node, whose kind names no file - clusters by its KIND.
+//! whose id NAMES A FILE under its kind's arm of `node_file`'s table clusters by that file's
+//! DIRECTORY (its module); a directory-less repo-root file falls back to
+//! [`rigger::dash::CLUSTER_ROOT`]; every node whose id names no file under its kind's arm - a
+//! dev-loop node, or an extensionless design doc - clusters by its KIND.
 //!
 //! This runs OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::cluster_key` and
 //! `rigger::dash::CLUSTER_ROOT`). The implementer's inside-out unit test in `dash.rs` calls
@@ -40,10 +41,11 @@ fn assert_cluster_keys(cases: &[(&str, &str, &str, &str)]) {
 
 rigger::test_cases! {
     /// The public fold key is reachable across the crate boundary and folds the three canonical
-    /// node shapes as documented: an id whose kind names a file clusters by its file's DIRECTORY,
-    /// and a dev-loop id, whose kind names none, clusters by its KIND. This test's VALUE is structural: it proves
-    /// `cluster_key` and `CLUSTER_ROOT` are genuinely `pub` and usable by an external consumer (the
-    /// downstream c2/c3 aggregations), which the in-module unit test cannot prove.
+    /// node shapes as documented: an id naming a file under its kind's arm of `node_file`
+    /// clusters by its file's DIRECTORY, and a decision id, naming none under its kind's arm,
+    /// clusters by its KIND. This test's VALUE is structural: it proves `cluster_key` and
+    /// `CLUSTER_ROOT` are genuinely `pub` and usable by an external consumer (the downstream c2/c3
+    /// aggregations), which the in-module unit test cannot prove.
     cluster_key_is_reachable_over_the_public_crate_boundary: assert_cluster_keys(&[
         // A code entity `<file>::<name>` clusters by its file's module (directory).
         (
@@ -59,12 +61,13 @@ rigger::test_cases! {
             "docs",
             "a plain path id folds to its directory",
         ),
-        // A dev-loop node, whose kind names no file, folds to its KIND, echoed verbatim.
+        // A decision id names no file under its kind's arm, so it folds to its KIND, echoed
+        // verbatim.
         (
             "adj-u42c1-approve",
             KIND_DECISION,
             KIND_DECISION,
-            "a dev-loop node, whose kind names no file, folds to its kind",
+            "a decision id names no file under its kind's arm, so it folds to its kind",
         ),
         // The repo-root sentinel is reachable and is what a directory-less file folds to.
         (
