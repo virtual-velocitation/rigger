@@ -290,9 +290,13 @@ mod tests {
     /// from its generators (an item's callers read from the graph at depth 1) over the unit's
     /// whole range on every round, never a round's delta, and records on every change, each new
     /// or FIXED sentence with the `file:line` witness that makes it true, each spelling of a rule the change rewrites found by a recorded search per
-    /// distinguishing phrase of its old statement and of each label its cases carried, the SDET
+    /// distinguishing phrase of its old statement and of each label its cases carried, a
+    /// boolean term a production hunk adds to or removes from a filter, guard or predicate
+    /// rewriting the rule its function answers, whose old statement its depth-1 callers' notes,
+    /// Returns paragraphs, variant docs and oracles spell and are searched by, the SDET
     /// lens re-deriving each generator's set over that range, reading every witness, re-running
-    /// each search and re-reading every hit against head, with a renamed name's old spelling
+    /// each search and re-reading every hit against head, deriving the changed-condition set
+    /// itself and reading every consumer sentence against it, with a renamed name's old spelling
     /// counted to zero, nothing added that nothing reads, the red test's body untouched by the
     /// green commit, and a probe that edits the tree - the sharpest case of a turn's end being
     /// the session's end - run to completion and restored before the turn ends; the gates'
@@ -405,6 +409,19 @@ mod tests {
              words)",
             "A rewritten rule with no search is a record you cannot write; a change that \
              rewrites no rule names the set empty.",
+            "A rule is rewritten whenever a condition of it changes - a boolean term your \
+             production hunks add to or remove from a filter, guard, match-arm guard or \
+             predicate a function applies - even when no sentence of yours moves",
+            "its old statement is what the function's consumers spell: the notes they print, \
+             their Returns paragraphs, the docs of the variants the answer maps to and the \
+             oracles that assert them",
+            "read from the function's callers at depth 1 in the project's graph and their \
+             callers' output sentences",
+            "For each changed condition write down the rule it changes - the question the \
+             function answers - and the distinguishing phrases of the old answer as the \
+             consumers spell them, and run the rule search for each",
+            "every hit is FIXED, carrying the new qualifier, or CHECKED with the named reason \
+             the qualifier does not reach it (a call that passes no path, say)",
             "The SDET lens re-derives each generator's set on the review tree from the diff and \
              the graph",
             "each hunk's identifiers, doc links (`[...]`) and constants included",
@@ -420,6 +437,13 @@ mod tests {
              against the code at head: a sentence whose witness no longer makes it true, a new \
              or FIXED sentence with no witness, or a record whose sets are re-derived over a \
              round's delta, is a BLOCKING finding on its own.",
+            "The lens derives the changed-condition set itself from the unit's production hunks \
+             over the whole range - every added or removed boolean term inside a filter, guard \
+             or predicate - names the rule each changes, and reads every consumer sentence of \
+             that function - its depth-1 callers' notes, Returns paragraphs, variant docs and \
+             oracles - against the condition at head: a consumer sentence stating the \
+             pre-change answer that the record does not carry FIXED or CHECKED is a BLOCKING \
+             finding on its own.",
             "when you rename or retire a name, walk every spelling of the old term through the \
              tree",
             "The old spelling occurs zero times in the tree outside git history, counted over \
