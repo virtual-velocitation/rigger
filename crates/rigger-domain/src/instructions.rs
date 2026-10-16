@@ -445,6 +445,8 @@ mod tests {
              that assigns the value, each component of a key or comparator, each condition of a \
              filter or guard, each branch of a match), the record naming the cases and a witness \
              per case",
+            "a case the claim does not hold for makes the sentence false, to be narrowed or \
+             FIXED, never witnessed at the case it does hold for",
             "a CHECKED sentence whose truth rests on code names its witness the same way, and \
              one CHECKED as a different rule sharing the words names that rule instead",
             "names that rule instead and shows the sentence's claim is that rule's question, \
