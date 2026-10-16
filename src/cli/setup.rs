@@ -3582,7 +3582,9 @@ mod tests {
     /// command that counts it, and the audit record owed for every added test-side shape with the
     /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
     /// the root crate's `src/` test modules included), run once per term of the statements of
-    /// each added or edited test-side body - each string literal alone and in full, quotes
+    /// each added test-side body and of the changed statements of each edited one over the
+    /// unit's whole range, a twin among untouched statements named as the tree's debt - each
+    /// string literal alone and in full, quotes
     /// inside the term and one run per literal however short, and each outside call with its
     /// first argument token, never the body's name - and the sentence
     /// walk's generators as commands over the unit's whole range on every round (the merge base
@@ -3679,6 +3681,10 @@ mod tests {
              makes outside the shared home with its first argument token \
              (`create_dir_all(root.join(`, `for_extension(\"rs\")`), the command run once per \
              term.",
+            "The bodies are read over the unit's whole range: a body you add whole, every \
+             statement, and a body you edit in the statements `git diff $(git merge-base \
+             rigger-run HEAD)..HEAD -- tests crates src` shows changed, a twin found only among \
+             statements you did not touch named in your hand-over as the tree's debt.",
             "A literal's term is the literal alone, its quotes inside the term \
              (`t='\"src/f.rs\"'`) and nothing around it - never the call, format string or \
              statement that spells it - one run per literal, none set aside as short or \
@@ -3742,7 +3748,9 @@ mod tests {
     /// every search the author's shape record carries on the review tree and compares the hit
     /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
     /// command is BLOCKING; it derives the expression set itself from the unit's test hunks -
-    /// each body's string literals in full and its outside calls with their first argument -
+    /// the string literals in full and the outside calls with their first argument of every
+    /// statement of an added body and of the changed statements of an edited one, a literal of
+    /// an untouched statement named to the operator as debt and never BLOCKING -
     /// runs each with the authors' search, every literal alone, and an uncarried hit, a record of
     /// names only for a body that spells either, a literal the record never searched alone or a
     /// statement or format string searched in a literal's place is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
@@ -3782,9 +3790,15 @@ mod tests {
             "You also derive the expression set yourself: list the unit's added or edited \
              test-side bodies from `git diff $(git merge-base rigger-run HEAD)..HEAD -- tests \
              crates src`",
-            "take every string literal each body spells, in full, and every call it makes \
-             outside the shared home with its first argument token, and run each with the \
+            "the hunks inside the test homes the authors' search reads, and the statements each \
+             body owes: every statement of an added body, and of an edited body the statements \
+             those hunks change.",
+            "Take every string literal those statements spell, in full, and every call they \
+             make outside the shared home with its first argument token, and run each with the \
              authors' search, `git ls-files tests crates src | t='<expression>' xargs awk",
+            "A literal of a statement the unit did not touch is the tree's duplication debt, \
+             never a BLOCKING finding: you name it to the operator in your review as debt, with \
+             its hit count.",
             "A hit the record does not carry is BLOCKING, and so is a record whose expressions \
              are names only - a fn name, the callee a helper wraps - for a body that spells a \
              literal or an outside call.",

@@ -282,11 +282,14 @@ mod tests {
     /// committed with their inputs, a test-side shape spelled once - any token two tests could
     /// spell, a named inline spelling included - with every added or named shape recorded in a
     /// whole-tree audit whether merged or not, the audit one search per distinguishing
-    /// expression of each statement of every test-side body added or edited - each string
+    /// expression of each statement of every test-side body added and of each edited statement
+    /// of a body edited, the hunks of the unit's whole range inside it, a twin among untouched
+    /// statements named to the operator as the tree's debt - each string
     /// literal alone and in full, however short, and each outside call with its first argument,
     /// never the body's name nor an expression wrapping a literal -
     /// whose command and hits the record carries and the SDET lens re-runs and re-derives from
-    /// the test hunks, one search per literal alone, every
+    /// the test hunks over the same statements, one search per literal alone, a literal of an
+    /// untouched statement named to the operator as debt and never blocking, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators (an item's callers read from the graph at depth 1) over the unit's
     /// whole range on every round, never a round's delta, and records on every change, each new
@@ -344,6 +347,13 @@ mod tests {
              builder, a table row's closure - statement by statement",
             "each statement that is not a single call into the shared test home is a shape of \
              its own",
+            "A body you add is walked whole, every statement; a body you edit is walked in its \
+             edited statements, the hunks of the unit's whole range inside it - the merge base \
+             with the run branch to head, the range the sentence walk and the mutant probes use \
+             - since a statement you did not touch carries no shape you added.",
+            "A twin the search surfaces only among statements you did not touch, spelling no \
+             literal or call of yours, is the tree's duplication debt: your hand-over names it to \
+             the operator, and you do not lift it.",
             "every string literal it spells, in full (an assertion, expect or panic message, a \
              fixture path, a query text)",
             "every call it makes outside the shared home with its first argument token",
@@ -371,10 +381,13 @@ mod tests {
              for a body that spells a literal or an outside call is a record you cannot write \
              either.",
             "The lens derives the expression set itself from the unit's test hunks at head - \
-             every string literal and every outside call with its first argument in each \
-             test-side body the unit adds or edits - and runs each over every test home: a hit \
-             the record does not carry, or a record whose expressions are names only for a body \
-             that spells either, is a BLOCKING finding on its own.",
+             every string literal and every outside call with its first argument in every \
+             statement of each test-side body the unit adds and in the edited statements of each \
+             body it edits, over the unit's whole range - and runs each over every test home: a \
+             hit the record does not carry, or a record whose expressions are names only for a \
+             body that spells either, is a BLOCKING finding on its own.",
+            "A literal of a statement the unit did not touch is the tree's duplication debt, \
+             which the lens names to the operator, never a BLOCKING finding.",
             "carrying each search's command, its hit count and every hit",
             "CHECKED when kept apart, with the reason: the named way its shape differs",
             "A CHECKED hit whose shape does not differ is a twin.",
