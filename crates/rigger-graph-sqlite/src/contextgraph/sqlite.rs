@@ -11451,6 +11451,11 @@ mod tests {
             .unwrap()
     }
 
+    /// Assert some step of `plan`, a [`query_plan`] answer, spells `step`.
+    fn assert_plan_uses(plan: &[String], step: &str) {
+        assert!(plan.iter().any(|d| d.contains(step)), "{plan:?}");
+    }
+
     #[test]
     fn additive_indexes_exist_and_the_leaf_bound_edge_and_node_seeks_use_them() {
         // Spec 45 criterion 4, re-expressed by spec 119 criterion 2: the additive indexes that
@@ -11815,11 +11820,7 @@ mod tests {
                     same_file,
                 ),
             ] {
-                assert!(
-                    plan.iter()
-                        .any(|d| d.contains("USING INDEX idx_nodes_leaf")),
-                    "{plan:?}"
-                );
+                assert_plan_uses(&plan, "USING INDEX idx_nodes_leaf");
             }
         }
     }
@@ -11836,19 +11837,16 @@ mod tests {
         use super::*;
         use crate::test_support::{
             assert_live_calls, file_half, fold_events, folds, hold, no_bytes_batch, BARE_PARENT,
-            FILELESS_MEMBER, FILE_MATE, LEAF_PLACEHOLDER, MAKE_TARGET, NESTED_METHOD,
-            RANGE_ARTIFACT,
+            FILELESS_MEMBER, FILE_MATE, FLAT_LEAF_ID, LEAF_PLACEHOLDER, MAKE_TARGET, NESTED_METHOD,
+            ONE_COMMUNITY, RANGE_ARTIFACT,
         };
         use rigger_domain::contextgraph::query::{member_file, path_leaf};
-
-        /// The flat id a knowledge assertion holds for [`NESTED_METHOD`]: a nameless node.
-        const FLAT_ID: &str = "a.rs::new";
 
         /// Plant, by direct writes with no edge: [`NESTED_METHOD`]'s file node, that method and
         /// [`FILE_MATE`] named by their leaves (only an unkeyed assertion holds each), a named
         /// definition whose id holds no `::` (that leaf alone), [`LEAF_PLACEHOLDER`] and
         /// [`BARE_PARENT`] nameless, [`RANGE_ARTIFACT`] an `artifact` carrying its leaf, and
-        /// [`FLAT_ID`] held by a decision.
+        /// [`FLAT_LEAF_ID`] held by a decision.
         fn plant() -> Projector {
             let p = fold_events([]);
             let named = [NESTED_METHOD, FILE_MATE, RANGE_ARTIFACT].map(|id| (id, path_leaf(id)));
@@ -11867,7 +11865,7 @@ mod tests {
                 )
                 .unwrap();
             });
-            hold(&p, 1, &[FLAT_ID]);
+            hold(&p, 1, &[FLAT_LEAF_ID]);
             p
         }
 
@@ -11952,13 +11950,12 @@ mod tests {
         fn a_file_emptied_by_its_boundary_relabels_the_community_its_members_held() {
             let p = fold_events([]);
             seed_community_fixture(&p);
-            let community = "community/1/0";
-            let before = label(&p, community);
+            let before = label(&p, ONE_COMMUNITY);
             let mut boundary = no_bytes_batch("src/combat/hit.rs").remove(0);
             boundary.position = 20;
             folds(&p, &[boundary]);
             assert_eq!(
-                (before, label(&p, community)),
+                (before, label(&p, ONE_COMMUNITY)),
                 (Some("apply_damage".into()), Some("send".into()))
             );
         }
@@ -11976,7 +11973,7 @@ mod tests {
                 NESTED_METHOD,
                 LEAF_PLACEHOLDER,
                 BARE_PARENT,
-                FLAT_ID,
+                FLAT_LEAF_ID,
                 RANGE_ARTIFACT,
                 path_leaf(FILE_MATE),
             ];
@@ -12008,11 +12005,10 @@ mod tests {
         fn the_member_range_load_seeks_the_node_key() {
             let p = plant();
             let seed = serde_json::to_string(&[file_half(NESTED_METHOD)]).unwrap();
-            let plan = query_plan(&p, &reach_sql(), params![seed, 1, "test"]);
-            assert!(
-                plan.iter()
-                    .any(|d| d.contains("USING INDEX sqlite_autoindex_nodes_1 (id>? AND id<?)")),
-                "{plan:?}"
+            let plan = query_plan(&p, &reach_sql(), params![seed, 1, p.project]);
+            assert_plan_uses(
+                &plan,
+                "USING INDEX sqlite_autoindex_nodes_1 (id>? AND id<?)",
             );
         }
     }
@@ -12025,7 +12021,7 @@ mod tests {
         use super::leaf_keys_resolution::located;
         use super::*;
         use crate::test_support::{
-            fold_path_def_rows, hold, located_many, PathDef, A_RS_NEWS, T_NEW, U_NEW,
+            fold_path_def_rows, hold, located_many, PathDef, A_RS_NEWS, FLAT_LEAF_ID, T_NEW, U_NEW,
         };
 
         /// Fold `defs` from position 1, each at its position's line, then `then` at the next
@@ -12087,7 +12083,7 @@ mod tests {
             );
             a_flat_id_a_decision_holds_answers_the_definition_its_file_holds_at_its_leaf: shows(
                 &[T_NEW],
-                |p, pos| hold(p, pos, &["a.rs::new"]),
+                |p, pos| hold(p, pos, &[FLAT_LEAF_ID]),
                 &[("a.rs::new", "a.rs::T::new")],
             );
             a_flat_id_a_caller_holds_answers_the_definition_its_file_holds_at_its_leaf: shows(
@@ -12232,11 +12228,7 @@ mod tests {
                 &callers_via_bare_sql(),
                 params![REL_CALLS, "test", "new"],
             );
-            assert!(
-                plan.iter()
-                    .any(|d| d.contains("SEARCH e USING INDEX idx_edges_live_to_name_suffix")),
-                "{plan:?}"
-            );
+            assert_plan_uses(&plan, "SEARCH e USING INDEX idx_edges_live_to_name_suffix");
         }
 
         #[test]
@@ -13845,7 +13837,7 @@ mod tests {
         pub(in crate::contextgraph::sqlite::tests) mod ledger_entries {
             use super::*;
             use crate::contextgraph::{wired, EntryFold, Fold};
-            use crate::test_support::event_of;
+            use crate::test_support::{event_of, ONE_COMMUNITY};
             use rigger_domain::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
             use std::cell::Cell;
 
@@ -14276,7 +14268,7 @@ mod tests {
             fn a_resolved_batch_changing_a_members_degree_relabels_its_community_as_it_returns() {
                 let p = Projector::open(":memory:", "test").unwrap();
                 seed_community_fixture(&p);
-                assert_eq!(label(&p, "community/1/0"), Some("apply_damage".to_string()));
+                assert_eq!(label(&p, ONE_COMMUNITY), Some("apply_damage".to_string()));
                 let hit = "src/combat/hit.rs";
                 let batch = vec![
                     event_of(
@@ -14306,7 +14298,7 @@ mod tests {
                     Ok(EntryFold::BatchAsked)
                 );
                 assert_eq!(
-                    label(&p, "community/1/0"),
+                    label(&p, ONE_COMMUNITY),
                     Some("clamp".to_string()),
                     "the member whose degree the batch raised labels the community at once"
                 );

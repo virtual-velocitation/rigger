@@ -365,7 +365,8 @@ pub fn kinded_def_node(id: &str, kind: &str) -> Node {
     node
 }
 
-/// The community a test built by [`one_community_graph`] holds its members in.
+/// The community a test built by [`one_community_graph`] holds its members in, and the first
+/// community the seeded community fixture labels.
 pub const ONE_COMMUNITY: &str = "community/1/0";
 
 /// A graph of the one community node `community` followed by `members`, each held by a live
@@ -388,6 +389,9 @@ pub fn card_file(graph: &Graph, id: &str) -> Option<String> {
 
 /// THE MEMBER RULE's nested method (spec 119): a definition two levels into its file `a.rs`.
 pub const NESTED_METHOD: &str = "a.rs::T::new";
+/// The flat id `<file>::<leaf>` of [`NESTED_METHOD`]'s leaf in its file: the id a decision holds
+/// by leaf alone.
+pub const FLAT_LEAF_ID: &str = "a.rs::new";
 /// A file-level definition beside [`NESTED_METHOD`] in its file.
 pub const FILE_MATE: &str = "a.rs::mate";
 /// The placeholder of [`NESTED_METHOD`]'s leaf in its file: a nameless code entity.
