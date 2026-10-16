@@ -187,7 +187,12 @@ one under `src/`, and each root test binary the unit touched by `cargo test --te
 restore the file with `git checkout -- <file>` before the next. The `<unit>-mutant-probes`
 DecisionMade, beside the other two records, pastes each token's `file:line`, the mutation, each
 command as run and the test that went red with its assertion; the `sdet` lens probes every token
-it lacks.
+it lacks. The record walks the production lines of
+`git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src` with the test regions left out,
+in file order: each added or changed line names its mutable tokens with their probes - a SQL
+conjunct, a column name, bound or placeholder passed to a query builder and a substr start
+inside a query or format string among them - or is marked as carrying none with its reason (a
+signature, a `use`, a doc line, a brace).
 
 ## Every test must survive mutation testing
 
