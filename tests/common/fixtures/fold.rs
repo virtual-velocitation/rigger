@@ -14,7 +14,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    around, entity_site, site_fields, Candidate, EntitySite, Graph, Located, Projection,
+    around, entity_site, site_fields, Candidate, EntitySite, Graph, Located, Node, Projection,
     CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION, KIND_CODE_ENTITY,
     KIND_COMMUNITY, KIND_DESIGN_DOC, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
@@ -888,11 +888,16 @@ pub fn definition_ids(p: &Projector) -> Vec<String> {
     ids
 }
 
-/// The attrs node `id` carries in `p`'s whole graph.
-pub fn attrs_of(p: &Projector, id: &str) -> BTreeMap<String, String> {
+/// The node `id` of `p`'s whole graph, which must hold it.
+pub fn node_of(p: &Projector, id: &str) -> Node {
     let nodes = p.whole().unwrap().nodes;
     let node = nodes.into_iter().find(|n| n.id == id);
-    node.unwrap_or_else(|| panic!("{id} is held")).attrs
+    node.unwrap_or_else(|| panic!("{id} is held"))
+}
+
+/// The attrs node `id` carries in `p`'s whole graph ([`node_of`]).
+pub fn attrs_of(p: &Projector, id: &str) -> BTreeMap<String, String> {
+    node_of(p, id).attrs
 }
 
 /// The `proven_by` attr node `id` carries in `p`'s whole graph ([`attrs_of`]), `None` when it

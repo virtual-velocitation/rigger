@@ -1230,6 +1230,46 @@ pub fn asserted_fact(
 /// the emit unit test is structurally blind to: the deserialize direction, the byte-identical
 /// omission of `caller` when it is `None`, and a pre-37 log's tolerance.
 #[cfg(test)]
+mod parent_path_rule {
+    use super::CodeEntityExtracted;
+
+    /// The method at id path `T::s` naming `parent`; [`CodeEntityExtracted::parent_path`] reads
+    /// only its `path` and `parent`.
+    fn method_naming(parent: Option<String>) -> CodeEntityExtracted {
+        CodeEntityExtracted {
+            file: String::new(),
+            name: String::new(),
+            path: Some("T::s".to_owned()),
+            parent,
+            kind: String::new(),
+            line: 1,
+            lang: String::new(),
+            fresh: false,
+            partial: false,
+        }
+    }
+
+    #[test]
+    fn a_parent_absent_empty_or_naming_its_own_path_reads_as_none() {
+        let parents = [
+            Some("T".to_owned()),
+            None,
+            Some(String::new()),
+            Some("T::s".to_owned()),
+        ];
+        let read: Vec<Option<String>> = parents
+            .into_iter()
+            .map(|parent| method_naming(parent).parent_path().map(str::to_owned))
+            .collect();
+        assert_eq!(
+            read,
+            [Some("T".to_owned()), None, None, None],
+            "only a non-empty parent other than the definition's own path is its parent"
+        );
+    }
+}
+
+#[cfg(test)]
 mod caller_wire_contract {
     use super::EdgeInferred;
 

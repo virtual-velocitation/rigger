@@ -347,6 +347,11 @@ mod tests {
                 "b",
                 "the persisted definition carries its path"
             );
+            assert_eq!(
+                persisted_def(persisted).get("parent"),
+                None,
+                "a definition at file level is saved with no parent key"
+            );
         });
         restamp(root, "ts-tags-v3");
         assert_eq!(load(root), None, "a ts-tags-v3 index must load as absent");

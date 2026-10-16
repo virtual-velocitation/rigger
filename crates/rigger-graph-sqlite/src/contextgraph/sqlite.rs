@@ -13090,8 +13090,8 @@ mod tests {
         use super::*;
         use crate::test_support::{
             assert_live, attrs_of, child_entity_json, definition, definition_ids, event_of,
-            fold_events, fold_generation, kind_def_json, ENUM_E, E_HOLDS_A, GENERATION_AFTER,
-            GENERATION_BEFORE, VARIANT_E_A,
+            fold_events, fold_generation, kind_def_json, node_of, ENUM_E, E_HOLDS_A,
+            GENERATION_AFTER, GENERATION_BEFORE, VARIANT_E_A,
         };
 
         /// The parent [`GHOST_M`] names, which no event defines.
@@ -13147,6 +13147,11 @@ mod tests {
                 attrs_of(&p, GHOST),
                 BTreeMap::new(),
                 "the undefined parent is held, a bare node carrying no name"
+            );
+            assert_eq!(
+                node_of(&p, GHOST).kind,
+                KIND_CODE_ENTITY,
+                "the undefined parent is held as a code entity, never an artifact"
             );
             assert_eq!(definition_ids(&p), [GHOST_M]);
         }
