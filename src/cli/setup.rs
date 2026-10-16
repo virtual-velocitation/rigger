@@ -3894,7 +3894,8 @@ mod tests {
             "your review-complete record carries, for every sentence you read - each CHECKED \
              member of the author's record first of all, each member the record omits, each hit \
              of a rule-spelling search - its location, its claims and each claim's witness at \
-             head, and a grouped verdict (\"none false\", \"each a field reference\", \"the \
+             head, a quantified claim's cases beside it, each with its witness, and a grouped \
+             verdict (\"none false\", \"each a field reference\", \"the \
              CHECKED hits hold\") over sentences with no per-sentence witness is a record you \
              cannot write.",
             "You are also the enforcement of the built-in rule that every mutable token of the \
