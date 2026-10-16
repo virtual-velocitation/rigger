@@ -3,7 +3,8 @@
 //! contract the log actually carries), the on-log payloads the code-ingest, decision and
 //! reference folds read, the canonical spec-53 two-subsystem coupling seed, the spec-119
 //! show-renderer seed with the oracles its `rigger_graph` `show` and `around` objects are checked
-//! by, the live edges and calls a projector serves, and the read-backs suites take of a folded
+//! by, the live edges and calls a projector serves with the spec-119 enum's `CONTAINS` edges they
+//! are checked against, and the read-backs suites take of a folded
 //! `Graph`. `apply` returns `Err`
 //! on a fold failure, so every helper unwraps it: a successful call is itself evidence the
 //! payload folded.

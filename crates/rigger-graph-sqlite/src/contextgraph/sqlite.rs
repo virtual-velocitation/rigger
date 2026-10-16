@@ -927,7 +927,8 @@ impl Projector {
     /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE, VALIDATE ADVISORY): the count of
     /// `code-entity` nodes this project's graph currently holds that are RETIRED - reachable by NO
     /// live edge at all, in either direction, though each DID at some point carry a live `CONTAINS`
-    /// edge from its own file (proving it was once a genuine, reachable graph member, never a
+    /// edge from its parent, its own file at file level (spec 119), whatever that edge's source
+    /// (proving it was once a genuine, reachable graph member, never a
     /// dangling placeholder [`ensure_node`] creates for an unresolved cross-file reference that
     /// simply has not resolved yet - such a placeholder never had a `CONTAINS` edge to lose, live
     /// or historical, so it is never counted here).
@@ -2668,10 +2669,11 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
         }
         TYPE_CODE_ENTITY_EXTRACTED => {
             // Spec 29a criterion 1: one definition the extraction pass emitted. Fold it into a
-            // code-entity node hung off its file container node, so code structure lives in the
-            // event-sourced projection, not a mutable side index. ALWAYS compiled: the light lane
-            // folds this with the extraction pass absent, which is why the node kinds and this arm
-            // live outside the `symbols` feature. Project-scoped like every arm (spec 28): the
+            // code-entity node in its file container node, hung off its parent (spec 119; the file
+            // at file level), so code structure lives in the event-sourced projection, not a
+            // mutable side index. ALWAYS compiled: the light lane folds this with the extraction
+            // pass absent, which is why the node kinds and this arm live outside the `symbols`
+            // feature. Project-scoped like every arm (spec 28): the
             // file, the entity, and the edge all carry the injected project. The file path is
             // alias-resolved exactly as the artifact-producing arms resolve theirs, so the file
             // container is the SAME node those arms build for the path (one-graph identity), never
@@ -2721,12 +2723,24 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                 project,
             )?;
             let defines = undo_what_resolved_against(tx, &entity, defined, project)?;
-            // CONTAINS: the file container node holds this definition. A definition's containment
-            // is the most explicit structural fact there is, so it folds at the EXTRACTED tier
-            // (spec 29a, addendum 6.2).
+            // CONTAINS (spec 119, CONTAINS IS STRUCTURE): the definition's parent holds it, the
+            // file when it has none - a `parent` absent, empty or naming the definition's own
+            // path. The parent is asserted bare under this batch's identity first, since a variant
+            // can fold before its enum; the parent's own event fills it, and a parent no event
+            // defines stays that nameless node. A definition's containment is the most explicit
+            // structural fact there is, so it folds at the EXTRACTED tier (spec 29a, addendum 6.2).
+            let parent = c.parent.as_deref();
+            let container = match parent.filter(|p| !p.is_empty() && *p != c.id_path()) {
+                Some(parent) => {
+                    let parent = code_entity_id(&file, parent);
+                    ensure_node(tx, by, &parent, KIND_CODE_ENTITY, &[], project)?;
+                    parent
+                }
+                None => file.clone(),
+            };
             add_edge(
                 tx,
-                &file,
+                &container,
                 &entity,
                 REL_CONTAINS,
                 at,
@@ -3266,7 +3280,8 @@ fn invalidate_finding_edges(
 /// Supersede-on-re-extract (spec 29a criterion 3): set `valid_to` on (never delete - mirroring the
 /// decision-supersession arm and [`invalidate_finding_edges`]) every LIVE structural edge OUT of a
 /// file's OWN structure - the `CONTAINS` / `REFERENCES` edges out of its container node AND the
-/// `CALLS` edges out of the code entities it defines (spec 37). Called at the boundary of a file's
+/// `CALLS` and `CONTAINS` edges out of the code entities it defines (spec 37; spec 119, CONTAINS IS
+/// STRUCTURE: a variant's `CONTAINS` comes from its enum). Called at the boundary of a file's
 /// extraction batch (the `fresh` event), BEFORE that batch folds its own edges, so re-extracting a
 /// changed file REPLACES its structural edges rather than accreting duplicates: a removed
 /// definition's / reference's / call's edge drops from the live `subgraph` (its `valid_to` is now
@@ -3274,8 +3289,9 @@ fn invalidate_finding_edges(
 /// stamped, so a historical / as-of query still reaches the previous graph (bi-temporal, spec 29a
 /// section 6.4).
 ///
-/// The `CONTAINS` / `REFERENCES` edges hang off `from_id = file` (the container node); a `CALLS`
-/// edge instead hangs off `from_id = <file>::<caller>` (the enclosing definition entity), so it is
+/// The top-level `CONTAINS` and the `REFERENCES` edges hang off `from_id = file` (the container
+/// node); a `CALLS` edge instead hangs off `from_id = <file>::<caller>` (the enclosing definition
+/// entity), and a nested definition's `CONTAINS` off `from_id = <file>::<parent>`, so both are
 /// matched by an EXACT `<file>::` id prefix (`substr`, never a `LIKE`/`GLOB` whose `_`/`%`/`*`
 /// wildcards a real path could contain). Both scopings retire ONLY this file's own structure: a
 /// cross-file `REFERENCES` from ANOTHER file (whose `from_id` is that other file) and a cross-file
@@ -3292,7 +3308,7 @@ fn supersede_file_edges(tx: &Transaction, file: &str, at: i64, project: &str) ->
              WHERE valid_to IS NULL AND project = ?5
                AND (
                  (from_id = ?2 AND (rel = ?3 OR rel = ?4))
-                 OR (rel = ?6 AND {})
+                 OR ((rel = ?6 OR rel = ?3) AND {})
                )",
             id_range_sql("from_id", "?2")
         ),

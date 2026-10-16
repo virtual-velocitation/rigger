@@ -172,8 +172,10 @@ pub const REL_ASSIGNED_TO: &str = "ASSIGNED_TO";
 /// The acting reviewer raised this finding (a DECIDED-style provenance link from
 /// the `by` agent to the finding node).
 pub const REL_RAISED: &str = "RAISED";
-/// A file container node CONTAINS a code entity extracted from it (spec 29a): the structural
-/// edge from a `file` node to each `code-entity` node folded from that file's definitions.
+/// A definition's parent CONTAINS it (spec 29a; spec 119, CONTAINS IS STRUCTURE): the structural
+/// edge from an enum to its variant, a struct, union or variant to its field, an impl or trait
+/// to its associated item, an inline mod or enclosing fn to its item, and from a `file` node to
+/// each `code-entity` node folded from a definition of that file with no parent.
 pub const REL_CONTAINS: &str = "CONTAINS";
 /// A file REFERENCES a code symbol (spec 29a): the structural edge folded from an
 /// `EdgeInferred` event, from the referencing `file` node to the referenced symbol's
@@ -504,7 +506,8 @@ pub const TYPE_ALIAS_UNRESOLVED: &str = "AliasUnresolved";
 pub const TYPE_REVIEW_FINDING: &str = "ReviewFinding";
 /// One definition extracted from a source file (spec 29a): the extraction pass emits one per
 /// definition, and the always-compiled fold turns it into a `code-entity` node plus a
-/// `CONTAINS` edge from the file container node. Always compiled, so the light lane folds it
+/// `CONTAINS` edge from its parent, the file container node when it has none (spec 119). Always
+/// compiled, so the light lane folds it
 /// with the extraction pass absent.
 pub const TYPE_CODE_ENTITY_EXTRACTED: &str = "CodeEntityExtracted";
 /// One reference extracted from a source file (spec 29a): the extraction pass emits one per
@@ -970,6 +973,12 @@ pub struct CodeEntityExtracted {
     /// the field existed replays as; serde-defaulted and omitted when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Spec 119 (CONTAINS IS STRUCTURE): the id path of the definition this one's `CONTAINS`
+    /// comes from (`E` for the variant `E::A`), absent at file level, where the file contains it.
+    /// Absent, empty or naming the definition's own [`CodeEntityExtracted::id_path`] reads as none,
+    /// the file containing it; serde-defaulted and omitted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     /// The rigger `Kind` of the definition, lowercased (e.g. `function`, `type`, `module`).
     pub kind: String,
     /// The 1-based line of the definition site.
@@ -1040,9 +1049,9 @@ pub struct EdgeInferred {
     pub fresh: bool,
     /// The enclosing definition this reference was attributed to during extraction (spec 37): the
     /// caller's path in its file (spec 119 criterion 8: `T::new`; a payload recorded before
-    /// paths carries its leaf, folding to that flat id as its definition then did, and so does
-    /// one lowered from a `ts-tags-v3` index persisted before criterion 8, which loads as current
-    /// until criterion 9 bumps the index version to `ts-tags-v4`), same-file, the innermost
+    /// paths carries its leaf, folding to that flat id as its definition then did; a `ts-tags-v3`
+    /// index persisted before criterion 8 lowers none, loading as absent since criterion 9 bumped
+    /// the index version to `ts-tags-v4`), same-file, the innermost
     /// enclosing function before any other definition (spec 116). `None` for a top-level
     /// reference outside every definition (an import or a module-level call; a file-level impl
     /// header's trait and type attribute to the impl block, a definition of its own). The emit

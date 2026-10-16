@@ -2056,7 +2056,7 @@ const PRODUCTION_CONTROLS: &[(&str, &str, &[&str])] = &[
 /// `project_batches` -> `Projector` path over a real tree in every registered language: a file
 /// at each DEV-ONLY PATHS pattern is no node, holds no node and ends no edge, and its one call
 /// is the one proof on the production definition it names; each production control is a file
-/// node containing its definitions and proves nothing; and `src/tests/mod.rs`, which a pattern
+/// node holding its definitions, each contained by its parent, and proves nothing; and `src/tests/mod.rs`, which a pattern
 /// names and `#[cfg(test)] mod tests;` declares, is no node and proves nothing either.
 #[cfg(feature = "symbols")]
 #[test]
@@ -2083,7 +2083,9 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
     let seeds: Vec<&str> = files.iter().map(|&(path, _)| path).collect();
     let g = ingested_subgraph(&files, &seeds, 3);
 
-    // Every file node is production, and each control contains exactly its definitions.
+    // Every file node is production, and each control holds exactly its definitions, each
+    // contained by its parent (spec 119, CONTAINS IS STRUCTURE): the file, but for the one
+    // control method, contained by its class.
     let file_nodes: BTreeSet<&str> = g
         .nodes
         .iter()
@@ -2100,6 +2102,7 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
             .into_iter()
             .map(|(from, _, to)| (from, to))
             .collect();
+    const NESTED: (&str, &str) = ("Contest/a.cs::Contest", "Contest/a.cs::Contest::Run");
     let control_definitions: Vec<(&str, String)> = PRODUCTION_CONTROLS
         .iter()
         .flat_map(|&(path, _, names)| {
@@ -2112,7 +2115,10 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
         contained,
         control_definitions
             .iter()
-            .map(|(path, id)| (*path, id.as_str()))
+            .map(|(path, id)| match id.as_str() {
+                child if child == NESTED.1 => NESTED,
+                id => (*path, id),
+            })
             .collect()
     );
 

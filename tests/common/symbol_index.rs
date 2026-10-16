@@ -28,6 +28,7 @@ pub fn def(kind: Kind, name: &str) -> Def {
         line: 1,
         end_line: 0,
         path: name.into(),
+        parent: None,
         is_test: false,
         is_out_of_line_module: false,
         path_override: None,

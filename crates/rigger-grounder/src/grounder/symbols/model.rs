@@ -66,6 +66,14 @@ pub struct Def {
     /// default, as `end_line`: an index persisted before it existed loads as absent and is
     /// rebuilt.
     pub path: String,
+    /// Spec 119 (CONTAINS IS STRUCTURE): the [`Def::path`] of the definition this one's
+    /// `CONTAINS` comes from - the innermost definition strictly enclosing it, a Go method's the
+    /// file-level definition at its receiver type's path - and `None` at file level, where the
+    /// file contains it ([`crate::grounder::symbols::extract::extract`] sets it). Serde-defaulted
+    /// and omitted when `None`; an index persisted before it existed is of an older
+    /// [`GRAMMAR_TAGS_VERSION`], so it loads as absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     /// Spec 86 criterion 1: whether this definition is TEST code - directly annotated
     /// `#[test]`/`#[cfg(test)]` (or any `cfg(...)` predicate naming the `test` token, e.g.
     /// `#[cfg(all(test, feature = "x"))]`), or nested inside such a definition (a plain helper
@@ -191,12 +199,11 @@ pub struct FileSymbols {
 /// is distinguishable on replay from one the current set would produce, and so a persisted
 /// [`SymbolIndex`] built under an older set loads as absent and is rebuilt (gap 104); so does a
 /// change to what extraction records under an unchanged query, the caller a reference carries
-/// (`SymRef::enclosing`) included - save one staged change: spec 119 criterion 8's caller path
-/// in place of its name shares `ts-tags-v3` with the leaf-caller index before it, until criterion
-/// 9 bumps the version to `ts-tags-v4` (spec 119, GENERATIONS: one bump at the index's last shape
-/// change), so a v3 index persisted before criterion 8 still loads, its callers by leaf.
+/// (`SymRef::enclosing`) and a definition's parent (`Def::parent`) included: `ts-tags-v4` is
+/// spec 119's one bump, at the index's last shape change (GENERATIONS), so a `ts-tags-v3` index -
+/// callers by leaf, or by path with no parent - loads as absent and is rebuilt.
 /// Parser-free, so it lives in the model both feature lanes compile.
-pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v3";
+pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v4";
 
 /// The whole-project index. Deterministic containers only (`BTreeMap`): iterating it for
 /// serialization is stable across processes, unlike a `HashMap` whose iteration order is
@@ -345,6 +352,7 @@ mod tests {
                     line: 1,
                     end_line: 1,
                     path: "apply_damage".into(),
+                    parent: None,
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
@@ -443,6 +451,7 @@ mod tests {
                     line: 7,
                     end_line: 7,
                     path: "apply_damage".into(),
+                    parent: None,
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,

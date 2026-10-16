@@ -2193,6 +2193,7 @@ mod tests {
             line,
             end_line: line,
             path: name.to_string(),
+            parent: None,
             is_test: false,
             is_out_of_line_module: false,
             path_override: None,

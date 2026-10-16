@@ -176,9 +176,10 @@ impl<'s> Source<'s> {
 /// definition [`extract`] records, in every language. `line` is the 1-based line its pass gives
 /// it (a tagged definition's name row, a read-off's as its reader gives it) and `end_line` the
 /// 1-based line of `range`'s last byte, `range` the definition's whole byte range, never below
-/// `line`; a zero-length `range` gives `line`. Its `path` is its `name` here. It is built ahead of
-/// the passes over the whole file that resolve the rest: `path` needs every definition's range
-/// ([`def_paths`] decides containment over the whole set), as `is_test` does (`test_regions`),
+/// `line`; a zero-length `range` gives `line`. Its `path` is its `name` here and it has no
+/// `parent`. It is built ahead of the passes over the whole file that resolve the rest: `path`
+/// and `parent` need every definition's range ([`def_paths`] decides containment over the whole
+/// set), as `is_test` does (`test_regions`),
 /// and the out-of-line module facts are read from the parsed tree once every definition is known
 /// (only a `Module`-kind definition ever carries them; see `Def::is_out_of_line_module`).
 fn def_of(
@@ -196,6 +197,7 @@ fn def_of(
     Def {
         kind,
         path: name.clone(),
+        parent: None,
         name,
         line,
         end_line,
@@ -253,7 +255,7 @@ fn record_def(
 /// binds, class-body names and type aliases ([`assigned_names`], [`class_body_names`],
 /// [`type_aliases`]), each recorded as a tagged definition is ([`record_def`]). Every definition,
 /// an impl block's included, is built by [`def_of`] from its byte range, which gives its
-/// `end_line`, and takes its id path from [`def_paths`].
+/// `end_line`, and takes its id path and parent from [`def_paths`].
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -401,13 +403,15 @@ pub fn extract(
             ));
         }
     }
-    // Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH): each definition's id path, decided over every
-    // definition's range at once, so a container recorded after what it holds still prefixes it.
-    for (d, path) in defs
+    // Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH; CONTAINS IS STRUCTURE): each definition's id path
+    // and parent, decided over every definition's range at once, so a container recorded after
+    // what it holds still prefixes and parents it.
+    for (d, (path, parent)) in defs
         .iter_mut()
         .zip(def_paths(root, source.as_bytes(), &def_ranges))
     {
         d.path = path;
+        d.parent = parent;
     }
     // Attribute each reference to its caller (`enclosing_def`: the innermost enclosing function,
     // else the innermost enclosing definition; spec 116), named by that definition's path (spec
@@ -1022,11 +1026,16 @@ fn collapsed(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
 /// type>::<name>` ([`go_receiver`]), and a JS or TS named function, generator or class value
 /// whose name is the leaf of the declarator, assignment, pair or class field holding it
 /// ([`is_named_value`]) takes that container's path (`const f = function f() {}` is `f`).
+///
+/// Beside each path it answers the definition's PARENT (spec 119, CONTAINS IS STRUCTURE), the
+/// path its `CONTAINS` comes from: its container's path, but that a named value takes its
+/// container's parent, being one definition with it, and a Go method the path of its receiver
+/// base type when a definition of the file sits there; `None` at file level.
 fn def_paths(
     root: tree_sitter::Node,
     source: &[u8],
     def_ranges: &[(std::ops::Range<usize>, String, Kind)],
-) -> Vec<String> {
+) -> Vec<(String, Option<String>)> {
     let nodes: Vec<_> = def_ranges
         .iter()
         .map(|(range, _, _)| outermost_node(root, range).filter(|n| n.byte_range() == *range))
@@ -1043,8 +1052,13 @@ fn def_paths(
     // A container's span strictly holds what it contains, so the longest spans are resolved first.
     let mut order: Vec<usize> = (0..spans.len()).collect();
     order.sort_by_key(|&i| std::cmp::Reverse(spans[i].len()));
+    let receivers: Vec<_> = nodes
+        .iter()
+        .map(|node| node.and_then(|n| go_receiver(n, source)))
+        .collect();
     let mut paths = vec![String::new(); def_ranges.len()];
     let mut prefixes = vec![String::new(); def_ranges.len()];
+    let mut parents: Vec<Option<String>> = vec![None; def_ranges.len()];
     for i in order {
         let (_, leaf, kind) = &def_ranges[i];
         let under = |prefix: Option<&str>, sep: &str, leaf: &str| match prefix {
@@ -1058,12 +1072,17 @@ fn def_paths(
             "::"
         };
         let path = match (nodes[i], containers[i]) {
-            (Some(n), Some(c)) if is_named_value(n, leaf, &def_ranges[c].1) => paths[c].clone(),
-            (Some(n), _) => match go_receiver(n, source) {
-                Some(receiver) => format!("{receiver}::{leaf}"),
-                None => under(prefix, sep, leaf),
-            },
-            (None, _) => under(prefix, sep, leaf),
+            (Some(n), Some(c)) if is_named_value(n, leaf, &def_ranges[c].1) => {
+                parents[i] = parents[c].clone();
+                paths[c].clone()
+            }
+            _ => {
+                parents[i] = containers[i].map(|c| paths[c].clone());
+                match &receivers[i] {
+                    Some(receiver) => format!("{receiver}::{leaf}"),
+                    None => under(prefix, sep, leaf),
+                }
+            }
         };
         let prefix_out = match nodes[i]
             .filter(|n| n.kind() == "impl_item")
@@ -1076,7 +1095,14 @@ fn def_paths(
         paths[i] = path;
         prefixes[i] = prefix_out;
     }
-    paths
+    // A Go method's parent is the definition at its receiver type's path, which only a file-level
+    // definition's path can equal, once every path is known; else the file.
+    for (parent, receiver) in parents.iter_mut().zip(receivers) {
+        if let Some(receiver) = receiver {
+            *parent = paths.contains(&receiver).then_some(receiver);
+        }
+    }
+    paths.into_iter().zip(parents).collect()
 }
 
 /// The index of the definition whose span STRICTLY holds span `i` of `spans` most narrowly - the

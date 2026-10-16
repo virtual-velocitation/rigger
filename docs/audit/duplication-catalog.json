@@ -6747,13 +6747,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-710503cb82f8",
+    "id": "dup-2209023f3f99",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
         "name": "extract_events",
-        "content_hash": "56c9fce19c77f40b"
+        "content_hash": "ffedc55df3af221c"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
@@ -6785,13 +6785,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ce397aa49626",
+    "id": "dup-0a7f026597b0",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
         "name": "extract",
-        "content_hash": "60721993aec0c05c"
+        "content_hash": "ca2eae99978ec77b"
       },
       {
         "file": "tests/common/source_audit.rs",
