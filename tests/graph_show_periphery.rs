@@ -54,8 +54,8 @@ use common::cli::assert_light_lane_extent_note;
 use common::cli::body_line_count;
 use common::cli::open_graph;
 use common::cli::planted_graph;
+use common::cli::run_around;
 use common::cli::run_rigger;
-use common::cli::run_rigger_ok;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
 use common::fixtures::apply_code_entity;
@@ -176,10 +176,7 @@ fn graph_around_a_file_lists_its_members_and_a_member_its_file_with_no_contains(
         ),
     ] {
         assert_eq!(
-            run_rigger_ok(
-                root,
-                &["graph", "--around", seed, "--depth", &depth.to_string()]
-            ),
+            run_around(root, seed, depth).0,
             printed(seed, depth, &nodes),
             "--around {seed} at depth {depth}"
         );

@@ -110,6 +110,15 @@ pub fn run_rigger_ok(cwd: &Path, args: &[&str]) -> String {
     out
 }
 
+/// Run `rigger graph --around <seed> --depth <depth>` in `cwd` ([`run_rigger`]) and return
+/// (stdout, stderr, success).
+pub fn run_around(cwd: &Path, seed: &str, depth: i64) -> (String, String, bool) {
+    run_rigger(
+        cwd,
+        &["graph", "--around", seed, "--depth", &depth.to_string()],
+    )
+}
+
 /// Run `rigger <args...>` in `cwd` with extra environment `envs` and return
 /// (stdout, stderr, success).
 pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {

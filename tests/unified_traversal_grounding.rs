@@ -49,6 +49,9 @@ use common::cli::{planted_graph, temp_project};
 use common::fixtures::apply_next_json;
 use common::fixtures::{file_half, member_graph, NESTED_METHOD};
 
+/// The failure message of a test whose stage's agent was never spawned.
+const SPAWNED: &str = "the stage's agent must have been spawned";
+
 /// A driver that captures every prompt it is asked to spawn, then returns an empty result. It is
 /// the observation channel for the periphery boundary: the prompt a spawn actually receives.
 #[derive(Default)]
@@ -471,7 +474,7 @@ rigger::test_cases! {
             run_and_capture_prompts,
             "TRIMMED",
             "the trimmed implement prompt",
-            "the stage's agent must have been spawned",
+            SPAWNED,
         );
     /// Criterion 1 (this unit OWNS the implement-stage trim), the SDET-author call site: the
     /// build-seam `sdet-author` spawn - a DIFFERENT call site than the implementer, threading its
@@ -984,10 +987,7 @@ fn over_cap_code_neighborhood_prompt() -> String {
             json!({ "file": "core.rs", "name": format!("definition_{i:03}"), "kind": "function", "line": i, "lang": "rust", "fresh": i == 1 }),
         );
     }
-    first_prompt(
-        run_and_capture_prompts(&graph),
-        "the stage's agent must have been spawned",
-    )
+    first_prompt(run_and_capture_prompts(&graph), SPAWNED)
 }
 
 rigger::test_cases! {
@@ -1093,10 +1093,7 @@ fn a_spawn_prompt_with_no_extracted_definitions_renders_no_code_neighborhood_hea
     );
 
     let prompts = run_and_capture_prompts(&graph);
-    assert!(
-        !prompts.is_empty(),
-        "the stage's agent must have been spawned"
-    );
+    assert!(!prompts.is_empty(), "{SPAWNED}");
     let prompt = &prompts[0];
 
     // The one traversal ran and reached the file: its design intent is surfaced.
@@ -1308,10 +1305,7 @@ fn over_cap_design_intent_prompt() -> String {
             "core.rs",
         );
     }
-    first_prompt(
-        run_and_capture_prompts(&graph),
-        "the stage's agent must have been spawned",
-    )
+    first_prompt(run_and_capture_prompts(&graph), SPAWNED)
 }
 
 rigger::test_cases! {
@@ -1492,10 +1486,7 @@ fn a_spawn_prompt_with_no_governing_design_intent_renders_no_design_intent_heade
 
     let neighborhood = "the one traversal must still surface the file's code neighborhood";
     assert_prompt(
-        &first_prompt(
-            run_and_capture_prompts(&graph),
-            "the stage's agent must have been spawned",
-        ),
+        &first_prompt(run_and_capture_prompts(&graph), SPAWNED),
         // The one traversal ran and reached the file: its code neighborhood is surfaced.
         &[("run_unit", neighborhood), ("core.rs:42", neighborhood)],
         // With no governing design intent, the design-intent section is suppressed entirely - no
@@ -1592,10 +1583,7 @@ fn the_design_intent_section_renders_every_touched_file_a_node_binds_with_a_mult
         files: vec!["core.rs".into(), "util.rs".into()],
     };
     let prompts = run_and_capture_prompts_grounded(&graph, &grounder, "core");
-    assert!(
-        !prompts.is_empty(),
-        "the stage's agent must have been spawned"
-    );
+    assert!(!prompts.is_empty(), "{SPAWNED}");
     let prompt = &prompts[0];
 
     // (1) The rule that governs BOTH touched files names BOTH on its line (the distinct bound seed
@@ -1798,7 +1786,7 @@ fn a_spawn_prompt_lists_a_nested_method_of_the_touched_file_with_no_contains() {
 
     let prompt = first_prompt(
         run_and_capture_prompts_grounded(&graph, &grounder, "core"),
-        "the stage's agent must have been spawned",
+        SPAWNED,
     );
     assert_eq!(
         neighborhood_lines(&prompt, file),
@@ -1832,10 +1820,7 @@ fn a_spawn_prompt_lists_no_data_member_and_no_declaration_in_its_code_neighborho
         );
     }
 
-    let prompt = first_prompt(
-        run_and_capture_prompts(&graph),
-        "the stage's agent must have been spawned",
-    );
+    let prompt = first_prompt(run_and_capture_prompts(&graph), SPAWNED);
     assert_eq!(
         neighborhood_lines(&prompt, "core.rs"),
         ["- core.rs:1  function run", "- core.rs:5  constant LIMIT"],
@@ -1864,10 +1849,7 @@ fn a_field_takes_no_slot_of_the_capped_code_neighborhood() {
         json!({ "file": "core.rs", "name": "run", "kind": "function", "line": 41, "lang": "rust" }),
     );
 
-    let prompt = first_prompt(
-        run_and_capture_prompts(&graph),
-        "the stage's agent must have been spawned",
-    );
+    let prompt = first_prompt(run_and_capture_prompts(&graph), SPAWNED);
     assert_eq!(
         neighborhood_lines(&prompt, "core.rs"),
         ["- core.rs:41  function run"],

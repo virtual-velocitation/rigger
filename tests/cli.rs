@@ -21,6 +21,7 @@ use common::cli::graph_build_line;
 use common::cli::plant_stale_marker;
 use common::cli::read_run_events;
 use common::cli::reported_reclaimed_bytes;
+use common::cli::run_around;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::run_rigger_ok;
@@ -299,7 +300,7 @@ fn rigger_result_folds_an_adjudicator_discard_into_the_persisted_graph() {
     };
 
     // Before any verdict, both findings are reachable from the file they are ABOUT.
-    let (before, err, ok) = run_rigger(root, &["graph", "--around", file, "--depth", "2"]);
+    let (before, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph must succeed; stderr: {err}");
     let before_ids = graph_node_ids(&before);
     for id in ["f-discard", "f-open"] {
@@ -321,7 +322,7 @@ fn rigger_result_folds_an_adjudicator_discard_into_the_persisted_graph() {
     // After the recorded verdict folds into graph.db, the discarded finding's edges are
     // invalidated so `subgraph` (valid_to IS NULL) no longer reaches it; the un-disposed
     // finding is untouched and stays live.
-    let (after, err, ok) = run_rigger(root, &["graph", "--around", file, "--depth", "2"]);
+    let (after, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph must succeed after the verdict; stderr: {err}");
     let after_ids = graph_node_ids(&after);
     assert!(
@@ -441,7 +442,7 @@ fn reset_runs_prunes_dead_runs_from_the_graph_keeping_lessons_active_run_and_reu
     };
 
     // Before the reset every provenance node is reachable from the shared file.
-    let (before, err, ok) = run_rigger(root, &["graph", "--around", file, "--depth", "2"]);
+    let (before, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph must succeed; stderr: {err}");
     let before_ids = graph_node_ids(&before);
     for id in [
@@ -475,7 +476,7 @@ fn reset_runs_prunes_dead_runs_from_the_graph_keeping_lessons_active_run_and_reu
     // After the reset the superseded/pre-boundary decisions and findings are gone, but every
     // lesson (including the PRE-BOUNDARY one), the ACTIVE run's decision + finding, and the
     // cross-run-reused id all remain.
-    let (after, err, ok) = run_rigger(root, &["graph", "--around", file, "--depth", "2"]);
+    let (after, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph must succeed after reset; stderr: {err}");
     let after_ids = graph_node_ids(&after);
     for id in ["pre-d", "pre-f", "r1-d", "r1-f"] {
@@ -587,7 +588,7 @@ fn reset_runs_reclaims_superseded_edges_retired_before_the_active_run_and_report
 
     // LIVE is sacrosanct: keep-d's ACTIVE-run GOVERNS(new.rs) survived, so the live graph a grounding
     // consumer reads still shows keep-d governing new.rs after the reclamation removed only history.
-    let (graph, err, ok) = run_rigger(root, &["graph", "--around", "new.rs", "--depth", "2"]);
+    let (graph, err, ok) = run_around(root, "new.rs", 2);
     assert!(ok, "graph must succeed after reset; stderr: {err}");
     assert!(
         graph.contains("keep-d"),
@@ -27300,20 +27301,15 @@ fn graph_around_a_bare_name_notes_the_seed_form_and_show() {
 fn graph_show_notes_a_nameless_node_by_its_id() {
     let dir = temp_project();
     let root = dir.path();
-    common::cli::seed_rigger_dir(root);
     common::fixtures::write_text(root, "src/x.rs", "fn thing() {}\n");
-    {
-        let _schema = common::cli::open_graph(root);
-        let conn = common::cli::rigger_db(root, "graph.db");
-        let project = run_stream_identity(root);
-        common::cli::insert_node(
-            &conn,
-            &project,
+    drop(common::cli::planted_graph(
+        root,
+        &[common::fixtures::node_with_attrs(
             "src/x.rs::thing",
             "code-entity",
-            Some(r#"{"kind":"function","line":"1"}"#),
-        );
-    }
+            &[("kind", "function"), ("line", "1")],
+        )],
+    ));
 
     assert_eq!(
         run_rigger_ok(root, &["graph", "--show", "src/x.rs::thing"]),

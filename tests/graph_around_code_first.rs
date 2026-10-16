@@ -23,6 +23,7 @@ use rigger::contextgraph::sqlite::Projector;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
 mod common;
 
+use common::cli::run_around;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_store_project;
@@ -81,7 +82,7 @@ fn around_lists_code_first_then_caps_decisions_and_findings_to_the_newest_ten() 
         }
     }
 
-    let (out, err, ok) = run_rigger(root, &["graph", "--around", file, "--depth", "2"]);
+    let (out, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph --around must succeed; stderr: {err}");
 
     let nodes = node_lines(&out);
@@ -169,7 +170,7 @@ fn run_rigger_ignores_an_inherited_ambient_store_fence() {
         "emit DecisionMade must succeed even under an inherited fence; stderr: {err}"
     );
 
-    let (out, err, ok) = run_rigger(root, &["graph", "--around", "big.rs", "--depth", "2"]);
+    let (out, err, ok) = run_around(root, "big.rs", 2);
     assert!(ok, "graph --around must succeed; stderr: {err}");
     assert!(
         out.contains("fenced-d1"),
