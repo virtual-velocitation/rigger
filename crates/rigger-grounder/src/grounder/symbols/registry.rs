@@ -1059,8 +1059,9 @@ pub(crate) mod tests {
     }
 
     /// A persisted index stamped `ts-tags-v2`, the generation before the caller rule changed
-    /// what `SymRef.enclosing` holds, is not current and loads as absent; one stamped
-    /// `ts-tags-v3` is current and loads.
+    /// what `SymRef.enclosing` holds, is not current and loads as absent, as is one stamped
+    /// `ts-tags-v3`, the generation before a definition carried its parent (spec 119, CONTAINS IS
+    /// STRUCTURE); one stamped `ts-tags-v4` is current and loads.
     #[test]
     fn a_persisted_ts_tags_v2_index_is_not_current() {
         use crate::grounder::symbols::model::SymbolIndex;
@@ -1080,8 +1081,13 @@ pub(crate) mod tests {
         );
         assert_eq!(
             persisted("ts-tags-v3"),
+            (false, false),
+            "a ts-tags-v3 index is not current and loads as absent"
+        );
+        assert_eq!(
+            persisted("ts-tags-v4"),
             (true, true),
-            "a ts-tags-v3 index is current and loads"
+            "a ts-tags-v4 index is current and loads"
         );
     }
 

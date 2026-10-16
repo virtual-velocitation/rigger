@@ -17,8 +17,8 @@
 //! NAMED BY ITS PATH: a call in a Rust method of `impl T` and one in a Go receiver method each
 //! hang off the method's own definition node at its path, never a nameless node at its leaf. On
 //! the persisted symbol index, a `ts-tags-v3` index saved before that criterion, its callers by
-//! leaf, is still served, the caller path sharing that generation until criterion 9 bumps it, so
-//! its call folds from the flat id `<file>::<leaf>`.
+//! leaf, is not served since spec 119 criterion 9 bumped the index version to `ts-tags-v4`: the
+//! grounder rebuilds it from the tree, so its call folds from the method's path.
 //!
 //! It also holds the wire form of the eight older kinds (spec 116 criterion 4 moved their kind
 //! strings onto shared constants): the emit pass still lowers each to the string it always did.
@@ -117,12 +117,12 @@ fn graph_build_hangs_a_method_s_calls_off_the_method_s_path() {
 /// symbol index, stamped `ts-tags-v3`, was saved before spec 119 criterion 8 named a caller by
 /// its path: the method at its path `T::new`, the call attributed to the method's leaf `new`,
 /// WHEN the production whole-project ingest emits the project and the graph folds its events,
-/// THEN the index is served as persisted, the caller path sharing `ts-tags-v3` until criterion 9
-/// bumps the index version: the call's `CALLS` edge folds from the flat id `a.rs::new`, never
-/// from the `a.rs::T::new` a rebuild from the tree would name.
+/// THEN the index is not served, `ts-tags-v4` being current since criterion 9: it is rebuilt
+/// from the tree, so the call's `CALLS` edges fold from the method's path `a.rs::T::new`, never
+/// from the flat id `a.rs::new` the persisted index names.
 #[cfg(feature = "symbols")]
 #[test]
-fn the_ingest_serves_a_ts_tags_v3_index_saved_with_a_leaf_caller_and_folds_from_that_leaf() {
+fn the_ingest_rebuilds_a_ts_tags_v3_index_saved_with_a_leaf_caller_and_folds_from_the_path() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
     std::fs::write(
@@ -145,8 +145,8 @@ fn the_ingest_serves_a_ts_tags_v3_index_saved_with_a_leaf_caller_and_folds_from_
 
     common::fixtures::assert_live_calls(
         &common::fixtures::fold_events(common::project_events(root.to_str().unwrap())),
-        &[("a.rs::new", "a.rs::helper")],
-        "a ts-tags-v3 index saved with a leaf caller folds its call from that leaf",
+        common::fixtures::RUST_METHOD_CALLER_CALLS,
+        "a ts-tags-v3 index saved with a leaf caller is rebuilt, its call folding from the path",
     );
 }
 
@@ -187,21 +187,23 @@ fn opened_over_an_index_stamped(grammar: &str) -> (Vec<String>, String) {
     (names, persisted["grammar"].as_str().unwrap().to_string())
 }
 
-/// A persisted index stamped `ts-tags-v2` is not served: opening the grounder over it rebuilds
-/// the index from the tree and persists the rebuild under `ts-tags-v3`. One already stamped
-/// `ts-tags-v3` is served as persisted, the tree unread.
+/// A persisted index stamped `ts-tags-v2` or `ts-tags-v3` is not served: opening the grounder
+/// over it rebuilds the index from the tree and persists the rebuild under `ts-tags-v4`. One
+/// already stamped `ts-tags-v4` is served as persisted, the tree unread.
 #[cfg(feature = "symbols")]
 #[test]
-fn opening_the_grounder_over_a_ts_tags_v2_index_rebuilds_it_under_ts_tags_v3() {
+fn opening_the_grounder_over_an_older_index_rebuilds_it_under_ts_tags_v4() {
+    for older in ["ts-tags-v2", "ts-tags-v3"] {
+        assert_eq!(
+            opened_over_an_index_stamped(older),
+            (vec!["real".to_string()], "ts-tags-v4".to_string()),
+            "a {older} index is rebuilt from the tree and re-stamped"
+        );
+    }
     assert_eq!(
-        opened_over_an_index_stamped("ts-tags-v2"),
-        (vec!["real".to_string()], "ts-tags-v3".to_string()),
-        "a ts-tags-v2 index is rebuilt from the tree and re-stamped"
-    );
-    assert_eq!(
-        opened_over_an_index_stamped("ts-tags-v3"),
-        (vec!["ghost".to_string()], "ts-tags-v3".to_string()),
-        "a ts-tags-v3 index is served as persisted"
+        opened_over_an_index_stamped("ts-tags-v4"),
+        (vec!["ghost".to_string()], "ts-tags-v4".to_string()),
+        "a ts-tags-v4 index is served as persisted"
     );
 }
 
