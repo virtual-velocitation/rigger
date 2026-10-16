@@ -3586,7 +3586,8 @@ mod tests {
     /// unit's whole range, a twin among untouched statements named as the tree's debt - each
     /// string literal alone and in full, quotes
     /// inside the term and one run per literal however short, and each outside call with its
-    /// first argument token, never the body's name - and the sentence
+    /// first argument token, never the body's name, the record organised by statement, each
+    /// added or edited statement quoted with its `file:line` above its terms - and the sentence
     /// walk's generators as commands over the unit's whole range on every round (the merge base
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
     /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
@@ -3709,6 +3710,10 @@ mod tests {
             "END { print n + 0 \" hits\" }'`",
             "The record pastes each command as run, its hit count and every hit it printed, each \
              FIXED or CHECKED, and the `sdet` lens re-runs each on the review tree.",
+            "The record is organised by statement: each statement you add or edit is quoted with \
+             its `file:line` and followed by its terms and their searches, a single call into the \
+             shared home marked so with its callee named; a term the statement spells that the \
+             record lacks under it is a record defect the `sdet` lens blocks on.",
             "Each rule the change rewrites is searched by the distinguishing phrase of its old \
              statement and of each label its cases carried (a name a doc, test or comment gives \
              a case the old rule decided), one run per phrase, the phrase its one argument, over every tracked text \
@@ -3774,7 +3779,10 @@ mod tests {
     /// an untouched statement named to the operator as debt and never BLOCKING -
     /// runs each with the authors' search, every literal alone, and an uncarried hit, a record of
     /// names only for a body that spells either, a literal the record never searched alone or a
-    /// statement or format string searched in a literal's place is BLOCKING. Of the sentence rule: it re-derives each generator's set from the
+    /// statement or format string searched in a literal's place is BLOCKING; it reads the record
+    /// statement by statement, and a term a statement spells that the record lacks under it, or
+    /// a statement the hunks add or edit that the record does not list, is BLOCKING. Of the
+    /// sentence rule: it re-derives each generator's set from the
     /// diff over the unit's whole range and the graph and compares it with the walk record,
     /// re-runs every rule-spelling search the record carries and re-reads every hit and every
     /// witness against head, and an omitted member, an uncarried hit, a CHECKED reason that
@@ -3840,6 +3848,11 @@ mod tests {
              record whose terms for a body are statements, bracketed expressions or format \
              strings in place of its literals, is BLOCKING on its own, citing the literal, its \
              hit count and the first hits the record does not carry.",
+            "You read the record statement by statement: for each statement the hunks add or \
+             edit you derive its terms yourself and match them against the terms the record \
+             lists under that statement's `file:line`; a term the statement spells that the \
+             record lacks there, or a statement the hunks add or edit that the record does not \
+             list, is BLOCKING on its own, citing the statement's `file:line` and the term.",
             "You are also the enforcement of the built-in rule that every sentence about the \
              changed behaviour is true at head.",
             "you re-derive each generator's set on the review tree from the diff and the graph",

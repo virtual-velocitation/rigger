@@ -133,7 +133,10 @@ literal's term is the literal alone, its quotes inside the term
 spells it - one run per literal, none set aside as short or conventional (`"x"`, `":memory:"`, a
 fixture path), and every hit the run prints listed under its disposition. A `'` in the expression is written `'\''`. The record pastes each command as run, its hit
 count and every hit it printed, each FIXED or CHECKED, and the `sdet` lens re-runs each on the
-review tree.
+review tree. The record is organised by statement: each statement you add or edit is quoted
+with its `file:line` and followed by its terms and their searches, a single call into the
+shared home marked so with its callee named; a term the statement spells that the record lacks
+under it is a record defect the `sdet` lens blocks on.
 
 The sentence walk's generators, run at head against the base your prompt names (`rigger-run`
 when it names none): `git diff --name-only <base>..HEAD` lists the changed files, the `//!`
