@@ -508,6 +508,8 @@ mod tests {
              BLOCKING finding on its own.",
             "For a quantified claim the lens enumerates the cases itself from the code at head \
              and its record lists them beside the claim, each with its witness",
+            "a quantified claim witnessed at one case, or a case the claim does not hold for, is \
+             a BLOCKING finding on its own.",
             "The lens's record lists every sentence it reads, the record's CHECKED members \
              included, each with its claims and a witness per claim; a grouped verdict over any \
              of them is a record the lens cannot write.",
