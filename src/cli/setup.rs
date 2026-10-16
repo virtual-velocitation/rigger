@@ -3773,7 +3773,10 @@ mod tests {
     /// cannot write. Of the mutable-token rule:
     /// it derives the token set from the production hunks over the unit's whole range, probes
     /// every token the author's `<unit>-mutant-probes` record lacks in a scratch worktree it
-    /// restores and removes in-turn, and a green probe or an unrecorded token is BLOCKING. The
+    /// restores and removes in-turn, and a green probe or an unrecorded token is BLOCKING; it
+    /// compares its token set with the record line by line, a query or format string's tokens
+    /// counted on their line, and a production line the record does not disposition is
+    /// BLOCKING. The
     /// records are the author's instruments, never a gate, so the lens's rule against re-running
     /// a green gate does not reach them.
     #[test]
@@ -3878,6 +3881,13 @@ mod tests {
             "You derive the token set yourself from the production hunks of `git diff \
              $(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out",
             "compare it with the author's `<unit>-mutant-probes` record",
+            "You compare the two line by line: a token inside a query string, a format string \
+             or a macro argument the code executes is a token of its line (a SQL conjunct a \
+             boolean operand; a column name, bound or placeholder passed to a query builder a \
+             call argument; a substr start an index), and a production line those hunks add or \
+             change that the record does not disposition - naming its tokens with their probes, \
+             or marked as carrying none with its reason - is BLOCKING on its own, citing the \
+             line.",
             "Every token the record lacks you probe yourself in a scratch worktree (`git \
              worktree add <scratch> HEAD`), one mutation at a time",
             "restoring each file with `git checkout -- <file>` and removing the scratch worktree \

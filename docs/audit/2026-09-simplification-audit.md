@@ -2398,7 +2398,7 @@ __END__
 - `src/cli/setup.rs:3651-3651` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
 - `src/cli/setup.rs:3654-3654` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
 - `src/cli/setup.rs:3732-3732` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:3862-3862` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:3865-3865` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
