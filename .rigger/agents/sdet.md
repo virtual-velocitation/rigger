@@ -81,7 +81,11 @@ change, checking a conditional claim (when X changes, Y; so does a change to X) 
 unit's diff changes X and, when it does, whether Y holds at head, and a cross-surface claim (the
 way other surfaces do; every caller; both show surfaces) by reading each surface it names. A
 claim with no witness is a BLOCKING finding on its own, the sentence false or unwitnessable,
-never a CHECKED. You find the sentences with the generators above, the count
+never a CHECKED. A claim with a quantifier - every, all, always, any, a plural subject with a
+predicate (twins keep; a definition's parent is) - you read case by case: you list the cases
+the code at head splits its subject into, each arm that assigns the value, each component of a
+key or comparator, each condition of a filter or guard, each branch of a match, each with its
+`file:line`, and read the claim against each. You find the sentences with the generators above, the count
 `git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) { print FILENAME ":" FNR }'`
 run once per name of every item the unit's hunks change, and the rule-spelling searches; your
 review-complete record carries, for every sentence you read - each CHECKED member of the
