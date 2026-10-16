@@ -3682,6 +3682,10 @@ mod tests {
              round's delta your prompt carries.",
             "Each FIXED or new line of the record carries its witness beside that location: the \
              `file:line` of the code at head that makes the sentence true.",
+            "A sentence with a quantifier (every, all, always, any, a plural subject with a \
+             predicate) carries one witness per case the code splits its subject into - each \
+             arm, key component, filter condition or match branch - the cases named in the \
+             record.",
             "The search is this command, one run per distinguishing expression, the expression \
              its one argument",
             "`git ls-files tests crates src | t='<expression>' xargs awk",
