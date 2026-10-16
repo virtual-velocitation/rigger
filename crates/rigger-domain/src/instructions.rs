@@ -289,7 +289,8 @@ mod tests {
     /// never the body's name nor an expression wrapping a literal, the record organised by
     /// statement, each added or edited statement quoted with its `file:line` above its terms -
     /// whose command and hits the record carries and the SDET lens re-runs and re-derives from
-    /// the test hunks over the same statements, one search per literal alone, a literal of an
+    /// the test hunks over the same statements, comparing the record statement by statement, a
+    /// missing term or an unlisted statement blocking, one search per literal alone, a literal of an
     /// untouched statement named to the operator as debt and never blocking, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators (an item's callers read from the graph at depth 1) over the unit's
@@ -406,6 +407,10 @@ mod tests {
              body it edits, over the unit's whole range - and runs each over every test home: a \
              hit the record does not carry, or a record whose expressions are names only for a \
              body that spells either, is a BLOCKING finding on its own.",
+            "The lens derives each statement's terms itself and compares the record statement by \
+             statement: a statement whose record terms lack a literal or call the statement \
+             spells, or a statement the hunks touch that the record does not list, is a BLOCKING \
+             finding on its own, citing the statement and the term.",
             "A literal of a statement the unit did not touch is the tree's duplication debt, \
              which the lens names to the operator, never a BLOCKING finding.",
             "carrying each search's command, its hit count and every hit",
