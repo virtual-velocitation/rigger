@@ -1,12 +1,12 @@
 //! The code-to-events emit pass (spec 29a): lowers an extracted `SymbolIndex` / `FileSymbols`
-//! into `CodeEntityExtracted` (one per definition) and `EdgeInferred` (one per reference) events,
+//! into `CodeEntityExtracted` (one per path) and `EdgeInferred` (one per reference) events,
 //! which the always-compiled context-graph fold ingests into `code-entity` / `file` nodes and
 //! structural edges. Code structure thus becomes a rebuildable projection over the event log, not
 //! a mutable side index. This is the emit half; the fold half lives in `contextgraph::sqlite` and
 //! stays compiled in both lanes.
 
 use crate::contextgraph::{
-    CodeEntityExtracted, EdgeInferred, CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR,
+    kind_rank, CodeEntityExtracted, EdgeInferred, CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR,
     CODE_KIND_DECLARATION, CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO,
     CODE_KIND_METHOD, CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_STATIC,
     CODE_KIND_TRAIT, CODE_KIND_TYPE, CODE_KIND_VARIABLE, CODE_KIND_VARIANT,
@@ -170,15 +170,17 @@ fn lower_file(path: &str, symbols: &FileSymbols, excluded: bool) -> Vec<Event> {
     events
 }
 
-/// Emit one file's extracted symbols as events: one `CodeEntityExtracted` per definition, carrying
-/// its id path when that differs from its name and its parent's path when it has one (spec 119),
-/// then one `EdgeInferred` per reference. Each set is emitted in a sorted, deterministic order so
-/// identical source yields byte-identical events - the determinism-by-construction spec 29a
-/// requires: refs by name/line, and defs parent before child (spec 119, A PARENT IS EMITTED BEFORE
-/// ITS CHILD), by the length of each one's parent chain ([`chain_length`]), then leaf, then path,
-/// stably, so definitions of one key (same-path twins of one parent chain length) keep `extract`'s
-/// order and a parent's own event precedes every child's. Definitions are emitted before
-/// references so the fold can land a same-file reference on its already-folded definition entity.
+/// Emit one file's extracted symbols as events: one `CodeEntityExtracted` per path (spec 119, ONE
+/// PATH, ONE EVENT), for the definition at that path first by `CODE_KIND_PRECEDENCE`
+/// ([`path_precedence`]), then the lower line, then the order `extract` returns them, carrying
+/// its id path when that differs from its name and its parent's path when it has one, then one
+/// `EdgeInferred` per reference. Each set is emitted in a sorted, deterministic order so identical
+/// source yields byte-identical events - the determinism-by-construction spec 29a requires: refs
+/// by name/line, and defs parent before child (spec 119, A PARENT IS EMITTED BEFORE ITS CHILD), by
+/// the length of each one's parent chain ([`chain_length`]), then leaf, then path, a total order
+/// over one-per-path definitions, so a parent's own event precedes every child's. Definitions are
+/// emitted before references so the fold can land a same-file reference on its already-folded
+/// definition entity.
 ///
 /// The FIRST event of the file's batch carries `fresh` (spec 29a criterion 3): it marks the
 /// extraction-batch boundary, so the fold supersedes the file's PRIOR structural edges before
@@ -221,18 +223,23 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     }
     let mut events = Vec::with_capacity(fs.defs.len() + fs.refs.len());
 
-    let mut defs: Vec<&Def> = fs.defs.iter().filter(|d| !d.is_test).collect();
-    // Spec 119 (A PARENT IS EMITTED BEFORE ITS CHILD): a stable sort, so definitions of one key -
-    // same-path twins of one parent chain length - keep `extract`'s order.
-    let mut parents: BTreeMap<&str, Vec<Option<&str>>> = BTreeMap::new();
-    for d in &defs {
-        parents
-            .entry(d.path.as_str())
-            .or_default()
-            .push(d.parent.as_deref());
+    let survivors = fs.defs.iter().filter(|d| !d.is_test);
+    // Spec 119 (ONE PATH, ONE EVENT): one definition per path, the first by
+    // `CODE_KIND_PRECEDENCE`, then the lower line, then the order `extract` returns them.
+    let mut emitted: BTreeMap<&str, &Def> = BTreeMap::new();
+    for d in survivors.clone() {
+        let held = emitted.entry(d.path.as_str()).or_insert(d);
+        if path_precedence(d) < path_precedence(held) {
+            *held = d;
+        }
     }
+    let mut defs: Vec<&Def> = survivors
+        .filter(|d| std::ptr::eq(emitted[d.path.as_str()], *d))
+        .collect();
+    // Spec 119 (A PARENT IS EMITTED BEFORE ITS CHILD): two distinct paths never tie, so the
+    // emission is a total order independent of `extract`'s.
     defs.sort_by_cached_key(|&d| {
-        let chain = chain_length(d.parent.as_deref(), &parents);
+        let chain = chain_length(d.parent.as_deref(), &emitted);
         (chain, d.name.as_str(), d.path.as_str())
     });
     for d in defs {
@@ -327,17 +334,21 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
 }
 
 /// The length of the parent chain above a definition whose parent is `parent` (spec 119, A PARENT
-/// IS EMITTED BEFORE ITS CHILD): 0 at file level, else one link for the parent plus the longest
-/// chain above the definitions `parents` holds at its path - each emitted path mapped to the
-/// parents of its definitions - a parent naming no emitted definition adding nothing above it.
-fn chain_length(parent: Option<&str>, parents: &BTreeMap<&str, Vec<Option<&str>>>) -> usize {
+/// IS EMITTED BEFORE ITS CHILD): 0 at file level, else one link for the parent plus the chain
+/// above the one definition `emitted` holds at its path - each emitted path mapped to its
+/// definition - a parent naming no emitted definition adding nothing above it.
+fn chain_length(parent: Option<&str>, emitted: &BTreeMap<&str, &Def>) -> usize {
     parent.map_or(0, |path| {
-        let above = parents.get(path).into_iter().flatten();
-        1 + above
-            .map(|grand| chain_length(*grand, parents))
-            .max()
-            .unwrap_or(0)
+        1 + emitted
+            .get(path)
+            .map_or(0, |d| chain_length(d.parent.as_deref(), emitted))
     })
+}
+
+/// Where `d` stands in the order that picks a path's one emitted definition (spec 119, ONE PATH,
+/// ONE EVENT): its kind's place in `CODE_KIND_PRECEDENCE` ([`kind_rank`]), then its line.
+fn path_precedence(d: &Def) -> (usize, u32) {
+    (kind_rank(kind_str(d.kind)), d.line)
 }
 
 /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): the STRUCTURAL batch-boundary sentinel for a

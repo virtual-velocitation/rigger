@@ -103,6 +103,14 @@ pub const CODE_KIND_PRECEDENCE: [&str; 16] = [
     CODE_KIND_MODULE,
     CODE_KIND_OTHER,
 ];
+/// Where `kind` stands in [`CODE_KIND_PRECEDENCE`]: a kind outside the list ranks with its last
+/// member, `other`.
+pub fn kind_rank(kind: &str) -> usize {
+    CODE_KIND_PRECEDENCE
+        .iter()
+        .position(|listed| *listed == kind)
+        .unwrap_or(CODE_KIND_PRECEDENCE.len() - 1)
+}
 /// The code kinds no call resolves onto: a data member, and a declaration, whose calls reach
 /// its implementation.
 pub const NON_TARGET_KINDS: [&str; 3] =

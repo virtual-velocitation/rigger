@@ -12,9 +12,9 @@ use super::query::{
     entity_id, leaf_of, node_file, node_leaf, node_name, path_leaf, placeholder_id, split_id,
 };
 use super::{
-    entity_site, CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch,
-    EntryFold, Error, FoldAccess, Graph, Located, Node, Projection, CODE_KIND_PRECEDENCE,
-    KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
+    entity_site, kind_rank, CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite,
+    EntryBatch, EntryFold, Error, FoldAccess, Graph, Located, Node, Projection, KIND_AGENT,
+    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
     KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
     KIND_LESSON, KIND_RATIONALE, KIND_STAGE, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
     PLACEHOLDER_SIGIL, REBUILD_OWED, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS,
@@ -2173,24 +2173,16 @@ fn undo_what_resolved_against(
     Ok(now)
 }
 
-/// Where `kind` stands in [`CODE_KIND_PRECEDENCE`]: a kind outside the list ranks with its last
-/// member, `other`.
-fn kind_rank(kind: &str) -> usize {
-    CODE_KIND_PRECEDENCE
-        .iter()
-        .position(|listed| *listed == kind)
-        .unwrap_or(CODE_KIND_PRECEDENCE.len() - 1)
-}
-
 /// The `(kind, line)` node `id` takes when `by` folds a definition of it, a `kind` at `line`
 /// (spec 116, A SHARED NODE TAKES ONE KIND). Every definition of one leaf in one file folds onto
 /// one node, so for a keyed event the node settles on ONE of the definitions its file's identity
 /// asserts on it at its current generation: the one whose kind is first in
-/// [`CODE_KIND_PRECEDENCE`], the lower line and then the lesser kind string breaking a tie -
-/// whatever order the batch emitted them in. The assertion that identity already recorded holds
-/// the winner of the definitions folded so far; one of another generation, or carrying no `kind`
-/// attr (a reference that folded before its definition), is no candidate. An unkeyed event is
-/// asserted by no generation and takes the node as it is, the last folded.
+/// [`CODE_KIND_PRECEDENCE`](super::CODE_KIND_PRECEDENCE), the lower line and then the lesser
+/// kind string breaking a tie - whatever order the batch emitted them in. The assertion that
+/// identity already recorded holds the winner of the definitions folded so far; one of another
+/// generation, or carrying no `kind` attr (a reference that folded before its definition), is no
+/// candidate. An unkeyed event is asserted by no generation and takes the node as it is, the last
+/// folded.
 fn settling_definition(
     tx: &Transaction,
     by: &Asserter,
