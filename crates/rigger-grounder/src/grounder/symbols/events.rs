@@ -2879,7 +2879,7 @@ mod tests {
             ),
             (
                 "c.ts",
-                "namespace A.B {}\nclass A {\n    B = 1;\n}\n",
+                crate::js_ts_definition_sources::NAMESPACE_A_B_BESIDE_CLASS_A_FIELD_B,
                 &["type A@2 in -", "field A.B@3 in A"],
             ),
         ];
@@ -2914,6 +2914,9 @@ mod tests {
     /// removing the twin that won leaves the other's line and parent.
     #[test]
     fn a_removed_twin_leaves_the_other_s_line_and_parent() {
+        use crate::rust_definition_sources::{
+            METHOD_C_IN_THE_FILE_LEVEL_IMPL, METHOD_C_IN_TWO_IMPLS,
+        };
         let twin_events = |source: &str| -> Vec<String> {
             emitted_entities(&extracted_events("a.rs", source))
                 .into_iter()
@@ -2921,18 +2924,12 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            twin_events(
-                "mod a {\n    struct B;\n    impl B {\n        fn c() {}\n    }\n}\n\
-                 impl a::B {\n    fn c() {}\n}\n"
-            ),
+            twin_events(METHOD_C_IN_TWO_IMPLS),
             ["method a::B::c@4 in a::impl B"],
             "both twins: the lower line wins"
         );
         assert_eq!(
-            twin_events(
-                "mod a {\n    struct B;\n\n\n\n}\n\
-                 impl a::B {\n    fn c() {}\n}\n"
-            ),
+            twin_events(METHOD_C_IN_THE_FILE_LEVEL_IMPL),
             ["method a::B::c@8 in impl a::B"],
             "the winner removed: the other's line and parent"
         );

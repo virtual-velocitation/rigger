@@ -73,3 +73,8 @@ pub const TS_DEFINITIONS_SOURCE: &str = concat!(js_lines!(), "const el = <T>u;\n
 /// THE TSX DEFINITIONS FIXTURE (spec 116 criterion 9): the JS lines, then at line 15 a
 /// declarator whose value is a JSX element, then the TS lines.
 pub const TSX_DEFINITIONS_SOURCE: &str = concat!(js_lines!(), "const el = <div/>;\n", ts_lines!());
+
+/// A TS `namespace A.B` at line 1 beside a `class A` whose field `B` is at line 3 (spec 119, ONE
+/// PATH IS ONE EVENT): two definitions at the one path `A.B`.
+pub const NAMESPACE_A_B_BESIDE_CLASS_A_FIELD_B: &str =
+    "namespace A.B {}\nclass A {\n    B = 1;\n}\n";

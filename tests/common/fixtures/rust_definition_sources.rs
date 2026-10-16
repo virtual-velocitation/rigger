@@ -49,3 +49,13 @@ pub const ENUM_E_HOLDING_A_AND_B: &str = "enum E {\n    A,\n    B,\n}\n";
 
 /// [`ENUM_E_HOLDING_A_AND_B`] with its variant `B` removed: `E` holds `A` alone.
 pub const ENUM_E_HOLDING_A: &str = "enum E {\n    A,\n}\n";
+
+/// The method `c` of `a::B` defined twice (spec 119, ONE PATH IS ONE EVENT): at line 4 in the
+/// `impl B` inside `mod a`, and at line 8 in the file-level `impl a::B`.
+pub const METHOD_C_IN_TWO_IMPLS: &str =
+    "mod a {\n    struct B;\n    impl B {\n        fn c() {}\n    }\n}\nimpl a::B {\n    fn c() {}\n}\n";
+
+/// [`METHOD_C_IN_TWO_IMPLS`] with the `impl B` inside `mod a` blanked out: `c` at line 8 alone,
+/// in the file-level `impl a::B`.
+pub const METHOD_C_IN_THE_FILE_LEVEL_IMPL: &str =
+    "mod a {\n    struct B;\n\n\n\n}\nimpl a::B {\n    fn c() {}\n}\n";
