@@ -292,7 +292,8 @@ mod tests {
     /// untouched statement named to the operator as debt and never blocking, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators (an item's callers read from the graph at depth 1) over the unit's
-    /// whole range on every round, never a round's delta, and records on every change, each new
+    /// whole range on every round, never a round's delta, and records on every change, the name
+    /// count and the depth-1 caller read paired with every item of the hunk list, each new
     /// or FIXED sentence with the `file:line` witness that makes it true, a sentence CHECKED as a
     /// different rule shown to answer that rule's question and one answering a rewritten rule's
     /// question a spelling of it, each spelling of a rule the change rewrites found by a recorded search per
@@ -420,6 +421,11 @@ mod tests {
              walked by its generators",
             "every sentence FIXED with its location",
             "a member whose generator returned nothing is named as empty",
+            "The name count and the depth-1 caller read run once per item the hunks touch, new or \
+             pre-existing, its body or its doc changed, and the record pairs each item of its \
+             hunk list with its count, the lines read and its callers or the named fallback; an \
+             item the hunk list names without its count, or without its callers or the named \
+             fallback, is a record you cannot write.",
             "each sentence the change writes marked new with its location",
             "The walk's range is the unit's whole range, the merge base with the run branch to \
              head, on every round, never a round's delta alone",
