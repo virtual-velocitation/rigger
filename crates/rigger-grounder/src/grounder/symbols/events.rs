@@ -2703,4 +2703,110 @@ mod tests {
             "a hand-built leaf caller folds from <file>::<leaf>",
         );
     }
+
+    /// Each `CodeEntityExtracted` of `events` as `<path>@<line>`, in emission order, the path its
+    /// name where the payload carries none.
+    fn emitted_definitions(events: &[Event]) -> Vec<String> {
+        crate::event_fixtures::payloads_of_type(events, TYPE_CODE_ENTITY_EXTRACTED)
+            .into_iter()
+            .map(|payload| {
+                let path = payload["path"].as_str().or(payload["name"].as_str());
+                format!("{}@{}", path.unwrap(), payload["line"])
+            })
+            .collect()
+    }
+
+    /// A PARENT IS EMITTED BEFORE ITS CHILD (spec 119 criterion 16): the real extraction emits a
+    /// variant whose leaf sorts before its enum's after the enum, and a method nested in an impl
+    /// inside a mod after the impl, the type it is for and the mod - each definition after every
+    /// definition containing it, a depth's definitions by leaf.
+    #[test]
+    fn extract_events_emits_each_definition_after_every_definition_containing_it() {
+        let events = extracted_events(
+            "a.rs",
+            "enum Z {\n    A,\n}\nmod m {\n    struct B;\n    impl B {\n        fn a() {}\n    }\n}\n",
+        );
+        assert_eq!(
+            emitted_definitions(&events),
+            ["Z@1", "m@4", "Z::A@2", "m::B@5", "m::impl B@6", "m::B::a@7"],
+            "each definition after every definition containing it"
+        );
+    }
+
+    /// A definition of `name` at `line` on `path` under `parent`, as `extract` would set them.
+    fn placed(name: &str, line: u32, path: &str, parent: Option<&str>) -> Def {
+        Def {
+            line,
+            path: path.into(),
+            parent: parent.map(Into::into),
+            ..crate::symbol_index::def(Kind::Function, name)
+        }
+    }
+
+    /// [`emitted_definitions`] of the batch `extract_events` lowers from a Rust file holding
+    /// `defs` and no reference.
+    fn emitted_from(defs: Vec<Def>) -> Vec<String> {
+        let fs = crate::symbol_index::rust_file(defs, Vec::new());
+        emitted_definitions(&extract_events("a.rs", &fs))
+    }
+
+    /// A PARENT IS EMITTED BEFORE ITS CHILD (spec 119 criterion 16): the emission sorts by the
+    /// length of each definition's parent chain - a parent counting one link, resolved to the
+    /// definitions emitted at its path with the longest chain taken, and one naming no emitted
+    /// definition still one link - then by leaf, then by path, and stably, so same-path twins keep
+    /// `extract`'s order.
+    #[test]
+    fn extract_events_orders_by_parent_chain_then_leaf_then_path_keeping_twins_in_place() {
+        let emitted = emitted_from(vec![
+            placed("t", 9, "t", None),
+            placed("t", 8, "t", None),
+            placed("n", 1, "U::n", None),
+            placed("n", 2, "T::n", None),
+            placed("a", 3, "Z::a", None),
+            placed("b", 4, "A::b", None),
+            placed("P", 10, "P", None),
+            placed("Q", 11, "Q", None),
+            placed("P", 12, "P", Some("Q")),
+            placed("c", 13, "P::c", Some("P")),
+            placed("d", 14, "Q::d", Some("Q")),
+            placed("o", 15, "gone::o", Some("gone")),
+        ]);
+        assert_eq!(
+            emitted,
+            [
+                "P@10",
+                "Q@11",
+                "Z::a@3",
+                "A::b@4",
+                "T::n@2",
+                "U::n@1",
+                "t@9",
+                "t@8",
+                "P@12",
+                "Q::d@14",
+                "gone::o@15",
+                "P::c@13",
+            ],
+            "by parent chain, then leaf, then path, twins in extract's order"
+        );
+    }
+
+    /// A PARENT IS EMITTED BEFORE ITS CHILD (spec 119 criterion 16): the sort is stable over a
+    /// batch long enough that an unstable one reorders equal keys - two same-path twin sets, each
+    /// interleaved with the other, each emitted in `extract`'s order.
+    #[test]
+    fn extract_events_keeps_same_path_twins_in_extract_order_in_a_long_batch() {
+        let emitted = emitted_from(
+            (0..40)
+                .flat_map(|i| [placed("t", 100 - i, "t", None), placed("a", i, "a", None)])
+                .collect(),
+        );
+        let a_twins = (0..40).map(|i| format!("a@{i}"));
+        let t_twins = (0..40).map(|i| format!("t@{}", 100 - i));
+        assert_eq!(
+            emitted,
+            a_twins.chain(t_twins).collect::<Vec<_>>(),
+            "each twin set in extract's order"
+        );
+    }
 }
