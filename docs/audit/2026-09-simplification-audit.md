@@ -1714,8 +1714,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:666-668` `deferred_gate_verdict_key`
 - `crates/rigger-conductor/src/conductor.rs:677-679` `deferred_gate_failed_key`
 - `crates/rigger-conductor/src/conductor.rs:12506-12513` `review_protocol`
-- `crates/rigger-domain/src/contextgraph.rs:769-771` `not_folded`
-- `crates/rigger-domain/src/contextgraph.rs:825-827` `rebuild_owed_refusal`
+- `crates/rigger-domain/src/contextgraph.rs:768-770` `not_folded`
+- `crates/rigger-domain/src/contextgraph.rs:824-826` `rebuild_owed_refusal`
 - `crates/rigger-domain/src/review.rs:387-389` `critique_unit`
 - `crates/rigger-domain/src/spawn.rs:115-117` `lens_role`
 - `crates/rigger-domain/src/spawn.rs:207-209` `speculation_group_id`
@@ -4155,8 +4155,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7644-7651` `apply_doc_link`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7974-7981` `apply_batch_ref`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9870-9880` `apply_unit_integrated`
-- `tests/code_ingest_events.rs:857-864` `apply_ref_json`
-- `tests/code_ingest_events.rs:994-1001` `apply_ref_fresh`
+- `tests/code_ingest_events.rs:862-869` `apply_ref_json`
+- `tests/code_ingest_events.rs:999-1006` `apply_ref_fresh`
 
 #### `dup-b5bd50de3e2a` (near, 2 sites)
 
@@ -4815,8 +4815,8 @@ Proposed home: `code_ingest_events::support (consolidate these 2 sites into one 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/code_ingest_events.rs:1057-1098` `a_refs_only_files_re_extraction_supersedes_via_the_reference_batch_boundary`
-- `tests/code_ingest_events.rs:1101-1155` `a_re_extraction_supersedes_only_its_own_files_edges_not_another_files_reference`
+- `tests/code_ingest_events.rs:1062-1103` `a_refs_only_files_re_extraction_supersedes_via_the_reference_batch_boundary`
+- `tests/code_ingest_events.rs:1106-1160` `a_re_extraction_supersedes_only_its_own_files_edges_not_another_files_reference`
 
 #### `dup-d46432042e0c` (near, 2 sites)
 

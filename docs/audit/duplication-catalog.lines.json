@@ -39,13 +39,13 @@
       },
       {
         "file": "crates/rigger-domain/src/contextgraph.rs",
-        "start_line": 769,
-        "end_line": 771
+        "start_line": 768,
+        "end_line": 770
       },
       {
         "file": "crates/rigger-domain/src/contextgraph.rs",
-        "start_line": 825,
-        "end_line": 827
+        "start_line": 824,
+        "end_line": 826
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
@@ -6134,13 +6134,13 @@
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 857,
-        "end_line": 864
+        "start_line": 862,
+        "end_line": 869
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 994,
-        "end_line": 1001
+        "start_line": 999,
+        "end_line": 1006
       }
     ]
   },
@@ -7424,13 +7424,13 @@
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 1057,
-        "end_line": 1098
+        "start_line": 1062,
+        "end_line": 1103
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 1101,
-        "end_line": 1155
+        "start_line": 1106,
+        "end_line": 1160
       }
     ]
   },

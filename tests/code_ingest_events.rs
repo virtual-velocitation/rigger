@@ -745,16 +745,16 @@ fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
 
 #[cfg(feature = "symbols")]
 #[test]
-fn extract_events_emits_one_event_per_definition_and_reference_threading_the_file_label() {
+fn extract_events_emits_one_event_per_path_and_reference_threading_the_file_label() {
     use rigger::grounder::symbols::build_index;
     use rigger::grounder::symbols::events::extract_events;
 
     // Drive the per-file emit API DIRECTLY - `project_batches` only reaches `extract_events`
-    // transitively, so its own contract is otherwise unpinned. Criterion 1 says the pass emits
-    // "one CodeEntityExtracted per definition" and "one EdgeInferred per reference"; that
-    // CARDINALITY is the core of the extract-as-events pass, yet no other periphery test asserts
-    // it (the determinism test checks only non-empty + defs-before-refs). A regression that
-    // dropped, doubled, or mis-typed a def/ref event would fold a wrong graph - and, once the
+    // transitively, so its own contract is otherwise unpinned. The pass emits one
+    // CodeEntityExtracted per path (spec 119, ONE PATH, ONE EVENT) and one EdgeInferred per
+    // reference; that CARDINALITY is the core of the extract-as-events pass, yet no other periphery
+    // test asserts it (the determinism test checks only non-empty + defs-before-refs). A regression
+    // that dropped, doubled, or mis-typed a def/ref event would fold a wrong graph - and, once the
     // rebuild criterion replays the log, a wrong REBUILT graph - while every existing test stayed
     // green. This ties the emitted per-type counts to the extracted `FileSymbols` as ground truth
     // and pins that `extract_events` threads its `file` argument onto every payload.
@@ -791,11 +791,16 @@ fn extract_events_emits_one_event_per_definition_and_reference_threading_the_fil
         .iter()
         .filter(|e| e.type_ == TYPE_EDGE_INFERRED)
         .count();
+    let paths = fs
+        .defs
+        .iter()
+        .filter(|d| !d.is_test)
+        .map(|d| d.path.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     assert_eq!(
-        defs,
-        fs.defs.len(),
-        "exactly one CodeEntityExtracted per extracted definition; got {defs} for {} defs",
-        fs.defs.len()
+        defs, paths,
+        "exactly one CodeEntityExtracted per extracted path; got {defs} for {paths} paths"
     );
     assert_eq!(
         refs,
@@ -805,8 +810,8 @@ fn extract_events_emits_one_event_per_definition_and_reference_threading_the_fil
     );
     assert_eq!(
         events.len(),
-        fs.defs.len() + fs.refs.len(),
-        "extract_events emits exactly the definition and reference events, nothing spurious; got \
+        paths + fs.refs.len(),
+        "extract_events emits exactly one event per path and per reference, nothing spurious; got \
          {} events",
         events.len()
     );

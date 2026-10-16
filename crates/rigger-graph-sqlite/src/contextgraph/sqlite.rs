@@ -7277,11 +7277,11 @@ mod tests {
 
     #[test]
     fn code_extraction_events_fold_into_a_file_container_entities_and_structural_edges() {
-        // Criterion 1: a source file's extraction EMITS CodeEntityExtracted (one per definition)
-        // and EdgeInferred (one per reference); the ALWAYS-compiled fold turns them into a file
-        // container node, code-entity nodes, and structural edges - so code structure lives in the
-        // event-sourced projection, not a mutable side index. This test constructs the events by
-        // hand (no extraction dependency) so it proves the fold in BOTH feature lanes: the fold
+        // Criterion 1: a source file's extraction EMITS CodeEntityExtracted (one per path, spec
+        // 119) and EdgeInferred (one per reference); the ALWAYS-compiled fold turns them into a
+        // file container node, code-entity nodes, and structural edges - so code structure lives in
+        // the event-sourced projection, not a mutable side index. This test constructs the events
+        // by hand (no extraction dependency) so it proves the fold in BOTH feature lanes: the fold
         // must build and pass with the `symbols` extractor absent.
         let p = Projector::open(":memory:", "test").unwrap();
         // Definition `apply_damage` in combat.rs, and a reference to `clamp` from the same file.

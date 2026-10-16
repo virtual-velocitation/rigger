@@ -514,10 +514,9 @@ pub const TYPE_ALIAS_UNRESOLVED: &str = "AliasUnresolved";
 /// KIND_FINDING node ABOUT each file, plus a RAISED edge from the acting reviewer.
 pub const TYPE_REVIEW_FINDING: &str = "ReviewFinding";
 /// One definition extracted from a source file (spec 29a): the extraction pass emits one per
-/// definition, and the always-compiled fold turns it into a `code-entity` node plus a
-/// `CONTAINS` edge from its parent, the file container node when it has none (spec 119). Always
-/// compiled, so the light lane folds it
-/// with the extraction pass absent.
+/// path (spec 119, ONE PATH, ONE EVENT), and the always-compiled fold turns it into a
+/// `code-entity` node plus a `CONTAINS` edge from its parent, the file container node when it has
+/// none (spec 119). Always compiled, so the light lane folds it with the extraction pass absent.
 pub const TYPE_CODE_ENTITY_EXTRACTED: &str = "CodeEntityExtracted";
 /// One reference extracted from a source file (spec 29a): the extraction pass emits one per
 /// reference, and the always-compiled fold turns it into a `REFERENCES` structural edge from
