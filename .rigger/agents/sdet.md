@@ -98,7 +98,13 @@ delta is pinned. You derive the token set yourself from the production hunks of 
 $(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out - every
 comparison operator, arithmetic offset, boolean operand, call argument that is a range, index or
 bound, statement in one arm of a branch, match arm, early return and continue the unit adds or
-changes - and compare it with the author's `<unit>-mutant-probes` record. Every token the record
+changes - and compare it with the author's `<unit>-mutant-probes` record. You compare the two
+line by line: a token inside a query string, a format string or a macro argument the code
+executes is a token of its line (a SQL conjunct a boolean operand; a column name, bound or
+placeholder passed to a query builder a call argument; a substr start an index), and a
+production line those hunks add or change that the record does not disposition - naming its
+tokens with their probes, or marked as carrying none with its reason - is BLOCKING on its own,
+citing the line. Every token the record
 lacks you probe yourself in a scratch worktree (`git worktree add <scratch> HEAD`), one mutation
 at a time, `<scratch>` a directory outside the repository, running `cargo test -p <crate> --lib`
 for a file under `crates/` or `cargo test --lib --bin rigger` for one under `src/` and each
