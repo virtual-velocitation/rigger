@@ -3759,7 +3759,9 @@ mod tests {
     /// witness against head, and an omitted member, an uncarried hit, a CHECKED reason that
     /// does not hold, a record naming no search and no empty set, a witness that no longer makes
     /// its sentence true, a new or FIXED sentence with no witness, or sets re-derived over a
-    /// round's delta is BLOCKING; it derives the changed-condition set itself - each boolean
+    /// round's delta is BLOCKING; it compares the record's count list with its hunk list item by
+    /// item, and an item the hunks touch with no name count or no depth-1 caller read is
+    /// BLOCKING; it derives the changed-condition set itself - each boolean
     /// term the unit's production hunks add to or remove from a filter, guard or predicate -
     /// and reads every consumer sentence of that function against it, and one stating the
     /// pre-change answer that the record does not carry is BLOCKING; every sentence it reads, a
@@ -3861,6 +3863,10 @@ mod tests {
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches",
+            "You compare the record's count list with its hunk list item by item: an item the \
+             hunks touch, new or pre-existing, its body or its doc changed, with no count of its \
+             name or no depth-1 caller read beside it in the record is BLOCKING on its own, \
+             citing the item, the count you got and its callers.",
             "your review-complete record carries, for every sentence you read - each CHECKED \
              member of the author's record first of all, each member the record omits, each hit \
              of a rule-spelling search - its location, its claims and each claim's witness at \
