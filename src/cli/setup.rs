@@ -3589,7 +3589,9 @@ mod tests {
     /// first argument token, never the body's name - and the sentence
     /// walk's generators as commands over the unit's whole range on every round (the merge base
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
-    /// 1 with its counted fallback recorded as a gap, each FIXED or new line's `file:line`
+    /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
+    /// per item of the walk's hunk list and paired with it in the record, each FIXED or new
+    /// line's `file:line`
     /// witness, the rule-spelling search over every tracked text file, one
     /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
     /// phrase in another case or split by a rewrap still a hit) whose command and hits the walk pastes for the `sdet`
@@ -3665,6 +3667,12 @@ mod tests {
              item's name",
             "a `GAP:` clause naming the item in the record",
             "the count above with `t='<name>'`",
+            "The count and the caller lookup run once per item of the walk's hunk list - every \
+             item the hunks touch, new or pre-existing, its body or its doc changed - each \
+             item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
+             xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
+             and the record pairs each item of the hunk list with its count, the lines read and \
+             its callers.",
             "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
             "On every round, the first and each later one alike, `<base>` is the unit's merge \
              base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
