@@ -3554,13 +3554,13 @@
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 491,
-        "end_line": 491
+        "start_line": 490,
+        "end_line": 490
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 538,
-        "end_line": 538
+        "start_line": 537,
+        "end_line": 537
       },
       {
         "file": "tests/principle_gates_wiring.rs",
@@ -6124,13 +6124,13 @@
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 858,
-        "end_line": 865
+        "start_line": 857,
+        "end_line": 864
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 995,
-        "end_line": 1002
+        "start_line": 994,
+        "end_line": 1001
       }
     ]
   },
@@ -7414,13 +7414,13 @@
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 1058,
-        "end_line": 1099
+        "start_line": 1057,
+        "end_line": 1098
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 1102,
-        "end_line": 1156
+        "start_line": 1101,
+        "end_line": 1155
       }
     ]
   },
@@ -7614,13 +7614,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 536,
-        "end_line": 538
+        "start_line": 534,
+        "end_line": 536
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 560,
-        "end_line": 562
+        "start_line": 558,
+        "end_line": 560
       }
     ]
   },
@@ -7629,8 +7629,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 829,
-        "end_line": 838
+        "start_line": 827,
+        "end_line": 836
       },
       {
         "file": "tests/community_resolution_knob.rs",
@@ -8014,8 +8014,8 @@
     "sites": [
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "start_line": 521,
-        "end_line": 530
+        "start_line": 520,
+        "end_line": 529
       },
       {
         "file": "tests/validate_advisories.rs",

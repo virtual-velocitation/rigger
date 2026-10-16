@@ -2976,8 +2976,8 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/ledger_rebuild.rs:1203-1203` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:2245-2245` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:2275-2275` `"gw/.rigger/workflow.yml"`
-- `tests/migration_is_deliberate_periphery.rs:491-491` `".rigger"`
-- `tests/migration_is_deliberate_periphery.rs:538-538` `".rigger"`
+- `tests/migration_is_deliberate_periphery.rs:490-490` `".rigger"`
+- `tests/migration_is_deliberate_periphery.rs:537-537` `".rigger"`
 - `tests/principle_gates_wiring.rs:51-51` `"the scaffolded .rigger/agents: {missing:#?}"`
 - `tests/principle_gates_wiring.rs:65-65` `".rigger/gates/red-before-green.sh"`
 - `tests/principle_gates_wiring.rs:66-66` `".rigger/gates/mutation.sh"`
@@ -4145,8 +4145,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7637-7644` `apply_doc_link`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7967-7974` `apply_batch_ref`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9863-9873` `apply_unit_integrated`
-- `tests/code_ingest_events.rs:858-865` `apply_ref_json`
-- `tests/code_ingest_events.rs:995-1002` `apply_ref_fresh`
+- `tests/code_ingest_events.rs:857-864` `apply_ref_json`
+- `tests/code_ingest_events.rs:994-1001` `apply_ref_fresh`
 
 #### `dup-b5bd50de3e2a` (near, 2 sites)
 
@@ -4805,8 +4805,8 @@ Proposed home: `code_ingest_events::support (consolidate these 2 sites into one 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/code_ingest_events.rs:1058-1099` `a_refs_only_files_re_extraction_supersedes_via_the_reference_batch_boundary`
-- `tests/code_ingest_events.rs:1102-1156` `a_re_extraction_supersedes_only_its_own_files_edges_not_another_files_reference`
+- `tests/code_ingest_events.rs:1057-1098` `a_refs_only_files_re_extraction_supersedes_via_the_reference_batch_boundary`
+- `tests/code_ingest_events.rs:1101-1155` `a_re_extraction_supersedes_only_its_own_files_edges_not_another_files_reference`
 
 #### `dup-d46432042e0c` (near, 2 sites)
 
@@ -4917,8 +4917,8 @@ Proposed home: `fold::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:536-538` `apply_ref`
-- `tests/common/fixtures/fold.rs:560-562` `apply_call`
+- `tests/common/fixtures/fold.rs:534-536` `apply_ref`
+- `tests/common/fixtures/fold.rs:558-560` `apply_call`
 
 #### `dup-9c3b5c80063e` (near, 3 sites)
 
@@ -4926,7 +4926,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/common/fixtures/f
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:829-838` `live_node_ids`
+- `tests/common/fixtures/fold.rs:827-836` `live_node_ids`
 - `tests/community_resolution_knob.rs:139-148` `live_memberships_of`
 - `tests/graph_superseded_prune.rs:32-41` `live_contains`
 
@@ -5123,7 +5123,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/migration_is_deli
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/migration_is_deliberate_periphery.rs:521-530` `validate_is_silent_on_retired_code_entities_when_nothing_has_been_retired`
+- `tests/migration_is_deliberate_periphery.rs:520-529` `validate_is_silent_on_retired_code_entities_when_nothing_has_been_retired`
 - `tests/validate_advisories.rs:657-666` `validate_is_silent_on_a_gated_scaffolded_fanout_template`
 
 #### `dup-8f0f2622431b` (exact, 2 sites)

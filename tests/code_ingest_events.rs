@@ -33,10 +33,9 @@ use common::fixtures::{apply_json, edge_tier};
 #[cfg(feature = "symbols")]
 fn fold_tree(p: &Projector, root: &std::path::Path, pos: &mut u64, generation: Option<&str>) {
     let Some(generation) = generation else {
-        for mut e in common::project_events(root.to_str().unwrap()) {
+        for e in common::project_events(root.to_str().unwrap()) {
             *pos += 1;
-            e.position = *pos;
-            common::fixtures::folds(p, std::slice::from_ref(&e));
+            common::fixtures::fold_at(p, *pos, e);
         }
         return;
     };

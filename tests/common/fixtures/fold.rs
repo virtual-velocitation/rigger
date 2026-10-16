@@ -164,7 +164,7 @@ pub fn folds(p: &dyn Projection, events: &[Event]) {
 }
 
 /// Fold `e` onto `p` at log position `pos`.
-fn fold_at(p: &Projector, pos: u64, mut e: Event) {
+pub fn fold_at(p: &Projector, pos: u64, mut e: Event) {
     e.position = pos;
     folds(p, std::slice::from_ref(&e));
 }
@@ -262,7 +262,7 @@ pub fn code_batch_key(file: &str, generation: &str, index: usize) -> String {
 /// [`code_batch_key`]`(file, generation, index)`, advancing `*pos` past it: the shape a ledger
 /// entry's batch folds in, so a later generation retracts what only this one asserted.
 pub fn fold_generation(
-    p: &dyn Projection,
+    p: &Projector,
     pos: &mut u64,
     file: &str,
     generation: &str,
@@ -271,9 +271,7 @@ pub fn fold_generation(
     for (index, e) in batch.into_iter().enumerate() {
         *pos += 1;
         let key = code_batch_key(file, generation, index);
-        let mut e = e.with_meta(rigger::ingest::META_REPLAY_KEY, key);
-        e.position = *pos;
-        folds(p, std::slice::from_ref(&e));
+        fold_at(p, *pos, e.with_meta(rigger::ingest::META_REPLAY_KEY, key));
     }
 }
 

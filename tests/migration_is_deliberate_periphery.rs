@@ -124,10 +124,9 @@ fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_eve
         .files()
         .get("keep.rs")
         .expect("fixture precondition: keep.rs is indexed");
-    for mut ev in extract_events("keep.rs", keep_fs) {
+    for ev in extract_events("keep.rs", keep_fs) {
         pos += 1;
-        ev.position = pos;
-        common::fixtures::folds(&p, std::slice::from_ref(&ev));
+        common::fixtures::fold_at(&p, pos, ev);
     }
 
     assert_eq!(
