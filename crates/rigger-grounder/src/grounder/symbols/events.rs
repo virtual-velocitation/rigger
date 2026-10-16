@@ -2671,8 +2671,8 @@ mod tests {
     }
 
     /// Spec 119, CONTAINS IS STRUCTURE: a named value one with the class field holding it takes
-    /// the field's parent, so both events of `class A { f = function f() {} }`'s `f` name `A`, and
-    /// the file-level `A` names none.
+    /// the field's parent, so the one event of `class A { f = function f() {} }`'s `f` names `A`,
+    /// and the file-level `A` names none.
     #[test]
     fn a_named_value_takes_the_parent_of_the_definition_it_is_one_with() {
         use crate::event_fixtures::payloads_of_type;
@@ -2683,13 +2683,11 @@ mod tests {
                 .into_iter()
                 .map(|payload| (payload["name"].clone(), payload["parent"].clone()))
                 .collect();
-        let f_under_a = ("f".into(), "A".into());
         assert_eq!(
             parents,
             [
                 ("A".into(), serde_json::Value::Null),
-                f_under_a.clone(),
-                f_under_a
+                ("f".into(), "A".into())
             ],
             "each event's (name, parent)"
         );
@@ -2728,14 +2726,35 @@ mod tests {
         );
     }
 
-    /// Each `CodeEntityExtracted` of `events` as `<path>@<line>`, in emission order, the path its
-    /// name where the payload carries none.
-    fn emitted_definitions(events: &[Event]) -> Vec<String> {
+    /// Each `CodeEntityExtracted` payload of `events` beside its path, in emission order, the path
+    /// its name where the payload carries none.
+    fn emitted_payloads(events: &[Event]) -> Vec<(String, serde_json::Value)> {
         crate::event_fixtures::payloads_of_type(events, TYPE_CODE_ENTITY_EXTRACTED)
             .into_iter()
             .map(|payload| {
                 let path = payload["path"].as_str().or(payload["name"].as_str());
-                format!("{}@{}", path.unwrap(), payload["line"])
+                (path.unwrap().to_owned(), payload)
+            })
+            .collect()
+    }
+
+    /// Each `CodeEntityExtracted` of `events` as `<path>@<line>`, in emission order.
+    fn emitted_definitions(events: &[Event]) -> Vec<String> {
+        emitted_payloads(events)
+            .into_iter()
+            .map(|(path, payload)| format!("{path}@{}", payload["line"]))
+            .collect()
+    }
+
+    /// Each `CodeEntityExtracted` of `events` as `<kind> <path>@<line> in <parent>`, in emission
+    /// order, the parent `-` where the payload carries none.
+    fn emitted_entities(events: &[Event]) -> Vec<String> {
+        emitted_payloads(events)
+            .into_iter()
+            .map(|(path, payload)| {
+                let kind = payload["kind"].as_str().unwrap();
+                let parent = payload["parent"].as_str().unwrap_or("-");
+                format!("{kind} {path}@{} in {parent}", payload["line"])
             })
             .collect()
     }
@@ -2767,20 +2786,22 @@ mod tests {
         }
     }
 
-    /// [`emitted_definitions`] of the batch `extract_events` lowers from a Rust file holding
-    /// `defs` and no reference.
+    /// The batch `extract_events` lowers from a Rust file holding `defs` and no reference.
+    fn lowered_rust(defs: Vec<Def>) -> Vec<Event> {
+        extract_events("a.rs", &crate::symbol_index::rust_file(defs, Vec::new()))
+    }
+
+    /// [`emitted_definitions`] of [`lowered_rust`] over `defs`.
     fn emitted_from(defs: Vec<Def>) -> Vec<String> {
-        let fs = crate::symbol_index::rust_file(defs, Vec::new());
-        emitted_definitions(&extract_events("a.rs", &fs))
+        emitted_definitions(&lowered_rust(defs))
     }
 
     /// A PARENT IS EMITTED BEFORE ITS CHILD (spec 119 criterion 16): the emission sorts by the
-    /// length of each definition's parent chain - a parent counting one link, resolved to the
-    /// definitions emitted at its path with the longest chain taken, and one naming no emitted
-    /// definition still one link - then by leaf, then by path, and stably, so definitions of one
-    /// key - same-path twins of one parent chain length - keep `extract`'s order.
+    /// length of each definition's parent chain - a parent counting one link, resolved to the one
+    /// definition emitted at its path, and one naming no emitted definition still one link - then
+    /// by leaf, then by path, the definitions emitted being one per path (spec 119 criterion 10).
     #[test]
-    fn extract_events_orders_by_parent_chain_then_leaf_then_path_keeping_twins_in_place() {
+    fn extract_events_orders_by_parent_chain_then_leaf_then_path() {
         let emitted = emitted_from(vec![
             placed("t", 9, "t", None),
             placed("t", 8, "t", None),
@@ -2794,6 +2815,7 @@ mod tests {
             placed("c", 13, "P::c", Some("P")),
             placed("d", 14, "Q::d", Some("Q")),
             placed("o", 15, "gone::o", Some("gone")),
+            placed("b", 16, "lost::b", Some("lost")),
         ]);
         assert_eq!(
             emitted,
@@ -2804,33 +2826,104 @@ mod tests {
                 "A::b@4",
                 "T::n@2",
                 "U::n@1",
-                "t@9",
                 "t@8",
-                "P@12",
+                "lost::b@16",
+                "P::c@13",
                 "Q::d@14",
                 "gone::o@15",
-                "P::c@13",
             ],
-            "by parent chain, then leaf, then path, twins in extract's order"
+            "by parent chain, then leaf, then path, one event per path"
         );
     }
 
-    /// A PARENT IS EMITTED BEFORE ITS CHILD (spec 119 criterion 16): the sort is stable over a
-    /// batch long enough that an unstable one reorders equal keys - two same-path twin sets, each
-    /// interleaved with the other, each emitted in `extract`'s order.
+    /// ONE PATH IS ONE EVENT (spec 119 criterion 10): each file's real extraction emits one event
+    /// per path, its winner the first by `CODE_KIND_PRECEDENCE`, then the lower line, with the
+    /// winner's own kind, line and parent: `fn x` over `mod x;`, the first of two cfg twins and of
+    /// two impls with one header, the production `fn x` over a `#[cfg(test)]` twin at a lower
+    /// line, the function of `const f = function f() {}`, and the field `B` of `class A { B }`
+    /// over a `namespace A.B` above it.
     #[test]
-    fn extract_events_keeps_same_path_twins_in_extract_order_in_a_long_batch() {
-        let emitted = emitted_from(
-            (0..40)
-                .flat_map(|i| [placed("t", 100 - i, "t", None), placed("a", i, "a", None)])
-                .collect(),
-        );
-        let a_twins = (0..40).map(|i| format!("a@{i}"));
-        let t_twins = (0..40).map(|i| format!("t@{}", 100 - i));
+    fn extract_events_emits_one_event_per_path_the_first_by_kind_precedence_then_line() {
+        let cases: [(&str, &str, &[&str]); 6] = [
+            ("a.rs", "mod x;\nfn x() {}\n", &["function x@2 in -"]),
+            (
+                "a.rs",
+                "#[cfg(unix)]\nfn x() {}\n#[cfg(not(unix))]\nfn x() {}\n",
+                &["function x@2 in -"],
+            ),
+            (
+                "a.rs",
+                "struct T;\nimpl T {}\nimpl T {}\n",
+                &["type T@1 in -", "impl impl T@2 in -"],
+            ),
+            (
+                "a.rs",
+                "#[cfg(test)]\nfn x() {}\nfn x() {}\n",
+                &["function x@3 in -"],
+            ),
+            (
+                "c.ts",
+                "const f = function f() {};\n",
+                &["function f@1 in -"],
+            ),
+            (
+                "c.ts",
+                "namespace A.B {}\nclass A {\n    B = 1;\n}\n",
+                &["type A@2 in -", "field A.B@3 in A"],
+            ),
+        ];
+        for (file, source, winners) in cases {
+            assert_eq!(
+                emitted_entities(&extracted_events(file, source)),
+                winners,
+                "{source:?}: one event per path"
+            );
+        }
+    }
+
+    /// ONE PATH IS ONE EVENT (spec 119 criterion 10): of same-path twins of one precedence the
+    /// lower line wins though `extract` returns it last, and of twins on one line the first
+    /// `extract` returns, each with its own parent.
+    #[test]
+    fn extract_events_keeps_the_lower_line_then_the_first_extract_returns() {
+        let events = lowered_rust(vec![
+            placed("t", 9, "t", None),
+            placed("t", 8, "t", Some("A")),
+            placed("x", 1, "x", Some("A")),
+            placed("x", 1, "x", Some("B")),
+        ]);
         assert_eq!(
-            emitted,
-            a_twins.chain(t_twins).collect::<Vec<_>>(),
-            "each twin set in extract's order"
+            emitted_entities(&events),
+            ["function t@8 in A", "function x@1 in A"],
+            "the lower line, then the first extract returns"
+        );
+    }
+
+    /// ONE PATH IS ONE EVENT (spec 119 criterion 10): each generation re-derives the winner, so
+    /// removing the twin that won leaves the other's line and parent.
+    #[test]
+    fn a_removed_twin_leaves_the_other_s_line_and_parent() {
+        let twin_events = |source: &str| -> Vec<String> {
+            emitted_entities(&extracted_events("a.rs", source))
+                .into_iter()
+                .filter(|entity| entity.contains(" a::B::c@"))
+                .collect()
+        };
+        assert_eq!(
+            twin_events(
+                "mod a {\n    struct B;\n    impl B {\n        fn c() {}\n    }\n}\n\
+                 impl a::B {\n    fn c() {}\n}\n"
+            ),
+            ["method a::B::c@4 in a::impl B"],
+            "both twins: the lower line wins"
+        );
+        assert_eq!(
+            twin_events(
+                "mod a {\n    struct B;\n\n\n\n}\n\
+                 impl a::B {\n    fn c() {}\n}\n"
+            ),
+            ["method a::B::c@8 in impl a::B"],
+            "the winner removed: the other's line and parent"
         );
     }
 }

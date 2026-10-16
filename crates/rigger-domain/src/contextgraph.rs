@@ -1281,6 +1281,26 @@ mod parent_path_rule {
 }
 
 #[cfg(test)]
+mod kind_rank_rule {
+    use super::{kind_rank, CODE_KIND_PRECEDENCE};
+    use crate::graph_fixtures::UNLISTED_KIND;
+
+    #[test]
+    fn a_listed_kind_ranks_at_its_place_and_an_unlisted_one_with_other_last() {
+        let ranks: Vec<usize> = CODE_KIND_PRECEDENCE
+            .into_iter()
+            .chain([UNLISTED_KIND])
+            .map(kind_rank)
+            .collect();
+        assert_eq!(
+            ranks,
+            (0..16).chain([15]).collect::<Vec<_>>(),
+            "each listed kind at its place, an unlisted one with other"
+        );
+    }
+}
+
+#[cfg(test)]
 mod caller_wire_contract {
     use super::EdgeInferred;
 

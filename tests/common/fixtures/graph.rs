@@ -369,6 +369,9 @@ pub fn kinded_def_node(id: &str, kind: &str) -> Node {
 /// community the seeded community fixture labels.
 pub const ONE_COMMUNITY: &str = "community/1/0";
 
+/// A code kind string outside `CODE_KIND_PRECEDENCE`, which ranks with `other`.
+pub const UNLISTED_KIND: &str = "alien";
+
 /// A graph of the one community node `community` followed by `members`, each held by a live
 /// inferred `IN_COMMUNITY` edge in `members` order: the subject a re-projection folds.
 pub fn one_community_graph(community: &str, members: Vec<Node>) -> Graph {
