@@ -371,6 +371,9 @@ pub const ONE_COMMUNITY: &str = "community/1/0";
 
 /// A code kind string outside `CODE_KIND_PRECEDENCE`, which ranks with `other`.
 pub const UNLISTED_KIND: &str = "alien";
+/// A second code kind string outside `CODE_KIND_PRECEDENCE`, sorting after [`UNLISTED_KIND`] and
+/// `other`.
+pub const LATER_UNLISTED_KIND: &str = "zeta";
 
 /// A graph of the one community node `community` followed by `members`, each held by a live
 /// inferred `IN_COMMUNITY` edge in `members` order: the subject a re-projection folds.

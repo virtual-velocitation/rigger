@@ -1289,8 +1289,20 @@ mod parent_path_rule {
 
 #[cfg(test)]
 mod kind_rank_rule {
-    use super::{kind_rank, CODE_KIND_PRECEDENCE};
+    use super::{definition_precedence, kind_rank, CODE_KIND_FUNCTION, CODE_KIND_PRECEDENCE};
     use crate::graph_fixtures::UNLISTED_KIND;
+
+    #[test]
+    fn a_definition_ranks_by_its_kind_s_place_then_its_line() {
+        assert_eq!(
+            [
+                definition_precedence(CODE_KIND_FUNCTION, 9),
+                definition_precedence(UNLISTED_KIND, 2),
+            ],
+            [(3, 9), (15, 2)],
+            "the kind's place in CODE_KIND_PRECEDENCE, then the line"
+        );
+    }
 
     #[test]
     fn a_listed_kind_ranks_at_its_place_and_an_unlisted_one_with_other_last() {

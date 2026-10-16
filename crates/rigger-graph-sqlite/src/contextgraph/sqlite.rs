@@ -13304,7 +13304,7 @@ mod tests {
             use super::super::leaf_keys_resolution::proof_targets;
             use super::*;
             use crate::contextgraph::CODE_KIND_PRECEDENCE;
-            use crate::graph_fixtures::UNLISTED_KIND;
+            use crate::graph_fixtures::{LATER_UNLISTED_KIND, UNLISTED_KIND};
             use crate::test_support::{
                 attrs_of, call_json, cross_file_call_and_proof, definition, kind_def_json,
                 proven_by_attr, ref_json, DefRow as Def, NEW_LEAF_MODULE, OLD_LEAF_FN,
@@ -13397,13 +13397,13 @@ mod tests {
                 an_unlisted_kind_beside_a_function_settles_function:
                     a_shared_node_settles(&[("x", "function", 5), ("x", UNLISTED_KIND, 1)], "function", 5);
                 two_unlisted_kinds_at_one_line_settle_the_lesser_kind_string:
-                    a_shared_node_settles(&[("x", UNLISTED_KIND, 3), ("x", "zeta", 3)], UNLISTED_KIND, 3);
+                    a_shared_node_settles(&[("x", UNLISTED_KIND, 3), ("x", LATER_UNLISTED_KIND, 3)], UNLISTED_KIND, 3);
                 two_unlisted_kinds_settle_the_lower_line_before_the_lesser_kind_string:
-                    a_shared_node_settles(&[("x", UNLISTED_KIND, 2), ("x", "zeta", 1)], "zeta", 1);
+                    a_shared_node_settles(&[("x", UNLISTED_KIND, 2), ("x", LATER_UNLISTED_KIND, 1)], LATER_UNLISTED_KIND, 1);
                 an_unlisted_kind_ranks_with_other_so_the_lesser_kind_string_settles_one_line:
                     a_shared_node_settles(&[("x", UNLISTED_KIND, 3), ("x", "other", 3)], UNLISTED_KIND, 3);
                 an_unlisted_kind_ranks_with_other_so_its_lower_line_settles:
-                    a_shared_node_settles(&[("x", "zeta", 1), ("x", "other", 2)], "zeta", 1);
+                    a_shared_node_settles(&[("x", LATER_UNLISTED_KIND, 1), ("x", "other", 2)], LATER_UNLISTED_KIND, 1);
                 other_at_a_lower_line_settles_over_an_unlisted_kind:
                     a_shared_node_settles(&[("x", "other", 1), ("x", UNLISTED_KIND, 2)], "other", 1);
                 a_module_beside_a_field_of_its_leaf_settles_field:
