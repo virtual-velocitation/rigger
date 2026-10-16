@@ -176,7 +176,10 @@ unit's merge base with that branch, `$(git merge-base rigger-run HEAD)`, so the 
 prompt carries. The walk is recorded as one `<unit>-sentence-walk` DecisionMade
 beside the `<unit>-test-shape-audit` one, naming what each generator returned and every
 sentence FIXED with its location. Each FIXED or new line of the record carries its witness
-beside that location: the `file:line` of the code at head that makes the sentence true.
+beside that location: the `file:line` of the code at head that makes the sentence true. A
+sentence with a quantifier (every, all, always, any, a plural subject with a predicate) carries
+one witness per case the code splits its subject into - each arm, key component, filter
+condition or match branch - the cases named in the record.
 
 Each rule the change rewrites is searched by the distinguishing phrase of its old statement
 and of each label its cases carried (a name a doc, test or comment gives a case the old rule
