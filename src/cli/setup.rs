@@ -3784,17 +3784,15 @@ mod tests {
     /// CHECKED member, an omitted member or a search hit, it reads claim by claim against the
     /// unit's change with a `file:line` witness per claim at head, a conditional claim against
     /// whether the diff changes its condition and a cross-surface claim against each surface it
-    /// names, a claim with no witness BLOCKING and a grouped verdict with no per-sentence witness
-    /// - over the author's CHECKED members as over any other sentence it reads - a record it
-    /// cannot write. Of the mutable-token rule:
-    /// it derives the token set from the production hunks over the unit's whole range, probes
-    /// every token the author's `<unit>-mutant-probes` record lacks in a scratch worktree it
-    /// restores and removes in-turn, and a green probe or an unrecorded token is BLOCKING; it
-    /// compares its token set with the record line by line, a query or format string's tokens
-    /// counted on their line, and a production line the record does not disposition is
-    /// BLOCKING. The
-    /// records are the author's instruments, never a gate, so the lens's rule against re-running
-    /// a green gate does not reach them.
+    /// names, a claim with no witness BLOCKING and a grouped verdict with no per-sentence
+    /// witness, over the author's CHECKED members as over any other sentence it reads, a record
+    /// it cannot write. Of the mutable-token rule: it derives the token set from the production
+    /// hunks over the unit's whole range, probes every token the author's `<unit>-mutant-probes`
+    /// record lacks in a scratch worktree it restores and removes in-turn, and a green probe or
+    /// an unrecorded token is BLOCKING; it compares its token set with the record line by line,
+    /// a query or format string's tokens counted on their line, and a production line the
+    /// record does not disposition is BLOCKING. The records are the author's instruments, never
+    /// a gate, so the lens's rule against re-running a green gate does not reach them.
     #[test]
     fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
         const HEADING: &str = "## Re-run the author's searches and re-derive its walk";
