@@ -3592,7 +3592,8 @@ mod tests {
     /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
     /// per item of the walk's hunk list and paired with it in the record, each FIXED or new
     /// line's `file:line`
-    /// witness, the rule-spelling search over every tracked text file, one
+    /// witness, one per case the code splits a quantified sentence's subject into with the cases
+    /// named, the rule-spelling search over every tracked text file, one
     /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
     /// phrase in another case or split by a rewrap still a hit) whose command and hits the walk pastes for the `sdet`
     /// lens to re-run, each boolean term a production hunk adds to or removes from a filter,
@@ -3682,6 +3683,10 @@ mod tests {
              round's delta your prompt carries.",
             "Each FIXED or new line of the record carries its witness beside that location: the \
              `file:line` of the code at head that makes the sentence true.",
+            "A sentence with a quantifier (every, all, always, any, a plural subject with a \
+             predicate) carries one witness per case the code splits its subject into - each \
+             arm, key component, filter condition or match branch - the cases named in the \
+             record.",
             "The search is this command, one run per distinguishing expression, the expression \
              its one argument",
             "`git ls-files tests crates src | t='<expression>' xargs awk",
@@ -3784,9 +3789,11 @@ mod tests {
     /// CHECKED member, an omitted member or a search hit, it reads claim by claim against the
     /// unit's change with a `file:line` witness per claim at head, a conditional claim against
     /// whether the diff changes its condition and a cross-surface claim against each surface it
-    /// names, a claim with no witness BLOCKING and a grouped verdict with no per-sentence
-    /// witness, over the author's CHECKED members as over any other sentence it reads, a record
-    /// it cannot write. Of the mutable-token rule: it derives the token set from the production
+    /// names, a quantified claim read against each case the code splits its subject into, each
+    /// case with its `file:line` and listed beside the claim in its record, a claim with no
+    /// witness, a quantified claim with one witness or a failing case BLOCKING and a grouped
+    /// verdict with no per-sentence witness, over the author's CHECKED members as over any other
+    /// sentence it reads, a record it cannot write. Of the mutable-token rule: it derives the token set from the production
     /// hunks over the unit's whole range, probes every token the author's `<unit>-mutant-probes`
     /// record lacks in a scratch worktree it restores and removes in-turn, and a green probe or
     /// an unrecorded token is BLOCKING; it compares its token set with the record line by line,
@@ -3876,6 +3883,13 @@ mod tests {
              by reading each surface it names.",
             "A claim with no witness is a BLOCKING finding on its own, the sentence false or \
              unwitnessable, never a CHECKED.",
+            "A claim with a quantifier - every, all, always, any, a plural subject with a \
+             predicate (twins keep; a definition's parent is) - you read case by case: you list \
+             the cases the code at head splits its subject into, each arm that assigns the \
+             value, each component of a key or comparator, each condition of a filter or guard, \
+             each branch of a match, each with its `file:line`, and read the claim against each",
+            "One witness for a quantified claim, or a case the claim does not hold for, is \
+             BLOCKING on its own, citing the case and its line.",
             "You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
@@ -3887,7 +3901,8 @@ mod tests {
             "your review-complete record carries, for every sentence you read - each CHECKED \
              member of the author's record first of all, each member the record omits, each hit \
              of a rule-spelling search - its location, its claims and each claim's witness at \
-             head, and a grouped verdict (\"none false\", \"each a field reference\", \"the \
+             head, a quantified claim's cases beside it, each with its witness, and a grouped \
+             verdict (\"none false\", \"each a field reference\", \"the \
              CHECKED hits hold\") over sentences with no per-sentence witness is a record you \
              cannot write.",
             "You are also the enforcement of the built-in rule that every mutable token of the \
