@@ -122,7 +122,10 @@ tool that searches them.
   constant; two witnesses when one would not make the whole sentence true - and a sentence
   with no witness is a claim, not a record; a CHECKED sentence whose truth rests on code names
   its witness the same way, and one CHECKED as a different rule sharing the words names that
-  rule instead. A rule the change rewrites - a condition
+  rule instead and shows the sentence's claim is that rule's question, the question the
+  sentence answers read claim by claim as the lens reads it; a sentence whose claim is the
+  question a rule the change rewrites answers is a spelling of that rule, whatever other rule
+  its words also fit. A rule the change rewrites - a condition
   the code decides by, such as what a call lands on or what a tier means - has spellings no
   generator above reaches: prose that states it without naming a changed item. So every
   spelling of each rewritten rule is walked too, and its search is an instrument, not a claim:
