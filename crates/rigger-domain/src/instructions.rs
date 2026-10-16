@@ -294,7 +294,9 @@ mod tests {
     /// from its generators (an item's callers read from the graph at depth 1) over the unit's
     /// whole range on every round, never a round's delta, and records on every change, the name
     /// count and the depth-1 caller read paired with every item of the hunk list, each new
-    /// or FIXED sentence with the `file:line` witness that makes it true, a sentence CHECKED as a
+    /// or FIXED sentence with the `file:line` witness that makes it true, a claim quantified over
+    /// a set witnessed once per case the code splits it into, a failing case making it false, a
+    /// sentence CHECKED as a
     /// different rule shown to answer that rule's question and one answering a rewritten rule's
     /// question a spelling of it, each spelling of a rule the change rewrites found by a recorded search per
     /// distinguishing phrase of its old statement and of each label its cases carried, a
@@ -305,7 +307,9 @@ mod tests {
     /// each search and re-reading every hit against head, deriving the changed-condition set
     /// itself and reading every consumer sentence against it, and reading every sentence it
     /// re-reads claim by claim against the unit's change with a witness per claim at head, a
-    /// sentence it cannot witness blocking on its own, its record listing every sentence it
+    /// sentence it cannot witness blocking on its own, a quantified claim's cases enumerated by
+    /// the lens and listed each with its witness, one witnessed case or a failing case blocking
+    /// on its own, its record listing every sentence it
     /// reads, the CHECKED members included, never a grouped verdict, with a renamed name's old
     /// spelling counted to zero, nothing added that nothing reads, the red test's body untouched
     /// by the green commit, every mutable token of the production delta - an operator, an
