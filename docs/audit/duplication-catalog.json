@@ -1147,7 +1147,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-4c2bdcf1ed4d",
+    "id": "dup-ee609dc6129b",
     "classification": "semantic",
     "sites": [
       {
@@ -3803,11 +3803,6 @@
       {
         "file": "tests/relocated_worktree_store_resolution_periphery.rs",
         "name": "\".rigger\"",
-        "content_hash": "74c50c2fb6453fb9"
-      },
-      {
-        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
-        "name": "\".rigger\"",
         "content_hash": "6381403cc55e857d"
       },
       {
@@ -4187,7 +4182,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 607 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 606 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -5084,7 +5079,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-17929143626a",
+    "id": "dup-28ac8c722172",
     "classification": "semantic",
     "sites": [
       {
@@ -5096,15 +5091,10 @@
         "file": "crates/rigger-domain/src/run.rs",
         "name": "current_run_id",
         "content_hash": "6cf264536139f3c4"
-      },
-      {
-        "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "name": "current_run_id",
-        "content_hash": "d2dca10621dd86c6"
       }
     ],
     "proposed_home": "one shared `current_run_id` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6108,7 +6098,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a12c42d5d9c5",
+    "id": "dup-3cd6f7f2cb9b",
     "classification": "semantic",
     "sites": [
       {
@@ -6199,11 +6189,6 @@
       {
         "file": "src/cli/mod.rs",
         "name": "Connection::open",
-        "content_hash": "c9acaf03cef6d3a0"
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
@@ -6225,11 +6210,6 @@
         "file": "tests/cli.rs",
         "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Connection::open",
-        "content_hash": "c9acaf03cef6d3a0"
       },
       {
         "file": "tests/cli.rs",
@@ -6279,6 +6259,11 @@
       {
         "file": "tests/common/fixtures/sqlite.rs",
         "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/fixtures/sqlite.rs",
+        "name": "Connection::open",
         "content_hash": "e4bfcfaa4e39b2d2"
       },
       {
@@ -6289,17 +6274,7 @@
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "c9acaf03cef6d3a0"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
         "content_hash": "f927f941b4db84e3"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -6423,7 +6398,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 62 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 59 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

@@ -153,6 +153,13 @@ pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (Str
     )
 }
 
+/// `rigger setup` in `cwd` with extra environment `envs`, which must succeed: its stdout.
+pub fn setup_ok(cwd: &Path, envs: &[(&str, &str)]) -> String {
+    let (out, err, ok) = run_rigger_envs(cwd, &["setup"], envs);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    out
+}
+
 /// `rigger <args...>` in `cwd` with extra environment `envs`, as [`run_rigger_envs`] runs it, for
 /// a caller that spawns it and acts while it runs; `state` must outlive the process.
 pub fn rigger_command(cwd: &Path, args: &[&str], envs: &[(&str, &str)], state: &Path) -> Command {
@@ -326,6 +333,27 @@ pub fn run_stream_identity(root: &Path) -> String {
         .unwrap_or_else(|| "rigger".to_string())
 }
 
+/// The fold rule a `graph.db` records (its `user_version`).
+pub fn user_version(db: &Path) -> i64 {
+    super::fixtures::pragma_i64(db, "user_version")
+}
+
+/// Whether an open of the `graph.db` at `db` for `project` owes a rebuild.
+pub fn rebuild_owed(db: &Path, project: &str) -> bool {
+    use rigger::contextgraph::Projection;
+    Projector::open(db.to_str().unwrap(), project)
+        .unwrap()
+        .rebuild_owed()
+        .unwrap()
+}
+
+/// The fold rule a `graph.db` records after an open of it for `project`, and whether that open
+/// owes a rebuild.
+pub fn version_and_owed(db: &Path, project: &str) -> (i64, bool) {
+    let owed = rebuild_owed(db, project);
+    (user_version(db), owed)
+}
+
 /// Seed `(type, json body)` run events directly into `root`'s namespaced run stream, standing
 /// in for the conductor minting them - the `rigger emit` surface refuses conductor-owned
 /// boundary types (spec 22), so a test that must seed them appends through the store.
@@ -367,6 +395,16 @@ pub fn with_pre_ledger_run_store<R>(root: &Path, f: impl FnOnce(&dyn EventStore)
     f(&store)
 }
 
+/// Append `events` to `root`'s own run stream as a binary before the ledger recorded them
+/// ([`with_pre_ledger_run_store`]), so a test seeds the derived events a store now refuses.
+pub fn seed_pre_ledger_events(root: &Path, events: &[Event]) {
+    with_pre_ledger_run_store(root, |store| {
+        store
+            .append(rigger::conductor::STREAM, ExpectedRevision::Any, events)
+            .unwrap();
+    });
+}
+
 /// Every event in `root`'s namespaced run stream, oldest first.
 pub fn read_run_events(root: &Path) -> Vec<Event> {
     with_run_store(root, |store| {
@@ -374,6 +412,12 @@ pub fn read_run_events(root: &Path) -> Vec<Event> {
             .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
             .unwrap()
     })
+}
+
+/// The id of the run [`rigger::run::current_run_id`] resolves over `root`'s own run stream
+/// ([`read_run_events`]), `None` before any run started.
+pub fn current_run_id_of(root: &Path) -> Option<String> {
+    rigger::run::current_run_id(&read_run_events(root))
 }
 
 /// `root`'s run stream as `(position, revision, type)`, oldest first.
@@ -1023,11 +1067,7 @@ pub fn seed_derived_duplicates(root: &Path) {
             .with_valid_from(UNIX_EPOCH + Duration::from_secs(1_000 + r as u64)),
         );
     }
-    with_pre_ledger_run_store(root, |store| {
-        store
-            .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
-            .unwrap();
-    });
+    seed_pre_ledger_events(root, &events);
 }
 
 /// The `worker` agent definition (sonnet, Read/Edit) that runs without a worktree

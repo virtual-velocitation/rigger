@@ -29,14 +29,9 @@ use std::path::Path;
 mod common;
 use common::cli::open_graph;
 use common::cli::run_rigger;
-use common::cli::run_stream_identity;
 use common::fixtures::apply_code_entity;
 use common::git::run_git;
 use common::mcp::McpSession;
-
-use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, EventStore};
 
 /// `git init` plus one real commit under `root` - a bare `git init` has no commit for `git
 /// worktree add -b <new-branch>` to branch from.
@@ -131,12 +126,7 @@ fn node_ids(around: &serde_json::Value) -> Vec<String> {
 /// proves the subprocess's write genuinely landed on disk at `root`, not merely that the
 /// child process exited 0.
 fn decision_summaries_in(root: &Path) -> Vec<String> {
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap())
-        .expect("open the real store for readback");
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .expect("read the real store's stream")
+    common::cli::read_run_events(root)
         .into_iter()
         .filter(|e| e.type_ == "DecisionMade")
         .map(|e| String::from_utf8_lossy(&e.data).into_owned())

@@ -5190,10 +5190,7 @@ mod tests {
             "a current file owes nothing"
         );
 
-        rusqlite::Connection::open(&path)
-            .unwrap()
-            .execute_batch("PRAGMA user_version = 0;")
-            .unwrap();
+        crate::test_support::stamp_user_version(&path, 0);
         assert_eq!(
             graph_rebuild_owed_note(graph_db, "p"),
             Some(format!(

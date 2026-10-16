@@ -102,13 +102,15 @@ CREATE TABLE IF NOT EXISTS relabel_owed (
 /// generations superseding their predecessors (spec 101): a file folded before it holds facts a
 /// superseded generation asserted and has no assertion ledgers to retire them from. Rule 2 is
 /// the shared node's one kind (spec 116, [`settling_definition`]): a file folded before it gave
-/// a node the definitions of one file share the kind and line of the last one folded. A file at
-/// an older version that folded anything owes one cold rebuild from the log
+/// a node the definitions of one file share the kind and line of the last one folded. Rule 3 is
+/// the node addressed by its path (spec 119): a file folded before it holds a nested definition
+/// at its flat `<file>::<leaf>` id rather than its path's, with no `CONTAINS` from its parent. A
+/// file at an older version that folded anything owes one cold rebuild from the log
 /// ([`Projector::rebuild`], which only `rigger setup` runs) and nothing folds into it
 /// incrementally until then. A rebuild's shadow records the rule it is folded under the same
 /// way, from the moment it is opened, so one a binary of another rule left is never resumed
 /// ([`open_shadow`]).
-pub const PROJECTION_VERSION: i64 = 2;
+pub const PROJECTION_VERSION: i64 = 3;
 
 /// The generation ledgers and their views, dropped from a file at an older [`PROJECTION_VERSION`]
 /// so [`SCHEMA`] recreates them in their current shape.
@@ -5922,11 +5924,12 @@ mod tests {
         assert_eq!(p.owed_because().unwrap(), vec![OWED_OLDER_RULE]);
     }
 
-    /// The shared-node rule (spec 116) is fold rule 2: a file that folded under rule 1 took a
-    /// shared node's kind and line from the last definition folded, so it owes its rebuild, and
-    /// one at rule 2 owes none.
+    /// The shared-node rule (spec 116) is fold rule 2 and the path-addressed node (spec 119) rule
+    /// 3: a file that folded under rule 1 took a shared node's kind and line from the last
+    /// definition folded, and one that folded under rule 2 holds a nested definition at its flat
+    /// id, so each owes its rebuild, and one at rule 3 owes none.
     #[test]
-    fn a_graph_file_folded_at_projection_version_1_owes_its_rebuild_and_one_at_2_owes_none() {
+    fn a_graph_file_folded_at_projection_version_1_or_2_owes_its_rebuild_and_one_at_3_owes_none() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let p = Projector::open(path.to_str().unwrap(), "test").unwrap();
@@ -5940,7 +5943,8 @@ mod tests {
             p.owed_because().unwrap()
         };
         assert_eq!(owed_at(1), vec![OWED_OLDER_RULE]);
-        assert_eq!(owed_at(2), Vec::<&str>::new());
+        assert_eq!(owed_at(2), vec![OWED_OLDER_RULE]);
+        assert_eq!(owed_at(3), Vec::<&str>::new());
     }
 
     /// The owed mark belongs to the graph file whose fold it lost: once that file is gone the mark
