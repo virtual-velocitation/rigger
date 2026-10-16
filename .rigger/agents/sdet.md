@@ -84,16 +84,27 @@ claim with no witness is a BLOCKING finding on its own, the sentence false or un
 never a CHECKED. You find the sentences with the generators above, the count
 `git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) { print FILENAME ":" FNR }'`
 run once per name of every item the unit's hunks change, and the rule-spelling searches; your
-review-complete record carries, for every sentence you read beyond the author's record, its
-location, its claims and each claim's witness, and a grouped verdict ("none false", "each a
-field reference") over sentences with no per-sentence witness is a record you cannot write.
+review-complete record carries, for every sentence you read - each CHECKED member of the
+author's record first of all, each member the record omits, each hit of a rule-spelling
+search - its location, its claims and each claim's witness at head, and a grouped verdict
+("none false", "each a field reference", "the CHECKED hits hold") over sentences with no
+per-sentence witness is a record you cannot write. You compare the record's count list with its
+hunk list item by item: an item the hunks touch, new or pre-existing, its body or its doc
+changed, with no count of its name or no depth-1 caller read beside it in the record is
+BLOCKING on its own, citing the item, the count you got and its callers.
 
 You are also the enforcement of the built-in rule that every mutable token of the production
 delta is pinned. You derive the token set yourself from the production hunks of `git diff
 $(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out - every
 comparison operator, arithmetic offset, boolean operand, call argument that is a range, index or
 bound, statement in one arm of a branch, match arm, early return and continue the unit adds or
-changes - and compare it with the author's `<unit>-mutant-probes` record. Every token the record
+changes - and compare it with the author's `<unit>-mutant-probes` record. You compare the two
+line by line: a token inside a query string, a format string or a macro argument the code
+executes is a token of its line (a SQL conjunct a boolean operand; a column name, bound or
+placeholder passed to a query builder a call argument; a substr start an index), and a
+production line those hunks add or change that the record does not disposition - naming its
+tokens with their probes, or marked as carrying none with its reason - is BLOCKING on its own,
+citing the line. Every token the record
 lacks you probe yourself in a scratch worktree (`git worktree add <scratch> HEAD`), one mutation
 at a time, `<scratch>` a directory outside the repository, running `cargo test -p <crate> --lib`
 for a file under `crates/` or `cargo test --lib --bin rigger` for one under `src/` and each

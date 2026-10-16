@@ -3589,7 +3589,9 @@ mod tests {
     /// first argument token, never the body's name - and the sentence
     /// walk's generators as commands over the unit's whole range on every round (the merge base
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
-    /// 1 with its counted fallback recorded as a gap, each FIXED or new line's `file:line`
+    /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
+    /// per item of the walk's hunk list and paired with it in the record, each FIXED or new
+    /// line's `file:line`
     /// witness, the rule-spelling search over every tracked text file, one
     /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
     /// phrase in another case or split by a rewrap still a hit) whose command and hits the walk pastes for the `sdet`
@@ -3599,7 +3601,9 @@ mod tests {
     /// runs, and the record the walk owes, the hand probe of every mutable token of the
     /// production hunks over the unit's whole range - one mutation at a time, the owning crate's
     /// unit tests and the touched root test binaries run, the file restored - with the
-    /// `<unit>-mutant-probes` record the `sdet` lens completes, and the foreground wait for
+    /// `<unit>-mutant-probes` record the `sdet` lens completes, organised by production line -
+    /// each added or changed line naming its tokens, a query or format string's included, or
+    /// marked as carrying none - and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
     /// line when the host backgrounds one.
     #[test]
@@ -3665,6 +3669,12 @@ mod tests {
              item's name",
             "a `GAP:` clause naming the item in the record",
             "the count above with `t='<name>'`",
+            "The count and the caller lookup run once per item of the walk's hunk list - every \
+             item the hunks touch, new or pre-existing, its body or its doc changed - each \
+             item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
+             xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
+             and the record pairs each item of the hunk list with its count, the lines read and \
+             its callers.",
             "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
             "On every round, the first and each later one alike, `<base>` is the unit's merge \
              base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
@@ -3729,6 +3739,12 @@ mod tests {
             "The `<unit>-mutant-probes` DecisionMade, beside the other two records, pastes each \
              token's `file:line`, the mutation, each command as run and the test that went red \
              with its assertion; the `sdet` lens probes every token it lacks.",
+            "The record walks the production lines of `git diff $(git merge-base rigger-run \
+             HEAD)..HEAD -- crates src` with the test regions left out, in file order: each \
+             added or changed line names its mutable tokens with their probes - a SQL conjunct, \
+             a column name, bound or placeholder passed to a query builder and a substr start \
+             inside a query or format string among them - or is marked as carrying none with \
+             its reason (a signature, a `use`, a doc line, a brace).",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
@@ -3759,20 +3775,24 @@ mod tests {
     /// witness against head, and an omitted member, an uncarried hit, a CHECKED reason that
     /// does not hold, a record naming no search and no empty set, a witness that no longer makes
     /// its sentence true, a new or FIXED sentence with no witness, or sets re-derived over a
-    /// round's delta is BLOCKING; it derives the changed-condition set itself - each boolean
+    /// round's delta is BLOCKING; it compares the record's count list with its hunk list item by
+    /// item, and an item the hunks touch with no name count or no depth-1 caller read is
+    /// BLOCKING; it derives the changed-condition set itself - each boolean
     /// term the unit's production hunks add to or remove from a filter, guard or predicate -
     /// and reads every consumer sentence of that function against it, and one stating the
     /// pre-change answer that the record does not carry is BLOCKING; every sentence it reads, a
     /// CHECKED member, an omitted member or a search hit, it reads claim by claim against the
     /// unit's change with a `file:line` witness per claim at head, a conditional claim against
     /// whether the diff changes its condition and a cross-surface claim against each surface it
-    /// names, a claim with no witness BLOCKING and a grouped verdict with no per-sentence witness
-    /// a record it cannot write. Of the mutable-token rule:
-    /// it derives the token set from the production hunks over the unit's whole range, probes
-    /// every token the author's `<unit>-mutant-probes` record lacks in a scratch worktree it
-    /// restores and removes in-turn, and a green probe or an unrecorded token is BLOCKING. The
-    /// records are the author's instruments, never a gate, so the lens's rule against re-running
-    /// a green gate does not reach them.
+    /// names, a claim with no witness BLOCKING and a grouped verdict with no per-sentence
+    /// witness, over the author's CHECKED members as over any other sentence it reads, a record
+    /// it cannot write. Of the mutable-token rule: it derives the token set from the production
+    /// hunks over the unit's whole range, probes every token the author's `<unit>-mutant-probes`
+    /// record lacks in a scratch worktree it restores and removes in-turn, and a green probe or
+    /// an unrecorded token is BLOCKING; it compares its token set with the record line by line,
+    /// a query or format string's tokens counted on their line, and a production line the
+    /// record does not disposition is BLOCKING. The records are the author's instruments, never
+    /// a gate, so the lens's rule against re-running a green gate does not reach them.
     #[test]
     fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
         const HEADING: &str = "## Re-run the author's searches and re-derive its walk";
@@ -3860,15 +3880,28 @@ mod tests {
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches",
-            "your review-complete record carries, for every sentence you read beyond the \
-             author's record, its location, its claims and each claim's witness, and a grouped \
-             verdict (\"none false\", \"each a field reference\") over sentences with no \
-             per-sentence witness is a record you cannot write.",
+            "You compare the record's count list with its hunk list item by item: an item the \
+             hunks touch, new or pre-existing, its body or its doc changed, with no count of its \
+             name or no depth-1 caller read beside it in the record is BLOCKING on its own, \
+             citing the item, the count you got and its callers.",
+            "your review-complete record carries, for every sentence you read - each CHECKED \
+             member of the author's record first of all, each member the record omits, each hit \
+             of a rule-spelling search - its location, its claims and each claim's witness at \
+             head, and a grouped verdict (\"none false\", \"each a field reference\", \"the \
+             CHECKED hits hold\") over sentences with no per-sentence witness is a record you \
+             cannot write.",
             "You are also the enforcement of the built-in rule that every mutable token of the \
              production delta is pinned.",
             "You derive the token set yourself from the production hunks of `git diff \
              $(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out",
             "compare it with the author's `<unit>-mutant-probes` record",
+            "You compare the two line by line: a token inside a query string, a format string \
+             or a macro argument the code executes is a token of its line (a SQL conjunct a \
+             boolean operand; a column name, bound or placeholder passed to a query builder a \
+             call argument; a substr start an index), and a production line those hunks add or \
+             change that the record does not disposition - naming its tokens with their probes, \
+             or marked as carrying none with its reason - is BLOCKING on its own, citing the \
+             line.",
             "Every token the record lacks you probe yourself in a scratch worktree (`git \
              worktree add <scratch> HEAD`), one mutation at a time",
             "restoring each file with `git checkout -- <file>` and removing the scratch worktree \
@@ -3878,6 +3911,12 @@ mod tests {
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
+        // The lens's per-sentence list covers the author's CHECKED members it re-reads, so no
+        // clause leaves the record's own members out of it.
+        assert!(
+            !flat.contains("beyond the author's record"),
+            "the lens's per-sentence list covers the author's CHECKED members too"
+        );
     }
 
     /// The implementer runs the hand-over checks, never the whole suite: no sentence of its
