@@ -114,9 +114,10 @@ pub const NON_TARGET_KINDS: [&str; 3] =
 pub fn is_call_target(kind: Option<&str>) -> bool {
     kind.is_none_or(|k| !NON_TARGET_KINDS.contains(&k))
 }
-/// A source file container node (spec 29a): the `<rel-path>` node that a file's extracted
-/// code entities hang off. Folded alongside the entities, so a query can reach a file's
-/// structure the same way it reaches the decisions that govern the file.
+/// A source file container node (spec 29a): the `<rel-path>` node that holds a file's top-level
+/// extracted definitions through `CONTAINS`, each nested one hanging off its parent instead
+/// (spec 119, CONTAINS IS STRUCTURE). Folded alongside the entities, so a query can reach a
+/// file's structure the same way it reaches the decisions that govern the file.
 pub const KIND_FILE: &str = "file";
 /// A design-intent doc / doc-section node (spec 29b): a reference-architecture doc,
 /// `architecture.md`, or an addendum (and its `##` sections) ingested as first-class design
@@ -975,8 +976,9 @@ pub struct CodeEntityExtracted {
     pub path: Option<String>,
     /// Spec 119 (CONTAINS IS STRUCTURE): the id path of the definition this one's `CONTAINS`
     /// comes from (`E` for the variant `E::A`), absent at file level, where the file contains it.
-    /// Absent, empty or naming the definition's own [`CodeEntityExtracted::id_path`] reads as none,
-    /// the file containing it; serde-defaulted and omitted when absent.
+    /// Absent, empty or naming the definition's own [`CodeEntityExtracted::id_path`] reads as none
+    /// ([`CodeEntityExtracted::parent_path`]), the file containing it; serde-defaulted and omitted
+    /// when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     /// The rigger `Kind` of the definition, lowercased (e.g. `function`, `type`, `module`).
@@ -1019,6 +1021,15 @@ impl CodeEntityExtracted {
             .as_deref()
             .filter(|path| !path.is_empty())
             .unwrap_or(&self.name)
+    }
+
+    /// The id path of the definition this one's `CONTAINS` comes from (spec 119, CONTAINS IS
+    /// STRUCTURE): `parent` when it is present, non-empty and not the definition's own
+    /// [`CodeEntityExtracted::id_path`]; `None` otherwise, the file containing it.
+    pub fn parent_path(&self) -> Option<&str> {
+        self.parent
+            .as_deref()
+            .filter(|parent| !parent.is_empty() && *parent != self.id_path())
     }
 }
 

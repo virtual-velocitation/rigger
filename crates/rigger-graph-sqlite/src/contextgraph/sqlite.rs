@@ -2724,13 +2724,12 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             )?;
             let defines = undo_what_resolved_against(tx, &entity, defined, project)?;
             // CONTAINS (spec 119, CONTAINS IS STRUCTURE): the definition's parent holds it, the
-            // file when it has none - a `parent` absent, empty or naming the definition's own
-            // path. The parent is asserted bare under this batch's identity first, since a variant
-            // can fold before its enum; the parent's own event fills it, and a parent no event
-            // defines stays that nameless node. A definition's containment is the most explicit
+            // file when it has none ([`CodeEntityExtracted::parent_path`]). The parent is asserted
+            // bare under this batch's identity first, since a variant can fold before its enum;
+            // the parent's own event fills it, and a parent no event defines stays that nameless
+            // node. A definition's containment is the most explicit
             // structural fact there is, so it folds at the EXTRACTED tier (spec 29a, addendum 6.2).
-            let parent = c.parent.as_deref();
-            let container = match parent.filter(|p| !p.is_empty() && *p != c.id_path()) {
+            let container = match c.parent_path() {
                 Some(parent) => {
                     let parent = code_entity_id(&file, parent);
                     ensure_node(tx, by, &parent, KIND_CODE_ENTITY, &[], project)?;
