@@ -27,9 +27,10 @@
 //!    is always complete - trivially, vacuously - since it is always empty). The unit test asserts
 //!    Rust struct equality, never the JSON keys' presence / absence.
 //!  - THE CARD HANDOFF SEAM surviving this criterion's purity: [`neighborhood`] is LENS-AGNOSTIC (a
-//!    generic BFS over every currently-valid edge, regardless of relation), so a file's `CONTAINS`-
-//!    linked entities stay reachable that way - the metadata card's job (criterion 2) - even though
-//!    this criterion makes the SAME entities unreachable as cluster-fold NODES. Proving that
+//!    generic BFS over every currently-valid edge, regardless of relation, and the file-member
+//!    hops of spec 119's member rule), so a file's `CONTAINS`-linked entities stay reachable that
+//!    way - the metadata card's job (criterion 2) - even though this criterion makes the SAME
+//!    entities unreachable as cluster-fold NODES. Proving that
 //!    boundary needs the real `neighborhood` / served-route seam, which the in-module fold test never
 //!    drives.
 //!
@@ -462,8 +463,9 @@ fn files_lens_drill_is_unconditionally_empty_at_the_public_boundary() {
 }
 
 /// THE CARD HANDOFF SEAM (criterion 2, not this one's) survives this criterion's cluster-fold purity
-/// intact: [`neighborhood`] is LENS-AGNOSTIC - a generic BFS over every currently-valid edge - so a
-/// file's `CONTAINS`-linked entities stay reachable there even though the SAME entities are now
+/// intact: [`neighborhood`] is LENS-AGNOSTIC - a generic BFS over every currently-valid edge and
+/// the file-member hops of spec 119's member rule - so a file's `CONTAINS`-linked entities stay
+/// reachable there even though the SAME entities are now
 /// unreachable as files-lens cluster NODES. This is the exact handoff spec 63's Goal describes: a
 /// file's top entities live on the metadata card, not as cluster members.
 #[test]

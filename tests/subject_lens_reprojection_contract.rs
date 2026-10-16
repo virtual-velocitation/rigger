@@ -8,7 +8,7 @@
 //!    alongside Code's community fold and Files' defining-file fold). A membership-less member keeps
 //!    its KIND bucket, so a re-projection stays whole (nothing silently dropped);
 //!  - the SUBJECT axis: `member_set` dispatches on the subject's OWN node kind - a COMMUNITY re-grains
-//!    to its `IN_COMMUNITY` members, a FILE to its `CONTAINS` entities, a single entity is its own
+//!    to its `IN_COMMUNITY` members, a FILE to its members by `member_file`, a single entity is its own
 //!    singleton set, and an UNKNOWN subject is the empty set (the empty cell the mechanics ship);
 //!  - the SERIALIZED FORM: `Reprojection` is the JSON body the browser consumes, and its
 //!    `#[serde(skip_serializing_if)]` on `unresolved` is a wire contract - the key is ABSENT when the

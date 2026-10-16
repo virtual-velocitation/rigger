@@ -3287,7 +3287,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-console/s
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-console/src/console/map.rs:1246-1248` `in_community`
-- `tests/files_lens_view_periphery.rs:65-67` `refs`
+- `tests/files_lens_view_periphery.rs:66-68` `refs`
 
 #### `dup-c138bb72172b` (near, 9 sites)
 

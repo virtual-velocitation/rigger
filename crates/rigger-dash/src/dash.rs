@@ -10257,7 +10257,7 @@ mod metadata_card_c2 {
     }
 
     /// A file's `top_entities` also carries each member's own kind (always `code-entity`, since
-    /// `REL_CONTAINS` forward edges are structurally file -> code-entity only, spec 29a) - the
+    /// `query::member_file` names a file for a named code entity alone, spec 119) - the
     /// SAME `CardRef` shape `top_evidence` uses, proven here so the field is not accidentally
     /// scoped to concepts alone.
     #[test]
