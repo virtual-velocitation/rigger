@@ -16,7 +16,7 @@ use crate::eventstore::Event;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
 use crate::grounder::symbols::registry::for_path;
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Round 5 (adj-u86c3-r4-out-of-line-exclusion-still-unmigrated): the symbols [`extract_events`]
 /// actually sees for one file - `fs` unchanged, UNLESS `excluded` (this file is the resolved
@@ -172,10 +172,13 @@ fn lower_file(path: &str, symbols: &FileSymbols, excluded: bool) -> Vec<Event> {
 
 /// Emit one file's extracted symbols as events: one `CodeEntityExtracted` per definition, carrying
 /// its id path when that differs from its name and its parent's path when it has one (spec 119),
-/// then one `EdgeInferred` per reference. Each set is emitted in a sorted, deterministic order (defs by
-/// name/line/kind, refs by name/line) so identical source yields byte-identical events - the
-/// determinism-by-construction spec 29a requires. Definitions are emitted before references so the
-/// fold can land a same-file reference on its already-folded definition entity.
+/// then one `EdgeInferred` per reference. Each set is emitted in a sorted, deterministic order so
+/// identical source yields byte-identical events - the determinism-by-construction spec 29a
+/// requires: refs by name/line, and defs parent before child (spec 119, A PARENT IS EMITTED BEFORE
+/// ITS CHILD), by the length of each one's parent chain ([`chain_length`]), then leaf, then path,
+/// stably, so same-path twins keep `extract`'s order and a parent's own event precedes every
+/// child's. Definitions are emitted before references so the fold can land a same-file reference
+/// on its already-folded definition entity.
 ///
 /// The FIRST event of the file's batch carries `fresh` (spec 29a criterion 3): it marks the
 /// extraction-batch boundary, so the fold supersedes the file's PRIOR structural edges before
@@ -219,11 +222,18 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     let mut events = Vec::with_capacity(fs.defs.len() + fs.refs.len());
 
     let mut defs: Vec<&Def> = fs.defs.iter().filter(|d| !d.is_test).collect();
-    defs.sort_by(|a, b| {
-        a.name
-            .cmp(&b.name)
-            .then(a.line.cmp(&b.line))
-            .then_with(|| kind_str(a.kind).cmp(kind_str(b.kind)))
+    // Spec 119 (A PARENT IS EMITTED BEFORE ITS CHILD): a stable sort, so same-path twins keep
+    // `extract`'s order.
+    let mut parents: BTreeMap<&str, Vec<Option<&str>>> = BTreeMap::new();
+    for d in &defs {
+        parents
+            .entry(d.path.as_str())
+            .or_default()
+            .push(d.parent.as_deref());
+    }
+    defs.sort_by_cached_key(|&d| {
+        let chain = chain_length(d.parent.as_deref(), &parents);
+        (chain, d.name.as_str(), d.path.as_str())
     });
     for d in defs {
         let payload = CodeEntityExtracted {
@@ -314,6 +324,20 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     }
 
     events
+}
+
+/// The length of the parent chain above a definition whose parent is `parent` (spec 119, A PARENT
+/// IS EMITTED BEFORE ITS CHILD): 0 at file level, else one link for the parent plus the longest
+/// chain above the definitions `parents` holds at its path - each emitted path mapped to the
+/// parents of its definitions - a parent naming no emitted definition adding nothing above it.
+fn chain_length(parent: Option<&str>, parents: &BTreeMap<&str, Vec<Option<&str>>>) -> usize {
+    parent.map_or(0, |path| {
+        let above = parents.get(path).into_iter().flatten();
+        1 + above
+            .map(|grand| chain_length(*grand, parents))
+            .max()
+            .unwrap_or(0)
+    })
 }
 
 /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): the STRUCTURAL batch-boundary sentinel for a

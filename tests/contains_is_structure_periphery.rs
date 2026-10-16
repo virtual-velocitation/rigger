@@ -42,14 +42,14 @@ fn the_extracted_event_carries_parent_only_off_file_level_and_round_trips() {
     let under_e = |variant: &str| (variant.to_string(), Some("E".into()));
     assert_eq!(
         common::names_and_key(&payloads, "parent"),
-        [under_e("A"), under_e("B"), ("E".to_string(), None)],
+        [("E".to_string(), None), under_e("A"), under_e("B")],
         "only a variant's payload carries a parent key, its enum's path"
     );
     let read: Vec<_> = payloads.iter().map(parent_read).collect();
     let under_e = (Some("E".to_string()), Some("E".to_string()), true);
     assert_eq!(
         read,
-        [under_e.clone(), under_e, (None, None, true)],
+        [(None, None, true), under_e.clone(), under_e],
         "each payload's parent_path, its parent, and whether it serializes back to itself"
     );
 }

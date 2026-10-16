@@ -51,8 +51,8 @@ fn source_names_and_paths() -> Vec<NameAndPath> {
     vec![
         ("T".to_string(), None),
         ("impl T".to_string(), None),
-        new_at_its_path(),
         ("run".to_string(), None),
+        new_at_its_path(),
     ]
 }
 
@@ -82,8 +82,8 @@ fn the_extracted_event_carries_path_only_off_file_level_and_round_trips() {
         [
             ("T".to_string(), true),
             ("impl T".to_string(), true),
-            ("T::new".to_string(), true),
             ("run".to_string(), true),
+            ("T::new".to_string(), true),
         ],
         "each payload's id path, and whether it serializes back to itself"
     );
