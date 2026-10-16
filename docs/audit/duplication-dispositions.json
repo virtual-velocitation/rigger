@@ -895,9 +895,9 @@
     "reason": "Two port methods of the `Namespaced` decorator, each forwarding its own inner call; the shared work (scoping the stream name) is already the one `scoped` both call."
   },
   {
-    "id": "dup-b4990598bfd7",
+    "id": "dup-26b14e332411",
     "disposition": "not-a-duplicate",
-    "reason": "Two different SQL statements over the one shared `group_expr`: the partial group index's `CREATE INDEX` and the lookup's `SELECT` that seeks it; the shared expression is already the one function both call."
+    "reason": "Different SQL composed over one shared expression function: the partial group index's `CREATE INDEX` and the lookup's `SELECT` that seeks it over `group_expr`, and the graph store's member expression (`member_sql`) over `node_leaf_sql`; each shared expression is already the one function its readers call."
   },
   {
     "id": "dup-3eb116c3c4c8",
@@ -910,9 +910,9 @@
     "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, landing an interleaved write) is already the one `record`/`land_interleaved` pair both call."
   },
   {
-    "id": "dup-e6d4de111048",
+    "id": "dup-ff98ca74f1ca",
     "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect) over different inputs."
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect, the `<file>::` id-range SQL predicate the graph store's file-range readers embed) over different inputs."
   },
   {
     "id": "dup-da45cd3da239",

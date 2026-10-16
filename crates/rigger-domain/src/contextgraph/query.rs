@@ -29,8 +29,8 @@ use serde::{Deserialize, Serialize};
 use crate::contextgraph::{
     is_call_target, Edge, Error, Graph, Node, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
     KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING,
-    KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, PLACEHOLDER_SIGIL, REL_ABOUT, REL_CONTAINS,
-    REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
+    KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, PLACEHOLDER_SIGIL, REL_ABOUT, REL_GOVERNS,
+    REL_IN_COMMUNITY, REL_REALIZES,
 };
 use crate::eventstore::Position;
 
@@ -118,7 +118,7 @@ pub fn cluster_key(id: &str, kind: &str) -> String {
 ///
 /// So `Makefile::all` names `Makefile`, while a dotted id of a kind naming no file (a decision
 /// `v1.2-choice`) names none. The ONE file read [`cluster_key`] (which folds to the file's
-/// DIRECTORY), the files lens ([`whole_graph_lens_key`]), [`card`], `dash.rs`'s
+/// DIRECTORY), the files lens ([`whole_graph_lens_key`]), [`card`], [`member_file`], `dash.rs`'s
 /// `reproject_files` and the console map's district all take. Pure and total.
 pub fn node_file<'a>(kind: &str, id: &'a str) -> Option<&'a str> {
     match kind {
@@ -131,6 +131,22 @@ pub fn node_file<'a>(kind: &str, id: &'a str) -> Option<&'a str> {
         | KIND_ARTIFACT => file_of(id),
         _ => None,
     }
+}
+
+/// The file a node is a MEMBER of (spec 119, THE MEMBER RULE): [`node_file`] of a `code-entity`
+/// node carrying a non-empty `name` ([`node_name`]), a definition however deeply nested, and
+/// `None` for any other node - a placeholder, a bare parent, a bare caller, a flat id a
+/// knowledge assertion holds and a non-`code-entity` node whose id holds `::` (an `artifact`)
+/// alike. Membership reads no edge: a file's members are the named code entities its id range
+/// holds, whatever `CONTAINS` reaches them. The one rule [`member_set`]'s file arm,
+/// [`neighborhood_of`]'s member hops, the conductor's file of a definition and the store's
+/// `member_sql()` read.
+pub fn member_file(node: &Node) -> Option<&str> {
+    if node.kind != KIND_CODE_ENTITY {
+        return None;
+    }
+    node_name(node)?;
+    node_file(KIND_CODE_ENTITY, &node.id)
 }
 
 /// The FILE PATH a path-shaped id names, or `None` when the id names no file: the file half
@@ -929,7 +945,8 @@ pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
 
 /// The subject's MEMBER SET at its own grain (spec 55 c1), as the member NODES (so the fold can read
 /// each member's kind / attrs). Dispatched on the SUBJECT'S node kind: a concept's `REALIZES`
-/// members, a community's `IN_COMMUNITY` members, a file's `CONTAINS` entities, else the subject's own
+/// members, a community's `IN_COMMUNITY` members, a file's members by [`member_file`] (its named
+/// code entities, nested ones included, whatever `CONTAINS` reaches them), else the subject's own
 /// singleton set; an unknown subject (absent from the graph) is empty. Deterministic - members come
 /// out in ascending-id order - and deduped. `pub(crate)`: shared by [`card`] (a file's `top_entities` /
 /// a concept's `top_evidence`) and `dash.rs`'s `reproject`.
@@ -953,13 +970,15 @@ pub fn member_set<'g>(graph: &'g Graph, subject: &str) -> Vec<&'g Node> {
                 }
             }
         }
-        // A file re-grains to the entities it CONTAINS (spec 29a).
+        // A file re-grains to its members (spec 119, THE MEMBER RULE): no edge is read.
         Some(KIND_FILE) => {
-            for e in &graph.edges {
-                if e.valid_to.is_none() && e.rel == REL_CONTAINS && e.from == subject {
-                    ids.insert(e.to.as_str());
-                }
-            }
+            ids.extend(
+                graph
+                    .nodes
+                    .iter()
+                    .filter(|n| member_file(n) == Some(subject))
+                    .map(|n| n.id.as_str()),
+            );
         }
         // A single entity (a code entity / doc / any other node) is its own member set.
         Some(_) => {
@@ -974,10 +993,12 @@ pub fn member_set<'g>(graph: &'g Graph, subject: &str) -> Vec<&'g Node> {
 }
 
 /// Compute the seeded neighborhood of `seed` WITHIN the already-projected `graph` (spec 30 c5): a
-/// breadth-first walk following currently-valid edges in EITHER direction up to `depth` hops,
-/// returning the reachable nodes and the TIER-TAGGED edges among them. This mirrors
-/// [`crate::contextgraph::Projection::subgraph`]'s traversal (both-direction, valid-only,
-/// node-and-edge-in-set) applied to the graph the dash already loaded, so the route stays a pure
+/// breadth-first walk following currently-valid edges in EITHER direction up to `depth` hops, a
+/// reached file also reaching its members and a reached member its file one hop on (spec 119,
+/// THE MEMBER RULE, by [`member_file`]), returning the reachable nodes and the TIER-TAGGED edges
+/// among them. This mirrors [`crate::contextgraph::Projection::subgraph`]'s traversal
+/// (both-direction, valid-only, the two member hops, node-and-edge-in-set) applied to the graph
+/// the dash already loaded, so the route stays a pure
 /// read over the projected inputs - the panel never re-queries the store. An unknown seed or an
 /// empty graph yields an empty neighborhood (never an error), the graceful degradation the spec's
 /// KG-feature-off / empty-graph case requires.
@@ -1008,9 +1029,28 @@ pub fn neighborhood_of(
             frontier.push(seed.clone());
         }
     }
+    // THE MEMBER RULE's two hops (spec 119): each file's members and each member's file, read
+    // off the nodes, never an edge.
+    let mut members_of: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut file_of_member: BTreeMap<&str, &str> = BTreeMap::new();
+    for n in &graph.nodes {
+        if let Some(file) = member_file(n) {
+            members_of.entry(file).or_default().push(n.id.as_str());
+            file_of_member.insert(n.id.as_str(), file);
+        }
+    }
     let mut hops = 0;
     while hops < depth && !frontier.is_empty() {
         let mut next: Vec<String> = Vec::new();
+        for near in &frontier {
+            let members = members_of.get(near.as_str()).into_iter().flatten();
+            let file = file_of_member.get(near.as_str());
+            for far in members.chain(file) {
+                if reached.insert(far.to_string()) {
+                    next.push(far.to_string());
+                }
+            }
+        }
         for e in &graph.edges {
             if e.valid_to.is_some() {
                 continue; // an invalidated (superseded) edge is not currently valid
@@ -1276,7 +1316,7 @@ pub struct CardRef {
 /// - a [`KIND_CODE_ENTITY`] subject carries its definition `file`/`line`, the coupling
 ///   `community` it belongs to (spec 53's default grain), the `concepts` it REALIZES, and
 ///   `decisions`/`findings` COUNTS;
-/// - a [`KIND_FILE`] subject carries `top_entities` - the [`member_set`] it CONTAINS;
+/// - a [`KIND_FILE`] subject carries `top_entities` - its [`member_set`], by [`member_file`];
 /// - a [`KIND_CONCEPT`] subject carries `top_evidence` - the [`member_set`] that REALIZES it.
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct Card {
@@ -1350,7 +1390,7 @@ pub(crate) fn community_label(graph: &Graph, id: &str) -> Option<String> {
 }
 
 /// A [`member_set`] node as a [`CardRef`] (id + kind + display label) - the shared mapping
-/// [`card`]'s `top_entities` (a file's CONTAINS members) and `top_evidence` (a concept's REALIZES
+/// [`card`]'s `top_entities` (a file's members) and `top_evidence` (a concept's REALIZES
 /// members) both use, so the two chip lists are built by ONE conversion, never two. `kind` is the
 /// member's OWN [`Node::kind`], never the subject's.
 pub(crate) fn card_ref(n: &Node) -> CardRef {

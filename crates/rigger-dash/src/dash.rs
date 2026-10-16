@@ -1663,7 +1663,7 @@ pub const REPROJECT_FILES_UNRESOLVED: &str = "no member resolves to a file";
 ///
 /// The MEMBER SET is read at the subject's grain from its OWN node kind: a [`KIND_CONCEPT`] resolves
 /// to the nodes that `REALIZES` it; a [`KIND_COMMUNITY`] to the nodes `IN_COMMUNITY` it; a
-/// [`KIND_FILE`] to the entities it `CONTAINS`; any other node (a single code entity / doc) is its own
+/// [`KIND_FILE`] to its members, the named code entities `query::member_file` gives it; any other node (a single code entity / doc) is its own
 /// singleton set; an unknown subject is the empty set (the documented empty cell, spec 55 c2). The
 /// RE-BUCKET is the shared [`fold_buckets`] authority: coupling community under [`Lens::Code`],
 /// derived concept under [`Lens::Concepts`], and the DISTINCT DEFINING FILE under [`Lens::Files`].
@@ -10153,7 +10153,7 @@ mod metadata_card_c2 {
         );
     }
 
-    /// A file subject's card lists the entities it CONTAINS as `top_entities` (reusing
+    /// A file subject's card lists its members as `top_entities` (reusing
     /// [`member_set`]'s own file dispatch, never a second parallel read) and carries no
     /// `file`/`line`/`community` of its own (those name a CODE-ENTITY's definition site, not a
     /// file's).
@@ -10180,7 +10180,7 @@ mod metadata_card_c2 {
         assert_eq!(
             ids,
             vec!["combat.rs::fire", "combat.rs::reload"],
-            "top_entities is the file's CONTAINS member set: {card:?}"
+            "top_entities is the file's member set: {card:?}"
         );
         assert!(
             card.top_evidence.is_empty(),

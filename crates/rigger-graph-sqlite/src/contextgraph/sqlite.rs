@@ -1752,20 +1752,8 @@ impl Projection for Projector {
         // of truth. The traversal itself is scoped (`e.project`), so it never walks another
         // project's edge into a node it does not own, and the node/edge fetches are scoped so a
         // same-id row from another project is never returned.
-        let mut reach = conn
-            .prepare(
-                "WITH RECURSIVE reach(id, depth) AS (
-                   SELECT value, 0 FROM json_each(?1)
-                   UNION
-                   SELECT CASE WHEN e.from_id = r.id THEN e.to_id ELSE e.from_id END, r.depth + 1
-                   FROM reach r JOIN edges e
-                     ON (e.from_id = r.id OR e.to_id = r.id)
-                        AND e.valid_to IS NULL AND e.project = ?3
-                   WHERE r.depth < ?2
-                 )
-                 SELECT DISTINCT id FROM reach",
-            )
-            .map_err(be)?;
+        // The walk crosses live edges and THE MEMBER RULE's two hops (spec 119), [`reach_sql`].
+        let mut reach = conn.prepare(&reach_sql()).map_err(be)?;
         let ids: Vec<String> = reach
             .query_map(params![seed_json, depth, self.project], |r| r.get(0))
             .map_err(be)?
@@ -2341,16 +2329,20 @@ fn owe_relabel_of(
     project: &str,
 ) -> Result<(), Error> {
     let sql = if whole_file {
-        "INSERT OR IGNORE INTO relabel_owed (project, community)
-         SELECT DISTINCT project, to_id FROM edges
-          WHERE rel = ?3 AND valid_to IS NULL AND project = ?2
-            AND (from_id = ?1 OR (from_id >= ?1 || '::' AND from_id < ?1 || ':;'))"
+        format!(
+            "INSERT OR IGNORE INTO relabel_owed (project, community)
+             SELECT DISTINCT project, to_id FROM edges
+              WHERE rel = ?3 AND valid_to IS NULL AND project = ?2
+                AND (from_id = ?1 OR ({}))",
+            id_range_sql("from_id", "?1")
+        )
     } else {
         "INSERT OR IGNORE INTO relabel_owed (project, community)
          SELECT DISTINCT project, to_id FROM edges
           WHERE from_id = ?1 AND rel = ?3 AND valid_to IS NULL AND project = ?2"
+            .to_string()
     };
-    tx.execute(sql, params![member, project, REL_IN_COMMUNITY])
+    tx.execute(&sql, params![member, project, REL_IN_COMMUNITY])
         .map_err(be)?;
     Ok(())
 }
@@ -3295,12 +3287,15 @@ fn invalidate_finding_edges(
 fn supersede_file_edges(tx: &Transaction, file: &str, at: i64, project: &str) -> Result<(), Error> {
     owe_relabel_of(tx, file, true, project)?;
     tx.execute(
-        "UPDATE edges SET valid_to = ?1
-         WHERE valid_to IS NULL AND project = ?5
-           AND (
-             (from_id = ?2 AND (rel = ?3 OR rel = ?4))
-             OR (rel = ?6 AND from_id >= ?2 || '::' AND from_id < ?2 || ':;')
-           )",
+        &format!(
+            "UPDATE edges SET valid_to = ?1
+             WHERE valid_to IS NULL AND project = ?5
+               AND (
+                 (from_id = ?2 AND (rel = ?3 OR rel = ?4))
+                 OR (rel = ?6 AND {})
+               )",
+            id_range_sql("from_id", "?2")
+        ),
         params![at, file, REL_CONTAINS, REL_REFERENCES, project, REL_CALLS],
     )
     .map_err(be)?;
@@ -3404,6 +3399,64 @@ fn node_leaf_sql() -> &'static str {
     "NULLIF(json_extract(attrs, '$.name'), '')"
 }
 
+/// The `<file>::` id range (spec 119): `column` holds an id whose file half is the SQL value
+/// `file`, an id `<file>::<rest>` sorting at or after `<file>::` and before `<file>:;` (`;` the
+/// byte after `:`), so a seek of an index on `column` answers it and no `LIKE`/`GLOB` wildcard a
+/// real path could hold is read. The one spelling every reader of a file's id range embeds: the
+/// leaf lookup filtered to a file ([`leaf_definitions_sql`]), a file's supersession
+/// ([`supersede_file_edges`]), its relabel debt ([`owe_relabel_of`]) and `subgraph`'s member hop
+/// ([`reach_sql`]).
+fn id_range_sql(column: &str, file: &str) -> String {
+    format!("{column} >= {file} || '::' AND {column} < {file} || ':;'")
+}
+
+/// The store form of [`member_file`](super::query::member_file) over a node row's `kind`, `id`
+/// and `attrs` (spec 119, THE MEMBER RULE): the file half of a `code-entity` row's id when its
+/// [`node_leaf_sql`] is not NULL, else NULL, and NULL too for an id holding no `::` or an empty
+/// file half, where `query::node_file` names none. ONE expression both of [`reach_sql`]'s member
+/// hops embed, the range load (file to members) and the member-to-file hop, so a placeholder, a
+/// bare parent, a bare caller or a knowledge-held flat id enters the reach only through an edge.
+fn member_sql() -> String {
+    let leaf = node_leaf_sql();
+    format!(
+        "CASE WHEN kind = '{KIND_CODE_ENTITY}' AND {leaf} IS NOT NULL
+              THEN NULLIF(substr(id, 1, instr(id, '::') - 1), '') END"
+    )
+}
+
+/// The recursive reach [`Projection::subgraph`] walks from the seed ids `?1` (a JSON array)
+/// within `?2` hops in project `?3`, each row a reached id and the hop it was reached at, by three
+/// legs taken one hop on under the same depth bound: a live edge in either direction; a reached
+/// file's members (spec 119, THE MEMBER RULE), every node in its `<file>::` id range
+/// ([`id_range_sql`], a seek of the node key, the unary `+` on `project` keeping the planner off
+/// the leaf index's project prefix) whose [`member_sql`] is that file, whatever its
+/// nesting; and a reached member's file, its [`member_sql`]. So a nested definition's file and
+/// file-mates sit at the hops a file `CONTAINS` hop gave them.
+fn reach_sql() -> String {
+    let member = member_sql();
+    let range = id_range_sql("id", "r.rid");
+    format!(
+        "WITH RECURSIVE reach(rid, depth) AS (
+           SELECT value, 0 FROM json_each(?1)
+           UNION
+           SELECT CASE WHEN e.from_id = r.rid THEN e.to_id ELSE e.from_id END, r.depth + 1
+           FROM reach r JOIN edges e
+             ON (e.from_id = r.rid OR e.to_id = r.rid)
+                AND e.valid_to IS NULL AND e.project = ?3
+           WHERE r.depth < ?2
+           UNION
+           SELECT id, r.depth + 1
+           FROM reach r JOIN nodes
+           WHERE r.depth < ?2 AND {range} AND +project = ?3 AND {member} = r.rid
+           UNION
+           SELECT {member}, r.depth + 1
+           FROM reach r JOIN nodes ON project = ?3 AND id = r.rid
+           WHERE r.depth < ?2 AND {member} IS NOT NULL
+         )
+         SELECT DISTINCT rid FROM reach"
+    )
+}
+
 /// The text of an edge's target after its first `::`, `to_id` naming the target column: ONE pinned
 /// expression the partial index `idx_edges_live_to_name_suffix` ([`migrate_indexes`]) is built on
 /// over `to_id` and every edge-side reader embeds through [`edge_binds_leaf_sql`], since SQLite
@@ -3457,9 +3510,10 @@ fn leaf_definitions_sql(rule: &str) -> String {
           WHERE project = ?3 AND {} = ?1
             AND kind = ?2
             AND {rule}
-            AND (?4 IS NULL OR (id >= ?4 || '::' AND id < ?4 || ':;'))
+            AND (?4 IS NULL OR ({}))
           ORDER BY id",
-        node_leaf_sql()
+        node_leaf_sql(),
+        id_range_sql("id", "?4")
     )
 }
 

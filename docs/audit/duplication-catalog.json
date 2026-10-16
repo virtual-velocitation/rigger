@@ -256,7 +256,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-e6d4de111048",
+    "id": "dup-ff98ca74f1ca",
     "classification": "near",
     "sites": [
       {
@@ -278,6 +278,11 @@
         "file": "crates/rigger-domain/src/review.rs",
         "name": "spec_critique_prompt",
         "content_hash": "7963312db697b9f4"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "id_range_sql",
+        "content_hash": "5d23ae9ae3e76aee"
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
@@ -310,7 +315,7 @@
         "content_hash": "5d23ae9ae3e76aee"
       }
     ],
-    "proposed_home": "a new shared module (sites span 9 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/review.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/common/fixtures/plan_critique.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
+    "proposed_home": "a new shared module (sites span 10 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/review.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/common/fixtures/plan_critique.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -6412,6 +6417,30 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-26b14e332411",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "member_sql",
+        "content_hash": "0b8660f5890d2a0c"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "group_index_sql",
+        "content_hash": "0b8660f5890d2a0c"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "latest_in_group_sql",
+        "content_hash": "0b8660f5890d2a0c"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-c650c3e62b50",
     "classification": "exact",
     "sites": [
@@ -7106,25 +7135,6 @@
       }
     ],
     "proposed_home": "namespace::namespaced",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-b4990598bfd7",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "group_index_sql",
-        "content_hash": "0b8660f5890d2a0c"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "latest_in_group_sql",
-        "content_hash": "0b8660f5890d2a0c"
-      }
-    ],
-    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

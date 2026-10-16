@@ -866,8 +866,10 @@ pub trait Projection: Send + Sync {
     /// reads the projection's record of what it folded against the log.
     fn rebuild_owed(&self) -> Result<bool, Error>;
 
-    /// The connected subgraph reachable from any seed within depth hops,
-    /// following only currently valid edges (the FEED arc / an agent's blast radius).
+    /// The connected subgraph reachable from any seed within depth hops (the FEED arc / an
+    /// agent's blast radius), following only currently valid edges and THE MEMBER RULE's two
+    /// hops (spec 119): a reached file reaches its members ([`query::member_file`]) and a reached
+    /// member its file, each one hop on.
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error>;
 
     /// A directed, depth-bounded traversal over the caller-attributed `CALLS` edges (spec 52),
