@@ -95,7 +95,9 @@ mod caller_sources;
 mod name_filter_sources;
 
 /// THE RUST DEFINITIONS FIXTURE the Rust definition tests extract, and the enum `E` sources the
-/// CONTAINS IS STRUCTURE tests extract, compiled here from the same file as the root crate's tests. It names no crate; only the default lane's tests extract it.
+/// CONTAINS IS STRUCTURE tests and the twin-method sources the ONE PATH IS ONE EVENT tests extract,
+/// compiled here from the same file as the root crate's tests. It names no crate; only the
+/// default lane's tests extract it.
 #[cfg(all(
     test,
     feature = "symbols",
@@ -124,9 +126,9 @@ mod go_definition_sources;
 #[path = "../../../tests/common/fixtures/csharp_definition_sources.rs"]
 mod csharp_definition_sources;
 
-/// THE JS AND TS DEFINITIONS FIXTURES the JS and TS definition tests extract, compiled here from
-/// the file the shared fixtures live in. They name no crate; only the default lane's tests
-/// extract them.
+/// THE JS AND TS DEFINITIONS FIXTURES the JS and TS definition tests extract, and the namespace
+/// source the ONE PATH IS ONE EVENT tests extract, compiled here from the file the shared fixtures
+/// live in. They name no crate; only the default lane's tests extract them.
 #[cfg(all(
     test,
     feature = "symbols",

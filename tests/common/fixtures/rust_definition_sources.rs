@@ -2,7 +2,9 @@
 //! definition type is a definition of its kind) is proven over, once on the symbols the
 //! registered Rust query extracts and once on the graph a build folds; and the enum `E` before
 //! and after its variant `B` is removed, the sources CONTAINS IS STRUCTURE (spec 119) retires a
-//! variant's `CONTAINS` over. It names no crate, so every lane compiles it.
+//! variant's `CONTAINS` over; and the method `a::B::c` in two impls and then in one, the sources
+//! ONE PATH IS ONE EVENT (spec 119) picks and hands over a path's one event over. It names no
+//! crate, so every lane compiles it.
 
 /// THE RUST DEFINITIONS FIXTURE (spec 116 criterion 6): one Rust file holding every Rust
 /// definition type. Lines 1-2 an `extern crate` without and with an alias; 3-4 an item const

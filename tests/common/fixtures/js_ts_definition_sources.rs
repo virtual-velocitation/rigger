@@ -1,6 +1,8 @@
 //! THE JS AND TS DEFINITIONS FIXTURES: the three source texts JS AND TS DEFINITIONS ARE NODES
 //! (every JS and TS definition type is a definition of its kind) is proven over, on the symbols
-//! the JS, TS and TSX queries extract. They name no crate, so every lane compiles them.
+//! the JS, TS and TSX queries extract; and the TS `namespace A.B` beside a field `B` of a
+//! `class A`, the source ONE PATH IS ONE EVENT (spec 119) picks the field's event over. They name
+//! no crate, so every lane compiles them.
 
 /// The JS lines all three fixtures open with, every one of them parsed alike by the JS, TS and
 /// TSX grammars. Line 1 a function holding a const whose initializer calls, a `for .. of`
