@@ -2635,7 +2635,7 @@ project identity so one backend can hold many projects without their data mixing
          Surfaces the document fails to name: {missing:#?}"`
 - `tests/boundary_audit.rs:836-836` `"let b = \"sh .rigger/gates/mutation.sh\";\n"`
 - `tests/canary_model_drift_periphery.rs:62-62` `".rigger"`
-- `tests/change_path_revert_periphery.rs:82-82` `".rigger"`
+- `tests/change_path_revert_periphery.rs:83-83` `".rigger"`
 - `tests/checkin_mutation_diff_base_periphery.rs:63-63` `".rigger"`
 - `tests/checkpoint_commit_hook_bypass_periphery.rs:58-58` `"{repo_path}/.rigger-test-scratch"`
 - `tests/ci_lanes.rs:35-35` `".rigger/gates/lanes.sh"`
@@ -3148,11 +3148,11 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/validate_footprint_default_scratch_root_periphery.rs:70-70` `".rigger"`
 - `tests/watchdog_cli_periphery.rs:165-165` `".rigger"`
 - `tests/watchdog_cli_periphery.rs:352-352` `".rigger"`
-- `tests/workflow_definition_and_js_constants_periphery.rs:90-90` `".rigger"`
-- `tests/workflow_definition_and_js_constants_periphery.rs:92-92` `".rigger"`
-- `tests/workflow_definition_and_js_constants_periphery.rs:354-354` `".rigger"`
-- `tests/workflow_definition_and_js_constants_periphery.rs:356-356` `".rigger"`
-- `tests/workflow_definition_and_js_constants_periphery.rs:595-595` `".rigger"`
+- `tests/workflow_definition_and_js_constants_periphery.rs:91-91` `".rigger"`
+- `tests/workflow_definition_and_js_constants_periphery.rs:93-93` `".rigger"`
+- `tests/workflow_definition_and_js_constants_periphery.rs:355-355` `".rigger"`
+- `tests/workflow_definition_and_js_constants_periphery.rs:357-357` `".rigger"`
+- `tests/workflow_definition_and_js_constants_periphery.rs:596-596` `".rigger"`
 - `tests/workflow_driver_resolved_model_periphery.rs:106-106` `".rigger"`
 - `tests/worktree_liveness_fence_periphery.rs:110-110` `".rigger"`
 
@@ -5259,8 +5259,8 @@ Proposed home: `workflow_definition_and_js_constants_periphery::support (consoli
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/workflow_definition_and_js_constants_periphery.rs:89-123` `seed_workflow_yml`
-- `tests/workflow_definition_and_js_constants_periphery.rs:131-146` `seed_js_files`
+- `tests/workflow_definition_and_js_constants_periphery.rs:90-124` `seed_workflow_yml`
+- `tests/workflow_definition_and_js_constants_periphery.rs:132-147` `seed_js_files`
 
 ### Adversarial sample
 
@@ -5285,7 +5285,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `src/cli/mod.rs:4432-4458` `footprint_reclaim_lines` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:8437-8447` `parse_run_args_reads_rebase_definition` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/run.rs:2085-2109` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `tests/change_path_revert_periphery.rs:212-322` `a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `tests/change_path_revert_periphery.rs:213-323` `a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/cli.rs:10125-10149` `workflow_accepts_a_spec_and_a_base_flag` - no duplicate found by reading
 - `tests/code_entity_test_exclusion_periphery.rs:1812-1824` `edges_where` - duplicate found by reading and closed: the design-doc assertion, the dev-only path test and the test-region test each re-rolled its `(from, rel, to)` edge projection inline; all now call `edges_where`
 - `tests/common/fixtures/events.rs:624-626` `reads` - caught: `dup-ebee743f02de`

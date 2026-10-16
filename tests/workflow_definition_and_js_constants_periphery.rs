@@ -73,6 +73,7 @@ mod common;
 use common::cli::ingested_count;
 #[cfg(feature = "symbols")]
 use common::cli::run_around;
+#[cfg(feature = "symbols")]
 use common::cli::run_rigger;
 #[cfg(feature = "symbols")]
 use common::cli::run_stream_identity;

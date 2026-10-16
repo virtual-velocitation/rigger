@@ -54,6 +54,7 @@ use common::git::run_git;
 
 use common::cli::ingested_count;
 use common::cli::read_run_events;
+#[cfg(feature = "symbols")]
 use common::cli::run_around;
 use common::cli::run_rigger;
 
