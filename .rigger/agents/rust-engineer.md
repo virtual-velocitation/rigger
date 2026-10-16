@@ -144,7 +144,12 @@ each of its callers names the trait item it implements; `rigger graph --around
 default depth answers the item's whole file neighbourhood, never its callers), and when it
 answers nothing the callers are the lines the count above prints for the item's name, each
 read, with a `GAP:` clause naming the item in the record; and the count above with `t='<name>'` prints every tracked line spelling each changed
-item's name, each read. On every round, the first and each later one alike, `<base>` is the
+item's name, each read. The count and the caller lookup run once per item of the walk's hunk
+list - every item the hunks touch, new or pre-existing, its body or its doc changed - each
+item's count run as
+`git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) { print FILENAME ":" FNR }'`
+with its name, and the record pairs each item of the hunk list with its count, the lines read
+and its callers. On every round, the first and each later one alike, `<base>` is the
 unit's merge base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is
 `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the round's delta your
 prompt carries. The walk is recorded as one `<unit>-sentence-walk` DecisionMade
