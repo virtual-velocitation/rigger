@@ -293,7 +293,9 @@ mod tests {
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators (an item's callers read from the graph at depth 1) over the unit's
     /// whole range on every round, never a round's delta, and records on every change, each new
-    /// or FIXED sentence with the `file:line` witness that makes it true, each spelling of a rule the change rewrites found by a recorded search per
+    /// or FIXED sentence with the `file:line` witness that makes it true, a sentence CHECKED as a
+    /// different rule shown to answer that rule's question and one answering a rewritten rule's
+    /// question a spelling of it, each spelling of a rule the change rewrites found by a recorded search per
     /// distinguishing phrase of its old statement and of each label its cases carried, a
     /// boolean term a production hunk adds to or removes from a filter, guard or predicate
     /// rewriting the rule its function answers, whose old statement its depth-1 callers' notes,
@@ -431,6 +433,10 @@ mod tests {
             "a sentence with no witness is a claim, not a record",
             "a CHECKED sentence whose truth rests on code names its witness the same way, and \
              one CHECKED as a different rule sharing the words names that rule instead",
+            "names that rule instead and shows the sentence's claim is that rule's question, \
+             the question the sentence answers read claim by claim as the lens reads it; a \
+             sentence whose claim is the question a rule the change rewrites answers is a \
+             spelling of that rule, whatever other rule its words also fit.",
             "has spellings no generator above reaches: prose that states it without naming a \
              changed item",
             "every spelling of each rewritten rule is walked too",
