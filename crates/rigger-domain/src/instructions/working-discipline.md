@@ -177,7 +177,9 @@ tool that searches them.
   sentence stating the pre-change answer that the record does not carry FIXED or CHECKED is a
   BLOCKING finding on its own. The lens reads every sentence it re-reads claim by claim against
   the unit's change, with a witness per claim at head, and a sentence it cannot witness is a
-  BLOCKING finding on its own. The lens's record lists every sentence it reads, the record's
+  BLOCKING finding on its own. For a quantified claim the lens enumerates the cases itself from
+  the code at head and its record lists them beside the claim, each with its witness. The lens's
+  record lists every sentence it reads, the record's
   CHECKED members included, each with its claims and a witness per claim; a grouped verdict
   over any of them is a record the lens cannot write.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
