@@ -1140,10 +1140,7 @@ fn collect_use_leaves<'t>(
         "scoped_use_list" => {
             let path = node.child_by_field_name("path");
             let root = root.or_else(|| path.and_then(|p| root_segment(p, source)));
-            let last = path.and_then(|p| match p.kind() {
-                "scoped_identifier" => p.child_by_field_name("name"),
-                _ => Some(p),
-            });
+            let last = path.and_then(final_identifier);
             if let Some(list) = node.child_by_field_name("list") {
                 let mut cursor = list.walk();
                 let items: Vec<_> = list.named_children(&mut cursor).collect();
@@ -3993,6 +3990,35 @@ fn f<Tp>(t: Tp, o: Outer::Inner) { Outer::Mid::<u8>::new(); }
         for (case, src, expected) in cases {
             crate::symbol_index::assert_tagged_refs("rs", src, expected, case);
         }
+    }
+
+    /// Spec 117 criterion 6: the tagged references follow the call references in `refs`, in
+    /// source order.
+    #[test]
+    fn tagged_references_follow_the_calls_in_source_order() {
+        let fs = crate::symbol_index::extracted(
+            "rs",
+            "fn a() -> u8 { KITE }\nfn b() -> u8 { KITE + go() }\n",
+        );
+        let refs: Vec<_> = fs
+            .refs
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.enclosing.as_deref(),
+                    r.ref_kind.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            refs,
+            [
+                ("go", Some("b"), None),
+                ("KITE", Some("a"), Some("const")),
+                ("KITE", Some("b"), Some("const")),
+            ]
+        );
     }
 
     /// Spec 117 criterion 6: the tagged reference pass reads Rust alone, so a TypeScript type
