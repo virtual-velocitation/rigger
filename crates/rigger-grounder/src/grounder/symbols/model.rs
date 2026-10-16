@@ -68,12 +68,14 @@ pub struct Def {
     pub path: String,
     /// Spec 119 (CONTAINS IS STRUCTURE): the [`Def::path`] of the definition this one's
     /// `CONTAINS` comes from ([`crate::grounder::symbols::extract::extract`] sets it): its
-    /// container's path - the innermost definition strictly holding it, or the C# file-scoped
-    /// namespace a declaration after it sits in - but that a JS or TS named value takes its
-    /// container's parent, being one definition with it, and a Go method the path of its receiver
-    /// base type when a definition of the file sits there; `None` at file level, where the file
-    /// contains it. Serde-defaulted and omitted when `None`; an index persisted before it existed
-    /// is of an older [`GRAMMAR_TAGS_VERSION`], so it loads as absent.
+    /// container's path - the innermost definition that alone strictly holds it, a span two
+    /// definitions share holding nothing (in `var a, b = func() { type T struct{} }(), 1` the file
+    /// holds `T`), or the C# file-scoped namespace a declaration after it sits in - but that a JS
+    /// or TS named value takes its container's parent, being one definition with it, and a Go
+    /// method the path of its receiver base type when a definition of the file sits there; `None`
+    /// where that names no definition, the file containing it. Serde-defaulted and omitted when
+    /// `None`; an index persisted before it existed is of an older [`GRAMMAR_TAGS_VERSION`], so it
+    /// loads as absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     /// Spec 86 criterion 1: whether this definition is TEST code - directly annotated
