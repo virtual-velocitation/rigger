@@ -3881,6 +3881,8 @@ mod tests {
              the cases the code at head splits its subject into, each arm that assigns the \
              value, each component of a key or comparator, each condition of a filter or guard, \
              each branch of a match, each with its `file:line`, and read the claim against each",
+            "One witness for a quantified claim, or a case the claim does not hold for, is \
+             BLOCKING on its own, citing the case and its line.",
             "You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \

@@ -1894,8 +1894,8 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3884,
-        "end_line": 3884
+        "start_line": 3886,
+        "end_line": 3886
       },
       {
         "file": "src/cli/validate.rs",

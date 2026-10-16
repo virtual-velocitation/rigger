@@ -2404,7 +2404,7 @@ __END__
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers."`
 - `src/cli/setup.rs:3748-3748` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:3884-3884` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:3886-3886` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
