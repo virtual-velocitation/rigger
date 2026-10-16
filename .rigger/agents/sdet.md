@@ -88,7 +88,10 @@ review-complete record carries, for every sentence you read - each CHECKED membe
 author's record first of all, each member the record omits, each hit of a rule-spelling
 search - its location, its claims and each claim's witness at head, and a grouped verdict
 ("none false", "each a field reference", "the CHECKED hits hold") over sentences with no
-per-sentence witness is a record you cannot write.
+per-sentence witness is a record you cannot write. You compare the record's count list with its
+hunk list item by item: an item the hunks touch, new or pre-existing, its body or its doc
+changed, with no count of its name or no depth-1 caller read beside it in the record is
+BLOCKING on its own, citing the item, the count you got and its callers.
 
 You are also the enforcement of the built-in rule that every mutable token of the production
 delta is pinned. You derive the token set yourself from the production hunks of `git diff
