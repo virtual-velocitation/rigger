@@ -5,7 +5,8 @@
 //! definitions and references and its references with their callers, checking a language's definition
 //! types against a file's definitions, checking a language's definitions fixture whole and a source's callers whole,
 //! projecting a file's definition extents, checking the variant names a file's kinds persist
-//! under, and looking up a registered language.
+//! under, rendering and checking a file's tagged references, and looking up a registered
+//! language.
 //! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention
 //! `tests/common/mod.rs` keeps). Every lane compiles it; `registered` and `extracted`, with
@@ -43,6 +44,7 @@ pub fn sym_ref(name: &str, line: u32, enclosing: Option<&str>, is_test: bool) ->
         line,
         enclosing: enclosing.map(Into::into),
         is_test,
+        ref_kind: None,
     }
 }
 
@@ -235,16 +237,50 @@ fn test_by_line<'a>(marked: impl Iterator<Item = (bool, u32, &'a str)>) -> TestL
     lines
 }
 
-/// Every reference of `fs` as `(line, name, caller)`, sorted: the one projection the caller-rule
-/// tests of the extractor and of the registry compare whole.
+/// Every call reference of `fs` ([`FileSymbols::calls`], a reference with no `ref_kind`) as
+/// `(line, name, caller)`, sorted: the one projection the caller-rule tests of the extractor and
+/// of the registry compare whole.
 pub fn refs_with_callers(fs: &FileSymbols) -> Vec<(u32, &str, Option<&str>)> {
     let mut refs: Vec<_> = fs
-        .refs
-        .iter()
+        .calls()
         .map(|r| (r.line, r.name.as_str(), r.enclosing.as_deref()))
         .collect();
     refs.sort();
     refs
+}
+
+/// Every tagged reference of `fs` (spec 117: one carrying a `ref_kind`), one line each,
+/// `<line> <ref kind> <name> <caller>`, the caller `-` for a top-level one, sorted by line, then
+/// name, then kind, then caller and joined by `\n`: the one rendering the reference-kind tests
+/// of the extractor compare whole.
+pub fn tagged_refs(fs: &FileSymbols) -> String {
+    let mut tagged: Vec<_> = fs
+        .refs
+        .iter()
+        .filter_map(|r| {
+            let kind = r.ref_kind?.as_str();
+            Some((
+                r.line,
+                r.name.as_str(),
+                kind,
+                r.enclosing.as_deref().unwrap_or("-"),
+            ))
+        })
+        .collect();
+    tagged.sort();
+    tagged
+        .iter()
+        .map(|(line, name, kind, caller)| format!("{line} {kind} {name} {caller}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The tagged references the registered query for `ext` extracts from `src`, rendered by
+/// [`tagged_refs`], are exactly `expected`, `case` naming the rule they follow: the one check of
+/// a source text's tagged references whole.
+#[cfg(feature = "symbols")]
+pub fn assert_tagged_refs(ext: &str, src: &str, expected: &str, case: &str) {
+    assert_eq!(tagged_refs(&extracted(ext, src)), expected, "{case}");
 }
 
 /// A hand-authored `index.json` body holding `file` alone, a Rust file of the definitions `defs`

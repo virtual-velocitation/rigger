@@ -1345,6 +1345,7 @@ mod caller_wire_contract {
             line: 0,
             is_test: false,
             partial: false,
+            ref_kind: None,
         };
         let wire = serde_json::to_vec(&edge).unwrap();
         let back: EdgeInferred = serde_json::from_slice(&wire).unwrap();
@@ -1371,6 +1372,7 @@ mod caller_wire_contract {
             line: 0,
             is_test: false,
             partial: false,
+            ref_kind: None,
         };
         let wire = String::from_utf8(serde_json::to_vec(&edge).unwrap()).unwrap();
         assert_eq!(

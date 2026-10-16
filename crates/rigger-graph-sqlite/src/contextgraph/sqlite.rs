@@ -14578,4 +14578,70 @@ mod tests {
             }
         }
     }
+
+    /// Spec 117 criterion 6: a `ref_kind` event - a type reference, a const read or a `use` -
+    /// runs its batch's structural head alone, so it folds no `REFERENCES` or `CALLS` edge and no
+    /// node but its file's, however it names a caller.
+    #[test]
+    fn a_ref_kind_event_folds_no_edge_and_no_node_beyond_its_file_node() {
+        let p = Projector::open(":memory:", "test").unwrap();
+        apply_def(&p, 1, "a.rs", "read", 1, true);
+        for (pos, name, ref_kind) in [
+            (2, "Kestrel", "type"),
+            (3, "QUOTA_CAP", "const"),
+            (4, "Ledger", "use"),
+        ] {
+            let tagged = crate::test_support::tagged_ref_json("a.rs", name, ref_kind, Some("read"));
+            apply_json(&p, pos, TYPE_EDGE_INFERRED, tagged);
+        }
+        let g = p.whole().unwrap();
+        assert_eq!(
+            [KIND_FILE, KIND_CODE_ENTITY].map(|kind| crate::test_support::live_node_ids(&g, kind)),
+            [["a.rs"], ["a.rs::read"]].map(|ids| ids.map(String::from).to_vec())
+        );
+        crate::test_support::assert_live(
+            &p,
+            REL_CONTAINS,
+            &[("a.rs", "a.rs::read")],
+            "the definition's CONTAINS is the one live edge",
+        );
+        assert_eq!(
+            crate::test_support::live_edges(&p).len(),
+            1,
+            "a tagged reference folds no edge"
+        );
+    }
+
+    /// Spec 117 criterion 6: a `use`-only file's batch is one `ref_kind` event carrying `fresh`,
+    /// whose head supersedes the file's prior structural edges and creates its file node, stamped
+    /// with its `lang` and `partial`, as a call event's head does.
+    #[test]
+    fn a_use_only_files_head_supersedes_its_prior_edges_and_creates_its_file_node() {
+        let p = Projector::open(":memory:", "test").unwrap();
+        apply_def(&p, 1, "u.rs", "helper", 1, true);
+        apply_call(&p, 2, "u.rs", "helper", "helper");
+        for (pos, file) in [(3, "u.rs"), (4, "v.rs")] {
+            let mut head = crate::test_support::tagged_ref_json(file, "Ledger", "use", None);
+            head["fresh"] = true.into();
+            head["partial"] = true.into();
+            apply_json(&p, pos, TYPE_EDGE_INFERRED, head);
+        }
+        assert_eq!(
+            crate::test_support::live_edges(&p).len(),
+            0,
+            "the head event supersedes u.rs's earlier edges and folds none"
+        );
+        let g = p.whole().unwrap();
+        assert_eq!(
+            [KIND_FILE, KIND_CODE_ENTITY].map(|kind| crate::test_support::live_node_ids(&g, kind)),
+            [vec!["u.rs", "v.rs"], vec!["u.rs::helper"]]
+                .map(|ids| ids.into_iter().map(String::from).collect::<Vec<_>>())
+        );
+        assert_eq!(
+            crate::test_support::attrs_of(&p, "v.rs"),
+            [("lang", "rust"), ("partial", "true")]
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .into()
+        );
+    }
 }

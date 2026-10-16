@@ -2209,6 +2209,7 @@ mod tests {
             line,
             enclosing: None,
             is_test: false,
+            ref_kind: None,
         }
     }
 
@@ -2416,5 +2417,77 @@ mod tests {
                 ),
             ],
         );
+    }
+
+    /// Spec 117 criterion 6: a type reference, a const read and a `use` move no count, rank or
+    /// radius - [`SymbolIndex::reference_degree`], [`name_occurrence_map`], [`scored_hits`],
+    /// [`Symbols::ground_ranked`] and [`Symbols::blast_radius`] count call references alone - over
+    /// an index holding one of each beside a call.
+    #[test]
+    fn tagged_references_move_no_degree_commonness_rank_or_radius() {
+        let mut idx = SymbolIndex::default();
+        for (path, src) in [
+            (
+                "src/shapes.rs",
+                "pub struct Kestrel;\npub const QUOTA_CAP: u32 = 3;\npub fn draw() {}\n",
+            ),
+            (
+                "src/user.rs",
+                "use crate::shapes::Kestrel;\nfn paint(k: Kestrel) -> u32 { draw(); QUOTA_CAP }\n",
+            ),
+        ] {
+            idx.insert_file(path.into(), crate::symbol_index::extracted("rs", src));
+        }
+        assert_eq!(
+            crate::symbol_index::tagged_refs(&idx.files()["src/user.rs"]),
+            "1 use Kestrel -\n2 type Kestrel paint\n2 const QUOTA_CAP paint"
+        );
+        let names = ["Kestrel", "QUOTA_CAP", "draw"];
+        assert_eq!(
+            names.map(|n| idx.reference_degree(n, Lang::Rust)),
+            [0, 0, 1]
+        );
+        let occurrences = name_occurrence_map(&idx, true);
+        assert_eq!(names.map(|n| occurrences[&(n, Lang::Rust)]), [1, 1, 2]);
+        let mut hits: Vec<(&str, u32)> = scored_hits(&idx, &names)
+            .iter()
+            .map(|h| (h.file, h.line))
+            .collect();
+        hits.sort();
+        assert_eq!(
+            hits,
+            [
+                ("src/shapes.rs", 1),
+                ("src/shapes.rs", 2),
+                ("src/shapes.rs", 3),
+                ("src/user.rs", 2)
+            ]
+        );
+        let g = Symbols {
+            root: String::new(),
+            override_lang: None,
+            idx: Mutex::new(idx),
+            fingerprints: Mutex::default(),
+        };
+        let ranked: Vec<(String, u32, usize)> = g
+            .ground_ranked("Kestrel draw", 8)
+            .into_iter()
+            .map(|r| (r.loc.file, r.loc.line, r.degree))
+            .collect();
+        assert_eq!(
+            ranked,
+            [
+                ("src/shapes.rs".into(), 1, 0),
+                ("src/shapes.rs".into(), 3, 1)
+            ]
+        );
+        for (query, radius) in [
+            ("`Kestrel` `QUOTA_CAP`", &["src/shapes.rs"][..]),
+            ("`draw`", &["src/shapes.rs", "src/user.rs"][..]),
+        ] {
+            let br = g.blast_radius(query, 8);
+            let radius: Vec<String> = radius.iter().map(|f| f.to_string()).collect();
+            assert_eq!((br.precise, br.safe), (radius.clone(), radius), "{query}");
+        }
     }
 }

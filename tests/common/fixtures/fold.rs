@@ -496,6 +496,23 @@ pub fn call_json(file: &str, name: &str, caller: &str) -> serde_json::Value {
     serde_json::json!({ "file": file, "name": name, "lang": "rust", "caller": caller })
 }
 
+/// The TAGGED `EdgeInferred` payload (spec 117): `file` references `name` as a `ref_kind`
+/// reference (`type`, `const` or `use`), from inside the enclosing definition `caller` when it
+/// has one, else from the file.
+pub fn tagged_ref_json(
+    file: &str,
+    name: &str,
+    ref_kind: &str,
+    caller: Option<&str>,
+) -> serde_json::Value {
+    let mut json = ref_json(file, name);
+    json["ref_kind"] = ref_kind.into();
+    if let Some(caller) = caller {
+        json["caller"] = caller.into();
+    }
+    json
+}
+
 /// The `DecisionMade` payload. Each entry in `governs` folds a `decision --GOVERNS--> file` edge; a
 /// non-empty `supersedes` folds `decision --SUPERSEDES--> <id>` and INVALIDATES (stamps `valid_to`
 /// on, never deletes) the superseded decision's live `GOVERNS` edges.

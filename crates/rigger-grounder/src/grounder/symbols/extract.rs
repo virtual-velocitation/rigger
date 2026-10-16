@@ -3225,4 +3225,170 @@ class K
         let paths: Vec<&str> = symbols.defs.iter().map(|d| d.path.as_str()).collect();
         assert_eq!(paths, ["a", "b"], "adjacent definitions sit side by side");
     }
+
+    /// Spec 117 criterion 6, REFERENCES: `extract` tags a Rust const read, a type reference and
+    /// each imported leaf of a `use` with its `ref_kind`, after the call references it already
+    /// records, and every name the spec excludes stages nothing. Each case is a source and the
+    /// tagged references it extracts, whole ([`crate::symbol_index::assert_tagged_refs`]).
+    #[test]
+    fn rust_references_are_tagged_by_kind_and_every_excluded_name_stages_nothing() {
+        let cases = [
+            // A const read is an all-caps identifier or the final identifier of a whole expression
+            // path, a type reference a type name or an uppercase path's final identifier in
+            // expression position, a `use` each imported leaf; a definition's own name stages
+            // nothing.
+            (
+                "a const read, a type reference and a use are tagged",
+                "\
+use crate::store::Ledger;
+pub const QUOTA_CAP: u32 = 3;
+pub struct Kestrel { size: u32 }
+fn read(k: Kestrel) -> u32 {
+    QUOTA_CAP + Limits::DEPTH_CAP + config::SPAN_CAP
+}
+",
+                "\
+1 use Ledger -
+4 type Kestrel read
+5 const DEPTH_CAP read
+5 type Limits read
+5 const QUOTA_CAP read
+5 const SPAN_CAP read",
+            ),
+            // A local, a generic and a const generic parameter of an enclosing item, an impl
+            // header's self type, `Self`, a name the file imports from `std` (a leaf, an alias by
+            // its alias name, a path rooted at an imported module), a `std::` path and a
+            // primitive-qualified const stage nothing, while a project type beside them does.
+            (
+                "locals, generics, Self, std names and primitive consts are never tagged",
+                "\
+use std::collections::HashMap;
+use std::io::Error as IoError;
+use std::fmt;
+pub struct Holder<T> { item: T }
+impl<T: Clone> Holder<T> {
+    fn get<const N: usize>(&self, local: u32) -> Self {
+        let width = local + N;
+        let seen: HashMap<u8, [u8; N]> = HashMap::new();
+        let fault: IoError = fail();
+        let shown: std::fmt::Result = std::fmt::Result::Ok(());
+        let args: fmt::Arguments = make();
+        let top = u32::MAX + std::u32::MAX;
+        let copy: T = self.item.clone();
+        let made = Self::new();
+        let kept: Plover = Plover::new();
+        made
+    }
+}
+",
+                "\
+15 type Plover Holder<T>::get
+15 type Plover Holder<T>::get",
+            ),
+            // `impl Trait for Type` stages one `type` row of its trait, from the self type's path
+            // when exactly one surviving definition of the file has the self type's leaf, else
+            // from the impl's path: none, two, or one beside a test-code twin.
+            (
+                "an impl trait row is from its one surviving self type, else from the impl",
+                "\
+trait Draw {}
+struct Kestrel;
+impl Draw for Kestrel {}
+impl Draw for Plover {}
+struct Twin;
+mod nest { pub struct Twin; }
+impl Draw for Twin {}
+struct Gizmo;
+#[cfg(test)]
+mod tests { struct Gizmo; }
+impl Draw for Gizmo {}
+",
+                "\
+3 type Draw Kestrel
+4 type Draw impl Draw for Plover
+7 type Draw impl Draw for Twin
+11 type Draw Gizmo",
+            ),
+            // A struct literal and a struct pattern stage one `type` row of their name: of the
+            // path's final identifier when it begins with an uppercase letter (`Enum::Variant
+            // { .. }`), else of the name (`module::Type { .. }`); a tuple-struct pattern and a
+            // unit pattern stage their path's final uppercase identifier, and a const pattern
+            // stages no const read.
+            (
+                "struct literals and patterns stage one type row each",
+                "\
+fn f(k: Kind) {
+    let a = Foo { a: 1 };
+    let b = Enum::Variant { a: 1 };
+    let c = module::Type { a: 1 };
+    match k {
+        Enum::Variant { .. } => {}
+        Enum::Variant(x) => {}
+        Kind::Constant => {}
+        Foo { .. } => {}
+        QUOTA_CAP => {}
+    }
+}
+",
+                "\
+1 type Kind f
+2 type Foo f
+3 type Enum f
+4 type Type f
+6 type Enum f
+7 type Enum f
+8 type Kind f
+9 type Foo f",
+            ),
+            // Each imported leaf of a `use` is a `use` row from the caller path (the file at top
+            // level), `pub use` included: an alias references the name it renames and is named by
+            // a later type, a glob stages nothing, a `self` leaf names the module before it, and
+            // one after `crate`, `super` or `self` stages nothing.
+            (
+                "each imported leaf of a use is a use row",
+                "\
+use crate::store::{self, Ledger as Book, codec::*};
+use super::{self};
+pub use crate::model::Plover;
+use self::local::Wren as wren;
+fn f(d: Book, w: wren) {
+    use crate::inner::Heron;
+}
+",
+                "\
+1 use Ledger -
+1 use store -
+3 use Plover -
+4 use Wren -
+5 type Book f
+5 type wren f
+6 use Heron f",
+            ),
+        ];
+        for (case, src, expected) in cases {
+            crate::symbol_index::assert_tagged_refs("rs", src, expected, case);
+        }
+    }
+
+    /// Spec 117 criterion 6: no name of [`RUST_PRELUDE`] stages a row, imported by a `use` or
+    /// named as a type, and the constant holds exactly the pinned names.
+    #[test]
+    fn every_rust_prelude_name_is_never_tagged() {
+        assert_eq!(
+            RUST_PRELUDE.join(" "),
+            "Copy Send Sized Sync Unpin Drop Fn FnMut FnOnce AsyncFn AsyncFnMut AsyncFnOnce Clone \
+             Eq Ord PartialEq PartialOrd AsMut AsRef From Into Default Debug Hash \
+             DoubleEndedIterator ExactSizeIterator Extend IntoIterator Iterator Option Some None \
+             Result Ok Err ToOwned Box String ToString Vec TryFrom TryInto FromIterator"
+        );
+        let names = RUST_PRELUDE.join(", ");
+        crate::symbol_index::assert_tagged_refs(
+            "rs",
+            &format!(
+                "use crate::prelude::{{{names}}};\nfn f(a: ({names})) {{}}\nfn g(b: Plover) {{}}\n"
+            ),
+            "3 type Plover g",
+            "no prelude name is tagged",
+        );
+    }
 }

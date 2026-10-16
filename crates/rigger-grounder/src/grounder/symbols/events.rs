@@ -1007,6 +1007,7 @@ mod tests {
                 line: 5,
                 enclosing: None,
                 is_test: false,
+                ref_kind: None,
             }],
             partial: false,
         };
@@ -1054,12 +1055,14 @@ mod tests {
                     line: 2,
                     enclosing: None,
                     is_test: false,
+                    ref_kind: None,
                 },
                 SymRef {
                     name: "apply".to_string(),
                     line: 4,
                     enclosing: None,
                     is_test: false,
+                    ref_kind: None,
                 },
             ],
             partial: false,
@@ -1113,6 +1116,7 @@ mod tests {
                     line: 2,
                     enclosing: Some("F".to_string()),
                     is_test: false,
+                    ref_kind: None,
                 },
                 // A top-level `use` outside every definition: no caller.
                 SymRef {
@@ -1120,6 +1124,7 @@ mod tests {
                     line: 5,
                     enclosing: None,
                     is_test: false,
+                    ref_kind: None,
                 },
             ],
             partial: false,
@@ -1258,6 +1263,7 @@ mod tests {
                 line: 2,
                 enclosing: None,
                 is_test: false,
+                ref_kind: None,
             }],
             partial: false,
         }
@@ -1670,12 +1676,14 @@ mod tests {
                     line: 6,
                     enclosing: Some("aaa_test_item".into()),
                     is_test: true,
+                    ref_kind: None,
                 },
                 SymRef {
                     name: "product_fn".into(),
                     line: 2,
                     enclosing: None,
                     is_test: false,
+                    ref_kind: None,
                 },
             ],
             partial: false,
@@ -2932,6 +2940,79 @@ mod tests {
             twin_events(METHOD_C_IN_THE_FILE_LEVEL_IMPL),
             ["method a::B::c@8 in impl a::B"],
             "the winner removed: the other's line and parent"
+        );
+    }
+
+    /// Spec 117 criterion 6: a production file's const read, type reference and `use` each
+    /// emit an `EdgeInferred` carrying its `ref_kind`, while the ones inside its `#[cfg(test)]`
+    /// region and every one of a dev-only file emit no tagged event, and the evidence a file's
+    /// batch carries ([`super::proof_events`]) names its call references alone.
+    #[test]
+    fn test_code_and_dev_only_files_emit_no_tagged_event_and_evidence_is_calls_alone() {
+        let src = "\
+use crate::store::Ledger;
+pub fn product(k: Kestrel) -> u8 { QUOTA_CAP }
+#[cfg(test)]
+mod tests {
+    use crate::model::Plover;
+    const LOCAL_CAP: u8 = 1;
+    fn t(p: Plover) -> u8 { super::product(make()); LOCAL_CAP }
+}
+";
+        let production = [
+            ("Kestrel", "type"),
+            ("Ledger", "use"),
+            ("QUOTA_CAP", "const"),
+        ];
+        for (path, tagged) in [("src/a.rs", &production[..]), ("tests/a.rs", &[][..])] {
+            let edges = crate::event_fixtures::payloads_of_type(
+                &super::bytes_batch(path, Some(src.as_bytes()), false),
+                TYPE_EDGE_INFERRED,
+            );
+            let kinds: Vec<(&str, &str)> = edges
+                .iter()
+                .filter_map(|p| Some((p["name"].as_str()?, p["ref_kind"].as_str()?)))
+                .collect();
+            assert_eq!(kinds, tagged, "{path}: the tagged events");
+            let evidence: Vec<&str> = edges
+                .iter()
+                .filter(|p| p["is_test"] == true)
+                .filter_map(|p| p["name"].as_str())
+                .collect();
+            assert_eq!(evidence, ["make", "product"], "{path}: the evidence");
+        }
+    }
+
+    /// Spec 117 criterion 6: an impl header's trait `type` row is emitted after the untagged
+    /// reference of the same name and site, from the self type's path, carrying its `ref_kind`.
+    #[test]
+    fn an_impl_trait_row_follows_the_untagged_header_reference() {
+        let fs = crate::symbol_index::extracted(
+            "rs",
+            "trait Draw {}\nstruct Kestrel;\nimpl Draw for Kestrel {}\n",
+        );
+        let edges = crate::event_fixtures::payloads_of_type(
+            &super::extract_events("a.rs", &fs),
+            TYPE_EDGE_INFERRED,
+        );
+        let refs: Vec<_> = edges
+            .iter()
+            .map(|p| {
+                (
+                    p["name"].as_str(),
+                    p["caller"].as_str(),
+                    p["ref_kind"].as_str(),
+                )
+            })
+            .collect();
+        let header = Some("impl Draw for Kestrel");
+        assert_eq!(
+            refs,
+            [
+                (Some("Draw"), header, None),
+                (Some("Draw"), Some("Kestrel"), Some("type")),
+                (Some("Kestrel"), header, None),
+            ]
         );
     }
 }
