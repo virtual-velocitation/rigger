@@ -92,9 +92,10 @@ sentences with the generators above, the count
 run once per name of every item the unit's hunks change, and the rule-spelling searches; your
 review-complete record carries, for every sentence you read - each CHECKED member of the
 author's record first of all, each member the record omits, each hit of a rule-spelling
-search - its location, its claims and each claim's witness at head, and a grouped verdict
-("none false", "each a field reference", "the CHECKED hits hold") over sentences with no
-per-sentence witness is a record you cannot write. You compare the record's count list with its
+search - its location, its claims and each claim's witness at head, a quantified claim's cases
+beside it, each with its witness, and a grouped verdict ("none false", "each a field
+reference", "the CHECKED hits hold") over sentences with no per-sentence witness is a record
+you cannot write. You compare the record's count list with its
 hunk list item by item: an item the hunks touch, new or pre-existing, its body or its doc
 changed, with no count of its name or no depth-1 caller read beside it in the record is
 BLOCKING on its own, citing the item, the count you got and its callers.
