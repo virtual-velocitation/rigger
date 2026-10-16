@@ -286,7 +286,8 @@ mod tests {
     /// of a body edited, the hunks of the unit's whole range inside it, a twin among untouched
     /// statements named to the operator as the tree's debt - each string
     /// literal alone and in full, however short, and each outside call with its first argument,
-    /// never the body's name nor an expression wrapping a literal -
+    /// never the body's name nor an expression wrapping a literal, the record organised by
+    /// statement, each added or edited statement quoted with its `file:line` above its terms -
     /// whose command and hits the record carries and the SDET lens re-runs and re-derives from
     /// the test hunks over the same statements, one search per literal alone, a literal of an
     /// untouched statement named to the operator as debt and never blocking, every
@@ -392,6 +393,11 @@ mod tests {
             "A record whose expressions are names only - a fn name, the callee a helper wraps - \
              for a body that spells a literal or an outside call is a record you cannot write \
              either.",
+            "The record is organised by statement: each statement of a body you add and each \
+             edited statement of a body you edit is quoted with its `file:line`, followed by its \
+             terms - every string literal it spells, alone, and every call it makes outside the \
+             shared home with its first argument token - each term with its search, or the \
+             statement is marked as a single call into the shared home with the callee named.",
             "The lens derives the expression set itself from the unit's test hunks at head - \
              every string literal and every outside call with its first argument in every \
              statement of each test-side body the unit adds and in the edited statements of each \
