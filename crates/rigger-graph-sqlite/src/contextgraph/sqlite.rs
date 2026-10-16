@@ -2853,6 +2853,13 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                 file_attrs.push(("partial", "true"));
             }
             ensure_node(tx, by, &file, KIND_FILE, &file_attrs, project)?;
+            // Spec 117 (REFERENCES): a tagged reference - a type reference, a const read or a
+            // `use` - runs the structural head above alone, the `fresh` supersede and its file
+            // node, so a `use`-only file gains its file node; it folds no `REFERENCES` or `CALLS`
+            // edge and no node beyond the file's.
+            if r.ref_kind.is_some() {
+                return Ok(());
+            }
             // REFERENCES (spec 29a criterion 2): the file references this symbol, at the confidence
             // tier its resolution earns: EXTRACTED on its one same-file candidate, else what
             // [`reference_tier`] answers for the placeholder. The tier is read BEFORE `ensure_node`

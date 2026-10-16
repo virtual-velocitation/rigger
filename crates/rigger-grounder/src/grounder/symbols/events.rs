@@ -294,6 +294,9 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
             is_test: false,
             // See the definition arm's identical field above.
             partial: fs.partial,
+            // Spec 117 (REFERENCES): a tagged reference's kind, absent for a call, so a call's
+            // event stays byte-identical to the form recorded before the field existed.
+            ref_kind: r.ref_kind.clone(),
         };
         events.push(Event::new(
             TYPE_EDGE_INFERRED,
@@ -388,6 +391,7 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
         line: 0,
         is_test: false,
         partial,
+        ref_kind: None,
     };
     Event::new(
         TYPE_EDGE_INFERRED,
@@ -407,7 +411,9 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// contracts - "extract_events emits nothing for excluded content" and "no evidence is ever lost" -
 /// both hold, in two disjoint functions rather than one straining to prove both at once.
 ///
-/// A reference counts as evidence when EITHER: the whole file is at a dev-only path
+/// A reference counts as evidence only when it is a call ([`FileSymbols::calls`], spec 117: a
+/// type reference, const read or `use` is never evidence, so `proven_by` stands) and EITHER: the
+/// whole file is at a dev-only path
 /// ([`is_dev_only`] - every reference in a test, bench or example file is test-origin, whatever
 /// its own `is_test` marking, since the file itself exercises production code), OR the reference
 /// itself is `is_test` (a `#[cfg(test)]`/`#[test]` region inside an otherwise-included product
@@ -477,8 +483,7 @@ pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     let whole_file_test = is_dev_only(file);
     let lang = lang_str(fs.lang);
     let mut refs: Vec<&SymRef> = fs
-        .refs
-        .iter()
+        .calls()
         .filter(|r| whole_file_test || r.is_test)
         .collect();
     refs.sort_by(|a, b| a.name.cmp(&b.name).then(a.line.cmp(&b.line)));
@@ -502,6 +507,8 @@ pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
                 // returns before it) - always `false`, a plain field-completeness requirement, not a
                 // meaningful signal here.
                 partial: false,
+                // Evidence is a call alone: `fs.calls()` above never yields a tagged reference.
+                ref_kind: None,
             };
             Event::new(
                 TYPE_EDGE_INFERRED,
@@ -536,6 +543,7 @@ fn empty_evidence_boundary_event(file: &str, lang: &str) -> Event {
         line: 0,
         is_test: true,
         partial: false,
+        ref_kind: None,
     };
     Event::new(
         TYPE_EDGE_INFERRED,

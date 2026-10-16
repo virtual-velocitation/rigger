@@ -6,6 +6,7 @@
 //! already holds that node as a reference) also adds a read-off here, selected by the language
 //! `extract` is given.
 
+use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
 use crate::grounder::symbols::events::kind_str;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 use rigger_domain::wave::normalize_ws;
@@ -327,6 +328,7 @@ pub fn extract(
                 line,
                 enclosing: None,
                 is_test: false,
+                ref_kind: None,
             });
         }
     }
@@ -351,6 +353,27 @@ pub fn extract(
                 line,
                 enclosing: None,
                 is_test: false,
+                ref_kind: None,
+            });
+        }
+    }
+    // Spec 117 (REFERENCES): Rust's tagged references, read off the parsed tree after every call
+    // reference, so each follows the untagged one of its name and site and the attribution and
+    // test-region passes below cover it; an impl header's trait row is noted to take its `from`
+    // once every definition's test status is known.
+    let mut impl_rows: Vec<(usize, std::ops::Range<usize>, String)> = Vec::new();
+    if lang == Lang::Rust {
+        for tagged in rust_references(root, source.as_bytes()) {
+            if let Some((impl_range, self_leaf)) = tagged.impl_from {
+                impl_rows.push((refs.len(), impl_range, self_leaf));
+            }
+            ref_positions.push(tagged.pos);
+            refs.push(SymRef {
+                name: tagged.name,
+                line: tagged.line,
+                enclosing: None,
+                is_test: false,
+                ref_kind: Some(tagged.kind.to_string()),
             });
         }
     }
@@ -440,6 +463,20 @@ pub fn extract(
         for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
             r.is_test = regions.iter().any(|region| region.contains(&pos));
         }
+    }
+    // Spec 117 (REFERENCES): an impl header's trait row comes from the self type's path when
+    // exactly one surviving (non-test) definition of the file has the self type's leaf, else from
+    // the impl's own path.
+    for (at, impl_range, self_leaf) in impl_rows {
+        let mut named = defs.iter().filter(|d| !d.is_test && d.name == self_leaf);
+        let from = match (named.next(), named.next()) {
+            (Some(only), None) => Some(only.path.clone()),
+            _ => def_ranges
+                .iter()
+                .position(|(range, _, kind)| *kind == Kind::Impl && *range == impl_range)
+                .map(|i| defs[i].path.clone()),
+        };
+        refs[at].enclosing = from;
     }
     // Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 2): mark every `Module`-kind
     // definition that is an OUT-OF-LINE declaration (`mod name;`, no body of its own - see
@@ -633,6 +670,495 @@ fn impl_blocks(root: tree_sitter::Node, source: &[u8]) -> Vec<ImplBlock> {
         .into_iter()
         .filter_map(|node| impl_block(node, source))
         .collect()
+}
+
+/// THE RUST PRELUDE (spec 117): the names a Rust file reaches with no `use` that no tagged
+/// reference stages - the 2021 prelude's types, traits and variants at toolchain 1.95.0
+/// (`library/std/src/prelude/v1.rs`, `library/core/src/prelude/v1.rs`, plus 2021's `TryFrom`,
+/// `TryInto` and `FromIterator`) and the derive-macro names `Debug` and `Hash`. A project
+/// definition of one of these names gets no row.
+pub const RUST_PRELUDE: [&str; 43] = [
+    "Copy",
+    "Send",
+    "Sized",
+    "Sync",
+    "Unpin",
+    "Drop",
+    "Fn",
+    "FnMut",
+    "FnOnce",
+    "AsyncFn",
+    "AsyncFnMut",
+    "AsyncFnOnce",
+    "Clone",
+    "Eq",
+    "Ord",
+    "PartialEq",
+    "PartialOrd",
+    "AsMut",
+    "AsRef",
+    "From",
+    "Into",
+    "Default",
+    "Debug",
+    "Hash",
+    "DoubleEndedIterator",
+    "ExactSizeIterator",
+    "Extend",
+    "IntoIterator",
+    "Iterator",
+    "Option",
+    "Some",
+    "None",
+    "Result",
+    "Ok",
+    "Err",
+    "ToOwned",
+    "Box",
+    "String",
+    "ToString",
+    "Vec",
+    "TryFrom",
+    "TryInto",
+    "FromIterator",
+];
+
+/// The roots a Rust path names the standard library by: a path rooted at one stages nothing.
+const STD_ROOTS: [&str; 3] = ["std", "core", "alloc"];
+
+/// Rust's primitive types: a const qualified by one (`u32::MAX`) stages nothing.
+const PRIMITIVE_TYPES: [&str; 17] = [
+    "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32",
+    "f64", "bool", "char", "str",
+];
+
+/// The grammar node kinds whose subtree holds no reference (spec 117): a macro's token tree, an
+/// attribute, a `macro_rules!` body and a visibility path.
+const OPAQUE_KINDS: [&str; 5] = [
+    "token_tree",
+    "attribute_item",
+    "inner_attribute_item",
+    "macro_definition",
+    "visibility_modifier",
+];
+
+/// The definition node kinds whose `name` is a `type_identifier` naming the definition itself,
+/// never a reference to it.
+const NAMED_TYPE_DEFINERS: [&str; 7] = [
+    "struct_item",
+    "enum_item",
+    "union_item",
+    "type_item",
+    "trait_item",
+    "associated_type",
+    "type_parameter",
+];
+
+/// The parent fields under which a Rust `identifier` is no expression read (spec 117): a
+/// definition's name or alias, a pattern, a call's or macro's head (already a call reference), a
+/// path segment, a tuple-struct pattern's or generic type's name and a field name.
+const NON_READ_FIELDS: [&str; 7] = [
+    "name", "alias", "pattern", "function", "macro", "path", "type",
+];
+
+/// One tagged reference [`rust_references`] reads off the tree: its leaf, its 1-based line, its
+/// byte position (the caller attribution and test regions key on it) and its kind, and for an
+/// impl header's trait row the impl's byte range and its self type's leaf, which decide its
+/// `from` once every definition is known.
+struct TaggedRef {
+    name: String,
+    line: u32,
+    pos: usize,
+    kind: &'static str,
+    impl_from: Option<(std::ops::Range<usize>, String)>,
+}
+
+/// One imported leaf of a Rust `use` (spec 117): the name it binds (its alias, else the name it
+/// imports), the node of the name it imports, and its path's root segment.
+struct UseLeaf<'t> {
+    bound: String,
+    node: tree_sitter::Node<'t>,
+    root: Option<String>,
+}
+
+/// RUST'S TAGGED REFERENCES (spec 117, REFERENCES), every one under `root` in source order. A
+/// CONST READ is an `identifier` in expression position, or the final identifier of a whole
+/// expression path (never a prefix, a pattern or a call's head), spelled `^[A-Z][A-Z0-9_]*$`. A
+/// TYPE REFERENCE is a `type_identifier` that is no definition's own name, nor an impl header's
+/// self type or trait, or the final identifier of an expression or pattern path's `path` that
+/// begins with an uppercase letter; a struct literal or pattern named `Path::Name` whose path ends
+/// in an uppercase identifier stages that identifier in place of `Name`. A USE is each imported
+/// leaf of a `use` ([`use_leaves`]). An impl header's trait is one `type` row of its own,
+/// carrying the impl's range and its self type's leaf. A macro's token tree, an attribute, a
+/// `macro_rules!` body and a visibility path stage nothing, and no name [`excluded`] stages.
+fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
+    let uses: Vec<UseLeaf> = nodes_of_kind(root, "use_declaration")
+        .into_iter()
+        .flat_map(|decl| use_leaves(decl, source))
+        .collect();
+    let std_imports: Vec<&str> = uses
+        .iter()
+        .filter(|u| u.root.as_deref().is_some_and(|r| STD_ROOTS.contains(&r)))
+        .map(|u| u.bound.as_str())
+        .collect();
+    let impls = nodes_of_kind(root, "impl_item");
+    let headers: Vec<usize> = impls
+        .iter()
+        .flat_map(|i| {
+            [
+                i.child_by_field_name("type"),
+                i.child_by_field_name("trait"),
+            ]
+        })
+        .flatten()
+        .filter_map(base_type_identifier)
+        .map(|n| n.id())
+        .collect();
+    let mut out = Vec::new();
+    let mut stage = |node: tree_sitter::Node, kind: &'static str, root_seg: Option<&str>| {
+        let Ok(name) = node.utf8_text(source) else {
+            return;
+        };
+        if !excluded(name, root_seg, node, source, &std_imports) {
+            out.push(TaggedRef {
+                name: name.to_string(),
+                line: node.start_position().row as u32 + 1,
+                pos: node.start_byte(),
+                kind,
+                impl_from: None,
+            });
+        }
+    };
+    for node in reference_nodes(root) {
+        match node.kind() {
+            "use_declaration" => {
+                let leaves = uses
+                    .iter()
+                    .filter(|u| node.byte_range().contains(&u.node.start_byte()));
+                for leaf in leaves {
+                    if !leaf.root.as_deref().is_some_and(|r| STD_ROOTS.contains(&r)) {
+                        stage(leaf.node, REF_KIND_USE, None);
+                    }
+                }
+            }
+            "type_identifier" if !headers.contains(&node.id()) => {
+                let parent = node.parent();
+                if parent.is_some_and(|p| {
+                    NAMED_TYPE_DEFINERS.contains(&p.kind())
+                        && p.child_by_field_name("name") == Some(node)
+                }) {
+                    continue;
+                }
+                match parent.filter(|p| p.kind() == "scoped_type_identifier") {
+                    Some(scoped) => {
+                        let path = scoped.child_by_field_name("path");
+                        let root_seg = path.and_then(|p| root_segment(p, source));
+                        let literal = scoped.parent().is_some_and(|q| {
+                            matches!(q.kind(), "struct_expression" | "struct_pattern")
+                        });
+                        match path.and_then(final_identifier) {
+                            Some(last) if literal && begins_upper(last, source) => {
+                                stage(last, REF_KIND_TYPE, root_seg.as_deref())
+                            }
+                            _ => stage(node, REF_KIND_TYPE, root_seg.as_deref()),
+                        }
+                    }
+                    None => stage(node, REF_KIND_TYPE, None),
+                }
+            }
+            "scoped_identifier" if is_whole_expression_path(node) => {
+                let path = node.child_by_field_name("path");
+                let root_seg = path.and_then(|p| root_segment(p, source));
+                if let Some(last) = path.and_then(final_identifier) {
+                    if begins_upper(last, source) {
+                        stage(last, REF_KIND_TYPE, root_seg.as_deref());
+                    }
+                }
+                let primitive = root_seg
+                    .as_deref()
+                    .is_some_and(|r| PRIMITIVE_TYPES.contains(&r));
+                if let Some(name) = node.child_by_field_name("name") {
+                    if !primitive && is_read(node) && is_const_spelled(name, source) {
+                        stage(name, REF_KIND_CONST, root_seg.as_deref());
+                    }
+                }
+            }
+            "identifier" if is_read(node) && is_const_spelled(node, source) => {
+                stage(node, REF_KIND_CONST, None)
+            }
+            _ => {}
+        }
+    }
+    for block in impls {
+        let (Some(trait_node), Some(self_type)) = (
+            block.child_by_field_name("trait"),
+            block.child_by_field_name("type"),
+        ) else {
+            continue;
+        };
+        let (Some(leaf), Some(self_leaf)) = (
+            base_type_identifier(trait_node),
+            base_type_identifier(self_type).and_then(|n| n.utf8_text(source).ok()),
+        ) else {
+            continue;
+        };
+        let root_seg = type_root(trait_node, source);
+        let Ok(name) = leaf.utf8_text(source) else {
+            continue;
+        };
+        if !excluded(name, root_seg.as_deref(), leaf, source, &std_imports) {
+            out.push(TaggedRef {
+                name: name.to_string(),
+                line: leaf.start_position().row as u32 + 1,
+                pos: leaf.start_byte(),
+                kind: REF_KIND_TYPE,
+                impl_from: Some((block.byte_range(), self_leaf.to_string())),
+            });
+        }
+    }
+    out
+}
+
+/// Every node under `root` [`rust_references`] reads, in source order: each node outside an
+/// [`OPAQUE_KINDS`] subtree, a `use_declaration` read whole by its leaves and never descended.
+fn reference_nodes(root: tree_sitter::Node) -> Vec<tree_sitter::Node> {
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if OPAQUE_KINDS.contains(&node.kind()) {
+            continue;
+        }
+        out.push(node);
+        if node.kind() == "use_declaration" {
+            continue;
+        }
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.children(&mut cursor).collect();
+        stack.extend(children.into_iter().rev());
+    }
+    out
+}
+
+/// Whether the leaf `name`, read at `node` under a path whose root segment is `root_seg`, stages
+/// no tagged reference (spec 117): `Self`, a [`RUST_PRELUDE`] name, a leaf the file imports from
+/// the standard library (`std_imports`, an alias by its alias name), a path rooted at the
+/// standard library ([`STD_ROOTS`]) or at such an imported leaf, and a generic or const generic
+/// parameter of an item enclosing `node`.
+fn excluded(
+    name: &str,
+    root_seg: Option<&str>,
+    node: tree_sitter::Node,
+    source: &[u8],
+    std_imports: &[&str],
+) -> bool {
+    name == "Self"
+        || RUST_PRELUDE.contains(&name)
+        || std_imports.contains(&name)
+        || root_seg.is_some_and(|r| STD_ROOTS.contains(&r) || std_imports.contains(&r))
+        || names_enclosing_generic(name, node, source)
+}
+
+/// Whether `name` is a generic or const generic parameter of an item enclosing `node`: a
+/// `type_parameter` or `const_parameter` of any ancestor's `type_parameters`.
+fn names_enclosing_generic(name: &str, node: tree_sitter::Node, source: &[u8]) -> bool {
+    std::iter::successors(node.parent(), |n| n.parent())
+        .filter_map(|n| n.child_by_field_name("type_parameters"))
+        .any(|params| {
+            let mut cursor = params.walk();
+            let found = params
+                .named_children(&mut cursor)
+                .filter_map(|p| p.child_by_field_name("name"))
+                .any(|n| n.utf8_text(source).is_ok_and(|t| t == name));
+            found
+        })
+}
+
+/// Whether `node`, an `identifier` or a whole `scoped_identifier`, is an expression READ (spec
+/// 117): outside every pattern, and not under a parent field of [`NON_READ_FIELDS`] - but a
+/// match arm's guard, its `condition`, is read.
+fn is_read(node: tree_sitter::Node) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    let field = field_of(node);
+    let pattern = parent.kind().ends_with("_pattern")
+        || matches!(parent.kind(), "closure_parameters" | "lifetime" | "label")
+        || (parent.kind() == "match_pattern" && field != Some("condition"));
+    !pattern
+        && !matches!(parent.kind(), "const_parameter" | "scoped_identifier")
+        && !field.is_some_and(|f| NON_READ_FIELDS.contains(&f))
+}
+
+/// Whether `node`, a `scoped_identifier`, is a WHOLE expression or pattern path: no prefix of a
+/// longer path, no type position (a `scoped_type_identifier`'s or `generic_type`'s path) and no
+/// macro's name.
+fn is_whole_expression_path(node: tree_sitter::Node) -> bool {
+    node.parent().is_none_or(|p| {
+        !matches!(
+            p.kind(),
+            "scoped_identifier" | "scoped_type_identifier" | "generic_type" | "macro_invocation"
+        )
+    })
+}
+
+/// The field of its parent `node` sits under, `None` for an unnamed child.
+fn field_of(node: tree_sitter::Node) -> Option<&'static str> {
+    let parent = node.parent()?;
+    let mut cursor = parent.walk();
+    let index = parent.children(&mut cursor).position(|c| c == node)?;
+    parent.field_name_for_child(index as u32)
+}
+
+/// Whether `node`'s text is spelled as a Rust constant, `^[A-Z][A-Z0-9_]*$` (the
+/// `non_upper_case_globals` naming, the one per-file fact telling a const from a local).
+fn is_const_spelled(node: tree_sitter::Node, source: &[u8]) -> bool {
+    node.utf8_text(source).is_ok_and(|t| {
+        t.starts_with(|c: char| c.is_ascii_uppercase())
+            && t.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    })
+}
+
+/// Whether `node`'s text begins with an ASCII uppercase letter (the `non_camel_case_types`
+/// naming a type path segment carries).
+fn begins_upper(node: tree_sitter::Node, source: &[u8]) -> bool {
+    node.utf8_text(source)
+        .is_ok_and(|t| t.starts_with(|c: char| c.is_ascii_uppercase()))
+}
+
+/// The final identifier of a Rust path node: an `identifier` itself, a `scoped_identifier`'s
+/// `name`, a `generic_type`'s type's; `None` for a `crate`, `self` or `super` segment.
+fn final_identifier(path: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    match path.kind() {
+        "identifier" => Some(path),
+        "scoped_identifier" => path
+            .child_by_field_name("name")
+            .filter(|n| n.kind() == "identifier"),
+        "generic_type" => final_identifier(path.child_by_field_name("type")?),
+        _ => None,
+    }
+}
+
+/// The text of a Rust path node's ROOT segment - its first: an `identifier`, `crate`, `self` or
+/// `super` itself, a scoped path's `path` followed down, a `generic_type`'s type's; a scoped path
+/// with no `path` (`::name`) roots at its name.
+fn root_segment(path: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut cur = path;
+    loop {
+        cur = match cur.kind() {
+            "scoped_identifier" | "scoped_type_identifier" => cur
+                .child_by_field_name("path")
+                .or_else(|| cur.child_by_field_name("name"))?,
+            "generic_type" => cur.child_by_field_name("type")?,
+            _ => return Some(cur.utf8_text(source).ok()?.to_string()),
+        };
+    }
+}
+
+/// The root segment ([`root_segment`]) of the path a Rust type names, `None` for an unqualified
+/// type: the `path` of a `scoped_type_identifier`, through a `generic_type`'s type.
+fn type_root(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "scoped_type_identifier" => root_segment(node.child_by_field_name("path")?, source),
+        "generic_type" => type_root(node.child_by_field_name("type")?, source),
+        _ => None,
+    }
+}
+
+/// THE USE RULE (spec 117): each imported leaf of the `use_declaration` `decl`, in source order -
+/// a path's final identifier, the name an alias renames (bound by the alias), and the module
+/// before a `self` leaf, unless that module is `crate`, `super` or `self`; a glob imports none.
+/// Each carries the root segment of its whole path.
+fn use_leaves<'t>(decl: tree_sitter::Node<'t>, source: &[u8]) -> Vec<UseLeaf<'t>> {
+    let mut out = Vec::new();
+    if let Some(argument) = decl.child_by_field_name("argument") {
+        collect_use_leaves(argument, None, None, source, &mut out);
+    }
+    out
+}
+
+/// [`use_leaves`]' walk over one use tree `node` under the list prefix ending in `prefix_last`,
+/// the whole path rooted at `root` once a prefix gave it one.
+fn collect_use_leaves<'t>(
+    node: tree_sitter::Node<'t>,
+    prefix_last: Option<tree_sitter::Node<'t>>,
+    root: Option<String>,
+    source: &[u8],
+    out: &mut Vec<UseLeaf<'t>>,
+) {
+    let text = |n: tree_sitter::Node| n.utf8_text(source).ok().map(str::to_string);
+    let mut leaf =
+        |name_node: tree_sitter::Node<'t>, bound: Option<String>, root: Option<String>| {
+            if let Some(name) = text(name_node) {
+                out.push(UseLeaf {
+                    bound: bound.unwrap_or(name),
+                    node: name_node,
+                    root,
+                });
+            }
+        };
+    match node.kind() {
+        "identifier" => {
+            let root = root.or_else(|| text(node));
+            leaf(node, None, root)
+        }
+        "scoped_identifier" => {
+            let root = root.or_else(|| root_segment(node, source));
+            if let Some(name) = node
+                .child_by_field_name("name")
+                .filter(|n| n.kind() == "identifier")
+            {
+                leaf(name, None, root)
+            }
+        }
+        "use_as_clause" => {
+            let Some(path) = node.child_by_field_name("path") else {
+                return;
+            };
+            let root = root.or_else(|| root_segment(path, source));
+            let bound = node.child_by_field_name("alias").and_then(text);
+            match path.kind() {
+                "self" => {
+                    if let Some(module) = prefix_last.filter(|n| n.kind() == "identifier") {
+                        leaf(module, bound, root)
+                    }
+                }
+                _ => {
+                    if let Some(name) = final_identifier(path) {
+                        leaf(name, bound, root)
+                    }
+                }
+            }
+        }
+        "self" => {
+            if let Some(module) = prefix_last.filter(|n| n.kind() == "identifier") {
+                leaf(module, None, root)
+            }
+        }
+        "scoped_use_list" => {
+            let path = node.child_by_field_name("path");
+            let root = root.or_else(|| path.and_then(|p| root_segment(p, source)));
+            let last = path.and_then(|p| match p.kind() {
+                "scoped_identifier" => p.child_by_field_name("name"),
+                _ => Some(p),
+            });
+            if let Some(list) = node.child_by_field_name("list") {
+                let mut cursor = list.walk();
+                let items: Vec<_> = list.named_children(&mut cursor).collect();
+                for item in items {
+                    collect_use_leaves(item, last, root.clone(), source, out);
+                }
+            }
+        }
+        "use_list" => {
+            let mut cursor = node.walk();
+            let items: Vec<_> = node.named_children(&mut cursor).collect();
+            for item in items {
+                collect_use_leaves(item, prefix_last, root.clone(), source, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Rust's TUPLE FIELDS (spec 116): every field of every tuple struct and tuple variant under
@@ -1715,8 +2241,7 @@ pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>()
             fs.defs
         );
         let refs: Vec<(&str, u32, Option<&str>)> = fs
-            .refs
-            .iter()
+            .calls()
             .map(|r| (r.name.as_str(), r.line, r.enclosing.as_deref()))
             .collect();
         for expected in [

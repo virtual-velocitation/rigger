@@ -1046,6 +1046,15 @@ impl CodeEntityExtracted {
     }
 }
 
+/// The [`EdgeInferred::ref_kind`] of a TYPE reference (spec 117): a Rust type name, an uppercase
+/// path segment, a struct literal's or pattern's name, or an impl header's trait.
+pub const REF_KIND_TYPE: &str = "type";
+/// The [`EdgeInferred::ref_kind`] of a CONST read (spec 117): an all-caps Rust identifier read in
+/// expression position, or the final identifier of a whole expression path.
+pub const REF_KIND_CONST: &str = "const";
+/// The [`EdgeInferred::ref_kind`] of a USE (spec 117): one imported leaf of a Rust `use`.
+pub const REF_KIND_USE: &str = "use";
+
 /// The `EdgeInferred` payload (spec 29a): one reference the extraction pass emits. Shares the
 /// same one-contract discipline as [`CodeEntityExtracted`]: emitted by the feature-gated pass,
 /// folded by the always-compiled arm.
@@ -1108,6 +1117,13 @@ pub struct EdgeInferred {
     /// `fresh` already rides whichever event happens to be the file's batch boundary.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// Spec 117 (REFERENCES): the kind of a non-call reference, a Rust type reference, const
+    /// read or imported leaf ([`REF_KIND_TYPE`], [`REF_KIND_CONST`] or [`REF_KIND_USE`]); absent
+    /// for a call, which folds as before the field existed. The fold runs a tagged event's structural head alone (the `fresh`
+    /// supersede and the file node) and folds nothing else from it. Serde-defaulted and omitted
+    /// when absent, so a call's wire form is byte-identical to before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_kind: Option<String>,
 }
 
 /// Serde `skip_serializing_if` predicate: an `EdgeInferred::line` of `0` is never a real 1-based

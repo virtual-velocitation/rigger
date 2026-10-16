@@ -274,7 +274,9 @@ fn identifier_shaped(token: &str) -> bool {
 }
 
 /// Every distinct `(name, language)` pair's occurrence count across the WHOLE index, counting
-/// DEFINITIONS always and REFERENCES only when `count_refs` is set - the ONE counting pass
+/// DEFINITIONS always and CALL references
+/// ([`FileSymbols::calls`](crate::grounder::symbols::model::FileSymbols::calls), never a tagged
+/// one, spec 117) only when `count_refs` is set - the ONE counting pass
 /// [`commonness_map`] and [`ambiguity_map`] both share (spec 92 criterion 3 remediation,
 /// arch-u92c3-cutoff-formula-duplicated-not-shared's DRY finding applied to this pair too: two
 /// near-identical scan loops over the same data, one function body now covers both). Keyed by
@@ -290,7 +292,7 @@ fn name_occurrence_map(idx: &SymbolIndex, count_refs: bool) -> BTreeMap<(&str, L
             *counts.entry((d.name.as_str(), fs.lang)).or_insert(0) += 1;
         }
         if count_refs {
-            for r in &fs.refs {
+            for r in fs.calls() {
                 *counts.entry((r.name.as_str(), fs.lang)).or_insert(0) += 1;
             }
         }
@@ -408,7 +410,9 @@ impl ScoredHit<'_> {
     }
 }
 
-/// Score every (file, line) definition/reference location in `idx` against `terms`, ranked by
+/// Score every (file, line) definition/call-reference location in `idx` against `terms` (a
+/// tagged reference, spec 117, never a location:
+/// [`FileSymbols::calls`](crate::grounder::symbols::model::FileSymbols::calls)), ranked by
 /// [`ScoredHit::rank`] - the ONE scored, sorted pass both [`Symbols::ground`] and
 /// [`Symbols::ground_ranked`] consume, so the two views can never disagree on ranking. A
 /// location that matches more than one term (or both an EXACT and a CONTAINS candidate) keeps
@@ -486,7 +490,7 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
         for d in &fs.defs {
             score_one(d.name.as_str(), d.line, HitKind::Def, 3, d.is_test);
         }
-        for r in &fs.refs {
+        for r in fs.calls() {
             score_one(r.name.as_str(), r.line, HitKind::Ref, 2, r.is_test);
         }
     }
@@ -626,7 +630,7 @@ impl Grounder for Symbols {
                 if !named.is_empty() || !defines.is_empty() {
                     definers.push(path.as_str());
                 }
-                if fs.refs.iter().any(|r| names.contains(&r.name.as_str())) {
+                if fs.calls().any(|r| names.contains(&r.name.as_str())) {
                     referencers.push(path.as_str());
                 }
             }

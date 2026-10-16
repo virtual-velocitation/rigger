@@ -172,6 +172,14 @@ pub struct SymRef {
     /// byte-identical-wire-form reason as `Def::is_test`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_test: bool,
+    /// Spec 117 (REFERENCES): what kind of non-call reference this is - a const read, a type
+    /// reference or an imported leaf of a `use`, the `EdgeInferred` payload's own spelling
+    /// (`contextgraph::REF_KIND_CONST`, `REF_KIND_TYPE`, `REF_KIND_USE`) - extracted for Rust
+    /// only; `None` for a call, every other language's reference included, which folds and counts
+    /// as before the field existed. A calls-only consumer reads [`FileSymbols::calls`].
+    /// Serde-defaulted and omitted when `None`, so a call serializes byte-identically to before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_kind: Option<String>,
 }
 
 /// One file's extracted symbols, tagged with the language it was parsed as (the scope key for
@@ -194,6 +202,16 @@ pub struct FileSymbols {
     /// before this field existed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+}
+
+impl FileSymbols {
+    /// The file's CALL references, every reference with no [`SymRef::ref_kind`] (spec 117), in
+    /// `refs` order: the one filter each calls-only consumer reads - the reference degree, the
+    /// grounder's commonness, scoring and radius, and the test evidence - so no tagged reference
+    /// moves a count, a rank or a radius.
+    pub fn calls(&self) -> impl Iterator<Item = &SymRef> {
+        self.refs.iter().filter(|r| r.ref_kind.is_none())
+    }
 }
 
 /// The version of the grammar / tag-query set this build indexes with (architecture 5.5.3),
@@ -292,15 +310,16 @@ impl SymbolIndex {
         &self.files
     }
 
-    /// How many references name `name` WITHIN `lang` - the per-language fan-out degree an entity
-    /// row reports. SCOPED to `lang`: the cross-reference graph is per-language (5.5.2), so the
+    /// How many call references ([`FileSymbols::calls`]) name `name` WITHIN `lang` - the
+    /// per-language fan-out degree an entity row reports, which no tagged reference (spec 117)
+    /// moves. SCOPED to `lang`: the cross-reference graph is per-language (5.5.2), so the
     /// degree over it is too. A name that over-links in another language never inflates this
     /// count (a Python `parse` leaves the Rust `parse` degree untouched).
     pub fn reference_degree(&self, name: &str, lang: Lang) -> usize {
         self.files
             .values()
             .filter(|f| f.lang == lang)
-            .flat_map(|f| f.refs.iter())
+            .flat_map(FileSymbols::calls)
             .filter(|r| r.name == name)
             .count()
     }

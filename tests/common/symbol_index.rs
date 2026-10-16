@@ -258,7 +258,7 @@ pub fn tagged_refs(fs: &FileSymbols) -> String {
         .refs
         .iter()
         .filter_map(|r| {
-            let kind = r.ref_kind?.as_str();
+            let kind = r.ref_kind.as_deref()?;
             Some((
                 r.line,
                 r.name.as_str(),
