@@ -1303,7 +1303,7 @@ pub struct RationaleBatch {
 /// The SUBJECT x LENS re-projection body (spec 55 c1): a SELECTED subject re-grained at a lens's
 /// altitude, in place, rather than switched to a whole-graph overview. Built by [`reproject`] from
 /// the subject's MEMBER SET (a concept's `REALIZES` members; a community's members; a file's
-/// contained entities; a single entity is its own set), re-bucketed under the requested lens - by
+/// members by `query::member_file`; a single entity is its own set), re-bucketed under the requested lens - by
 /// coupling community under [`Lens::Code`], by derived concept under [`Lens::Concepts`], by DISTINCT
 /// DEFINING FILE under [`Lens::Files`]. A pure read over the already-projected graph: no store touch,
 /// no new event type. Deterministic by construction, so the same graph + subject + lens yield a
@@ -6212,7 +6212,7 @@ mod tests {
 
     /// Spec 63 c3 (FILES-LENS PURITY): under [`Lens::Files`], drilling a cluster is UNCONDITIONALLY
     /// EMPTY - never a members-of-a-file fallback - because a file is this lens's atomic LEAF
-    /// subject (there is nothing further to drill INTO; a file's contained entities are the metadata
+    /// subject (there is nothing further to drill INTO; a file's members are the metadata
     /// card's job, criterion 2's). This holds regardless of whether `key` names a REAL, populated
     /// file cluster, an unknown key, or the graph is empty - the SAME graceful-degradation shape
     /// [`cluster_detail`] already promises for every lens, just unconditional here.
@@ -9941,7 +9941,7 @@ mod subject_view_c5 {
 /// and the `/api/graph?card=` route branch: a code-entity subject's card carries its definition
 /// file:line, its coupling community, the concepts it REALIZES, and decision/finding COUNTS
 /// (spec 63 c5's rail carries the full leaves; the card carries only the chip's count); a file
-/// subject's card lists its CONTAINED entities as `top_entities`; a concept subject's card lists
+/// subject's card lists its members (by `query::member_file`) as `top_entities`; a concept subject's card lists
 /// its REALIZING members as `top_evidence`. Every field the subject's own taxonomy does not name
 /// stays empty/absent - ONE struct serves every lens, never a per-taxonomy card type. The served-
 /// boundary + chip-handoff proof lives in `tests/metadata_card_handoff_viz.rs`.

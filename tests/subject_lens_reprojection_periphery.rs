@@ -3,7 +3,7 @@
 //! route. Selecting a SUBJECT and flipping the LENS re-grains THAT subject's member set at the
 //! chosen altitude - it does NOT switch to a whole-graph overview. The projection rule is: resolve
 //! the subject's MEMBER SET at its own grain (a concept's `REALIZES` members; a community's members;
-//! a file's contained entities; a single entity is its own set), then re-bucket that set under the
+//! a file's members by `query::member_file`; a single entity is its own set), then re-bucket that set under the
 //! requested lens. So a concept under `lens=code` shows its members grouped by coupling community,
 //! and under `lens=files` shows the DISTINCT FILES those members resolve to.
 //!

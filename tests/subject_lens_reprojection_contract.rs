@@ -317,7 +317,7 @@ const FILE_SUBJECT: &str = "src/pkg/mod.rs";
 const COMM_ALPHA: &str = "community/1/0";
 const COMM_BETA: &str = "community/1/1";
 
-/// A file subject whose three CONTAINED entities re-grain by coupling community: two into alpha, one
+/// A file subject whose three members re-grain by coupling community: two into alpha, one
 /// into beta.
 fn file_over_code_graph() -> Graph {
     Graph {
@@ -330,7 +330,7 @@ fn file_over_code_graph() -> Graph {
             def("src/pkg/mod.rs::e3", "e3"),
         ],
         edges: vec![
-            // The file's CONTAINS membership: its three entities.
+            // A `CONTAINS` edge from the file to each of its three members.
             edge(
                 FILE_SUBJECT,
                 "src/pkg/mod.rs::e1",
@@ -373,7 +373,7 @@ fn file_over_code_graph() -> Graph {
 }
 
 /// A FILE subject re-grains to its members (the `member_set` file arm, `member_file`), re-bucketed under
-/// the requested lens: `reproject(graph, file, &Lens::Code)` groups the file's contained entities by
+/// the requested lens: `reproject(graph, file, &Lens::Code)` groups the file's members by
 /// coupling community, sized by member count and labelled - proving the subject axis dispatches on the
 /// subject's OWN kind, not only a concept.
 #[test]
@@ -394,7 +394,7 @@ fn file_subject_regrains_its_contained_entities_by_community_under_the_code_lens
             bucket(COMM_ALPHA, 2, Some("alpha")),
             bucket(COMM_BETA, 1, Some("beta")),
         ],
-        "the file's contained entities re-grain into their two communities, sized and labelled: {re:?}"
+        "the file's members re-grain into their two communities, sized and labelled: {re:?}"
     );
     assert!(
         re.unresolved.is_empty(),
@@ -799,7 +799,7 @@ fn served_reproject_fires_for_a_file_subject_and_cluster_drill_takes_precedence(
     assert_eq!(
         keys,
         vec![COMM_ALPHA, COMM_BETA],
-        "the served file re-grain buckets its contained entities by community: {reproj}"
+        "the served file re-grain buckets its members by community: {reproj}"
     );
 
     // A cluster drill with a lens present STILL drills (a Neighborhood: seed + nodes, never a
@@ -1044,7 +1044,7 @@ fn served_explain_overlay_takes_precedence_over_the_reprojection_when_both_are_p
     assert_eq!(
         keys,
         vec![COMM_ALPHA, COMM_BETA],
-        "the re-projection buckets the file's contained entities by community: {reproj}"
+        "the re-projection buckets the file's members by community: {reproj}"
     );
     assert!(
         reproj.get("nodes").is_none(),

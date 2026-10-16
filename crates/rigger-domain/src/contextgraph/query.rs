@@ -1404,7 +1404,7 @@ pub(crate) fn card_ref(n: &Node) -> CardRef {
 /// The METADATA CARD of `id` (spec 63 c2): `None` when `id` is not a graph node (the graceful
 /// empty every KG detail read degrades to). See [`Card`] for the per-taxonomy field contract.
 /// Reuses [`memory_rail`] for the concepts/decision/finding facts and [`member_set`] for a file's
-/// contained entities / a concept's realizing members - ONE read authority per fact, never a
+/// members / a concept's realizing members - ONE read authority per fact, never a
 /// second parallel derivation kept in sync by hand.
 pub fn card(graph: &Graph, id: &str) -> Option<Card> {
     let node = graph.nodes.iter().find(|n| n.id == id)?;
