@@ -400,20 +400,37 @@ pub fn insert_node(
     .unwrap();
 }
 
-/// Seed `root` as a project whose own `.rigger/graph.db` holds each of `nodes` and no edge, each
-/// written straight into the store ([`insert_node`]) under `root`'s run-stream identity, its
-/// `attrs` the JSON object of the node's own, and hand back that projection: a graph no fold
-/// writes, read by the binary and the library alike.
-pub fn planted_graph(root: &Path, nodes: &[rigger::contextgraph::Node]) -> Projector {
+/// Seed `root` as a project whose own `.rigger/graph.db` holds `graph`'s nodes and edges alone,
+/// each written straight into the store under `root`'s run-stream identity - a node by
+/// [`insert_node`], its `attrs` the JSON object of the node's own, an edge as its `edges` row - and
+/// hand back that projection: a graph no fold writes, read by the binary and the library alike.
+pub fn planted_graph(root: &Path, graph: &rigger::contextgraph::Graph) -> Projector {
     seed_rigger_dir(root);
-    let graph = open_graph(root);
+    let planted = open_graph(root);
     let conn = rigger_db(root, "graph.db");
     let project = run_stream_identity(root);
-    for n in nodes {
+    for n in &graph.nodes {
         let attrs = serde_json::to_string(&n.attrs).unwrap();
         insert_node(&conn, &project, &n.id, &n.kind, Some(&attrs));
     }
-    graph
+    for e in &graph.edges {
+        conn.execute(
+            "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                e.from,
+                e.to,
+                e.rel,
+                e.valid_from,
+                e.valid_to,
+                e.source,
+                project,
+                e.tier
+            ],
+        )
+        .unwrap();
+    }
+    planted
 }
 
 /// The stdout `rigger graph --show <query>` prints when several definitions answer `query`: the

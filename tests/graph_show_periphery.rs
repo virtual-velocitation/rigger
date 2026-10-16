@@ -140,7 +140,7 @@ fn graph_show_and_around_with_no_store_print_the_not_found_note() {
 fn graph_around_a_file_lists_its_members_and_a_member_its_file_with_no_contains() {
     let dir = temp_project();
     let root = dir.path();
-    drop(planted_graph(root, &member_graph().nodes));
+    drop(planted_graph(root, &member_graph()));
     let printed = |seed: &str, depth: i64, nodes: &[(&str, &str)]| {
         let mut out = format!("subgraph around {seed:?} (depth {depth}):\n");
         for (id, kind) in nodes {

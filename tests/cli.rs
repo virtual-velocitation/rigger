@@ -27302,13 +27302,17 @@ fn graph_show_notes_a_nameless_node_by_its_id() {
     let dir = temp_project();
     let root = dir.path();
     common::fixtures::write_text(root, "src/x.rs", "fn thing() {}\n");
+    let nameless = common::fixtures::node_with_attrs(
+        "src/x.rs::thing",
+        "code-entity",
+        &[("kind", "function"), ("line", "1")],
+    );
     drop(common::cli::planted_graph(
         root,
-        &[common::fixtures::node_with_attrs(
-            "src/x.rs::thing",
-            "code-entity",
-            &[("kind", "function"), ("line", "1")],
-        )],
+        &rigger::contextgraph::Graph {
+            nodes: vec![nameless],
+            edges: Vec::new(),
+        },
     ));
 
     assert_eq!(

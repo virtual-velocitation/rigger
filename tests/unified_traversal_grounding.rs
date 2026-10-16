@@ -34,10 +34,10 @@ use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE, REL_CONSTRAINS,
-    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES, TYPE_CODE_ENTITY_EXTRACTED,
-    TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_LESSON_LEARNED,
-    TYPE_REVIEW_FINDING,
+    KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE, REL_CALLS,
+    REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES, TIER_INFERRED,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
+    TYPE_DOC_LINK_EXTRACTED, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
@@ -47,7 +47,12 @@ use serde_json::{json, Value};
 
 use common::cli::{planted_graph, temp_project};
 use common::fixtures::apply_next_json;
-use common::fixtures::{file_half, member_graph, NESTED_METHOD};
+use common::fixtures::{
+    edge, file_half, member_graph, BARE_PARENT, LEAF_PLACEHOLDER, NESTED_METHOD, RANGE_ARTIFACT,
+};
+
+/// The opening words of the code-neighborhood section's header.
+const CODE_NEIGHBORHOOD: &str = "Code neighborhood of these files";
 
 /// The failure message of a test whose stage's agent was never spawned.
 const SPAWNED: &str = "the stage's agent must have been spawned";
@@ -1105,7 +1110,7 @@ fn a_spawn_prompt_with_no_extracted_definitions_renders_no_code_neighborhood_hea
     // With no extracted definition, the code-neighborhood section is suppressed entirely - no bare
     // header renders over an empty body.
     assert!(
-        !prompt.contains("Code neighborhood of these files"),
+        !prompt.contains(CODE_NEIGHBORHOOD),
         "an empty code neighborhood must render no bare header; prompt was:\n{prompt}"
     );
 }
@@ -1766,21 +1771,42 @@ fn the_trimmed_implement_prompt_still_delivers_every_design_intent_binding_deter
     );
 }
 
-/// The code-neighborhood lines of `prompt` for `file`, in rendered order.
-fn neighborhood_lines<'p>(prompt: &'p str, file: &str) -> Vec<&'p str> {
-    let prefix = format!("- {file}:");
-    prompt.lines().filter(|l| l.starts_with(&prefix)).collect()
+/// The code-neighborhood lines of `prompt` for `core.rs`, in rendered order.
+fn core_neighborhood_lines(prompt: &str) -> Vec<&str> {
+    prompt
+        .lines()
+        .filter(|l| l.starts_with("- core.rs:"))
+        .collect()
+}
+
+/// Every line of `prompt`'s code-neighborhood section, from the one after its header to the
+/// blank line that closes it, in rendered order.
+fn code_neighborhood_section(prompt: &str) -> Vec<&str> {
+    prompt
+        .lines()
+        .skip_while(|l| !l.starts_with(CODE_NEIGHBORHOOD))
+        .skip(1)
+        .take_while(|l| !l.is_empty())
+        .collect()
 }
 
 /// Spec 119, THE MEMBER RULE at the prompt boundary. GIVEN a project graph store holding
-/// [`member_graph`]'s nodes and no edge, so no `CONTAINS` reaches the touched file's definitions,
-/// WHEN the stage's agent is spawned on that file, THEN its code neighborhood lists the nested
-/// method and the file-mate, the members the store's walk loads one hop from the file, and no
-/// line for the placeholder, the bare parent or the `artifact` its id range holds.
+/// [`member_graph`]'s nodes, no `CONTAINS` reaching the touched file's definitions, and a `CALLS`
+/// from the nested method to each of the placeholder, the bare parent and the `artifact` its id
+/// range holds, so the store's walk loads those three one hop past the method, WHEN the stage's
+/// agent is spawned on that file, THEN its code neighborhood lists the nested method and the
+/// file-mate, the members the walk loads one hop from the file, and no line for any of the three:
+/// a loaded node of the file's range renders only as a member.
 #[test]
 fn a_spawn_prompt_lists_a_nested_method_of_the_touched_file_with_no_contains() {
+    let mut planted = member_graph();
+    for to in [LEAF_PLACEHOLDER, BARE_PARENT, RANGE_ARTIFACT] {
+        planted
+            .edges
+            .push(edge(NESTED_METHOD, to, REL_CALLS, TIER_INFERRED));
+    }
     let dir = temp_project();
-    let graph = planted_graph(dir.path(), &member_graph().nodes);
+    let graph = planted_graph(dir.path(), &planted);
     let file = file_half(NESTED_METHOD);
     let grounder = SeedGrounder { file: file.into() };
 
@@ -1789,7 +1815,7 @@ fn a_spawn_prompt_lists_a_nested_method_of_the_touched_file_with_no_contains() {
         SPAWNED,
     );
     assert_eq!(
-        neighborhood_lines(&prompt, file),
+        code_neighborhood_section(&prompt),
         ["- a.rs:0   new", "- a.rs:0   mate"],
         "the touched file's members are listed, nested or not; prompt was:\n{prompt}"
     );
@@ -1822,7 +1848,7 @@ fn a_spawn_prompt_lists_no_data_member_and_no_declaration_in_its_code_neighborho
 
     let prompt = first_prompt(run_and_capture_prompts(&graph), SPAWNED);
     assert_eq!(
-        neighborhood_lines(&prompt, "core.rs"),
+        core_neighborhood_lines(&prompt),
         ["- core.rs:1  function run", "- core.rs:5  constant LIMIT"],
         "the neighborhood lists the fn and the constant alone; prompt was:\n{prompt}"
     );
@@ -1851,7 +1877,7 @@ fn a_field_takes_no_slot_of_the_capped_code_neighborhood() {
 
     let prompt = first_prompt(run_and_capture_prompts(&graph), SPAWNED);
     assert_eq!(
-        neighborhood_lines(&prompt, "core.rs"),
+        core_neighborhood_lines(&prompt),
         ["- core.rs:41  function run"],
         "the fn behind forty fields is listed, the fields are not; prompt was:\n{prompt}"
     );
