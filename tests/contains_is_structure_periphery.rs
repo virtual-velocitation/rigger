@@ -25,7 +25,8 @@ fn parent_read(payload: &serde_json::Value) -> (Option<String>, Option<String>, 
 }
 
 /// GIVEN a tree whose `a.rs` defines the enum `E` holding the variants `A` and `B`, WHEN the
-/// production ingest emits it, THEN each variant's `CodeEntityExtracted` payload carries `parent`
+/// production ingest emits it, THEN `E`'s `CodeEntityExtracted` payload is emitted before its
+/// variants', though each variant's name sorts before `E`, each variant's payload carries `parent`
 /// `E` and the file-level `E`'s carries no `parent` key, and each payload deserializes to the
 /// public payload type, whose `parent` and `parent_path` are that key's value, and serializes back
 /// to itself.
@@ -43,7 +44,7 @@ fn the_extracted_event_carries_parent_only_off_file_level_and_round_trips() {
     assert_eq!(
         common::names_and_key(&payloads, "parent"),
         [("E".to_string(), None), under_e("A"), under_e("B")],
-        "only a variant's payload carries a parent key, its enum's path"
+        "the enum's payload before its variants', and only a variant's carries a parent key, its enum's path"
     );
     let read: Vec<_> = payloads.iter().map(parent_read).collect();
     let under_e = (Some("E".to_string()), Some("E".to_string()), true);

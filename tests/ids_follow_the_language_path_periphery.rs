@@ -44,8 +44,9 @@ fn new_at_its_path() -> NameAndPath {
     ("new".to_string(), Some("T::new".into()))
 }
 
-/// The [`NameAndPath`] of each payload [`source_tree`]'s own extraction emits, in emit order: the
-/// method `new` alone carries a `path` ([`new_at_its_path`]).
+/// The [`NameAndPath`] of each payload [`source_tree`]'s own extraction emits, in emit order, each
+/// definition after every definition containing it - `new` after `T` and `impl T`, though its name
+/// sorts before `run`'s: the method `new` alone carries a `path` ([`new_at_its_path`]).
 #[cfg(feature = "symbols")]
 fn source_names_and_paths() -> Vec<NameAndPath> {
     vec![
@@ -57,8 +58,9 @@ fn source_names_and_paths() -> Vec<NameAndPath> {
 }
 
 /// GIVEN a tree whose `a.rs` defines the file-level `run`, `T` and `impl T` and the method
-/// `T::new`, WHEN the production ingest emits it, THEN each `CodeEntityExtracted` payload carries
-/// `path` exactly when its path differs from its name (`T::new` alone), and each deserializes to
+/// `T::new`, WHEN the production ingest emits it, THEN the method's `CodeEntityExtracted` payload
+/// is emitted after `T`'s and `impl T`'s, each payload carries `path` exactly when its path differs
+/// from its name (`T::new` alone), and each deserializes to
 /// the public payload type, whose `id_path` is that path, and serializes back to itself.
 #[cfg(feature = "symbols")]
 #[test]
@@ -68,7 +70,7 @@ fn the_extracted_event_carries_path_only_off_file_level_and_round_trips() {
     assert_eq!(
         names_and_paths(&payloads),
         source_names_and_paths(),
-        "only the payload whose path differs from its name carries a path key"
+        "the method's payload after its type's and impl's, and only the payload whose path differs from its name carries a path key"
     );
     let round_trips: Vec<(String, bool)> = payloads
         .iter()
