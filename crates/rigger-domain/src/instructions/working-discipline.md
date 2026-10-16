@@ -162,6 +162,8 @@ tool that searches them.
   changes, and reads every consumer sentence of that function - its depth-1 callers' notes,
   Returns paragraphs, variant docs and oracles - against the condition at head: a consumer
   sentence stating the pre-change answer that the record does not carry FIXED or CHECKED is a
+  BLOCKING finding on its own. The lens reads every sentence it re-reads claim by claim against
+  the unit's change, with a witness per claim at head, and a sentence it cannot witness is a
   BLOCKING finding on its own.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
   code reads after your change, on any feature lane, is removed. Check: name its reader.

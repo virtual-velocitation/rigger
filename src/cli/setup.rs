@@ -3762,7 +3762,12 @@ mod tests {
     /// round's delta is BLOCKING; it derives the changed-condition set itself - each boolean
     /// term the unit's production hunks add to or remove from a filter, guard or predicate -
     /// and reads every consumer sentence of that function against it, and one stating the
-    /// pre-change answer that the record does not carry is BLOCKING. Of the mutable-token rule:
+    /// pre-change answer that the record does not carry is BLOCKING; every sentence it reads, a
+    /// CHECKED member, an omitted member or a search hit, it reads claim by claim against the
+    /// unit's change with a `file:line` witness per claim at head, a conditional claim against
+    /// whether the diff changes its condition and a cross-surface claim against each surface it
+    /// names, a claim with no witness BLOCKING and a grouped verdict with no per-sentence witness
+    /// a record it cannot write. Of the mutable-token rule:
     /// it derives the token set from the production hunks over the unit's whole range, probes
     /// every token the author's `<unit>-mutant-probes` record lacks in a scratch worktree it
     /// restores and removes in-turn, and a green probe or an unrecorded token is BLOCKING. The
@@ -3841,6 +3846,24 @@ mod tests {
              them - against the condition at head",
             "A consumer sentence stating the pre-change answer that the record does not carry \
              FIXED or CHECKED is BLOCKING",
+            "Every sentence you read - a CHECKED member of the record, a member the record \
+             omits that you read yourself, a hit of a rule-spelling search - you read claim by \
+             claim against the unit's change: you write down each claim the sentence makes and \
+             the `file:line` at head that makes that claim true for THIS unit's change",
+            "checking a conditional claim (when X changes, Y; so does a change to X) by whether \
+             the unit's diff changes X and, when it does, whether Y holds at head, and a \
+             cross-surface claim (the way other surfaces do; every caller; both show surfaces) \
+             by reading each surface it names.",
+            "A claim with no witness is a BLOCKING finding on its own, the sentence false or \
+             unwitnessable, never a CHECKED.",
+            "You find the sentences with the generators above, the count `git ls-files src \
+             crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
+             { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
+             change, and the rule-spelling searches",
+            "your review-complete record carries, for every sentence you read beyond the \
+             author's record, its location, its claims and each claim's witness, and a grouped \
+             verdict (\"none false\", \"each a field reference\") over sentences with no \
+             per-sentence witness is a record you cannot write.",
             "You are also the enforcement of the built-in rule that every mutable token of the \
              production delta is pinned.",
             "You derive the token set yourself from the production hunks of `git diff \

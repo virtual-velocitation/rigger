@@ -300,7 +300,9 @@ mod tests {
     /// Returns paragraphs, variant docs and oracles spell and are searched by, the SDET
     /// lens re-deriving each generator's set over that range, reading every witness, re-running
     /// each search and re-reading every hit against head, deriving the changed-condition set
-    /// itself and reading every consumer sentence against it, with a renamed name's old spelling
+    /// itself and reading every consumer sentence against it, and reading every sentence it
+    /// re-reads claim by claim against the unit's change with a witness per claim at head, a
+    /// sentence it cannot witness blocking on its own, with a renamed name's old spelling
     /// counted to zero, nothing added that nothing reads, the red test's body untouched by the
     /// green commit, every mutable token of the production delta - an operator, an offset, an
     /// operand, a range argument, an arm's statement, a match arm, an early return - mutated by
@@ -479,6 +481,9 @@ mod tests {
              oracles - against the condition at head: a consumer sentence stating the \
              pre-change answer that the record does not carry FIXED or CHECKED is a BLOCKING \
              finding on its own.",
+            "The lens reads every sentence it re-reads claim by claim against the unit's \
+             change, with a witness per claim at head, and a sentence it cannot witness is a \
+             BLOCKING finding on its own.",
             "when you rename or retire a name, walk every spelling of the old term through the \
              tree",
             "The old spelling occurs zero times in the tree outside git history, counted over \
