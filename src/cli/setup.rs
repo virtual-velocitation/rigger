@@ -3586,7 +3586,8 @@ mod tests {
     /// unit's whole range, a twin among untouched statements named as the tree's debt - each
     /// string literal alone and in full, quotes
     /// inside the term and one run per literal however short, and each outside call with its
-    /// first argument token, never the body's name - and the sentence
+    /// first argument token, never the body's name, the record organised by statement, each
+    /// added or edited statement quoted with its `file:line` above its terms - and the sentence
     /// walk's generators as commands over the unit's whole range on every round (the merge base
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
     /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
@@ -3709,6 +3710,10 @@ mod tests {
             "END { print n + 0 \" hits\" }'`",
             "The record pastes each command as run, its hit count and every hit it printed, each \
              FIXED or CHECKED, and the `sdet` lens re-runs each on the review tree.",
+            "The record is organised by statement: each statement you add or edit is quoted with \
+             its `file:line` and followed by its terms and their searches, a single call into the \
+             shared home marked so with its callee named; a term the statement spells that the \
+             record lacks under it is a record defect the `sdet` lens blocks on.",
             "Each rule the change rewrites is searched by the distinguishing phrase of its old \
              statement and of each label its cases carried (a name a doc, test or comment gives \
              a case the old rule decided), one run per phrase, the phrase its one argument, over every tracked text \
