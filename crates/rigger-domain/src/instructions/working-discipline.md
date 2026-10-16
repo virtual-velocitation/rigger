@@ -124,7 +124,11 @@ tool that searches them.
   record you cannot write. Every sentence the record marks new or FIXED carries its witness,
   the `file:line` of the code at head that makes it true - the arm, the guard, the call, the
   constant; two witnesses when one would not make the whole sentence true - and a sentence
-  with no witness is a claim, not a record; a CHECKED sentence whose truth rests on code names
+  with no witness is a claim, not a record; a claim that quantifies over a set - every, all,
+  always, any, a plural subject with a predicate - is witnessed once per case the code splits
+  that set into (each arm that assigns the value, each component of a key or comparator, each
+  condition of a filter or guard, each branch of a match), the record naming the cases and a
+  witness per case; a CHECKED sentence whose truth rests on code names
   its witness the same way, and one CHECKED as a different rule sharing the words names that
   rule instead and shows the sentence's claim is that rule's question, the question the
   sentence answers read claim by claim as the lens reads it; a sentence whose claim is the
