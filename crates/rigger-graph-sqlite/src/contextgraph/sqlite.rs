@@ -11611,11 +11611,19 @@ mod tests {
             call_node_ids(&call_walk(p, caller, Direction::Down))
         }
 
-        /// The value the SQL expression `expr` gives node `id`'s row: a store form read beside
-        /// the in-memory rule it spells.
-        pub(super) fn stored(p: &Projector, expr: &str, id: &str) -> Option<String> {
+        /// The value the SQL expression `expr` gives node `id`'s row, paired with the value the
+        /// in-memory rule `read` it spells gives the same stored node.
+        pub(super) fn stored_beside(
+            p: &Projector,
+            expr: &str,
+            id: &str,
+            read: fn(&Node) -> Option<&str>,
+        ) -> (Option<String>, Option<String>) {
             let sql = format!("SELECT {expr} FROM nodes WHERE id = ?1");
-            raw_rows::<_, Vec<_>>(p, &sql, [id], |r| r.get(0)).remove(0)
+            let stored = raw_rows::<_, Vec<_>>(p, &sql, [id], |r| r.get(0)).remove(0);
+            let conn = p.conn.lock().unwrap();
+            let node = node_row(&conn, id, &p.project).unwrap().unwrap();
+            (stored, read(&node).map(str::to_string))
         }
 
         /// The id `p.locate(query)` resolves to, insisting it resolves to exactly one.
@@ -11781,12 +11789,7 @@ mod tests {
             define(&p, &named);
             let leaves: Vec<(Option<String>, Option<String>)> = named
                 .iter()
-                .map(|(id, _)| {
-                    let stored = stored(&p, node_leaf_sql(), id);
-                    let conn = p.conn.lock().unwrap();
-                    let node = node_row(&conn, id, &p.project).unwrap().unwrap();
-                    (stored, node_leaf(&node).map(str::to_string))
-                })
+                .map(|(id, _)| stored_beside(&p, node_leaf_sql(), id, node_leaf))
                 .collect();
             let expected = [Some("new"), Some("A.B"), Some("a::b"), None]
                 .map(|leaf| leaf.map(str::to_string))
@@ -11828,7 +11831,7 @@ mod tests {
     mod member_rule {
         use super::generations::ledger_entries::label;
         use super::leaf_keys_resolution::{
-            define, edge_directly, entity, stored, write_directly, UNKEYED,
+            define, edge_directly, entity, stored_beside, write_directly, UNKEYED,
         };
         use super::*;
         use crate::test_support::{
@@ -11979,12 +11982,7 @@ mod tests {
             ];
             let files: Vec<(Option<String>, Option<String>)> = ids
                 .into_iter()
-                .map(|id| {
-                    let stored = stored(&p, &member_sql(), id);
-                    let conn = p.conn.lock().unwrap();
-                    let node = node_row(&conn, id, &p.project).unwrap().unwrap();
-                    (stored, member_file(&node).map(str::to_string))
-                })
+                .map(|id| stored_beside(&p, &member_sql(), id, member_file))
                 .collect();
             let file = Some(file_half(NESTED_METHOD).to_string());
             let expected = [file, None, None, None, None, None].map(|f| (f.clone(), f));
