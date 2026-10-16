@@ -2391,20 +2391,20 @@ __END__
 - `src/cli/setup.rs:3183-3183` `".rigger/workflow.yml"`
 - `src/cli/setup.rs:3413-3413` `".rigger"`
 - `src/cli/setup.rs:3441-3441` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:3641-3641` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:3643-3643` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:3644-3644` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:3645-3645` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:3655-3655` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:3658-3658` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:3672-3672` `"The count and the caller lookup run once per item of the walk's hunk list - every \
+- `src/cli/setup.rs:3642-3642` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:3644-3644` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:3645-3645` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:3646-3646` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:3656-3656` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:3659-3659` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:3673-3673` `"The count and the caller lookup run once per item of the walk's hunk list - every \
              item the hunks touch, new or pre-existing, its body or its doc changed - each \
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers."`
-- `src/cli/setup.rs:3752-3752` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:3890-3890` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:3753-3753` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:3893-3893` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`

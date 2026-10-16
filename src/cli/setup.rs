@@ -3592,7 +3592,8 @@ mod tests {
     /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
     /// per item of the walk's hunk list and paired with it in the record, each FIXED or new
     /// line's `file:line`
-    /// witness, the rule-spelling search over every tracked text file, one
+    /// witness, one per case the code splits a quantified sentence's subject into with the cases
+    /// named, the rule-spelling search over every tracked text file, one
     /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
     /// phrase in another case or split by a rewrap still a hit) whose command and hits the walk pastes for the `sdet`
     /// lens to re-run, each boolean term a production hunk adds to or removes from a filter,
@@ -3788,9 +3789,11 @@ mod tests {
     /// CHECKED member, an omitted member or a search hit, it reads claim by claim against the
     /// unit's change with a `file:line` witness per claim at head, a conditional claim against
     /// whether the diff changes its condition and a cross-surface claim against each surface it
-    /// names, a claim with no witness BLOCKING and a grouped verdict with no per-sentence
-    /// witness, over the author's CHECKED members as over any other sentence it reads, a record
-    /// it cannot write. Of the mutable-token rule: it derives the token set from the production
+    /// names, a quantified claim read against each case the code splits its subject into, each
+    /// case with its `file:line` and listed beside the claim in its record, a claim with no
+    /// witness, a quantified claim with one witness or a failing case BLOCKING and a grouped
+    /// verdict with no per-sentence witness, over the author's CHECKED members as over any other
+    /// sentence it reads, a record it cannot write. Of the mutable-token rule: it derives the token set from the production
     /// hunks over the unit's whole range, probes every token the author's `<unit>-mutant-probes`
     /// record lacks in a scratch worktree it restores and removes in-turn, and a green probe or
     /// an unrecorded token is BLOCKING; it compares its token set with the record line by line,
