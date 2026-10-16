@@ -3767,7 +3767,8 @@ mod tests {
     /// unit's change with a `file:line` witness per claim at head, a conditional claim against
     /// whether the diff changes its condition and a cross-surface claim against each surface it
     /// names, a claim with no witness BLOCKING and a grouped verdict with no per-sentence witness
-    /// a record it cannot write. Of the mutable-token rule:
+    /// - over the author's CHECKED members as over any other sentence it reads - a record it
+    /// cannot write. Of the mutable-token rule:
     /// it derives the token set from the production hunks over the unit's whole range, probes
     /// every token the author's `<unit>-mutant-probes` record lacks in a scratch worktree it
     /// restores and removes in-turn, and a green probe or an unrecorded token is BLOCKING. The
@@ -3860,10 +3861,12 @@ mod tests {
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches",
-            "your review-complete record carries, for every sentence you read beyond the \
-             author's record, its location, its claims and each claim's witness, and a grouped \
-             verdict (\"none false\", \"each a field reference\") over sentences with no \
-             per-sentence witness is a record you cannot write.",
+            "your review-complete record carries, for every sentence you read - each CHECKED \
+             member of the author's record first of all, each member the record omits, each hit \
+             of a rule-spelling search - its location, its claims and each claim's witness at \
+             head, and a grouped verdict (\"none false\", \"each a field reference\", \"the \
+             CHECKED hits hold\") over sentences with no per-sentence witness is a record you \
+             cannot write.",
             "You are also the enforcement of the built-in rule that every mutable token of the \
              production delta is pinned.",
             "You derive the token set yourself from the production hunks of `git diff \
@@ -3878,6 +3881,12 @@ mod tests {
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
+        // The lens's per-sentence list covers the author's CHECKED members it re-reads, so no
+        // clause leaves the record's own members out of it.
+        assert!(
+            !flat.contains("beyond the author's record"),
+            "the lens's per-sentence list covers the author's CHECKED members too"
+        );
     }
 
     /// The implementer runs the hand-over checks, never the whole suite: no sentence of its
