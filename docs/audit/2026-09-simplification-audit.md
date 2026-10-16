@@ -5010,7 +5010,7 @@ Proposed home: `one shared `exploration_graph` helper (e.g. relocated into `test
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `tests/dash_exploration_route_client_contract.rs:67-117` `exploration_graph`
-- `tests/dash_kg_graph_route.rs:1137-1148` `exploration_graph`
+- `tests/dash_kg_graph_route.rs:1141-1152` `exploration_graph`
 
 #### `dup-c49b09543e58` (semantic, 3 sites)
 
@@ -5018,7 +5018,7 @@ Proposed home: `one shared `fixture_graph` helper (e.g. relocated into `tests/co
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/dash_kg_graph_route.rs:52-64` `fixture_graph`
+- `tests/dash_kg_graph_route.rs:56-68` `fixture_graph`
 - `tests/graph_query_engine_relocation_periphery.rs:53-72` `fixture_graph`
 - `tests/metadata_card_periphery.rs:49-100` `fixture_graph`
 

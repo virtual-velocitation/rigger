@@ -12,6 +12,10 @@
 //! `serve` entrypoint - carries the c5 seeded neighborhood end-to-end, and that the served root page
 //! ships the KG panel + the select-to-seed wiring the browser runs.
 //!
+//! The member-rule test (spec 119) reads the same `route` dispatch in-process through the shared
+//! `served_json`, since what it proves is which nodes the seed and card routes answer with, the
+//! socket framing being the other tests' subject.
+//!
 //! Criterion 6 (query-path + god-node) and criterion 7 (explain provenance + client tier-filter)
 //! EXTEND the same served route + panel, so their periphery guards live here too, each bound to its
 //! own mechanism; the c5 tests stay scoped to the neighborhood shape (nodes + tier-tagged edges) and

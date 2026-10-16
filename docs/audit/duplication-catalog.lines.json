@@ -7779,8 +7779,8 @@
       },
       {
         "file": "tests/dash_kg_graph_route.rs",
-        "start_line": 1137,
-        "end_line": 1148
+        "start_line": 1141,
+        "end_line": 1152
       }
     ]
   },
@@ -7789,8 +7789,8 @@
     "sites": [
       {
         "file": "tests/dash_kg_graph_route.rs",
-        "start_line": 52,
-        "end_line": 64
+        "start_line": 56,
+        "end_line": 68
       },
       {
         "file": "tests/graph_query_engine_relocation_periphery.rs",
