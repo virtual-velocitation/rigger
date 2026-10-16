@@ -304,8 +304,9 @@ mod tests {
     /// each search and re-reading every hit against head, deriving the changed-condition set
     /// itself and reading every consumer sentence against it, and reading every sentence it
     /// re-reads claim by claim against the unit's change with a witness per claim at head, a
-    /// sentence it cannot witness blocking on its own, with a renamed name's old spelling
-    /// counted to zero, nothing added that nothing reads, the red test's body untouched by the
+    /// sentence it cannot witness blocking on its own, its record listing every sentence it
+    /// reads, the CHECKED members included, never a grouped verdict, with a renamed name's old
+    /// spelling counted to zero, nothing added that nothing reads, the red test's body untouched by the
     /// green commit, every mutable token of the production delta - an operator, an offset, an
     /// operand, a range argument, an arm's statement, a match arm, an early return - mutated by
     /// hand one at a time with the red test recorded, a green probe pinned or reshaped away, the
@@ -490,6 +491,9 @@ mod tests {
             "The lens reads every sentence it re-reads claim by claim against the unit's \
              change, with a witness per claim at head, and a sentence it cannot witness is a \
              BLOCKING finding on its own.",
+            "The lens's record lists every sentence it reads, the record's CHECKED members \
+             included, each with its claims and a witness per claim; a grouped verdict over any \
+             of them is a record the lens cannot write.",
             "when you rename or retire a name, walk every spelling of the old term through the \
              tree",
             "The old spelling occurs zero times in the tree outside git history, counted over \
