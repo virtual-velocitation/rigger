@@ -6,11 +6,11 @@
 //! stays compiled in both lanes.
 
 use crate::contextgraph::{
-    kind_rank, CodeEntityExtracted, EdgeInferred, CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR,
-    CODE_KIND_DECLARATION, CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO,
-    CODE_KIND_METHOD, CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_STATIC,
-    CODE_KIND_TRAIT, CODE_KIND_TYPE, CODE_KIND_VARIABLE, CODE_KIND_VARIANT,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+    definition_precedence, CodeEntityExtracted, EdgeInferred, CODE_KIND_CONSTANT,
+    CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION, CODE_KIND_FIELD, CODE_KIND_FUNCTION,
+    CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD, CODE_KIND_MODULE, CODE_KIND_OTHER,
+    CODE_KIND_PROPERTY, CODE_KIND_STATIC, CODE_KIND_TRAIT, CODE_KIND_TYPE, CODE_KIND_VARIABLE,
+    CODE_KIND_VARIANT, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
 };
 use crate::eventstore::Event;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
@@ -346,9 +346,9 @@ fn chain_length(parent: Option<&str>, emitted: &BTreeMap<&str, &Def>) -> usize {
 }
 
 /// Where `d` stands in the order that picks a path's one emitted definition (spec 119, ONE PATH,
-/// ONE EVENT): its kind's place in `CODE_KIND_PRECEDENCE` ([`kind_rank`]), then its line.
+/// ONE EVENT): the [`definition_precedence`] of its kind and line.
 fn path_precedence(d: &Def) -> (usize, u32) {
-    (kind_rank(kind_str(d.kind)), d.line)
+    definition_precedence(kind_str(d.kind), d.line)
 }
 
 /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): the STRUCTURAL batch-boundary sentinel for a

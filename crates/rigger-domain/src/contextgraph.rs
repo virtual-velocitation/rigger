@@ -111,6 +111,12 @@ pub fn kind_rank(kind: &str) -> usize {
         .position(|listed| *listed == kind)
         .unwrap_or(CODE_KIND_PRECEDENCE.len() - 1)
 }
+/// The order that picks one of the definitions sharing a node (spec 116, A SHARED NODE TAKES ONE
+/// KIND; spec 119, ONE PATH, ONE EVENT): a definition of `kind` at `line` ranks by its kind's
+/// place in [`CODE_KIND_PRECEDENCE`] ([`kind_rank`]), then by its line, the lesser first.
+pub fn definition_precedence(kind: &str, line: u32) -> (usize, u32) {
+    (kind_rank(kind), line)
+}
 /// The code kinds no call resolves onto: a data member, and a declaration, whose calls reach
 /// its implementation.
 pub const NON_TARGET_KINDS: [&str; 3] =

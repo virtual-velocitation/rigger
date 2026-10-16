@@ -12,9 +12,9 @@ use super::query::{
     entity_id, leaf_of, node_file, node_leaf, node_name, path_leaf, placeholder_id, split_id,
 };
 use super::{
-    entity_site, kind_rank, CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite,
-    EntryBatch, EntryFold, Error, FoldAccess, Graph, Located, Node, Projection, KIND_AGENT,
-    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
+    definition_precedence, entity_site, CallEdge, CallGraph, CallNode, Candidate, Direction, Edge,
+    EntitySite, EntryBatch, EntryFold, Error, FoldAccess, Graph, Located, Node, Projection,
+    KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
     KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
     KIND_LESSON, KIND_RATIONALE, KIND_STAGE, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
     PLACEHOLDER_SIGIL, REBUILD_OWED, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS,
@@ -2173,11 +2173,11 @@ fn undo_what_resolved_against(
     Ok(now)
 }
 
-/// The `(kind, line)` node `id` takes when `by` folds a definition of it, a `kind` at `line`
-/// (spec 116, A SHARED NODE TAKES ONE KIND). Every definition of one leaf in one file folds onto
-/// one node, so for a keyed event the node settles on ONE of the definitions its file's identity
-/// asserts on it at its current generation: the one whose kind is first in
-/// [`CODE_KIND_PRECEDENCE`](super::CODE_KIND_PRECEDENCE), the lower line and then the lesser
+/// The `(kind, line)` node `id` takes when `by` folds a definition of it, a `kind` at `line` (spec
+/// 116, A SHARED NODE TAKES ONE KIND). Every definition at one id path in one file folds onto one
+/// node, so for a keyed event the node settles on ONE of the definitions its file's identity
+/// asserts on it at its current generation: the first by [`definition_precedence`] (its kind's
+/// place in [`CODE_KIND_PRECEDENCE`](super::CODE_KIND_PRECEDENCE), then the lower line), the lesser
 /// kind string breaking a tie - whatever order the batch emitted them in. The assertion that
 /// identity already recorded holds the winner of the definitions folded so far; one of another
 /// generation, or carrying no `kind` attr (a reference that folded before its definition), is no
@@ -2191,7 +2191,11 @@ fn settling_definition(
     line: u32,
     project: &str,
 ) -> Result<(String, u32), Error> {
-    let folded = (kind_rank(kind), line, kind.to_string());
+    let ranked = |kind: String, line: u32| {
+        let (rank, line) = definition_precedence(&kind, line);
+        (rank, line, kind)
+    };
+    let folded = ranked(kind.to_string(), line);
     if by.identity.is_empty() {
         return Ok((folded.2, folded.1));
     }
@@ -2199,7 +2203,7 @@ fn settling_definition(
         .filter(|(generation, ..)| generation == by.generation)
         .and_then(|(_, _, attrs)| held_definition(&attrs?));
     let (_, line, kind) = match held {
-        Some((kind, line)) => folded.min((kind_rank(&kind), line, kind)),
+        Some((kind, line)) => folded.min(ranked(kind, line)),
         None => folded,
     };
     Ok((kind, line))
