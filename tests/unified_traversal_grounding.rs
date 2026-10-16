@@ -45,7 +45,9 @@ use rigger::grounder::{Grounder, Ref};
 use rigger::spawn::ROLE_SDET_AUTHOR;
 use serde_json::{json, Value};
 
+use common::cli::{planted_graph, temp_project};
 use common::fixtures::apply_next_json;
+use common::fixtures::{file_half, member_graph, NESTED_METHOD};
 
 /// A driver that captures every prompt it is asked to spawn, then returns an empty result. It is
 /// the observation channel for the periphery boundary: the prompt a spawn actually receives.
@@ -1776,12 +1778,33 @@ fn the_trimmed_implement_prompt_still_delivers_every_design_intent_binding_deter
     );
 }
 
-/// The code-neighborhood lines of `prompt` for `core.rs`, in rendered order.
-fn core_neighborhood_lines(prompt: &str) -> Vec<&str> {
-    prompt
-        .lines()
-        .filter(|l| l.starts_with("- core.rs:"))
-        .collect()
+/// The code-neighborhood lines of `prompt` for `file`, in rendered order.
+fn neighborhood_lines<'p>(prompt: &'p str, file: &str) -> Vec<&'p str> {
+    let prefix = format!("- {file}:");
+    prompt.lines().filter(|l| l.starts_with(&prefix)).collect()
+}
+
+/// Spec 119, THE MEMBER RULE at the prompt boundary. GIVEN a project graph store holding
+/// [`member_graph`]'s nodes and no edge, so no `CONTAINS` reaches the touched file's definitions,
+/// WHEN the stage's agent is spawned on that file, THEN its code neighborhood lists the nested
+/// method and the file-mate, the members the store's walk loads one hop from the file, and no
+/// line for the placeholder, the bare parent or the `artifact` its id range holds.
+#[test]
+fn a_spawn_prompt_lists_a_nested_method_of_the_touched_file_with_no_contains() {
+    let dir = temp_project();
+    let graph = planted_graph(dir.path(), &member_graph().nodes);
+    let file = file_half(NESTED_METHOD);
+    let grounder = SeedGrounder { file: file.into() };
+
+    let prompt = first_prompt(
+        run_and_capture_prompts_grounded(&graph, &grounder, "core"),
+        "the stage's agent must have been spawned",
+    );
+    assert_eq!(
+        neighborhood_lines(&prompt, file),
+        ["- a.rs:0   new", "- a.rs:0   mate"],
+        "the touched file's members are listed, nested or not; prompt was:\n{prompt}"
+    );
 }
 
 /// Spec 116 criterion 4, a data member is no call target, at the prompt boundary. GIVEN the
@@ -1814,7 +1837,7 @@ fn a_spawn_prompt_lists_no_data_member_and_no_declaration_in_its_code_neighborho
         "the stage's agent must have been spawned",
     );
     assert_eq!(
-        core_neighborhood_lines(&prompt),
+        neighborhood_lines(&prompt, "core.rs"),
         ["- core.rs:1  function run", "- core.rs:5  constant LIMIT"],
         "the neighborhood lists the fn and the constant alone; prompt was:\n{prompt}"
     );
@@ -1846,7 +1869,7 @@ fn a_field_takes_no_slot_of_the_capped_code_neighborhood() {
         "the stage's agent must have been spawned",
     );
     assert_eq!(
-        core_neighborhood_lines(&prompt),
+        neighborhood_lines(&prompt, "core.rs"),
         ["- core.rs:41  function run"],
         "the fn behind forty fields is listed, the fields are not; prompt was:\n{prompt}"
     );

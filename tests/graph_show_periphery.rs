@@ -34,6 +34,8 @@
 //!     degrades to the site plus an explicit extent-unavailable note and NO body - the honesty
 //!     contract for a feature lane that cannot derive the extent.
 //!   - ARG EDGE: `graph` with neither `--around` nor `--show` errors and names BOTH selectors.
+//!   - MEMBERS (spec 119, THE MEMBER RULE): `--around` a file prints its named code entities one
+//!     hop on and `--around` one of them its file, over a store no `CONTAINS` edge reaches.
 //!
 //! The graph is seeded by folding the ALWAYS-compiled `CodeEntityExtracted` events (no `symbols`
 //! extractor), so RESOLUTION and the degrade/none/arg faces run identically in BOTH feature lanes.
@@ -51,14 +53,21 @@ mod common;
 use common::cli::assert_light_lane_extent_note;
 use common::cli::body_line_count;
 use common::cli::open_graph;
+use common::cli::planted_graph;
 use common::cli::run_rigger;
+use common::cli::run_rigger_ok;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
 use common::fixtures::apply_code_entity;
 #[cfg(feature = "symbols")]
 use common::fixtures::{apply_json, path_entity_json};
+use common::fixtures::{
+    file_half, member_graph, BARE_PARENT, FILELESS_MEMBER, FILE_MATE, LEAF_PLACEHOLDER,
+    MAKE_TARGET, NESTED_METHOD, RANGE_ARTIFACT,
+};
 #[cfg(feature = "symbols")]
 use rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
+use rigger::contextgraph::{KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE};
 
 /// NONE face: an unknown query is not an error. The show surface prints a one-line not-found note
 /// (never guessing, never a stack trace), prints NO body, and EXITS SUCCESS - mirroring
@@ -117,6 +126,64 @@ fn graph_show_and_around_with_no_store_print_the_not_found_note() {
         out.contains("nothing found"),
         "--around with no store prints its not-found note; got:\n{out}"
     );
+}
+
+/// MEMBERS face (spec 119, THE MEMBER RULE) at the operator's `--around`: GIVEN a `graph.db`
+/// holding [`member_graph`]'s nodes and no edge, so no `CONTAINS` reaches any node, WHEN the
+/// operator runs `rigger graph --around` on a file, THEN depth 0 prints the file alone and depth 1
+/// adds its nested method and its file-mate, never the placeholder, the bare parent or the
+/// `artifact` its id range holds; on the nested method depth 1 prints its file and depth 2 its
+/// file-mate too; and the placeholder, the bare parent and the artifact reach no file at depth 2,
+/// nor a member whose file the store holds no node for at depth 1. Lane-independent: the rows are
+/// written straight into the store the binary reads.
+#[test]
+fn graph_around_a_file_lists_its_members_and_a_member_its_file_with_no_contains() {
+    let dir = temp_project();
+    let root = dir.path();
+    drop(planted_graph(root, &member_graph().nodes));
+    let printed = |seed: &str, depth: i64, nodes: &[(&str, &str)]| {
+        let mut out = format!("subgraph around {seed:?} (depth {depth}):\n");
+        for (id, kind) in nodes {
+            out.push_str(&format!("  node {id:<24} {kind}\n"));
+        }
+        out
+    };
+    let (file, make) = (file_half(NESTED_METHOD), file_half(MAKE_TARGET));
+    let (as_file, as_entity) = ((file, KIND_FILE), (NESTED_METHOD, KIND_CODE_ENTITY));
+    let mate = (FILE_MATE, KIND_CODE_ENTITY);
+    for (seed, depth, nodes) in [
+        (file, 0, vec![as_file]),
+        (file, 1, vec![as_file, as_entity, mate]),
+        (NESTED_METHOD, 0, vec![as_entity]),
+        (NESTED_METHOD, 1, vec![as_file, as_entity]),
+        (NESTED_METHOD, 2, vec![as_file, as_entity, mate]),
+        (
+            make,
+            1,
+            vec![(make, KIND_FILE), (MAKE_TARGET, KIND_CODE_ENTITY)],
+        ),
+        (
+            LEAF_PLACEHOLDER,
+            2,
+            vec![(LEAF_PLACEHOLDER, KIND_CODE_ENTITY)],
+        ),
+        (BARE_PARENT, 2, vec![(BARE_PARENT, KIND_CODE_ENTITY)]),
+        (RANGE_ARTIFACT, 2, vec![(RANGE_ARTIFACT, KIND_ARTIFACT)]),
+        (
+            FILELESS_MEMBER,
+            1,
+            vec![(FILELESS_MEMBER, KIND_CODE_ENTITY)],
+        ),
+    ] {
+        assert_eq!(
+            run_rigger_ok(
+                root,
+                &["graph", "--around", seed, "--depth", &depth.to_string()]
+            ),
+            printed(seed, depth, &nodes),
+            "--around {seed} at depth {depth}"
+        );
+    }
 }
 
 /// DEGRADE face: when the recorded graph location no longer resolves to working-tree source, the

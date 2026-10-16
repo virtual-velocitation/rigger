@@ -2871,16 +2871,16 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/cli.rs:267-267` `".rigger"`
 - `tests/common/cli.rs:288-288` `".rigger"`
 - `tests/common/cli.rs:305-305` `".rigger"`
-- `tests/common/cli.rs:710-710` `"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
+- `tests/common/cli.rs:726-726` `"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
      vacuums the file, which is a mechanic of the embedded .rigger/events.db store; this project \
      is configured for the server-backed store, where the migration does not run. Re-run it \
      against a project on the sqlite backend. Refusing rather than reporting a migration that did \
      not happen.\n"`
-- `tests/common/cli.rs:795-795` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
-- `tests/common/cli.rs:1021-1021` `".rigger"`
-- `tests/common/cli.rs:1022-1022` `"create .rigger/agents"`
-- `tests/common/cli.rs:1135-1135` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
-- `tests/common/cli.rs:1232-1232` `".rigger"`
+- `tests/common/cli.rs:811-811` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
+- `tests/common/cli.rs:1037-1037` `".rigger"`
+- `tests/common/cli.rs:1038-1038` `"create .rigger/agents"`
+- `tests/common/cli.rs:1151-1151` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
+- `tests/common/cli.rs:1248-1248` `".rigger"`
 - `tests/common/fixtures/config.rs:102-102` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/fixtures/extraction_tree.rs:76-76` `".rigger/workflow.yml"`
 - `tests/common/layer_cli.rs:22-22` `".rigger"`
@@ -3925,7 +3925,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/spec.rs:2643-2645` `f11`
-- `tests/common/cli.rs:794-796` `graph_build_line`
+- `tests/common/cli.rs:810-812` `graph_build_line`
 
 #### `dup-d340e212490f` (exact, 2 sites)
 
@@ -4069,11 +4069,11 @@ mandatory sweep: sqlite Connection::open call sites - 62 site(s), collected mech
 - `tests/cli.rs:2468-2468` `Connection::open`
 - `tests/cli.rs:9348-9348` `Connection::open`
 - `tests/common/cli.rs:97-97` `Connection::open`
-- `tests/common/cli.rs:458-458` `Connection::open`
-- `tests/common/cli.rs:471-471` `Connection::open`
-- `tests/common/cli.rs:529-529` `Connection::open`
-- `tests/common/cli.rs:539-539` `Connection::open`
-- `tests/common/cli.rs:1243-1243` `Connection::open`
+- `tests/common/cli.rs:474-474` `Connection::open`
+- `tests/common/cli.rs:487-487` `Connection::open`
+- `tests/common/cli.rs:545-545` `Connection::open`
+- `tests/common/cli.rs:555-555` `Connection::open`
+- `tests/common/cli.rs:1259-1259` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:8-8` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:22-22` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:51-51` `Connection::open`
@@ -4510,9 +4510,9 @@ Proposed home: `a new shared module (sites span 3 files: src/cli/hygiene.rs, tes
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/hygiene.rs:252-254` `derived_count_phrase`
-- `tests/common/cli.rs:664-671` `migrated_lines`
-- `tests/common/cli.rs:678-683` `derived_menu_line_naming`
-- `tests/common/cli.rs:1296-1301` `bloat_advisory_naming`
+- `tests/common/cli.rs:680-687` `migrated_lines`
+- `tests/common/cli.rs:694-699` `derived_menu_line_naming`
+- `tests/common/cli.rs:1312-1317` `bloat_advisory_naming`
 - `tests/compaction_generations_periphery.rs:4951-4956` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
@@ -4713,7 +4713,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:24248-24265` `prime_given_a_spec_path_names_the_spec_lint_as_a_next_step`
 - `tests/cli.rs:24268-24290` `prime_given_a_spec_path_names_the_spec_lint_alongside_recent_decisions`
 - `tests/cli.rs:25786-25818` `mcp_rejects_a_malformed_spawn_flag_or_unexpected_arguments`
-- `tests/graph_show_periphery.rs:103-120` `graph_show_and_around_with_no_store_print_the_not_found_note`
+- `tests/graph_show_periphery.rs:112-129` `graph_show_and_around_with_no_store_print_the_not_found_note`
 - `tests/reset_build_cache_periphery.rs:103-129` `reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything`
 - `tests/reset_build_cache_periphery.rs:167-177` `reset_build_cache_flag_is_registered_and_rejects_a_duplicate`
 - `tests/reset_derived_live_writer_guard_periphery.rs:1728-1738` `reset_force_live_alone_is_refused_as_no_mode`
@@ -4852,9 +4852,9 @@ Proposed home: `cli::support (consolidate these 3 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:689-691` `derived_menu_lines`
-- `tests/common/cli.rs:1290-1292` `index_lag_lines`
-- `tests/common/cli.rs:1305-1307` `bloat_lines`
+- `tests/common/cli.rs:705-707` `derived_menu_lines`
+- `tests/common/cli.rs:1306-1308` `index_lag_lines`
+- `tests/common/cli.rs:1321-1323` `bloat_lines`
 
 #### `dup-8dd44d643a5c` (semantic, 2 sites)
 
@@ -4862,7 +4862,7 @@ Proposed home: `one shared `write_workflow` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/common/cli.rs:1081-1088` `write_workflow`
+- `tests/common/cli.rs:1097-1104` `write_workflow`
 - `tests/common/workflow_probe.rs:21-23` `write_workflow`
 
 #### `dup-b58b0ff72b22` (near, 3 sites)
@@ -4871,8 +4871,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:1117-1137` `assert_selected_server`
-- `tests/common/cli.rs:1141-1157` `assert_selected_sqlite`
+- `tests/common/cli.rs:1133-1153` `assert_selected_server`
+- `tests/common/cli.rs:1157-1173` `assert_selected_sqlite`
 - `tests/store_secrets.rs:69-107` `assert_server_reached_and_credentials_redacted`
 
 #### `dup-c82a46fd1fec` (exact, 2 sites)
@@ -5010,7 +5010,7 @@ Proposed home: `one shared `exploration_graph` helper (e.g. relocated into `test
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `tests/dash_exploration_route_client_contract.rs:67-117` `exploration_graph`
-- `tests/dash_kg_graph_route.rs:1132-1143` `exploration_graph`
+- `tests/dash_kg_graph_route.rs:1137-1148` `exploration_graph`
 
 #### `dup-c49b09543e58` (semantic, 3 sites)
 
@@ -5018,7 +5018,7 @@ Proposed home: `one shared `fixture_graph` helper (e.g. relocated into `tests/co
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/dash_kg_graph_route.rs:47-59` `fixture_graph`
+- `tests/dash_kg_graph_route.rs:52-64` `fixture_graph`
 - `tests/graph_query_engine_relocation_periphery.rs:53-72` `fixture_graph`
 - `tests/metadata_card_periphery.rs:49-100` `fixture_graph`
 
@@ -5084,18 +5084,18 @@ Proposed home: `a new shared module (sites span 2 files: tests/graph_show_periph
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/graph_show_periphery.rs:129-184` `graph_show_degrades_to_stale_note_when_location_drifted`
-- `tests/graph_show_periphery.rs:194-236` `graph_show_degrades_to_stale_note_when_recorded_line_is_zero`
-- `tests/graph_show_periphery.rs:266-300` `graph_show_light_lane_degrades_to_extent_unavailable_note`
-- `tests/graph_show_periphery.rs:309-361` `graph_show_bounds_body_at_the_definitions_own_extent`
-- `tests/graph_show_periphery.rs:373-454` `graph_show_shows_full_body_past_nested_definition`
-- `tests/graph_show_periphery.rs:465-513` `graph_show_shows_full_body_of_a_destructuring_signature`
-- `tests/graph_show_periphery.rs:521-563` `graph_show_extent_ignores_braces_in_strings_comments_and_chars`
-- `tests/graph_show_periphery.rs:573-647` `graph_show_shows_full_body_of_a_python_nested_def`
-- `tests/graph_show_periphery.rs:658-698` `graph_show_does_not_overread_a_js_single_quote_brace_body`
-- `tests/graph_show_periphery.rs:769-822` `graph_show_degrades_when_no_grammar_registered_for_the_file_extension`
-- `tests/graph_show_periphery.rs:837-897` `graph_show_heals_to_the_live_line_when_the_moved_name_is_unambiguous`
-- `tests/graph_show_periphery.rs:907-959` `graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file`
+- `tests/graph_show_periphery.rs:196-251` `graph_show_degrades_to_stale_note_when_location_drifted`
+- `tests/graph_show_periphery.rs:261-303` `graph_show_degrades_to_stale_note_when_recorded_line_is_zero`
+- `tests/graph_show_periphery.rs:333-367` `graph_show_light_lane_degrades_to_extent_unavailable_note`
+- `tests/graph_show_periphery.rs:376-428` `graph_show_bounds_body_at_the_definitions_own_extent`
+- `tests/graph_show_periphery.rs:440-521` `graph_show_shows_full_body_past_nested_definition`
+- `tests/graph_show_periphery.rs:532-580` `graph_show_shows_full_body_of_a_destructuring_signature`
+- `tests/graph_show_periphery.rs:588-630` `graph_show_extent_ignores_braces_in_strings_comments_and_chars`
+- `tests/graph_show_periphery.rs:640-714` `graph_show_shows_full_body_of_a_python_nested_def`
+- `tests/graph_show_periphery.rs:725-765` `graph_show_does_not_overread_a_js_single_quote_brace_body`
+- `tests/graph_show_periphery.rs:836-889` `graph_show_degrades_when_no_grammar_registered_for_the_file_extension`
+- `tests/graph_show_periphery.rs:904-964` `graph_show_heals_to_the_live_line_when_the_moved_name_is_unambiguous`
+- `tests/graph_show_periphery.rs:974-1026` `graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file`
 - `tests/graph_show_staleness.rs:42-86` `graph_show_degrades_gracefully_when_the_recorded_file_is_missing`
 - `tests/graph_show_staleness.rs:104-182` `graph_show_never_presents_a_neighbours_body_when_the_line_drifted`
 
@@ -5264,7 +5264,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9385 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9389 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4996-5037` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15079-15101` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

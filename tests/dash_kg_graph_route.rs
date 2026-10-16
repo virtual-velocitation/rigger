@@ -27,18 +27,23 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
+use common::fixtures::around_nodes;
 use common::fixtures::chain_graph;
 use common::fixtures::edge;
 use common::fixtures::star_graph;
 use common::fixtures::summarized_node as node;
+use common::fixtures::{file_half, member_graph, FILE_MATE, LEAF_PLACEHOLDER, NESTED_METHOD};
 use common::served::body_of;
 use common::served::fetch_served;
 use common::served::node_harness_passes;
+use common::served::served_json;
+use rigger::contextgraph::query::path_leaf;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_IN_COMMUNITY, REL_REFERENCES,
-    TIER_EXTRACTED, TIER_INFERRED,
+    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_FILE, KIND_UNIT, REL_DECIDED,
+    REL_IN_COMMUNITY, REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{self, DashInputs};
+use serde_json::json;
 
 /// A tier-tagged fixture neighborhood: a unit `u1`, the decision `d1` that DECIDED it (extracted),
 /// and a code entity `c1` the decision REFERENCES (inferred). A depth-2 walk from `u1` reaches all
@@ -1487,5 +1492,56 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
     assert!(
         !body.contains("polled-neighbor"),
         "the graph route must NOT read the polled provider's decoy graph: {body}"
+    );
+}
+
+/// Spec 119, THE MEMBER RULE at the panel's graph routes: GIVEN [`member_graph`], which holds no
+/// edge, so no `CONTAINS` reaches any node, WHEN the panel asks `/api/graph?seed=` for a file,
+/// THEN depth 0 serves the file alone and depth 1 adds its nested method and its file-mate, never
+/// the placeholder, the bare parent or the `artifact` its id range holds; seeded at the nested
+/// method, depth 1 serves its file beside it; seeded at the placeholder, depth 2 serves it alone;
+/// and the file's `/api/graph?card=` lists the same two members as its `top_entities`.
+#[test]
+fn the_graph_routes_give_a_file_its_members_and_a_member_its_file_with_no_contains() {
+    let graph = member_graph();
+    let file = file_half(NESTED_METHOD);
+    let card_ref =
+        |id: &str, kind: &str, label: &str| json!({"id": id, "kind": kind, "label": label});
+    let view = |id: &str, kind: &str, label: &str| {
+        let mut node = card_ref(id, kind, label);
+        node["degree"] = json!(0);
+        node["god"] = json!(false);
+        node
+    };
+    let member = |id: &str| view(id, KIND_CODE_ENTITY, path_leaf(id));
+    let as_file = view(file, KIND_FILE, file);
+    let placeholder = view(LEAF_PLACEHOLDER, KIND_CODE_ENTITY, LEAF_PLACEHOLDER);
+    for (seed, depth, nodes) in [
+        (file, 0, vec![as_file.clone()]),
+        (
+            file,
+            1,
+            vec![as_file.clone(), member(NESTED_METHOD), member(FILE_MATE)],
+        ),
+        (
+            NESTED_METHOD,
+            1,
+            vec![as_file.clone(), member(NESTED_METHOD)],
+        ),
+        (LEAF_PLACEHOLDER, 2, vec![placeholder]),
+    ] {
+        let target = format!("/api/graph?seed={}&depth={depth}", seed.replace('%', "%25"));
+        assert_eq!(
+            around_nodes(&served_json(&graph, &target)),
+            nodes,
+            "{target}"
+        );
+    }
+    let entity = |id: &str| card_ref(id, KIND_CODE_ENTITY, path_leaf(id));
+    let card = served_json(&graph, &format!("/api/graph?card={file}"));
+    assert_eq!(
+        card["card"]["top_entities"],
+        json!([entity(NESTED_METHOD), entity(FILE_MATE)]),
+        "{card}"
     );
 }
