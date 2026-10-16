@@ -3601,7 +3601,9 @@ mod tests {
     /// runs, and the record the walk owes, the hand probe of every mutable token of the
     /// production hunks over the unit's whole range - one mutation at a time, the owning crate's
     /// unit tests and the touched root test binaries run, the file restored - with the
-    /// `<unit>-mutant-probes` record the `sdet` lens completes, and the foreground wait for
+    /// `<unit>-mutant-probes` record the `sdet` lens completes, organised by production line -
+    /// each added or changed line naming its tokens, a query or format string's included, or
+    /// marked as carrying none - and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
     /// line when the host backgrounds one.
     #[test]
@@ -3737,6 +3739,12 @@ mod tests {
             "The `<unit>-mutant-probes` DecisionMade, beside the other two records, pastes each \
              token's `file:line`, the mutation, each command as run and the test that went red \
              with its assertion; the `sdet` lens probes every token it lacks.",
+            "The record walks the production lines of `git diff $(git merge-base rigger-run \
+             HEAD)..HEAD -- crates src` with the test regions left out, in file order: each \
+             added or changed line names its mutable tokens with their probes - a SQL conjunct, \
+             a column name, bound or placeholder passed to a query builder and a substr start \
+             inside a query or format string among them - or is marked as carrying none with \
+             its reason (a signature, a `use`, a doc line, a brace).",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
