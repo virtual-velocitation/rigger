@@ -1119,9 +1119,10 @@ pub struct EdgeInferred {
     pub partial: bool,
     /// Spec 117 (REFERENCES): the kind of a non-call reference, a Rust type reference, const
     /// read or imported leaf ([`REF_KIND_TYPE`], [`REF_KIND_CONST`] or [`REF_KIND_USE`]); absent
-    /// for a call, which folds as before the field existed. The fold runs a tagged event's structural head alone (the `fresh`
-    /// supersede and the file node) and folds nothing else from it. Serde-defaulted and omitted
-    /// when absent, so a call's wire form is byte-identical to before.
+    /// for a call, which folds as before the field existed. The fold runs a tagged event's
+    /// structural head alone (the `fresh` supersede and the file node) and folds nothing else
+    /// from it. Serde-defaulted and omitted when absent, so a call's wire form is byte-identical
+    /// to before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_kind: Option<String>,
 }
