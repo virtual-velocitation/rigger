@@ -473,7 +473,7 @@ pub fn extract(
             (Some(only), None) => Some(only.path.clone()),
             _ => def_ranges
                 .iter()
-                .position(|(range, _, kind)| *kind == Kind::Impl && *range == impl_range)
+                .position(|(range, _, _)| *range == impl_range)
                 .map(|i| defs[i].path.clone()),
         };
         refs[at].enclosing = from;
@@ -743,15 +743,15 @@ const OPAQUE_KINDS: [&str; 5] = [
 ];
 
 /// The definition node kinds whose `name` is a `type_identifier` naming the definition itself,
-/// never a reference to it.
-const NAMED_TYPE_DEFINERS: [&str; 7] = [
+/// never a reference to it; a generic parameter's own name is an enclosing generic parameter
+/// ([`names_enclosing_generic`]).
+const NAMED_TYPE_DEFINERS: [&str; 6] = [
     "struct_item",
     "enum_item",
     "union_item",
     "type_item",
     "trait_item",
     "associated_type",
-    "type_parameter",
 ];
 
 /// The parent fields under which a Rust `identifier` is no expression read (spec 117): a
@@ -974,26 +974,30 @@ fn names_enclosing_generic(name: &str, node: tree_sitter::Node, source: &[u8]) -
 }
 
 /// Whether `node`, an `identifier` or a whole `scoped_identifier`, is an expression READ (spec
-/// 117): outside every pattern, and not under a parent field of [`NON_READ_FIELDS`] - but a
-/// match arm's guard, its `condition`, is read.
+/// 117): outside every pattern - but a match arm's guard, its `condition`, is read - a closure's
+/// parameters, a lifetime and a label, not a segment of a `scoped_identifier` (read whole, as a
+/// path), and not under a parent field of [`NON_READ_FIELDS`].
 fn is_read(node: tree_sitter::Node) -> bool {
-    let Some(parent) = node.parent() else {
-        return false;
-    };
-    let field = field_of(node);
-    let pattern = parent.kind().ends_with("_pattern")
-        || matches!(parent.kind(), "closure_parameters" | "lifetime" | "label")
-        || (parent.kind() == "match_pattern" && field != Some("condition"));
-    !pattern
-        && !matches!(parent.kind(), "const_parameter" | "scoped_identifier")
-        && !field.is_some_and(|f| NON_READ_FIELDS.contains(&f))
+    node.parent().is_some_and(|parent| {
+        let field = field_of(node);
+        let pattern = match parent.kind() {
+            "match_pattern" => field != Some("condition"),
+            kind => {
+                kind.ends_with("_pattern")
+                    || matches!(kind, "closure_parameters" | "lifetime" | "label")
+            }
+        };
+        !pattern
+            && parent.kind() != "scoped_identifier"
+            && !field.is_some_and(|f| NON_READ_FIELDS.contains(&f))
+    })
 }
 
 /// Whether `node`, a `scoped_identifier`, is a WHOLE expression or pattern path: no prefix of a
 /// longer path, no type position (a `scoped_type_identifier`'s or `generic_type`'s path) and no
 /// macro's name.
 fn is_whole_expression_path(node: tree_sitter::Node) -> bool {
-    node.parent().is_none_or(|p| {
+    node.parent().is_some_and(|p| {
         !matches!(
             p.kind(),
             "scoped_identifier" | "scoped_type_identifier" | "generic_type" | "macro_invocation"
@@ -1026,14 +1030,12 @@ fn begins_upper(node: tree_sitter::Node, source: &[u8]) -> bool {
         .is_ok_and(|t| t.starts_with(|c: char| c.is_ascii_uppercase()))
 }
 
-/// The final identifier of a Rust path node: an `identifier` itself, a `scoped_identifier`'s
-/// `name`, a `generic_type`'s type's; `None` for a `crate`, `self` or `super` segment.
+/// The final segment of a Rust path node: an `identifier` itself, a `scoped_identifier`'s
+/// `name`, a `generic_type`'s type's; `None` for a `crate`, `self` or `super` path.
 fn final_identifier(path: tree_sitter::Node) -> Option<tree_sitter::Node> {
     match path.kind() {
         "identifier" => Some(path),
-        "scoped_identifier" => path
-            .child_by_field_name("name")
-            .filter(|n| n.kind() == "identifier"),
+        "scoped_identifier" => path.child_by_field_name("name"),
         "generic_type" => final_identifier(path.child_by_field_name("type")?),
         _ => None,
     }
@@ -1046,7 +1048,7 @@ fn root_segment(path: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut cur = path;
     loop {
         cur = match cur.kind() {
-            "scoped_identifier" | "scoped_type_identifier" => cur
+            "scoped_identifier" => cur
                 .child_by_field_name("path")
                 .or_else(|| cur.child_by_field_name("name"))?,
             "generic_type" => cur.child_by_field_name("type")?,
