@@ -23534,7 +23534,7 @@ mod tests {
     ///  (3) TIGHT-SCOPED to the touched files ("of these files"): a design-intent node reachable in
     ///      the subgraph but whose binding edge targets a NON-seed file, and a design-doc that only
     ///      CITES the file (a doc `references` edge, not a code-binding SPECIFIES/GOVERNS), are NOT
-    ///      surfaced - mirroring c1's CONTAINS-to-seed scoping of the code neighborhood.
+    ///      surfaced - mirroring c1's scoping of the code neighborhood to the seeded files.
     #[test]
     fn design_intent_grounding_renders_the_governing_rule_and_specifying_ra_by_traversal() {
         let seed = vec!["core.rs".to_string()];
@@ -39877,6 +39877,47 @@ mod tests {
         assert!(
             r.precise.iter().all(|f| r.safe.contains(f)),
             "precise must be a subset of safe"
+        );
+    }
+
+    /// THE MEMBER RULE at the blast radius (spec 119): over [`member_graph`], which holds no
+    /// `CONTAINS` edge, a nested method maps to its file, while a placeholder and a member whose
+    /// file node the graph does not hold map to none - each seed always in its own radius.
+    #[test]
+    fn files_reachable_maps_a_member_to_its_held_file_and_a_placeholder_to_none() {
+        use crate::test_support::{
+            file_half, member_graph, FILELESS_MEMBER, LEAF_PLACEHOLDER, NESTED_METHOD,
+        };
+        let g = member_graph();
+        let radius = |seed: &str| -> Vec<String> {
+            files_reachable(&g, &[seed.to_string()], &[contextgraph::TIER_EXTRACTED])
+                .into_iter()
+                .collect()
+        };
+        assert_eq!(
+            radius(NESTED_METHOD),
+            [file_half(NESTED_METHOD), NESTED_METHOD]
+        );
+        assert_eq!(radius(LEAF_PLACEHOLDER), [LEAF_PLACEHOLDER]);
+        assert_eq!(radius(FILELESS_MEMBER), [FILELESS_MEMBER]);
+    }
+
+    /// THE MEMBER RULE at the code neighborhood (spec 119): over [`member_graph`], which holds no
+    /// `CONTAINS` edge, each named member is listed under its file when the graph holds that
+    /// file's node, so `c.rs::U::run`, the placeholder, the bare parent and the artifact get no
+    /// line.
+    #[test]
+    fn the_code_neighborhood_lists_each_member_under_its_held_file() {
+        use crate::test_support::{file_half, member_graph, NESTED_METHOD};
+        let mut b = String::new();
+        write_code_neighborhood(
+            &mut b,
+            &member_graph(),
+            &[file_half(NESTED_METHOD).to_string()],
+        );
+        assert_eq!(
+            b,
+            format!("{CODE_NEIGHBORHOOD_HEADER}\n- Makefile:0   all\n- a.rs:0   new\n- a.rs:0   mate\n\n")
         );
     }
 

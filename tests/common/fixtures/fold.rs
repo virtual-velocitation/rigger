@@ -241,8 +241,40 @@ pub fn apply_generation_head_event(
     head: serde_json::Value,
     secs: u64,
 ) {
-    let key = format!("gc/{file}@{generation}#0");
+    let key = code_batch_key(file, generation, 0);
     apply_keyed(p, pos, type_, head, &key, secs);
+}
+
+/// The generation a re-extraction test folds a file's first batch at ([`fold_generation`]).
+pub const GENERATION_BEFORE: &str = "before";
+/// The generation a re-extraction test folds a file's second batch at, retracting what only
+/// [`GENERATION_BEFORE`] asserted.
+pub const GENERATION_AFTER: &str = "after";
+
+/// The replay key of event `index` of generation `generation` of `file`'s code batch, under the
+/// file's identity `gc/<file>`.
+pub fn code_batch_key(file: &str, generation: &str, index: usize) -> String {
+    format!("gc/{file}@{generation}#{index}")
+}
+
+/// Fold `batch`, the extraction of `file` at generation `generation`, onto `p` one event at a
+/// time from the log position after `*pos`, event `index` keyed
+/// [`code_batch_key`]`(file, generation, index)`, advancing `*pos` past it: the shape a ledger
+/// entry's batch folds in, so a later generation retracts what only this one asserted.
+pub fn fold_generation(
+    p: &dyn Projection,
+    pos: &mut u64,
+    file: &str,
+    generation: &str,
+    batch: Vec<Event>,
+) {
+    for (index, e) in batch.into_iter().enumerate() {
+        *pos += 1;
+        let key = code_batch_key(file, generation, index);
+        let mut e = e.with_meta(rigger::ingest::META_REPLAY_KEY, key);
+        e.position = *pos;
+        folds(p, std::slice::from_ref(&e));
+    }
 }
 
 /// Fold one `type_` event carrying `json` onto `p` at log position `pos`.
@@ -370,7 +402,7 @@ pub fn f_rs_batch_def(
             kind_def_json("src/f.rs", name, kind, line, index == 0),
             path,
         ),
-        &format!("gc/src/f.rs@{generation}#{index}"),
+        &code_batch_key("src/f.rs", generation, index),
         secs,
     )
 }

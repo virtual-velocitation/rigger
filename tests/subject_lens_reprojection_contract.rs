@@ -372,7 +372,7 @@ fn file_over_code_graph() -> Graph {
     }
 }
 
-/// A FILE subject re-grains to the entities it CONTAINS (the `member_set` file arm), re-bucketed under
+/// A FILE subject re-grains to its members (the `member_set` file arm, `member_file`), re-bucketed under
 /// the requested lens: `reproject(graph, file, &Lens::Code)` groups the file's contained entities by
 /// coupling community, sized by member count and labelled - proving the subject axis dispatches on the
 /// subject's OWN kind, not only a concept.

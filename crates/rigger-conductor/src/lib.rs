@@ -140,6 +140,10 @@ use rigger_process::{holders, reap};
 mod git_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/graph.rs"]
+mod graph_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/ingest.rs"]
 mod ingest_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
@@ -183,6 +187,7 @@ mod test_support {
     pub use crate::extraction_tree_fixtures::*;
     pub use crate::fold_fixtures::*;
     pub use crate::git_fixtures::*;
+    pub use crate::graph_fixtures::*;
     #[cfg(feature = "symbols")]
     pub use crate::host_fixtures::*;
     pub use crate::ingest_fixtures::*;

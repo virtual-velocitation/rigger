@@ -172,7 +172,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b6dc10b9c376",
+    "id": "dup-0a7aeeeffe48",
     "classification": "near",
     "sites": [
       {
@@ -226,6 +226,11 @@
         "content_hash": "7f40f97a5c856b17"
       },
       {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "code_batch_key",
+        "content_hash": "3ee1a513e6d79e12"
+      },
+      {
         "file": "tests/common/fixtures/graph.rs",
         "name": "spoke_id",
         "content_hash": "40e792b0bd9f5829"
@@ -246,7 +251,7 @@
         "content_hash": "1314e6adae890d88"
       }
     ],
-    "proposed_home": "a new shared module (sites span 6 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-driver/src/driver/claude_code.rs, tests/common/fixtures/graph.rs, tests/postmerge_gate_error_cleanup_periphery.rs, tests/simplification_audit.rs)",
+    "proposed_home": "a new shared module (sites span 7 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-driver/src/driver/claude_code.rs, tests/common/fixtures/fold.rs, tests/common/fixtures/graph.rs, tests/postmerge_gate_error_cleanup_periphery.rs, tests/simplification_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

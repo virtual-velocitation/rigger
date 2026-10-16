@@ -1983,7 +1983,7 @@ mod search_tests {
 #[cfg(test)]
 mod graph_ops_tests {
     use super::*;
-    use crate::contextgraph::KIND_FILE;
+    use crate::contextgraph::{KIND_FILE, REL_CONTAINS};
     use crate::test_support::node_with_attrs as node;
 
     fn sample_graph() -> Graph {
@@ -2132,15 +2132,29 @@ mod path_tests {
 #[cfg(test)]
 mod member_set_tests {
     use super::*;
-    use crate::contextgraph::TIER_EXTRACTED;
-    use crate::test_support::edge_valid_to;
-    use crate::test_support::plain;
+    use crate::contextgraph::{REL_CONTAINS, TIER_EXTRACTED};
+    use crate::test_support::{
+        edge_valid_to, file_half, leaf_named_node, member_graph, plain, BARE_PARENT, FILE_MATE,
+        LEAF_PLACEHOLDER, MAKE_TARGET, NESTED_METHOD, RANGE_ARTIFACT,
+    };
 
-    /// `member_set` of `of` over the graph of `nodes` and `edges` is exactly `src/w.rs::w`.
-    fn assert_sole_member_is_w(nodes: Vec<Node>, edges: Vec<Edge>, of: &str, why: &str) {
+    /// `member_set` of `of` over the graph of `nodes` and `edges` is exactly `members`.
+    fn assert_members(nodes: Vec<Node>, edges: Vec<Edge>, of: &str, members: &[&str], why: &str) {
         let g = Graph { nodes, edges };
         let ids: Vec<&str> = member_set(&g, of).iter().map(|n| n.id.as_str()).collect();
-        assert_eq!(ids, vec!["src/w.rs::w"], "{why}: {ids:?}");
+        assert_eq!(ids, members, "{why}: {ids:?}");
+    }
+
+    /// The ids of the nodes [`neighborhood`] reaches in [`member_graph`] from `seed` within
+    /// `depth` hops, sorted.
+    fn member_graph_reach(seed: &str, depth: i64) -> Vec<String> {
+        let mut ids: Vec<String> = neighborhood(&member_graph(), seed, depth)
+            .nodes
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        ids.sort();
+        ids
     }
 
     crate::test_cases! {
@@ -2150,7 +2164,7 @@ mod member_set_tests {
         /// edge to a DIFFERENT community, and a live edge of a DIFFERENT rel to THIS community must
         /// every one be excluded, while the one edge satisfying all three is the only member.
         member_set_of_a_community_counts_only_its_own_live_in_community_edges:
-            assert_sole_member_is_w(
+            assert_members(
                 vec![
                     plain("community/1/0", KIND_COMMUNITY),
                     plain("community/1/1", KIND_COMMUNITY),
@@ -2166,32 +2180,103 @@ mod member_set_tests {
                     edge_valid_to("src/z.rs::z", "community/1/0", REL_ABOUT, TIER_EXTRACTED, None),
                 ],
                 "community/1/0",
+                &["src/w.rs::w"],
                 "only the live, right-rel, right-target edge should count as membership",
             );
-        /// `member_set` of a FILE counts ONLY a currently-valid `CONTAINS` edge whose SOURCE is
-        /// EXACTLY this file - the KIND_FILE arm's mirror of
-        /// `member_set_of_a_community_counts_only_its_own_live_in_community_edges` above, same
-        /// three-conjunct proof: a superseded containment, a live `CONTAINS` edge FROM a
-        /// DIFFERENT file, and a live edge of a DIFFERENT rel FROM this file must every one be
-        /// excluded, while the one edge satisfying all three is the only member.
-        member_set_of_a_file_counts_only_its_own_live_contains_edges: assert_sole_member_is_w(
+        /// `member_set` of a FILE is its named code entities by `member_file` (spec 119, THE
+        /// MEMBER RULE), reading no edge: `src/w.rs::w` (a live `CONTAINS`), `::y` (a superseded
+        /// one) and `::z` (an edge of another rel) carry `name` and are all three members, while
+        /// `src/x.rs::x`, named in another file's range though a live `CONTAINS` from this file
+        /// reaches it, and the nameless in-range `src/w.rs::v` are not.
+        member_set_of_a_file_holds_its_named_entities_whatever_their_contains_edges: assert_members(
             vec![
                 plain("src/w.rs", KIND_FILE),
                 plain("src/x.rs", KIND_FILE),
-                plain("src/w.rs::w", KIND_CODE_ENTITY), // the one genuine live member
-                plain("src/x.rs::x", KIND_CODE_ENTITY), // live CONTAINS, wrong file
-                plain("src/w.rs::y", KIND_CODE_ENTITY), // right rel+source, but superseded
-                plain("src/w.rs::z", KIND_CODE_ENTITY), // right source, wrong rel
+                leaf_named_node("src/w.rs::w"),
+                leaf_named_node("src/x.rs::x"),
+                leaf_named_node("src/w.rs::y"),
+                leaf_named_node("src/w.rs::z"),
+                plain("src/w.rs::v", KIND_CODE_ENTITY),
             ],
             vec![
                 edge_valid_to("src/w.rs", "src/w.rs::w", REL_CONTAINS, TIER_EXTRACTED, None),
-                edge_valid_to("src/x.rs", "src/x.rs::x", REL_CONTAINS, TIER_EXTRACTED, None),
+                edge_valid_to("src/w.rs", "src/x.rs::x", REL_CONTAINS, TIER_EXTRACTED, None),
                 edge_valid_to("src/w.rs", "src/w.rs::y", REL_CONTAINS, TIER_EXTRACTED, Some(9)),
                 edge_valid_to("src/w.rs", "src/w.rs::z", REL_ABOUT, TIER_EXTRACTED, None),
             ],
             "src/w.rs",
-            "only the live, right-rel, right-source edge should count as membership",
+            &["src/w.rs::w", "src/w.rs::y", "src/w.rs::z"],
+            "a file's members are its named code entities, whatever edge reaches them",
         );
+        /// THE MEMBER RULE over nested ids with no file `CONTAINS` (spec 119): a file's member
+        /// set holds its nested method and the file-mate beside it, never the placeholder, the
+        /// bare parent or the named artifact in its range.
+        member_set_of_a_file_holds_its_nested_method_and_no_nameless_or_artifact_node:
+            assert_members(
+                member_graph().nodes,
+                Vec::new(),
+                file_half(NESTED_METHOD),
+                &[NESTED_METHOD, FILE_MATE],
+                "a.rs's members",
+            );
+        /// An extensionless file's target is its member (spec 119): `Makefile::all` in
+        /// `Makefile`'s set.
+        member_set_of_an_extensionless_file_holds_its_target: assert_members(
+            member_graph().nodes,
+            Vec::new(),
+            file_half(MAKE_TARGET),
+            &[MAKE_TARGET],
+            "Makefile's members",
+        );
+    }
+
+    #[test]
+    fn member_file_names_the_file_of_a_named_code_entity_alone() {
+        let g = member_graph();
+        let file_of = |id: &str| {
+            let node = g.nodes.iter().find(|n| n.id == id).unwrap();
+            member_file(node)
+        };
+        let ids = [
+            NESTED_METHOD,
+            LEAF_PLACEHOLDER,
+            BARE_PARENT,
+            RANGE_ARTIFACT,
+            MAKE_TARGET,
+        ];
+        let files: Vec<Option<&str>> = ids.into_iter().map(file_of).collect();
+        let nested_file = file_half(NESTED_METHOD);
+        assert_eq!(
+            files,
+            [
+                Some(nested_file),
+                None,
+                None,
+                None,
+                Some(file_half(MAKE_TARGET))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_reaches_its_members_and_a_member_its_file_one_hop_on() {
+        let file = file_half(NESTED_METHOD).to_string();
+        let (method, mate) = (NESTED_METHOD.to_string(), FILE_MATE.to_string());
+        assert_eq!(member_graph_reach(&file, 0), [file.as_str()]);
+        assert_eq!(
+            member_graph_reach(&file, 1),
+            [file.clone(), method.clone(), mate.clone()]
+        );
+        assert_eq!(
+            member_graph_reach(NESTED_METHOD, 1),
+            [file.clone(), method.clone()]
+        );
+        assert_eq!(member_graph_reach(NESTED_METHOD, 2), [file, method, mate]);
+    }
+
+    #[test]
+    fn a_placeholder_reaches_no_file() {
+        assert_eq!(member_graph_reach(LEAF_PLACEHOLDER, 1), [LEAF_PLACEHOLDER]);
     }
 }
 

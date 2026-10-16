@@ -6985,6 +6985,22 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "files_reachable_maps_a_member_to_its_held_file_and_a_placeholder_to_none",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "2f0a019a392f4f57"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "the_code_neighborhood_lists_each_member_under_its_held_file",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "b1e73b32ab57b750"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "grounded_blast_radius_tier_filters_the_subgraph_and_keeps_the_grounder_radius",
     "is_test": true,
     "proposed_module": "conductor::tests",

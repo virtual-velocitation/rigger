@@ -27,13 +27,22 @@ use rigger::contextgraph::{
 use common::fixtures::{apply_json, edge_tier};
 
 /// Extracts the source tree at `root`, emits it, and folds every event onto `p` at the positions
-/// following `pos`, advancing `pos` past the last one.
+/// following `pos`, advancing `pos` past the last one: each file's batch as generation
+/// `generation` of the file's identity when one is given
+/// ([`fold_generation`](common::fixtures::fold_generation)), else unkeyed.
 #[cfg(feature = "symbols")]
-fn fold_tree(p: &Projector, root: &std::path::Path, pos: &mut u64) {
-    for mut e in common::project_events(root.to_str().unwrap()) {
-        *pos += 1;
-        e.position = *pos;
-        common::fixtures::folds(p, std::slice::from_ref(&e));
+fn fold_tree(p: &Projector, root: &std::path::Path, pos: &mut u64, generation: Option<&str>) {
+    let Some(generation) = generation else {
+        for mut e in common::project_events(root.to_str().unwrap()) {
+            *pos += 1;
+            e.position = *pos;
+            common::fixtures::folds(p, std::slice::from_ref(&e));
+        }
+        return;
+    };
+    let batches = rigger::grounder::symbols::events::project_batches(root.to_str().unwrap());
+    for (file, batch, _) in batches {
+        common::fixtures::fold_generation(p, pos, &file, generation, batch);
     }
 }
 
@@ -51,16 +60,21 @@ fn combat_calling_every_tier() -> rigger::contextgraph::Graph {
     .unwrap();
 
     let p = Projector::open(":memory:", "test").unwrap();
-    fold_tree(&p, dir.path(), &mut 0);
+    fold_tree(&p, dir.path(), &mut 0, None);
     p.subgraph(&["combat.rs".to_string()], 3).unwrap()
 }
 
 /// The `combat.rs` subgraph folded from a real file defining `apply_damage`, `heal` and a
 /// `caller` calling both, then again after the file CHANGES - `heal` and its call deleted - is
-/// re-extracted and its second batch folded onto the SAME projection at fresh positions.
+/// re-extracted and its second batch folded onto the SAME projection at fresh positions: as the
+/// generations [`GENERATION_BEFORE`](common::fixtures::GENERATION_BEFORE) and
+/// [`GENERATION_AFTER`](common::fixtures::GENERATION_AFTER) of the file's identity when `keyed`,
+/// so the second retracts what only the first asserted, else unkeyed.
 #[cfg(feature = "symbols")]
 fn combat_before_and_after_dropping_heal(
+    keyed: bool,
 ) -> (rigger::contextgraph::Graph, rigger::contextgraph::Graph) {
+    use common::fixtures::{GENERATION_AFTER, GENERATION_BEFORE};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("combat.rs");
     std::fs::write(
@@ -70,7 +84,7 @@ fn combat_before_and_after_dropping_heal(
     .unwrap();
     let p = Projector::open(":memory:", "test").unwrap();
     let mut pos = 0u64;
-    fold_tree(&p, dir.path(), &mut pos);
+    fold_tree(&p, dir.path(), &mut pos, keyed.then_some(GENERATION_BEFORE));
     let before = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
 
     std::fs::write(
@@ -78,7 +92,7 @@ fn combat_before_and_after_dropping_heal(
         "fn apply_damage() {}\nfn caller() { apply_damage(); }\n",
     )
     .unwrap();
-    fold_tree(&p, dir.path(), &mut pos);
+    fold_tree(&p, dir.path(), &mut pos, keyed.then_some(GENERATION_AFTER));
     (before, p.subgraph(&["combat.rs".to_string()], 3).unwrap())
 }
 
@@ -403,7 +417,7 @@ fn re_extracting_a_file_that_drops_a_call_supersedes_its_calls_edge_end_to_end()
     // stale CALLS edge must leave the live subgraph - the hand-built unit test proves the prefix
     // match on a fabricated from_id; this proves it against the REAL `<file>::caller` id the extractor
     // mints, composed with the emit-side `fresh` batch stamping.
-    let (g0, g1) = combat_before_and_after_dropping_heal();
+    let (g0, g1) = combat_before_and_after_dropping_heal(false);
     // Precondition: caller calls heal - a live CALLS edge before the change.
     assert!(
         g0.edges.iter().any(|e| e.rel == REL_CALLS
@@ -589,7 +603,7 @@ fn ingesting_a_real_file_answers_who_calls_g_by_function_end_to_end() {
     .unwrap();
 
     let p = Projector::open(":memory:", "test").unwrap();
-    fold_tree(&p, dir.path(), &mut 0);
+    fold_tree(&p, dir.path(), &mut 0, None);
 
     // The query the design routes to an agent: `subgraph` around the CALLEE, read incoming callers.
     let g = p
@@ -690,7 +704,9 @@ fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
     // a re-extraction REPLACES rather than accretes. This exercises extraction -> emit -> fold with
     // no hand-built events, so it pins that the emit-side `fresh` stamping and the fold's supersede
     // actually compose in production shape (unlike the in-crate fold test's hand-built batches).
-    let (g0, g1) = combat_before_and_after_dropping_heal();
+    // Both batches fold as two generations of the file's identity (spec 119, THE MEMBER RULE):
+    // the dropped `heal` then loses `name`, so it is no member the file's reach loads.
+    let (g0, g1) = combat_before_and_after_dropping_heal(true);
     // Precondition: both definitions are live in the projection before the change.
     assert!(
         g0.nodes
@@ -700,7 +716,8 @@ fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
         g0.nodes
     );
 
-    // gone from the live subgraph (its CONTAINS edge was superseded, not deleted).
+    // gone from the live subgraph (its CONTAINS edge was superseded, not deleted, and its `name`
+    // retracted by the second generation, so it is no member of the file).
     assert!(
         g1.nodes
             .iter()

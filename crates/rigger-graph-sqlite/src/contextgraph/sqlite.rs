@@ -11557,6 +11557,13 @@ mod tests {
             call_node_ids(&call_walk(p, caller, Direction::Down))
         }
 
+        /// The value the SQL expression `expr` gives node `id`'s row: a store form read beside
+        /// the in-memory rule it spells.
+        pub(super) fn stored(p: &Projector, expr: &str, id: &str) -> Option<String> {
+            let sql = format!("SELECT {expr} FROM nodes WHERE id = ?1");
+            raw_rows::<_, Vec<_>>(p, &sql, [id], |r| r.get(0)).remove(0)
+        }
+
         /// The id `p.locate(query)` resolves to, insisting it resolves to exactly one.
         pub(super) fn located(p: &Projector, query: &str) -> String {
             match p.locate(query).unwrap() {
@@ -11721,13 +11728,7 @@ mod tests {
             let leaves: Vec<(Option<String>, Option<String>)> = named
                 .iter()
                 .map(|(id, _)| {
-                    let stored: Option<String> = raw_rows::<_, Vec<_>>(
-                        &p,
-                        &format!("SELECT {} FROM nodes WHERE id = ?1", node_leaf_sql()),
-                        [id],
-                        |r| r.get(0),
-                    )
-                    .remove(0);
+                    let stored = stored(&p, node_leaf_sql(), id);
                     let conn = p.conn.lock().unwrap();
                     let node = node_row(&conn, id, &p.project).unwrap().unwrap();
                     (stored, node_leaf(&node).map(str::to_string))
@@ -11763,6 +11764,204 @@ mod tests {
                     "{plan:?}"
                 );
             }
+        }
+    }
+
+    /// Spec 119 criterion 14 (THE MEMBER RULE): a file's members are its named code entities by
+    /// `query::member_file`, spelled in the store by `member_sql()`, which both of `subgraph`'s
+    /// member hops embed: a file entering the reach loads its members one hop on and a member its
+    /// file, with no file `CONTAINS` written.
+    mod member_rule {
+        use super::generations::ledger_entries::label;
+        use super::leaf_keys_resolution::{
+            define, edge_directly, entity, stored, write_directly, UNKEYED,
+        };
+        use super::*;
+        use crate::test_support::{
+            assert_live_calls, file_half, fold_events, folds, hold, no_bytes_batch, BARE_PARENT,
+            FILELESS_MEMBER, FILE_MATE, LEAF_PLACEHOLDER, MAKE_TARGET, NESTED_METHOD,
+            RANGE_ARTIFACT,
+        };
+        use rigger_domain::contextgraph::query::{member_file, path_leaf};
+
+        /// The flat id a knowledge assertion holds for [`NESTED_METHOD`]: a nameless node.
+        const FLAT_ID: &str = "a.rs::new";
+
+        /// Plant, by direct writes with no edge: [`NESTED_METHOD`]'s file node, that method and
+        /// [`FILE_MATE`] named by their leaves (only an unkeyed assertion holds each), a named
+        /// definition whose id holds no `::` (that leaf alone), [`LEAF_PLACEHOLDER`] and
+        /// [`BARE_PARENT`] nameless, [`RANGE_ARTIFACT`] an `artifact` carrying its leaf, and
+        /// [`FLAT_ID`] held by a decision.
+        fn plant() -> Projector {
+            let p = fold_events([]);
+            let named = [NESTED_METHOD, FILE_MATE, RANGE_ARTIFACT].map(|id| (id, path_leaf(id)));
+            define(&p, &named);
+            let fileless = path_leaf(FILE_MATE);
+            define(&p, &[(fileless, fileless)]);
+            write_directly(&p, |tx, project| {
+                let file = file_half(NESTED_METHOD);
+                ensure_node(tx, &UNKEYED, file, KIND_FILE, &[], project).unwrap();
+                for bare in [LEAF_PLACEHOLDER, BARE_PARENT] {
+                    entity(tx, project, &UNKEYED, bare, &[]);
+                }
+                tx.execute(
+                    "UPDATE nodes SET kind = ?1 WHERE id = ?2 AND project = ?3",
+                    params![KIND_ARTIFACT, RANGE_ARTIFACT, project],
+                )
+                .unwrap();
+            });
+            hold(&p, 1, &[FLAT_ID]);
+            p
+        }
+
+        /// The ids of the nodes `p.subgraph` loads from `seed` within `depth` hops, sorted.
+        fn reach(p: &Projector, seed: &str, depth: i64) -> Vec<String> {
+            let g = p.subgraph(&[seed.to_string()], depth).unwrap();
+            let mut ids: Vec<String> = g.nodes.into_iter().map(|n| n.id).collect();
+            ids.sort();
+            ids
+        }
+
+        #[test]
+        fn a_file_seed_loads_its_members_one_hop_on_and_no_nameless_node() {
+            let p = plant();
+            let file = file_half(NESTED_METHOD);
+            assert_eq!(reach(&p, file, 0), [file]);
+            assert_eq!(reach(&p, file, 1), [file, NESTED_METHOD, FILE_MATE]);
+        }
+
+        #[test]
+        fn a_member_seed_loads_its_file_one_hop_on_and_its_file_mates_the_next() {
+            let p = plant();
+            let file = file_half(NESTED_METHOD);
+            assert_eq!(reach(&p, NESTED_METHOD, 0), [NESTED_METHOD]);
+            assert_eq!(reach(&p, NESTED_METHOD, 1), [file, NESTED_METHOD]);
+            assert_eq!(
+                reach(&p, NESTED_METHOD, 2),
+                [file, NESTED_METHOD, FILE_MATE]
+            );
+        }
+
+        #[test]
+        fn a_members_neighbour_sits_one_hop_past_the_member() {
+            let p = plant();
+            let (file, outside) = (file_half(NESTED_METHOD), file_half(MAKE_TARGET));
+            edge_directly(&p, FILE_MATE, outside, REL_CALLS, TIER_INFERRED);
+            assert_eq!(reach(&p, file, 1), [file, NESTED_METHOD, FILE_MATE]);
+            assert_eq!(
+                reach(&p, file, 2),
+                [outside, file, NESTED_METHOD, FILE_MATE]
+            );
+        }
+
+        #[test]
+        fn another_projects_members_stay_out_of_the_reach() {
+            let p = plant();
+            let other = format!("{}-other", p.project);
+            for id in [NESTED_METHOD, FILE_MATE] {
+                write_directly(&p, |tx, _| {
+                    tx.execute(
+                        "UPDATE nodes SET project = ?1 WHERE id = ?2",
+                        params![other, id],
+                    )
+                    .unwrap();
+                });
+            }
+            write_directly(&p, |tx, project| {
+                entity(tx, project, &UNKEYED, NESTED_METHOD, &[]);
+            });
+            let file = file_half(NESTED_METHOD);
+            assert_eq!(reach(&p, file, 1), [file]);
+            assert_eq!(reach(&p, NESTED_METHOD, 1), [NESTED_METHOD]);
+        }
+
+        /// A file's supersession retires the `CALLS` its id range makes ([`id_range_sql`] over
+        /// `from_id`), never a call another file makes into it.
+        #[test]
+        fn a_files_supersession_retires_its_calls_out_and_keeps_a_call_into_it() {
+            let p = fold_events([]);
+            edge_directly(&p, NESTED_METHOD, FILELESS_MEMBER, REL_CALLS, TIER_INFERRED);
+            edge_directly(&p, FILELESS_MEMBER, FILE_MATE, REL_CALLS, TIER_INFERRED);
+            let leaf = path_leaf(FILE_MATE);
+            apply_def(&p, 1, file_half(NESTED_METHOD), leaf, 1, true);
+            let why = "the fresh batch of a file retires only the calls its own range makes";
+            assert_live_calls(&p, &[(FILELESS_MEMBER, FILE_MATE)], why);
+        }
+
+        /// A file emptied by its boundary sentinel owes a relabel to every community its members
+        /// held ([`id_range_sql`] over the membership edge's `from_id`), so the fold settles the
+        /// label on the highest-degree member left.
+        #[test]
+        fn a_file_emptied_by_its_boundary_relabels_the_community_its_members_held() {
+            let p = fold_events([]);
+            seed_community_fixture(&p);
+            let community = "community/1/0";
+            let before = label(&p, community);
+            let mut boundary = no_bytes_batch("src/combat/hit.rs").remove(0);
+            boundary.position = 20;
+            folds(&p, &[boundary]);
+            assert_eq!(
+                (before, label(&p, community)),
+                (Some("apply_damage".into()), Some("send".into()))
+            );
+        }
+
+        #[test]
+        fn a_bare_parent_seed_loads_no_file() {
+            let p = plant();
+            assert_eq!(reach(&p, BARE_PARENT, 2), [BARE_PARENT]);
+        }
+
+        #[test]
+        fn the_member_expression_answers_as_member_file() {
+            let p = plant();
+            let ids = [
+                NESTED_METHOD,
+                LEAF_PLACEHOLDER,
+                BARE_PARENT,
+                FLAT_ID,
+                RANGE_ARTIFACT,
+                path_leaf(FILE_MATE),
+            ];
+            let files: Vec<(Option<String>, Option<String>)> = ids
+                .into_iter()
+                .map(|id| {
+                    let stored = stored(&p, &member_sql(), id);
+                    let conn = p.conn.lock().unwrap();
+                    let node = node_row(&conn, id, &p.project).unwrap().unwrap();
+                    (stored, member_file(&node).map(str::to_string))
+                })
+                .collect();
+            let file = Some(file_half(NESTED_METHOD).to_string());
+            let expected = [file, None, None, None, None, None].map(|f| (f.clone(), f));
+            assert_eq!(files, expected);
+        }
+
+        #[test]
+        fn the_id_range_holds_exactly_the_ids_whose_file_half_is_the_file() {
+            let p = plant();
+            let file = file_half(NESTED_METHOD);
+            let sql = format!("SELECT {} FROM nodes LIMIT 1", id_range_sql("?1", "?2"));
+            let below = format!("{file}:");
+            let empty_rest = format!("{file}::");
+            let above = format!("{file}:;");
+            let held: Vec<bool> = [below.as_str(), empty_rest.as_str(), NESTED_METHOD, &above]
+                .into_iter()
+                .map(|id| raw_rows::<_, Vec<_>>(&p, &sql, [id, file], |r| r.get(0)).remove(0))
+                .collect();
+            assert_eq!(held, [false, true, true, false]);
+        }
+
+        #[test]
+        fn the_member_range_load_seeks_the_node_key() {
+            let p = plant();
+            let seed = serde_json::to_string(&[file_half(NESTED_METHOD)]).unwrap();
+            let plan = query_plan(&p, &reach_sql(), params![seed, 1, "test"]);
+            assert!(
+                plan.iter()
+                    .any(|d| d.contains("USING INDEX sqlite_autoindex_nodes_1 (id>? AND id<?)")),
+                "{plan:?}"
+            );
         }
     }
 
@@ -13591,7 +13790,7 @@ mod tests {
         /// folds only through `Projection::apply_generation`, with the batch its `batch` function
         /// answers, at the entry's position and valid-time and under the entry's identity and
         /// generation. Every entry is built by the one constructor and no sink is involved.
-        mod ledger_entries {
+        pub(in crate::contextgraph::sqlite::tests) mod ledger_entries {
             use super::*;
             use crate::contextgraph::{wired, EntryFold, Fold};
             use crate::test_support::event_of;
@@ -13680,7 +13879,10 @@ mod tests {
             }
 
             /// The `label` attribute of the community node `community` in `p`.
-            fn label(p: &Projector, community: &str) -> Option<String> {
+            pub(in crate::contextgraph::sqlite::tests) fn label(
+                p: &Projector,
+                community: &str,
+            ) -> Option<String> {
                 p.whole()
                     .unwrap()
                     .nodes

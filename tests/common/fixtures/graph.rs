@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use rigger::contextgraph::query::{card, split_id};
+use rigger::contextgraph::query::{card, path_leaf, split_id};
 use rigger::contextgraph::{
-    CallEdge, CallGraph, Direction, Edge, Graph, Node, Projection, KIND_CODE_ENTITY,
+    CallEdge, CallGraph, Direction, Edge, Graph, Node, Projection, KIND_ARTIFACT, KIND_CODE_ENTITY,
     KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, KIND_UNIT,
     REL_ABOUT, REL_CALLS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES,
     TIER_EXTRACTED, TIER_INFERRED,
@@ -384,4 +384,49 @@ pub fn one_community_graph(community: &str, members: Vec<Node>) -> Graph {
 /// card names no file.
 pub fn card_file(graph: &Graph, id: &str) -> Option<String> {
     card(graph, id).and_then(|c| c.file)
+}
+
+/// THE MEMBER RULE's nested method (spec 119): a definition two levels into its file `a.rs`.
+pub const NESTED_METHOD: &str = "a.rs::T::new";
+/// A file-level definition beside [`NESTED_METHOD`] in its file.
+pub const FILE_MATE: &str = "a.rs::mate";
+/// The placeholder of [`NESTED_METHOD`]'s leaf in its file: a nameless code entity.
+pub const LEAF_PLACEHOLDER: &str = "a.rs::%new";
+/// A bare parent in [`NESTED_METHOD`]'s file: a nameless code entity a child's parent edge made.
+pub const BARE_PARENT: &str = "a.rs::P";
+/// An `artifact` in [`NESTED_METHOD`]'s file range, the kind a finding's mention settles.
+pub const RANGE_ARTIFACT: &str = "a.rs::x";
+/// A target of the extensionless file `Makefile`.
+pub const MAKE_TARGET: &str = "Makefile::all";
+/// A definition whose file no node of [`member_graph`] holds.
+pub const FILELESS_MEMBER: &str = "c.rs::U::run";
+
+/// The file half of the code-entity id `id` ([`split_id`]): the file it is a member of.
+pub fn file_half(id: &str) -> &str {
+    split_id(id).0
+}
+
+/// THE MEMBER RULE's graph (spec 119), holding no edge, so no `CONTAINS` reaches any node: the
+/// file of [`NESTED_METHOD`] beside that method, [`FILE_MATE`], [`LEAF_PLACEHOLDER`], [`BARE_PARENT`] and
+/// [`RANGE_ARTIFACT`]; the file of [`MAKE_TARGET`] beside that target; and [`FILELESS_MEMBER`].
+/// Each definition and the artifact carry their path's leaf as `name` ([`def_node`]), so only the
+/// artifact's kind keeps it from membership.
+pub fn member_graph() -> Graph {
+    let named = |id: &str| def_node(id, path_leaf(id));
+    let mut artifact = named(RANGE_ARTIFACT);
+    artifact.kind = KIND_ARTIFACT.to_string();
+    Graph {
+        nodes: vec![
+            plain(file_half(NESTED_METHOD), KIND_FILE),
+            named(NESTED_METHOD),
+            named(FILE_MATE),
+            plain(LEAF_PLACEHOLDER, KIND_CODE_ENTITY),
+            plain(BARE_PARENT, KIND_CODE_ENTITY),
+            artifact,
+            plain(file_half(MAKE_TARGET), KIND_FILE),
+            named(MAKE_TARGET),
+            named(FILELESS_MEMBER),
+        ],
+        edges: Vec::new(),
+    }
 }
