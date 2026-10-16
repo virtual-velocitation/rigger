@@ -17,7 +17,7 @@ mod symbol_index;
 
 /// A payload's `name` and its `path` key's JSON value, `None` when it has no such key.
 #[cfg(feature = "symbols")]
-type NameAndPath = (String, Option<serde_json::Value>);
+type NameAndPath = common::NameAndKey;
 
 /// A fresh tree whose one file `a.rs` holds a file-level fn `run` and type `T`, the impl `impl T`
 /// and the method `T::new` under it.
@@ -32,27 +32,10 @@ fn source_tree() -> tempfile::TempDir {
     dir
 }
 
-/// The `CodeEntityExtracted` payloads the production whole-project ingest emits for `root`.
-#[cfg(feature = "symbols")]
-fn code_entity_payloads(root: &std::path::Path) -> Vec<serde_json::Value> {
-    common::fixtures::payloads_of_type(
-        &common::project_events(root.to_str().unwrap()),
-        rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-    )
-}
-
 /// Each of `payloads` as its [`NameAndPath`].
 #[cfg(feature = "symbols")]
 fn names_and_paths(payloads: &[serde_json::Value]) -> Vec<NameAndPath> {
-    payloads
-        .iter()
-        .map(|payload| {
-            (
-                payload["name"].as_str().unwrap().to_string(),
-                payload.get("path").cloned(),
-            )
-        })
-        .collect()
+    common::names_and_key(payloads, "path")
 }
 
 /// The [`NameAndPath`] of the method `new`'s payload: its `path`, `T::new`.
@@ -80,10 +63,8 @@ fn source_names_and_paths() -> Vec<NameAndPath> {
 #[cfg(feature = "symbols")]
 #[test]
 fn the_extracted_event_carries_path_only_off_file_level_and_round_trips() {
-    use rigger::contextgraph::CodeEntityExtracted;
-
     let tree = source_tree();
-    let payloads = code_entity_payloads(tree.path());
+    let payloads = common::code_entity_payloads(tree.path());
     assert_eq!(
         names_and_paths(&payloads),
         source_names_and_paths(),
@@ -92,11 +73,8 @@ fn the_extracted_event_carries_path_only_off_file_level_and_round_trips() {
     let round_trips: Vec<(String, bool)> = payloads
         .iter()
         .map(|payload| {
-            let typed: CodeEntityExtracted = serde_json::from_value(payload.clone()).unwrap();
-            (
-                typed.id_path().to_string(),
-                serde_json::to_value(&typed).unwrap() == *payload,
-            )
+            let (typed, back) = common::code_entity_round_trip(payload);
+            (typed.id_path().to_string(), back)
         })
         .collect();
     assert_eq!(
@@ -125,7 +103,7 @@ fn emitted_over_an_index_whose_method_carries(path: Option<&str>) -> Vec<NameAnd
     let index =
         symbol_index::rust_index_json("a.rs", serde_json::json!([method]), serde_json::json!([]));
     symbol_index::persist_current(tree.path().to_str().unwrap(), &index);
-    names_and_paths(&code_entity_payloads(tree.path()))
+    names_and_paths(&common::code_entity_payloads(tree.path()))
 }
 
 /// GIVEN a tree whose persisted index was written before definitions carried `path` (its one

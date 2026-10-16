@@ -119,6 +119,25 @@ pub fn run_around(cwd: &Path, seed: &str, depth: i64) -> (String, String, bool) 
     )
 }
 
+/// Every printed `edge <from> -<rel>-> <to>` line of a `rigger graph --around` transcript, parsed
+/// into its (from, rel, to) triple - never substring-matched, so an assertion about which edges
+/// printed is a claim about the parsed fields, not a text search a coincidental substring could
+/// satisfy.
+pub fn edge_lines(out: &str) -> Vec<(String, String, String)> {
+    out.lines()
+        .filter_map(|l| {
+            let rest = l.trim_start().strip_prefix("edge ")?;
+            let (from, rest) = rest.split_once(" -")?;
+            let (rel, to) = rest.split_once("-> ")?;
+            Some((
+                from.trim().to_string(),
+                rel.trim().to_string(),
+                to.trim().to_string(),
+            ))
+        })
+        .collect()
+}
+
 /// Run `rigger <args...>` in `cwd` with extra environment `envs` and return
 /// (stdout, stderr, success).
 pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {

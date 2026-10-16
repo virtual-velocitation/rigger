@@ -94,8 +94,8 @@ mod caller_sources;
 #[path = "../../../tests/common/fixtures/name_filter_sources.rs"]
 mod name_filter_sources;
 
-/// THE RUST DEFINITIONS FIXTURE the Rust definition tests extract, compiled here from the same
-/// file as the root crate's tests. It names no crate; only the default lane's tests extract it.
+/// THE RUST DEFINITIONS FIXTURE the Rust definition tests extract, and the enum `E` sources the
+/// CONTAINS IS STRUCTURE tests extract, compiled here from the same file as the root crate's tests. It names no crate; only the default lane's tests extract it.
 #[cfg(all(
     test,
     feature = "symbols",

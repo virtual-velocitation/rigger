@@ -2425,7 +2425,7 @@ mod tests {
     fn each_extracted_definition_folds_at_its_language_path_id() {
         use crate::csharp_definition_sources::CSHARP_FILE_SCOPED_NAMESPACE;
         use crate::go_definition_sources::GO_CLOSURE_VAR;
-        use crate::test_support::definition_ids;
+        use crate::test_support::{definition_ids, ENUM_E, VARIANT_E_A, VARIANT_E_B};
 
         let cases: [(&str, &str, &[&str]); 7] = [
             (
@@ -2439,9 +2439,9 @@ mod tests {
                  const _: () = {\n    fn a() {}\n};\n",
                 &[
                     "a.rs::<T as Show>::show",
-                    "a.rs::E",
-                    "a.rs::E::A",
-                    "a.rs::E::B",
+                    ENUM_E,
+                    VARIANT_E_A,
+                    VARIANT_E_B,
                     "a.rs::E::B.a",
                     "a.rs::Foo",
                     "a.rs::Foo.0",
@@ -2559,7 +2559,7 @@ mod tests {
     fn each_definitions_contains_comes_from_its_parent_and_the_files_only_from_the_file() {
         use crate::csharp_definition_sources::CSHARP_FILE_SCOPED_NAMESPACE;
         use crate::go_definition_sources::GO_CLOSURE_VAR;
-        use crate::test_support::{assert_live, ENUM_E, VARIANT_E_A};
+        use crate::test_support::{assert_live, ENUM_E, VARIANT_E_A, VARIANT_E_B};
 
         let cases = [
             (
@@ -2576,8 +2576,8 @@ mod tests {
                     ("a.rs", "a.rs::m"),
                     ("a.rs", "a.rs::outer"),
                     (ENUM_E, VARIANT_E_A),
-                    (ENUM_E, "a.rs::E::B"),
-                    ("a.rs::E::B", "a.rs::E::B.a"),
+                    (ENUM_E, VARIANT_E_B),
+                    (VARIANT_E_B, "a.rs::E::B.a"),
                     ("a.rs::impl Display for X", "a.rs::<X as Display>::fmt"),
                     ("a.rs::impl T", "a.rs::T::new"),
                     ("a.rs::m", "a.rs::m::item"),
@@ -2618,6 +2618,7 @@ mod tests {
     /// its file's next generation, folded from the real extraction of each.
     #[test]
     fn a_removed_variants_contains_retires_at_the_next_generation() {
+        use crate::rust_definition_sources::{ENUM_E_HOLDING_A, ENUM_E_HOLDING_A_AND_B};
         use crate::test_support::{
             assert_live, fold_events, fold_generation, E_HOLDS_A, GENERATION_AFTER,
             GENERATION_BEFORE,
@@ -2626,8 +2627,8 @@ mod tests {
         let p = fold_events([]);
         let mut pos = 0;
         for (generation, source) in [
-            (GENERATION_BEFORE, "enum E {\n    A,\n    B,\n}\n"),
-            (GENERATION_AFTER, "enum E {\n    A,\n}\n"),
+            (GENERATION_BEFORE, ENUM_E_HOLDING_A_AND_B),
+            (GENERATION_AFTER, ENUM_E_HOLDING_A),
         ] {
             fold_generation(
                 &p,

@@ -31,6 +31,7 @@ use rigger::contextgraph::Projection;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
 mod common;
 
+use common::cli::edge_lines;
 use common::cli::run_around;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
@@ -46,24 +47,6 @@ fn node_ids(out: &str) -> Vec<String> {
                 .strip_prefix("node ")
                 .and_then(|rest| rest.split_whitespace().next())
                 .map(str::to_string)
-        })
-        .collect()
-}
-
-/// Every printed `edge <from> -<rel>-> <to>` line, parsed into its (from, rel, to) triple -
-/// never substring-matched, so an assertion about which edges printed is a claim about the
-/// parsed fields, not a text search a coincidental substring could satisfy.
-fn edge_lines(out: &str) -> Vec<(String, String, String)> {
-    out.lines()
-        .filter_map(|l| {
-            let rest = l.trim_start().strip_prefix("edge ")?;
-            let (from, rest) = rest.split_once(" -")?;
-            let (rel, to) = rest.split_once("-> ")?;
-            Some((
-                from.trim().to_string(),
-                rel.trim().to_string(),
-                to.trim().to_string(),
-            ))
         })
         .collect()
 }

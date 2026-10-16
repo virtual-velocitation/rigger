@@ -364,6 +364,8 @@ pub fn child_entity_json(
 pub const ENUM_E: &str = "a.rs::E";
 /// The variant `A` of [`ENUM_E`].
 pub const VARIANT_E_A: &str = "a.rs::E::A";
+/// The variant `B` of [`ENUM_E`].
+pub const VARIANT_E_B: &str = "a.rs::E::B";
 /// The live `CONTAINS` edges, `(parent, child)` in sorted order, of `a.rs` defining [`ENUM_E`]
 /// with its one variant [`VARIANT_E_A`].
 pub const E_HOLDS_A: &[(&str, &str)] = &[("a.rs", ENUM_E), (ENUM_E, VARIANT_E_A)];
