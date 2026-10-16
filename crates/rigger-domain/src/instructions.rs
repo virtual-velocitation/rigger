@@ -393,6 +393,8 @@ mod tests {
             "A record whose expressions are names only - a fn name, the callee a helper wraps - \
              for a body that spells a literal or an outside call is a record you cannot write \
              either.",
+            "A statement listed with a literal or call it spells absent from its terms is a \
+             record you cannot write.",
             "The record is organised by statement: each statement of a body you add and each \
              edited statement of a body you edit is quoted with its `file:line`, followed by its \
              terms - every string literal it spells, alone, and every call it makes outside the \
