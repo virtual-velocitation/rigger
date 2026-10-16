@@ -41,7 +41,11 @@ list: a literal the record never searched alone, or a record whose terms for a b
 statements, bracketed expressions or format strings in place of its literals, is BLOCKING on its
 own, citing the literal, its hit count and the first hits the record does not carry. Each is a
 finding on its own, citing the hit's file:line with the command and the output
-you got. A literal of a statement the unit did not touch is the tree's duplication debt, never a
+you got. You read the record statement by statement: for each statement the hunks add or edit
+you derive its terms yourself and match them against the terms the record lists under that
+statement's `file:line`; a term the statement spells that the record lacks there, or a statement
+the hunks add or edit that the record does not list, is BLOCKING on its own, citing the
+statement's `file:line` and the term. A literal of a statement the unit did not touch is the tree's duplication debt, never a
 BLOCKING finding: you name it to the operator in your review as debt, with its hit count.
 
 You are also the enforcement of the built-in rule that every sentence about the changed

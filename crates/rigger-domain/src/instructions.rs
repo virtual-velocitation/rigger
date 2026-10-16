@@ -286,9 +286,11 @@ mod tests {
     /// of a body edited, the hunks of the unit's whole range inside it, a twin among untouched
     /// statements named to the operator as the tree's debt - each string
     /// literal alone and in full, however short, and each outside call with its first argument,
-    /// never the body's name nor an expression wrapping a literal -
+    /// never the body's name nor an expression wrapping a literal, the record organised by
+    /// statement, each added or edited statement quoted with its `file:line` above its terms -
     /// whose command and hits the record carries and the SDET lens re-runs and re-derives from
-    /// the test hunks over the same statements, one search per literal alone, a literal of an
+    /// the test hunks over the same statements, comparing the record statement by statement, a
+    /// missing term or an unlisted statement blocking, one search per literal alone, a literal of an
     /// untouched statement named to the operator as debt and never blocking, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators (an item's callers read from the graph at depth 1) over the unit's
@@ -392,12 +394,23 @@ mod tests {
             "A record whose expressions are names only - a fn name, the callee a helper wraps - \
              for a body that spells a literal or an outside call is a record you cannot write \
              either.",
+            "A statement listed with a literal or call it spells absent from its terms is a \
+             record you cannot write.",
+            "The record is organised by statement: each statement of a body you add and each \
+             edited statement of a body you edit is quoted with its `file:line`, followed by its \
+             terms - every string literal it spells, alone, and every call it makes outside the \
+             shared home with its first argument token - each term with its search, or the \
+             statement is marked as a single call into the shared home with the callee named.",
             "The lens derives the expression set itself from the unit's test hunks at head - \
              every string literal and every outside call with its first argument in every \
              statement of each test-side body the unit adds and in the edited statements of each \
              body it edits, over the unit's whole range - and runs each over every test home: a \
              hit the record does not carry, or a record whose expressions are names only for a \
              body that spells either, is a BLOCKING finding on its own.",
+            "The lens derives each statement's terms itself and compares the record statement by \
+             statement: a statement whose record terms lack a literal or call the statement \
+             spells, or a statement the hunks touch that the record does not list, is a BLOCKING \
+             finding on its own, citing the statement and the term.",
             "A literal of a statement the unit did not touch is the tree's duplication debt, \
              which the lens names to the operator, never a BLOCKING finding.",
             "carrying each search's command, its hit count and every hit",
