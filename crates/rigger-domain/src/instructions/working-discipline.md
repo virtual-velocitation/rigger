@@ -124,7 +124,13 @@ tool that searches them.
   record you cannot write. Every sentence the record marks new or FIXED carries its witness,
   the `file:line` of the code at head that makes it true - the arm, the guard, the call, the
   constant; two witnesses when one would not make the whole sentence true - and a sentence
-  with no witness is a claim, not a record; a CHECKED sentence whose truth rests on code names
+  with no witness is a claim, not a record; a claim that quantifies over a set - every, all,
+  always, any, a plural subject with a predicate - is witnessed once per case the code splits
+  that set into (each arm that assigns the value, each component of a key or comparator, each
+  condition of a filter or guard, each branch of a match), the record naming the cases and a
+  witness per case, and a case the claim does not hold for makes the sentence false, to be
+  narrowed or FIXED, never witnessed at the case it does hold for; a CHECKED sentence whose
+  truth rests on code names
   its witness the same way, and one CHECKED as a different rule sharing the words names that
   rule instead and shows the sentence's claim is that rule's question, the question the
   sentence answers read claim by claim as the lens reads it; a sentence whose claim is the
@@ -171,9 +177,12 @@ tool that searches them.
   sentence stating the pre-change answer that the record does not carry FIXED or CHECKED is a
   BLOCKING finding on its own. The lens reads every sentence it re-reads claim by claim against
   the unit's change, with a witness per claim at head, and a sentence it cannot witness is a
-  BLOCKING finding on its own. The lens's record lists every sentence it reads, the record's
-  CHECKED members included, each with its claims and a witness per claim; a grouped verdict
-  over any of them is a record the lens cannot write.
+  BLOCKING finding on its own. For a quantified claim the lens enumerates the cases itself from
+  the code at head and its record lists them beside the claim, each with its witness: a
+  quantified claim witnessed at one case, or a case the claim does not hold for, is a BLOCKING
+  finding on its own. The lens's record lists every sentence it reads, the record's CHECKED
+  members included, each with its claims and a witness per claim; a grouped verdict over any of
+  them is a record the lens cannot write.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
   code reads after your change, on any feature lane, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without

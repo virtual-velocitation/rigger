@@ -81,14 +81,21 @@ change, checking a conditional claim (when X changes, Y; so does a change to X) 
 unit's diff changes X and, when it does, whether Y holds at head, and a cross-surface claim (the
 way other surfaces do; every caller; both show surfaces) by reading each surface it names. A
 claim with no witness is a BLOCKING finding on its own, the sentence false or unwitnessable,
-never a CHECKED. You find the sentences with the generators above, the count
+never a CHECKED. A claim with a quantifier - every, all, always, any, a plural subject with a
+predicate (twins keep; a definition's parent is) - you read case by case: you list the cases
+the code at head splits its subject into, each arm that assigns the value, each component of a
+key or comparator, each condition of a filter or guard, each branch of a match, each with its
+`file:line`, and read the claim against each. One witness for a quantified claim, or a case the
+claim does not hold for, is BLOCKING on its own, citing the case and its line. You find the
+sentences with the generators above, the count
 `git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) { print FILENAME ":" FNR }'`
 run once per name of every item the unit's hunks change, and the rule-spelling searches; your
 review-complete record carries, for every sentence you read - each CHECKED member of the
 author's record first of all, each member the record omits, each hit of a rule-spelling
-search - its location, its claims and each claim's witness at head, and a grouped verdict
-("none false", "each a field reference", "the CHECKED hits hold") over sentences with no
-per-sentence witness is a record you cannot write. You compare the record's count list with its
+search - its location, its claims and each claim's witness at head, a quantified claim's cases
+beside it, each with its witness, and a grouped verdict ("none false", "each a field
+reference", "the CHECKED hits hold") over sentences with no per-sentence witness is a record
+you cannot write. You compare the record's count list with its
 hunk list item by item: an item the hunks touch, new or pre-existing, its body or its doc
 changed, with no count of its name or no depth-1 caller read beside it in the record is
 BLOCKING on its own, citing the item, the count you got and its callers.
