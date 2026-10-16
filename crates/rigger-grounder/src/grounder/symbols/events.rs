@@ -2387,19 +2387,21 @@ mod tests {
         assert_eq!(wire_owned(&named[0].1), boundary("src/absent.rs"));
     }
 
-    /// A fresh graph holding `file`'s real extraction of `source`, the registered query its
-    /// extension names, lowered by `extract_events` and folded.
-    fn folded_extraction(file: &str, source: &str) -> Projector {
+    /// `file`'s real extraction of `source`, the registered query its extension names, lowered by
+    /// `extract_events`.
+    fn extracted_events(file: &str, source: &str) -> Vec<Event> {
         let (_, ext) = file
             .rsplit_once('.')
             .expect("the fixture file has an extension");
+        extract_events(file, &crate::symbol_index::extracted(ext, source))
+    }
+
+    /// A fresh graph holding [`extracted_events`] of `file` and `source`, folded.
+    fn folded_extraction(file: &str, source: &str) -> Projector {
         let p = Projector::open(":memory:", "test").unwrap();
         crate::test_support::folds(
             &p,
-            &crate::event_fixtures::positioned(extract_events(
-                file,
-                &crate::symbol_index::extracted(ext, source),
-            )),
+            &crate::event_fixtures::positioned(extracted_events(file, source)),
         );
         p
     }
@@ -2411,6 +2413,8 @@ mod tests {
     /// siblings, a name-filtered `_` and a named value equal to its declarator add nothing.
     #[test]
     fn each_extracted_definition_folds_at_its_language_path_id() {
+        use crate::csharp_definition_sources::CSHARP_FILE_SCOPED_NAMESPACE;
+        use crate::go_definition_sources::GO_CLOSURE_VAR;
         use crate::test_support::definition_ids;
 
         let cases: [(&str, &str, &[&str]); 7] = [
@@ -2462,8 +2466,8 @@ mod tests {
                 &["g.go::Recv", "g.go::Recv::Name", "g.go::a", "g.go::b"],
             ),
             (
-                "h.go",
-                "package h\n\nvar a, b = func() { type T struct{} }(), 1\n",
+                GO_CLOSURE_VAR.0,
+                GO_CLOSURE_VAR.1,
                 &["h.go::T", "h.go::a", "h.go::b"],
             ),
             (
@@ -2478,8 +2482,8 @@ mod tests {
                 &["n.cs::N", "n.cs::N::Foo", "n.cs::N::Foo.P", "n.cs::N::Foo::Foo"],
             ),
             (
-                "s.cs",
-                "namespace N;\nclass Foo {}\n",
+                CSHARP_FILE_SCOPED_NAMESPACE.0,
+                CSHARP_FILE_SCOPED_NAMESPACE.1,
                 &["s.cs::N", "s.cs::N::Foo"],
             ),
             (
@@ -2531,6 +2535,128 @@ mod tests {
             attrs_of(&p, "x.rs::T::new").get("name").map(String::as_str),
             Some("new"),
             "the node's name stays its leaf"
+        );
+    }
+
+    /// Spec 119, CONTAINS IS STRUCTURE: each file's real extraction, folded, hangs every
+    /// definition's `CONTAINS` off its parent - a variant off its enum, a field off its variant,
+    /// an associated item off its impl, an item off its inline mod or enclosing fn, a C#
+    /// file-scoped namespace's class off the namespace, a Go method off the receiver type its file
+    /// defines - and the file's off the file alone: a top-level definition, an impl of a type the
+    /// file does not define, a Go method whose receiver the file does not define, what a
+    /// name-filtered `_` holds and a type inside a closure two equal-range siblings share.
+    #[test]
+    fn each_definitions_contains_comes_from_its_parent_and_the_files_only_from_the_file() {
+        use crate::csharp_definition_sources::CSHARP_FILE_SCOPED_NAMESPACE;
+        use crate::go_definition_sources::GO_CLOSURE_VAR;
+        use crate::test_support::{assert_live, ENUM_E, VARIANT_E_A};
+
+        let cases = [
+            (
+                "a.rs",
+                "enum E {\n    A,\n    B { a: u8 },\n}\nstruct T;\nimpl T {\n    fn new() -> T { T }\n}\n\
+                 impl Display for X {\n    fn fmt(&self) {}\n}\nmod m {\n    fn item() {}\n}\n\
+                 fn outer() {\n    fn inner() {}\n}\nconst _: () = {\n    fn a() {}\n};\n",
+                &[
+                    ("a.rs", ENUM_E),
+                    ("a.rs", "a.rs::T"),
+                    ("a.rs", "a.rs::a"),
+                    ("a.rs", "a.rs::impl Display for X"),
+                    ("a.rs", "a.rs::impl T"),
+                    ("a.rs", "a.rs::m"),
+                    ("a.rs", "a.rs::outer"),
+                    (ENUM_E, VARIANT_E_A),
+                    (ENUM_E, "a.rs::E::B"),
+                    ("a.rs::E::B", "a.rs::E::B.a"),
+                    ("a.rs::impl Display for X", "a.rs::<X as Display>::fmt"),
+                    ("a.rs::impl T", "a.rs::T::new"),
+                    ("a.rs::m", "a.rs::m::item"),
+                    ("a.rs::outer", "a.rs::outer::inner"),
+                ][..],
+            ),
+            (
+                "g.go",
+                "package g\n\ntype Recv struct{}\n\nfunc (r *Recv) Name() {}\n\nfunc (o *Other) Run() {}\n",
+                &[
+                    ("g.go", "g.go::Other::Run"),
+                    ("g.go", "g.go::Recv"),
+                    ("g.go::Recv", "g.go::Recv::Name"),
+                ][..],
+            ),
+            (
+                GO_CLOSURE_VAR.0,
+                GO_CLOSURE_VAR.1,
+                &[("h.go", "h.go::T"), ("h.go", "h.go::a"), ("h.go", "h.go::b")][..],
+            ),
+            (
+                CSHARP_FILE_SCOPED_NAMESPACE.0,
+                CSHARP_FILE_SCOPED_NAMESPACE.1,
+                &[("s.cs", "s.cs::N"), ("s.cs::N", "s.cs::N::Foo")][..],
+            ),
+        ];
+        for (file, source, contains) in cases {
+            assert_live(
+                &folded_extraction(file, source),
+                REL_CONTAINS,
+                contains,
+                &format!("{file}: each definition's CONTAINS comes from its parent"),
+            );
+        }
+    }
+
+    /// Spec 119, CONTAINS IS STRUCTURE: a removed variant's `CONTAINS` from its enum retires with
+    /// its file's next generation, folded from the real extraction of each.
+    #[test]
+    fn a_removed_variants_contains_retires_at_the_next_generation() {
+        use crate::test_support::{
+            assert_live, fold_events, fold_generation, E_HOLDS_A, GENERATION_AFTER,
+            GENERATION_BEFORE,
+        };
+
+        let p = fold_events([]);
+        let mut pos = 0;
+        for (generation, source) in [
+            (GENERATION_BEFORE, "enum E {\n    A,\n    B,\n}\n"),
+            (GENERATION_AFTER, "enum E {\n    A,\n}\n"),
+        ] {
+            fold_generation(
+                &p,
+                &mut pos,
+                "a.rs",
+                generation,
+                extracted_events("a.rs", source),
+            );
+        }
+        assert_live(
+            &p,
+            REL_CONTAINS,
+            E_HOLDS_A,
+            "the removed variant's CONTAINS retires with the generation",
+        );
+    }
+
+    /// Spec 119, CONTAINS IS STRUCTURE: a named value one with the class field holding it takes
+    /// the field's parent, so both events of `class A { f = function f() {} }`'s `f` name `A`, and
+    /// the file-level `A` names none.
+    #[test]
+    fn a_named_value_takes_the_parent_of_the_definition_it_is_one_with() {
+        use crate::event_fixtures::payloads_of_type;
+
+        let events = extracted_events("c.ts", "class A {\n    f = function f() {};\n}\n");
+        let parents: Vec<(serde_json::Value, serde_json::Value)> =
+            payloads_of_type(&events, TYPE_CODE_ENTITY_EXTRACTED)
+                .into_iter()
+                .map(|payload| (payload["name"].clone(), payload["parent"].clone()))
+                .collect();
+        let f_under_a = ("f".into(), "A".into());
+        assert_eq!(
+            parents,
+            [
+                ("A".into(), serde_json::Value::Null),
+                f_under_a.clone(),
+                f_under_a
+            ],
+            "each event's (name, parent)"
         );
     }
 

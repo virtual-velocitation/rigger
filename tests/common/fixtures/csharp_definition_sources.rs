@@ -33,3 +33,6 @@ public class Foo {
 }
 public abstract class Ext { extern Ext(); extern ~Ext(); public static extern Ext operator -(Ext a); public static extern explicit operator Ext(int i); public abstract void Bare(); }
 ";
+
+/// `(file, source)` of a C# file-scoped namespace `N` and the class `Foo` after it (spec 119).
+pub const CSHARP_FILE_SCOPED_NAMESPACE: (&str, &str) = ("s.cs", "namespace N;\nclass Foo {}\n");

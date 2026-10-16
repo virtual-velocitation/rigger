@@ -13068,6 +13068,111 @@ mod tests {
         }
     }
 
+    /// Spec 119, CONTAINS IS STRUCTURE, over hand-built events: a definition's `CONTAINS` comes
+    /// from its parent, the file holding only a definition with none.
+    mod contains_is_structure {
+        use super::*;
+        use crate::test_support::{
+            assert_live, attrs_of, child_entity_json, definition, definition_ids, event_of,
+            fold_events, fold_generation, kind_def_json, ENUM_E, E_HOLDS_A, GENERATION_AFTER,
+            GENERATION_BEFORE, VARIANT_E_A,
+        };
+
+        /// The parent [`GHOST_M`] names, which no event defines.
+        const GHOST: &str = "a.rs::Ghost";
+        /// The method `m` of [`GHOST`].
+        const GHOST_M: &str = "a.rs::Ghost::m";
+
+        /// The `CodeEntityExtracted` event of the variant `a.rs::E::<name>`, its parent `E`.
+        fn variant_of_e(name: &str) -> Event {
+            event_of(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                child_entity_json("a.rs", name, &format!("E::{name}"), "E", "variant"),
+            )
+        }
+
+        /// The `CodeEntityExtracted` event of the enum `a.rs::E` at line 1.
+        fn enum_e(fresh: bool) -> Event {
+            event_of(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                kind_def_json("a.rs", "E", "type", 1, fresh),
+            )
+        }
+
+        #[test]
+        fn a_variant_folded_before_its_enum_is_contained_by_it_and_the_enum_by_the_file() {
+            let p = fold_events([variant_of_e("A"), enum_e(false)]);
+            assert_live(
+                &p,
+                REL_CONTAINS,
+                E_HOLDS_A,
+                "the variant hangs off its enum, the enum off the file",
+            );
+            assert_eq!(
+                attrs_of(&p, ENUM_E),
+                definition("E", "type", 1),
+                "the enum's own event fills the parent its variant asserted first"
+            );
+        }
+
+        #[test]
+        fn a_parent_no_event_defines_stays_a_nameless_node_the_file_does_not_contain() {
+            let p = fold_events([event_of(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                child_entity_json("a.rs", "m", "Ghost::m", "Ghost", "method"),
+            )]);
+            assert_live(
+                &p,
+                REL_CONTAINS,
+                &[(GHOST, GHOST_M)],
+                "the child hangs off its undefined parent, which no CONTAINS from the file reaches",
+            );
+            assert_eq!(
+                attrs_of(&p, GHOST),
+                BTreeMap::new(),
+                "the undefined parent is held, a bare node carrying no name"
+            );
+            assert_eq!(definition_ids(&p), [GHOST_M]);
+        }
+
+        #[test]
+        fn an_empty_parent_and_one_naming_its_own_path_are_contained_by_the_file() {
+            let p = fold_events([
+                event_of(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    child_entity_json("a.rs", "s", "T::s", "T::s", "method"),
+                ),
+                event_of(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    child_entity_json("a.rs", "e", "e", "", "function"),
+                ),
+            ]);
+            assert_live(
+                &p,
+                REL_CONTAINS,
+                &[("a.rs", "a.rs::T::s"), ("a.rs", "a.rs::e")],
+                "an empty parent and a self-naming one read as no parent",
+            );
+        }
+
+        #[test]
+        fn a_removed_variants_contains_retires_at_its_files_next_generation() {
+            let p = fold_events([]);
+            let mut pos = 0;
+            let before = vec![enum_e(true), variant_of_e("A"), variant_of_e("B")];
+            fold_generation(&p, &mut pos, "a.rs", GENERATION_BEFORE, before);
+            let after = vec![enum_e(true), variant_of_e("A")];
+            fold_generation(&p, &mut pos, "a.rs", GENERATION_AFTER, after);
+            assert_live(
+                &p,
+                REL_CONTAINS,
+                E_HOLDS_A,
+                "the removed variant's CONTAINS from its enum retires with the generation",
+            );
+            assert_eq!(definition_ids(&p), [ENUM_E, VARIANT_E_A]);
+        }
+    }
+
     /// Spec 101, A GENERATION SUPERSEDES THE WHOLE PRIOR GENERATION OF ITS FILE, IN BOTH HALVES:
     /// the facts a newer generation of a `<prefix>/<file>` identity does not re-assert are retired,
     /// so the graph holds the file's CURRENT facts whether it is folded from the whole log or from

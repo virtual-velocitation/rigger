@@ -27,3 +27,10 @@ func ext(c Canvas)
 func (s Shape) bare()
 type _ = Base
 ";
+
+/// `(file, source)` of a Go `var` spec naming two whose first initializer is a closure holding a
+/// type (spec 119): the type sits inside a range the two equal-range siblings share.
+pub const GO_CLOSURE_VAR: (&str, &str) = (
+    "h.go",
+    "package h\n\nvar a, b = func() { type T struct{} }(), 1\n",
+);

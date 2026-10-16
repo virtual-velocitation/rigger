@@ -98,23 +98,34 @@ pub fn live_edges(p: &Projector) -> Vec<(String, String, String, i64, u64)> {
     edges
 }
 
-/// Every live `CALLS` edge `p` serves as `(caller, callee)`, sorted.
-pub fn live_calls(p: &Projector) -> Vec<(String, String)> {
+/// Every live `rel` edge `p` serves as `(from, to)`, sorted.
+pub fn live_of(p: &Projector, rel: &str) -> Vec<(String, String)> {
     live_edges(p)
         .into_iter()
-        .filter(|(_, rel, ..)| rel == REL_CALLS)
+        .filter(|(_, edge_rel, ..)| edge_rel == rel)
         .map(|(from, _, to, ..)| (from, to))
         .collect()
+}
+
+/// Every live `CALLS` edge `p` serves as `(caller, callee)`, sorted.
+pub fn live_calls(p: &Projector) -> Vec<(String, String)> {
+    live_of(p, REL_CALLS)
+}
+
+/// Every live `rel` edge `p` serves ([`live_of`]) is exactly `edges`, `(from, to)` ids in that
+/// sorted order, `why` naming the rule the edges follow.
+pub fn assert_live(p: &Projector, rel: &str, edges: &[(&str, &str)], why: &str) {
+    let edges: Vec<(String, String)> = edges
+        .iter()
+        .map(|(from, to)| (from.to_string(), to.to_string()))
+        .collect();
+    assert_eq!(live_of(p, rel), edges, "{why}");
 }
 
 /// Every live `CALLS` edge `p` serves ([`live_calls`]) is exactly `calls`, `(caller, callee)`
 /// ids in that sorted order, `why` naming the rule the edges follow.
 pub fn assert_live_calls(p: &Projector, calls: &[(&str, &str)], why: &str) {
-    let calls: Vec<(String, String)> = calls
-        .iter()
-        .map(|(from, to)| (from.to_string(), to.to_string()))
-        .collect();
-    assert_eq!(live_calls(p), calls, "{why}");
+    assert_live(p, REL_CALLS, calls, why);
 }
 
 /// Every live `REFERENCES` and `CALLS` edge `p` serves, as `(from, rel, to, tier)`, sorted:
@@ -333,6 +344,28 @@ pub fn path_entity_json(
 ) -> serde_json::Value {
     with_path(code_entity_json(file, name, kind, line, lang), Some(path))
 }
+
+/// [`path_entity_json`] carrying `parent`, the id path of the definition enclosing it (spec 119,
+/// CONTAINS IS STRUCTURE), at line 1.
+pub fn child_entity_json(
+    file: &str,
+    name: &str,
+    path: &str,
+    parent: &str,
+    kind: &str,
+) -> serde_json::Value {
+    let mut json = path_entity_json(file, name, path, kind, 1, "rust");
+    json["parent"] = parent.into();
+    json
+}
+
+/// The enum `E` of `a.rs` (spec 119, CONTAINS IS STRUCTURE).
+pub const ENUM_E: &str = "a.rs::E";
+/// The variant `A` of [`ENUM_E`].
+pub const VARIANT_E_A: &str = "a.rs::E::A";
+/// The live `CONTAINS` edges, `(parent, child)` in sorted order, of `a.rs` defining [`ENUM_E`]
+/// with its one variant [`VARIANT_E_A`].
+pub const E_HOLDS_A: &[(&str, &str)] = &[("a.rs", ENUM_E), (ENUM_E, VARIANT_E_A)];
 
 /// A definition `(file, leaf, path, kind)`, folded carrying its id path (spec 119, IDS FOLLOW THE
 /// LANGUAGE'S PATH).
