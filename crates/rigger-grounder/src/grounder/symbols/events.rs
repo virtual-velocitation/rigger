@@ -176,9 +176,9 @@ fn lower_file(path: &str, symbols: &FileSymbols, excluded: bool) -> Vec<Event> {
 /// identical source yields byte-identical events - the determinism-by-construction spec 29a
 /// requires: refs by name/line, and defs parent before child (spec 119, A PARENT IS EMITTED BEFORE
 /// ITS CHILD), by the length of each one's parent chain ([`chain_length`]), then leaf, then path,
-/// stably, so same-path twins keep `extract`'s order and a parent's own event precedes every
-/// child's. Definitions are emitted before references so the fold can land a same-file reference
-/// on its already-folded definition entity.
+/// stably, so definitions of one key (same-path twins of one parent chain length) keep `extract`'s
+/// order and a parent's own event precedes every child's. Definitions are emitted before
+/// references so the fold can land a same-file reference on its already-folded definition entity.
 ///
 /// The FIRST event of the file's batch carries `fresh` (spec 29a criterion 3): it marks the
 /// extraction-batch boundary, so the fold supersedes the file's PRIOR structural edges before
@@ -222,8 +222,8 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     let mut events = Vec::with_capacity(fs.defs.len() + fs.refs.len());
 
     let mut defs: Vec<&Def> = fs.defs.iter().filter(|d| !d.is_test).collect();
-    // Spec 119 (A PARENT IS EMITTED BEFORE ITS CHILD): a stable sort, so same-path twins keep
-    // `extract`'s order.
+    // Spec 119 (A PARENT IS EMITTED BEFORE ITS CHILD): a stable sort, so definitions of one key -
+    // same-path twins of one parent chain length - keep `extract`'s order.
     let mut parents: BTreeMap<&str, Vec<Option<&str>>> = BTreeMap::new();
     for d in &defs {
         parents
@@ -2777,8 +2777,8 @@ mod tests {
     /// A PARENT IS EMITTED BEFORE ITS CHILD (spec 119 criterion 16): the emission sorts by the
     /// length of each definition's parent chain - a parent counting one link, resolved to the
     /// definitions emitted at its path with the longest chain taken, and one naming no emitted
-    /// definition still one link - then by leaf, then by path, and stably, so same-path twins keep
-    /// `extract`'s order.
+    /// definition still one link - then by leaf, then by path, and stably, so definitions of one
+    /// key - same-path twins of one parent chain length - keep `extract`'s order.
     #[test]
     fn extract_events_orders_by_parent_chain_then_leaf_then_path_keeping_twins_in_place() {
         let emitted = emitted_from(vec![
