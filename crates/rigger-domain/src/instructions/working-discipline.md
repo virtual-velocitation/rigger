@@ -92,7 +92,11 @@ tool that searches them.
   statement of each test-side body the unit adds and in the edited statements of each body it
   edits, over the unit's whole range - and runs each over every test home: a hit the record
   does not carry, or a record whose expressions are names only for a body that spells either,
-  is a BLOCKING finding on its own. A literal of a statement the unit did not touch is the
+  is a BLOCKING finding on its own. The lens derives each statement's terms itself and compares
+  the record statement by statement: a statement whose record terms lack a literal or call the
+  statement spells, or a statement the hunks touch that the record does not list, is a BLOCKING
+  finding on its own, citing the statement and the term. A literal of a statement the unit did
+  not touch is the
   tree's duplication debt, which the lens names to the operator, never a BLOCKING finding. The
   lens compares the record's terms with the literals of
   the bodies it derives, one search per literal alone: a literal with no search of its own, or a
