@@ -113,7 +113,11 @@ tool that searches them.
   change: one whole-tree DecisionMade naming the set walked by its generators (files, items,
   trait items, callers, lines counted) and every sentence FIXED with its location, each
   sentence the change writes marked new with its location; a member whose generator returned
-  nothing is named as empty. The walk's range is the unit's whole range, the merge base with
+  nothing is named as empty. The name count and the depth-1 caller read run once per item the
+  hunks touch, new or pre-existing, its body or its doc changed, and the record pairs each item
+  of its hunk list with its count, the lines read and its callers or the named fallback; an
+  item the hunk list names without its count, or without its callers or the named fallback, is
+  a record you cannot write. The walk's range is the unit's whole range, the merge base with
   the run branch to head, on every round, never a round's delta alone: a sentence you wrote in
   an earlier round is a member again whenever a later round changes the behaviour it states,
   so a record, or a round's addendum, whose sets are re-derived over a round's delta is a
@@ -122,7 +126,10 @@ tool that searches them.
   constant; two witnesses when one would not make the whole sentence true - and a sentence
   with no witness is a claim, not a record; a CHECKED sentence whose truth rests on code names
   its witness the same way, and one CHECKED as a different rule sharing the words names that
-  rule instead. A rule the change rewrites - a condition
+  rule instead and shows the sentence's claim is that rule's question, the question the
+  sentence answers read claim by claim as the lens reads it; a sentence whose claim is the
+  question a rule the change rewrites answers is a spelling of that rule, whatever other rule
+  its words also fit. A rule the change rewrites - a condition
   the code decides by, such as what a call lands on or what a tier means - has spellings no
   generator above reaches: prose that states it without naming a changed item. So every
   spelling of each rewritten rule is walked too, and its search is an instrument, not a claim:
@@ -164,7 +171,9 @@ tool that searches them.
   sentence stating the pre-change answer that the record does not carry FIXED or CHECKED is a
   BLOCKING finding on its own. The lens reads every sentence it re-reads claim by claim against
   the unit's change, with a witness per claim at head, and a sentence it cannot witness is a
-  BLOCKING finding on its own.
+  BLOCKING finding on its own. The lens's record lists every sentence it reads, the record's
+  CHECKED members included, each with its claims and a witness per claim; a grouped verdict
+  over any of them is a record the lens cannot write.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
   code reads after your change, on any feature lane, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
@@ -180,7 +189,14 @@ tool that searches them.
   touched test binaries, read the red, and restore the tree - a probe is over before your turn
   is, as the rule below says. The record is one whole-tree `<unit>-mutant-probes` DecisionMade
   carrying, for each token, its `file:line`, the mutation applied, and the test that went red
-  with its assertion. A token whose probe leaves every test green is pinned by a new test before
+  with its assertion. The record is organised by production line: every production line the
+  range adds or changes, in file order, either names its mutable tokens, each with its probe,
+  or is marked as carrying none with the named reason (a signature, a `use`, a doc line, a
+  brace); a line with no disposition is a record you cannot write. A token inside a query
+  string, a format string or a macro argument the production code executes is a token of its
+  line: a SQL conjunct is a boolean operand, a column name, bound or placeholder passed to a
+  query builder is a call argument, and a substr start is an index. A token whose probe leaves
+  every test green is pinned by a new test before
   you report, or the code is reshaped so the token disappears (one `span.contains(&x)` in place
   of two comparisons, say) and the reshaped form probed. A token with no recorded probe is a
   record you cannot write. The enumeration is by hand and stands once the mutation gate runs
@@ -188,7 +204,9 @@ tool that searches them.
   of an arm.
   The SDET lens derives the token set itself from the production hunks over the unit's whole
   range and probes every token the record lacks: a probe that leaves every test green, or a
-  token with no recorded probe, is a BLOCKING finding on its own.
+  token with no recorded probe, is a BLOCKING finding on its own. The lens compares its token
+  set with the record line by line: a production line the record does not disposition is a
+  BLOCKING finding on its own.
 - **A probe that edits your tree is over before your turn is.** A reversion probe, or any check
   that edits your worktree, runs to completion and restores the tree before your turn ends,
   never as a detached or background job: the attempt checkpoint commits whatever the worktree

@@ -292,8 +292,11 @@ mod tests {
     /// untouched statement named to the operator as debt and never blocking, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators (an item's callers read from the graph at depth 1) over the unit's
-    /// whole range on every round, never a round's delta, and records on every change, each new
-    /// or FIXED sentence with the `file:line` witness that makes it true, each spelling of a rule the change rewrites found by a recorded search per
+    /// whole range on every round, never a round's delta, and records on every change, the name
+    /// count and the depth-1 caller read paired with every item of the hunk list, each new
+    /// or FIXED sentence with the `file:line` witness that makes it true, a sentence CHECKED as a
+    /// different rule shown to answer that rule's question and one answering a rewritten rule's
+    /// question a spelling of it, each spelling of a rule the change rewrites found by a recorded search per
     /// distinguishing phrase of its old statement and of each label its cases carried, a
     /// boolean term a production hunk adds to or removes from a filter, guard or predicate
     /// rewriting the rule its function answers, whose old statement its depth-1 callers' notes,
@@ -302,13 +305,16 @@ mod tests {
     /// each search and re-reading every hit against head, deriving the changed-condition set
     /// itself and reading every consumer sentence against it, and reading every sentence it
     /// re-reads claim by claim against the unit's change with a witness per claim at head, a
-    /// sentence it cannot witness blocking on its own, with a renamed name's old spelling
-    /// counted to zero, nothing added that nothing reads, the red test's body untouched by the
-    /// green commit, every mutable token of the production delta - an operator, an offset, an
-    /// operand, a range argument, an arm's statement, a match arm, an early return - mutated by
-    /// hand one at a time with the red test recorded, a green probe pinned or reshaped away, the
+    /// sentence it cannot witness blocking on its own, its record listing every sentence it
+    /// reads, the CHECKED members included, never a grouped verdict, with a renamed name's old
+    /// spelling counted to zero, nothing added that nothing reads, the red test's body untouched
+    /// by the green commit, every mutable token of the production delta - an operator, an
+    /// offset, an operand, a range argument, an arm's statement, a match arm, an early return -
+    /// mutated by hand one at a time with the red test recorded in a record organised by
+    /// production line - each line naming its tokens, a token inside a query, format or macro
+    /// string included, or marked as carrying none - a green probe pinned or reshaped away, the
     /// hand enumeration standing beside the mutation gate and the SDET lens probing every token
-    /// the record lacks, and a probe that edits the tree - the sharpest case of a turn's end being
+    /// the record lacks and comparing its token set with the record line by line, and a probe that edits the tree - the sharpest case of a turn's end being
     /// the session's end - run to completion and restored before the turn ends; the gates'
     /// check names each gate command run to completion inside the turn. Read by its words, so
     /// a rewrap never moves a verdict.
@@ -417,6 +423,11 @@ mod tests {
              walked by its generators",
             "every sentence FIXED with its location",
             "a member whose generator returned nothing is named as empty",
+            "The name count and the depth-1 caller read run once per item the hunks touch, new or \
+             pre-existing, its body or its doc changed, and the record pairs each item of its \
+             hunk list with its count, the lines read and its callers or the named fallback; an \
+             item the hunk list names without its count, or without its callers or the named \
+             fallback, is a record you cannot write.",
             "each sentence the change writes marked new with its location",
             "The walk's range is the unit's whole range, the merge base with the run branch to \
              head, on every round, never a round's delta alone",
@@ -431,6 +442,10 @@ mod tests {
             "a sentence with no witness is a claim, not a record",
             "a CHECKED sentence whose truth rests on code names its witness the same way, and \
              one CHECKED as a different rule sharing the words names that rule instead",
+            "names that rule instead and shows the sentence's claim is that rule's question, \
+             the question the sentence answers read claim by claim as the lens reads it; a \
+             sentence whose claim is the question a rule the change rewrites answers is a \
+             spelling of that rule, whatever other rule its words also fit.",
             "has spellings no generator above reaches: prose that states it without naming a \
              changed item",
             "every spelling of each rewritten rule is walked too",
@@ -484,6 +499,9 @@ mod tests {
             "The lens reads every sentence it re-reads claim by claim against the unit's \
              change, with a witness per claim at head, and a sentence it cannot witness is a \
              BLOCKING finding on its own.",
+            "The lens's record lists every sentence it reads, the record's CHECKED members \
+             included, each with its claims and a witness per claim; a grouped verdict over any \
+             of them is a record the lens cannot write.",
             "when you rename or retire a name, walk every spelling of the old term through the \
              tree",
             "The old spelling occurs zero times in the tree outside git history, counted over \
@@ -505,6 +523,16 @@ mod tests {
              touched test binaries, read the red, and restore the tree",
             "one whole-tree `<unit>-mutant-probes` DecisionMade carrying, for each token, its \
              `file:line`, the mutation applied, and the test that went red with its assertion",
+            "The record is organised by production line: every production line the range adds \
+             or changes, in file order, either names its mutable tokens, each with its probe, or \
+             is marked as carrying none with the named reason (a signature, a `use`, a doc line, \
+             a brace); a line with no disposition is a record you cannot write.",
+            "A token inside a query string, a format string or a macro argument the production \
+             code executes is a token of its line: a SQL conjunct is a boolean operand, a column \
+             name, bound or placeholder passed to a query builder is a call argument, and a \
+             substr start is an index.",
+            "The lens compares its token set with the record line by line: a production line \
+             the record does not disposition is a BLOCKING finding on its own.",
             "A token whose probe leaves every test green is pinned by a new test before you \
              report, or the code is reshaped so the token disappears",
             "and the reshaped form probed",
