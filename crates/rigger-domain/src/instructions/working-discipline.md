@@ -113,7 +113,11 @@ tool that searches them.
   change: one whole-tree DecisionMade naming the set walked by its generators (files, items,
   trait items, callers, lines counted) and every sentence FIXED with its location, each
   sentence the change writes marked new with its location; a member whose generator returned
-  nothing is named as empty. The walk's range is the unit's whole range, the merge base with
+  nothing is named as empty. The name count and the depth-1 caller read run once per item the
+  hunks touch, new or pre-existing, its body or its doc changed, and the record pairs each item
+  of its hunk list with its count, the lines read and its callers or the named fallback; an
+  item the hunk list names without its count, or without its callers or the named fallback, is
+  a record you cannot write. The walk's range is the unit's whole range, the merge base with
   the run branch to head, on every round, never a round's delta alone: a sentence you wrote in
   an earlier round is a member again whenever a later round changes the behaviour it states,
   so a record, or a round's addendum, whose sets are re-derived over a round's delta is a
