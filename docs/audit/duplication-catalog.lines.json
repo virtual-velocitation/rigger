@@ -1060,7 +1060,7 @@
     ]
   },
   {
-    "id": "dup-6ce4d1b3f33b",
+    "id": "dup-2a04a6aac78e",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1886,6 +1886,11 @@
         "file": "src/cli/setup.rs",
         "start_line": 3732,
         "end_line": 3732
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3859,
+        "end_line": 3859
       },
       {
         "file": "src/cli/validate.rs",
