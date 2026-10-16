@@ -81,7 +81,7 @@ list: an unresolved superseded entry of the defining file, or two files' entries
 | `retired_code_entity_count` (`sqlite.rs:950-968`), for either row's edge | UNAFFECTED: inside `apply_generation` a row edge on a retiring definition retires at the same batch end, and outside it under the `fold_new` accepted difference; it counts `code-entity` nodes only (`n.kind = ?1`, `KIND_CODE_ENTITY`) and reads a retired `CONTAINS` only into the counted node, so a module edge's `file` target is never counted, and a `mod` node the live edge keeps out of the count is one its file still declares |
 | the console map's typed edges (`console/map.rs:381`), for a module row's edge | ACCEPTED: drawn as a typed `contains` edge |
 | spec 119's member readers (`query::member_file`, `member_sql()`, `member_set`), for either row's edge | UNAFFECTED: membership reads no edge |
-| `one_hop_degree` (`sqlite.rs:3346-3356`, read by `site_of` at `:925`) and spec 119's `around` merged-graph degree | ACCEPTED GROWTH: a degree counts every live incident edge, so a referenced const, type or trait gains degree, a file-level row deferring to its file's call twin (STAGED REFERENCES) adding none, so the pair counts once |
+| `one_hop_degree` (`sqlite.rs:3346-3356`, read by `site_of` at `:925`) and spec 119's `around` merged-graph degree | ACCEPTED GROWTH: a degree counts every live incident edge, so a referenced const, type or trait gains degree, a file-level row deferring to its file's call twin (STAGED REFERENCES) adding none, so the pair counts once; and a module `CONTAINS`, ACCEPTED GROWTH: a `mod` node and its module file node each gain one degree |
 | `Projector::migrate_project` (`sqlite.rs:850-865`) | REPLACED: re-keys `refs` in criterion 7's one transaction (A MIGRATED PROJECT STAYS LIVE), so no row escapes the identity's drop or the project-scoped reads |
 | `query::neighborhood` and `neighborhood_of` (`query.rs:1005-1083`) and its in-neighbourhood degree (`:1087-1110`), the dash's reach | ACCEPTED GROWTH, for a reference row's edge and a module `CONTAINS`: the dash neighbourhood is navigational, as the console map is, so it walks either as any live edge and counts it in its degree |
 | `write_code_neighborhood` (`conductor.rs:13067-13116`) | ACCEPTED GROWTH: the grown subgraph lists those users' definitions in the prompt's code neighbourhood; a module `CONTAINS` keys its file map by a file node, which no definition reads |
@@ -94,7 +94,7 @@ The walker search's other hits, each one disposition: UNAFFECTED, reading only r
 **A MODULE ROW REACHES ITS FILE, decided here.** A MODULE ROW (criterion 3's) is a second fold arm
 over the same table and generation drop with its own rel (`CONTAINS`), candidates and trigger. It
 carries its candidates (the `#[path]` override, else `<module_dir>[/<inline chain>]/x.rs` and
-`.../x/mod.rs`) joined by `\n` (a declaration with no candidate, `events.rs:631-643`, `:659-668`,
+`.../x/mod.rs`) joined by `\n` in its `leaf` column, the event's `name`, so the set key tells cfg-twin declarations with different candidates apart, no leaf-keyed read (STAGED REFERENCES' leaf resolution and leaf trigger, the unresolved listing) reading a module row (a declaration with no candidate, `events.rs:631-643`, `:659-668`,
 emits no row, and a `mod x;` in dev-only code stages none by the batch flag `lower_file` passes, the row being lowered only from a `module` `Def` that survives the test filter, so a `#[cfg(test)] mod x;` stages none in any file), lowered from the `module` `Def` at `extract_events` through `module_candidates(declaring path, Def)` with no `SymRef` persisted for it (criterion 3's), `from` the node at the declaration's path whatever kind won (a `mod x;` beside `fn x` being one node, spec 119's ONE PATH, ONE EVENT; cfg-twin `mod x;` declarations with different candidates staging two rows and two edges from it; both accepted), and resolves to the first candidate holding a live node of graph kind `file` ("first candidate" in every criterion meaning the first candidate holding a `file` node, never the first in the list), each candidate compared after `resolve_in_tx` (alias-resolved, as `from` is), settled at the end of every batch in
 which a resolved candidate path gains or loses that kind (created, retired, or `settle_node`'s kind change to
 a knowledge-held kind and back, `sqlite.rs:2129-2140`); it creates no node, each file node staying
@@ -206,7 +206,7 @@ kind in spec 116's KINDS except `method`, `field`, `property` and `declaration`,
 
 PAYLOADS. `CodeEntityExtracted { .., doc?, file_doc? }`; `EdgeInferred { .., ref_kind?, file_doc? }`:
 `type`, `const` and `use` stage `REFERENCES` rows, `module` one `CONTAINS` row whose `name` is its
-candidates joined by `\n`; any other value folds nothing. Spec 118 owns any `refs` column, key part or `ref_kind` value beyond the four decided here. `SymRef { .., ref_kind? }`.
+candidates joined by `\n`, every row's `leaf` column holding the event's `name`; any other value folds nothing. Spec 118 owns any `refs` column, key part or `ref_kind` value beyond the four decided here. `SymRef { .., ref_kind? }`.
 `Def { .., doc? }`; `FileSymbols { .., file_doc? }`. Every payload field is serde-defaulted and
 omitted when absent.
 
