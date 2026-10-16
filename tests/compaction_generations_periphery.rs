@@ -43,6 +43,7 @@ use common::cli::temp_store_project;
 use common::cli::with_graph_locked;
 use common::cli::write_workflow_fixture;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
+use common::cli::{rebuild_owed, setup_ok, user_version, version_and_owed};
 use common::cli::{
     LOG_LEFT_AS_IT_STANDS_LINE, NOTHING_TO_SHED_LINE, REBUILD_LOCK_REFUSAL,
     UNFINISHED_REBUILD_REFUSAL,
@@ -773,8 +774,6 @@ fn a_rebuild_folds_what_the_log_gained_while_it_ran() {
 /// what they did not, and reaches exactly the whole log's graph.
 #[test]
 fn an_interrupted_rebuild_leaves_graph_db_untouched_and_resumes_from_its_last_committed_batch() {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
     let dir = tempfile::tempdir().unwrap();
     let (backend, _) = store_with(
         dir.path(),
@@ -794,11 +793,7 @@ fn an_interrupted_rebuild_leaves_graph_db_untouched_and_resumes_from_its_last_co
         "the interruption fails the rebuild"
     );
     assert!(
-        std::fs::read(&db).unwrap() == before
-            && Projector::open(db.to_str().unwrap(), PROJECT)
-                .unwrap()
-                .rebuild_owed()
-                .unwrap(),
+        std::fs::read(&db).unwrap() == before && rebuild_owed(&db, PROJECT),
         "graph.db is untouched and still owes the rebuild"
     );
     assert!(
@@ -860,7 +855,7 @@ fn a_rebuild_interrupted_in_its_tail_finishes_the_tail_on_the_next_call() {
     });
     assert_eq!(interrupted.unwrap_err().0, "interrupted");
     assert_eq!(
-        version_and_owed(&db),
+        version_and_owed(&db, PROJECT),
         (PROJECTION_VERSION, false),
         "the rebuilt file was swapped in"
     );
@@ -916,10 +911,7 @@ fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
             &Projector::open(graph_db.to_str().unwrap(), &run_stream_identity(root)).unwrap(),
             &log[..3],
         );
-        rusqlite::Connection::open(&graph_db)
-            .unwrap()
-            .execute_batch("PRAGMA user_version = 0;")
-            .unwrap();
+        common::fixtures::stamp_user_version(&graph_db, 0);
     }
 
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
@@ -931,8 +923,7 @@ fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
         )),
         "the refusal is the one owed refusal, naming the command that rebuilds it; stderr: {err}"
     );
-    let (_, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must rebuild the graph; stderr: {err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert_eq!(
         (ok, out),
@@ -1018,25 +1009,6 @@ fn pruning_superseded_edges_keeps_what_the_fold_may_revive() {
     );
 }
 
-/// The fold rule a `graph.db` records (its `user_version`).
-fn user_version(db: &Path) -> i64 {
-    rusqlite::Connection::open(db)
-        .unwrap()
-        .pragma_query_value(None, "user_version", |r| r.get(0))
-        .unwrap()
-}
-
-/// The fold rule a `graph.db` records after an open of it, and whether that open owes a rebuild.
-fn version_and_owed(db: &Path) -> (i64, bool) {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
-    let owed = Projector::open(db.to_str().unwrap(), PROJECT)
-        .unwrap()
-        .rebuild_owed()
-        .unwrap();
-    (user_version(db), owed)
-}
-
 /// Opening a pre-rule `graph.db` never pays its rebuild and never writes to it: every open until
 /// [`Projector::rebuild`] owes it again and leaves the file byte for byte as it was, so a command
 /// that opens and refuses cannot let the next one fold onto it or undo a rebuild. A file at the
@@ -1054,12 +1026,12 @@ fn an_open_owes_the_rebuild_until_it_is_paid_writes_nothing_and_an_unfolded_file
     a_pre_rule_graph_db(&folded, &log[..3], "");
     let before = std::fs::read(&folded).unwrap();
     assert_eq!(
-        version_and_owed(&folded),
+        version_and_owed(&folded, PROJECT),
         (0, true),
         "the first open owes it"
     );
     assert_eq!(
-        version_and_owed(&folded),
+        version_and_owed(&folded, PROJECT),
         (0, true),
         "an open that did not rebuild leaves the rebuild owed"
     );
@@ -1071,12 +1043,12 @@ fn an_open_owes_the_rebuild_until_it_is_paid_writes_nothing_and_an_unfolded_file
     let unfolded = dir.path().join("unfolded.db");
     a_pre_rule_graph_db(&unfolded, &[], "");
     assert_eq!(
-        version_and_owed(&unfolded),
+        version_and_owed(&unfolded, PROJECT),
         (PROJECTION_VERSION, false),
         "a file that folded nothing owes nothing and records the current rule"
     );
     assert_eq!(
-        version_and_owed(&unfolded),
+        version_and_owed(&unfolded, PROJECT),
         (PROJECTION_VERSION, false),
         "and stays current"
     );
@@ -1219,19 +1191,9 @@ impl ReleaseEraStore {
         if minted {
             std::fs::write(root.join(".rigger").join("project.id"), "proj-era\n").unwrap();
         }
-        let project = run_stream_identity(root);
         let events_db = rigger_file(root, "events.db");
         let graph_db = rigger_file(root, "graph.db");
-        {
-            let backend = Store::open(events_db.to_str().unwrap()).unwrap();
-            let pre_ledger = common::fixtures::PreLedgerStore {
-                db: &events_db,
-                inner: &backend,
-            };
-            Namespaced::new(&pre_ledger, &project)
-                .append(rigger::conductor::STREAM, ExpectedRevision::Any, log)
-                .unwrap();
-        }
+        common::cli::seed_pre_ledger_events(root, log);
         let _ = std::fs::remove_file(&graph_db);
         ReleaseEraStore {
             dir,
@@ -1287,8 +1249,7 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
     let store = ReleaseEraStore::new();
-    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     let rebuild: Vec<&str> = out
         .lines()
         .filter(|l| l.contains("graph.db") || l.starts_with("rebuilt "))
@@ -1350,8 +1311,7 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
         "the rebuilt graph.db is the whole log's, fold state included"
     );
 
-    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "a second setup must succeed; stderr: {err}");
+    let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     assert!(
         !out.contains("graph.db"),
         "a paid rebuild is not owed or reported again; stdout: {out}"
@@ -1367,8 +1327,7 @@ fn rigger_setup_names_both_causes_a_graph_db_owes_its_rebuild_for_and_pays_both(
     let store = ReleaseEraStore::new();
     let mark = rigger_file(store.root(), "graph.db.owed");
     std::fs::write(&mark, b"").unwrap();
-    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     assert_eq!(
         out.lines()
             .filter(|l| l.starts_with("rebuilding graph.db"))
@@ -1387,8 +1346,7 @@ fn rigger_setup_names_both_causes_a_graph_db_owes_its_rebuild_for_and_pays_both(
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
     assert_eq!(graph, fresh, "the rebuilt graph.db is the whole log's");
 
-    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "a second setup must succeed; stderr: {err}");
+    let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     assert!(
         !out.contains("graph.db"),
         "a paid rebuild is not owed or reported again; stdout: {out}"
@@ -1403,8 +1361,7 @@ fn rigger_setup_names_both_causes_a_graph_db_owes_its_rebuild_for_and_pays_both(
 fn rigger_setup_rebuilds_from_the_log_under_the_identity_it_mints() {
     let store = ReleaseEraStore::with_identity(false);
     let legacy = store.project();
-    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     assert_ne!(store.project(), legacy, "setup minted the durable identity");
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
     assert!(
@@ -1433,7 +1390,7 @@ fn rigger_setup_rebuilds_a_rule_1_graph_db_and_its_shared_node_takes_its_precede
     };
     let before = store.graph_bytes();
     assert_eq!(
-        version_and_owed(&store.graph_db),
+        version_and_owed(&store.graph_db, PROJECT),
         (1, true),
         "a file that folded at rule 1 owes its rebuild"
     );
@@ -1447,8 +1404,7 @@ fn rigger_setup_rebuilds_a_rule_1_graph_db_and_its_shared_node_takes_its_precede
         "opening a file that owes its rebuild writes nothing to it"
     );
 
-    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     let head = store.log().last().unwrap().position;
     assert_eq!(
         out.lines()
@@ -1469,7 +1425,7 @@ fn rigger_setup_rebuilds_a_rule_1_graph_db_and_its_shared_node_takes_its_precede
         "the rebuilt file records the current rule and the node holds the fn at the fn's line"
     );
     assert_eq!(
-        version_and_owed(&store.graph_db),
+        version_and_owed(&store.graph_db, PROJECT),
         (PROJECTION_VERSION, false),
         "the rebuild was paid"
     );
@@ -1479,8 +1435,7 @@ fn rigger_setup_rebuilds_a_rule_1_graph_db_and_its_shared_node_takes_its_precede
         "the rebuilt graph.db is the whole log's, fold state included"
     );
 
-    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "a second setup must succeed; stderr: {err}");
+    let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     assert!(
         !out.contains("graph.db"),
         "a paid rebuild is not owed or reported again; stdout: {out}"
@@ -1519,8 +1474,7 @@ fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_l
     );
     ReleaseEraStore::as_rule_1_left(&shadow, 0);
 
-    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     assert_eq!(
         out.lines()
             .filter(|l| l.starts_with("rebuilt "))
@@ -1553,8 +1507,7 @@ fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_l
 #[test]
 fn rigger_setup_on_a_project_without_a_graph_db_creates_none() {
     let dir = common::cli::temp_project();
-    let (out, err, ok) = run_rigger_envs(dir.path(), &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stderr: {err}");
+    let out = setup_ok(dir.path(), &[("RIGGER_NPM", "true")]);
     assert!(
         !rigger_file(dir.path(), "graph.db").exists() && !out.contains("graph.db"),
         "no graph.db is created or rebuilt; stdout: {out}"
@@ -1598,8 +1551,7 @@ fn an_emit_at_the_old_rule_appends_says_it_skipped_the_fold_and_leaves_graph_db_
         "an emit at the old rule writes nothing to graph.db"
     );
 
-    let (_, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stderr: {err}");
+    setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
     assert_eq!(
         graph, fresh,
@@ -1796,8 +1748,7 @@ fn the_read_only_surfaces_say_the_rebuild_is_owed_write_nothing_and_stop_once_se
         "graph --show answers from the graph as it stands; stdout: {out} stderr: {err}"
     );
 
-    let (_, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stderr: {err}");
+    setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     for args in surfaces {
         let (_, err, _) = run_rigger(store.root(), args);
         assert!(
@@ -1859,8 +1810,7 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
         "neither the session nor its emit wrote to a graph.db owing its rebuild"
     );
 
-    let (_, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stderr: {err}");
+    setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     let around = mcp.tool_call("rigger_graph", serde_json::json!({"around": "docs/f.md"}));
     let answer = around["result"].to_string();
     assert!(
@@ -2664,8 +2614,7 @@ fn an_identity_migration_into_a_graph_that_owes_its_rebuild_says_its_decision_wa
         "the owed graph.db does not hold the migration's decision"
     );
 
-    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     assert!(
         applied(&store.graph_db, last.position),
         "setup's rebuild folds the migration's decision from the log"
@@ -2727,8 +2676,7 @@ fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
         "the migration's refusal names `rigger setup`; stderr: {err}"
     );
 
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
         out.lines()
             .filter(|l| l.starts_with("rebuilding graph.db"))
@@ -2782,8 +2730,7 @@ fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_fol
         }
     }
 
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         !mark.exists(),
         "setup drops the mark of the removed graph file"
@@ -2822,8 +2769,7 @@ const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it
 /// ledger holds every position of the log's live selection.
 fn the_next_setup_pays_the_missing_event(root: &Path, lost: u64) {
     let graph_db = rigger_file(root, "graph.db");
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
         (
             out.lines()
@@ -3075,8 +3021,7 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
         ),
     ];
 
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
         (
             out.lines()
@@ -3196,8 +3141,7 @@ fn every_event_rigger_s_own_verbs_append_is_folded_so_setup_owes_no_rebuild() {
         Vec::<(u64, String)>::new(),
         "every event the verbs appended is in the graph's ledger"
     );
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
         out.lines()
             .filter(|l| l.starts_with("rebuilding graph.db") || l.starts_with("rebuilt "))
@@ -3630,11 +3574,7 @@ fn a_cold_rebuild_of_a_log_whose_closed_runs_were_pruned_yields_the_live_graph()
     let pruned = menus_runs_prune(root);
 
     lose_graph(root);
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(
-        ok,
-        "setup rebuilds the lost graph; stdout: {out} stderr: {err}"
-    );
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
         (live, provenance_nodes(root)),
         (
@@ -3671,11 +3611,7 @@ fn closed_run_store(root: &Path) {
         format!(r#"{{"id":"{id}","summary":"s","governs":["src/f.rs"],"supersedes":""}}"#)
     };
     let (d_dead, shared, d_live) = (decision("d-dead"), decision("shared"), decision("d-live"));
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(
-        ok,
-        "setup mints the project identity; stdout: {out} stderr: {err}"
-    );
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     let (out, err, ok) = run_rigger(
         root,
         &[
@@ -4175,11 +4111,7 @@ fn reset_runs_on_a_graph_that_owes_its_rebuild_removes_a_stale_pruned_copy_befor
 fn a_decision_recorded_before_any_run_is_live_on_both_peers_surfaces_until_a_run_starts() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(
-        ok,
-        "setup mints the project identity; stdout: {out} stderr: {err}"
-    );
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     let (out, err, ok) = emit_decision(root, "d-early");
     assert!(ok, "the emit appends; stdout: {out} stderr: {err}");
     let mut mcp = common::mcp::McpSession::start(root);
@@ -4307,11 +4239,7 @@ fn a_sqlite_subscription_whose_log_fails_reports_the_databases_own_error() {
 fn a_log_that_never_started_a_run_is_rebuilt_and_reset_without_pruning_anything() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(
-        ok,
-        "setup mints the project identity; stdout: {out} stderr: {err}"
-    );
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     for (ty, body) in [
         (
             "LessonLearned",
@@ -4677,8 +4605,7 @@ fn graph_db_lock_stands_beside_graph_db_after_setup_and_no_reset_verb_removes_it
     let root = dir.path();
     closed_run_store(root);
     lose_graph(root);
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup rebuilds graph.db; stdout: {out} stderr: {err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     let lock = rigger_file(root, "graph.db.lock");
     let stands = || std::fs::metadata(&lock).map(|m| m.len()).ok();
     let mut after = vec![("setup".to_string(), true, stands())];

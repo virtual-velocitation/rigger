@@ -34,7 +34,6 @@ use std::process::Output;
 
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, EventStore};
 use rigger::progress::{self, StopFailure};
 use rigger::run::META_RUN_ID;
 
@@ -63,13 +62,7 @@ fn recorded_stop_failure_events(root: &Path) -> Vec<rigger::eventstore::Event> {
         .expect("the store opens")
     };
     let identity = run_stream_identity(root);
-    let events = open("events.db");
-    let run_id = rigger::run::current_run_id(
-        &Namespaced::new(&events, &identity)
-            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-            .expect("the event log reads"),
-    )
-    .unwrap_or_default();
+    let run_id = common::cli::current_run_id_of(root).unwrap_or_default();
     let backend = open("progress.db");
     progress::read_run(&Namespaced::new(&backend, &identity), &run_id)
         .expect("the progress stream reads")

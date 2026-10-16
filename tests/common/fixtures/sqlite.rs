@@ -25,6 +25,15 @@ pub fn pragma_i64(db: &std::path::Path, pragma: &str) -> i64 {
         .unwrap_or_else(|e| panic!("read PRAGMA {pragma}: {e}"))
 }
 
+/// Stamp the sqlite file `db` with `version` as its `user_version` (the fold rule a `graph.db`
+/// records), through a connection of its own.
+pub fn stamp_user_version(db: &std::path::Path, version: i64) {
+    rusqlite::Connection::open(db)
+        .expect("open the file to stamp its user_version")
+        .pragma_update(None, "user_version", version)
+        .expect("stamp user_version");
+}
+
 /// Bytes the file at `path` occupies on disk, or 0 when it is not there: a `-wal` does not exist
 /// before the first write and is deleted on a clean close, and neither absence is an error about
 /// the space a store occupies.

@@ -83,7 +83,6 @@
 
 mod common;
 
-use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::seed_run_events;
@@ -453,7 +452,10 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is
     // at the EXACT path production derives (same scratch root [`default_unit_worktree_dir`]'s own doc
     // comment already asserts against, same run id the priming step just minted).
     let scratch = common::default_scratch_root(root);
-    let run_id = current_run_id(root);
+    // The run id the real priming process minted, read back from the SAME on-disk store at the
+    // SAME project identity [`seed_run_events`] appends to - never hardcoded or guessed.
+    let run_id = common::cli::current_run_id_of(root)
+        .expect("a real prior `rigger step` process must already have minted a run id");
     let marker = rigger::liveness::marker_path(scratch.to_str().unwrap(), &run_id, &sibling.id)
         .expect("a non-degenerate spawn id always encodes a marker path");
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
@@ -576,16 +578,6 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_once_the_named_spawn_already_has_a_r
         committed_extra, "temporary red repro",
         "the post-result dirt must still land in the committed tree, never silently discarded"
     );
-}
-
-/// The run id `rigger::run::current_run_id` resolves for the events a real `rigger step`
-/// process against `root` has already written - read back from the SAME on-disk store, at the
-/// SAME project identity, [`seed_run_events`] appends to. Lets a test plant a liveness marker
-/// at the EXACT path production derives for a spawn of the run a separate, real prior process
-/// just started, without hardcoding or guessing the run id that process minted.
-fn current_run_id(root: &Path) -> String {
-    rigger::run::current_run_id(&read_run_events(root))
-        .expect("a real prior `rigger step` process must already have minted a run id")
 }
 
 /// Round 2 fix, defect (b): a resumed `ResumePhase::Reviewed` unit whose worktree ALREADY

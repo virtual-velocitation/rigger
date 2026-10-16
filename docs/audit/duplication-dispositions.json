@@ -825,9 +825,9 @@
     "reason": "`run::read::read_current_run` is the one composition of the run read, its slice and its id; the conductor's `RunCtx` method and the MCP server method only bind their own store and stream to it and map its error into their own error type."
   },
   {
-    "id": "dup-17929143626a",
+    "id": "dup-28ac8c722172",
     "disposition": "not-a-duplicate",
-    "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store's current run, the on-disk run stream) and take the id from it."
+    "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method only reads its own event source (the served store's current run) and takes the id from it."
   },
   {
     "id": "dup-4f6fb68b58e5",
