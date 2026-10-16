@@ -189,7 +189,14 @@ tool that searches them.
   touched test binaries, read the red, and restore the tree - a probe is over before your turn
   is, as the rule below says. The record is one whole-tree `<unit>-mutant-probes` DecisionMade
   carrying, for each token, its `file:line`, the mutation applied, and the test that went red
-  with its assertion. A token whose probe leaves every test green is pinned by a new test before
+  with its assertion. The record is organised by production line: every production line the
+  range adds or changes, in file order, either names its mutable tokens, each with its probe,
+  or is marked as carrying none with the named reason (a signature, a `use`, a doc line, a
+  brace); a line with no disposition is a record you cannot write. A token inside a query
+  string, a format string or a macro argument the production code executes is a token of its
+  line: a SQL conjunct is a boolean operand, a column name, bound or placeholder passed to a
+  query builder is a call argument, and a substr start is an index. A token whose probe leaves
+  every test green is pinned by a new test before
   you report, or the code is reshaped so the token disappears (one `span.contains(&x)` in place
   of two comparisons, say) and the reshaped form probed. A token with no recorded probe is a
   record you cannot write. The enumeration is by hand and stands once the mutation gate runs
@@ -197,7 +204,9 @@ tool that searches them.
   of an arm.
   The SDET lens derives the token set itself from the production hunks over the unit's whole
   range and probes every token the record lacks: a probe that leaves every test green, or a
-  token with no recorded probe, is a BLOCKING finding on its own.
+  token with no recorded probe, is a BLOCKING finding on its own. The lens compares its token
+  set with the record line by line: a production line the record does not disposition is a
+  BLOCKING finding on its own.
 - **A probe that edits your tree is over before your turn is.** A reversion probe, or any check
   that edits your worktree, runs to completion and restores the tree before your turn ends,
   never as a detached or background job: the attempt checkpoint commits whatever the worktree
