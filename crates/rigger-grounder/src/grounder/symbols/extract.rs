@@ -3889,10 +3889,120 @@ fn f(d: Book, w: wren) {
 5 type wren f
 6 use Heron f",
             ),
+            // A const qualified by any primitive type stages nothing, a project type's does.
+            (
+                "every primitive-qualified const stages nothing",
+                "\
+fn f() -> u8 {
+    u8::MAX + u16::MAX + u32::MAX + u64::MAX + u128::MAX + usize::MAX + i8::MAX + i16::MAX
+        + i32::MAX + i64::MAX + i128::MAX + isize::MAX + f32::MAX + f64::MAX + bool::MAX
+        + char::MAX + str::MAX + Kestrel::MAX
+}
+",
+                "\
+4 type Kestrel f
+4 const MAX f",
+            ),
+            // A path rooted at `std`, `core` or `alloc` (a leading `::` included, a generic root
+            // read through its type) or at a module the file imports from one stages nothing, in
+            // a `use`, a type, an expression and an impl header's trait alike; a prelude trait
+            // stages no impl row.
+            (
+                "the standard library's roots and an imported module's stage nothing",
+                "\
+use core::marker::Phantom;
+use alloc::rc::Rcx;
+use std::fmt;
+use std::collections::HashMap;
+fn f(a: core::cell::Cellar, b: alloc::rc::Rcx, c: ::core::fmt::Formatter, d: fmt::Arguments) -> u32 {
+    std::u32::LIMIT_CAP + HashMap::<u8, u8>::LIMIT_CAP + Kestrel::LIMIT_CAP
+}
+impl std::fmt::Display for Kestrel {}
+impl core::ops::Add<Kestrel> for Kestrel {}
+impl Clone for Kestrel {}
+",
+                "\
+6 type Kestrel f
+6 const LIMIT_CAP f
+9 type Kestrel impl core::ops::Add<Kestrel> for Kestrel",
+            ),
+            // No pattern, call or macro head, path segment, alias, closure parameter, lifetime,
+            // label, attribute, visibility path, token tree or `macro_rules!` pattern stages a
+            // const read, nor a name not spelled as a const; a match guard, a digit-bearing const
+            // and a whole path's final identifier do, and an uppercase segment before it is a
+            // type.
+            (
+                "no non-read or opaque position stages a const read",
+                "\
+#![doc = INNER_CAP]
+#[doc = OUTER_CAP]
+pub(in self::SCOPE_CAP) fn f<'LT>(x: &'LT u8, k: CAPS::Kestrel) -> u8 {
+    let LOCAL_CAP = CALL_CAP() + GENF_CAP::<u8>() + MAC_CAP!(TOKEN_CAP);
+    let (TUPLE_CAP, b) = (1, 2);
+    let c = |CLO_CAP| 1;
+    'OUTER: loop { break 'OUTER; }
+    match x { y if GUARD_CAP => 1, V2_CAP => 3 }
+    _HIDDEN + V2_CAP + Outer::mac!();
+    CONST_TY::<u8>::new() + mods::MID_CAP::LEAF_CAP + Limits::MAKE_CAP()
+}
+macro_rules! m { (PAT_CAP) => {}; }
+extern crate foo as ALIAS_CAP;
+",
+                "\
+3 type Kestrel f
+8 const GUARD_CAP f
+9 const V2_CAP f
+10 type CONST_TY f
+10 const LEAF_CAP f
+10 type Limits f
+10 type MID_CAP f",
+            ),
+            // Every type definition's own name stages nothing while a type it names does; a `use`
+            // path stages no type, whatever its segments; a bare `use`, a `self` leaf after a
+            // module (aliased too) and a braced top-level list each stage their leaves, and
+            // `super` imports no leaf.
+            (
+                "a definition names itself and a use path stages its leaves alone",
+                "\
+use crate::Shapes::Kestrel;
+use serde;
+use beta::{self};
+use crate::cache::{self as stash};
+use {crate::alpha::Bravo, crate::charlie::Delta};
+use super::super;
+enum Gull { A }
+union Tern { a: u8 }
+type Alias = Kestrel;
+trait Draw { type Assoc; }
+fn f<Tp>(t: Tp, o: Outer::Inner) { Outer::Mid::<u8>::new(); }
+",
+                "\
+1 use Kestrel -
+2 use serde -
+3 use beta -
+4 use cache -
+5 use Bravo -
+5 use Delta -
+9 type Kestrel Alias
+11 type Inner f
+11 type Mid f",
+            ),
         ];
         for (case, src, expected) in cases {
             crate::symbol_index::assert_tagged_refs("rs", src, expected, case);
         }
+    }
+
+    /// Spec 117 criterion 6: the tagged reference pass reads Rust alone, so a TypeScript type
+    /// name, a `type_identifier` in its grammar too, stages no row.
+    #[test]
+    fn the_tagged_reference_pass_reads_rust_alone() {
+        crate::symbol_index::assert_tagged_refs(
+            "ts",
+            "let k: Kestrel = q;\n",
+            "",
+            "another language's type stages nothing",
+        );
     }
 
     /// Spec 117 criterion 6: no name of [`RUST_PRELUDE`] stages a row, imported by a `use` or
