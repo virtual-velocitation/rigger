@@ -1861,7 +1861,7 @@
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"write\" (generic write helper); grouped under `conductor::support`.",
-    "content_hash": "ef4dea9ea85327de"
+    "content_hash": "a84263a0e83e3c01"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

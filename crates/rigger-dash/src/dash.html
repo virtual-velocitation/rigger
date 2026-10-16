@@ -830,8 +830,8 @@ function renderMemoryRail(memory) {
 
 // A CardRef's OWN `kind` (never the card's own subject kind) resolved to the lens that owns that
 // taxonomy (spec 63 c2, "Card handoff ownership is total"): a `top_entities` member is always a
-// code entity (REL_CONTAINS forward edges are structurally file -> code-entity only, spec 29a),
-// but a `top_evidence` member can be ANY kind the intent layer folds into a concept (a file, a
+// code entity (`query::member_file` names a file for a named code entity alone, spec 119 THE
+// MEMBER RULE), but a `top_evidence` member can be ANY kind the intent layer folds into a concept (a file, a
 // design-doc, a handbook rule, ... - spec 54/29b) - so the chip lens is resolved from THIS field,
 // never hardcoded to "code" for the whole row. A kind with no lens of its own in this design's
 // three named lenses (Code, Files, Concepts) resolves to `null` - a graceful non-handoff, the

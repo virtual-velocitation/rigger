@@ -13027,8 +13027,8 @@ fn plain_node_line(n: &contextgraph::Node) -> String {
 /// findings sections read, so a single seeded traversal returns the code neighborhood, the
 /// decisions/findings about the files, and the design-intent nodes together - replacing the
 /// separate structural-grounder "Relevant locations" call `build_prompt_with_failure` used to
-/// stitch in. Only call-target DEFINITION entities render (a `code-entity` node carrying a `name`
-/// attr whose kind passes `is_call_target`): a bare reference node folded from an `EdgeInferred`
+/// stitch in. Only call-target DEFINITION entities render (a member by [`member_files`], a
+/// `code-entity` node carrying a `name` attr, whose kind passes `is_call_target`): a bare reference node folded from an `EdgeInferred`
 /// event has no line/kind, so it is not a "read-first" location, and a field, a property or a
 /// declaration takes no slot.
 ///
@@ -13077,8 +13077,6 @@ fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
     let mut defs: Vec<&contextgraph::Node> = g
         .nodes
         .iter()
-        .filter(|n| n.kind == contextgraph::KIND_CODE_ENTITY)
-        .filter(|n| contextgraph::query::node_name(n).is_some())
         .filter(|n| contextgraph::is_call_target(n.attrs.get("kind").map(String::as_str)))
         .filter(|n| file_of.contains_key(n.id.as_str()))
         .collect();
