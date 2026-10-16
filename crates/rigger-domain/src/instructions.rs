@@ -307,12 +307,14 @@ mod tests {
     /// re-reads claim by claim against the unit's change with a witness per claim at head, a
     /// sentence it cannot witness blocking on its own, its record listing every sentence it
     /// reads, the CHECKED members included, never a grouped verdict, with a renamed name's old
-    /// spelling counted to zero, nothing added that nothing reads, the red test's body untouched by the
-    /// green commit, every mutable token of the production delta - an operator, an offset, an
-    /// operand, a range argument, an arm's statement, a match arm, an early return - mutated by
-    /// hand one at a time with the red test recorded, a green probe pinned or reshaped away, the
+    /// spelling counted to zero, nothing added that nothing reads, the red test's body untouched
+    /// by the green commit, every mutable token of the production delta - an operator, an
+    /// offset, an operand, a range argument, an arm's statement, a match arm, an early return -
+    /// mutated by hand one at a time with the red test recorded in a record organised by
+    /// production line - each line naming its tokens, a token inside a query, format or macro
+    /// string included, or marked as carrying none - a green probe pinned or reshaped away, the
     /// hand enumeration standing beside the mutation gate and the SDET lens probing every token
-    /// the record lacks, and a probe that edits the tree - the sharpest case of a turn's end being
+    /// the record lacks and comparing its token set with the record line by line, and a probe that edits the tree - the sharpest case of a turn's end being
     /// the session's end - run to completion and restored before the turn ends; the gates'
     /// check names each gate command run to completion inside the turn. Read by its words, so
     /// a rewrap never moves a verdict.
@@ -521,6 +523,16 @@ mod tests {
              touched test binaries, read the red, and restore the tree",
             "one whole-tree `<unit>-mutant-probes` DecisionMade carrying, for each token, its \
              `file:line`, the mutation applied, and the test that went red with its assertion",
+            "The record is organised by production line: every production line the range adds \
+             or changes, in file order, either names its mutable tokens, each with its probe, or \
+             is marked as carrying none with the named reason (a signature, a `use`, a doc line, \
+             a brace); a line with no disposition is a record you cannot write.",
+            "A token inside a query string, a format string or a macro argument the production \
+             code executes is a token of its line: a SQL conjunct is a boolean operand, a column \
+             name, bound or placeholder passed to a query builder is a call argument, and a \
+             substr start is an index.",
+            "The lens compares its token set with the record line by line: a production line \
+             the record does not disposition is a BLOCKING finding on its own.",
             "A token whose probe leaves every test green is pinned by a new test before you \
              report, or the code is reshaped so the token disappears",
             "and the reshaped form probed",
