@@ -3608,8 +3608,8 @@ mod tests {
     /// the file restored - with the `<unit>-mutant-probes` record the `sdet` lens completes,
     /// organised by production line - each added or changed line naming its tokens, a query or
     /// format string's included, or marked as carrying none - and closed by one tally line per
-    /// spelled class, the `?`, `return`, `break` and `continue` counts the ones the block's awk
-    /// prints, and the foreground wait for
+    /// spelled class, the `?`, `return`, `break` and `continue` counts the ones
+    /// `.rigger/gates/token-count.sh` prints, and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
     /// line when the host backgrounds one.
     #[test]
@@ -3831,7 +3831,7 @@ mod tests {
     /// a query or format string's tokens counted on their line, and a production line the
     /// record does not disposition is BLOCKING; it reads the token classes from the working
     /// discipline's list, carrying no copy of it, counts the `?`, `return`, `break` and
-    /// `continue` with the authors' awk and reads each call's arguments, and a tally short of its
+    /// `continue` with `.rigger/gates/token-count.sh` and reads each call's arguments, and a tally short of its
     /// count is BLOCKING. The records are the author's instruments, never
     /// a gate, so the lens's rule against re-running a green gate does not reach them.
     #[test]
