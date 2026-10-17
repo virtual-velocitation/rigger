@@ -590,6 +590,10 @@ mod tests {
              table name, a kind string); `derived from <file:line>`, the hunk reading the \
              existing spelling; or `pinned to <file:line> by <test>`, where a derivation is \
              impossible and a test holds the two spellings equal.",
+            "The architecture lens reads the walk record's one-home lines for every item the \
+             unit adds: an added item with no line, or a line false at head - the fact has \
+             another spelling the line does not name, or the named derivation or pin does not \
+             exist - is a BLOCKING finding on its own (DRY, single responsibility).",
             "A probe that edits your tree is over before your turn is.",
             "runs to completion and restores the tree before your turn ends, never as a \
              detached or background job",
