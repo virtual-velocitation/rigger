@@ -128,7 +128,10 @@ root test binary the unit touched by `cargo test --test <name>`, restoring each 
 `git checkout -- <file>` and removing the scratch worktree with `git worktree remove <scratch>`
 before your turn ends. A probe that leaves every test green is BLOCKING, and so is a token the
 record carries no probe for; each is a finding on its own citing the token's file:line, the
-mutation, and the command with the output you got.
+mutation, and the command with the output you got. For every `?` the author's record disposes
+as `unviable` you apply, in the same scratch worktree, the swallow of the working discipline's
+`?` list that fits the value's type, and run the same tests: one that compiles and leaves every
+test green is BLOCKING on its own, citing the site, the swallow and the green run.
 
 ## Every test must survive mutation testing
 
