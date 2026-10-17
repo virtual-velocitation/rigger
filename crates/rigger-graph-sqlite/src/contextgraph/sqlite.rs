@@ -16116,7 +16116,6 @@ mod tests {
             fn a_retired_edge_an_entry_names_is_neither_counted_nor_pruned() {
                 let p = fold_events([]);
                 doc_linked_to_a_then_b(&p);
-                let superseded = |stats: Result<PruneStats, Error>| stats.unwrap().superseded_edges;
                 assert_eq!(superseded(p.count_prunable(&[], Some(nanos(51)))), 0);
                 assert_eq!(superseded(p.prune(&[], Some(nanos(51)))), 0);
                 let links: Vec<String> = raw_rows(
@@ -16163,7 +16162,6 @@ mod tests {
                     ))
                     .unwrap();
                 });
-                let superseded = |stats: Result<PruneStats, Error>| stats.unwrap().superseded_edges;
                 let gone = ["gone".to_string()];
                 assert_eq!(superseded(p.count_prunable(&gone, Some(20))), 1);
                 assert_eq!(superseded(p.count_prunable(&[], Some(20))), 3);
@@ -16171,6 +16169,11 @@ mod tests {
                 let kept: Vec<i64> =
                     raw_rows(&p, "SELECT id FROM edges ORDER BY id", [], |r| r.get(0));
                 assert_eq!(kept, [2, 3, 4, 5, 6]);
+            }
+
+            /// The superseded edges a history count or prune answered.
+            fn superseded(stats: Result<PruneStats, Error>) -> usize {
+                stats.unwrap().superseded_edges
             }
 
             /// The `gd/docs/f.md` design batches `h1` at position 4 linking the doc to [`A`] and
