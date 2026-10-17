@@ -10542,7 +10542,8 @@ mod tests {
     }
 
     /// The OLD schema a graph.db had before spec 28, with no `project` column and no recorded
-    /// fold rule, seeded with a node and an edge the way pre-spec-28 code folded them.
+    /// fold rule, seeded with a decision, the file it governs and the edge between them, the way
+    /// pre-spec-28 code folded them.
     const PRE_PROJECT_GRAPH: &str = "
         CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, attrs TEXT);
         CREATE TABLE edges (
