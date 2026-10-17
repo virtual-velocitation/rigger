@@ -132,8 +132,18 @@ pub fn nanos(secs: u64) -> i64 {
 /// Fold `entry` onto `p` with `batch` as its batch, through `Projection::apply_generation` - the
 /// one fold that stages a tagged reference (spec 117) - answering which outcome it met.
 pub fn fold_entry_with(p: &dyn Projection, entry: &Event, batch: Vec<Event>) -> EntryFold {
+    fold_entry_result(p, entry, batch).unwrap()
+}
+
+/// [`fold_entry_with`]'s fold, answering the outcome it met or the text of the error it failed
+/// with.
+pub fn fold_entry_result(
+    p: &dyn Projection,
+    entry: &Event,
+    batch: Vec<Event>,
+) -> Result<EntryFold, String> {
     p.apply_generation(entry, Box::new(move || Ok(Some(batch))))
-        .unwrap()
+        .map_err(|e| e.0)
 }
 
 /// Every live edge `p` serves as `(from, rel, to, valid_from, source)`, sorted.

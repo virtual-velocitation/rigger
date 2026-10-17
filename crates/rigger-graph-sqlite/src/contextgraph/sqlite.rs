@@ -12682,6 +12682,43 @@ mod tests {
             assert_plan_uses(&plan, "SEARCH e USING INDEX idx_edges_live_to_name_suffix");
         }
 
+        /// A leg of the referenced-but-not-called read whose edge's source cannot be read fails
+        /// the UP walk with that read's error, at a depth that walks no caller: `rel`'s edge from
+        /// `b.rs` onto `b.rs::new`, beside the definition `a.rs::T::new`, its source made a blob.
+        fn an_unreadable_leg_fails_the_up_walk(rel: &str) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            define(&p, &[("a.rs::T::new", "new")]);
+            edge_directly(&p, "b.rs", "b.rs::new", rel, TIER_INFERRED);
+            write_directly(&p, |tx, _| {
+                tx.execute(
+                    "UPDATE edges SET from_id = x'00' WHERE to_id = 'b.rs::new'",
+                    [],
+                )
+                .unwrap();
+            });
+            assert_eq!(
+                p.calls(
+                    &["a.rs::T::new".to_string()],
+                    Direction::Up,
+                    0,
+                    TIER_INFERRED
+                )
+                .map(drop)
+                .map_err(|e| e.0),
+                Err(format!(
+                    "Invalid column type Blob at index: 0, name: {}",
+                    source_file_sql()
+                ))
+            );
+        }
+
+        crate::test_cases! {
+            an_unreadable_referencing_leg_fails_the_up_walk:
+                an_unreadable_leg_fails_the_up_walk(REL_REFERENCES);
+            an_unreadable_calling_leg_fails_the_up_walk:
+                an_unreadable_leg_fails_the_up_walk(REL_CALLS);
+        }
+
         #[test]
         fn a_seed_with_no_leaf_names_nothing_referenced() {
             let p = Projector::open(":memory:", "test").unwrap();
@@ -15395,9 +15432,10 @@ mod tests {
                 CODE_KIND_TYPE, CODE_KIND_VARIANT, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE,
             };
             use crate::test_support::{
-                call_json, code_entity_json, definition_event, entry_at, event_of, fold_entry_with,
-                fold_events, kind_def_json, landed, nanos, no_bytes_batch, reference,
-                referenced_not_called_ids, tagged_ref_json, ONE_COMMUNITY,
+                call_json, code_entity_json, definition_event, entry_at, event_of,
+                fold_entry_result, fold_entry_with, fold_events, kind_def_json, landed, nanos,
+                no_bytes_batch, reference, referenced_not_called_ids, tagged_ref_json,
+                ONE_COMMUNITY,
             };
 
             /// The file whose functions read what the other files define.
@@ -16052,10 +16090,7 @@ mod tests {
                     "a.rs's first CONTAINS and the row edge, neither named by an entry"
                 );
 
-                for (generation, pos, to) in [("h1", 4, A), ("h2", 5, B)] {
-                    let (entry, batch) = doc_linking(generation, pos, to);
-                    assert_eq!(fold_entry_with(&p, &entry, batch), EntryFold::BatchAsked);
-                }
+                doc_linked_to_a_then_b(&p);
                 let design: Vec<(String, String)> = raw_rows(
                     &p,
                     "SELECT a.generation, e.to_id FROM edge_assertions a
@@ -16069,6 +16104,34 @@ mod tests {
                     [("h1".into(), A.into()), ("h2".into(), B.into())],
                     "the design link's prior entry stands"
                 );
+            }
+
+            /// A retired edge an entry still names - the doc's link to [`A`], retired by its
+            /// generation `h2`, its `h1` entry kept until the generation after - is neither
+            /// counted nor reclaimed by the history prune past its boundary.
+            #[test]
+            fn a_retired_edge_an_entry_names_is_neither_counted_nor_pruned() {
+                let p = fold_events([]);
+                doc_linked_to_a_then_b(&p);
+                let superseded = |stats: Result<PruneStats, Error>| stats.unwrap().superseded_edges;
+                assert_eq!(superseded(p.count_prunable(&[], Some(nanos(51)))), 0);
+                assert_eq!(superseded(p.prune(&[], Some(nanos(51)))), 0);
+                let links: Vec<String> = raw_rows(
+                    &p,
+                    "SELECT to_id FROM edges WHERE rel = ?1 ORDER BY to_id",
+                    [REL_SPECIFIES],
+                    |r| r.get(0),
+                );
+                assert_eq!(links, [A, B]);
+            }
+
+            /// The `gd/docs/f.md` design batches `h1` at position 4 linking the doc to [`A`] and
+            /// `h2` at position 5 linking it to [`B`] alone, each folded whole.
+            fn doc_linked_to_a_then_b(p: &Projector) {
+                for (generation, pos, to) in [("h1", 4, A), ("h2", 5, B)] {
+                    let (entry, batch) = doc_linking(generation, pos, to);
+                    assert_eq!(fold_entry_with(p, &entry, batch), EntryFold::BatchAsked);
+                }
             }
 
             /// A row re-resolving away with no other live row of its identity on the pair
@@ -16818,8 +16881,7 @@ mod tests {
                 write_directly(&p, |tx, _| tx.execute_batch(trigger).unwrap());
                 let (entry, batch) = failing;
                 assert_eq!(
-                    p.apply_generation(&entry, Box::new(move || Ok(Some(batch))))
-                        .map_err(|e| e.0),
+                    fold_entry_result(&p, &entry, batch),
                     Err(expected),
                     "{trigger}"
                 );

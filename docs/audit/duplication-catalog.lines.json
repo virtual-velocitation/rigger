@@ -224,8 +224,8 @@
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 323,
-        "end_line": 325
+        "start_line": 333,
+        "end_line": 335
       },
       {
         "file": "tests/common/fixtures/graph.rs",
@@ -5809,13 +5809,13 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "start_line": 13964,
-        "end_line": 13964
+        "start_line": 14001,
+        "end_line": 14001
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "start_line": 15192,
-        "end_line": 15192
+        "start_line": 15229,
+        "end_line": 15229
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
@@ -6084,8 +6084,8 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "start_line": 13031,
-        "end_line": 13051
+        "start_line": 13068,
+        "end_line": 13088
       }
     ]
   },
@@ -6229,13 +6229,13 @@
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "start_line": 13075,
-        "end_line": 13106
+        "start_line": 13112,
+        "end_line": 13143
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "start_line": 13351,
-        "end_line": 13382
+        "start_line": 13388,
+        "end_line": 13419
       }
     ]
   },
@@ -7624,13 +7624,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 657,
-        "end_line": 659
+        "start_line": 667,
+        "end_line": 669
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 681,
-        "end_line": 683
+        "start_line": 691,
+        "end_line": 693
       }
     ]
   },
@@ -7639,8 +7639,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 964,
-        "end_line": 973
+        "start_line": 974,
+        "end_line": 983
       },
       {
         "file": "tests/community_resolution_knob.rs",
