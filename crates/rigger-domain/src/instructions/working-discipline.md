@@ -239,7 +239,10 @@ tool that searches them.
   BLOCKING finding on its own. The lens counts the `?`, `return`, `break` and `continue` of the
   production hunks itself, string literals and test regions left out, reads each added or
   changed call's arguments, and compares each class's count with the record's tally line: a
-  short tally, or a token with no probe, is a BLOCKING finding on its own.
+  short tally, or a token with no probe, is a BLOCKING finding on its own. For every `?` the
+  record disposes as `unviable` the lens applies, in its scratch worktree, the swallow of this
+  list that fits the value's type: one that compiles and leaves every test green is a BLOCKING
+  finding on its own, naming the site, the swallow and the green run.
 - **Every fact your production delta states has one home.** A constant, static, list, closure
   or predicate your production hunks add states a fact, and the tree spells that fact once:
   read from the spelling that exists, or held equal to it by a test. Check: name its home. The
