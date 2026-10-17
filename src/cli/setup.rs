@@ -3770,11 +3770,8 @@ mod tests {
              `continue` among them",
             "After that walk the record carries one tally line per spelled class, `<class>: <n> \
              in hunks, <n> probed`, the two counts equal",
-            "the `?`, `return`, `break` and `continue` counts are the ones this command prints, \
-             run in your worktree's root: `git diff -U0 $(git merge-base rigger-run HEAD)..HEAD \
-             -- crates src | awk",
-            "gsub(/\"([^\"\\\\]|\\\\.)*\"/, \"\", s)",
-            "q += gsub(/\\?([;.),\\] ]|$)/, \"\", s)",
+            "the `?`, `return`, `break` and `continue` counts are the ones `sh \
+             .rigger/gates/token-count.sh` prints, run from your worktree's root",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
@@ -3787,6 +3784,12 @@ mod tests {
         assert!(
             !block.contains("`rigger graph --around <item>`"),
             "the caller lookup names its depth; a bare `--around` answers the file neighbourhood"
+        );
+        // The token count has one home, `.rigger/gates/token-count.sh`; the block names it and
+        // carries no copy of its awk.
+        assert!(
+            !block.contains("gsub("),
+            "the hand-over block names the token-count script instead of spelling its awk"
         );
     }
 
@@ -3949,9 +3952,9 @@ mod tests {
             "every token of a class the working discipline's rule lists that the unit adds or \
              changes",
             "You count the classes yourself as well: the `?`, `return`, `break` and `continue` \
-             of the production hunks with the authors' count command, run in your own worktree's \
-             root, and the arguments of each call those hunks add or change, read call by call",
-            "q += gsub(/\\?([;.),\\] ]|$)/, \"\", s)",
+             of the production hunks with the authors' count, `sh .rigger/gates/token-count.sh` \
+             run from your own worktree's root, and the arguments of each call those hunks add \
+             or change, read call by call",
             "you compare each class's count with the record's tally line for it, and a tally \
              short of your count, or a token with no probe, is BLOCKING on its own, citing the \
              class, both counts and the unprobed tokens.",
@@ -3982,6 +3985,10 @@ mod tests {
         assert!(
             !flat.contains("call argument that is a range, index or bound"),
             "sdet.md refers to the working discipline's token list instead of re-spelling it"
+        );
+        assert!(
+            !flat.contains("gsub("),
+            "sdet.md names the token-count script instead of spelling its awk"
         );
     }
 
