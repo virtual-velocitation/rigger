@@ -3884,7 +3884,7 @@ fn named_call_target(conn: &Connection, id: &str, project: &str) -> Result<Optio
 
 /// The SQL term an `edges` row passes while no assertion holds it: no `edge_assertions` entry names
 /// its `id`, so neither the history prune's count and delete nor a retirement's re-tiering
-/// touches an edge a live identity still asserts.
+/// touches an edge any entry still names, a prior generation's kept entry included.
 const UNASSERTED_EDGE_SQL: &str = "id NOT IN (SELECT edge_id FROM edge_assertions)";
 
 /// The statement `verb` over the `edges` rows the history prune reclaims (spec 41), past the
