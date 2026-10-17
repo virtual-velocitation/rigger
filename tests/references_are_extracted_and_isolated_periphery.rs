@@ -9,7 +9,8 @@
 //!    and no edge of the event arm's, each landing instead as the staged row's one edge onto its
 //!    one definition (spec 117, STAGED REFERENCES), while its call folds as before; that edge
 //!    lands only while one candidate of its reference's kind answers it - the same file's before
-//!    the project's, `extracted` - retires with its definition and lands again on its return, and
+//!    the project's, `extracted` - stands with its dates while a re-extraction keeps its
+//!    definition, retires with it and lands again on its return, and
 //!    its file, never its fn, is listed referenced but not called; a file
 //!    rewritten to a `use` that nothing defines keeps its file node and loses every edge, and a
 //!    new `use`-only file gains its file node; and the tagged
@@ -195,6 +196,57 @@ fn graph_rebuild_retires_a_staged_reference_with_its_definition_and_lands_it_on_
             (PAINT, DEFINER_ENTITIES[1], TIER_INFERRED)
         ]),
         "the restored definition answers the const read again"
+    );
+}
+
+/// The live `REFERENCES` edges of `graph` onto the reference-kinds tree's `Kestrel` and `QUOTA_CAP`, each as
+/// [`common::fixtures::live_edges`] answers it, its `valid_from` and `source` included.
+#[cfg(feature = "symbols")]
+fn staged_edges(
+    graph: &rigger::contextgraph::sqlite::Projector,
+) -> Vec<(String, String, String, i64, u64)> {
+    common::fixtures::live_edges(graph)
+        .into_iter()
+        .filter(|(_, rel, to, ..)| {
+            rel == rigger::contextgraph::REL_REFERENCES
+                && DEFINER_ENTITIES[..2].contains(&to.as_str())
+        })
+        .collect()
+}
+
+/// GIVEN the built reference-kinds tree,
+/// WHEN the operator appends `fn sketch` to `src/shapes.rs`, keeping every definition, and
+/// rebuilds,
+/// THEN the rebuild re-extracts the file - `sketch` stands - and each staged reference's edge onto
+/// `Kestrel` and `QUOTA_CAP` stands unchanged, its `valid_from` and `source` included.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_rebuild_of_a_definer_keeping_its_definitions_leaves_each_staged_edge_and_its_dates() {
+    let (project, built) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
+    let before = staged_edges(&built);
+    drop(built);
+
+    let [(definer, source), _] = common::fixtures::REFERENCE_KINDS_TREE;
+    let edited = common::cli::rebuilt_graph(
+        project.path(),
+        &[(definer, &format!("{source}pub fn sketch() {{}}\n"))],
+    );
+    assert_eq!(
+        common::fixtures::live_file_and_entity_ids(&edited.whole().unwrap()),
+        common::fixtures::file_and_entity_ids(
+            &[DEFINER, USER],
+            &[
+                &DEFINER_ENTITIES[..],
+                &["src/shapes.rs::sketch", DRAW_PLACEHOLDER, PAINT]
+            ]
+            .concat()
+        ),
+        "the edited definer is re-extracted"
+    );
+    assert_eq!(
+        (before.len(), staged_edges(&edited)),
+        (3, before),
+        "a kept definition leaves its staged edges and their dates untouched"
     );
 }
 
