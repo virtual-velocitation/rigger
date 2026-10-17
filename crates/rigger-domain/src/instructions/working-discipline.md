@@ -231,7 +231,10 @@ tool that searches them.
   range and probes every token the record lacks: a probe that leaves every test green, or a
   token with no recorded probe, is a BLOCKING finding on its own. The lens compares its token
   set with the record line by line: a production line the record does not disposition is a
-  BLOCKING finding on its own.
+  BLOCKING finding on its own. The lens counts the `?`, `return`, `break` and `continue` of the
+  production hunks itself, string literals and test regions left out, reads each added or
+  changed call's arguments, and compares each class's count with the record's tally line: a
+  short tally, or a token with no probe, is a BLOCKING finding on its own.
 - **A probe that edits your tree is over before your turn is.** A reversion probe, or any check
   that edits your worktree, runs to completion and restores the tree before your turn ends,
   never as a detached or background job: the attempt checkpoint commits whatever the worktree
