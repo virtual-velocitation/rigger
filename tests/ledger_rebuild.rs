@@ -33,10 +33,10 @@ use rigger::eventstore::{Event, ExpectedRevision};
 use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
 
 #[cfg(feature = "symbols")]
-use common::cli::{nanos, run_rigger_envs, temp_repoless_project};
+use common::cli::{run_rigger_envs, temp_repoless_project};
 #[cfg(feature = "symbols")]
 use common::fixtures::{
-    git_hash_object, git_ok, git_ok_with_identity, git_out, live_edges, loose_object,
+    git_hash_object, git_ok, git_ok_with_identity, git_out, live_edges, loose_object, nanos,
     no_bytes_batch, walked_batch, DOCUMENT_BODY, SOURCE_BODY, TEST_MODULE_BODY, WORKFLOW_BODY,
 };
 #[cfg(feature = "symbols")]

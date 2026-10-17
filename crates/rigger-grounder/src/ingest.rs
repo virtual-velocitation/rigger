@@ -2533,7 +2533,12 @@ mod scoped_reindex_tests {
     fn logged(recorded: &[(&str, &str)]) -> HashMap<String, String> {
         recorded
             .iter()
-            .map(|(file, generation)| (format!("gc/{file}"), generation.to_string()))
+            .map(|(file, generation)| {
+                (
+                    crate::test_support::gc_identity(file),
+                    generation.to_string(),
+                )
+            })
             .collect()
     }
 

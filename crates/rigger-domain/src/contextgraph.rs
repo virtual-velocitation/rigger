@@ -1348,6 +1348,43 @@ mod kind_rank_rule {
     }
 }
 
+/// Spec 117, KIND CANDIDATES: the definition kinds each reference kind resolves onto.
+#[cfg(test)]
+mod reference_candidate_kinds_rule {
+    use super::*;
+
+    #[test]
+    fn each_reference_kind_names_its_candidate_kinds_and_any_other_none() {
+        let candidates =
+            ["type", "const", "use", "module", "call", ""].map(reference_candidate_kinds);
+        assert_eq!(
+            candidates,
+            [
+                vec!["type", "trait"],
+                vec!["constant", "static"],
+                vec![
+                    "type",
+                    "trait",
+                    "impl",
+                    "function",
+                    "macro",
+                    "constructor",
+                    "variant",
+                    "constant",
+                    "static",
+                    "variable",
+                    "module",
+                    "other",
+                ],
+                vec![],
+                vec![],
+                vec![],
+            ],
+            "a use imports any kind but a method, a field, a property or a declaration"
+        );
+    }
+}
+
 #[cfg(test)]
 mod caller_wire_contract {
     use super::EdgeInferred;

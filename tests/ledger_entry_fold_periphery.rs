@@ -32,13 +32,13 @@ mod common;
 
 use std::cell::Cell;
 use std::sync::mpsc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 use common::cli::{
-    applied_positions, nanos, read_run_events, rigger_file, run_rigger, temp_store_project,
+    applied_positions, read_run_events, rigger_file, run_rigger, temp_store_project,
 };
 use common::fixtures::{
-    decision_json, def_json, event_of, generation_ingested, live_edges, live_node_ids,
+    decision_json, event_of, generation_ingested, live_edges, live_node_ids, nanos, placed_at,
 };
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
@@ -74,13 +74,6 @@ const EMIT_REFUSED: &str = "refusing to emit \"GenerationIngested\": only agent 
 const RAW_PAYLOAD: &str =
     r#"{"prefix":"gc","file":"src/a.rs","generation":"h1","blob":"b10b","excluded":true}"#;
 
-/// `e` at log position `pos`, valid from `secs` past the epoch.
-fn at(e: Event, pos: u64, secs: u64) -> Event {
-    let mut e = e.with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
-    e.position = pos;
-    e
-}
-
 /// What an entry of `gc/<file>` at `generation` records, its batch extracted from `blob` under
 /// the walk's flag `excluded`.
 fn named(file: &str, generation: &str, blob: &str, excluded: bool) -> GenerationIngested {
@@ -89,15 +82,12 @@ fn named(file: &str, generation: &str, blob: &str, excluded: bool) -> Generation
 
 /// The constructor's entry of `gc/<file>` at `generation`, at position `pos`, valid from `secs`.
 fn entry(file: &str, generation: &str, pos: u64, secs: u64) -> Event {
-    at(named(file, generation, "", false).event(1), pos, secs)
+    common::fixtures::entry_at("gc", file, generation, pos, secs)
 }
 
 /// One unkeyed definition of `name` in `file`, as a batch event.
 fn defines(file: &str, name: &str, line: u64, fresh: bool) -> Event {
-    event_of(
-        TYPE_CODE_ENTITY_EXTRACTED,
-        def_json(file, name, line, fresh),
-    )
+    common::fixtures::definition_event(file, name, "function", line, fresh)
 }
 
 /// Fold `entry` through the port with a batch function answering `batch`: the outcome, or the
@@ -160,7 +150,7 @@ fn an_entry_folded_through_the_port_is_held_by_the_file_and_each_outcome_is_name
     let dir = tempfile::tempdir().unwrap();
     let path = graph_db(&dir);
     // The entry as the log carries it: the type string and the payload's raw bytes.
-    let raw = at(
+    let raw = placed_at(
         Event::new(
             "GenerationIngested",
             br#"{"prefix":"gc","file":"src/f.rs","generation":"h1","blob":"","excluded":false}"#
@@ -171,7 +161,7 @@ fn an_entry_folded_through_the_port_is_held_by_the_file_and_each_outcome_is_name
     );
     // The second batch event carries a replay key naming another identity, and its own position
     // and valid-time.
-    let stray = at(
+    let stray = placed_at(
         defines(F, "gone", 9, false)
             .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/other.rs@zz#0"),
         42,
@@ -278,7 +268,7 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
     assert_eq!(generation(port, IDENTITY), Some("h1".to_string()));
 
     // The entry's payload does not parse.
-    let unparsable = at(Event::new("GenerationIngested", b"{}".to_vec()), 8, 20);
+    let unparsable = placed_at(Event::new("GenerationIngested", b"{}".to_vec()), 8, 20);
     assert_eq!(
         fold_through_port(
             port,
@@ -353,7 +343,7 @@ fn a_ledger_entry_the_public_fold_refused_folds_afterwards_through_apply_generat
 
     // A batch holding an entry is refused whole: the decision before the entry did not land.
     let batch = [
-        at(
+        placed_at(
             event_of(TYPE_DECISION_MADE, decision_json("d1", "x", &["a.rs"], "")),
             11,
             50,

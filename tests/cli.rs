@@ -21522,13 +21522,6 @@ fn shared_registry() -> (tempfile::TempDir, String, std::path::PathBuf) {
     (state, xdg, regdir)
 }
 
-/// A hermetic scratch root and its path, for the dash to resolve via `RIGGER_TMPDIR`.
-fn hermetic_scratch_root() -> (tempfile::TempDir, String) {
-    let scratch = tempfile::tempdir().unwrap();
-    let root = scratch.path().to_str().unwrap().to_string();
-    (scratch, root)
-}
-
 /// A foreign project holding NO `.rigger/workflow.yml` (so its scratch root falls to the plain
 /// `<root>/.rigger/tmp` default rung - the resolution its own `rigger` would use, per
 /// `foreign_instance_scratch_root`), its root, and its implementer's agent-liveness marker path.
@@ -21766,7 +21759,7 @@ fn touch_marker(path: &std::path::Path) {
 /// with BOTH signals quiet, it reaps exactly as spec 50 criterion 5 always has.
 fn assert_a_fresh_agent_marker_outlives_an_aged_out_registry(git_less_cwd: bool) {
     let (_state, xdg, regdir) = shared_registry();
-    let (_scratch, scratch_root) = hermetic_scratch_root();
+    let (_scratch, scratch_root) = common::fixtures::temp_root();
     let marker_path =
         rigger::liveness::marker_path(&scratch_root, "run-1", "u1c1/implementer#0").unwrap();
     let cwd = tempfile::tempdir().unwrap();
@@ -21858,7 +21851,7 @@ rigger::test_cases! {
 /// see every registered project's agent liveness; once that marker goes idle too, it reaps.
 fn assert_a_foreign_projects_fresh_agent_marker_holds_the_reap(already_stale: bool) {
     let (_state, xdg, regdir) = shared_registry();
-    let (_own_scratch, own_scratch_root) = hermetic_scratch_root();
+    let (_own_scratch, own_scratch_root) = common::fixtures::temp_root();
     let (_other_project, other_root, other_marker_path) = foreign_project_marker();
 
     let latch_project = tempfile::tempdir().unwrap();
@@ -21959,7 +21952,7 @@ fn a_landing_poll_racing_the_watchers_first_tick_does_not_erase_a_foreign_projec
 
     // The LAUNCHING project's own scratch root: hermetic and left EMPTY (no marker ever written
     // there), isolating the assertion to the foreign project's marker alone.
-    let (_own_scratch, own_scratch_root) = hermetic_scratch_root();
+    let (_own_scratch, own_scratch_root) = common::fixtures::temp_root();
 
     // A THIRD project supplies the `ever_seen_live` startup latch (see the test above for why this
     // one-time-write-then-decay shape isolates the assertion to the SECOND project's marker alone).
@@ -27159,7 +27152,7 @@ fn graph_show_heals_a_drifted_method_by_its_path_beside_a_same_named_one() {
         common::cli::show_lines(root, "src/pair.rs::T::new"),
         [
             "show src/pair.rs::T::new",
-            "  site: src/pair.rs:6   kind method   degree 1   (recorded line 4, now 6)",
+            "  site: src/pair.rs:6   kind method   degree 2   (recorded line 4, now 6)",
             "  name new",
             "  lang rust",
             "       6 |     fn new() -> T {",

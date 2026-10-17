@@ -3166,4 +3166,56 @@ mod tests {
             ]
         );
     }
+
+    /// Spec 117 criterion 1, STAGED REFERENCES: over the real extraction folded as ledger
+    /// entries, `src/a.rs`'s `use` of a fn, its field naming a type and its fn reading a const,
+    /// each defined once in `src/b.rs`, are each one `inferred` `REFERENCES` edge onto that
+    /// definition whichever file folds first, and none once `src/c.rs` defines each leaf again.
+    #[test]
+    fn a_use_a_field_type_and_a_const_read_reach_their_one_definition_in_either_fold_order() {
+        use crate::contextgraph::{EntryFold, TIER_INFERRED};
+        use crate::test_support::{entry_at, fold_entry_with, landed};
+
+        let a = (
+            "src/a.rs",
+            "use crate::b::helper;\npub struct Nest {\n    k: Kestrel,\n}\n\
+             pub fn read() -> u8 {\n    QUOTA_CAP\n}\n",
+        );
+        let b = (
+            "src/b.rs",
+            "pub const QUOTA_CAP: u8 = 1;\npub struct Kestrel;\npub fn helper() {}\n",
+        );
+        let c = ("src/c.rs", b.1);
+        let fold = |p: &Projector, pos: u64, (file, source): (&str, &str)| {
+            let batch = super::bytes_batch(file, Some(source.as_bytes()), false);
+            let entry = entry_at("gc", file, "g1", pos, pos);
+            assert_eq!(fold_entry_with(p, &entry, batch), EntryFold::BatchAsked);
+        };
+        let references = |p: &Projector| -> Vec<(String, String, String)> {
+            landed(p)
+                .into_iter()
+                .filter(|(_, rel, ..)| rel == REL_REFERENCES)
+                .map(|(from, _, to, tier)| (from, to, tier))
+                .collect()
+        };
+        let resolved: Vec<(String, String, String)> = [
+            ("src/a.rs", "src/b.rs::helper"),
+            ("src/a.rs::Nest.k", "src/b.rs::Kestrel"),
+            ("src/a.rs::read", "src/b.rs::QUOTA_CAP"),
+        ]
+        .map(|(from, to)| (from.into(), to.into(), TIER_INFERRED.into()))
+        .into();
+        for order in [[a, b], [b, a]] {
+            let p = Projector::open(":memory:", "test").unwrap();
+            fold(&p, 1, order[0]);
+            fold(&p, 2, order[1]);
+            assert_eq!(references(&p), resolved, "{:?} first", order[0].0);
+            fold(&p, 3, c);
+            assert_eq!(
+                references(&p),
+                [],
+                "a second definition of each leaf leaves every row unresolved"
+            );
+        }
+    }
 }

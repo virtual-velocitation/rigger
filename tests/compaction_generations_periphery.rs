@@ -27,7 +27,6 @@ use common::cli::insert_node;
 use common::cli::keyed;
 use common::cli::log_and_graph_files;
 use common::cli::migrated_lines;
-use common::cli::nanos;
 use common::cli::no_progress;
 use common::cli::read_run_events;
 use common::cli::refused_derived_reset;
@@ -51,6 +50,7 @@ use common::cli::{
 use common::fixtures::cleanup;
 use common::fixtures::f_rs_batch_def;
 use common::fixtures::files_open_by;
+use common::fixtures::nanos;
 use common::fixtures::wait_until_for;
 use common::git::temp_git_project_with_commit;
 use rigger::contextgraph::sqlite::{PruneStats, RebuildSink, Rebuilt, PROJECTION_VERSION};

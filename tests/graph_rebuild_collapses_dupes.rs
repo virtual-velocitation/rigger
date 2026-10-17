@@ -27,9 +27,9 @@
 
 mod common;
 
-use common::cli::nanos;
 use common::fixtures::apply_governs_at;
 use common::fixtures::governs;
+use common::fixtures::nanos;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Graph, Projection};
 

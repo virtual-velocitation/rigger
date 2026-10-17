@@ -107,6 +107,13 @@ mod extraction_tree_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/fold.rs"]
 mod fold_fixtures;
+// The scratch fixture the fold fixtures name through `super::`, compiled here from the same
+// file as the root crate's tests.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[path = "../../../tests/common/fixtures/scratch.rs"]
+mod scratch_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use scratch_fixtures::temp_root;
 /// The host fixtures the run sink's tests write their files through. They name the reaper and
 /// the open-files reader as `rigger::reap` and `rigger::holders`, which the import below makes
 /// resolve in this crate.

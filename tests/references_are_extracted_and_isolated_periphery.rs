@@ -5,9 +5,11 @@
 //! counts and the fold arm one module at a time over hand-built input; these run OUTSIDE the
 //! crates and guard the two boundaries a tagged reference crosses on its way to an operator:
 //!
-//!  - the graph `rigger graph build` folds: a real tree's tagged references fold no edge and no
-//!    placeholder, while its call folds as before; a file rewritten to a `use` alone keeps its
-//!    file node and loses every edge, and a new `use`-only file gains its file node; and the tagged
+//!  - the graph `rigger graph build` folds: a real tree's tagged references fold no placeholder
+//!    and no edge of the event arm's, each landing instead as the staged row's one edge onto its
+//!    one definition (spec 117, STAGED REFERENCES), while its call folds as before; a file
+//!    rewritten to a `use` that nothing defines keeps its file node and loses every edge, and a
+//!    new `use`-only file gains its file node; and the tagged
 //!    references of a test file, of a `#[cfg(test)]` module or under their own `#[cfg(test)]`
 //!    fold no edge and prove no definition, while their call proves one;
 //!  - the persisted symbol index: `SymRef.ref_kind` is written for a tagged reference and omitted
@@ -48,21 +50,39 @@ const DEFINER_ENTITIES: [&str; 3] = [
 /// `src/user.rs` imports `Kestrel` and, in `fn paint`, takes it as a parameter type, calls `draw`
 /// and reads `QUOTA_CAP`,
 /// WHEN the operator runs `rigger graph build`,
-/// THEN the graph's `REFERENCES` and `CALLS` edges are the call's two alone, landed on its
-/// placeholder at the tier a cross-file definition earns, and its code entities are the
-/// definitions and that one placeholder: the `use`, the type reference and the const read fold
-/// no edge and no node.
+/// THEN the graph's `REFERENCES` and `CALLS` edges are the call's two, landed on its placeholder
+/// at the tier a cross-file definition earns, and one `inferred` `REFERENCES` edge for each staged
+/// row onto its one definition - the file's `use` of `Kestrel`, and `fn paint`'s type reference
+/// to `Kestrel` and const read of `QUOTA_CAP` - and its code entities are the definitions and that
+/// one placeholder: the `use`, the type reference and the const read fold no node.
 #[cfg(feature = "symbols")]
 #[test]
-fn graph_build_folds_a_files_call_alone_never_its_use_type_reference_or_const_read() {
-    use rigger::contextgraph::TIER_INFERRED;
+fn graph_build_folds_a_files_call_and_one_edge_per_staged_reference_and_no_placeholder() {
+    use rigger::contextgraph::{REL_REFERENCES, TIER_INFERRED};
 
     let (_project, graph) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
 
+    let mut landed = common::fixtures::a_call_from(USER, "paint", DRAW_PLACEHOLDER, TIER_INFERRED);
+    landed.extend(
+        [
+            (USER, DEFINER_ENTITIES[0]),
+            ("src/user.rs::paint", DEFINER_ENTITIES[0]),
+            ("src/user.rs::paint", DEFINER_ENTITIES[1]),
+        ]
+        .map(|(from, to)| {
+            (
+                from.to_string(),
+                REL_REFERENCES.to_string(),
+                to.to_string(),
+                TIER_INFERRED.to_string(),
+            )
+        }),
+    );
+    landed.sort();
     assert_eq!(
         common::fixtures::landed(&graph),
-        common::fixtures::a_call_from(USER, "paint", DRAW_PLACEHOLDER, TIER_INFERRED),
-        "the call to `draw` is the one reference that lands"
+        landed,
+        "the call to `draw` lands as before, and each staged reference on its one definition"
     );
     assert_eq!(
         common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),
@@ -95,7 +115,7 @@ fn graph_build_over_use_only_files_folds_their_file_nodes_and_no_edge() {
     assert_eq!(
         common::fixtures::landed(&graph),
         [],
-        "a `use` folds no edge"
+        "a `use` nothing defines folds no edge"
     );
     assert_eq!(
         common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),

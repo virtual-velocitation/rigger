@@ -18,8 +18,8 @@
 
 mod common;
 
-use common::cli::nanos;
 use common::fixtures::apply_def_at;
+use common::fixtures::nanos;
 use rigger::contextgraph::sqlite::{Projector, PruneStats};
 
 // ---------------------------------------------------------------------------------------

@@ -1007,11 +1007,6 @@ pub fn now_nanos() -> i64 {
         .as_nanos() as i64
 }
 
-/// `secs` seconds as nanoseconds.
-pub fn nanos(secs: u64) -> i64 {
-    Duration::from_secs(secs).as_nanos() as i64
-}
-
 /// The payload of one extracted code entity, `alpha` in `src/a.rs`.
 pub fn code_entity() -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({

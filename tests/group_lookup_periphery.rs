@@ -36,6 +36,7 @@ mod ingest_sinks {
         graph_build_line, identified_git_project, init_event_log, read_run_events, run_rigger,
         step_line, with_pre_ledger_run_store, with_run_store, write_workflow,
     };
+    use common::fixtures::gc_identity;
     use common::git::run_git;
     use rigger::eventstore::Event;
     use std::path::Path;
@@ -319,7 +320,7 @@ mod ingest_sinks {
         );
         let now = walk(root);
         let generation = |batches: &[(String, String, Vec<String>)], file: &str| {
-            let identity = format!("gc/{file}");
+            let identity = gc_identity(file);
             batches
                 .iter()
                 .find(|(id, _, _)| *id == identity)
@@ -346,7 +347,7 @@ mod ingest_sinks {
         step_line(root, "the step that ingests the moved tree");
         let recorded = appended(root, before);
         let moved = batches_where(&now, |identity| {
-            identity == format!("gc/{CHANGED}") || identity == format!("gc/{REVERTED}")
+            identity == gc_identity(CHANGED) || identity == gc_identity(REVERTED)
         });
         assert_eq!(moved.len(), 2);
         assert_eq!(
@@ -361,8 +362,8 @@ mod ingest_sinks {
             "each entry's key names its batch's generation and event count"
         );
         assert_eq!(
-            keys_of(&now, &[&format!("gc/{REVERTED}")]),
-            keys_of(&first, &[&format!("gc/{REVERTED}")]),
+            keys_of(&now, &[&gc_identity(REVERTED)]),
+            keys_of(&first, &[&gc_identity(REVERTED)]),
             "the reverted batch is at a generation the log already records, and is recorded again \
              because that is no longer its latest"
         );
@@ -404,7 +405,7 @@ mod ingest_sinks {
             ],
         );
         let now = walk(root);
-        let broken = format!("gc/{BROKEN}");
+        let broken = gc_identity(BROKEN);
         let before = plant_unreadable_recording(root, &broken);
 
         let (out, err, ok) = run_rigger(root, &["graph", "build"]);
@@ -540,7 +541,7 @@ mod ingest_sinks {
             ],
         );
         let now = walk(root);
-        let refused = format!("gc/{REFUSED}");
+        let refused = gc_identity(REFUSED);
         let at = now
             .iter()
             .position(|(identity, _, _)| *identity == refused)
@@ -569,7 +570,7 @@ mod ingest_sinks {
         let dir = ingestable_project();
         let root = dir.path();
         let now = tree_with_a_refused_file(root);
-        let refused = format!("gc/{REFUSED}");
+        let refused = gc_identity(REFUSED);
         let refused_batch = batches_where(&now, |identity| identity == refused);
         let refused_keys = entry_keys(&refused_batch);
         let others = entry_keys(&batches_where(&now, |identity| identity != refused));
@@ -780,7 +781,7 @@ mod ingest_sinks {
             &[(CHANGED, "pub fn after() {}\npub fn caller() { after(); }\n")],
         );
         let now = walk(root);
-        let changed = format!("gc/{CHANGED}");
+        let changed = gc_identity(CHANGED);
         let moved = batches_where(&now, |identity| identity == changed);
         let stayed = batches_where(&now, |identity| identity != changed);
         assert_eq!(
@@ -875,7 +876,7 @@ mod ingest_sinks {
         );
         let now = walk(root);
         let of = |file: &str| {
-            let identity = format!("gc/{file}");
+            let identity = gc_identity(file);
             let (_, generation, keys) = now
                 .iter()
                 .find(|(id, _, _)| *id == identity)

@@ -14,11 +14,11 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    around, entity_site, site_fields, Candidate, EntitySite, Graph, Located, Node, Projection,
-    CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION, KIND_CODE_ENTITY,
-    KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY,
-    REL_REFERENCES, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_EDGE_INFERRED, TYPE_REVIEW_FINDING,
+    around, entity_site, site_fields, Candidate, EntitySite, EntryFold, Graph, Located, Node,
+    Projection, CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION,
+    KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, META_ACTOR, REL_CALLS,
+    REL_IN_COMMUNITY, REL_REFERENCES, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
+    TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::Event;
 use rigger::retention::GenerationIngested;
@@ -84,6 +84,56 @@ pub fn generation_ingested(
         blob: blob.to_string(),
         excluded,
     }
+}
+
+/// The ledger entry of `<prefix>/<file>` at `generation`, its batch extracted from no blob, at log
+/// position `pos` and valid from `secs` past the epoch, as the entry's one constructor builds it.
+pub fn entry_at(prefix: &str, file: &str, generation: &str, pos: u64, secs: u64) -> Event {
+    placed_at(
+        generation_ingested(prefix, file, generation, "", false).event(1),
+        pos,
+        secs,
+    )
+}
+
+/// The `gc` identity a code file `file` keys its batch under, as its ledger entry names it.
+pub fn gc_identity(file: &str) -> String {
+    generation_ingested("gc", file, "", "", false).identity()
+}
+
+/// `e` at log position `pos`, valid from `secs` past the epoch.
+pub fn placed_at(e: Event, pos: u64, secs: u64) -> Event {
+    let mut e = e.with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
+    e.position = pos;
+    e
+}
+
+/// A fresh directory ([`super::temp_root`]) and the path of the `graph.db` file a store opened on
+/// it keeps.
+pub fn temp_graph_db() -> (tempfile::TempDir, String) {
+    let (dir, root) = super::temp_root();
+    (dir, format!("{root}/graph.db"))
+}
+
+/// Two projects, `ours` and `theirs`, sharing one fresh `graph.db` ([`temp_graph_db`]), with the
+/// directory that keeps it.
+pub fn ours_and_theirs() -> (tempfile::TempDir, Projector, Projector) {
+    let (dir, path) = temp_graph_db();
+    let ours = Projector::open(&path, "ours").unwrap();
+    let theirs = Projector::open(&path, "theirs").unwrap();
+    (dir, ours, theirs)
+}
+
+/// `secs` seconds as nanoseconds.
+pub fn nanos(secs: u64) -> i64 {
+    Duration::from_secs(secs).as_nanos() as i64
+}
+
+/// Fold `entry` onto `p` with `batch` as its batch, through `Projection::apply_generation` - the
+/// one fold that stages a tagged reference (spec 117) - answering which outcome it met.
+pub fn fold_entry_with(p: &dyn Projection, entry: &Event, batch: Vec<Event>) -> EntryFold {
+    p.apply_generation(entry, Box::new(move || Ok(Some(batch))))
+        .unwrap()
 }
 
 /// Every live edge `p` serves as `(from, rel, to, valid_from, source)`, sorted.
@@ -479,6 +529,15 @@ pub fn kind_def_json(
     })
 }
 
+/// The Rust definition of `name`, a `kind` at `line` in `file` ([`kind_def_json`]), as an unkeyed
+/// batch event, its batch's head when `fresh`.
+pub fn definition_event(file: &str, name: &str, kind: &str, line: u64, fresh: bool) -> Event {
+    event_of(
+        TYPE_CODE_ENTITY_EXTRACTED,
+        kind_def_json(file, name, kind, line, fresh),
+    )
+}
+
 /// The caller-less `EdgeInferred` payload: `file` references `name`.
 pub fn ref_json(file: &str, name: &str) -> serde_json::Value {
     serde_json::json!({ "file": file, "name": name, "lang": "rust" })
@@ -494,6 +553,12 @@ pub fn edge_inferred(file: &str, name: &str) -> Vec<u8> {
 /// body, which the fold turns into `<file>::<caller> --CALLS--> <target>`.
 pub fn call_json(file: &str, name: &str, caller: &str) -> serde_json::Value {
     serde_json::json!({ "file": file, "name": name, "lang": "rust", "caller": caller })
+}
+
+/// A caller-attributed `EdgeInferred` call (spec 37) as an unkeyed event: `<file>::<caller>`
+/// calls `name` ([`call_json`]).
+pub fn call_event(file: &str, name: &str, caller: &str) -> Event {
+    event_of(TYPE_EDGE_INFERRED, call_json(file, name, caller))
 }
 
 /// The TAGGED `EdgeInferred` payload (spec 117): `file` references `name` as a `ref_kind`
@@ -660,34 +725,48 @@ pub fn apply_governs_at(p: &Projector, pos: u64, id: &str, path: &str, secs: u64
 /// nodes (eight entities + four files), so at a high enough resolution every node isolates into
 /// its own community.
 pub fn seed_two_subsystems(p: &Projector) -> u64 {
-    // Definitions (each folds its file node + entity + CONTAINS).
-    def(p, 1, "src/combat/hit.rs", "strike");
-    def(p, 2, "src/combat/hit.rs", "block");
-    def(p, 3, "src/net/link.rs", "send");
-    def(p, 4, "src/net/link.rs", "recv");
-    def(p, 5, "src/render/draw.rs", "paint");
-    def(p, 6, "src/render/draw.rs", "shade");
-    def(p, 7, "src/ui/hud.rs", "layout");
-    def(p, 8, "src/ui/hud.rs", "show");
-
-    // Subsystem A: dense cross-file coupling between combat and net.
-    apply_call(p, 9, "src/combat/hit.rs", "send", "strike");
-    apply_call(p, 10, "src/combat/hit.rs", "recv", "strike");
-    apply_call(p, 11, "src/combat/hit.rs", "send", "block");
-    apply_call(p, 12, "src/net/link.rs", "strike", "send");
-    apply_call(p, 13, "src/net/link.rs", "block", "recv");
-
-    // Subsystem B: dense cross-file coupling between render and ui.
-    apply_call(p, 14, "src/render/draw.rs", "layout", "paint");
-    apply_call(p, 15, "src/render/draw.rs", "show", "paint");
-    apply_call(p, 16, "src/render/draw.rs", "layout", "shade");
-    apply_call(p, 17, "src/ui/hud.rs", "paint", "layout");
-    apply_call(p, 18, "src/ui/hud.rs", "shade", "show");
-
-    // A single weak bridge from A to B (one call): too thin to merge the two subsystems.
-    apply_call(p, 19, "src/combat/hit.rs", "paint", "strike");
-    20
+    // Definitions (each folds its file node + entity + CONTAINS), then the calls.
+    let mut pos = 0;
+    for (file, name) in TWO_SUBSYSTEM_DEFS {
+        pos += 1;
+        def(p, pos, file, name);
+    }
+    for (file, name, caller) in TWO_SUBSYSTEM_CALLS {
+        pos += 1;
+        apply_call(p, pos, file, name, caller);
+    }
+    pos + 1
 }
+
+/// The definitions of the canonical spec-53 TWO-SUBSYSTEM coupling graph, `(file, name)`:
+/// subsystem A spans `src/combat` and `src/net`, subsystem B `src/render` and `src/ui`.
+pub const TWO_SUBSYSTEM_DEFS: [(&str, &str); 8] = [
+    ("src/combat/hit.rs", "strike"),
+    ("src/combat/hit.rs", "block"),
+    ("src/net/link.rs", "send"),
+    ("src/net/link.rs", "recv"),
+    ("src/render/draw.rs", "paint"),
+    ("src/render/draw.rs", "shade"),
+    ("src/ui/hud.rs", "layout"),
+    ("src/ui/hud.rs", "show"),
+];
+
+/// The calls of the canonical spec-53 TWO-SUBSYSTEM coupling graph, `(file, name, caller)`: dense
+/// cross-file coupling between combat and net (A), then between render and ui (B), then a single
+/// weak bridge from A to B (one call), too thin to merge the two subsystems.
+pub const TWO_SUBSYSTEM_CALLS: [(&str, &str, &str); 11] = [
+    ("src/combat/hit.rs", "send", "strike"),
+    ("src/combat/hit.rs", "recv", "strike"),
+    ("src/combat/hit.rs", "send", "block"),
+    ("src/net/link.rs", "strike", "send"),
+    ("src/net/link.rs", "block", "recv"),
+    ("src/render/draw.rs", "layout", "paint"),
+    ("src/render/draw.rs", "show", "paint"),
+    ("src/render/draw.rs", "layout", "shade"),
+    ("src/ui/hud.rs", "paint", "layout"),
+    ("src/ui/hud.rs", "shade", "show"),
+    ("src/combat/hit.rs", "paint", "strike"),
+];
 
 /// The file the show-renderer seed's three definitions live in ([`seed_shown_nodes`]).
 pub const SHOWN_FILE: &str = "src/limits.rs";
