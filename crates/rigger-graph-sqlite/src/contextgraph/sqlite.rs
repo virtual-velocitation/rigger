@@ -10532,6 +10532,23 @@ mod tests {
         );
     }
 
+    /// The OLD schema a graph.db had before spec 28, with no `project` column and no recorded
+    /// fold rule, seeded with a node and an edge the way pre-spec-28 code folded them.
+    const PRE_PROJECT_GRAPH: &str = "
+        CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, attrs TEXT);
+        CREATE TABLE edges (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          from_id TEXT NOT NULL, to_id TEXT NOT NULL, rel TEXT NOT NULL,
+          valid_from INTEGER NOT NULL, valid_to INTEGER, source INTEGER NOT NULL
+        );
+        CREATE TABLE aliases (alias TEXT PRIMARY KEY, canonical_id TEXT NOT NULL);
+        CREATE TABLE applied (position INTEGER PRIMARY KEY);
+        INSERT INTO nodes (id, kind, attrs)
+          VALUES ('old-d', 'decision', '{\"summary\":\"legacy\"}');
+        INSERT INTO nodes (id, kind, attrs) VALUES ('old.rs', 'artifact', NULL);
+        INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source)
+          VALUES ('old-d', 'old.rs', 'GOVERNS', 100, NULL, 1);";
+
     #[test]
     fn a_pre_project_graph_db_migrates_additively_backfilling_the_openers_identity() {
         // Spec 28 backward-compat (a GLOBAL CONSTRAINT criterion 1 owns as an ADDITIVE
@@ -10546,26 +10563,10 @@ mod tests {
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
 
-        // Hand-build the OLD schema and seed a node + an edge the way pre-spec-28 code did.
-        {
-            let conn = Connection::open(path).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, attrs TEXT);
-                 CREATE TABLE edges (
-                   id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   from_id TEXT NOT NULL, to_id TEXT NOT NULL, rel TEXT NOT NULL,
-                   valid_from INTEGER NOT NULL, valid_to INTEGER, source INTEGER NOT NULL
-                 );
-                 CREATE TABLE aliases (alias TEXT PRIMARY KEY, canonical_id TEXT NOT NULL);
-                 CREATE TABLE applied (position INTEGER PRIMARY KEY);
-                 INSERT INTO nodes (id, kind, attrs)
-                   VALUES ('old-d', 'decision', '{\"summary\":\"legacy\"}');
-                 INSERT INTO nodes (id, kind, attrs) VALUES ('old.rs', 'artifact', NULL);
-                 INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source)
-                   VALUES ('old-d', 'old.rs', 'GOVERNS', 100, NULL, 1);",
-            )
+        Connection::open(path)
+            .unwrap()
+            .execute_batch(PRE_PROJECT_GRAPH)
             .unwrap();
-        }
 
         // Open through the scoped constructor: the migration runs, backfilling the opener's id.
         let p = Projector::open(path, "legacy-proj").unwrap();
@@ -14786,6 +14787,46 @@ mod tests {
                     counted(&tables, &[3, 2])
                 );
                 assert_eq!(rows_under(&owed, &tables, &from), counted(&tables, &[0, 0]));
+            }
+
+            /// Every row of `p`'s file but its `applied` ledger, its fold rule, and whether its
+            /// `nodes` and `edges` carry a `project` column.
+            fn as_it_stands(p: &Projector) -> (Vec<String>, i64, [bool; 2]) {
+                let conn = p.conn.lock().unwrap();
+                let keyed =
+                    ["nodes", "edges"].map(|table| column_exists(&conn, table, "project").unwrap());
+                let rule = fold_rule(&conn).unwrap();
+                drop(conn);
+                (projection_but_applied(p), rule, keyed)
+            }
+
+            /// Spec 117, A MIGRATED PROJECT STAYS LIVE: a graph.db folded before spec 28 owes
+            /// its rebuild and is opened as it stands, its `nodes` and `edges` with no `project`
+            /// column; the migration moves nothing and leaves the file as planted.
+            #[test]
+            fn a_pre_project_owed_store_migrates_nothing_and_stands_as_planted() {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("graph.db");
+                let path = path.to_str().unwrap();
+                Connection::open(path)
+                    .unwrap()
+                    .execute_batch(&format!(
+                        "{PRE_PROJECT_GRAPH} INSERT INTO applied VALUES (1);"
+                    ))
+                    .unwrap();
+                let owed = Projector::open(path, "legacy").unwrap();
+                assert!(owed.rebuild_owed().unwrap());
+                let planted = as_it_stands(&owed);
+                assert_eq!(
+                    (planted.0.len(), planted.1, planted.2),
+                    (3, 0, [false, false]),
+                    "the open leaves the two nodes and the edge as planted, at no fold rule"
+                );
+                assert_eq!(
+                    owed.migrate_project("legacy", "minted").map_err(|e| e.0),
+                    Ok(0)
+                );
+                assert_eq!(as_it_stands(&owed), planted);
             }
 
             /// The error a trigger planted by [`refusing_the_rekey_of`] raises.
