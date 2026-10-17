@@ -1640,6 +1640,60 @@ mod tests {
         );
     }
 
+    /// Spec 117 criterion 8: the files a `mod x;` declaration names, in the order rustc tries
+    /// them, read off the declaring path and the declaration alone - a `#[path]` override's one
+    /// file under the declaring file's directory, or its module directory and inline chain when
+    /// nested, none for an absolute or over-climbing override; else `x.rs` then `x/mod.rs` under
+    /// the module directory and the enclosing inline-mod chain.
+    #[test]
+    fn module_candidates_name_the_files_rustc_tries_for_each_declaration_shape() {
+        let cases: [(&str, &str, &[&str]); 10] = [
+            (
+                "src/lib.rs",
+                "#[path = \"gen/real.rs\"]\nmod x;\n",
+                &["src/gen/real.rs"],
+            ),
+            ("lib.rs", "#[path = \"real.rs\"]\nmod x;\n", &["real.rs"]),
+            (
+                "src/lib.rs",
+                "mod outer {\n    #[path = \"real.rs\"]\n    mod x;\n}\n",
+                &["src/outer/real.rs"],
+            ),
+            ("src/lib.rs", "#[path = \"/etc/x.rs\"]\nmod x;\n", &[]),
+            ("src/lib.rs", "#[path = \"../../x.rs\"]\nmod x;\n", &[]),
+            ("src/lib.rs", "mod x;\n", &["src/x.rs", "src/x/mod.rs"]),
+            (
+                "src/foo.rs",
+                "mod x;\n",
+                &["src/foo/x.rs", "src/foo/x/mod.rs"],
+            ),
+            ("lib.rs", "mod x;\n", &["x.rs", "x/mod.rs"]),
+            (
+                "src/lib.rs",
+                "mod outer {\n    mod x;\n}\n",
+                &["src/outer/x.rs", "src/outer/x/mod.rs"],
+            ),
+            (
+                "lib.rs",
+                "mod outer {\n    mod x;\n}\n",
+                &["outer/x.rs", "outer/x/mod.rs"],
+            ),
+        ];
+        for (declaring, src, candidates) in cases {
+            let symbols = crate::symbol_index::extracted("rs", src);
+            let declaration = symbols
+                .defs
+                .iter()
+                .find(|d| d.is_out_of_line_module)
+                .expect("the source declares a module out of line");
+            assert_eq!(
+                super::module_candidates(declaring, declaration),
+                candidates,
+                "{declaring}: {src}"
+            );
+        }
+    }
+
     /// The file `mod outer { #[cfg(test)] mod x; }` in [`INLINE_TEST_MOD_TREE`]'s `src/lib.rs`
     /// names, as rustc resolves it.
     const INLINE_TEST_MOD_TARGET: &str = "src/outer/x.rs";
