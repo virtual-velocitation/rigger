@@ -7,7 +7,8 @@
 //!
 //!  - the graph `rigger graph build` folds: a real tree's tagged references fold no edge and no
 //!    placeholder, while its call folds as before; a file rewritten to a `use` alone keeps its
-//!    file node and loses every edge, and a new `use`-only file gains its file node;
+//!    file node and loses every edge, and a new `use`-only file gains its file node; and a test
+//!    file's tagged references prove no definition, while its call does;
 //!  - the persisted symbol index: `SymRef.ref_kind` is written for a tagged reference and omitted
 //!    for a call, the form an index saved before the field existed holds, and reads back so a
 //!    reloaded index counts no tagged reference as a call.
@@ -96,6 +97,25 @@ fn graph_build_over_use_only_files_folds_their_file_nodes_and_no_edge() {
         common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),
         common::fixtures::file_and_entity_ids(&[LEDGER, DEFINER, USER], &DEFINER_ENTITIES),
         "each `use`-only file stands as its file node alone"
+    );
+}
+
+/// GIVEN the reference-kinds tree beside a test file `tests/kestrel.rs` whose body is the user
+/// file's: it imports `Kestrel` and, in `fn paint`, takes it as a parameter type, calls `draw`
+/// and reads `QUOTA_CAP`,
+/// WHEN the operator runs `rigger graph build`,
+/// THEN `draw` alone carries the test file's evidence (`proven_by`): its `use`, type reference
+/// and const read prove neither `Kestrel` nor `QUOTA_CAP`.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_proves_a_definition_by_a_test_files_call_alone() {
+    let [definer, (_, user_source)] = common::fixtures::REFERENCE_KINDS_TREE;
+    let (_project, graph) = common::cli::built_graph(&[definer, ("tests/kestrel.rs", user_source)]);
+
+    assert_eq!(
+        DEFINER_ENTITIES.map(|id| common::fixtures::proven_by_attr(&graph, id)),
+        [None, None, Some("1".to_string())],
+        "the test file's call to `draw` is its one proof"
     );
 }
 
