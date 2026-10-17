@@ -4019,10 +4019,63 @@ use crate::store::Ledger;
                 "\
 5 use Ledger -",
             ),
+            // A nested use group keeps its list's prefix and root: a std root's nested leaf
+            // imports nothing, a project's keeps its leaf, and a nested `self` names the module.
+            (
+                "a nested use group keeps its prefix and its root",
+                "\
+use std::{{cmp}};
+use crate::{{store::Ledger}};
+use beta::{{self}};
+",
+                "\
+2 use Ledger -
+3 use beta -",
+            ),
         ];
         for (case, src, expected) in cases {
             crate::symbol_index::assert_tagged_refs("rs", src, expected, case);
         }
+    }
+
+    /// Spec 117 criterion 6: a tagged reference under its own `#[cfg(test)]` attribute - a
+    /// top-level `use`, a `use` in a function body, a `let` and an expression statement - is test
+    /// code, so no `ref_kind` event leaves the file for it.
+    #[test]
+    fn a_tagged_reference_under_its_own_cfg_test_attribute_is_test_code() {
+        let fs = crate::symbol_index::extracted(
+            "rs",
+            "\
+#[cfg(test)]
+use crate::fixture::Ledger;
+pub fn f() -> u8 {
+    #[cfg(test)]
+    use crate::fixture::Plover;
+    #[cfg(test)]
+    let k: Kestrel = KITE_CAP;
+    #[cfg(test)]
+    probe(LIMIT_CAP);
+    WIDTH_CAP
+}
+",
+        );
+        let tagged: Vec<(&str, bool)> = fs
+            .refs
+            .iter()
+            .filter(|r| r.ref_kind.is_some())
+            .map(|r| (r.name.as_str(), r.is_test))
+            .collect();
+        assert_eq!(
+            tagged,
+            [
+                ("Ledger", true),
+                ("Plover", true),
+                ("Kestrel", true),
+                ("KITE_CAP", true),
+                ("LIMIT_CAP", true),
+                ("WIDTH_CAP", false),
+            ]
+        );
     }
 
     /// Spec 117 criterion 6: the tagged references follow the call references in `refs`, in
