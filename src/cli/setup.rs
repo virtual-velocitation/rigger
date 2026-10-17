@@ -3603,7 +3603,8 @@ mod tests {
     /// paragraphs, variant docs and oracles of the function's depth-1 callers - that search
     /// runs, and the record the walk owes, the hand probe of every mutable token of the
     /// production hunks over the unit's whole range, each class read by its spelling - every
-    /// argument of every added or changed call, every `?`, `return`, `break` and `continue` - one
+    /// argument of every added or changed call, every `?` (swallowed by the spelling the working
+    /// discipline lists for its value), `return`, `break` and `continue` - one
     /// mutation at a time, the owning crate's unit tests and the touched root test binaries run,
     /// the file restored - with the `<unit>-mutant-probes` record the `sdet` lens completes,
     /// organised by production line - each added or changed line naming its tokens, a query or
@@ -3766,8 +3767,9 @@ mod tests {
              inside a query or format string among them - or is marked as carrying none with \
              its reason (a signature, a `use`, a doc line, a brace).",
             "each class the working discipline's rule spells read by its spelling - every \
-             argument of every call you add or change, every `?`, every `return`, `break` and \
-             `continue` among them",
+             argument of every call you add or change, every `?` (swallowed by the spelling the \
+             working discipline lists for its value), every `return`, `break` and `continue` \
+             among them",
             "After that walk the record carries one tally line per spelled class, `<class>: <n> \
              in hunks, <n> probed`, the two counts equal",
             "the `?`, `return`, `break` and `continue` counts are the ones `sh \
