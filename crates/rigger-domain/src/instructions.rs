@@ -583,6 +583,13 @@ mod tests {
              call's arguments, and compares each class's count with the record's tally line: a \
              short tally, or a token with no probe, is a BLOCKING finding on its own.",
             "Every fact your production delta states has one home.",
+            "The `<unit>-sentence-walk` record carries, beside the count of each constant, \
+             static, list, closure or predicate your production hunks add, its one-home line in \
+             one of three forms: `no other spelling` with the terms searched - the name count and \
+             the graph lookup the walk already runs, and the fact's distinguishing literal (a \
+             table name, a kind string); `derived from <file:line>`, the hunk reading the \
+             existing spelling; or `pinned to <file:line> by <test>`, where a derivation is \
+             impossible and a test holds the two spellings equal.",
             "A probe that edits your tree is over before your turn is.",
             "runs to completion and restores the tree before your turn ends, never as a \
              detached or background job",
