@@ -2799,8 +2799,9 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             }
         }
         TYPE_EDGE_INFERRED => {
-            // Spec 29a criterion 1: one reference the extraction pass emitted. Fold it into a
-            // structural REFERENCES edge from the referencing file to the code entity it lands on
+            // Spec 29a criterion 1: one reference the extraction pass emitted. Fold a call
+            // reference into a structural REFERENCES edge (a tagged one stops after its file node,
+            // spec 117, below) from the referencing file to the code entity it lands on
             // (spec 119, A CALL LANDS ON ITS ONE SAME-FILE CANDIDATE): the file's one call target
             // of the referenced leaf a live assertion defines ([`same_file_candidates`]), else the
             // placeholder `<file>::%<leaf>` ([`placeholder_id`]), which `ensure_node` creates bare

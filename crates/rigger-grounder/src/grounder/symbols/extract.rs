@@ -258,6 +258,12 @@ fn record_def(
 /// an impl block's included, is built by [`def_of`] from its byte range, which gives its
 /// `end_line`, and takes its id path and parent from [`def_paths`].
 ///
+/// Rust's const reads, type references and the leaves a `use` imports are read off the tree too
+/// ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`, pushed after
+/// every call reference so it takes its caller and test region by the same position rules, an
+/// impl header's trait row taking the self type's path when exactly one non-test definition of
+/// the file has the self type's leaf, else the impl block's.
+///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
 /// panicking, so a pathological file degrades to partial symbols, never a crash.

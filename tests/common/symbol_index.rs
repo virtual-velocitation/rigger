@@ -2,7 +2,7 @@
 //! index, saving it through the real `store` boundary and reading the bytes back, writing a
 //! hand-authored `index.json` under the current extraction generation and loading a legacy one
 //! through the real `store::load`, projecting a file's definitions, its test-marked
-//! definitions and references and its references with their callers, checking a language's definition
+//! definitions and references and its call references with their callers, checking a language's definition
 //! types against a file's definitions, checking a language's definitions fixture whole and a source's callers whole,
 //! projecting a file's definition extents, checking the variant names a file's kinds persist
 //! under, rendering and checking a file's tagged references, and looking up a registered
@@ -188,8 +188,8 @@ pub fn assert_one_def_per_row(fs: &FileSymbols, rows: &[(&str, Kind, &str)]) {
 }
 
 /// A language's definitions fixture `src`, read through the grammar and query registered for
-/// `ext`, parses whole and holds exactly the definitions `defs` and the references `refs`, each
-/// with its caller, and each row of `rows`, the language's DEFINITION TYPES, names exactly one
+/// `ext`, parses whole and holds exactly the definitions `defs` and the call references `refs`,
+/// each with its caller, and each row of `rows`, the language's DEFINITION TYPES, names exactly one
 /// of those definitions.
 #[cfg(feature = "symbols")]
 pub fn assert_definitions_fixture(
@@ -206,8 +206,8 @@ pub fn assert_definitions_fixture(
     assert_callers(ext, src, refs);
 }
 
-/// The references the registered query for `ext` extracts from `src`, each with its caller, are
-/// exactly `refs` ([`refs_with_callers`]): the one check of a source text's callers whole.
+/// The call references the registered query for `ext` extracts from `src`, each with its caller,
+/// are exactly `refs` ([`refs_with_callers`]): the one check of a source text's callers whole.
 #[cfg(feature = "symbols")]
 pub fn assert_callers(ext: &str, src: &str, refs: &[(u32, &str, Option<&str>)]) {
     assert_eq!(refs_with_callers(&extracted(ext, src)), refs);

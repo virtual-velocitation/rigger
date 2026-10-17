@@ -192,14 +192,16 @@ pub const REL_RAISED: &str = "RAISED";
 /// to its associated item, an inline mod or enclosing fn to its item, and from a `file` node to
 /// each `code-entity` node folded from a definition of that file with no parent.
 pub const REL_CONTAINS: &str = "CONTAINS";
-/// A file REFERENCES a code symbol (spec 29a): the structural edge folded from an
-/// `EdgeInferred` event, from the referencing `file` node to the referenced symbol's
-/// file-scoped `code-entity` id. A confidence tier is layered onto this edge by a later
-/// criterion; this criterion only makes the structural edge exist.
+/// A file REFERENCES a code symbol (spec 29a): the structural edge folded from a call reference's
+/// `EdgeInferred` event (one with no `ref_kind`; a tagged one folds none, spec 117), from the
+/// referencing `file` node to the referenced symbol's file-scoped `code-entity` id. A confidence
+/// tier is layered onto this edge by a later criterion; this criterion only makes the structural
+/// edge exist.
 pub const REL_REFERENCES: &str = "REFERENCES";
 /// A caller-attributed call edge (spec 37): `<file>::<caller> --CALLS--> <callee>`, folded from an
 /// `EdgeInferred` whose `caller` is set - the path of the enclosing definition the reference was
-/// attributed to.
+/// attributed to - and that carries no `ref_kind` (a tagged reference folds no CALLS edge, spec
+/// 117).
 /// It is added ALONGSIDE the file-level [`REL_REFERENCES`] edge (purely additive; the same callee
 /// resolution the REFERENCES edge uses), so one `subgraph` around a symbol answers "who calls it" by
 /// function, not merely "referenced from which file". A reference outside every definition
@@ -525,8 +527,9 @@ pub const TYPE_REVIEW_FINDING: &str = "ReviewFinding";
 /// none (spec 119). Always compiled, so the light lane folds it with the extraction pass absent.
 pub const TYPE_CODE_ENTITY_EXTRACTED: &str = "CodeEntityExtracted";
 /// One reference extracted from a source file (spec 29a): the extraction pass emits one per
-/// reference, and the always-compiled fold turns it into a `REFERENCES` structural edge from
-/// the file container node to the referenced symbol's code-entity id.
+/// reference, and the always-compiled fold turns a call reference into a `REFERENCES` structural
+/// edge from the file container node to the referenced symbol's code-entity id; a tagged one
+/// (`ref_kind`, spec 117) folds its file container node alone.
 pub const TYPE_EDGE_INFERRED: &str = "EdgeInferred";
 /// One design-intent concept extracted from a doc (spec 29b): the design-intent extraction pass
 /// emits one per concept, and the always-compiled fold turns it into a `design-doc` /
@@ -1087,12 +1090,14 @@ pub struct EdgeInferred {
     /// the index version to `ts-tags-v4`), same-file, the innermost
     /// enclosing function before any other definition (spec 116). `None` for a top-level
     /// reference outside every definition (an import or a module-level call; a file-level impl
-    /// header's trait and type attribute to the impl block, a definition of its own). The emit
-    /// pass carries what extraction attributed onto the `SymRef`; the fold, when it is present,
-    /// adds a `<file>::<caller> --CALLS--> <callee>` edge ALONGSIDE the existing file-level
-    /// `REFERENCES` edge (a later criterion owns that fold). Serde-defaulted and omitted when
-    /// `None`, so a pre-37 log folds as caller-less and a caller-less reference serializes
-    /// byte-identically to before - the CALLS edge is purely additive to the code layer.
+    /// header's trait and type attribute to the impl block, a definition of its own, and its
+    /// trait's tagged `type` row to the self type's definition when the file defines that once,
+    /// spec 117). The emit pass carries what extraction attributed onto the `SymRef`; the fold,
+    /// when it is present on a call reference (no `ref_kind`), adds a `<file>::<caller> --CALLS-->
+    /// <callee>` edge ALONGSIDE the existing file-level `REFERENCES` edge (a later criterion owns
+    /// that fold). Serde-defaulted and omitted when `None`, so a pre-37 log folds as caller-less
+    /// and a caller-less reference serializes byte-identically to before - the CALLS edge is purely
+    /// additive to the code layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<String>,
     /// The reference's 1-based source line (spec 86 criterion 2). Unused by a STRUCTURAL reference
