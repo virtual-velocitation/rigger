@@ -2471,17 +2471,18 @@ fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
     let index = rigger::grounder::symbols::store::index_path(root.to_str().unwrap());
     std::fs::create_dir_all(index.parent().unwrap()).unwrap();
     std::fs::write(index, OLDER_STORE_INDEX).unwrap();
-    for (path, body) in [
-        (OLDER_STORE_KINDS_PATH, OLDER_STORE_KINDS_BODY),
-        ("lunar.go", "package lunar\n\nvar Albedo = 12\n"),
-        (
-            "crater.cs",
-            "class Crater\n{\n    public int Depth { get; set; }\n}\n",
-        ),
-        ("probe.js", "class Probe {\n  constructor() {}\n}\n"),
-    ] {
-        std::fs::write(root.join(path), body).unwrap();
-    }
+    common::fixtures::write_files(
+        root,
+        &[
+            (OLDER_STORE_KINDS_PATH, OLDER_STORE_KINDS_BODY),
+            ("lunar.go", "package lunar\n\nvar Albedo = 12\n"),
+            (
+                "crater.cs",
+                "class Crater\n{\n    public int Depth { get; set; }\n}\n",
+            ),
+            ("probe.js", "class Probe {\n  constructor() {}\n}\n"),
+        ],
+    );
     let identities = ["gc/src/clock.rs", "gc/src/kinds.rs"];
 
     setup_ok(root, &[("RIGGER_NPM", "true")]);

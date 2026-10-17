@@ -31,6 +31,10 @@ const USE_ONLY_SOURCE: &str = "use crate::store::Ledger;\n";
 #[cfg(feature = "symbols")]
 const LEDGER: &str = "src/ledger.rs";
 
+/// The placeholder the user file's call to `draw` lands on, `draw` being defined in another file.
+#[cfg(feature = "symbols")]
+const DRAW_PLACEHOLDER: &str = "src/user.rs::%draw";
+
 /// The code-entity ids of the definitions of the reference-kinds tree's definer file.
 #[cfg(feature = "symbols")]
 const DEFINER_ENTITIES: [&str; 3] = [
@@ -56,7 +60,7 @@ fn graph_build_folds_a_files_call_alone_never_its_use_type_reference_or_const_re
 
     assert_eq!(
         common::fixtures::landed(&graph),
-        common::fixtures::a_call_from(USER, "paint", "src/user.rs::%draw", TIER_INFERRED),
+        common::fixtures::a_call_from(USER, "paint", DRAW_PLACEHOLDER, TIER_INFERRED),
         "the call to `draw` is the one reference that lands"
     );
     assert_eq!(
@@ -65,7 +69,7 @@ fn graph_build_folds_a_files_call_alone_never_its_use_type_reference_or_const_re
             &[DEFINER, USER],
             &[
                 &DEFINER_ENTITIES[..],
-                &["src/user.rs::%draw", "src/user.rs::paint"]
+                &[DRAW_PLACEHOLDER, "src/user.rs::paint"]
             ]
             .concat()
         ),
@@ -81,8 +85,7 @@ fn graph_build_folds_a_files_call_alone_never_its_use_type_reference_or_const_re
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_over_use_only_files_folds_their_file_nodes_and_no_edge() {
-    let (project, graph) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
-    drop(graph);
+    let (project, _) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
     let graph = common::cli::rebuilt_graph(
         project.path(),
         &[(USER, USE_ONLY_SOURCE), (LEDGER, USE_ONLY_SOURCE)],

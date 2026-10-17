@@ -15,7 +15,7 @@
 mod common;
 
 use common::cli::{rigger_file, run_rigger, temp_project};
-use common::fixtures::{arm_read_fault, write_file};
+use common::fixtures::{arm_read_fault, write_file, write_files};
 use rigger::grounder::{in_walk_scope, tree_bytes};
 use std::path::Path;
 
@@ -48,9 +48,7 @@ fn assert_rule(root: &Path, expected: &[Answer]) {
 /// The rule answers `expected` over a fresh root holding exactly `files`.
 fn assert_rule_over(files: &[(&str, &str)], expected: &[Answer]) {
     let dir = tempfile::tempdir().unwrap();
-    for (rel, text) in files {
-        write_file(&dir.path().join(rel), text.as_bytes());
-    }
+    write_files(dir.path(), files);
     assert_rule(dir.path(), expected);
 }
 
