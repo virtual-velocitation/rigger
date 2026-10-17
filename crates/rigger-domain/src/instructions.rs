@@ -317,21 +317,23 @@ mod tests {
     /// by the green commit, every mutable token of the production delta, each class named by its
     /// source spelling - an operator, an offset, an operand, every argument of every added or
     /// changed call, an arm's statement, a match arm, every `?` (swallowed by the spelling that
-    /// compiles for its value, `unviable` only when every swallow of the list fails to compile
-    /// with each error quoted, never when its type has a default), `return`, `break` and `continue` - mutated by hand one at a time with the red test recorded in a record
-    /// organised by production line - each line naming its tokens, a token inside a query,
-    /// format or macro string included, or marked as carrying none - and closed by one tally
-    /// line per spelled class, its hunk and probe counts equal, a green probe pinned or reshaped
-    /// away, the hand enumeration standing beside the mutation gate and the SDET lens probing
-    /// every token the record lacks, comparing its token set with the record line by line and
-    /// counting each class itself against the tally and re-applying the fitting swallow to
-    /// every `?` the record calls unviable, a compiling green one blocking, every constant, static, list, closure or
-    /// predicate the delta adds - a SQL conjunct inside a query string included - naming its one home in the sentence-walk record - no other
-    /// spelling, its distinguishing literal searched over the whole tree, derived from or
-    /// pinned to the existing one, a fact spelled twice lifted at all three sites - with the
-    /// architecture lens deriving the added set itself from the production hunks, query strings
-    /// included, and blocking on a missing or false line, and a probe that edits the tree - the sharpest case of a turn's end being
-    /// the session's end - run to completion and restored before the turn ends; the gates'
+    /// compiles for its value, `unviable` only when every swallow of the list fails to compile with
+    /// each error quoted, never when its type has a default), `return`, `break` and `continue` -
+    /// mutated by hand one at a time with the red test recorded in a record organised by production
+    /// line - each line naming its tokens, a token inside a query, format or macro string included,
+    /// or marked as carrying none - and closed by one tally line per spelled class, its hunk and
+    /// probe counts equal, a green probe pinned or reshaped away, the hand enumeration standing
+    /// beside the mutation gate and the SDET lens probing every token the record lacks, comparing
+    /// its token set with the record line by line and counting each class itself against the tally
+    /// and re-applying the fitting swallow to every `?` the record calls unviable, a compiling
+    /// green one blocking, every constant, static, list, closure or predicate the delta adds - a
+    /// SQL conjunct inside a query string included - naming its one home in the sentence-walk
+    /// record - no other spelling, its distinguishing literal searched over the whole tree, derived
+    /// from or pinned to the existing one, a fact spelled twice lifted at all three sites - with
+    /// the architecture lens deriving the added set itself from the production hunks, query strings
+    /// included, and blocking on a missing or false line, and a probe that edits the tree - the
+    /// sharpest case of a turn's end being the session's end - run to completion and restored
+    /// before the turn ends; the gates'
     /// check names each gate command run to completion inside the turn. Read by its words, so
     /// a rewrap never moves a verdict.
     #[test]

@@ -3684,11 +3684,11 @@ mod tests {
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers.",
             "Each item the hunks add - a constant, static, list, closure, predicate - a SQL \
-             conjunct inside a query string included - or fn - carries beside its count its one-home line in one of the working discipline's three \
-             forms: `no other spelling` with the terms searched (its name count, its caller \
-             lookup and the fact's distinguishing literal - a table name, a kind string - run \
-             with the count above), `derived from <file:line>` or `pinned to <file:line> by \
-             <test>`.",
+             conjunct inside a query string included - or fn - carries beside its count its \
+             one-home line in one of the working discipline's three forms: `no other \
+             spelling` with the terms searched (its name count, its caller lookup and the \
+             fact's distinguishing literal - a table name, a kind string - run with the count \
+             above), `derived from <file:line>` or `pinned to <file:line> by <test>`.",
             "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
             "On every round, the first and each later one alike, `<base>` is the unit's merge \
              base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
@@ -4017,10 +4017,10 @@ mod tests {
                       predicates the unit adds yourself from its production hunks - a boolean \
                       expression or SQL conjunct inside a query string, format string or macro \
                       argument included - and read the `<unit>-sentence-walk` record's one-home \
-                      lines for every item of it, and an added item with no line, or a line false at head (the fact has another spelling \
-                      the line does not name, or the named derivation or pin does not exist), \
-                      is BLOCKING (DRY, single responsibility), cited with both spellings' \
-                      `file:line`.";
+                      lines for every item of it, and an added item with no line, or a line false \
+                      at head (the fact has another spelling the line does not name, or the \
+                      named derivation or pin does not exist), is BLOCKING (DRY, single \
+                      responsibility), cited with both spellings' `file:line`.";
         assert!(
             flat.contains(wanted),
             "architecture-reviewer.md must say {wanted:?}"
