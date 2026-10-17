@@ -582,6 +582,7 @@ mod tests {
              itself, string literals and test regions left out, reads each added or changed \
              call's arguments, and compares each class's count with the record's tally line: a \
              short tally, or a token with no probe, is a BLOCKING finding on its own.",
+            "Every fact your production delta states has one home.",
             "A probe that edits your tree is over before your turn is.",
             "runs to completion and restores the tree before your turn ends, never as a \
              detached or background job",
