@@ -13364,7 +13364,10 @@ mod tests {
 
             /// Fold, from `pos`, the call `src/b.rs`'s fn `g` makes to `x` and the test
             /// reference `tests/t.rs` holds to it.
-            fn fold_a_cross_file_call_and_a_proof(p: &Projector, pos: u64) {
+            pub(in crate::contextgraph::sqlite::tests) fn fold_a_cross_file_call_and_a_proof(
+                p: &Projector,
+                pos: u64,
+            ) {
                 fold_a_cross_file_call_and_a_proof_of(p, pos, "x");
             }
 
@@ -13969,8 +13972,11 @@ mod tests {
         /// answers, at the entry's position and valid-time and under the entry's identity and
         /// generation. Every entry is built by the one constructor and no sink is involved.
         pub(in crate::contextgraph::sqlite::tests) mod ledger_entries {
+            use super::super::leaf_keys_resolution::write_directly;
+            use super::shared_node::fold_a_cross_file_call_and_a_proof;
             use super::*;
             use crate::contextgraph::{wired, EntryFold, Fold};
+            use crate::test_support::fold_events;
             use crate::test_support::{event_of, ONE_COMMUNITY};
             use rigger_domain::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
             use std::cell::Cell;
@@ -14583,6 +14589,176 @@ mod tests {
                 );
                 assert_eq!(theirs.current_generation("gc/src/f.rs").unwrap(), None);
                 assert_eq!(ours.current_generation("gd/src/f.rs").unwrap(), None);
+            }
+
+            /// Every table of the projection that carries a `project` column (spec 117, A
+            /// MIGRATED PROJECT STAYS LIVE).
+            const PROJECT_KEYED: [&str; 9] = [
+                "nodes",
+                "edges",
+                "generations",
+                "node_assertions",
+                "edge_assertions",
+                "proofs",
+                "retired_nodes",
+                "detached_attachments",
+                "relabel_owed",
+            ];
+
+            /// How many rows of each of `tables` in `p`'s file carry the scope `project`.
+            fn rows_under(p: &Projector, tables: &[&str], project: &str) -> Vec<(String, i64)> {
+                tables
+                    .iter()
+                    .map(|table| {
+                        let sql = format!("SELECT count(*) FROM {table} WHERE project = ?1");
+                        let n: Vec<i64> = raw_rows(p, &sql, [project], |r| r.get(0));
+                        (table.to_string(), n[0])
+                    })
+                    .collect()
+            }
+
+            /// `tables` each paired with its row count from `counts`, in order.
+            fn counted(tables: &[&str], counts: &[i64]) -> Vec<(String, i64)> {
+                tables
+                    .iter()
+                    .zip(counts)
+                    .map(|(table, n)| (table.to_string(), *n))
+                    .collect()
+            }
+
+            /// The live `SPECIFIES` targets of [`F`] under `project`, and every node `project`
+            /// holds retired, each in order.
+            fn links_and_retired(p: &Projector, project: &str) -> (Vec<String>, Vec<String>) {
+                let links = raw_rows(
+                    p,
+                    "SELECT to_id FROM edges
+                      WHERE project = ?1 AND from_id = ?2 AND rel = ?3 AND valid_to IS NULL
+                      ORDER BY to_id",
+                    params![project, F, REL_SPECIFIES],
+                    |r| r.get(0),
+                );
+                let retired = raw_rows(
+                    p,
+                    "SELECT id FROM retired_nodes WHERE project = ?1 ORDER BY id",
+                    [project],
+                    |r| r.get(0),
+                );
+                (links, retired)
+            }
+
+            /// `p`'s own connection, scoped to `project`: the projector the migrated identity
+            /// opens on the same file.
+            fn rescoped(p: Projector, project: &str) -> Projector {
+                Projector {
+                    project: project.to_string(),
+                    ..p
+                }
+            }
+
+            /// Spec 117, A MIGRATED PROJECT STAYS LIVE: `migrate_project` re-keys every
+            /// project-keyed table, so the identity's next generation under the new scope
+            /// supersedes the one it held under the old. Under the fixture's scope `gd/docs/f.md`
+            /// holds `h1` (links to `src/kept.rs` and `src/dropped.rs`), `src/dropped.rs` joins a
+            /// community, `tests/t.rs` proves `x`, and `h2` (the link to `src/kept.rs` alone)
+            /// retires `src/dropped.rs`, detaching its attachment; one relabel is owed by hand,
+            /// since a fold ends owing none. So the scope holds one generation, two edge
+            /// assertions (`h2` re-asserts the kept link's row in place) and one row each of a
+            /// proof, a retired node, a detached attachment and an owed relabel, beside six nodes,
+            /// six edges and seven node assertions.
+            #[test]
+            fn a_migrated_identity_keeps_its_generation_and_its_next_one_retires_what_it_dropped() {
+                let old = fold_events([]);
+                let from = old.project.clone();
+                let asked = Cell::new(0);
+                let h1 = vec![link_event("src/kept.rs"), link_event("src/dropped.rs")];
+                assert_eq!(
+                    apply_entry(&old, &entry("gd", F, "h1", 1, 10), Ok(Some(h1)), &asked),
+                    Ok(EntryFold::BatchAsked)
+                );
+                apply_community(
+                    &old,
+                    2,
+                    "src/dropped.rs",
+                    ONE_COMMUNITY,
+                    1.0,
+                    "h-alpha",
+                    true,
+                );
+                fold_a_cross_file_call_and_a_proof(&old, 3);
+                let h2 = vec![link_event("src/kept.rs")];
+                assert_eq!(
+                    apply_entry(&old, &entry("gd", F, "h2", 6, 20), Ok(Some(h2)), &asked),
+                    Ok(EntryFold::BatchAsked)
+                );
+                write_directly(&old, |tx, project| {
+                    tx.execute(
+                        "INSERT INTO relabel_owed (project, community) VALUES (?1, ?2)",
+                        [project, ONE_COMMUNITY],
+                    )
+                    .unwrap();
+                });
+                let held = counted(&PROJECT_KEYED, &[6, 6, 1, 7, 2, 1, 1, 1, 1]);
+                assert_eq!(rows_under(&old, &PROJECT_KEYED, &from), held);
+
+                assert_eq!(old.migrate_project(&from, "minted").unwrap(), 6);
+                assert_eq!(
+                    rows_under(&old, &PROJECT_KEYED, "minted"),
+                    held,
+                    "every row of every project-keyed table moves to the new scope"
+                );
+                assert_eq!(
+                    rows_under(&old, &PROJECT_KEYED, &from),
+                    counted(&PROJECT_KEYED, &[0; 9]),
+                    "no row stays under the old scope"
+                );
+                let migrated = projection_but_applied(&old);
+                assert_eq!(old.migrate_project(&from, "minted").unwrap(), 0);
+                assert_eq!(
+                    projection_but_applied(&old),
+                    migrated,
+                    "a second migration moves nothing"
+                );
+
+                let minted = rescoped(old, "minted");
+                let h3 = vec![link_event("src/added.rs")];
+                assert_eq!(
+                    apply_entry(&minted, &entry("gd", F, "h3", 7, 30), Ok(Some(h3)), &asked),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(
+                    links_and_retired(&minted, "minted"),
+                    (
+                        vec!["src/added.rs".to_string()],
+                        vec!["src/dropped.rs".to_string(), "src/kept.rs".to_string()]
+                    ),
+                    "h3 retires the link and the node h2 asserted and h3 does not"
+                );
+            }
+
+            /// Spec 117, A MIGRATED PROJECT STAYS LIVE: a file that owes its rebuild is opened as
+            /// it stands, so it may hold `nodes` and `edges` and none of the ledgers; the
+            /// migration moves both and skips every table the file does not hold. `h1` of
+            /// `gc/src/f.rs` leaves three nodes and two edges.
+            #[test]
+            fn an_owed_store_holding_only_nodes_and_edges_migrates_both() {
+                let owed = fold_events([]);
+                let from = owed.project.clone();
+                holding_h1(&owed);
+                write_directly(&owed, |tx, _| {
+                    tx.execute_batch(&format!("{DROP_LEDGERS} PRAGMA user_version = 0;"))
+                        .unwrap();
+                });
+                assert!(owed.rebuild_owed().unwrap());
+                let tables = ["nodes", "edges"];
+                assert_eq!(
+                    owed.migrate_project(&from, "minted").map_err(|e| e.0),
+                    Ok(3)
+                );
+                assert_eq!(
+                    rows_under(&owed, &tables, "minted"),
+                    counted(&tables, &[3, 2])
+                );
+                assert_eq!(rows_under(&owed, &tables, &from), counted(&tables, &[0, 0]));
             }
         }
     }
