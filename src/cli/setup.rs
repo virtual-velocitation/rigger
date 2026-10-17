@@ -3939,6 +3939,15 @@ mod tests {
             "You derive the token set yourself from the production hunks of `git diff \
              $(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out",
             "compare it with the author's `<unit>-mutant-probes` record",
+            "every token of a class the working discipline's rule lists that the unit adds or \
+             changes",
+            "You count the classes yourself as well: the `?`, `return`, `break` and `continue` \
+             of the production hunks with the authors' count command, run in your own worktree's \
+             root, and the arguments of each call those hunks add or change, read call by call",
+            "q += gsub(/\\?([;.),\\] ]|$)/, \"\", s)",
+            "you compare each class's count with the record's tally line for it, and a tally \
+             short of your count, or a token with no probe, is BLOCKING on its own, citing the \
+             class, both counts and the unprobed tokens.",
             "You compare the two line by line: a token inside a query string, a format string \
              or a macro argument the code executes is a token of its line (a SQL conjunct a \
              boolean operand; a column name, bound or placeholder passed to a query builder a \
@@ -3960,6 +3969,12 @@ mod tests {
         assert!(
             !flat.contains("beyond the author's record"),
             "the lens's per-sentence list covers the author's CHECKED members too"
+        );
+        // The token classes are spelled once, in the working discipline; the lens refers to
+        // that list and carries no copy of it.
+        assert!(
+            !flat.contains("call argument that is a range, index or bound"),
+            "sdet.md refers to the working discipline's token list instead of re-spelling it"
         );
     }
 
