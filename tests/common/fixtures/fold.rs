@@ -6,8 +6,8 @@
 //! by, the live edges and calls a projector serves with the spec-119 enum's `CONTAINS` edges they
 //! are checked against, and the read-backs suites take of a folded
 //! `Graph`. `apply` returns `Err`
-//! on a fold failure, so every helper unwraps it: a successful call is itself evidence the
-//! payload folded.
+//! on a fold failure, so every helper unwraps it - a successful call is itself evidence the
+//! payload folded - but [`fold_entry_result`], which answers the error text a failing fold meets.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, UNIX_EPOCH};
