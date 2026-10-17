@@ -732,13 +732,12 @@ const PRIMITIVE_TYPES: [&str; 17] = [
     "f64", "bool", "char", "str",
 ];
 
-/// The grammar node kinds whose subtree holds no reference (spec 117): a macro's token tree, an
-/// attribute, a `macro_rules!` body and a visibility path.
-const OPAQUE_KINDS: [&str; 5] = [
+/// The grammar node kinds whose subtree holds no reference (spec 117): a macro's token tree (a
+/// `macro_rules!` body among them), an attribute and a visibility path.
+const OPAQUE_KINDS: [&str; 4] = [
     "token_tree",
     "attribute_item",
     "inner_attribute_item",
-    "macro_definition",
     "visibility_modifier",
 ];
 
@@ -756,10 +755,8 @@ const NAMED_TYPE_DEFINERS: [&str; 6] = [
 
 /// The parent fields under which a Rust `identifier` is no expression read (spec 117): a
 /// definition's name or alias, a pattern, a call's or macro's head (already a call reference), a
-/// path segment, a tuple-struct pattern's or generic type's name and a field name.
-const NON_READ_FIELDS: [&str; 7] = [
-    "name", "alias", "pattern", "function", "macro", "path", "type",
-];
+/// path's leading segments under `path` and its final segment under `name`.
+const NON_READ_FIELDS: [&str; 6] = ["name", "alias", "pattern", "function", "macro", "path"];
 
 /// One tagged reference [`rust_references`] reads off the tree: its leaf, its 1-based line, its
 /// byte position (the caller attribution and test regions key on it) and its kind, and for an
@@ -975,8 +972,8 @@ fn names_enclosing_generic(name: &str, node: tree_sitter::Node, source: &[u8]) -
 
 /// Whether `node`, an `identifier` or a whole `scoped_identifier`, is an expression READ (spec
 /// 117): outside every pattern - but a match arm's guard, its `condition`, is read - a closure's
-/// parameters, a lifetime and a label, not a segment of a `scoped_identifier` (read whole, as a
-/// path), and not under a parent field of [`NON_READ_FIELDS`].
+/// parameters, a lifetime and a label, and not under a parent field of [`NON_READ_FIELDS`] (a
+/// `scoped_identifier`'s segments among them: a path is read whole).
 fn is_read(node: tree_sitter::Node) -> bool {
     node.parent().is_some_and(|parent| {
         let field = field_of(node);
@@ -987,9 +984,7 @@ fn is_read(node: tree_sitter::Node) -> bool {
                     || matches!(kind, "closure_parameters" | "lifetime" | "label")
             }
         };
-        !pattern
-            && parent.kind() != "scoped_identifier"
-            && !field.is_some_and(|f| NON_READ_FIELDS.contains(&f))
+        !pattern && !field.is_some_and(|f| NON_READ_FIELDS.contains(&f))
     })
 }
 
