@@ -16390,6 +16390,39 @@ mod tests {
             /// resolves away, its edge retires, the alias's row keeping its target (accepted).
             #[test]
             fn an_aliased_row_of_another_identity_keeps_no_edge_of_the_releasing_one() {
+                let p = aliased_reads_of_cap(REF_KIND_USE, REF_KIND_CONST);
+                assert_eq!(
+                    rows(&p),
+                    [
+                        row(A, "a1", (READ, "CAP", REF_KIND_USE), 3, None),
+                        row(C, "c1", (READ, "CAP", REF_KIND_CONST), 4, Some(CAP)),
+                    ]
+                );
+                assert_eq!(references(&p), []);
+            }
+
+            /// A row of another identity aliased onto a pair releases none of the asserting
+            /// identity's edge: [`READ`] reads `CAP` as a const and asserts the edge, `src/c.rs`'s
+            /// `x`, aliased to [`READ`], uses it and asserts nothing while that edge holds the pair;
+            /// once `src/d.rs` defines a fn `CAP`, `x`'s use resolves away and releases its own
+            /// entries alone, so [`READ`]'s edge stays live.
+            #[test]
+            fn an_aliased_row_resolving_away_leaves_the_asserting_identitys_edge_live() {
+                let p = aliased_reads_of_cap(REF_KIND_CONST, REF_KIND_USE);
+                assert_eq!(
+                    rows(&p),
+                    [
+                        row(A, "a1", (READ, "CAP", REF_KIND_CONST), 3, Some(CAP)),
+                        row(C, "c1", (READ, "CAP", REF_KIND_USE), 4, None),
+                    ]
+                );
+                assert_eq!(references(&p), [reference(READ, CAP, TIER_INFERRED)]);
+            }
+
+            /// [`READ`] referencing `CAP` as `read_kind` from `src/a.rs`, then `src/c.rs`'s `x`,
+            /// aliased to [`READ`], referencing it as `x_kind`, `src/b.rs` defining it a constant
+            /// first and `src/d.rs` a fn last.
+            fn aliased_reads_of_cap(read_kind: &str, x_kind: &str) -> Projector {
                 let p = fold_events([]);
                 apply_json(
                     &p,
@@ -16403,22 +16436,15 @@ mod tests {
                     "a1",
                     3,
                     20,
-                    vec![tagged(A, "CAP", REF_KIND_USE, Some("read"))],
+                    vec![tagged(A, "CAP", read_kind, Some("read"))],
                 );
-                let c_reads = vec![
+                let x_reads = vec![
                     definition_event(C, "x", CODE_KIND_FUNCTION, 1, true),
-                    tagged(C, "CAP", REF_KIND_CONST, Some("x")),
+                    tagged(C, "CAP", x_kind, Some("x")),
                 ];
-                fold(&p, C, "c1", 4, 30, c_reads);
+                fold(&p, C, "c1", 4, 30, x_reads);
                 fold_defining(&p, "src/d.rs", "d1", 5, 40, &[("CAP", CODE_KIND_FUNCTION)]);
-                assert_eq!(
-                    rows(&p),
-                    [
-                        row(A, "a1", (READ, "CAP", REF_KIND_USE), 3, None),
-                        row(C, "c1", (READ, "CAP", REF_KIND_CONST), 4, Some(CAP)),
-                    ]
-                );
-                assert_eq!(references(&p), []);
+                p
             }
 
             /// A row is live only at its identity's current generation in its project: `ours`
