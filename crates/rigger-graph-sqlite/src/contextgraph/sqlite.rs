@@ -14880,6 +14880,29 @@ mod tests {
                 }
             }
 
+            /// Spec 117, A MIGRATED PROJECT STAYS LIVE: a column check that fails fails the whole
+            /// migration with its error and moves nothing. `h1` of `gc/src/f.rs` leaves three
+            /// nodes and two edges, and `generations` stands as a view over a table the file
+            /// lacks, so reading its columns fails.
+            #[test]
+            fn a_failed_column_check_fails_the_migration_and_moves_nothing() {
+                let p = fold_events([]);
+                let from = p.project.clone();
+                holding_h1(&p);
+                write_directly(&p, |tx, _| {
+                    tx.execute_batch(
+                        "DROP TABLE generations; CREATE VIEW generations AS SELECT * FROM gone;",
+                    )
+                    .unwrap();
+                });
+                assert_eq!(
+                    p.migrate_project(&from, "minted").map_err(|e| e.0),
+                    Err("no such table: main.gone".to_string())
+                );
+                let tables = ["nodes", "edges"];
+                assert_eq!(rows_under(&p, &tables, &from), counted(&tables, &[3, 2]));
+            }
+
             /// Spec 117, A MIGRATED PROJECT STAYS LIVE: [`PROJECT_KEYED`] is every table of a
             /// fresh graph file that carries a `project` column, read from the file's schema.
             #[test]
