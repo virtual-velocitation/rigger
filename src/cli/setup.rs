@@ -3591,8 +3591,9 @@ mod tests {
     /// walk's generators as commands over the unit's whole range on every round (the merge base
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
     /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
-    /// per item of the walk's hunk list and paired with it in the record, each FIXED or new
-    /// line's `file:line`
+    /// per item of the walk's hunk list and paired with it in the record, each item the hunks
+    /// add carrying its one-home line in one of the working discipline's three forms, each FIXED
+    /// or new line's `file:line`
     /// witness, one per case the code splits a quantified sentence's subject into with the cases
     /// named, the rule-spelling search over every tracked text file, one
     /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
@@ -3601,11 +3602,14 @@ mod tests {
     /// guard or predicate read as a rewritten rule whose consumer phrases - the notes, Returns
     /// paragraphs, variant docs and oracles of the function's depth-1 callers - that search
     /// runs, and the record the walk owes, the hand probe of every mutable token of the
-    /// production hunks over the unit's whole range - one mutation at a time, the owning crate's
-    /// unit tests and the touched root test binaries run, the file restored - with the
-    /// `<unit>-mutant-probes` record the `sdet` lens completes, organised by production line -
-    /// each added or changed line naming its tokens, a query or format string's included, or
-    /// marked as carrying none - and the foreground wait for
+    /// production hunks over the unit's whole range, each class read by its spelling - every
+    /// argument of every added or changed call, every `?`, `return`, `break` and `continue` - one
+    /// mutation at a time, the owning crate's unit tests and the touched root test binaries run,
+    /// the file restored - with the `<unit>-mutant-probes` record the `sdet` lens completes,
+    /// organised by production line - each added or changed line naming its tokens, a query or
+    /// format string's included, or marked as carrying none - and closed by one tally line per
+    /// spelled class, the `?`, `return`, `break` and `continue` counts the ones
+    /// `.rigger/gates/token-count.sh` prints, and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
     /// line when the host backgrounds one.
     #[test]
@@ -3677,6 +3681,12 @@ mod tests {
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers.",
+            "Each item the hunks add - a constant, static, list, closure, predicate or fn - \
+             carries beside its count its one-home line in one of the working discipline's three \
+             forms: `no other spelling` with the terms searched (its name count, its caller \
+             lookup and the fact's distinguishing literal - a table name, a kind string - run \
+             with the count above), `derived from <file:line>` or `pinned to <file:line> by \
+             <test>`.",
             "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
             "On every round, the first and each later one alike, `<base>` is the unit's merge \
              base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
@@ -3755,6 +3765,13 @@ mod tests {
              a column name, bound or placeholder passed to a query builder and a substr start \
              inside a query or format string among them - or is marked as carrying none with \
              its reason (a signature, a `use`, a doc line, a brace).",
+            "each class the working discipline's rule spells read by its spelling - every \
+             argument of every call you add or change, every `?`, every `return`, `break` and \
+             `continue` among them",
+            "After that walk the record carries one tally line per spelled class, `<class>: <n> \
+             in hunks, <n> probed`, the two counts equal",
+            "the `?`, `return`, `break` and `continue` counts are the ones `sh \
+             .rigger/gates/token-count.sh` prints, run from your worktree's root",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
@@ -3767,6 +3784,12 @@ mod tests {
         assert!(
             !block.contains("`rigger graph --around <item>`"),
             "the caller lookup names its depth; a bare `--around` answers the file neighbourhood"
+        );
+        // The token count has one home, `.rigger/gates/token-count.sh`; the block names it and
+        // carries no copy of its awk.
+        assert!(
+            !block.contains("gsub("),
+            "the hand-over block names the token-count script instead of spelling its awk"
         );
     }
 
@@ -3806,7 +3829,10 @@ mod tests {
     /// record lacks in a scratch worktree it restores and removes in-turn, and a green probe or
     /// an unrecorded token is BLOCKING; it compares its token set with the record line by line,
     /// a query or format string's tokens counted on their line, and a production line the
-    /// record does not disposition is BLOCKING. The records are the author's instruments, never
+    /// record does not disposition is BLOCKING; it reads the token classes from the working
+    /// discipline's list, carrying no copy of it, counts the `?`, `return`, `break` and
+    /// `continue` with `.rigger/gates/token-count.sh` and reads each call's arguments, and a tally short of its
+    /// count is BLOCKING. The records are the author's instruments, never
     /// a gate, so the lens's rule against re-running a green gate does not reach them.
     #[test]
     fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
@@ -3923,6 +3949,15 @@ mod tests {
             "You derive the token set yourself from the production hunks of `git diff \
              $(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out",
             "compare it with the author's `<unit>-mutant-probes` record",
+            "every token of a class the working discipline's rule lists that the unit adds or \
+             changes",
+            "You count the classes yourself as well: the `?`, `return`, `break` and `continue` \
+             of the production hunks with the authors' count, `sh .rigger/gates/token-count.sh` \
+             run from your own worktree's root, and the arguments of each call those hunks add \
+             or change, read call by call",
+            "you compare each class's count with the record's tally line for it, and a tally \
+             short of your count, or a token with no probe, is BLOCKING on its own, citing the \
+             class, both counts and the unprobed tokens.",
             "You compare the two line by line: a token inside a query string, a format string \
              or a macro argument the code executes is a token of its line (a SQL conjunct a \
              boolean operand; a column name, bound or placeholder passed to a query builder a \
@@ -3944,6 +3979,34 @@ mod tests {
         assert!(
             !flat.contains("beyond the author's record"),
             "the lens's per-sentence list covers the author's CHECKED members too"
+        );
+        // The token classes are spelled once, in the working discipline; the lens refers to
+        // that list and carries no copy of it.
+        assert!(
+            !flat.contains("call argument that is a range, index or bound"),
+            "sdet.md refers to the working discipline's token list instead of re-spelling it"
+        );
+        assert!(
+            !flat.contains("gsub("),
+            "sdet.md names the token-count script instead of spelling its awk"
+        );
+    }
+
+    /// The architecture lens is the enforcement of the built-in rule that every fact the
+    /// production delta states has one home: it reads the walk record's one-home line for each
+    /// item the unit adds, and a missing line or one false at head is BLOCKING.
+    #[test]
+    fn the_architecture_lens_reads_the_one_home_line_of_every_added_item() {
+        let flat = rigger::wave::normalize_ws(&committed_persona("architecture-reviewer.md"));
+        let wanted = "you read the `<unit>-sentence-walk` record's one-home lines for every \
+                      constant, static, list, closure or predicate the unit adds, and an added \
+                      item with no line, or a line false at head (the fact has another spelling \
+                      the line does not name, or the named derivation or pin does not exist), \
+                      is BLOCKING (DRY, single responsibility), cited with both spellings' \
+                      `file:line`.";
+        assert!(
+            flat.contains(wanted),
+            "architecture-reviewer.md must say {wanted:?}"
         );
     }
 
