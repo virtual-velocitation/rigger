@@ -327,7 +327,9 @@ mod tests {
     /// counting each class itself against the tally and re-applying the fitting swallow to
     /// every `?` the record calls unviable, a compiling green one blocking, every constant, static, list, closure or
     /// predicate the delta adds - a SQL conjunct inside a query string included - naming its one home in the sentence-walk record - no other
-    /// spelling, derived from or pinned to the existing one - with the architecture lens
+    /// spelling, its distinguishing literal searched over the whole tree, derived from or
+    /// pinned to the existing one, a fact spelled twice lifted at all three sites - with the
+    /// architecture lens
     /// blocking on a missing or false line, and a probe that edits the tree - the sharpest case of a turn's end being
     /// the session's end - run to completion and restored before the turn ends; the gates'
     /// check names each gate command run to completion inside the turn. Read by its words, so
@@ -611,6 +613,12 @@ mod tests {
              table name, a kind string); `derived from <file:line>`, the hunk reading the \
              existing spelling; or `pinned to <file:line> by <test>`, where a derivation is \
              impossible and a test holds the two spellings equal.",
+            "The `no other spelling` search runs the fragment's distinguishing literal (the \
+             column with its operator, the subquery's table) over the whole tree, pre-existing \
+             spellings included; a fact the tree already spells is `derived from` that spelling, \
+             the hunk and the existing sites reading one fn, or `pinned to` it, and a fact the \
+             tree already spells twice is lifted at all three sites - the pre-existing pair is \
+             the tree's debt, and the unit's third spelling makes it the unit's.",
             "The architecture lens reads the walk record's one-home lines for every item the \
              unit adds: an added item with no line, or a line false at head - the fact has \
              another spelling the line does not name, or the named derivation or pin does not \
