@@ -3755,6 +3755,16 @@ mod tests {
              a column name, bound or placeholder passed to a query builder and a substr start \
              inside a query or format string among them - or is marked as carrying none with \
              its reason (a signature, a `use`, a doc line, a brace).",
+            "each class the working discipline's rule spells read by its spelling - every \
+             argument of every call you add or change, every `?`, every `return`, `break` and \
+             `continue` among them",
+            "After that walk the record carries one tally line per spelled class, `<class>: <n> \
+             in hunks, <n> probed`, the two counts equal",
+            "the `?`, `return`, `break` and `continue` counts are the ones this command prints, \
+             run in your worktree's root: `git diff -U0 $(git merge-base rigger-run HEAD)..HEAD \
+             -- crates src | awk",
+            "gsub(/\"([^\"\\\\]|\\\\.)*\"/, \"\", s)",
+            "q += gsub(/\\?([;.),\\] ]|$)/, \"\", s)",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
