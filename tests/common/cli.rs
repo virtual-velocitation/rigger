@@ -668,9 +668,7 @@ pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, Projector) {
 /// `(root-relative path, source text)` pair, is written there: a first build, or a rebuild over
 /// the files' next generation.
 pub fn rebuilt_graph(root: &Path, files: &[(&str, &str)]) -> Projector {
-    for (path, source) in files {
-        std::fs::write(root.join(path), source).unwrap();
-    }
+    super::fixtures::write_files(root, files);
     run_rigger_ok(root, &["graph", "build"]);
     open_graph(root)
 }

@@ -2433,22 +2433,16 @@ mod tests {
     /// an index holding one of each beside a call.
     #[test]
     fn tagged_references_move_no_degree_commonness_rank_or_radius() {
+        use crate::rust_definition_sources::{
+            REFERENCE_KINDS_DEFINER as DEFINER, REFERENCE_KINDS_USER as USER,
+        };
         let mut idx = SymbolIndex::default();
-        for (path, src) in [
-            (
-                "src/shapes.rs",
-                "pub struct Kestrel;\npub const QUOTA_CAP: u32 = 3;\npub fn draw() {}\n",
-            ),
-            (
-                "src/user.rs",
-                "use crate::shapes::Kestrel;\nfn paint(k: Kestrel) -> u32 { draw(); QUOTA_CAP }\n",
-            ),
-        ] {
+        for (path, src) in crate::rust_definition_sources::REFERENCE_KINDS_TREE {
             idx.insert_file(path.into(), crate::symbol_index::extracted("rs", src));
         }
         assert_eq!(
-            crate::symbol_index::tagged_refs(&idx.files()["src/user.rs"]),
-            "1 use Kestrel -\n2 type Kestrel paint\n2 const QUOTA_CAP paint"
+            crate::symbol_index::tagged_refs(&idx.files()[USER]),
+            crate::rust_definition_sources::REFERENCE_KINDS_USER_TAGGED
         );
         let names = ["Kestrel", "QUOTA_CAP", "draw"];
         assert_eq!(
@@ -2462,15 +2456,7 @@ mod tests {
             .map(|h| (h.file, h.line))
             .collect();
         hits.sort();
-        assert_eq!(
-            hits,
-            [
-                ("src/shapes.rs", 1),
-                ("src/shapes.rs", 2),
-                ("src/shapes.rs", 3),
-                ("src/user.rs", 2)
-            ]
-        );
+        assert_eq!(hits, [(DEFINER, 1), (DEFINER, 2), (DEFINER, 3), (USER, 2)]);
         let g = Symbols {
             root: String::new(),
             override_lang: None,
@@ -2482,16 +2468,10 @@ mod tests {
             .into_iter()
             .map(|r| (r.loc.file, r.loc.line, r.degree))
             .collect();
-        assert_eq!(
-            ranked,
-            [
-                ("src/shapes.rs".into(), 1, 0),
-                ("src/shapes.rs".into(), 3, 1)
-            ]
-        );
+        assert_eq!(ranked, [(DEFINER.into(), 1, 0), (DEFINER.into(), 3, 1)]);
         for (query, radius) in [
-            ("`Kestrel` `QUOTA_CAP`", &["src/shapes.rs"][..]),
-            ("`draw`", &["src/shapes.rs", "src/user.rs"][..]),
+            ("`Kestrel` `QUOTA_CAP`", &[DEFINER][..]),
+            ("`draw`", &[DEFINER, USER][..]),
         ] {
             let br = g.blast_radius(query, 8);
             let radius: Vec<String> = radius.iter().map(|f| f.to_string()).collect();

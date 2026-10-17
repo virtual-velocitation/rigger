@@ -3,7 +3,7 @@
 
 #![allow(unused_imports)]
 
-use super::fixtures::write_file;
+use super::fixtures::write_files;
 use std::path::{Path, PathBuf};
 
 pub use super::fixtures::{
@@ -12,12 +12,10 @@ pub use super::fixtures::{
     trimmed_stdout,
 };
 
-/// Write each `(path, content)` of `files` into `repo` through the shared [`write_file`], commit
+/// Write each `(path, content)` of `files` into `repo` through the shared [`write_files`], commit
 /// everything as `message` through [`git_commit_all`], and return the new HEAD.
 pub fn commit_files(repo: &Path, files: &[(&str, &str)], message: &str) -> String {
-    for (rel, content) in files {
-        write_file(&repo.join(rel), content.as_bytes());
-    }
+    write_files(repo, files);
     git_commit_all(repo, message);
     git_out(repo, &["rev-parse", "HEAD"])
 }

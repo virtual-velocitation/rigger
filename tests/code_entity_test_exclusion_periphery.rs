@@ -116,7 +116,7 @@ mod symbol_index;
 
 use rigger::grounder::symbols::model::{Def, Kind, Lang};
 use symbol_index::{
-    assert_saved_without_key, def, legacy_file, rust_file, saved_with_key, sym_ref,
+    assert_saved_without_key, def, defining_f, legacy_file, rust_file, saved_with_key, sym_ref,
 };
 
 // ---- serialized-form / back-compat contract (parser-free model + store: BOTH feature lanes) ----
@@ -144,10 +144,7 @@ rigger::test_cases! {
     /// additive, no re-serialization churn" contract.
     is_test_false_serializes_byte_identically_to_the_pre86_form: assert_saved_without_key(
         "a.rs",
-        rust_file(
-            vec![def(Kind::Function, "f")],
-            vec![sym_ref("g", 2, None, false)],
-        ),
+        defining_f(vec![sym_ref("g", 2, None, false)]),
         "is_test",
         "product-only code (is_test: false throughout) must omit the is_test key \
          entirely (byte-identical to the pre-86 on-disk form)",

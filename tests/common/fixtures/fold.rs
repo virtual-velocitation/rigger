@@ -894,6 +894,12 @@ pub fn live_file_and_entity_ids(g: &Graph) -> [Vec<String>; 2] {
     [KIND_FILE, KIND_CODE_ENTITY].map(|kind| live_node_ids(g, kind))
 }
 
+/// The `file` node ids `files` and the `code-entity` node ids `entities`, each in the order
+/// given: the expected side of a [`live_file_and_entity_ids`] comparison.
+pub fn file_and_entity_ids(files: &[&str], entities: &[&str]) -> [Vec<String>; 2] {
+    [files, entities].map(|ids| ids.iter().map(|id| id.to_string()).collect())
+}
+
 /// Every definition `p`'s whole graph holds - a code entity carrying a non-empty `name`, never a
 /// placeholder or a bare node - as its id, sorted.
 pub fn definition_ids(p: &Projector) -> Vec<String> {

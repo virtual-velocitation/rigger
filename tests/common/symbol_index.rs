@@ -1,7 +1,7 @@
 //! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file
 //! index, saving it through the real `store` boundary and reading the bytes back, writing a
 //! hand-authored `index.json` under the current extraction generation and loading a legacy one
-//! through the real `store::load`, projecting a file's definitions, its test-marked
+//! through the real `store::load`, building a tree's index and reloading it, projecting a file's definitions, its test-marked
 //! definitions and references and its call references with their callers, checking a language's definition
 //! types against a file's definitions, checking a language's definitions fixture whole and a source's callers whole,
 //! projecting a file's definition extents, checking the variant names a file's kinds persist
@@ -56,6 +56,16 @@ pub fn rust_file(defs: Vec<Def>, refs: Vec<SymRef>) -> FileSymbols {
         refs,
         partial: false,
     }
+}
+
+/// A fully-parsed Rust file defining the function `f` and holding `refs`.
+pub fn defining_f(refs: Vec<SymRef>) -> FileSymbols {
+    rust_file(vec![def(Kind::Function, "f")], refs)
+}
+
+/// The call to `G` on line 2, inside the function `f` ([`defining_f`]).
+pub fn g_called_in_f() -> SymRef {
+    sym_ref("G", 2, Some("f"), false)
 }
 
 /// An index holding `symbols` under `path`, saved through the real `store::save` under a fresh
@@ -128,6 +138,17 @@ pub fn saved_with_key(path: &str, symbols: FileSymbols, key: &str, why: &str) ->
     let bytes = &saved.bytes;
     assert!(bytes.contains(key), "{why}; got:\n{bytes}");
     saved.reload()
+}
+
+/// The index the public `build_index` builds over the tree at `root`, beside that index saved
+/// through the real `store::save` and read back through the real `store::load`: the one trip of
+/// an extracted index across the persistence boundary.
+#[cfg(feature = "symbols")]
+pub fn built_and_reloaded(root: &str) -> (SymbolIndex, SymbolIndex) {
+    let idx = rigger::grounder::symbols::build_index(root, None);
+    store::save(&idx, root).unwrap();
+    let loaded = store::load(root).expect("the built index persists and reloads");
+    (idx, loaded)
 }
 
 /// The grammar and query entry registered for the extension `ext`: the one lookup of a registered

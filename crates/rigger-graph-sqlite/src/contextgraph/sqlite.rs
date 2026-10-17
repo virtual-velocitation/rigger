@@ -14605,7 +14605,7 @@ mod tests {
         let g = p.whole().unwrap();
         assert_eq!(
             crate::test_support::live_file_and_entity_ids(&g),
-            [["a.rs"], ["a.rs::read"]].map(|ids| ids.map(String::from).to_vec())
+            crate::test_support::file_and_entity_ids(&["a.rs"], &["a.rs::read"])
         );
         crate::test_support::assert_live(
             &p,
@@ -14642,8 +14642,7 @@ mod tests {
         let g = p.whole().unwrap();
         assert_eq!(
             crate::test_support::live_file_and_entity_ids(&g),
-            [vec!["u.rs", "v.rs"], vec!["u.rs::helper"]]
-                .map(|ids| ids.into_iter().map(String::from).collect::<Vec<_>>())
+            crate::test_support::file_and_entity_ids(&["u.rs", "v.rs"], &["u.rs::helper"])
         );
         assert_eq!(
             crate::test_support::attrs_of(&p, "v.rs"),

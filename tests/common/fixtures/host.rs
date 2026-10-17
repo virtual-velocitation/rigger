@@ -20,6 +20,13 @@ pub fn write_file(path: &Path, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
 }
 
+/// Write each `(root-relative path, text)` of `files` under `root` through [`write_file`].
+pub fn write_files(root: &Path, files: &[(&str, &str)]) {
+    for (path, text) in files {
+        write_file(&root.join(path), text.as_bytes());
+    }
+}
+
 /// Write `content` at `rel` under `root`, creating parent directories.
 pub fn write_text(root: &Path, rel: &str, content: &str) {
     write_file(&root.join(rel), content.as_bytes());
