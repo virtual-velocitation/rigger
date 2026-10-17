@@ -152,7 +152,11 @@ list - every item the hunks touch, new or pre-existing, its body or its doc chan
 item's count run as
 `git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) { print FILENAME ":" FNR }'`
 with its name, and the record pairs each item of the hunk list with its count, the lines read
-and its callers. On every round, the first and each later one alike, `<base>` is the
+and its callers. Each item the hunks add - a constant, static, list, closure, predicate or fn -
+carries beside its count its one-home line in one of the working discipline's three forms: `no
+other spelling` with the terms searched (its name count, its caller lookup and the fact's
+distinguishing literal - a table name, a kind string - run with the count above), `derived from
+<file:line>` or `pinned to <file:line> by <test>`. On every round, the first and each later one alike, `<base>` is the
 unit's merge base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is
 `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the round's delta your
 prompt carries. The walk is recorded as one `<unit>-sentence-walk` DecisionMade
@@ -187,7 +191,9 @@ new qualifier or CHECKED with the reason it does not reach it.
 Every mutable token of your production delta is probed on your committed tree: list the tokens
 from the production hunks of `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src`
 with the test regions left out (files under a `tests/` directory and hunks inside a
-`#[cfg(test)]` module); after each single mutation run the owning crate's unit tests,
+`#[cfg(test)]` module), each class the working discipline's rule spells read by its spelling -
+every argument of every call you add or change, every `?`, every `return`, `break` and
+`continue` among them; after each single mutation run the owning crate's unit tests,
 `cargo test -p <crate> --lib` for a file under `crates/` or `cargo test --lib --bin rigger` for
 one under `src/`, and each root test binary the unit touched by `cargo test --test <name>`, then
 restore the file with `git checkout -- <file>` before the next. The `<unit>-mutant-probes`
@@ -198,7 +204,10 @@ it lacks. The record walks the production lines of
 in file order: each added or changed line names its mutable tokens with their probes - a SQL
 conjunct, a column name, bound or placeholder passed to a query builder and a substr start
 inside a query or format string among them - or is marked as carrying none with its reason (a
-signature, a `use`, a doc line, a brace).
+signature, a `use`, a doc line, a brace). After that walk the record carries one tally line per
+spelled class, `<class>: <n> in hunks, <n> probed`, the two counts equal; the `?`, `return`,
+`break` and `continue` counts are the ones `sh .rigger/gates/token-count.sh` prints, run from
+your worktree's root.
 
 ## Every test must survive mutation testing
 
