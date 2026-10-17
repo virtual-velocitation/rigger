@@ -475,13 +475,17 @@ pub fn project_events(root: &str) -> Vec<rigger::eventstore::Event> {
         .collect()
 }
 
-/// The `CodeEntityExtracted` payloads the production whole-project ingest emits for `root`.
+/// The payloads of every `type_` event the production whole-project ingest emits for `root`.
+#[cfg(feature = "symbols")]
+pub fn project_payloads(root: &Path, type_: &str) -> Vec<serde_json::Value> {
+    fixtures::payloads_of_type(&project_events(root.to_str().unwrap()), type_)
+}
+
+/// The `CodeEntityExtracted` payloads the production whole-project ingest emits for `root`
+/// ([`project_payloads`]).
 #[cfg(feature = "symbols")]
 pub fn code_entity_payloads(root: &Path) -> Vec<serde_json::Value> {
-    fixtures::payloads_of_type(
-        &project_events(root.to_str().unwrap()),
-        rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-    )
+    project_payloads(root, rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED)
 }
 
 /// A payload's `name` and one key's JSON value, `None` when it has no such key.

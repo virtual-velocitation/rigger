@@ -65,6 +65,15 @@ pub fn payloads_of_type(events: &[Event], type_: &str) -> Vec<serde_json::Value>
         .collect()
 }
 
+/// The `(name, ref_kind)` of each of `payloads` that carries a `ref_kind` (spec 117: a tagged
+/// `EdgeInferred`), in order.
+pub fn tagged_payloads(payloads: &[serde_json::Value]) -> Vec<(&str, &str)> {
+    payloads
+        .iter()
+        .filter_map(|p| Some((p["name"].as_str()?, p["ref_kind"].as_str()?)))
+        .collect()
+}
+
 /// `events` stamped with 1-based log positions, as the store stamps them on append, so a
 /// position-sensitive read (a cursor, `?since=`, a position-ordered fold) sees a realistic
 /// monotonic stream.

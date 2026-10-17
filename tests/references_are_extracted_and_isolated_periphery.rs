@@ -8,8 +8,8 @@
 //!  - the graph `rigger graph build` folds: a real tree's tagged references fold no edge and no
 //!    placeholder, while its call folds as before; a file rewritten to a `use` alone keeps its
 //!    file node and loses every edge, and a new `use`-only file gains its file node; and the tagged
-//!    references of a test file or of a `#[cfg(test)]` module fold no edge and prove no
-//!    definition, while their call proves one;
+//!    references of a test file, of a `#[cfg(test)]` module or under their own `#[cfg(test)]`
+//!    fold no edge and prove no definition, while their call proves one;
 //!  - the persisted symbol index: `SymRef.ref_kind` is written for a tagged reference and omitted
 //!    for a call, the form an index saved before the field existed holds, and reads back so a
 //!    reloaded index counts no tagged reference as a call.
@@ -109,13 +109,20 @@ fn graph_build_over_use_only_files_folds_their_file_nodes_and_no_edge() {
 #[cfg(feature = "symbols")]
 const TEST_REGION_SOURCE: &str = "fn product() {}\n#[cfg(test)]\nmod tests {\n    use crate::shapes::Kestrel;\n    fn check(k: Kestrel) -> u32 { draw(); QUOTA_CAP }\n}\n";
 
+/// A production file whose test code sits under its own `#[cfg(test)]` attributes: a top-level
+/// `use` of `Kestrel`, and in the production `fn product` a `let` taking `Kestrel` as its type and
+/// reading `QUOTA_CAP` and an expression statement calling `draw`.
+#[cfg(feature = "symbols")]
+const TEST_ATTRIBUTED_SOURCE: &str = "#[cfg(test)]\nuse crate::shapes::Kestrel;\npub fn product() -> u32 {\n    #[cfg(test)]\n    let k: Kestrel = QUOTA_CAP;\n    #[cfg(test)]\n    draw();\n    0\n}\n";
+
 /// GIVEN the reference-kinds tree's definer beside test code that imports `Kestrel`, takes it as
 /// a parameter type, calls `draw` and reads `QUOTA_CAP` - a test file `tests/kestrel.rs` holding
-/// the user file's body, or the `#[cfg(test)]` module of a production file `src/probe.rs`,
+/// the user file's body, the `#[cfg(test)]` module of a production file `src/probe.rs`, or the
+/// test-attributed `use`, `let` and expression statement of a production file `src/gated.rs`,
 /// WHEN the operator runs `rigger graph build`,
 /// THEN no `REFERENCES` or `CALLS` edge stands and `draw` alone carries the test code's evidence
 /// (`proven_by`): its `use`, type reference and const read prove neither `Kestrel` nor
-/// `QUOTA_CAP`.
+/// `QUOTA_CAP`, and the production ingest emits no `ref_kind` event for any of them.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_proves_a_definition_by_test_code_s_call_alone() {
@@ -123,8 +130,9 @@ fn graph_build_proves_a_definition_by_test_code_s_call_alone() {
     for test_code in [
         ("tests/kestrel.rs", user_source),
         ("src/probe.rs", TEST_REGION_SOURCE),
+        ("src/gated.rs", TEST_ATTRIBUTED_SOURCE),
     ] {
-        let (_project, graph) = common::cli::built_graph(&[definer, test_code]);
+        let (project, graph) = common::cli::built_graph(&[definer, test_code]);
 
         assert_eq!(
             common::fixtures::landed(&graph),
@@ -136,6 +144,14 @@ fn graph_build_proves_a_definition_by_test_code_s_call_alone() {
             DEFINER_ENTITIES.map(|id| common::fixtures::proven_by_attr(&graph, id)),
             [None, None, Some("1".to_string())],
             "{}: the test code's call to `draw` is its one proof",
+            test_code.0
+        );
+        let edges =
+            common::project_payloads(project.path(), rigger::contextgraph::TYPE_EDGE_INFERRED);
+        assert_eq!(
+            common::fixtures::tagged_payloads(&edges),
+            [],
+            "{}: test code emits no ref_kind event",
             test_code.0
         );
     }

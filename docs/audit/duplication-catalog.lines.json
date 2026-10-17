@@ -599,8 +599,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 624,
-        "end_line": 626
+        "start_line": 633,
+        "end_line": 635
       },
       {
         "file": "tests/common/real_driver_spy.rs",
@@ -4919,8 +4919,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 516,
-        "end_line": 530
+        "start_line": 520,
+        "end_line": 534
       }
     ]
   },
@@ -5279,8 +5279,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 824,
-        "end_line": 826
+        "start_line": 833,
+        "end_line": 835
       }
     ]
   },
@@ -7539,13 +7539,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 185,
-        "end_line": 192
+        "start_line": 194,
+        "end_line": 201
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 214,
-        "end_line": 221
+        "start_line": 223,
+        "end_line": 230
       }
     ]
   },
@@ -7554,13 +7554,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 211,
-        "end_line": 213
+        "start_line": 220,
+        "end_line": 222
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 239,
-        "end_line": 241
+        "start_line": 248,
+        "end_line": 250
       }
     ]
   },
@@ -7569,8 +7569,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 222,
-        "end_line": 229
+        "start_line": 231,
+        "end_line": 238
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
@@ -7584,13 +7584,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 720,
-        "end_line": 728
+        "start_line": 729,
+        "end_line": 737
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 787,
-        "end_line": 795
+        "start_line": 796,
+        "end_line": 804
       }
     ]
   },

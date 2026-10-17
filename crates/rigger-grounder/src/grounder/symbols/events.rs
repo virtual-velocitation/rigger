@@ -2977,10 +2977,7 @@ mod tests {
                 &super::bytes_batch(path, Some(src.as_bytes()), false),
                 TYPE_EDGE_INFERRED,
             );
-            let kinds: Vec<(&str, &str)> = edges
-                .iter()
-                .filter_map(|p| Some((p["name"].as_str()?, p["ref_kind"].as_str()?)))
-                .collect();
+            let kinds = crate::event_fixtures::tagged_payloads(&edges);
             assert_eq!(kinds, tagged, "{path}: the tagged events");
             let evidence: Vec<&str> = edges
                 .iter()
