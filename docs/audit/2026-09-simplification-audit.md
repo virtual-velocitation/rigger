@@ -4306,8 +4306,8 @@ Proposed home: `grounder::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:998-1051` `a_resolved_name_grounds_on_its_definer_and_call_sites_never_on_a_comment_mention`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1450-1487` `structural_view_is_cross_language_a_python_referencer_of_a_rust_symbol_is_included`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:999-1052` `a_resolved_name_grounds_on_its_definer_and_call_sites_never_on_a_comment_mention`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1451-1488` `structural_view_is_cross_language_a_python_referencer_of_a_rust_symbol_is_included`
 
 #### `dup-9c17d63a062c` (exact, 3 sites)
 
@@ -4315,9 +4315,9 @@ Proposed home: `grounder::support (consolidate these 3 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1130-1140` `blast_radius_grounds_a_path_the_tree_holds_on_that_file_alone`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1176-1186` `blast_radius_text_search_matches_a_trailing_underscore_span_as_a_prefix`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1191-1201` `blast_radius_text_search_matches_a_span_only_on_identifier_boundaries`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1131-1141` `blast_radius_grounds_a_path_the_tree_holds_on_that_file_alone`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1177-1187` `blast_radius_text_search_matches_a_trailing_underscore_span_as_a_prefix`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1192-1202` `blast_radius_text_search_matches_a_span_only_on_identifier_boundaries`
 
 #### `dup-d36198b3982d` (near, 2 sites)
 
@@ -4325,8 +4325,8 @@ Proposed home: `grounder::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1590-1601` `a_reference_ranks_below_a_definition_of_the_same_name`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1840-1854` `ground_ranks_an_exact_name_match_above_a_name_that_merely_contains_the_token`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1591-1602` `a_reference_ranks_below_a_definition_of_the_same_name`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1841-1855` `ground_ranks_an_exact_name_match_above_a_name_that_merely_contains_the_token`
 
 #### `dup-56485f8d4262` (near, 3 sites)
 
@@ -4334,9 +4334,9 @@ Proposed home: `grounder::support (consolidate these 3 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1757-1803` `a_concurrent_reindex_from_a_second_grounder_is_not_clobbered`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1806-1832` `reindex_replaces_only_a_changed_files_symbols`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:2131-2158` `reindex_over_a_deleted_file_stops_grounding_it`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1758-1804` `a_concurrent_reindex_from_a_second_grounder_is_not_clobbered`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1807-1833` `reindex_replaces_only_a_changed_files_symbols`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:2132-2159` `reindex_over_a_deleted_file_stops_grounding_it`
 
 #### `dup-415d2df07b98` (near, 2 sites)
 

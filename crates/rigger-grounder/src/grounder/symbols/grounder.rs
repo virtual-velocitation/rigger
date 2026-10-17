@@ -739,8 +739,9 @@ impl Grounder for Symbols {
     /// unique by construction, so two DIFFERENT definitions sharing a name (the constraints
     /// walk: "a name defined in two files - `ground` returns both entities as separate rows")
     /// never collapse into one, even when they share a file (six same-named methods on six
-    /// structs in one file stay six rows). A REFERENCE is absorbed into its SOLE definer's row
-    /// when the name has EXACTLY one definition anywhere in the tree; a name with ZERO or
+    /// structs in one file stay six rows). A REFERENCE - a call reference, the one kind
+    /// [`scored_hits`] reads (spec 117) - is absorbed into its SOLE definer's row when the name
+    /// has EXACTLY one definition anywhere in the tree; a name with ZERO or
     /// AMBIGUOUS (multiple) definitions is never guessed at - its references stand alone as
     /// their own (unattributed) entity rather than being pinned to one of several candidates.
     /// `degree` is the real [`SymbolIndex::reference_degree`] for the entity's name and
