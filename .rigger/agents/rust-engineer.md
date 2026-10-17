@@ -152,8 +152,8 @@ list - every item the hunks touch, new or pre-existing, its body or its doc chan
 item's count run as
 `git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) { print FILENAME ":" FNR }'`
 with its name, and the record pairs each item of the hunk list with its count, the lines read
-and its callers. Each item the hunks add - a constant, static, list, closure, predicate or fn -
-carries beside its count its one-home line in one of the working discipline's three forms: `no
+and its callers. Each item the hunks add - a constant, static, list, closure, predicate - a SQL
+conjunct inside a query string included - or fn - carries beside its count its one-home line in one of the working discipline's three forms: `no
 other spelling` with the terms searched (its name count, its caller lookup and the fact's
 distinguishing literal - a table name, a kind string - run with the count above), `derived from
 <file:line>` or `pinned to <file:line> by <test>`. On every round, the first and each later one alike, `<base>` is the
