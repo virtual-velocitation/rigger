@@ -205,7 +205,12 @@ tool that searches them.
   value, a bound moved by one), a statement in one arm of a branch (delete it), a match arm
   (swap it with a sibling), every `?` operator (replace it by the swallow that compiles for its
   value, so the error arm yields a value instead of returning), and every `return`, `break` and
-  `continue` (remove it). Check: enumerate the tokens
+  `continue` (remove it). The `?` swallows are `let _ = <expr>;` or `.ok()` where the value is
+  unused, `.unwrap_or_default()` where the value is used and its type has a default, and
+  `.unwrap_or(<the type's empty value>)` otherwise; a `?` is `unviable` only when every swallow
+  of this list fails to compile, each tried at its site with its compiler error quoted in the
+  record, and a `?` whose value's type has a default is never unviable. Check: enumerate the
+  tokens
   from your production hunks over the unit's whole range, the merge base with the run branch to
   head; apply each mutation in your worktree one at a time, run the crate's tests and the
   touched test binaries, read the red, and restore the tree - a probe is over before your turn
