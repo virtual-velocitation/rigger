@@ -235,6 +235,19 @@ tool that searches them.
   production hunks itself, string literals and test regions left out, reads each added or
   changed call's arguments, and compares each class's count with the record's tally line: a
   short tally, or a token with no probe, is a BLOCKING finding on its own.
+- **Every fact your production delta states has one home.** A constant, static, list, closure
+  or predicate your production hunks add states a fact, and the tree spells that fact once:
+  read from the spelling that exists, or held equal to it by a test. Check: name its home. The
+  `<unit>-sentence-walk` record carries, beside the count of each constant, static, list,
+  closure or predicate your production hunks add, its one-home line in one of three forms: `no
+  other spelling` with the terms searched - the name count and the graph lookup the walk
+  already runs, and the fact's distinguishing literal (a table name, a kind string); `derived
+  from <file:line>`, the hunk reading the existing spelling; or `pinned to <file:line> by
+  <test>`, where a derivation is impossible and a test holds the two spellings equal. An added
+  item with no line is a record you cannot write. The architecture lens reads the walk record's
+  one-home lines for every item the unit adds: an added item with no line, or a line false at
+  head - the fact has another spelling the line does not name, or the named derivation or pin
+  does not exist - is a BLOCKING finding on its own (DRY, single responsibility).
 - **A probe that edits your tree is over before your turn is.** A reversion probe, or any check
   that edits your worktree, runs to completion and restores the tree before your turn ends,
   never as a detached or background job: the attempt checkpoint commits whatever the worktree
