@@ -4258,6 +4258,25 @@ fn seed_leaf_leg_sql(projected: &str) -> String {
     )
 }
 
+/// The file of the source of every live `rel` edge in `project` whose target binds a leaf of the
+/// JSON array `leaves_json` ([`seed_leaf_leg_sql`] projecting [`source_file_sql`]), one per edge:
+/// one leg of [`referenced_not_called`] per relation.
+fn seed_leaf_files(
+    conn: &Connection,
+    rel: &str,
+    project: &str,
+    leaves_json: &str,
+) -> Result<Vec<String>, Error> {
+    conn.prepare(&seed_leaf_leg_sql(&source_file_sql()))
+        .and_then(|mut stmt| {
+            let files = stmt
+                .query_map(params![rel, project, leaves_json], |r| r.get(0))
+                .and_then(Iterator::collect);
+            files
+        })
+        .map_err(be)
+}
+
 /// The FILE nodes that reference the seed's leaves at file level or from a definition within them
 /// but call them from no function within them (spec 52 criterion 3 - the UP direction's
 /// "referenced but not called" sidecar). Sorted by id, scoped to `project`.
@@ -4293,24 +4312,12 @@ fn referenced_not_called(
 
     // Files that reference any seed leaf (a REFERENCES edge from the file container, or from a
     // definition within it, a staged reference's, listed as its file).
-    let mut ref_stmt = conn
-        .prepare(&seed_leaf_leg_sql(&source_file_sql()))
-        .map_err(be)?;
-    let referencing: Vec<String> = ref_stmt
-        .query_map(params![REL_REFERENCES, project, leaves_json], |r| r.get(0))
-        .map_err(be)?
-        .collect::<Result<_, _>>()
-        .map_err(be)?;
+    let referencing = seed_leaf_files(conn, REL_REFERENCES, project, &leaves_json)?;
 
     // Files that CALL any seed leaf from within (the file part of each caller-attributed CALLS edge).
-    let mut call_stmt = conn
-        .prepare(&seed_leaf_leg_sql(&source_file_sql()))
-        .map_err(be)?;
-    let calling: BTreeSet<String> = call_stmt
-        .query_map(params![REL_CALLS, project, leaves_json], |r| r.get(0))
-        .map_err(be)?
-        .collect::<Result<_, _>>()
-        .map_err(be)?;
+    let calling: BTreeSet<String> = seed_leaf_files(conn, REL_CALLS, project, &leaves_json)?
+        .into_iter()
+        .collect();
 
     // Referenced but not called: materialize each such file as its node, sorted by id.
     let mut files: Vec<String> = referencing
