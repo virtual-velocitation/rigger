@@ -107,15 +107,20 @@ BLOCKING on its own, citing the item, the count you got and its callers.
 You are also the enforcement of the built-in rule that every mutable token of the production
 delta is pinned. You derive the token set yourself from the production hunks of `git diff
 $(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out - every
-comparison operator, arithmetic offset, boolean operand, call argument that is a range, index or
-bound, statement in one arm of a branch, match arm, early return and continue the unit adds or
-changes - and compare it with the author's `<unit>-mutant-probes` record. You compare the two
+token of a class the working discipline's rule lists that the unit adds or changes - and compare
+it with the author's `<unit>-mutant-probes` record. You compare the two
 line by line: a token inside a query string, a format string or a macro argument the code
 executes is a token of its line (a SQL conjunct a boolean operand; a column name, bound or
 placeholder passed to a query builder a call argument; a substr start an index), and a
 production line those hunks add or change that the record does not disposition - naming its
 tokens with their probes, or marked as carrying none with its reason - is BLOCKING on its own,
-citing the line. Every token the record
+citing the line. You count the classes yourself as well: the
+`?`, `return`, `break` and `continue` of the production hunks with the authors' count command,
+run in your own worktree's root, and the arguments of each call those hunks add or change, read
+call by call (`git diff -U0 $(git merge-base rigger-run HEAD)..HEAD -- crates src | awk '/^\+\+\+ / { f = substr($2, 3); t = 0; if (f ~ /\.rs$/ && f !~ /(^|\/)tests\//) { c = "git show HEAD:" f; n = 0; p = ""; while ((c | getline l) > 0) { n++; if (!t && p ~ /^#\[cfg\(test\)\]/ && l ~ /^(pub(\([a-z]+\))? )?mod [^;]*[{]/) t = n; p = l } close(c) } next } /^@@/ { split($3, a, ","); ln = substr(a[1], 2) + 0; next } /^\+/ { if (f ~ /\.rs$/ && f !~ /(^|\/)tests\// && (!t || ln < t)) { s = substr($0, 2); gsub(/"([^"\\]|\\.)*"/, "", s); sub(/\/\/.*/, "", s); q += gsub(/\?([;.),\] ]|$)/, "", s); r += gsub(/(^|[^A-Za-z0-9_])return([^A-Za-z0-9_]|$)/, " ", s); b += gsub(/(^|[^A-Za-z0-9_])break([^A-Za-z0-9_]|$)/, " ", s); k += gsub(/(^|[^A-Za-z0-9_])continue([^A-Za-z0-9_]|$)/, " ", s) } ln++ } END { print "?: " q + 0 ", return: " r + 0 ", break: " b + 0 ", continue: " k + 0 }'`); you
+compare each class's count with the record's tally line for it, and a tally short of your
+count, or a token with no probe, is BLOCKING on its own, citing the class, both counts and the
+unprobed tokens. Every token the record
 lacks you probe yourself in a scratch worktree (`git worktree add <scratch> HEAD`), one mutation
 at a time, `<scratch>` a directory outside the repository, running `cargo test -p <crate> --lib`
 for a file under `crates/` or `cargo test --lib --bin rigger` for one under `src/` and each
