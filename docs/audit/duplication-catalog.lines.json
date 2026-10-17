@@ -1009,8 +1009,8 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 439,
-        "end_line": 439
+        "start_line": 453,
+        "end_line": 453
       },
       {
         "file": "tests/product_binary_authority_periphery.rs",
@@ -1075,7 +1075,7 @@
     ]
   },
   {
-    "id": "dup-ee609dc6129b",
+    "id": "dup-8fc8aa485304",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1869,48 +1869,58 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3643,
-        "end_line": 3643
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 3645,
-        "end_line": 3645
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 3646,
-        "end_line": 3646
-      },
-      {
-        "file": "src/cli/setup.rs",
         "start_line": 3647,
         "end_line": 3647
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3657,
-        "end_line": 3657
+        "start_line": 3649,
+        "end_line": 3649
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3660,
-        "end_line": 3660
+        "start_line": 3650,
+        "end_line": 3650
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3674,
-        "end_line": 3674
+        "start_line": 3651,
+        "end_line": 3651
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3758,
-        "end_line": 3758
+        "start_line": 3661,
+        "end_line": 3661
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3906,
-        "end_line": 3906
+        "start_line": 3664,
+        "end_line": 3664
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3678,
+        "end_line": 3678
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3773,
+        "end_line": 3773
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3775,
+        "end_line": 3775
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3932,
+        "end_line": 3932
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3954,
+        "end_line": 3954
       },
       {
         "file": "src/cli/validate.rs",
@@ -3599,23 +3609,23 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 368,
-        "end_line": 368
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "start_line": 392,
-        "end_line": 392
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "start_line": 402,
-        "end_line": 402
+        "start_line": 382,
+        "end_line": 382
       },
       {
         "file": "tests/principle_gates_wiring.rs",
         "start_line": 406,
         "end_line": 406
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "start_line": 416,
+        "end_line": 416
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "start_line": 420,
+        "end_line": 420
       },
       {
         "file": "tests/projections_stay_local.rs",

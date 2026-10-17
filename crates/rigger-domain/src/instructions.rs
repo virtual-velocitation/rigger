@@ -314,13 +314,19 @@ mod tests {
     /// on its own, its record listing every sentence it
     /// reads, the CHECKED members included, never a grouped verdict, with a renamed name's old
     /// spelling counted to zero, nothing added that nothing reads, the red test's body untouched
-    /// by the green commit, every mutable token of the production delta - an operator, an
-    /// offset, an operand, a range argument, an arm's statement, a match arm, an early return -
-    /// mutated by hand one at a time with the red test recorded in a record organised by
-    /// production line - each line naming its tokens, a token inside a query, format or macro
-    /// string included, or marked as carrying none - a green probe pinned or reshaped away, the
-    /// hand enumeration standing beside the mutation gate and the SDET lens probing every token
-    /// the record lacks and comparing its token set with the record line by line, and a probe that edits the tree - the sharpest case of a turn's end being
+    /// by the green commit, every mutable token of the production delta, each class named by its
+    /// source spelling - an operator, an offset, an operand, every argument of every added or
+    /// changed call, an arm's statement, a match arm, every `?`, `return`, `break` and
+    /// `continue` - mutated by hand one at a time with the red test recorded in a record
+    /// organised by production line - each line naming its tokens, a token inside a query,
+    /// format or macro string included, or marked as carrying none - and closed by one tally
+    /// line per spelled class, its hunk and probe counts equal, a green probe pinned or reshaped
+    /// away, the hand enumeration standing beside the mutation gate and the SDET lens probing
+    /// every token the record lacks, comparing its token set with the record line by line and
+    /// counting each class itself against the tally, every constant, static, list, closure or
+    /// predicate the delta adds naming its one home in the sentence-walk record - no other
+    /// spelling, derived from or pinned to the existing one - with the architecture lens
+    /// blocking on a missing or false line, and a probe that edits the tree - the sharpest case of a turn's end being
     /// the session's end - run to completion and restored before the turn ends; the gates'
     /// check names each gate command run to completion inside the turn. Read by its words, so
     /// a rewrap never moves a verdict.
@@ -540,11 +546,14 @@ mod tests {
             "Nothing is added that nothing reads.",
             "makes the red test pass without rewriting its body",
             "Every mutable token of your production delta is pinned.",
-            "the list is open: a comparison operator (flip its bound), an arithmetic offset \
-             (drop the +1 or -1), a boolean operand (negate or remove it), a call argument that \
-             is a range, index or bound (degenerate it), a statement in one arm of a branch \
-             (delete it), a match arm (swap it with a sibling), an early return or continue \
-             (remove it)",
+            "the list names each class by the spelling you read in the source, and it is open: \
+             a comparison operator (flip its bound), an arithmetic offset (drop the +1 or -1), a \
+             boolean operand (negate or remove it), every argument of every call you add or \
+             change (degenerate it to the value that drops its arm - `None`, zero, the empty \
+             value, a sibling's value, a bound moved by one), a statement in one arm of a branch \
+             (delete it), a match arm (swap it with a sibling), every `?` operator (replace it by \
+             a swallow - `let _ = <expr>` or `.ok()` - so the error arm no longer returns), and \
+             every `return`, `break` and `continue` (remove it)",
             "enumerate the tokens from your production hunks over the unit's whole range, the \
              merge base with the run branch to head",
             "apply each mutation in your worktree one at a time, run the crate's tests and the \
@@ -555,6 +564,10 @@ mod tests {
              or changes, in file order, either names its mutable tokens, each with its probe, or \
              is marked as carrying none with the named reason (a signature, a `use`, a doc line, \
              a brace); a line with no disposition is a record you cannot write.",
+            "After its per-line walk the record carries one tally line per spelled class - \
+             `<class>: <n> in hunks, <n> probed` - the count of that class's tokens in the \
+             production hunks and the count of its probes, the two equal; a short tally is a \
+             record you cannot write.",
             "A token inside a query string, a format string or a macro argument the production \
              code executes is a token of its line: a SQL conjunct is a boolean operand, a column \
              name, bound or placeholder passed to a query builder is a call argument, and a \
@@ -571,6 +584,22 @@ mod tests {
              unit's whole range and probes every token the record lacks: a probe that leaves \
              every test green, or a token with no recorded probe, is a BLOCKING finding on its \
              own.",
+            "The lens counts the `?`, `return`, `break` and `continue` of the production hunks \
+             itself, string literals and test regions left out, reads each added or changed \
+             call's arguments, and compares each class's count with the record's tally line: a \
+             short tally, or a token with no probe, is a BLOCKING finding on its own.",
+            "Every fact your production delta states has one home.",
+            "The `<unit>-sentence-walk` record carries, beside the count of each constant, \
+             static, list, closure or predicate your production hunks add, its one-home line in \
+             one of three forms: `no other spelling` with the terms searched - the name count and \
+             the graph lookup the walk already runs, and the fact's distinguishing literal (a \
+             table name, a kind string); `derived from <file:line>`, the hunk reading the \
+             existing spelling; or `pinned to <file:line> by <test>`, where a derivation is \
+             impossible and a test holds the two spellings equal.",
+            "The architecture lens reads the walk record's one-home lines for every item the \
+             unit adds: an added item with no line, or a line false at head - the fact has \
+             another spelling the line does not name, or the named derivation or pin does not \
+             exist - is a BLOCKING finding on its own (DRY, single responsibility).",
             "A probe that edits your tree is over before your turn is.",
             "runs to completion and restores the tree before your turn ends, never as a \
              detached or background job",

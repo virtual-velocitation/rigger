@@ -198,10 +198,14 @@ tool that searches them.
   rewriting its body. Check: diff the test between its red commit and head.
 - **Every mutable token of your production delta is pinned.** Every token of the production
   code you add or change whose mutation would leave the behaviour wrong turns some test red when
-  it is mutated; the list is open: a comparison operator (flip its bound), an arithmetic offset
-  (drop the +1 or -1), a boolean operand (negate or remove it), a call argument that is a range,
-  index or bound (degenerate it), a statement in one arm of a branch (delete it), a match arm
-  (swap it with a sibling), an early return or continue (remove it). Check: enumerate the tokens
+  it is mutated; the list names each class by the spelling you read in the source, and it is
+  open: a comparison operator (flip its bound), an arithmetic offset (drop the +1 or -1), a
+  boolean operand (negate or remove it), every argument of every call you add or change
+  (degenerate it to the value that drops its arm - `None`, zero, the empty value, a sibling's
+  value, a bound moved by one), a statement in one arm of a branch (delete it), a match arm
+  (swap it with a sibling), every `?` operator (replace it by a swallow - `let _ = <expr>` or
+  `.ok()` - so the error arm no longer returns), and every `return`, `break` and `continue`
+  (remove it). Check: enumerate the tokens
   from your production hunks over the unit's whole range, the merge base with the run branch to
   head; apply each mutation in your worktree one at a time, run the crate's tests and the
   touched test binaries, read the red, and restore the tree - a probe is over before your turn
@@ -210,7 +214,10 @@ tool that searches them.
   with its assertion. The record is organised by production line: every production line the
   range adds or changes, in file order, either names its mutable tokens, each with its probe,
   or is marked as carrying none with the named reason (a signature, a `use`, a doc line, a
-  brace); a line with no disposition is a record you cannot write. A token inside a query
+  brace); a line with no disposition is a record you cannot write. After its per-line walk the
+  record carries one tally line per spelled class - `<class>: <n> in hunks, <n> probed` - the
+  count of that class's tokens in the production hunks and the count of its probes, the two
+  equal; a short tally is a record you cannot write. A token inside a query
   string, a format string or a macro argument the production code executes is a token of its
   line: a SQL conjunct is a boolean operand, a column name, bound or placeholder passed to a
   query builder is a call argument, and a substr start is an index. A token whose probe leaves
@@ -224,7 +231,23 @@ tool that searches them.
   range and probes every token the record lacks: a probe that leaves every test green, or a
   token with no recorded probe, is a BLOCKING finding on its own. The lens compares its token
   set with the record line by line: a production line the record does not disposition is a
-  BLOCKING finding on its own.
+  BLOCKING finding on its own. The lens counts the `?`, `return`, `break` and `continue` of the
+  production hunks itself, string literals and test regions left out, reads each added or
+  changed call's arguments, and compares each class's count with the record's tally line: a
+  short tally, or a token with no probe, is a BLOCKING finding on its own.
+- **Every fact your production delta states has one home.** A constant, static, list, closure
+  or predicate your production hunks add states a fact, and the tree spells that fact once:
+  read from the spelling that exists, or held equal to it by a test. Check: name its home. The
+  `<unit>-sentence-walk` record carries, beside the count of each constant, static, list,
+  closure or predicate your production hunks add, its one-home line in one of three forms: `no
+  other spelling` with the terms searched - the name count and the graph lookup the walk
+  already runs, and the fact's distinguishing literal (a table name, a kind string); `derived
+  from <file:line>`, the hunk reading the existing spelling; or `pinned to <file:line> by
+  <test>`, where a derivation is impossible and a test holds the two spellings equal. An added
+  item with no line is a record you cannot write. The architecture lens reads the walk record's
+  one-home lines for every item the unit adds: an added item with no line, or a line false at
+  head - the fact has another spelling the line does not name, or the named derivation or pin
+  does not exist - is a BLOCKING finding on its own (DRY, single responsibility).
 - **A probe that edits your tree is over before your turn is.** A reversion probe, or any check
   that edits your worktree, runs to completion and restores the tree before your turn ends,
   never as a detached or background job: the attempt checkpoint commits whatever the worktree
