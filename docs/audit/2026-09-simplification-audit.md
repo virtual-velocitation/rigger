@@ -2391,20 +2391,20 @@ __END__
 - `src/cli/setup.rs:3183-3183` `".rigger/workflow.yml"`
 - `src/cli/setup.rs:3413-3413` `".rigger"`
 - `src/cli/setup.rs:3441-3441` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:3643-3643` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:3645-3645` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:3646-3646` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:3647-3647` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:3657-3657` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:3660-3660` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:3674-3674` `"The count and the caller lookup run once per item of the walk's hunk list - every \
+- `src/cli/setup.rs:3647-3647` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:3649-3649` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:3650-3650` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:3651-3651` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:3661-3661` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:3664-3664` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:3678-3678` `"The count and the caller lookup run once per item of the walk's hunk list - every \
              item the hunks touch, new or pre-existing, its body or its doc changed - each \
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers."`
-- `src/cli/setup.rs:3758-3758` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:3906-3906` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:3778-3778` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:3929-3929` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
@@ -5285,7 +5285,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9165 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9166 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4996-5037` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15081-15103` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
