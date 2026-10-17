@@ -1693,13 +1693,15 @@ mod tests {
     }
 
     /// Spec 117 criterion 8: a declaring file whose name lacks `.rs` (one indexed as Rust under a
-    /// `--language` override) keeps its whole name as its module directory's last component.
+    /// `--language` override) keeps its whole name as its module directory's last component, so
+    /// `src/foo` names the candidates `src/foo.rs` does.
     #[test]
     fn module_candidates_of_a_declaring_file_without_the_rust_extension_keep_its_whole_name() {
         let symbols = crate::symbol_index::extracted("rs", "mod x;\n");
+        let declaration = &symbols.defs[0];
         assert_eq!(
-            super::module_candidates("src/foo", &symbols.defs[0]),
-            ["src/foo/x.rs", "src/foo/x/mod.rs"]
+            super::module_candidates("src/foo", declaration),
+            super::module_candidates("src/foo.rs", declaration)
         );
     }
 
