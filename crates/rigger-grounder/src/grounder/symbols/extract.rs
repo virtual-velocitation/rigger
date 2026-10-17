@@ -529,11 +529,23 @@ pub fn extract(
     })
 }
 
+/// The node kinds an attribute can gate that yield no definition of their own, so
+/// [`test_regions`] reads each one's attribute stack itself: an extern block, a `use` and the two
+/// statement kinds, a `let` and an expression statement (spec 117: a reference inside a
+/// `#[cfg(test)] use ..;` or a `#[cfg(test)]` statement is test code).
+const GATED_NON_DEFINITIONS: [&str; 4] = [
+    "foreign_mod_item",
+    "use_declaration",
+    "let_declaration",
+    "expression_statement",
+];
+
 /// THE TEST REGIONS (spec 116): the byte ranges of every TEST-ATTRIBUTED range in the file
 /// `source` parsed to `root`, one whose own `#[test]`/`#[cfg(..test..)]` attribute stack sits
 /// directly above it ([`preceded_by_test_attribute`]): each definition of `def_ranges` and each
 /// one THE NAME FILTER dropped (`dropped`, a `#[cfg(test)] const _: () = { .. }`'s among them);
-/// each `foreign_mod_item`, an extern block being a container that yields no definition; and
+/// each node of [`GATED_NON_DEFINITIONS`] - an extern block, a container that yields no
+/// definition, and a `use` or a statement (spec 117), which a reference sits in; and
 /// the whole file, `0..source.len()`, when the root opens with an inner `#![cfg(test)]`
 /// ([`opens_with_inner_test_attribute`]). A definition NESTED inside one of these ranges (a
 /// plain helper with no attribute of its own, living inside a `#[cfg(test)] mod tests { .. }`) is
@@ -554,10 +566,11 @@ fn test_regions(
         .cloned()
         .collect();
     regions.extend(
-        nodes_of_kind(root, "foreign_mod_item")
-            .into_iter()
-            .filter(|block| node_preceded_by_test_attribute(*block, source))
-            .map(|block| block.byte_range()),
+        GATED_NON_DEFINITIONS
+            .iter()
+            .flat_map(|kind| nodes_of_kind(root, kind))
+            .filter(|node| node_preceded_by_test_attribute(*node, source))
+            .map(|node| node.byte_range()),
     );
     if opens_with_inner_test_attribute(root.named_child(0), source) {
         regions.push(0..source.len());
@@ -2947,8 +2960,9 @@ mod x;
                 &[(2, "first"), (3, "second"), (6, "x")],
                 &[(4, "first")],
             );
-        /// A file opening an OUTER `#[cfg(test)] use x;` is no test region: the attribute
-        /// gates the `use` alone, so the fns after it and their references stay production.
+        /// A file opening an OUTER `#[cfg(test)] use x;` opens no file-wide test region: the
+        /// attribute gates the `use` alone, so its own reference is test code (spec 117) while
+        /// the fns after it and their references stay production.
         a_file_opening_a_test_attributed_use_keeps_its_fns_production:
             assert_test_code(
                 "\
@@ -2960,7 +2974,7 @@ fn b() {
 }
 ",
                 &[],
-                &[],
+                &[(2, "x")],
             );
         /// A file opening an OUTER `#[cfg(test)] mod tests;` is no test region: the attribute
         /// makes the `mod` test alone, so the fns after it and their references stay production.
