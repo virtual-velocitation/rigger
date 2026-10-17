@@ -607,15 +607,26 @@ pub(crate) fn is_dev_only(path: &str) -> bool {
 }
 
 /// The directory component of a project-relative `path` (every segment except the file's own
-/// name) - the ONE place this repo splits a path this way, shared by [`module_dir`] and
-/// [`resolve_out_of_line_target`]'s `#[path]`-override branch, so the split-off-the-last-`/`
-/// idiom exists exactly once rather than twice with the identical shape.
+/// name) - the ONE place this repo splits a path this way, shared by [`is_dev_only`],
+/// [`module_dir`] and [`module_candidates`]' `#[path]`-override branch, so the
+/// split-off-the-last-`/` idiom exists exactly once.
 fn dir_of(path: &str) -> &str {
     path.rfind('/').map(|i| &path[..i]).unwrap_or("")
 }
 
+/// `rest` under the directory `base`: `<base>/<rest>`, or `rest` alone when `base` is empty (the
+/// project root) - the ONE place a module path joins a directory, shared by [`module_dir`] and
+/// [`module_candidates`].
+fn join_under(base: &str, rest: &str) -> String {
+    if base.is_empty() {
+        rest.to_string()
+    } else {
+        format!("{base}/{rest}")
+    }
+}
+
 /// Resolves `.` and `..` components, at ANY position, in a `/`-separated LOGICAL path string - the
-/// ONE place [`resolve_out_of_line_target`]'s `#[path]`-override branch normalizes a raw attribute
+/// ONE place [`module_candidates`]' `#[path]`-override branch normalizes a raw attribute
 /// value joined onto a directory before matching it against [`SymbolIndex::files`]'s keys. Those
 /// keys are always the project's own already-clean relative paths (never containing a literal `.`
 /// or `..` segment), so `std::fs::canonicalize` does not apply here - there is no real filesystem
@@ -631,11 +642,10 @@ fn dir_of(path: &str) -> &str {
 /// one and joining whatever segments remain computes a string that is syntactically a valid
 /// relative path but semantically WRONG (it claims to walk back further than the declaring file's
 /// own tree allows) - and nothing stops that wrong-but-plausible string from coincidentally
-/// matching a real, UNRELATED file's key, at which point the caller's `contains_key` check finds a
-/// match and silently drops that unrelated file's whole entity set from the graph. So this now
-/// returns `None` the instant a `..` has nothing real left to pop, letting the caller short-circuit
-/// to "unresolvable" immediately rather than running a lookup against a value that only LOOKS like
-/// a real path.
+/// matching a real, UNRELATED file's key, at which point the index lookup over the candidates finds
+/// a match and silently drops that unrelated file's whole entity set from the graph. So this now
+/// returns `None` the instant a `..` has nothing real left to pop, letting the caller name no
+/// candidate rather than one that only LOOKS like a real path.
 fn normalize_logical_path(path: &str) -> Option<String> {
     let mut stack: Vec<&str> = Vec::new();
     for segment in path.split('/') {
@@ -690,23 +700,19 @@ fn module_dir(path: &str) -> String {
     if base == "mod.rs" || base == "lib.rs" || base == "main.rs" {
         dir.to_string()
     } else {
-        let stem = base.strip_suffix(".rs").unwrap_or(base);
-        if dir.is_empty() {
-            stem.to_string()
-        } else {
-            format!("{dir}/{stem}")
-        }
+        join_under(dir, base.strip_suffix(".rs").unwrap_or(base))
     }
 }
 
-/// Round 7: the single file `d.name` names from `declaring_path`, resolved EXACTLY as rustc
-/// resolves it, matched against paths `idx` ACTUALLY holds (never assumed) at every step. Round 9
+/// The files the `mod` declaration `d` in `declaring_path` names, in the order rustc tries them
+/// (spec 117 criterion 8): a pure function of the declaring path and the declaration, reading no
+/// index, so a caller matches them against whatever files it holds. Round 9
 /// (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`) closes the
 /// whole `#[path]`-override contract as one enumerated list:
 /// 1. A `#[path = ".."]` override on the declaration ([`Def::path_override`], captured
-///    structurally at extraction time) takes precedence over the convention entirely. BASE
-///    DIRECTORY: when the declaration sits at the declaring file's own top level (the
-///    overwhelmingly common case), the base is the declaring file's own DIRECTORY
+///    structurally at extraction time) takes precedence over the convention entirely, naming one
+///    file or none. BASE DIRECTORY: when the declaration sits at the declaring file's own top
+///    level (the overwhelmingly common case), the base is the declaring file's own DIRECTORY
 ///    ([`dir_of`]) - never [`module_dir`], since `#[path]` is rustc's own escape hatch FROM the
 ///    file-per-module convention and is, at the file's top level, unconditionally
 ///    directory-of-file-relative regardless of whether the declaring file is itself a
@@ -716,69 +722,57 @@ fn module_dir(path: &str) -> String {
 ///    appended - one directory component per inline module, outermost first - verified against
 ///    real rustc (`Def::enclosing_inline_module_path`'s doc). ABSOLUTE / SCHEME REJECTION: an
 ///    override that is itself an OS-absolute path, a URI scheme, or a Windows drive letter
-///    ([`path_override_names_an_unresolvable_shape`]) is UNRESOLVABLE outright, joined onto
-///    nothing - rustc uses an absolute `#[path]` as-is, never relative to any Rust-side
-///    directory, so it can never name a key this project-relative index holds; left unguarded, a
-///    root-level declaring file's EMPTY base directory would let the join degenerate to the raw
-///    override unchanged, and its leading `/` would then silently drop during normalization
-///    (the SAME rule that drops an ordinary `.` segment), coincidentally colliding with an
-///    unrelated real file exactly like the `..`-overflow defect below. NORMALIZATION: the joined
-///    `<base>/<override>` string is then [`normalize_logical_path`]'d (round 8,
-///    `sdet-u86c1-r7-path-override-dotdot-unresolved` /
+///    ([`path_override_names_an_unresolvable_shape`]) names no file, joined onto nothing - rustc
+///    uses an absolute `#[path]` as-is, never relative to any Rust-side directory, so it can never
+///    name a key a project-relative index holds; left unguarded, a root-level declaring file's
+///    EMPTY base directory would let the join degenerate to the raw override unchanged, and its
+///    leading `/` would then silently drop during normalization (the SAME rule that drops an
+///    ordinary `.` segment), coincidentally colliding with an unrelated real file exactly like the
+///    `..`-overflow defect below. NORMALIZATION: the joined `<base>/<override>` string is then
+///    [`normalize_logical_path`]'d (round 8, `sdet-u86c1-r7-path-override-dotdot-unresolved` /
 ///    `adv-u86c1-r7-dot-slash-override-also-unresolved-not-just-dotdot`): a raw `#[path]` value
 ///    may itself contain `.` or `..` segments at any position (rustc resolves those purely
-///    lexically too), and `idx.files()`'s keys are always already-clean, so an unnormalized join
-///    would silently fail every `contains_key` lookup for such a value and leave its target
-///    unexcluded. Round 9 (`adv-u86c1-r8-overcount-dotdot-silently-excludes-an-unrelated-real-file`):
-///    normalization can itself fail - a `..` count exceeding the declaring directory's own depth -
-///    and that failure short-circuits this whole branch to `None` via `?` rather than running a
-///    `contains_key` lookup on a collapsed-but-wrong string that might coincidentally name a real,
-///    unrelated file. LOOKUP: the normalized key must equal a file `idx` actually holds; no match
-///    is UNRESOLVABLE. Every UNRESOLVABLE outcome above returns `None` - the declaration is
-///    ignored for exclusion purposes and nothing collapses onto another file; never a silent
-///    match on a wrong-but-plausible string.
-/// 2. Otherwise, the flat sibling `<module_dir>/<name>.rs`.
-/// 3. Otherwise, the nested directory-module form `<module_dir>/<name>/mod.rs`.
-/// 4. Otherwise `None` - a stale or unresolvable declaration excludes nothing.
-fn resolve_out_of_line_target(idx: &SymbolIndex, declaring_path: &str, d: &Def) -> Option<String> {
-    if let Some(p) = &d.path_override {
-        if path_override_names_an_unresolvable_shape(p) {
-            return None;
+///    lexically too), and an index's keys are always already-clean, so an unnormalized join would
+///    silently match no key for such a value. Round 9
+///    (`adv-u86c1-r8-overcount-dotdot-silently-excludes-an-unrelated-real-file`): normalization can
+///    itself fail - a `..` count exceeding the declaring directory's own depth - and that failure
+///    names no file rather than a collapsed-but-wrong string that might coincidentally name a
+///    real, unrelated file.
+/// 2. Otherwise the convention's two, under the declaring file's [`module_dir`] with the enclosing
+///    inline-mod chain appended, as the override nested in one takes it, so `mod outer { mod x; }`
+///    in `src/lib.rs` names `src/outer/x.rs` as rustc does: the flat `<dir>/<name>.rs`, then the
+///    directory-module form `<dir>/<name>/mod.rs`.
+fn module_candidates(declaring_path: &str, d: &Def) -> Vec<String> {
+    let module_dir = module_dir(declaring_path);
+    let inline_dir = match &d.enclosing_inline_module_path {
+        Some(chain) => join_under(&module_dir, chain),
+        None => module_dir,
+    };
+    match &d.path_override {
+        Some(p) if path_override_names_an_unresolvable_shape(p) => Vec::new(),
+        Some(p) => {
+            let base = match d.enclosing_inline_module_path {
+                Some(_) => inline_dir.as_str(),
+                None => dir_of(declaring_path),
+            };
+            normalize_logical_path(&join_under(base, p))
+                .into_iter()
+                .collect()
         }
-        let base = match &d.enclosing_inline_module_path {
-            Some(chain) => {
-                let module_dir = module_dir(declaring_path);
-                if module_dir.is_empty() {
-                    chain.clone()
-                } else {
-                    format!("{module_dir}/{chain}")
-                }
-            }
-            None => dir_of(declaring_path).to_string(),
-        };
-        let joined = if base.is_empty() {
-            p.clone()
-        } else {
-            format!("{base}/{p}")
-        };
-        let resolved = normalize_logical_path(&joined)?;
-        return idx.files().contains_key(&resolved).then_some(resolved);
+        None => [format!("{}.rs", d.name), format!("{}/mod.rs", d.name)]
+            .map(|leaf| join_under(&inline_dir, &leaf))
+            .into(),
     }
-    let dir = module_dir(declaring_path);
-    let flat = if dir.is_empty() {
-        format!("{}.rs", d.name)
-    } else {
-        format!("{dir}/{}.rs", d.name)
-    };
-    if idx.files().contains_key(&flat) {
-        return Some(flat);
-    }
-    let nested = if dir.is_empty() {
-        format!("{}/mod.rs", d.name)
-    } else {
-        format!("{dir}/{}/mod.rs", d.name)
-    };
-    idx.files().contains_key(&nested).then_some(nested)
+}
+
+/// Round 7: the single file `d.name` names from `declaring_path`, resolved EXACTLY as rustc
+/// resolves it, matched against paths `idx` ACTUALLY holds (never assumed): the first of its
+/// [`module_candidates`] `idx` holds, or `None` when it holds none - a stale or unresolvable
+/// declaration excludes nothing and nothing collapses onto another file.
+fn resolve_out_of_line_target(idx: &SymbolIndex, declaring_path: &str, d: &Def) -> Option<String> {
+    module_candidates(declaring_path, d)
+        .into_iter()
+        .find(|candidate| idx.files().contains_key(candidate))
 }
 
 /// Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 2), resolution fixed in round 7

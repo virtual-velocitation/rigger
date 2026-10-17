@@ -505,9 +505,9 @@ pub fn extract(
                     d.path_override = out_of_line_path_override(n, source.as_bytes());
                     // Round 9 (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-
                     // never-excludes`): which enclosing INLINE modules, if any, this declaration
-                    // sits nested inside - the events/index layer's `#[path]`-override branch
-                    // needs this to compute the correct base directory (`Def::
-                    // enclosing_inline_module_path`'s doc).
+                    // sits nested inside - the events/index layer's module candidates need this
+                    // to compute the correct directory, `#[path]` override or convention alike
+                    // (`Def::enclosing_inline_module_path`'s doc).
                     d.enclosing_inline_module_path =
                         enclosing_inline_module_path(n, source.as_bytes());
                 }
