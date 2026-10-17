@@ -245,7 +245,10 @@ tool that searches them.
   finding on its own, naming the site, the swallow and the green run.
 - **Every fact your production delta states has one home.** A constant, static, list, closure
   or predicate your production hunks add states a fact, and the tree spells that fact once:
-  read from the spelling that exists, or held equal to it by a test. Check: name its home. The
+  read from the spelling that exists, or held equal to it by a test. A predicate is a boolean
+  expression or a SQL conjunct, one inside a query string, a format string or a macro argument
+  the production code executes included, read as the probe rule above reads the tokens of those
+  strings. Check: name its home. The
   `<unit>-sentence-walk` record carries, beside the count of each constant, static, list,
   closure or predicate your production hunks add, its one-home line in one of three forms: `no
   other spelling` with the terms searched - the name count and the graph lookup the walk
