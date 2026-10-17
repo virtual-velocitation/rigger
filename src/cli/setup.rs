@@ -4004,14 +4004,17 @@ mod tests {
     }
 
     /// The architecture lens is the enforcement of the built-in rule that every fact the
-    /// production delta states has one home: it reads the walk record's one-home line for each
-    /// item the unit adds, and a missing line or one false at head is BLOCKING.
+    /// production delta states has one home: it derives the added items itself from the
+    /// production hunks, a SQL conjunct inside a query string included, reads the walk record's
+    /// one-home line for each, and a missing line or one false at head is BLOCKING.
     #[test]
     fn the_architecture_lens_reads_the_one_home_line_of_every_added_item() {
         let flat = rigger::wave::normalize_ws(&committed_persona("architecture-reviewer.md"));
-        let wanted = "you read the `<unit>-sentence-walk` record's one-home lines for every \
-                      constant, static, list, closure or predicate the unit adds, and an added \
-                      item with no line, or a line false at head (the fact has another spelling \
+        let wanted = "you derive the set of constants, statics, lists, closures and \
+                      predicates the unit adds yourself from its production hunks - a boolean \
+                      expression or SQL conjunct inside a query string, format string or macro \
+                      argument included - and read the `<unit>-sentence-walk` record's one-home \
+                      lines for every item of it, and an added item with no line, or a line false at head (the fact has another spelling \
                       the line does not name, or the named derivation or pin does not exist), \
                       is BLOCKING (DRY, single responsibility), cited with both spellings' \
                       `file:line`.";
