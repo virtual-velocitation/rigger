@@ -793,12 +793,15 @@ impl Projector {
         let superseded_edges: i64 = match superseded_before {
             Some(before) => conn
                 .query_row(
-                    "SELECT COUNT(*) FROM edges
-                     WHERE valid_to IS NOT NULL AND valid_to < ?1 AND project = ?2
-                       AND id NOT IN (SELECT edge_id FROM edge_assertions)
-                       AND id NOT IN (SELECT edge_id FROM detached_attachments)
-                       AND from_id NOT IN (SELECT value FROM json_each(?3))
-                       AND to_id NOT IN (SELECT value FROM json_each(?3))",
+                    &format!(
+                        "SELECT COUNT(*) FROM edges
+                         WHERE valid_to IS NOT NULL AND valid_to < ?1 AND project = ?2
+                           AND {}
+                           AND id NOT IN (SELECT edge_id FROM detached_attachments)
+                           AND from_id NOT IN (SELECT value FROM json_each(?3))
+                           AND to_id NOT IN (SELECT value FROM json_each(?3))",
+                        UNASSERTED_EDGE_SQL
+                    ),
                     params![before, self.project, ids_json],
                     |r| r.get(0),
                 )
@@ -1078,8 +1081,9 @@ impl Projector {
         Ok(CallGraph {
             nodes,
             edges,
-            // The "referenced but not called" sidecar is an UP-direction concept (who imports/uses
-            // the seed without calling it); the DOWN execution path never carries it.
+            // The "referenced but not called" sidecar is an UP-direction concept (who references
+            // the seed - a file-level import/use or a definition's reference - without calling
+            // it); the DOWN execution path never carries it.
             referenced_not_called: Vec::new(),
         })
     }
@@ -1299,10 +1303,13 @@ fn prune_in(
     let superseded_edges = match superseded_before {
         Some(before) => tx
             .execute(
-                "DELETE FROM edges
-                 WHERE valid_to IS NOT NULL AND valid_to < ?1 AND project = ?2
-                   AND id NOT IN (SELECT edge_id FROM edge_assertions)
-                   AND id NOT IN (SELECT edge_id FROM detached_attachments)",
+                &format!(
+                    "DELETE FROM edges
+                     WHERE valid_to IS NOT NULL AND valid_to < ?1 AND project = ?2
+                       AND {}
+                       AND id NOT IN (SELECT edge_id FROM detached_attachments)",
+                    UNASSERTED_EDGE_SQL
+                ),
                 params![before, project],
             )
             .map_err(be)?,
@@ -2040,6 +2047,38 @@ struct StagedRow {
     target: Option<String>,
 }
 
+/// The columns [`staged_rows_sql`] selects, in its order: a [`StagedRow`]'s fields as stored, one
+/// conversion of the row, so a column that cannot be read fails it whole.
+type StagedColumns = (
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+);
+
+impl From<StagedColumns> for StagedRow {
+    fn from(
+        (rowid, identity, generation, from, leaf, ref_kind, lang, position, target): StagedColumns,
+    ) -> Self {
+        StagedRow {
+            rowid,
+            identity,
+            generation,
+            from,
+            leaf,
+            ref_kind,
+            lang,
+            position: position as Position,
+            target,
+        }
+    }
+}
+
 /// Stage `e`, a batch event `by` asserts, as a `refs` row of `by`'s identity and generation when
 /// it is a tagged reference of a kind with candidates ([`reference_candidate_kinds`]; spec 117,
 /// STAGED REFERENCES): read from its caller's node, else its file's, either alias-resolved
@@ -2093,7 +2132,7 @@ fn live_ref_sql(row: &str) -> String {
 /// The live `refs` rows of project `?1` a batch of identity `?2` settles ([`settle_references`]):
 /// the identity's own, sought by the key's `(project, identity)` prefix, and any identity's naming
 /// a leaf of a node `?2` asserts, sought by `idx_refs_leaf`, in identity order - so of two rows
-/// one batch resolves onto one pair, the lesser identity's asserts it ([`pair_held`]).
+/// one batch resolves onto one pair, the lesser identity's asserts it ([`settled_target_sql`]).
 fn staged_rows_sql() -> String {
     format!(
         "SELECT r.rowid, r.identity, r.generation, r.from_id, r.leaf, r.ref_kind, r.lang,
@@ -2124,22 +2163,12 @@ fn settle_references(tx: &Transaction, by: &Asserter, project: &str) -> Result<(
         let mut stmt = tx.prepare(&staged_rows_sql()).map_err(be)?;
         let rows = stmt
             .query_map(params![project, by.identity], |r| {
-                Ok(StagedRow {
-                    rowid: r.get(0)?,
-                    identity: r.get(1)?,
-                    generation: r.get(2)?,
-                    from: r.get(3)?,
-                    leaf: r.get(4)?,
-                    ref_kind: r.get(5)?,
-                    lang: r.get(6)?,
-                    position: r.get::<_, i64>(7)? as Position,
-                    target: r.get(8)?,
-                })
+                StagedColumns::try_from(r)
             })
             .map_err(be)?
-            .collect::<Result<_, _>>()
+            .collect::<Result<Vec<_>, _>>()
             .map_err(be)?;
-        rows
+        rows.into_iter().map(StagedRow::from).collect()
     };
     for row in &rows {
         settle_reference(tx, by, row, project)?;
@@ -2147,35 +2176,46 @@ fn settle_references(tx: &Transaction, by: &Asserter, project: &str) -> Result<(
     tx.execute(
         "DELETE FROM edge_assertions
           WHERE project = ?1 AND identity = ?2 AND generation != ?3
-            AND edge_id IN (SELECT id FROM edges WHERE rel = ?4)",
+            AND EXISTS (SELECT 1 FROM edges e WHERE e.id = edge_assertions.edge_id AND e.rel = ?4)",
         params![project, by.identity, by.generation, REL_REFERENCES],
     )
     .map_err(be)?;
     Ok(())
 }
 
-/// Resolve `row` at the end of `by`'s batch and write what changed (spec 117): a row resolving to
-/// the target it holds changes nothing, its edge and that edge's dates included. Otherwise the
-/// row takes its new target; its edge onto the old one is released ([`release_reference`]); and
-/// its edge onto the new one is asserted under the row's own identity and generation
-/// ([`assert_link`]), valid from `by`'s event time and recorded at the row's staging position,
-/// unless a live `REFERENCES` already holds the pair ([`pair_held`]), which the row then leaves as
-/// the pair's one edge.
+/// Resolve `row` at the end of `by`'s batch and write what changed (spec 117), in one statement
+/// ([`settled_target_sql`]): a row resolving to the target it holds changes nothing, its edge and
+/// that edge's dates included. Otherwise the row takes its new target; its edge onto the old one
+/// is released ([`release_reference`]); and its edge onto the new one is asserted under the row's
+/// own identity and generation ([`assert_link`]), valid from `by`'s event time and recorded at the
+/// row's staging position, unless a live `REFERENCES` already holds the pair, which the row then
+/// leaves as the pair's one edge.
 fn settle_reference(
     tx: &Transaction,
     by: &Asserter,
     row: &StagedRow,
     project: &str,
 ) -> Result<(), Error> {
-    let resolved = resolve_reference(tx, row, project)?;
-    if resolved.as_ref().map(|(target, _)| target) == row.target.as_ref() {
+    let settled = tx
+        .query_row(
+            &settled_target_sql(&reference_candidate_kinds(&row.ref_kind)),
+            params![
+                row.leaf,
+                KIND_CODE_ENTITY,
+                project,
+                split_id(&row.from).0,
+                row.lang,
+                row.rowid,
+                REL_REFERENCES,
+                placeholder_id(&row.from, &row.leaf)
+            ],
+            |r| <(Option<String>, String, bool)>::try_from(r),
+        )
+        .optional()
+        .map_err(be)?;
+    let Some((resolved, tier, held)) = settled else {
         return Ok(());
-    }
-    tx.execute(
-        "UPDATE refs SET target = ?2 WHERE rowid = ?1",
-        params![row.rowid, resolved.as_ref().map(|(target, _)| target)],
-    )
-    .map_err(be)?;
+    };
     let asserter = Asserter {
         identity: &row.identity,
         generation: &row.generation,
@@ -2185,98 +2225,63 @@ fn settle_reference(
         release_reference(tx, &asserter, &row.from, old, project)?;
     }
     match resolved {
-        Some((target, tier)) if !pair_held(tx, &row.from, &target, &row.leaf, project)? => {
-            assert_link(
-                tx,
-                &asserter,
-                &row.from,
-                &target,
-                REL_REFERENCES,
-                by.at,
-                row.position,
-                project,
-                tier,
-            )
-        }
+        Some(target) if !held => assert_link(
+            tx,
+            &asserter,
+            &row.from,
+            &target,
+            REL_REFERENCES,
+            by.at,
+            row.position,
+            project,
+            &tier,
+        ),
         _ => Ok(()),
     }
 }
 
-/// The one definition `row` resolves to now and the tier of its edge (spec 117, STAGED
-/// REFERENCES): the one candidate in the file `row` is read from, [`TIER_EXTRACTED`], else the
-/// one in the project, [`TIER_INFERRED`], else none - no candidate or several, never a guess.
-fn resolve_reference(
-    tx: &Transaction,
-    row: &StagedRow,
-    project: &str,
-) -> Result<Option<(String, &'static str)>, Error> {
-    let file = split_id(&row.from).0;
-    if let [one] = reference_candidates(tx, row, project, Some(file))?.as_slice() {
-        return Ok(Some((one.clone(), TIER_EXTRACTED)));
-    }
-    Ok(
-        match reference_candidates(tx, row, project, None)?.as_slice() {
-            [one] => Some((one.clone(), TIER_INFERRED)),
-            _ => None,
-        },
-    )
-}
-
-/// The definitions of `row`'s leaf of a kind its `ref_kind` resolves onto
-/// ([`reference_candidate_kinds`]) in `row`'s language, in `project` and, given a `file`, in that
-/// file's `<file>::` id range, sorted by id ([`leaf_definitions_sql`]).
-fn reference_candidates(
-    tx: &Transaction,
-    row: &StagedRow,
-    project: &str,
-    file: Option<&str>,
-) -> Result<Vec<String>, Error> {
+/// The one statement that settles a `refs` row (spec 117, STAGED REFERENCES): it sets the row
+/// `?6` to the one definition its leaf `?1` resolves to now - the one candidate in the file `?4`
+/// it is read from, else the one in project `?3`, else none, never a guess among several - a
+/// candidate being a code entity (`?2`) of one of `kinds` ([`reference_candidate_kinds`]) in the
+/// row's language `?5` ([`leaf_definitions_sql`]), and only when that differs from the target it
+/// holds. It answers the new target, its tier ([`TIER_EXTRACTED`] for the same-file one, else
+/// [`TIER_INFERRED`]) and whether a live `REFERENCES` (`?7`) from the row's node onto it, or onto
+/// the placeholder `?8` of its leaf under that node ([`placeholder_id`]), already holds the pair:
+/// a call's twin, the pair's one writer, which the call arm writes from the file whether it landed
+/// on the file's definition or on the placeholder - so only a file-level row's node meets a
+/// placeholder - or another identity's row on the same pair. A row it leaves unchanged answers
+/// nothing.
+fn settled_target_sql(kinds: &[&str]) -> String {
     let rule = format!(
         "json_extract(attrs, '$.kind') IN ({}) AND json_extract(attrs, '$.lang') = ?5",
-        kinds_sql(&reference_candidate_kinds(&row.ref_kind))
+        kinds_sql(kinds)
     );
-    leaf_definitions(
-        tx,
-        &rule,
-        params![row.leaf, KIND_CODE_ENTITY, project, file, row.lang],
+    let one = |file: &str| {
+        format!(
+            "(SELECT CASE WHEN COUNT(*) = 1 THEN MIN(id) END FROM ({}))",
+            leaf_definitions_sql(&rule, file)
+        )
+    };
+    let (same, any) = (one("?4"), one("NULL"));
+    format!(
+        "UPDATE refs SET target = COALESCE({same}, {any})
+          WHERE rowid = ?6 AND target IS NOT COALESCE({same}, {any})
+         RETURNING target,
+                   CASE WHEN target = {same} THEN '{TIER_EXTRACTED}' ELSE '{TIER_INFERRED}' END,
+                   EXISTS (SELECT 1 FROM edges
+                            WHERE project = ?3 AND from_id = refs.from_id AND rel = ?7
+                              AND valid_to IS NULL AND to_id IN (refs.target, ?8))"
     )
-}
-
-/// Whether a live `REFERENCES` from `from` onto `target`, or onto the placeholder of `leaf` under
-/// `from` ([`placeholder_id`]), already holds the pair a row resolving `from` onto `target` names
-/// (spec 117): a call's twin, the pair's one writer, which the call arm writes from the file
-/// whether it landed on the file's definition or on the placeholder - so only a file-level row's
-/// `from` meets a placeholder - or another identity's row on the same pair.
-fn pair_held(
-    tx: &Transaction,
-    from: &str,
-    target: &str,
-    leaf: &str,
-    project: &str,
-) -> Result<bool, Error> {
-    tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM edges
-                         WHERE project = ?1 AND from_id = ?2 AND rel = ?3 AND valid_to IS NULL
-                           AND to_id IN (?4, ?5))",
-        params![
-            project,
-            from,
-            REL_REFERENCES,
-            target,
-            placeholder_id(from, leaf)
-        ],
-        |r| r.get(0),
-    )
-    .map_err(be)
 }
 
 /// Release the edge a row of `by`'s identity read from `from` held onto `target` once the row
 /// resolves elsewhere (spec 117, ONE RETIRER): while another row of the identity still targets the
 /// pair nothing changes - the check reads every row of the identity, all of them staged by its one
-/// latest batch; otherwise every entry of each edge from `from` onto `target` is deleted - the
-/// identity's own, since a live edge on the pair holds it for any other row ([`pair_held`]) - and
-/// the edge settled at `by`'s event time ([`settle_edge`]), retired when no live assertion holds
-/// it. A row that asserted nothing names no entry, so it changes no edge.
+/// latest batch; otherwise the identity's own entry of each edge from `from` onto `target` is
+/// deleted, another identity's entry keeping that edge for its row, and the edge settled at `by`'s
+/// event time ([`settle_edge`]), retired when no live assertion holds it. A row that asserted
+/// nothing names no entry, so it changes no edge.
 fn release_reference(
     tx: &Transaction,
     by: &Asserter,
@@ -2284,29 +2289,20 @@ fn release_reference(
     target: &str,
     project: &str,
 ) -> Result<(), Error> {
-    let shared: bool = tx
-        .query_row(
-            "SELECT EXISTS (SELECT 1 FROM refs
-                             WHERE project = ?1 AND identity = ?2 AND from_id = ?3
-                               AND target = ?4)",
-            params![project, by.identity, from, target],
-            |r| r.get(0),
-        )
-        .map_err(be)?;
-    if shared {
-        return Ok(());
-    }
     let released: Vec<i64> = {
         let mut stmt = tx
             .prepare(
                 "DELETE FROM edge_assertions
-                  WHERE project = ?1
-                    AND edge_id IN (SELECT id FROM edges WHERE from_id = ?2 AND to_id = ?3)
+                  WHERE project = ?1 AND identity = ?2
+                    AND edge_id IN (SELECT id FROM edges WHERE from_id = ?3 AND to_id = ?4)
+                    AND NOT EXISTS (SELECT 1 FROM refs
+                                     WHERE project = ?1 AND identity = ?2 AND from_id = ?3
+                                       AND target = ?4)
                  RETURNING edge_id",
             )
             .map_err(be)?;
         let rows = stmt
-            .query_map(params![project, from, target], |r| r.get(0))
+            .query_map(params![project, by.identity, from, target], |r| r.get(0))
             .map_err(be)?
             .collect::<Result<_, _>>()
             .map_err(be)?;
@@ -2629,12 +2625,13 @@ fn definition_retired(tx: &Transaction, id: &str, name: &str, project: &str) -> 
             "UPDATE edges SET tier = ?1
               WHERE rel IN (?2, ?3) AND tier = ?4 AND project = ?5 AND valid_to IS NULL
                 AND {}
-                AND id NOT IN (SELECT edge_id FROM edge_assertions)
+                AND {}
                 AND NOT EXISTS (
                   SELECT 1 FROM nodes n
                    WHERE n.project = ?5 AND {} = ?6
                      AND n.kind = ?7 AND n.id != edges.to_id AND {})",
             edge_binds_leaf_sql("to_id", "?6"),
+            UNASSERTED_EDGE_SQL,
             node_leaf_sql(),
             call_target_sql()
         ),
@@ -3781,7 +3778,7 @@ fn call_target_sql() -> String {
 }
 
 /// The code kinds `kinds` as the items of a SQL list, each a quoted literal: what a node row's
-/// `kind` attr is compared against ([`call_target_sql`], [`reference_candidates`]).
+/// `kind` attr is compared against ([`call_target_sql`], [`settled_target_sql`]).
 fn kinds_sql(kinds: &[&str]) -> String {
     let kinds: Vec<String> = kinds.iter().map(|k| format!("'{k}'")).collect();
     kinds.join(", ")
@@ -3898,20 +3895,25 @@ fn named_call_target(conn: &Connection, id: &str, project: &str) -> Result<Optio
     .map_err(be)
 }
 
+/// The SQL term an `edges` row passes while no assertion holds it: no `edge_assertions` entry names
+/// its `id`, so neither the history prune's count and delete nor a retirement's re-tiering
+/// touches an edge a live identity still asserts.
+const UNASSERTED_EDGE_SQL: &str = "id NOT IN (SELECT edge_id FROM edge_assertions)";
+
 /// The read of the code-entity nodes a leaf names, each admitted by the SQL term `rule`: `?1` the
-/// leaf, `?2` the code-entity kind, `?3` the project and `?4` the file whose `<file>::` id range
-/// the candidates lie in, or NULL for every file. Phrased with the pinned [`node_leaf_sql`] after
-/// the project so it seeks the leaf index `idx_nodes_leaf`.
-fn leaf_definitions_sql(rule: &str) -> String {
+/// leaf, `?2` the code-entity kind, `?3` the project and `file` the SQL value of the file whose
+/// `<file>::` id range the candidates lie in, or NULL for every file. Phrased with the pinned
+/// [`node_leaf_sql`] after the project so it seeks the leaf index `idx_nodes_leaf`.
+fn leaf_definitions_sql(rule: &str, file: &str) -> String {
     format!(
         "SELECT id FROM nodes
           WHERE project = ?3 AND {} = ?1
             AND kind = ?2
             AND {rule}
-            AND (?4 IS NULL OR ({}))
+            AND ({file} IS NULL OR ({}))
           ORDER BY id",
         node_leaf_sql(),
-        id_range_sql("id", "?4")
+        id_range_sql("id", file)
     )
 }
 
@@ -3967,23 +3969,13 @@ fn definitions_with_suffix(
     admitted: Admitted,
     file: Option<&str>,
 ) -> Result<Vec<String>, Error> {
-    leaf_definitions(
-        conn,
-        &admitted_sql(admitted),
-        params![leaf, KIND_CODE_ENTITY, project, file],
-    )
-}
-
-/// The ids [`leaf_definitions_sql`] selects admitting `rule`, its `?1` to `?4` and whatever
-/// `rule` binds after them bound to `params`, in its order.
-fn leaf_definitions(
-    conn: &Connection,
-    rule: &str,
-    params: impl rusqlite::Params,
-) -> Result<Vec<String>, Error> {
-    let mut stmt = conn.prepare(&leaf_definitions_sql(rule)).map_err(be)?;
+    let mut stmt = conn
+        .prepare(&leaf_definitions_sql(&admitted_sql(admitted), "?4"))
+        .map_err(be)?;
     let ids = stmt
-        .query_map(params, |r| r.get::<_, String>(0))
+        .query_map(params![leaf, KIND_CODE_ENTITY, project, file], |r| {
+            r.get::<_, String>(0)
+        })
         .map_err(be)?
         .collect::<Result<_, _>>()
         .map_err(be)?;
@@ -4274,8 +4266,8 @@ fn seed_leaf_leg_sql(projected: &str) -> String {
 /// a reference landed on a nested `<file>::T::new` is for `new`), listed as its file
 /// ([`source_file_sql`]); it CALLS the leaf when some caller inside it (a `<file>::<caller>`
 /// source) carries a live `CALLS` edge to such a target. The result is the set difference - files
-/// that reference but never call - the imports / uses a who-uses-this reader wants beside the
-/// caller DAG. The seed leaves are the
+/// that reference but never call - the imports / uses and the definitions' references a
+/// who-uses-this reader wants beside the caller DAG. The seed leaves are the
 /// [`node_leaf`]s of the seed ids that exist as nodes; a seed that is not a node, or a node with no
 /// leaf (no `name` and no `::` in its id), contributes nothing. Empty when no seed has a leaf.
 fn referenced_not_called(
@@ -9480,7 +9472,8 @@ mod tests {
         // transitive CALLER DAG - callers resolving THROUGH bare placeholders back onto the
         // seed's definition (the reverse name-match), each at its correct per-node LAYER, deduped
         // under a mutual-call cycle whose recursive edge is marked BACK - PLUS the flat, non-traversed
-        // "referenced but not called" list of files that import/use the seed name without calling it.
+        // "referenced but not called" list of files that reference the seed name - here a top-level
+        // import/use - without calling it.
         let p = Projector::open(":memory:", "test").unwrap();
         let a = "src/a.rs";
         let b = "src/b.rs";
@@ -12265,7 +12258,7 @@ mod tests {
                 query_plan(&p, &pinned, []),
                 query_plan(
                     &p,
-                    &leaf_definitions_sql(&admitted_sql(Admitted::LiveCallTargets)),
+                    &leaf_definitions_sql(&admitted_sql(Admitted::LiveCallTargets), "?4"),
                     same_file,
                 ),
             ] {
@@ -16793,20 +16786,33 @@ mod tests {
                 setup: impl FnOnce(&Projector),
                 failing: (Event, Vec<Event>),
             ) {
+                failed_by(
+                    &format!(
+                        "CREATE TRIGGER refuse {refused} BEGIN SELECT RAISE(ABORT, '{REFUSED}'); END;"
+                    ),
+                    setup,
+                    failing,
+                    format!("{REFUSED}{SETUP_PAYS}"),
+                );
+            }
+
+            /// After `setup`, the `trigger` planted fails the batch `failing` answers - its
+            /// entry and events - whole, with `expected`.
+            fn failed_by(
+                trigger: &str,
+                setup: impl FnOnce(&Projector),
+                failing: (Event, Vec<Event>),
+                expected: String,
+            ) {
                 let p = fold_events([]);
                 setup(&p);
-                write_directly(&p, |tx, _| {
-                    tx.execute_batch(&format!(
-                        "CREATE TRIGGER refuse {refused} BEGIN SELECT RAISE(ABORT, '{REFUSED}'); END;"
-                    ))
-                    .unwrap();
-                });
+                write_directly(&p, |tx, _| tx.execute_batch(trigger).unwrap());
                 let (entry, batch) = failing;
                 assert_eq!(
                     p.apply_generation(&entry, Box::new(move || Ok(Some(batch))))
                         .map_err(|e| e.0),
-                    Err(format!("{REFUSED}{SETUP_PAYS}")),
-                    "{refused}"
+                    Err(expected),
+                    "{trigger}"
                 );
             }
 
@@ -16855,24 +16861,31 @@ mod tests {
                 (entry_at("gc", B, generation, 3, 30), batch)
             }
 
-            /// A row whose target cannot be read fails the batch settling it, its entry and
-            /// events whole: [`READ`]'s row on `CAP`, its target made a blob, read back as
-            /// `src/b.rs` drops `CAP`.
-            #[test]
-            fn an_unreadable_row_fails_the_batch_settling_it() {
-                let p = fold_events([]);
-                reading_cap(&p);
-                write_directly(&p, |tx, _| {
-                    tx.execute("UPDATE refs SET target = x'00'", []).unwrap();
-                });
-                let (entry, batch) = b_defining("b2", "MAX");
-                assert_eq!(
-                    p.apply_generation(&entry, Box::new(move || Ok(Some(batch))))
-                        .map_err(|e| e.0),
-                    Err(format!(
-                        "Invalid column type Blob at index: 8, name: target{SETUP_PAYS}"
-                    ))
+            /// A row whose `column` (at `index` of [`staged_rows_sql`]) cannot be read fails the
+            /// batch settling it, its entry and events whole: [`READ`]'s row on `CAP`, that
+            /// column made a blob as it is staged.
+            fn unreadable(column: &str, index: usize) {
+                failed_by(
+                    &format!(
+                        "CREATE TRIGGER unreadable AFTER INSERT ON refs BEGIN
+                           UPDATE refs SET {column} = x'00' WHERE rowid = NEW.rowid;
+                         END;"
+                    ),
+                    |_| {},
+                    a_batch("a1", 1, &["CAP"]),
+                    format!(
+                        "Invalid column type Blob at index: {index}, name: {column}{SETUP_PAYS}"
+                    ),
                 );
+            }
+
+            crate::test_cases! {
+                an_unreadable_from_id_fails_the_batch_settling_it: unreadable("from_id", 3);
+                an_unreadable_leaf_fails_the_batch_settling_it: unreadable("leaf", 4);
+                an_unreadable_ref_kind_fails_the_batch_settling_it: unreadable("ref_kind", 5);
+                an_unreadable_lang_fails_the_batch_settling_it: unreadable("lang", 6);
+                an_unreadable_position_fails_the_batch_settling_it: unreadable("position", 7);
+                an_unreadable_target_fails_the_batch_settling_it: unreadable("target", 8);
             }
 
             crate::test_cases! {

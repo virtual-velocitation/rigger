@@ -2137,8 +2137,9 @@ function renderKgCalls(cg) {
       : (n.label || n.id),
     edgeWidth: () => 1.2
   });
-  // The UP "referenced but not called" sidecar: files that import/use the seed's name but call it
-  // from no function - each a data-seed handle back into the neighborhood. Empty for a down walk.
+  // The UP "referenced but not called" sidecar: files that reference the seed's name - a file-level
+  // import/use or a definition's reference within them - but call it from no function, each a
+  // data-seed handle back into the neighborhood. Empty for a down walk.
   const refSection = refd.length
     ? '<div class="kgrefd"><h3>referenced but not called</h3>'
       + refd.map(n => '<div class="kgnode" data-seed="' + esc(n.id) + '"><span class="tlabel">'

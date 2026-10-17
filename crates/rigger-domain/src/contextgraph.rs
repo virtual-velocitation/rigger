@@ -390,8 +390,9 @@ pub struct CallEdge {
 /// FILE nodes that reference the seed's leaf at file level or from a definition within them (a
 /// `REFERENCES` edge whose target binds the leaf, [`query::node_leaf`], a staged reference's from
 /// the fn that reads it, spec 117) but carry NO caller-attributed `CALLS` edge to it from within
-/// the file - the imports / uses a "who-uses-this" reader cares about, which the layered caller
-/// DAG (functions that CALL the seed) deliberately does not include. Sorted by id, deterministic across polls.
+/// the file - the imports / uses and definitions' references a "who-uses-this" reader cares about,
+/// which the layered caller DAG (functions that CALL the seed) deliberately does not include.
+/// Sorted by id, deterministic across polls.
 #[derive(Clone, Debug, Default)]
 pub struct CallGraph {
     pub nodes: Vec<CallNode>,
