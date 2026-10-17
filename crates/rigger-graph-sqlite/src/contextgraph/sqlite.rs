@@ -793,14 +793,10 @@ impl Projector {
         let superseded_edges: i64 = match superseded_before {
             Some(before) => conn
                 .query_row(
-                    &format!(
-                        "SELECT COUNT(*) FROM edges
-                         WHERE valid_to IS NOT NULL AND valid_to < ?1 AND project = ?2
-                           AND {}
-                           AND id NOT IN (SELECT edge_id FROM detached_attachments)
-                           AND from_id NOT IN (SELECT value FROM json_each(?3))
-                           AND to_id NOT IN (SELECT value FROM json_each(?3))",
-                        UNASSERTED_EDGE_SQL
+                    &superseded_edges_sql(
+                        "SELECT COUNT(*)",
+                        "AND from_id NOT IN (SELECT value FROM json_each(?3))
+                         AND to_id NOT IN (SELECT value FROM json_each(?3))",
                     ),
                     params![before, self.project, ids_json],
                     |r| r.get(0),
@@ -1293,9 +1289,9 @@ fn prune_in(
             params![ids_json, project],
         )
         .map_err(be)?;
-    // Spec 41: reclaim superseded structural edges retired before the retention boundary.
-    // `valid_to IS NOT NULL` makes this LIVE-safe by construction - a live edge is never
-    // matched, so grounding, blast-radius, and the two-view safe superset are untouched. STRICT
+    // Spec 41: reclaim superseded structural edges retired before the retention boundary
+    // ([`superseded_edges_sql`]). `valid_to < ?1` makes this LIVE-safe by construction - a live
+    // edge's NULL `valid_to` is before no boundary, so it is never matched, so grounding, blast-radius, and the two-view safe superset are untouched. STRICT
     // `<`: an edge whose `valid_to` equals the boundary was retired at the instant the active
     // run began, so it is recent history the window keeps, not cumulative cruft. Project-scoped
     // like the node deletes and in this same transaction, so the whole prune is atomic. `None`
@@ -1303,13 +1299,7 @@ fn prune_in(
     let superseded_edges = match superseded_before {
         Some(before) => tx
             .execute(
-                &format!(
-                    "DELETE FROM edges
-                     WHERE valid_to IS NOT NULL AND valid_to < ?1 AND project = ?2
-                       AND {}
-                       AND id NOT IN (SELECT edge_id FROM detached_attachments)",
-                    UNASSERTED_EDGE_SQL
-                ),
+                &superseded_edges_sql("DELETE", ""),
                 params![before, project],
             )
             .map_err(be)?,
@@ -3896,6 +3886,19 @@ fn named_call_target(conn: &Connection, id: &str, project: &str) -> Result<Optio
 /// its `id`, so neither the history prune's count and delete nor a retirement's re-tiering
 /// touches an edge a live identity still asserts.
 const UNASSERTED_EDGE_SQL: &str = "id NOT IN (SELECT edge_id FROM edge_assertions)";
+
+/// The statement `verb` over the `edges` rows the history prune reclaims (spec 41), past the
+/// further conditions `exclusions`, so [`Projector::count_prunable`] counts and [`prune_in`]
+/// deletes one set: an edge retired before the boundary `?1` - a live edge's NULL `valid_to` is
+/// before no boundary - in project `?2`, held by no assertion ([`UNASSERTED_EDGE_SQL`]) and
+/// recorded by no detached attachment, which keeps it to revive.
+fn superseded_edges_sql(verb: &str, exclusions: &str) -> String {
+    format!(
+        "{verb} FROM edges
+          WHERE valid_to < ?1 AND project = ?2 AND {UNASSERTED_EDGE_SQL}
+            AND id NOT IN (SELECT edge_id FROM detached_attachments) {exclusions}"
+    )
+}
 
 /// The read of the code-entity nodes a leaf names, each admitted by the SQL term `rule`: `?1` the
 /// leaf, `?2` the code-entity kind, `?3` the project and, when `in_file`, `?4` the file whose
@@ -16123,6 +16126,51 @@ mod tests {
                     |r| r.get(0),
                 );
                 assert_eq!(links, [A, B]);
+            }
+
+            /// The history count and the history prune reclaim one set of edges: only an edge
+            /// retired before the boundary, in the project, held by no entry and recorded by no
+            /// detached attachment - the count leaving out an edge touching a node it is told
+            /// drops, which that node's cascade removes.
+            #[test]
+            fn the_history_count_and_prune_pass_only_an_edge_every_term_admits() {
+                let p = fold_events([]);
+                write_directly(&p, |tx, project| {
+                    for (id, from, to, valid_to, edge_project) in [
+                        (1, "x", "y", Some(10), project),
+                        (2, "x", "y", Some(20), project),
+                        (3, "x", "y", None, project),
+                        (4, "x", "y", Some(10), "other"),
+                        (5, "x", "y", Some(10), project),
+                        (6, "x", "y", Some(10), project),
+                        (7, "gone", "y", Some(10), project),
+                        (8, "x", "gone", Some(10), project),
+                    ] {
+                        tx.execute(
+                            "INSERT INTO edges (id, from_id, to_id, rel, valid_from, valid_to,
+                                                source, project)
+                             VALUES (?1, ?2, ?3, 'CONTAINS', 0, ?4, 1, ?5)",
+                            params![id, from, to, valid_to, edge_project],
+                        )
+                        .unwrap();
+                    }
+                    tx.execute_batch(&format!(
+                        "INSERT INTO detached_attachments (project, edge_id, node_id)
+                         VALUES ('{project}', 5, 'x');
+                         INSERT INTO edge_assertions
+                           (project, identity, generation, edge_id, since, source)
+                         VALUES ('{project}', 'i', 'g', 6, 0, 1);"
+                    ))
+                    .unwrap();
+                });
+                let superseded = |stats: Result<PruneStats, Error>| stats.unwrap().superseded_edges;
+                let gone = ["gone".to_string()];
+                assert_eq!(superseded(p.count_prunable(&gone, Some(20))), 1);
+                assert_eq!(superseded(p.count_prunable(&[], Some(20))), 3);
+                assert_eq!(superseded(p.prune(&[], Some(20))), 3);
+                let kept: Vec<i64> =
+                    raw_rows(&p, "SELECT id FROM edges ORDER BY id", [], |r| r.get(0));
+                assert_eq!(kept, [2, 3, 4, 5, 6]);
             }
 
             /// The `gd/docs/f.md` design batches `h1` at position 4 linking the doc to [`A`] and

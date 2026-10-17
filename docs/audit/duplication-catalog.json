@@ -266,7 +266,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ff98ca74f1ca",
+    "id": "dup-1ef62dd3058b",
     "classification": "near",
     "sites": [
       {
@@ -292,6 +292,11 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "id_range_sql",
+        "content_hash": "5d23ae9ae3e76aee"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "superseded_edges_sql",
         "content_hash": "5d23ae9ae3e76aee"
       },
       {
