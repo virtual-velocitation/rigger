@@ -16,9 +16,9 @@ use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     around, entity_site, site_fields, Candidate, EntitySite, Graph, Located, Node, Projection,
     CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION, KIND_CODE_ENTITY,
-    KIND_COMMUNITY, KIND_DESIGN_DOC, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
-    TYPE_REVIEW_FINDING,
+    KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY,
+    REL_REFERENCES, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
+    TYPE_EDGE_INFERRED, TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::Event;
 use rigger::retention::GenerationIngested;
@@ -886,6 +886,12 @@ pub fn live_node_ids(g: &Graph, kind: &str) -> Vec<String> {
         .collect();
     ids.sort();
     ids
+}
+
+/// The live `file` node ids of `g` and its live `code-entity` node ids ([`live_node_ids`]), in
+/// that order: the node set a fold test compares whole.
+pub fn live_file_and_entity_ids(g: &Graph) -> [Vec<String>; 2] {
+    [KIND_FILE, KIND_CODE_ENTITY].map(|kind| live_node_ids(g, kind))
 }
 
 /// Every definition `p`'s whole graph holds - a code entity carrying a non-empty `name`, never a

@@ -14604,7 +14604,7 @@ mod tests {
         }
         let g = p.whole().unwrap();
         assert_eq!(
-            [KIND_FILE, KIND_CODE_ENTITY].map(|kind| crate::test_support::live_node_ids(&g, kind)),
+            crate::test_support::live_file_and_entity_ids(&g),
             [["a.rs"], ["a.rs::read"]].map(|ids| ids.map(String::from).to_vec())
         );
         crate::test_support::assert_live(
@@ -14641,7 +14641,7 @@ mod tests {
         );
         let g = p.whole().unwrap();
         assert_eq!(
-            [KIND_FILE, KIND_CODE_ENTITY].map(|kind| crate::test_support::live_node_ids(&g, kind)),
+            crate::test_support::live_file_and_entity_ids(&g),
             [vec!["u.rs", "v.rs"], vec!["u.rs::helper"]]
                 .map(|ids| ids.into_iter().map(String::from).collect::<Vec<_>>())
         );
