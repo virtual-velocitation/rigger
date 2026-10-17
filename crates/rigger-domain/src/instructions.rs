@@ -317,7 +317,8 @@ mod tests {
     /// by the green commit, every mutable token of the production delta, each class named by its
     /// source spelling - an operator, an offset, an operand, every argument of every added or
     /// changed call, an arm's statement, a match arm, every `?` (swallowed by the spelling that
-    /// compiles for its value), `return`, `break` and `continue` - mutated by hand one at a time with the red test recorded in a record
+    /// compiles for its value, `unviable` only when every swallow of the list fails to compile
+    /// with each error quoted, never when its type has a default), `return`, `break` and `continue` - mutated by hand one at a time with the red test recorded in a record
     /// organised by production line - each line naming its tokens, a token inside a query,
     /// format or macro string included, or marked as carrying none - and closed by one tally
     /// line per spelled class, its hunk and probe counts equal, a green probe pinned or reshaped
@@ -554,6 +555,12 @@ mod tests {
              (delete it), a match arm (swap it with a sibling), every `?` operator (replace it by \
              the swallow that compiles for its value, so the error arm yields a value instead of \
              returning), and every `return`, `break` and `continue` (remove it)",
+            "The `?` swallows are `let _ = <expr>;` or `.ok()` where the value is unused, \
+             `.unwrap_or_default()` where the value is used and its type has a default, and \
+             `.unwrap_or(<the type's empty value>)` otherwise; a `?` is `unviable` only when \
+             every swallow of this list fails to compile, each tried at its site with its \
+             compiler error quoted in the record, and a `?` whose value's type has a default is \
+             never unviable.",
             "enumerate the tokens from your production hunks over the unit's whole range, the \
              merge base with the run branch to head",
             "apply each mutation in your worktree one at a time, run the crate's tests and the \
