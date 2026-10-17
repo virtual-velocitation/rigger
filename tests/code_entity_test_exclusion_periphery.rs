@@ -2736,6 +2736,41 @@ CodeEntity("src/parent/middle/outer/actual.rs::reversed_order_decoy_product", "t
 }
 
 rigger::test_cases! {
+    /// Spec 117 criterion 8, A DEV-ONLY INLINE MOD'S TARGET IS DEV-ONLY, through the public
+    /// ingest path: a `#[cfg(test)] mod x;` with no `#[path]` override inside the inline
+    /// `mod outer` of `src/lib.rs` names `src/outer/x.rs`, the convention's file under the
+    /// declaring file's module directory plus the inline chain, so that file and its definition
+    /// never reach the graph, while `src/x.rs` - the file a resolver ignoring the inline chain
+    /// would name - stays graphed as product code.
+    #[cfg(feature = "symbols")]
+    a_cfg_test_mod_inside_an_inline_module_excludes_its_conventional_file_under_the_inline_chain_through_the_public_api: assert_ingested_graph(
+        &[
+            symbol_index::INLINE_TEST_MOD_TREE[0],
+            symbol_index::INLINE_TEST_MOD_TREE[1],
+            ("src/x.rs", "pub fn inline_chain_decoy_product() {}\n"),
+        ],
+        &[
+            symbol_index::INLINE_TEST_MOD_TREE[0].0,
+            symbol_index::INLINE_TEST_MOD_TARGET,
+            "src/x.rs",
+        ],
+        2,
+        &[
+            NoneGraphed(
+                &[symbol_index::INLINE_TEST_MOD_HELPER, symbol_index::INLINE_TEST_MOD_TARGET],
+                "the file a #[cfg(test)] mod inside an inline mod names under the inline chain \
+                 is dev-only: neither it nor its definition is graphed",
+            ),
+            CodeEntity(
+                "src/x.rs::inline_chain_decoy_product",
+                "the file the declaration would name without its inline chain stays graphed \
+                 as product code",
+            ),
+        ],
+    );
+}
+
+rigger::test_cases! {
     /// operator ruling
     /// `op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes` item 2
     /// (NORMALIZATION): an ABSOLUTE `#[path]` value is UNRESOLVABLE, never joined onto the

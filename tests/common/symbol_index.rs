@@ -1,5 +1,5 @@
 //! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file
-//! index, building one from Rust sources, saving it through the real `store` boundary and reading the bytes back, writing a
+//! index, building one from Rust sources, a tree whose inline mod declares a `#[cfg(test)]` mod out of line, saving it through the real `store` boundary and reading the bytes back, writing a
 //! hand-authored `index.json` under the current extraction generation and loading a legacy one
 //! through the real `store::load`, building a tree's index and reloading it, projecting a file's definitions, its test-marked
 //! definitions and references and its call references with their callers, checking a language's definition
@@ -180,6 +180,23 @@ pub fn extracted_rust_index(files: &[(&str, &str)]) -> SymbolIndex {
     }
     idx
 }
+
+/// The file `mod outer { #[cfg(test)] mod x; }` in [`INLINE_TEST_MOD_TREE`]'s `src/lib.rs`
+/// names, as rustc resolves it.
+pub const INLINE_TEST_MOD_TARGET: &str = "src/outer/x.rs";
+
+/// The entity id of the `helper` [`INLINE_TEST_MOD_TREE`] defines in [`INLINE_TEST_MOD_TARGET`].
+pub const INLINE_TEST_MOD_HELPER: &str = "src/outer/x.rs::helper";
+
+/// A crate root declaring `x` out of line under `#[cfg(test)]` inside the inline `mod outer`,
+/// beside [`INLINE_TEST_MOD_TARGET`] defining `helper`, and no `src/x.rs`.
+pub const INLINE_TEST_MOD_TREE: [(&str, &str); 2] = [
+    (
+        "src/lib.rs",
+        "mod outer {\n    #[cfg(test)]\n    mod x;\n}\n",
+    ),
+    (INLINE_TEST_MOD_TARGET, "pub fn helper() {}\n"),
+];
 
 /// Every definition of `fs` as `(line, end line, name)`, sorted: the one projection of each
 /// `Def`'s extent the extent tests compare whole.

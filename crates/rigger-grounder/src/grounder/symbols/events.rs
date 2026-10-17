@@ -1717,19 +1717,9 @@ mod tests {
         ]);
     }
 
-    /// The file `mod outer { #[cfg(test)] mod x; }` in [`INLINE_TEST_MOD_TREE`]'s `src/lib.rs`
-    /// names, as rustc resolves it.
-    const INLINE_TEST_MOD_TARGET: &str = "src/outer/x.rs";
-
-    /// A crate root declaring `x` out of line under `#[cfg(test)]` inside the inline `mod outer`,
-    /// beside [`INLINE_TEST_MOD_TARGET`] defining `helper`, and no `src/x.rs`.
-    const INLINE_TEST_MOD_TREE: [(&str, &str); 2] = [
-        (
-            "src/lib.rs",
-            "mod outer {\n    #[cfg(test)]\n    mod x;\n}\n",
-        ),
-        (INLINE_TEST_MOD_TARGET, "pub fn helper() {}\n"),
-    ];
+    use crate::symbol_index::{
+        INLINE_TEST_MOD_HELPER, INLINE_TEST_MOD_TARGET, INLINE_TEST_MOD_TREE,
+    };
 
     /// Spec 117 criterion 8, A DEV-ONLY INLINE MOD'S TARGET IS DEV-ONLY: the file a
     /// `#[cfg(test)] mod x;` inside an inline `mod outer` names, `outer/x.rs` under the declaring
@@ -1767,7 +1757,7 @@ mod tests {
         );
         assert_eq!(
             live_file_and_entity_ids(&p.whole().unwrap()),
-            file_and_entity_ids(&[INLINE_TEST_MOD_TARGET], &["src/outer/x.rs::helper"]),
+            file_and_entity_ids(&[INLINE_TEST_MOD_TARGET], &[INLINE_TEST_MOD_HELPER]),
             "folded as production, the target holds its file and its definition"
         );
         let excluded = super::out_of_line_test_module_files(&idx).contains(INLINE_TEST_MOD_TARGET);
