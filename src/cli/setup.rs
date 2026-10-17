@@ -3832,7 +3832,10 @@ mod tests {
     /// record does not disposition is BLOCKING; it reads the token classes from the working
     /// discipline's list, carrying no copy of it, counts the `?`, `return`, `break` and
     /// `continue` with `.rigger/gates/token-count.sh` and reads each call's arguments, and a tally short of its
-    /// count is BLOCKING. The records are the author's instruments, never
+    /// count is BLOCKING; for every `?` the record calls unviable it applies, in the same
+    /// scratch worktree, the swallow of the working discipline's list that fits the value's
+    /// type, carrying no copy of that list, and one that compiles and leaves every test green is
+    /// BLOCKING. The records are the author's instruments, never
     /// a gate, so the lens's rule against re-running a green gate does not reach them.
     #[test]
     fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
@@ -3971,6 +3974,10 @@ mod tests {
              with `git worktree remove <scratch>` before your turn ends",
             "A probe that leaves every test green is BLOCKING, and so is a token the record \
              carries no probe for",
+            "For every `?` the author's record disposes as `unviable` you apply, in the same \
+             scratch worktree, the swallow of the working discipline's `?` list that fits the \
+             value's type, and run the same tests: one that compiles and leaves every test green \
+             is BLOCKING on its own, citing the site, the swallow and the green run.",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
@@ -3989,6 +3996,10 @@ mod tests {
         assert!(
             !flat.contains("gsub("),
             "sdet.md names the token-count script instead of spelling its awk"
+        );
+        assert!(
+            !flat.contains(".unwrap_or_default()"),
+            "sdet.md refers to the working discipline's `?` swallow list instead of re-spelling it"
         );
     }
 
