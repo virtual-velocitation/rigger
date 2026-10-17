@@ -11587,8 +11587,9 @@ mod tests {
             at: 0,
         };
 
-        /// Run `write` in one committed transaction on `p`'s own connection: the direct writes
-        /// that plant a nested id before any payload carries its path.
+        /// Run `write` in one committed transaction on `p`'s own connection: the direct writes a
+        /// test makes beneath the fold - a nested id planted before any payload carries its path,
+        /// a row no fold leaves behind, or a file brought back to an older schema.
         pub(super) fn write_directly(p: &Projector, write: impl FnOnce(&Transaction, &str)) {
             let mut conn = p.conn.lock().unwrap();
             let tx = conn.transaction().unwrap();
