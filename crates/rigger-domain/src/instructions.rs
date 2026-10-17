@@ -324,7 +324,8 @@ mod tests {
     /// line per spelled class, its hunk and probe counts equal, a green probe pinned or reshaped
     /// away, the hand enumeration standing beside the mutation gate and the SDET lens probing
     /// every token the record lacks, comparing its token set with the record line by line and
-    /// counting each class itself against the tally, every constant, static, list, closure or
+    /// counting each class itself against the tally and re-applying the fitting swallow to
+    /// every `?` the record calls unviable, a compiling green one blocking, every constant, static, list, closure or
     /// predicate the delta adds naming its one home in the sentence-walk record - no other
     /// spelling, derived from or pinned to the existing one - with the architecture lens
     /// blocking on a missing or false line, and a probe that edits the tree - the sharpest case of a turn's end being
@@ -595,6 +596,10 @@ mod tests {
              itself, string literals and test regions left out, reads each added or changed \
              call's arguments, and compares each class's count with the record's tally line: a \
              short tally, or a token with no probe, is a BLOCKING finding on its own.",
+            "For every `?` the record disposes as `unviable` the lens applies, in its scratch \
+             worktree, the swallow of this list that fits the value's type: one that compiles \
+             and leaves every test green is a BLOCKING finding on its own, naming the site, the \
+             swallow and the green run.",
             "Every fact your production delta states has one home.",
             "The `<unit>-sentence-walk` record carries, beside the count of each constant, \
              static, list, closure or predicate your production hunks add, its one-home line in \
