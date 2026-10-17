@@ -128,8 +128,9 @@ DROP TABLE IF EXISTS proofs;
 ";
 
 /// Every table of [`SCHEMA`] beside `nodes` and `edges` that carries a `project` column: the
-/// rows [`Projector::migrate_project`] re-keys with the facts, each only when the file holds it,
-/// since a file that owes its rebuild is opened as it stands and may predate any of them.
+/// rows [`Projector::migrate_project`] re-keys with the facts, each only when the file holds it
+/// with that column, since a file that owes its rebuild is opened as it stands and may predate
+/// any of them.
 const PROJECT_KEYED_LEDGERS: [&str; 7] = [
     "generations",
     "node_assertions",
@@ -388,8 +389,9 @@ impl Projector {
     /// Open (or create) the graph at `path`, scoped to `project` - the plain project string
     /// that namespaces this project's streams (`project_identity` / `StoreLocation::identity`).
     /// Every fold stamps that scope on each node and edge. A pre-spec-28 graph.db (no `project`
-    /// column) is migrated in place, backfilling its existing rows with this identity, so a
-    /// single-project deployment behaves exactly as before.
+    /// column) that owes no rebuild is migrated in place, backfilling its existing rows with this
+    /// identity, so a single-project deployment behaves exactly as before; one that owes it is
+    /// refolded under this identity by that rebuild.
     pub fn open(path: &str, project: &str) -> Result<Self, Error> {
         let conn = open_connection(path).map_err(be)?;
         // A file that owes its rebuild is opened exactly as it stands: no schema, no migration,
@@ -849,7 +851,10 @@ impl Projector {
     /// of NODES moved. Moving the ledgers with the facts keeps the migrated identity's current
     /// generation and its assertions live under `to`, so its next generation supersedes the one
     /// it held under `from` rather than folding as its first. A file that owes its rebuild is
-    /// opened as it stands and may hold none of the ledgers; each it does not hold is skipped.
+    /// opened as it stands and may hold none of the ledgers, or, folded before spec 28, `nodes`
+    /// and `edges` with no `project` column; each table it does not hold, or holds without that
+    /// column, is skipped, since it tags no row to move and the rebuild the file owes refolds it
+    /// under the current identity.
     /// This is the graph analog of [`Store::rename_stream_prefix`] for
     /// the spec-09 identity migration (spec 28 GC5 backward-compat): a single-project deployment
     /// runs under its basename identity, folding graph rows tagged with it, then mints
@@ -871,20 +876,22 @@ impl Projector {
             // Every table re-keys in the same transaction so a crash never leaves an edge under
             // the old scope while its endpoint node moved, or a generation behind its facts, on a
             // shared backend.
+            // A table the file lacks, or holds without its `project` column, has no row to move.
             let rekey = |table: &str| {
-                tx.execute(
-                    &format!("UPDATE {table} SET project = ?2 WHERE project = ?1"),
-                    params![from, to],
-                )
-                .map_err(be)
+                column_exists(tx, table, "project").and_then(|keyed| match keyed {
+                    true => tx
+                        .execute(
+                            &format!("UPDATE {table} SET project = ?2 WHERE project = ?1"),
+                            params![from, to],
+                        )
+                        .map_err(be),
+                    false => Ok(0),
+                })
             };
             rekey("edges")?;
             let nodes = rekey("nodes")?;
             for table in PROJECT_KEYED_LEDGERS {
-                has_table(tx, table).and_then(|held| match held {
-                    true => rekey(table).map(drop),
-                    false => Ok(()),
-                })?;
+                rekey(table)?;
             }
             Ok(nodes)
         })
@@ -1710,7 +1717,9 @@ fn migrate_indexes(conn: &Connection) -> Result<(), Error> {
 
 /// Whether `table` (a trusted schema-literal name, never caller input) has a column named
 /// `col`, via `PRAGMA table_info` - so [`migrate_project_scope`] fires exactly once and leaves
-/// a fresh or already-migrated db untouched.
+/// a fresh or already-migrated db untouched. A table the file does not hold has no column:
+/// `PRAGMA table_info` answers it with no row, so [`Projector::migrate_project`] skips a table
+/// absent and one without its `project` column through this one check.
 fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool, Error> {
     let mut stmt = conn
         .prepare(&format!("PRAGMA table_info({table})"))
