@@ -815,7 +815,7 @@ impl Grounder for Symbols {
                 continue;
             }
             // An AMBIGUOUS (more than one same-language definition) entity's own Def row
-            // reports an attributable degree of 0, never the tree-wide reference count (spec
+            // reports an attributable degree of 0, never the tree-wide call-reference count (spec
             // 92 criterion 3 remediation round 6, adj-u92c3-r5-verdict-reject /
             // adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): the
             // Standalone row for this same `(name, Lang)` exists SPECIFICALLY because a
@@ -823,10 +823,11 @@ impl Grounder for Symbols {
             // must never turn around and claim that identical unattributable pool as its own
             // - the opposite of what creating the Standalone row already decided. An
             // UNAMBIGUOUS (exactly one definer) Def row keeps the real
-            // `reference_degree` - every reference to that name genuinely IS this entity's
+            // `reference_degree` - every call reference to that name genuinely IS this entity's
             // own, nothing is pooled. A Standalone row always keeps the real
-            // `reference_degree` too - it IS the pooled, unattributed reference count, by
-            // construction of why it exists at all.
+            // `reference_degree` too - it IS the pooled, unattributed call-reference count
+            // (`FileSymbols::calls`: no tagged reference counts, spec 117), by construction of
+            // why it exists at all.
             let degree = match key {
                 EntityKey::Def(..) if def_count > 1 => 0,
                 _ => idx.reference_degree(h.name, h.lang),
@@ -2294,13 +2295,14 @@ mod tests {
     crate::test_cases! {
         /// [`scored_hits`]' own tie-break, `let better = ..` (grounder.rs, three clauses over one
         /// (file, line) location's accumulated best candidate): clause 1 is `hit_tier >
-        /// slot.tier` - a STRICTLY higher tier always wins, no matter how the two candidates compare
-        /// on commonness or lexical kind. Two hand-built candidates collide at the SAME (file, line)
-        /// in each cluster below (the only way [`scored_hits`]' `best.entry(..).and_modify(..)`
-        /// tie-break ever runs at all): a definition is always scored before any reference in the
-        /// SAME file ([`scored_hits`]'s own `for d in &fs.defs { .. } for r in &fs.refs { .. }`), so
-        /// the definition is always the initial slot (`or_insert`) and the reference is always the
-        /// challenger (`and_modify`) whenever both match at one location.
+        /// slot.tier` - a STRICTLY higher tier always wins, no matter how the two candidates
+        /// compare on commonness or lexical kind. Two hand-built candidates collide at the SAME
+        /// (file, line) in each cluster below (the only way [`scored_hits`]'
+        /// `best.entry(..).and_modify(..)` tie-break ever runs at all): a definition is always
+        /// scored before any reference in the SAME file ([`scored_hits`]'s own `for d in &fs.defs
+        /// { .. } for r in fs.calls() { .. }`), so the definition is always the initial slot
+        /// (`or_insert`) and the reference is always the challenger (`and_modify`) whenever both
+        /// match at one location.
         scored_hits_a_strictly_higher_tier_always_wins_over_a_worse_commonness_and_lexical: assert_slots(
             vec![
                 // Cluster A (line 10): the SLOT is a CONTAINS-tier (1) definition that is

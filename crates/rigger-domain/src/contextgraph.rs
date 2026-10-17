@@ -283,7 +283,8 @@ pub const REL_REVIEWS_LIGHT: &str = "REVIEWS_LIGHT";
 
 // Edge confidence tiers (spec 29a, addendum 6.2). Every folded edge carries one, the
 // `precise`/`safe` split of the two-view blast radius made a first-class edge attribute. The
-// three tiers partition the reference set, so the graph keeps EVERY reference: a later traversal
+// three tiers partition the call-reference set, so the graph keeps EVERY call reference (a
+// tagged reference, one carrying a `ref_kind`, folds no edge - spec 117): a later traversal
 // reads the EXTRACTED sub-graph as the precise prompt seed and the structural reach
 // EXTRACTED u INFERRED as the blast radius's safe view (addendum 2.4).
 /// An explicit-in-source structural fact: a definition's containment, or a reference resolved to
