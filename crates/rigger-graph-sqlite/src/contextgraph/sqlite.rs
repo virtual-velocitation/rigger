@@ -127,6 +127,19 @@ DROP TABLE IF EXISTS pending_proof;
 DROP TABLE IF EXISTS proofs;
 ";
 
+/// Every table of [`SCHEMA`] beside `nodes` and `edges` that carries a `project` column: the
+/// rows [`Projector::migrate_project`] re-keys with the facts, each only when the file holds it,
+/// since a file that owes its rebuild is opened as it stands and may predate any of them.
+const PROJECT_KEYED_LEDGERS: [&str; 7] = [
+    "generations",
+    "node_assertions",
+    "edge_assertions",
+    "proofs",
+    "retired_nodes",
+    "detached_attachments",
+    "relabel_owed",
+];
+
 /// The state a rebuild ([`Projector::rebuild`]) keeps in the shadow file it folds and, from the
 /// swap until the tail it owes is folded, in the live one, born together in one transaction and
 /// dropped together in one ([`DROP_REBUILD_STATE`]) once the tail is folded - never apart:
@@ -831,8 +844,13 @@ impl Projector {
         Ok(reclaimed_pages * page_size.max(0) as u64)
     }
 
-    /// Re-scope every node and edge tagged `from` to `to`, in ONE transaction, returning the
-    /// number of NODES moved. This is the graph analog of [`Store::rename_stream_prefix`] for
+    /// Re-scope every row tagged `from` to `to` - every node and edge, and every row of each
+    /// [`PROJECT_KEYED_LEDGERS`] table the file holds - in ONE transaction, returning the number
+    /// of NODES moved. Moving the ledgers with the facts keeps the migrated identity's current
+    /// generation and its assertions live under `to`, so its next generation supersedes the one
+    /// it held under `from` rather than folding as its first. A file that owes its rebuild is
+    /// opened as it stands and may hold none of the ledgers; each it does not hold is skipped.
+    /// This is the graph analog of [`Store::rename_stream_prefix`] for
     /// the spec-09 identity migration (spec 28 GC5 backward-compat): a single-project deployment
     /// runs under its basename identity, folding graph rows tagged with it, then mints
     /// `.rigger/project.id`; the migration renames its event streams `proj-<legacy>-` ->
@@ -849,18 +867,24 @@ impl Projector {
     /// migration re-keys nothing (idempotent, mirroring `rename_stream_prefix`).
     pub fn migrate_project(&self, from: &str, to: &str) -> Result<usize, Error> {
         self.transact(|tx| {
-            // Edges and nodes re-key in the same transaction so a crash never leaves an edge under
-            // the old scope while its endpoint node moved (or the reverse) on a shared backend.
-            tx.execute(
-                "UPDATE edges SET project = ?2 WHERE project = ?1",
-                params![from, to],
-            )
-            .map_err(be)?;
-            tx.execute(
-                "UPDATE nodes SET project = ?2 WHERE project = ?1",
-                params![from, to],
-            )
-            .map_err(be)
+            // Every table re-keys in the same transaction so a crash never leaves an edge under
+            // the old scope while its endpoint node moved, or a generation behind its facts, on a
+            // shared backend.
+            let rekey = |table: &str| {
+                tx.execute(
+                    &format!("UPDATE {table} SET project = ?2 WHERE project = ?1"),
+                    params![from, to],
+                )
+                .map_err(be)
+            };
+            rekey("edges")?;
+            let nodes = rekey("nodes")?;
+            for table in PROJECT_KEYED_LEDGERS {
+                if has_table(tx, table)? {
+                    rekey(table)?;
+                }
+            }
+            Ok(nodes)
         })
     }
 
