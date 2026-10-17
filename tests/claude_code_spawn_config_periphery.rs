@@ -15,7 +15,7 @@
 //! pipe, and `rigger validate` advises when the checkout carries none of these hooks.
 
 mod common;
-use common::cli::{run_rigger, run_rigger_envs, temp_project};
+use common::cli::{run_rigger, setup_ok, temp_project};
 use common::fixtures::{git_commit_all, git_out, implementer_opts, temp_git_project_with_commit};
 use common::repo::repo_root;
 
@@ -296,8 +296,7 @@ const HOOKS_ADVISORY: &str = "does not carry rigger's session hooks";
 fn validate_advises_when_the_checkout_has_no_hooks_installed() {
     let proj = temp_project();
     let root = proj.path();
-    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
 
     let (_out, err, ok) = run_rigger(root, &["validate"]);
     assert!(ok, "validate succeeds on a set-up project; stderr:\n{err}");

@@ -1,7 +1,7 @@
 //! Periphery (API / integration / contract) tests for spec 63's METADATA CARD (criterion 2): "one
 //! hover-card anatomy everywhere" - a code subject's card carries its definition file:line, its
 //! coupling community, the concepts it REALIZES, and decision/finding COUNTS; a file subject's
-//! card lists its CONTAINED entities; a concept subject's card lists its REALIZING members. Every
+//! card lists its members, its named code entities; a concept subject's card lists its REALIZING members. Every
 //! other taxonomy than the card's own subject lives here as METADATA, never a second graph node.
 //!
 //! These run OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::{Card, CardRef,
@@ -229,7 +229,7 @@ fn the_served_route_carries_a_file_and_a_concept_subjects_card() {
     assert_eq!(
         ids,
         vec!["combat.rs::fire", "combat.rs::reload"],
-        "a file's card lists its CONTAINED entities: {body}"
+        "a file's card lists its members: {body}"
     );
     assert_eq!(
         json["card"]["top_entities"][0]["kind"].as_str(),

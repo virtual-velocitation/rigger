@@ -82,9 +82,11 @@ pub fn build_index(root: &str, override_lang: Option<Lang>) -> SymbolIndex {
 /// `override_lang`, beside the text they were extracted from: none when no grammar resolves, an
 /// inner none when `source` answers no text or the extraction fails. `source` is asked for the
 /// text only once a grammar resolves, so a path under no grammar costs no read. This is the ONE place
-/// a path's grammar is paired with the extraction it drives, so every reader of a file's symbols -
-/// the index ([`index_one_file`]) and the batch re-extracted from bytes
-/// ([`bytes_batch`](events::bytes_batch)) - reads the same symbols from the same text.
+/// a path's grammar is paired with the extraction its stored symbols come from, so every reader
+/// of them - the index ([`index_one_file`]) and the batch re-extracted from bytes
+/// ([`bytes_batch`](events::bytes_batch)) - reads the same symbols from the same text; a show
+/// surface's body bound resolves its grammar itself and extracts through
+/// [`extract::locate_extent`].
 #[cfg(feature = "symbols")]
 pub(crate) fn extracted<S: AsRef<str>>(
     path: &str,
@@ -307,6 +309,9 @@ mod staleness_tests {
                         kind: Kind::Function,
                         name: "f".into(),
                         line: 1,
+                        end_line: 1,
+                        path: "f".into(),
+                        parent: None,
                         is_test: false,
                         is_out_of_line_module: false,
                         path_override: None,

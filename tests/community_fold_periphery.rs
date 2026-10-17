@@ -31,6 +31,7 @@ use rigger::contextgraph::{
 };
 
 mod common;
+use common::fixtures::ONE_COMMUNITY;
 use common::fixtures::{apply_call, apply_json, community_snapshot, def, live_targets};
 
 /// The canonical spec-53 coupling graph: an `apply_damage` hub that CALLS three symbols (degree-4
@@ -118,26 +119,26 @@ fn the_community_fold_exposes_kind_relation_and_inferred_tier_over_the_public_su
         &p,
         9,
         TYPE_COMMUNITY_ASSIGNED,
-        serde_json::json!({ "node": "src/combat/hit.rs::apply_damage", "community": "community/1/0", "resolution": 1.0, "hash": "h", "fresh": true }),
+        serde_json::json!({ "node": "src/combat/hit.rs::apply_damage", "community": ONE_COMMUNITY, "resolution": 1.0, "hash": "h", "fresh": true }),
     );
     apply_json(
         &p,
         10,
         TYPE_COMMUNITY_ASSIGNED,
-        serde_json::json!({ "node": "src/combat/hit.rs::clamp", "community": "community/1/0", "resolution": 1.0, "hash": "h", "fresh": false }),
+        serde_json::json!({ "node": "src/combat/hit.rs::clamp", "community": ONE_COMMUNITY, "resolution": 1.0, "hash": "h", "fresh": false }),
     );
     apply_json(
         &p,
         11,
         TYPE_COMMUNITY_ASSIGNED,
-        serde_json::json!({ "node": "src/net/socket.rs::send", "community": "community/1/0", "resolution": 1.0, "hash": "h", "fresh": false }),
+        serde_json::json!({ "node": "src/net/socket.rs::send", "community": ONE_COMMUNITY, "resolution": 1.0, "hash": "h", "fresh": false }),
     );
 
     let g = p.whole().unwrap();
     let c = g
         .nodes
         .iter()
-        .find(|n| n.id == "community/1/0")
+        .find(|n| n.id == ONE_COMMUNITY)
         .expect("the community super-node folded");
     assert_eq!(
         c.kind, KIND_COMMUNITY,
@@ -150,7 +151,7 @@ fn the_community_fold_exposes_kind_relation_and_inferred_tier_over_the_public_su
         .find(|e| {
             e.rel == REL_IN_COMMUNITY
                 && e.from == "src/combat/hit.rs::apply_damage"
-                && e.to == "community/1/0"
+                && e.to == ONE_COMMUNITY
         })
         .expect("a membership edge ties the hub member to its community");
     assert!(
@@ -218,21 +219,21 @@ fn the_community_layer_serialized_literals_are_stable_and_the_fold_matches_the_o
         &p,
         2,
         "CommunityAssigned",
-        serde_json::json!({ "node": "a.rs::x", "community": "community/1/0", "resolution": 1.0, "hash": "h", "fresh": true }),
+        serde_json::json!({ "node": "a.rs::x", "community": ONE_COMMUNITY, "resolution": 1.0, "hash": "h", "fresh": true }),
     );
 
     let g = p.whole().unwrap();
     assert!(
         g.nodes
             .iter()
-            .any(|n| n.id == "community/1/0" && n.kind == "community"),
+            .any(|n| n.id == ONE_COMMUNITY && n.kind == "community"),
         "the literal-typed event folds a node stored with the literal `community` kind; got {:?}",
         g.nodes
     );
     assert!(
         g.edges
             .iter()
-            .any(|e| e.rel == "IN_COMMUNITY" && e.from == "a.rs::x" && e.to == "community/1/0"),
+            .any(|e| e.rel == "IN_COMMUNITY" && e.from == "a.rs::x" && e.to == ONE_COMMUNITY),
         "the membership edge is stored with the literal `IN_COMMUNITY` rel; got {:?}",
         g.edges
     );
@@ -259,7 +260,7 @@ fn the_community_derivation_is_a_pure_function_of_the_assignment_set_not_arrival
                 &p,
                 9 + i as u64,
                 TYPE_COMMUNITY_ASSIGNED,
-                serde_json::json!({ "node": m, "community": "community/1/0", "resolution": 1.0, "hash": "h", "fresh": i == 0 }),
+                serde_json::json!({ "node": m, "community": ONE_COMMUNITY, "resolution": 1.0, "hash": "h", "fresh": i == 0 }),
             );
         }
         community_snapshot(&p.whole().unwrap())

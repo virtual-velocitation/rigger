@@ -1,6 +1,7 @@
 //! THE GO DEFINITIONS FIXTURE: the one source text GO DEFINITIONS ARE NODES (every Go
 //! definition type is a definition of its kind) is proven over, on the symbols the registered Go
-//! query extracts. It names no crate, so every lane compiles it.
+//! query extracts, beside the closure `var` spec 119's id and `CONTAINS` tests both extract. It
+//! names no crate, so every lane compiles it.
 
 /// THE GO DEFINITIONS FIXTURE (spec 116 criterion 7): one Go file holding every Go definition
 /// type. Line 2 a const; 3 a const spec naming two, each initializer a call; 4-5 a package-level
@@ -27,3 +28,10 @@ func ext(c Canvas)
 func (s Shape) bare()
 type _ = Base
 ";
+
+/// `(file, source)` of a Go `var` spec naming two whose first initializer is a closure holding a
+/// type (spec 119): the type sits inside a range the two equal-range siblings share.
+pub const GO_CLOSURE_VAR: (&str, &str) = (
+    "h.go",
+    "package h\n\nvar a, b = func() { type T struct{} }(), 1\n",
+);

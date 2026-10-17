@@ -4,9 +4,10 @@
 //! boundaries the rule crosses on its way to an operator:
 //!
 //!  - the graph `rigger graph build` folds from the C# definitions fixture: each definition is a
-//!    node carrying its kind string and line under an id that is the file and its leaf verbatim
-//!    (a dotted namespace, `~Foo`, `+`, `this`, `implicit operator int`), a method-local variable
-//!    is no node, and each reference hangs off the caller the fixture gives it;
+//!    node carrying its kind string and line under an id that is the file and its path, each leaf
+//!    in it verbatim (a dotted namespace, `~Foo`, `+`, `this`, `implicit operator int`), a
+//!    method-local variable is no node, and each reference hangs off the caller the fixture gives
+//!    it;
 //!  - the persisted symbol index: the variant name `Property`, which the kind a C# property
 //!    takes is written under and read back from.
 
@@ -17,9 +18,10 @@ mod symbol_index;
 rigger::test_cases! {
     /// GIVEN a project whose one C# file is the C# definitions fixture,
     /// WHEN the operator runs `rigger graph build`,
-    /// THEN the graph's code entities are exactly one node per leaf a definition gives, each
-    /// carrying exactly its kind and line, and no placeholder, every name a reference reaches
-    /// (`Probe`, `Go`) being defined:
+    /// THEN the graph's definitions are exactly one node per definition, at its `<file>::<path>` id
+    /// (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), each carrying exactly its leaf, kind and line,
+    /// and no placeholder, every name a reference reaches (`Probe`, `Go`) being defined; the
+    /// file-scoped namespace `S.T` holds every declaration after it, so each path begins `S.T`:
     ///
     ///  - a class, a struct, a record, an interface, an enum and a delegate are each a `type`, and
     ///    each enum member a `variant`;
@@ -29,80 +31,88 @@ rigger::test_cases! {
     ///    and `deep` are no node;
     ///  - a property (`Size`) and an event with accessors (`Moved`) are each a `property`, and the
     ///    local function `Inner` a `function`;
-    ///  - the block namespace is a `module` at `A.B.C` and the file-scoped one at `S.T`, the
-    ///    destructor a `method` at `~Foo`, the operator at `+`, the indexer at `this` and the
-    ///    conversion operator at `implicit operator int`, its header's wide spacing collapsed;
+    ///  - the block namespace is a `module` at `S.T::A.B.C` and the file-scoped one at `S.T`, the
+    ///    destructor a `method` at `S.T::Foo::~Foo`, the operator at `S.T::Foo::+`, the indexer at
+    ///    `S.T::Foo::this` and the conversion operator at `S.T::Foo::implicit operator int`, its
+    ///    header's wide spacing collapsed;
+    ///  - a field, an event field and a property sit under their type after a `.`
+    ///    (`S.T::Cell.lo`, `S.T::Foo.Changed`, `S.T::Foo.Size`), a `const` field after a `::`
+    ///    (`S.T::Cell::Max`), and a local function under its method (`S.T::Foo::Run::Inner`);
     ///  - a member holding no body is a `declaration`: the interface's `Paint`, the abstract
     ///    `Bare`, the local function `Outer`, the destructor `~Ext`, the operator `-` and the
     ///    conversion operator `explicit operator Ext`;
-    ///  - a constructor shares its class's leaf and so its node, which the kind precedence
-    ///    settles a `type` at the class's line: `Foo`, its constructor four lines below, and
-    ///    `Ext`, whose bodiless constructor, a `declaration`, shares the class's line.
+    ///  - a constructor is a node under its class at the class's leaf: `S.T::Foo::Foo`, a
+    ///    `constructor` four lines below its class, and `S.T::Ext::Ext`, a `declaration` on its
+    ///    class's line.
     ///
     /// Its `CALLS` edges are exactly: the struct's two field type references from the struct and
     /// the field initializer's from the field (`made`); the event accessor's from the event and
-    /// the property value's from the property; the constructor body's from the node its class
-    /// shares; the destructor's, the operator's two, the conversion operator's and the indexer's
-    /// each from that member's leaf; and the local function's from the local function, the method
-    /// keeping its own.
+    /// the property value's from the property; the constructor body's from the constructor; the
+    /// destructor's, the operator's two, the conversion operator's and the indexer's each from that
+    /// member; and the local function's from the local function, the method keeping its own. Each
+    /// lands on the one same-file definition of its leaf (`S.T::A.B.C::Probe`,
+    /// `S.T::A.B.C::Probe::Go`) and hangs off the node of its caller's path, `<file>::<path>`
+    /// (spec 119 criterion 8).
     #[cfg(feature = "symbols")]
     graph_build_makes_each_csharp_definition_a_node_of_its_kind_and_none_of_a_method_local_variable:
         common::cli::assert_built_graph_holds(
             ("f.cs", "csharp", common::fixtures::CSHARP_DEFINITIONS_SOURCE),
             &[
-                ("+", "method", 14),
-                ("-", "declaration", 19),
-                ("A.B.C", "module", 2),
-                ("Bare", "declaration", 19),
-                ("Blue", "variant", 4),
-                ("Cell", "type", 7),
-                ("Changed", "field", 9),
-                ("Ext", "type", 19),
-                ("Fold", "type", 3),
-                ("Foo", "type", 8),
-                ("Go", "method", 2),
-                ("Hue", "type", 4),
-                ("IDraw", "type", 6),
-                ("Inner", "function", 17),
-                ("Max", "constant", 7),
-                ("Min", "constant", 7),
-                ("Moved", "property", 10),
-                ("Outer", "declaration", 17),
-                ("Paint", "declaration", 6),
-                ("Probe", "type", 2),
-                ("Rec", "type", 5),
-                ("Red", "variant", 4),
-                ("Run", "method", 17),
-                ("S.T", "module", 1),
-                ("Seed", "field", 7),
-                ("Size", "property", 11),
-                ("explicit operator Ext", "declaration", 19),
-                ("hi", "field", 7),
-                ("implicit operator int", "method", 15),
-                ("lo", "field", 7),
-                ("made", "field", 7),
-                ("owner", "field", 7),
-                ("this", "method", 16),
-                ("~Ext", "declaration", 19),
-                ("~Foo", "method", 13),
+                ("S.T", "S.T", "module", 1),
+                ("S.T::A.B.C", "A.B.C", "module", 2),
+                ("S.T::A.B.C::Probe", "Probe", "type", 2),
+                ("S.T::A.B.C::Probe::Go", "Go", "method", 2),
+                ("S.T::Cell", "Cell", "type", 7),
+                ("S.T::Cell.Seed", "Seed", "field", 7),
+                ("S.T::Cell.hi", "hi", "field", 7),
+                ("S.T::Cell.lo", "lo", "field", 7),
+                ("S.T::Cell.made", "made", "field", 7),
+                ("S.T::Cell.owner", "owner", "field", 7),
+                ("S.T::Cell::Max", "Max", "constant", 7),
+                ("S.T::Cell::Min", "Min", "constant", 7),
+                ("S.T::Ext", "Ext", "type", 19),
+                ("S.T::Ext::-", "-", "declaration", 19),
+                ("S.T::Ext::Bare", "Bare", "declaration", 19),
+                ("S.T::Ext::Ext", "Ext", "declaration", 19),
+                ("S.T::Ext::explicit operator Ext", "explicit operator Ext", "declaration", 19),
+                ("S.T::Ext::~Ext", "~Ext", "declaration", 19),
+                ("S.T::Fold", "Fold", "type", 3),
+                ("S.T::Foo", "Foo", "type", 8),
+                ("S.T::Foo.Changed", "Changed", "field", 9),
+                ("S.T::Foo.Moved", "Moved", "property", 10),
+                ("S.T::Foo.Size", "Size", "property", 11),
+                ("S.T::Foo::+", "+", "method", 14),
+                ("S.T::Foo::Foo", "Foo", "constructor", 12),
+                ("S.T::Foo::Run", "Run", "method", 17),
+                ("S.T::Foo::Run::Inner", "Inner", "function", 17),
+                ("S.T::Foo::Run::Outer", "Outer", "declaration", 17),
+                ("S.T::Foo::implicit operator int", "implicit operator int", "method", 15),
+                ("S.T::Foo::this", "this", "method", 16),
+                ("S.T::Foo::~Foo", "~Foo", "method", 13),
+                ("S.T::Hue", "Hue", "type", 4),
+                ("S.T::Hue::Blue", "Blue", "variant", 4),
+                ("S.T::Hue::Red", "Red", "variant", 4),
+                ("S.T::IDraw", "IDraw", "type", 6),
+                ("S.T::IDraw::Paint", "Paint", "declaration", 6),
+                ("S.T::Rec", "Rec", "type", 5),
             ],
             &[],
             &[
-                ("f.cs::+", "f.cs::Go"),
-                ("f.cs::+", "f.cs::Probe"),
-                ("f.cs::Cell", "f.cs::Probe"),
-                ("f.cs::Foo", "f.cs::Probe"),
-                ("f.cs::Inner", "f.cs::Probe"),
-                ("f.cs::Moved", "f.cs::Probe"),
-                ("f.cs::Run", "f.cs::Probe"),
-                ("f.cs::Size", "f.cs::Probe"),
-                ("f.cs::implicit operator int", "f.cs::Probe"),
-                ("f.cs::made", "f.cs::Probe"),
-                ("f.cs::this", "f.cs::Probe"),
-                ("f.cs::~Foo", "f.cs::Probe"),
+                ("f.cs::S.T::Cell", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Cell.made", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo.Moved", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo.Size", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::+", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::+", "f.cs::S.T::A.B.C::Probe::Go"),
+                ("f.cs::S.T::Foo::Foo", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::Run", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::Run::Inner", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::implicit operator int", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::this", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::~Foo", "f.cs::S.T::A.B.C::Probe"),
             ],
-            "every code entity of the built graph: one per definition leaf, none for a \
-             method-local variable or const, and no placeholder",
+            "every definition of the built graph at its path, none for a method-local variable or \
+             const, and no placeholder",
         );
     /// The persisted index writes a property under the variant name `Property`, and reads it back
     /// as the kind it was saved as.

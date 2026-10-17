@@ -24,16 +24,24 @@ use rigger::contextgraph::{
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
 
-use common::fixtures::apply_json;
+use common::fixtures::{apply_json, edge_tier};
 
 /// Extracts the source tree at `root`, emits it, and folds every event onto `p` at the positions
-/// following `pos`, advancing `pos` past the last one.
+/// following `pos`, advancing `pos` past the last one: each file's batch as generation
+/// `generation` of the file's identity when one is given
+/// ([`fold_generation`](common::fixtures::fold_generation)), else unkeyed.
 #[cfg(feature = "symbols")]
-fn fold_tree(p: &Projector, root: &std::path::Path, pos: &mut u64) {
-    for mut e in common::project_events(root.to_str().unwrap()) {
-        *pos += 1;
-        e.position = *pos;
-        common::fixtures::folds(p, std::slice::from_ref(&e));
+fn fold_tree(p: &Projector, root: &std::path::Path, pos: &mut u64, generation: Option<&str>) {
+    let Some(generation) = generation else {
+        for e in common::project_events(root.to_str().unwrap()) {
+            *pos += 1;
+            common::fixtures::fold_at(p, *pos, e);
+        }
+        return;
+    };
+    let batches = rigger::grounder::symbols::events::project_batches(root.to_str().unwrap());
+    for (file, batch, _) in batches {
+        common::fixtures::fold_generation(p, pos, &file, generation, batch);
     }
 }
 
@@ -51,16 +59,21 @@ fn combat_calling_every_tier() -> rigger::contextgraph::Graph {
     .unwrap();
 
     let p = Projector::open(":memory:", "test").unwrap();
-    fold_tree(&p, dir.path(), &mut 0);
+    fold_tree(&p, dir.path(), &mut 0, None);
     p.subgraph(&["combat.rs".to_string()], 3).unwrap()
 }
 
 /// The `combat.rs` subgraph folded from a real file defining `apply_damage`, `heal` and a
 /// `caller` calling both, then again after the file CHANGES - `heal` and its call deleted - is
-/// re-extracted and its second batch folded onto the SAME projection at fresh positions.
+/// re-extracted and its second batch folded onto the SAME projection at fresh positions: as the
+/// generations [`GENERATION_BEFORE`](common::fixtures::GENERATION_BEFORE) and
+/// [`GENERATION_AFTER`](common::fixtures::GENERATION_AFTER) of the file's identity when `keyed`,
+/// so the second retracts what only the first asserted, else unkeyed.
 #[cfg(feature = "symbols")]
 fn combat_before_and_after_dropping_heal(
+    keyed: bool,
 ) -> (rigger::contextgraph::Graph, rigger::contextgraph::Graph) {
+    use common::fixtures::{GENERATION_AFTER, GENERATION_BEFORE};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("combat.rs");
     std::fs::write(
@@ -70,7 +83,7 @@ fn combat_before_and_after_dropping_heal(
     .unwrap();
     let p = Projector::open(":memory:", "test").unwrap();
     let mut pos = 0u64;
-    fold_tree(&p, dir.path(), &mut pos);
+    fold_tree(&p, dir.path(), &mut pos, keyed.then_some(GENERATION_BEFORE));
     let before = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
 
     std::fs::write(
@@ -78,7 +91,7 @@ fn combat_before_and_after_dropping_heal(
         "fn apply_damage() {}\nfn caller() { apply_damage(); }\n",
     )
     .unwrap();
-    fold_tree(&p, dir.path(), &mut pos);
+    fold_tree(&p, dir.path(), &mut pos, keyed.then_some(GENERATION_AFTER));
     (before, p.subgraph(&["combat.rs".to_string()], 3).unwrap())
 }
 
@@ -145,7 +158,7 @@ fn a_code_event_missing_the_optional_lang_field_still_folds_backcompat() {
     assert!(
         g.edges.iter().any(|e| e.rel == REL_REFERENCES
             && e.from == "src/combat.rs"
-            && e.to == "src/combat.rs::clamp"),
+            && e.to == "src/combat.rs::%clamp"),
         "a REFERENCES edge folded from the lang-less reference event; got {:?}",
         g.edges
     );
@@ -193,7 +206,7 @@ fn replaying_the_code_events_does_not_double_the_entity_node_or_its_structural_e
     assert_eq!(
         g.edges
             .iter()
-            .filter(|e| e.rel == REL_REFERENCES && e.to == "src/combat.rs::clamp")
+            .filter(|e| e.rel == REL_REFERENCES && e.to == "src/combat.rs::%clamp")
             .count(),
         1,
         "replay must not double the REFERENCES edge; got {:?}",
@@ -315,13 +328,13 @@ fn real_extraction_tiers_every_structural_edge_through_the_emit_fold_pipeline() 
         "a real same-file reference folds EXTRACTED"
     );
     assert_eq!(
-        tier_of("combat.rs::shared"),
+        tier_of("combat.rs::%shared"),
         TIER_INFERRED,
         "a real cross-file reference folds INFERRED (through the convergent upgrade, since the \
          definition folds after the reference in sorted file order)"
     );
     assert_eq!(
-        tier_of("combat.rs::undefined_thing"),
+        tier_of("combat.rs::%undefined_thing"),
         TIER_AMBIGUOUS,
         "a real reference to a name defined nowhere folds AMBIGUOUS"
     );
@@ -371,13 +384,13 @@ fn real_extraction_folds_caller_attributed_calls_edges_at_every_tier() {
         "a real same-file call folds EXTRACTED, mirroring its REFERENCES twin"
     );
     assert_eq!(
-        calls_tier("combat.rs::shared"),
+        calls_tier("combat.rs::%shared"),
         TIER_INFERRED,
         "a real cross-file call upgrades AMBIGUOUS -> INFERRED with its REFERENCES twin (the \
          definition folds after the call in sorted file order)"
     );
     assert_eq!(
-        calls_tier("combat.rs::undefined_thing"),
+        calls_tier("combat.rs::%undefined_thing"),
         TIER_AMBIGUOUS,
         "a real call to a name defined nowhere folds AMBIGUOUS"
     );
@@ -403,7 +416,7 @@ fn re_extracting_a_file_that_drops_a_call_supersedes_its_calls_edge_end_to_end()
     // stale CALLS edge must leave the live subgraph - the hand-built unit test proves the prefix
     // match on a fabricated from_id; this proves it against the REAL `<file>::caller` id the extractor
     // mints, composed with the emit-side `fresh` batch stamping.
-    let (g0, g1) = combat_before_and_after_dropping_heal();
+    let (g0, g1) = combat_before_and_after_dropping_heal(false);
     // Precondition: caller calls heal - a live CALLS edge before the change.
     assert!(
         g0.edges.iter().any(|e| e.rel == REL_CALLS
@@ -589,7 +602,7 @@ fn ingesting_a_real_file_answers_who_calls_g_by_function_end_to_end() {
     .unwrap();
 
     let p = Projector::open(":memory:", "test").unwrap();
-    fold_tree(&p, dir.path(), &mut 0);
+    fold_tree(&p, dir.path(), &mut 0, None);
 
     // The query the design routes to an agent: `subgraph` around the CALLEE, read incoming callers.
     let g = p
@@ -690,7 +703,9 @@ fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
     // a re-extraction REPLACES rather than accretes. This exercises extraction -> emit -> fold with
     // no hand-built events, so it pins that the emit-side `fresh` stamping and the fold's supersede
     // actually compose in production shape (unlike the in-crate fold test's hand-built batches).
-    let (g0, g1) = combat_before_and_after_dropping_heal();
+    // Both batches fold as two generations of the file's identity (spec 119, THE MEMBER RULE):
+    // the dropped `heal` then loses `name`, so it is no member the file's reach loads.
+    let (g0, g1) = combat_before_and_after_dropping_heal(true);
     // Precondition: both definitions are live in the projection before the change.
     assert!(
         g0.nodes
@@ -700,7 +715,8 @@ fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
         g0.nodes
     );
 
-    // gone from the live subgraph (its CONTAINS edge was superseded, not deleted).
+    // gone from the live subgraph (its CONTAINS edge was superseded, not deleted, and its `name`
+    // retracted by the second generation, so it is no member of the file).
     assert!(
         g1.nodes
             .iter()
@@ -729,16 +745,16 @@ fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
 
 #[cfg(feature = "symbols")]
 #[test]
-fn extract_events_emits_one_event_per_definition_and_reference_threading_the_file_label() {
+fn extract_events_emits_one_event_per_path_and_reference_threading_the_file_label() {
     use rigger::grounder::symbols::build_index;
     use rigger::grounder::symbols::events::extract_events;
 
     // Drive the per-file emit API DIRECTLY - `project_batches` only reaches `extract_events`
-    // transitively, so its own contract is otherwise unpinned. Criterion 1 says the pass emits
-    // "one CodeEntityExtracted per definition" and "one EdgeInferred per reference"; that
-    // CARDINALITY is the core of the extract-as-events pass, yet no other periphery test asserts
-    // it (the determinism test checks only non-empty + defs-before-refs). A regression that
-    // dropped, doubled, or mis-typed a def/ref event would fold a wrong graph - and, once the
+    // transitively, so its own contract is otherwise unpinned. The pass emits one
+    // CodeEntityExtracted per path (spec 119, ONE PATH, ONE EVENT) and one EdgeInferred per
+    // reference; that CARDINALITY is the core of the extract-as-events pass, yet no other periphery
+    // test asserts it (the determinism test checks only non-empty + defs-before-refs). A regression
+    // that dropped, doubled, or mis-typed a def/ref event would fold a wrong graph - and, once the
     // rebuild criterion replays the log, a wrong REBUILT graph - while every existing test stayed
     // green. This ties the emitted per-type counts to the extracted `FileSymbols` as ground truth
     // and pins that `extract_events` threads its `file` argument onto every payload.
@@ -775,11 +791,16 @@ fn extract_events_emits_one_event_per_definition_and_reference_threading_the_fil
         .iter()
         .filter(|e| e.type_ == TYPE_EDGE_INFERRED)
         .count();
+    let paths = fs
+        .defs
+        .iter()
+        .filter(|d| !d.is_test)
+        .map(|d| d.path.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     assert_eq!(
-        defs,
-        fs.defs.len(),
-        "exactly one CodeEntityExtracted per extracted definition; got {defs} for {} defs",
-        fs.defs.len()
+        defs, paths,
+        "exactly one CodeEntityExtracted per extracted path; got {defs} for {paths} paths"
     );
     assert_eq!(
         refs,
@@ -789,8 +810,8 @@ fn extract_events_emits_one_event_per_definition_and_reference_threading_the_fil
     );
     assert_eq!(
         events.len(),
-        fs.defs.len() + fs.refs.len(),
-        "extract_events emits exactly the definition and reference events, nothing spurious; got \
+        paths + fs.refs.len(),
+        "extract_events emits exactly one event per path and per reference, nothing spurious; got \
          {} events",
         events.len()
     );
@@ -847,21 +868,6 @@ fn apply_ref_json(p: &Projector, pos: u64, file: &str, name: &str) {
     );
 }
 
-/// The stored tier of the single `rel` edge landing on `to` in `g` (panics unless exactly one).
-fn one_edge_tier(g: &rigger::contextgraph::Graph, rel: &str, to: &str) -> String {
-    let hits: Vec<_> = g
-        .edges
-        .iter()
-        .filter(|e| e.rel == rel && e.to == to)
-        .collect();
-    assert_eq!(
-        hits.len(),
-        1,
-        "expected exactly one {rel} edge to {to}; got {hits:?}"
-    );
-    hits[0].tier.clone()
-}
-
 #[test]
 fn the_confidence_tier_persists_across_a_reopen_of_an_on_disk_graph() {
     // Persistence + reopen boundary the inside-out tier tests are structurally blind to: every
@@ -897,22 +903,22 @@ fn the_confidence_tier_persists_across_a_reopen_of_an_on_disk_graph() {
     // The literal on-disk wire values survive unchanged - this is the durable cross-version
     // contract, asserted against the raw strings, not just the consts.
     assert_eq!(
-        one_edge_tier(&g, REL_CONTAINS, "combat.rs::apply_damage"),
+        edge_tier(&g, REL_CONTAINS, "combat.rs::apply_damage"),
         "extracted",
         "a definition's CONTAINS edge persists at the extracted tier"
     );
     assert_eq!(
-        one_edge_tier(&g, REL_REFERENCES, "combat.rs::apply_damage"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::apply_damage"),
         "extracted",
         "a same-file reference persists at the extracted tier"
     );
     assert_eq!(
-        one_edge_tier(&g, REL_REFERENCES, "combat.rs::shared"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::%shared"),
         "inferred",
         "a cross-file reference persists at the inferred tier across the reopen"
     );
     assert_eq!(
-        one_edge_tier(&g, REL_REFERENCES, "combat.rs::magic"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::%magic"),
         "ambiguous",
         "a define-nowhere reference persists at the ambiguous tier across the reopen"
     );
@@ -955,7 +961,7 @@ fn a_definition_upgrades_only_the_exact_name_cross_file_reference_never_a_substr
     apply_def_json(&p, 2, "util.rs", "damage");
     let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     assert_eq!(
-        one_edge_tier(&g, REL_REFERENCES, "combat.rs::apply_damage"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::%apply_damage"),
         TIER_AMBIGUOUS,
         "defining a substring name must NOT upgrade an unrelated reference (no wildcard match)"
     );
@@ -965,7 +971,7 @@ fn a_definition_upgrades_only_the_exact_name_cross_file_reference_never_a_substr
     apply_def_json(&p, 3, "util.rs", "apply_damage");
     let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     assert_eq!(
-        one_edge_tier(&g, REL_REFERENCES, "combat.rs::apply_damage"),
+        edge_tier(&g, REL_REFERENCES, "combat.rs::%apply_damage"),
         TIER_INFERRED,
         "defining the exact name DOES promote the cross-file reference to inferred"
     );
@@ -1072,7 +1078,7 @@ fn a_refs_only_files_re_extraction_supersedes_via_the_reference_batch_boundary()
     // Precondition: both references are live before the file changes.
     let g0 = p.subgraph(&[file.to_string()], 2).unwrap();
     assert!(
-        has_live_edge(&g0, REL_REFERENCES, file, "src/only_refs.rs::beta"),
+        has_live_edge(&g0, REL_REFERENCES, file, "src/only_refs.rs::%beta"),
         "precondition: beta is REFERENCEd before re-extraction; got {:?}",
         g0.edges
     );
@@ -1084,12 +1090,12 @@ fn a_refs_only_files_re_extraction_supersedes_via_the_reference_batch_boundary()
 
     let g1 = p.subgraph(&[file.to_string()], 2).unwrap();
     assert!(
-        has_live_edge(&g1, REL_REFERENCES, file, "src/only_refs.rs::alpha"),
+        has_live_edge(&g1, REL_REFERENCES, file, "src/only_refs.rs::%alpha"),
         "alpha is still REFERENCEd after re-extraction; got {:?}",
         g1.edges
     );
     assert!(
-        !has_live_edge(&g1, REL_REFERENCES, file, "src/only_refs.rs::beta"),
+        !has_live_edge(&g1, REL_REFERENCES, file, "src/only_refs.rs::%beta"),
         "the removed beta reference is superseded (gone from the live view) via the reference \
          batch boundary; got {:?}",
         g1.edges
@@ -1121,7 +1127,7 @@ fn a_re_extraction_supersedes_only_its_own_files_edges_not_another_files_referen
         g0.edges
     );
     assert!(
-        has_live_edge(&g0, REL_REFERENCES, b, "src/b.rs::shared"),
+        has_live_edge(&g0, REL_REFERENCES, b, "src/b.rs::%shared"),
         "precondition: B REFERENCEs its own shared target before A re-extracts; got {:?}",
         g0.edges
     );
@@ -1146,7 +1152,7 @@ fn a_re_extraction_supersedes_only_its_own_files_edges_not_another_files_referen
     // The scope boundary: B's reference edge (from_id = B) was NOT touched by supersede(A), so it
     // stays live. A supersede that ignored `from_id` would have wrongly retired it.
     assert!(
-        has_live_edge(&g1, REL_REFERENCES, b, "src/b.rs::shared"),
+        has_live_edge(&g1, REL_REFERENCES, b, "src/b.rs::%shared"),
         "B's cross-file reference survives A's re-extraction (supersede is scoped to A's own \
          from-edges); got {:?}",
         g1.edges

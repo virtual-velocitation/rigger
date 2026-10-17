@@ -13,13 +13,16 @@
 //!     the body is unavailable. A further degrade arm lives inside extent derivation (the `symbols`
 //!     lane, past the pre-read guards): the file's EXTENSION has no registered grammar degrades to a
 //!     note with NO body.
-//!   - HEAL (spec 92, FRESH ON EVERY INTEGRATION): when the current tree holds no definition of that
-//!     name STARTING at the recorded line (a name/line drift - the definition moved within the file
-//!     since the graph was last indexed), the surface RE-LOCATES it by name within the SAME file
-//!     (never crossing files) and shows its LIVE body, with the header noting "recorded line N, now
-//!     M" - but ONLY when that name is UNAMBIGUOUS there: with more than one live candidate the surface
-//!     cannot tell which the caller meant, so it degrades to a note with NO body instead of guessing
-//!     (never a wrong body from a neighbor, or from an ambiguous same-named sibling).
+//!   - HEAL (spec 92, FRESH ON EVERY INTEGRATION): when the current tree holds no definition of
+//!     that name STARTING at the recorded line (a name/line drift - the definition moved within the
+//!     file since the graph was last indexed), the surface RE-LOCATES it by name and kind, and by
+//!     the id's path when the id carries one (spec 119: `T::new` apart from a same-named
+//!     `U::new`), within the SAME file (never crossing files) and shows its LIVE body, with the
+//!     header noting "recorded line N, now M" - but ONLY when that definition is UNAMBIGUOUS among
+//!     the file's production definitions (test code never counts): with more than one live production
+//!     candidate the surface cannot tell which the caller meant, so it degrades to a
+//!     note with NO body instead of guessing (never a wrong body from a neighbor, or from an
+//!     ambiguous same-named sibling).
 //!   - EXTENT: a definition's line-numbered body is bounded by the definition's OWN extent, derived
 //!     through the shared multi-grammar symbols authority (the grammar's own tree-sitter node
 //!     boundary) - so a nested `fn`, a brace inside a string/comment/char, a signature that itself
@@ -31,6 +34,8 @@
 //!     degrades to the site plus an explicit extent-unavailable note and NO body - the honesty
 //!     contract for a feature lane that cannot derive the extent.
 //!   - ARG EDGE: `graph` with neither `--around` nor `--show` errors and names BOTH selectors.
+//!   - MEMBERS (spec 119, THE MEMBER RULE): `--around` a file prints its named code entities one
+//!     hop on and `--around` one of them its file, over a store no `CONTAINS` edge reaches.
 //!
 //! The graph is seeded by folding the ALWAYS-compiled `CodeEntityExtracted` events (no `symbols`
 //! extractor), so RESOLUTION and the degrade/none/arg faces run identically in BOTH feature lanes.
@@ -48,10 +53,21 @@ mod common;
 use common::cli::assert_light_lane_extent_note;
 use common::cli::body_line_count;
 use common::cli::open_graph;
+use common::cli::planted_graph;
+use common::cli::run_around;
 use common::cli::run_rigger;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
 use common::fixtures::apply_code_entity;
+#[cfg(feature = "symbols")]
+use common::fixtures::{apply_json, path_entity_json};
+use common::fixtures::{
+    file_half, member_graph, BARE_PARENT, FILELESS_MEMBER, FILE_MATE, LEAF_PLACEHOLDER,
+    MAKE_TARGET, NESTED_METHOD, RANGE_ARTIFACT,
+};
+#[cfg(feature = "symbols")]
+use rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
+use rigger::contextgraph::{KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE};
 
 /// NONE face: an unknown query is not an error. The show surface prints a one-line not-found note
 /// (never guessing, never a stack trace), prints NO body, and EXITS SUCCESS - mirroring
@@ -110,6 +126,61 @@ fn graph_show_and_around_with_no_store_print_the_not_found_note() {
         out.contains("nothing found"),
         "--around with no store prints its not-found note; got:\n{out}"
     );
+}
+
+/// MEMBERS face (spec 119, THE MEMBER RULE) at the operator's `--around`: GIVEN a `graph.db`
+/// holding [`member_graph`]'s nodes and no edge, so no `CONTAINS` reaches any node, WHEN the
+/// operator runs `rigger graph --around` on a file, THEN depth 0 prints the file alone and depth 1
+/// adds its nested method and its file-mate, never the placeholder, the bare parent or the
+/// `artifact` its id range holds; on the nested method depth 1 prints its file and depth 2 its
+/// file-mate too; and the placeholder, the bare parent and the artifact reach no file at depth 2,
+/// nor a member whose file the store holds no node for at depth 1. Lane-independent: the rows are
+/// written straight into the store the binary reads.
+#[test]
+fn graph_around_a_file_lists_its_members_and_a_member_its_file_with_no_contains() {
+    let dir = temp_project();
+    let root = dir.path();
+    drop(planted_graph(root, &member_graph()));
+    let printed = |seed: &str, depth: i64, nodes: &[(&str, &str)]| {
+        let mut out = format!("subgraph around {seed:?} (depth {depth}):\n");
+        for (id, kind) in nodes {
+            out.push_str(&format!("  node {id:<24} {kind}\n"));
+        }
+        out
+    };
+    let (file, make) = (file_half(NESTED_METHOD), file_half(MAKE_TARGET));
+    let (as_file, as_entity) = ((file, KIND_FILE), (NESTED_METHOD, KIND_CODE_ENTITY));
+    let mate = (FILE_MATE, KIND_CODE_ENTITY);
+    for (seed, depth, nodes) in [
+        (file, 0, vec![as_file]),
+        (file, 1, vec![as_file, as_entity, mate]),
+        (NESTED_METHOD, 0, vec![as_entity]),
+        (NESTED_METHOD, 1, vec![as_file, as_entity]),
+        (NESTED_METHOD, 2, vec![as_file, as_entity, mate]),
+        (
+            make,
+            1,
+            vec![(make, KIND_FILE), (MAKE_TARGET, KIND_CODE_ENTITY)],
+        ),
+        (
+            LEAF_PLACEHOLDER,
+            2,
+            vec![(LEAF_PLACEHOLDER, KIND_CODE_ENTITY)],
+        ),
+        (BARE_PARENT, 2, vec![(BARE_PARENT, KIND_CODE_ENTITY)]),
+        (RANGE_ARTIFACT, 2, vec![(RANGE_ARTIFACT, KIND_ARTIFACT)]),
+        (
+            FILELESS_MEMBER,
+            1,
+            vec![(FILELESS_MEMBER, KIND_CODE_ENTITY)],
+        ),
+    ] {
+        assert_eq!(
+            run_around(root, seed, depth).0,
+            printed(seed, depth, &nodes),
+            "--around {seed} at depth {depth}"
+        );
+    }
 }
 
 /// DEGRADE face: when the recorded graph location no longer resolves to working-tree source, the
@@ -177,7 +248,7 @@ fn graph_show_degrades_to_stale_note_when_location_drifted() {
 }
 
 /// DEGRADE (recorded line 0): a definition whose recorded line is 0 - a location that never named a
-/// real source line (a bare cross-file placeholder, or a drifted attr) - degrades to the
+/// real source line (a bare placeholder, or a drifted attr) - degrades to the
 /// stale-location note with NO body, and still EXITS SUCCESS. Guards `definition_body`'s `start == 0`
 /// arm: the one degrade return the missing-file / past-EOF cases cannot reach, because it
 /// short-circuits BEFORE any file read (and BEFORE extent derivation, so it is lane-independent). The
@@ -370,7 +441,8 @@ fn graph_show_shows_full_body_past_nested_definition() {
 
     // outer.rs: `outer` (lines 1-6) CONTAINS a nested `helper` (lines 2-4) and calls it (line 5);
     // then a blank + doc-comment separator, then a top-level `sibling` at line 9. The graph records
-    // outer@1, helper@2 (the next definition by line - nested inside outer), sibling@9. A
+    // outer@1, helper@2 (the next definition by line - nested inside outer, at its path
+    // `outer::helper`), sibling@9. A
     // next-def-by-line bound would truncate outer's body to line 1 alone (`fn outer() {`) because
     // helper begins on line 2; the node-range extent spans outer's whole body through line 6.
     std::fs::write(
@@ -391,7 +463,12 @@ fn graph_show_shows_full_body_past_nested_definition() {
     {
         let p = open_graph(root);
         apply_code_entity(&p, 1, "outer.rs", "outer", "function", 1, "rust");
-        apply_code_entity(&p, 2, "outer.rs", "helper", "function", 2, "rust");
+        apply_json(
+            &p,
+            2,
+            TYPE_CODE_ENTITY_EXTRACTED,
+            path_entity_json("outer.rs", "helper", "outer::helper", "function", 2, "rust"),
+        );
         apply_code_entity(&p, 3, "outer.rs", "sibling", "function", 9, "rust");
     }
 
@@ -563,7 +640,7 @@ fn graph_show_shows_full_body_of_a_python_nested_def() {
     seed_rigger_dir(root);
 
     // nested.py: `outer` (lines 1-5) CONTAINS a nested `inner` (lines 2-3); the blocks are bounded
-    // by indentation, not braces. The graph records outer@1, inner@2.
+    // by indentation, not braces. The graph records outer@1, inner@2 at its path `outer::inner`.
     std::fs::write(
         root.join("nested.py"),
         "def outer(n):\n\
@@ -576,7 +653,19 @@ fn graph_show_shows_full_body_of_a_python_nested_def() {
     {
         let p = open_graph(root);
         apply_code_entity(&p, 1, "nested.py", "outer", "function", 1, "python");
-        apply_code_entity(&p, 2, "nested.py", "inner", "function", 2, "python");
+        apply_json(
+            &p,
+            2,
+            TYPE_CODE_ENTITY_EXTRACTED,
+            path_entity_json(
+                "nested.py",
+                "inner",
+                "outer::inner",
+                "function",
+                2,
+                "python",
+            ),
+        );
     }
 
     // `--show outer`: the FULL indented block is shown, INCLUDING the nested `inner`, then outer's
@@ -797,15 +886,16 @@ fn graph_show_degrades_when_no_grammar_registered_for_the_file_extension() {
 }
 
 /// NAME/LINE-DRIFT HEAL (spec 92, FRESH ON EVERY INTEGRATION, the symbols lane): a definition whose
-/// file IS present and whose recorded line IS a real line of that file, but where the CURRENT working
-/// tree holds no definition of that name STARTING at the recorded line (the code was edited so the
-/// definition moved off its recorded site) - and the name is UNAMBIGUOUS elsewhere in the file. The
-/// surface RE-LOCATES it by name and shows its LIVE body, noting the drift in the site header, rather
-/// than refusing: a moved function must still resolve in the CURRENT tree. This is a distinct arm
-/// from the missing-file / past-EOF / line-0 degrades (all of which short-circuit BEFORE extent
-/// derivation): here every earlier guard passes and the exact name+start_line match misses, so the
-/// surface falls back to a name-only search of the same file. Reachable only in the `symbols` lane
-/// (the light lane never derives an extent, so it never attempts the fallback either).
+/// file IS present and whose recorded line IS a real line of that file, but where the CURRENT
+/// working tree holds no definition of that name STARTING at the recorded line (the code was edited
+/// so the definition moved off its recorded site) - and the name and kind are UNAMBIGUOUS elsewhere
+/// in the file. The surface RE-LOCATES it by name and kind and shows its LIVE body, noting the
+/// drift in the site header, rather than refusing: a moved function must still resolve in the
+/// CURRENT tree. This is a distinct arm from the missing-file / past-EOF / line-0 degrades (all of
+/// which short-circuit BEFORE extent derivation): here every earlier guard passes and the recorded
+/// name and line hold no definition, so the surface falls back to a search of the same file by name
+/// and kind. Reachable only in the `symbols` lane (the light lane never derives an extent, so it
+/// never attempts the fallback either).
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_show_heals_to_the_live_line_when_the_moved_name_is_unambiguous() {
@@ -815,10 +905,11 @@ fn graph_show_heals_to_the_live_line_when_the_moved_name_is_unambiguous() {
 
     // drift.rs: an UNRELATED `other` really sits at line 1 (with a distinctive body token), and the
     // queried `moved` really sits at line 4. The graph records `moved` at line 1 (a stale site: the
-    // definition was edited downward since the graph was built). Every pre-extent guard passes - the
-    // file exists, line 1 is a real line, it is not 0 and not past EOF - so the exact name+start_line
-    // match misses and the surface falls back to a name-only search: `moved` is UNAMBIGUOUS in this
-    // file (it occurs at exactly one line), so the fallback resolves it.
+    // definition was edited downward since the graph was built). Every pre-extent guard passes -
+    // the file exists, line 1 is a real line, it is not 0 and not past EOF - so the recorded name
+    // and line hold no definition and the surface falls back to a search by name and kind: the
+    // function `moved` is UNAMBIGUOUS in this file (it occurs at exactly one line), so the fallback
+    // resolves it.
     std::fs::write(
         root.join("drift.rs"),
         "fn other() {\n\
@@ -869,11 +960,12 @@ fn graph_show_heals_to_the_live_line_when_the_moved_name_is_unambiguous() {
     );
 }
 
-/// NAME/LINE-DRIFT, AMBIGUOUS (spec 92): when the queried name occurs at MORE than one live line in
-/// the file (none of them the recorded one), the surface cannot tell which the caller meant - it
-/// degrades to a note with NO body, exactly as the pre-heal behavior did for every drift, rather than
-/// guessing one of the candidates. This is the boundary the heal above must never cross: healing is
-/// safe only when the name is unambiguous in its file.
+/// NAME/LINE-DRIFT, AMBIGUOUS (spec 92): when the queried name, of its kind, occurs in production
+/// code at MORE than one live line in the file (none of them the recorded one), the surface cannot
+/// tell which the caller meant - it degrades to a note with NO body, exactly as the pre-heal
+/// behavior did for every drift, rather than guessing one of the candidates. This is the boundary
+/// the heal above must never cross: healing is safe only when the name and kind are unambiguous
+/// among its file's production definitions.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file() {
@@ -882,8 +974,8 @@ fn graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file() {
     seed_rigger_dir(root);
 
     // twins.rs: TWO live definitions named `dup` (lines 4 and 7), neither at the recorded line 1
-    // (where an unrelated `other` really sits). A name-only fallback with no tiebreak would have to
-    // guess between them - the surface must refuse instead.
+    // (where an unrelated `other` really sits). A fallback by name and kind with no tiebreak would
+    // have to guess between them - the surface must refuse instead.
     std::fs::write(
         root.join("twins.rs"),
         "fn other() {\n\
@@ -927,5 +1019,131 @@ fn graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file() {
         body_line_count(&out),
         0,
         "no line-numbered body is printed for an ambiguous drift; got:\n{out}"
+    );
+}
+
+/// The stdout lines of `rigger graph --show` on the Rust function `name` the graph records at line 1
+/// of `file`, in a project whose working tree holds `source` there (spec 119, ONE EXTENT: the
+/// node's recorded kind reaches the extent search).
+#[cfg(feature = "symbols")]
+fn shown_function_recorded_at_line_1(file: &str, source: &str, name: &str) -> Vec<String> {
+    let dir = temp_project();
+    common::cli::show_recorded(dir.path(), file, source, name, "function", 1, "rust")
+        .lines()
+        .map(String::from)
+        .collect()
+}
+
+rigger::test_cases! {
+    /// Spec 119, ONE EXTENT, the kind seam: GIVEN a function `h` the graph records at line 1 of a
+    /// file whose working tree holds a struct field `h` at line 2 and the function `h` at lines
+    /// 5-6, WHEN the operator runs `rigger graph --show` on its id, THEN the drift heals to the
+    /// function alone, the field never making the name ambiguous.
+    #[cfg(feature = "symbols")]
+    graph_show_heals_a_drifted_fn_beside_a_same_named_field: assert_eq!(
+        shown_function_recorded_at_line_1(
+            "field.rs",
+            common::fixtures::FN_BESIDE_SAME_NAMED_FIELD_SOURCE,
+            "h",
+        ),
+        [
+            "show field.rs::h",
+            "  site: field.rs:5   kind function   degree 1   (recorded line 1, now 5)",
+            "  name h",
+            "  lang rust",
+            "       5 | fn h() {",
+            "       6 | }",
+        ],
+        "the drift heals to the function, never ambiguous with the same-named field"
+    );
+    /// Spec 119, ONE EXTENT, the second tier at the binary: GIVEN a function `f` the graph records
+    /// at line 1 of a file whose working tree now holds a constant `f` spanning lines 1-2 and a
+    /// function `f` at lines 3-4, WHEN the operator runs `rigger graph --show` on its id, THEN the
+    /// definition whose kind changed in place bounds the body at the recorded line, ahead of
+    /// healing to the function.
+    #[cfg(feature = "symbols")]
+    graph_show_bounds_a_definition_whose_kind_changed_at_its_recorded_line: assert_eq!(
+        shown_function_recorded_at_line_1(
+            "changed.rs",
+            common::fixtures::KIND_CHANGED_IN_PLACE_SOURCE,
+            "f",
+        ),
+        [
+            "show changed.rs::f",
+            "  site: changed.rs:1   kind function   degree 1",
+            "  name f",
+            "  lang rust",
+            "       1 | const f: u8 =",
+            "       2 |     0;",
+        ],
+        "the recorded line's definition of another kind bounds the body, unhealed"
+    );
+    /// Spec 119, ONE EXTENT, the ambiguity note at the binary: GIVEN a function `dup` the graph
+    /// records at line 1 of a file whose working tree holds a struct field `dup` and two functions
+    /// `dup`, none at line 1, WHEN the operator runs `rigger graph --show` on its id, THEN no body
+    /// is printed and the note names the two lines its kind sits at, the same-named field's line
+    /// never counted.
+    #[cfg(feature = "symbols")]
+    graph_show_notes_an_ambiguous_drift_by_the_lines_holding_its_kind: assert_eq!(
+        shown_function_recorded_at_line_1(
+            "twins.rs",
+            "fn other() {}\nstruct S {\n    dup: u8,\n}\nfn dup() {}\nfn dup() {}\n",
+            "dup",
+        ),
+        [
+            "show twins.rs::dup",
+            "  site: twins.rs:1   kind function   degree 1",
+            "  name dup",
+            "  lang rust",
+            "  (production definitions named \"dup\" at path \"dup\" of kind function sit at 2 \
+             lines in twins.rs and none at the recorded line 1; the recorded location may be stale (cannot resolve \
+             which one moved))",
+        ],
+        "an ambiguous drift notes the lines holding its kind and prints no body"
+    );
+    /// Spec 119, ONE EXTENT, the deleted-definition note at the binary: GIVEN a function `g` the
+    /// graph records at line 1 of a file whose working tree holds a struct `g` and a constant `g`
+    /// at line 1 and no function `g` anywhere, WHEN the operator runs `rigger graph --show` on its
+    /// id, THEN no body is printed and the note names the definition by its name, id path and
+    /// kind, at its line or elsewhere in its file, the two same-named definitions of other kinds never bounding
+    /// it.
+    #[cfg(feature = "symbols")]
+    graph_show_notes_a_definition_missing_by_name_and_kind: assert_eq!(
+        shown_function_recorded_at_line_1(
+            "missing.rs",
+            common::fixtures::TWO_OTHER_KINDS_AT_ONE_LINE_SOURCE,
+            "g",
+        ),
+        [
+            "show missing.rs::g",
+            "  site: missing.rs:1   kind function   degree 1",
+            "  name g",
+            "  lang rust",
+            "  (no production definition named \"g\" at path \"g\" of kind function at line 1 or \
+             elsewhere in missing.rs in the current working tree; the recorded location may be stale)",
+        ],
+        "a definition of its name and kind found nowhere notes it by both and prints no body"
+    );
+    /// Spec 119, ONE EXTENT, the production scope of the deleted-definition note: GIVEN a function
+    /// `t` the graph records at line 1 of a file whose working tree holds an unrelated `other` at
+    /// line 1 and only a `#[cfg(test)]` function `t` at line 3, WHEN the operator runs `rigger
+    /// graph --show` on its id, THEN no body is printed and the note says no PRODUCTION definition
+    /// of its name and kind exists, the test-code twin never bounding it nor falsifying the note.
+    #[cfg(feature = "symbols")]
+    graph_show_notes_a_definition_whose_only_twin_is_test_code_as_missing: assert_eq!(
+        shown_function_recorded_at_line_1(
+            "tested.rs",
+            "fn other() {}\n#[cfg(test)]\nfn t() {}\n",
+            "t",
+        ),
+        [
+            "show tested.rs::t",
+            "  site: tested.rs:1   kind function   degree 1",
+            "  name t",
+            "  lang rust",
+            "  (no production definition named \"t\" at path \"t\" of kind function at line 1 or \
+             elsewhere in tested.rs in the current working tree; the recorded location may be stale)",
+        ],
+        "a definition whose only same-named twin is test code is missing among production code"
     );
 }

@@ -44,6 +44,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::contextgraph::query::{leaf_of, node_name};
 use crate::contextgraph::{
     is_call_target, CommunityAssigned, Graph, KIND_CODE_ENTITY, REL_CALLS, REL_CONTAINS,
     REL_REFERENCES, TIER_AMBIGUOUS, TYPE_COMMUNITY_ASSIGNED,
@@ -80,14 +81,6 @@ fn fnv1a_hex(s: &str) -> String {
     format!("{h:016x}")
 }
 
-/// The "simple name" of a code-entity id: the text after the FIRST `::` (the `<name>` of a
-/// `<file>::<name>` id). This is the pinned `substr(id, instr(id,'::')+2)` name-suffix the fold's
-/// own cross-file resolution keys on, so a bare placeholder and the definition it reaches share it.
-/// `None` for an id with no `::` (a file or non-code node), which never resolves.
-fn simple_name(id: &str) -> Option<&str> {
-    id.find("::").map(|pos| &id[pos + 2..])
-}
-
 /// An undirected, weighted coupling graph built from the projection's structure layer: the input
 /// community detection runs over. Its nodes are exactly the code-entity / file ids that participate
 /// in at least one coupling edge (a node with none is not part of any community and simply keeps its
@@ -117,36 +110,36 @@ impl Coupling {
     /// unordered node pair to one undirected edge weighted by how many such edges join it, and drops
     /// self-loops. A node with no surviving coupling edge is excluded (it joins no community).
     pub fn from_graph(g: &Graph) -> Self {
-        // Index real DEFINITIONS by simple name so a cross-file reference that folded onto a bare
+        // Index real DEFINITIONS by leaf so a cross-file reference that folded onto a bare
         // same-file placeholder can be redirected to the definition it actually reaches. A
-        // code-entity node carrying a `name` attr is a real definition (the extraction fold sets
-        // it), a redirect target only when its kind is a call target: a placeholder never
-        // redirects onto a data member or a declaration, which keeps its own edges as every named
-        // node does; a code-entity with NO `name` attr is a bare cross-file placeholder. The "simple
-        // name" is the text after the FIRST `::` - the pinned `substr(id, instr(id,'::')+2)`
-        // name-suffix the fold's own cross-file resolution keys on.
+        // code-entity node carrying a non-empty `name` attr ([`node_name`]) is a real definition
+        // (the extraction fold sets it), a redirect target only when its kind is a call target: a
+        // placeholder never redirects onto a data member or a declaration, which keeps its own
+        // edges as every named node does; a code-entity with no `name`, or an empty one, is a
+        // bare placeholder. A definition keys by its leaf, which for a named node is
+        // its name, and a placeholder by the leaf its id names ([`leaf_of`]): the leaf the
+        // store's resolution by leaf keys on too (spec 119).
         let mut defs_by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         let mut bare: BTreeMap<&str, bool> = BTreeMap::new();
         for node in &g.nodes {
             let is_code = node.kind == KIND_CODE_ENTITY;
-            let named = node.attrs.contains_key("name");
-            bare.insert(node.id.as_str(), is_code && !named);
-            if is_code && named && is_call_target(node.attrs.get("kind").map(String::as_str)) {
-                if let Some(simple) = simple_name(&node.id) {
-                    defs_by_name.entry(simple).or_default().push(&node.id);
-                }
+            let name = node_name(node);
+            bare.insert(node.id.as_str(), is_code && name.is_none());
+            let target = is_code && is_call_target(node.attrs.get("kind").map(String::as_str));
+            if let (true, Some(leaf)) = (target, name) {
+                defs_by_name.entry(leaf).or_default().push(&node.id);
             }
         }
-        // Canonicalize a node id: a bare cross-file placeholder resolves to the UNIQUE call-target
-        // definition sharing its simple name (EXACTLY ONE resolves; ZERO or MANY stays itself,
-        // honest by construction) - the SAME unique-name-suffix rule the directed calls walk
-        // (spec 52) applies at query time, here over the in-memory whole-graph read so the
-        // undirected coupling layer genuinely spans files instead of stopping at same-file bare
-        // placeholders. Every other node (a real definition, a file, a non-code node) is itself.
+        // Canonicalize a node id: a bare placeholder resolves to the UNIQUE call-target
+        // definition sharing its leaf (EXACTLY ONE resolves; ZERO or MANY stays itself, honest by
+        // construction) - the SAME unique-leaf rule the directed calls walk (spec 52) applies at
+        // query time, here over the in-memory whole-graph read so the undirected coupling layer
+        // genuinely spans files instead of stopping at same-file bare placeholders. Every other
+        // node (a real definition, a file, a non-code node) is itself.
         let canon = |id: &str| -> String {
             if *bare.get(id).unwrap_or(&false) {
-                if let Some(simple) = simple_name(id) {
-                    if let Some(defs) = defs_by_name.get(simple) {
+                if let Some(leaf) = leaf_of(id) {
+                    if let Some(defs) = defs_by_name.get(leaf) {
                         if defs.len() == 1 {
                             return defs[0].to_string();
                         }
@@ -537,8 +530,11 @@ fn number_groups(c: &Coupling, refined: &[usize]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contextgraph::query::split_id;
     use crate::contextgraph::{Edge, Node, KIND_FILE, TIER_EXTRACTED, TIER_INFERRED};
+    use crate::test_support::def_node;
     use crate::test_support::edge;
+    use crate::test_support::empty_named_node;
     use crate::test_support::kinded_def_node;
     use crate::test_support::node_with_optional_attrs;
     use crate::test_support::pair_map;
@@ -571,15 +567,15 @@ mod tests {
                 // makes every endpoint a real definition so canonicalization is a no-op here and the
                 // topology under test is exactly the edges given. Cross-file BARE resolution has its
                 // own dedicated test.
-                let mut attrs = Map::new();
-                if let Some(simple) = super::simple_name(&id) {
-                    attrs.insert("name".to_string(), simple.to_string());
-                }
-                Node {
+                let mut node = Node {
                     id,
                     kind: "code-entity".to_string(),
-                    attrs,
+                    attrs: Map::new(),
+                };
+                if let Some(leaf) = split_id(&node.id).1.map(str::to_string) {
+                    node.attrs.insert("name".to_string(), leaf);
                 }
+                node
             })
             .collect();
         Graph { nodes, edges: es }
@@ -833,7 +829,7 @@ mod tests {
     #[test]
     fn from_graph_resolves_a_bare_cross_file_reference_onto_its_unique_definition() {
         // The cross-directory heart of the pass: a reference in file B to `foo` (defined in file A)
-        // folds onto a BARE same-file placeholder `src/b.rs::foo` (no `name` attr). Detection must
+        // folds onto a BARE same-file placeholder `src/b.rs::%foo` (no `name` attr). Detection must
         // redirect that bare node onto the UNIQUE real definition `src/a.rs::foo`, so B genuinely
         // couples to A across the directory line - not to a dead-end placeholder. Without resolution,
         // B and A would sit in different components and never share a community.
@@ -847,15 +843,15 @@ mod tests {
                 ),
                 node_with_optional_attrs("src/b.rs", KIND_FILE, &[("title", None), ("name", None)]),
                 node_with_optional_attrs(
-                    "src/b.rs::foo",
+                    "src/b.rs::%foo",
                     KIND_CODE_ENTITY,
                     &[("title", None), ("name", None)],
-                ), // bare cross-file placeholder
+                ), // bare placeholder
             ],
             edges: vec![
                 edge("src/a.rs", "src/a.rs::foo", REL_CONTAINS, TIER_EXTRACTED),
                 // The cross-file reference, landed on the bare placeholder at the inferred tier.
-                edge("src/b.rs", "src/b.rs::foo", REL_REFERENCES, TIER_INFERRED),
+                edge("src/b.rs", "src/b.rs::%foo", REL_REFERENCES, TIER_INFERRED),
             ],
         };
         let c = Coupling::from_graph(&g);
@@ -863,7 +859,7 @@ mod tests {
         let m = pair_map(&a.members);
 
         assert!(
-            !m.contains_key("src/b.rs::foo"),
+            !m.contains_key("src/b.rs::%foo"),
             "the bare placeholder resolves away - it is never a member on its own"
         );
         assert!(
@@ -877,8 +873,37 @@ mod tests {
     }
 
     #[test]
+    fn from_graph_canonicalises_a_placeholder_onto_the_nested_definition_of_its_leaf() {
+        // Spec 119 criterion 1: `b.rs`'s placeholder `%new` and `c.rs`'s empty-named one both
+        // couple to `a.rs::T::new`, the one call-target definition of the leaf `new`. The field
+        // `d.rs::new` is named, so it is no placeholder and stays itself; neither it nor the
+        // named design doc `e.md` is a definition of `new`.
+        let g = Graph {
+            nodes: vec![
+                def_node("a.rs::T::new", "new"),
+                plain("b.rs", KIND_FILE),
+                plain("b.rs::%new", KIND_CODE_ENTITY),
+                plain("c.rs", KIND_FILE),
+                empty_named_node("c.rs::%new"),
+                plain("d.rs", KIND_FILE),
+                kinded_def_node("d.rs::new", "field"),
+                node_with_optional_attrs("e.md", "design-doc", &[("name", Some("new"))]),
+            ],
+            edges: vec![
+                edge("b.rs", "b.rs::%new", REL_REFERENCES, TIER_INFERRED),
+                edge("c.rs", "c.rs::%new", REL_REFERENCES, TIER_INFERRED),
+                edge("d.rs", "d.rs::new", REL_REFERENCES, TIER_INFERRED),
+            ],
+        };
+        assert_eq!(
+            Coupling::from_graph(&g).nodes,
+            vec!["a.rs::T::new", "b.rs", "c.rs", "d.rs", "d.rs::new"]
+        );
+    }
+
+    #[test]
     fn from_graph_leaves_an_ambiguous_bare_reference_unresolved() {
-        // Honest by construction: a bare `foo` reference whose simple name matches MORE THAN ONE
+        // Honest by construction: a bare `foo` reference whose leaf matches MORE THAN ONE
         // definition does NOT resolve (it would be a guess). The bare node stays itself, so it does
         // not spuriously fuse the two candidate definitions' subsystems.
         let g = Graph {
@@ -895,14 +920,14 @@ mod tests {
                 ),
                 node_with_optional_attrs("src/b.rs", KIND_FILE, &[("title", None), ("name", None)]),
                 node_with_optional_attrs(
-                    "src/b.rs::foo",
+                    "src/b.rs::%foo",
                     KIND_CODE_ENTITY,
                     &[("title", None), ("name", None)],
                 ),
             ],
             edges: vec![edge(
                 "src/b.rs",
-                "src/b.rs::foo",
+                "src/b.rs::%foo",
                 REL_REFERENCES,
                 TIER_INFERRED,
             )],
@@ -913,7 +938,7 @@ mod tests {
         // The bare node stays itself (two candidates => no resolution), so B couples only to the
         // unresolved placeholder, never to either real definition.
         assert!(
-            m.contains_key("src/b.rs::foo"),
+            m.contains_key("src/b.rs::%foo"),
             "an ambiguous bare reference stays unresolved rather than guessing a definition"
         );
         assert!(
@@ -1129,11 +1154,11 @@ mod tests {
                 plain("src/a.rs", KIND_FILE),
                 kinded_def_node("src/a.rs::x", member),
                 plain("src/b.rs", KIND_FILE),
-                plain("src/b.rs::x", KIND_CODE_ENTITY),
+                plain("src/b.rs::%x", KIND_CODE_ENTITY),
             ],
             edges: vec![
                 edge("src/a.rs", "src/a.rs::x", REL_CONTAINS, TIER_EXTRACTED),
-                edge("src/b.rs", "src/b.rs::x", REL_REFERENCES, TIER_INFERRED),
+                edge("src/b.rs", "src/b.rs::%x", REL_REFERENCES, TIER_INFERRED),
             ],
         };
         if with_fn {
@@ -1151,17 +1176,17 @@ mod tests {
         a_placeholder_never_resolves_onto_a_field: from_graph_beside_a_member(
             "field",
             false,
-            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::x")],
+            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::%x")],
         );
         a_placeholder_never_resolves_onto_a_property: from_graph_beside_a_member(
             "property",
             false,
-            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::x")],
+            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::%x")],
         );
         a_placeholder_never_resolves_onto_a_declaration: from_graph_beside_a_member(
             "declaration",
             false,
-            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::x")],
+            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::%x")],
         );
         a_placeholder_resolves_past_a_field_onto_the_one_fn: from_graph_beside_a_member(
             "field",
@@ -1173,7 +1198,7 @@ mod tests {
             true,
             &[
                 MEMBER_KEEPS_ITS_EDGE,
-                ("src/b.rs", "src/b.rs::x"),
+                ("src/b.rs", "src/b.rs::%x"),
                 ("src/c.rs", "src/c.rs::x"),
             ],
         );

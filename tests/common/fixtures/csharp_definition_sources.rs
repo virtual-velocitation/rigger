@@ -1,6 +1,7 @@
 //! THE C# DEFINITIONS FIXTURE: the one source text C# DEFINITIONS ARE NODES (every C#
 //! definition type is a definition of its kind) is proven over, on the symbols `CSHARP_TAGS`
-//! extracts. It names no crate, so every lane compiles it.
+//! extracts, beside the file-scoped namespace spec 119's id and `CONTAINS` tests both extract. It
+//! names no crate, so every lane compiles it.
 
 /// THE C# DEFINITIONS FIXTURE (spec 116 criterion 8): one C# file holding every C# definition
 /// type. Line 1 a file-scoped namespace and 2 a block one, each of a dotted name; 3 a delegate;
@@ -33,3 +34,6 @@ public class Foo {
 }
 public abstract class Ext { extern Ext(); extern ~Ext(); public static extern Ext operator -(Ext a); public static extern explicit operator Ext(int i); public abstract void Bare(); }
 ";
+
+/// `(file, source)` of a C# file-scoped namespace `N` and the class `Foo` after it (spec 119).
+pub const CSHARP_FILE_SCOPED_NAMESPACE: (&str, &str) = ("s.cs", "namespace N;\nclass Foo {}\n");

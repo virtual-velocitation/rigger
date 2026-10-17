@@ -20,6 +20,9 @@
 //! shape is exactly what it claims to be, locked down here so a future field rename becomes a
 //! test failure instead of a silent JS-side break.
 
+mod common;
+
+use common::fixtures::ONE_COMMUNITY;
 use rigger::console::map;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, REL_CALLS, REL_IN_COMMUNITY, TIER_EXTRACTED,
@@ -48,7 +51,7 @@ fn code_node(id: &str, name: &str, kind: &str) -> Node {
 fn two_entity_graph() -> Graph {
     let membership = |entity: &str| Edge {
         from: entity.to_string(),
-        to: "community/1/0".to_string(),
+        to: ONE_COMMUNITY.to_string(),
         rel: REL_IN_COMMUNITY.to_string(),
         valid_from: 0,
         valid_to: None,

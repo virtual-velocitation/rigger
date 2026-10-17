@@ -13027,18 +13027,16 @@ fn plain_node_line(n: &contextgraph::Node) -> String {
 /// findings sections read, so a single seeded traversal returns the code neighborhood, the
 /// decisions/findings about the files, and the design-intent nodes together - replacing the
 /// separate structural-grounder "Relevant locations" call `build_prompt_with_failure` used to
-/// stitch in. Only call-target DEFINITION entities render (a `code-entity` node carrying a `name`
-/// attr whose kind passes `is_call_target`): a bare reference node folded from an `EdgeInferred`
+/// stitch in. Only call-target DEFINITION entities render (a member by [`member_files`], a
+/// `code-entity` node carrying a `name` attr, whose kind passes `is_call_target`): a bare reference node folded from an `EdgeInferred`
 /// event has no line/kind, so it is not a "read-first" location, and a field, a property or a
 /// declaration takes no slot.
 ///
-/// The file each definition lives in comes STRUCTURALLY from the `CONTAINS` edge the extraction
-/// folded (`file --CONTAINS--> entity`, spec 29a), NEVER by string-parsing the `<file>::<name>`
-/// node id: that id format is the sqlite adapter's private convention ([`code_entity_id`]), so
-/// reading it here would duplicate that convention into the render layer and break silently on any
-/// id-format change. Reading the recorded edge is the same STRUCTURAL discipline
-/// [`write_capped_section`]'s dependency-restore follows. A definition whose containing file is
-/// outside this seeded subgraph is not a neighborhood "of these files", so it does not render.
+/// The file each definition lives in is its `query::member_file` (spec 119, THE MEMBER RULE), read
+/// through [`member_files`], NEVER by string-parsing the node id here: the id format
+/// `<file>::<path>` is the domain's (spec 119), `query::split_id` its one cut, so a render-layer
+/// parse would be a second cut beside it. A definition whose file node is outside this seeded
+/// subgraph is not a neighborhood "of these files", so it does not render.
 ///
 /// Deterministic by construction: entities sort by (file, line, id) - a total order - and render
 /// through the SHARED [`render_capped_section`] core under the count / byte cap, with the remainder
@@ -13067,15 +13065,9 @@ fn graph_around_recovery(seed: &[String]) -> String {
 /// Render the code neighborhood: the seeded subgraph's definitions a call resolves onto, by
 /// file and line. A field, a property or a declaration takes no slot of the capped list.
 fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
-    // Recover each definition's file from the recorded CONTAINS edge (file -> entity), keyed by the
-    // contained entity id. An extracted definition always folds this edge, so a definition reachable
-    // in this subgraph together with its containing file has its CONTAINS edge here too.
-    let file_of: BTreeMap<&str, &str> = g
-        .edges
-        .iter()
-        .filter(|e| e.rel == contextgraph::REL_CONTAINS)
-        .map(|e| (e.to.as_str(), e.from.as_str()))
-        .collect();
+    // Each definition's file, keyed by the definition's id: only a definition whose file node
+    // this subgraph holds is in it.
+    let file_of = member_files(g);
     let line_of = |n: &contextgraph::Node| -> u32 {
         n.attrs
             .get("line")
@@ -13085,8 +13077,6 @@ fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
     let mut defs: Vec<&contextgraph::Node> = g
         .nodes
         .iter()
-        .filter(|n| n.kind == contextgraph::KIND_CODE_ENTITY)
-        .filter(|n| n.attrs.get("name").is_some_and(|s| !s.is_empty()))
         .filter(|n| contextgraph::is_call_target(n.attrs.get("kind").map(String::as_str)))
         .filter(|n| file_of.contains_key(n.id.as_str()))
         .collect();
@@ -13125,6 +13115,19 @@ fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
     );
 }
 
+/// The file of each member `g` holds, keyed by the member's id: its `query::member_file` (spec
+/// 119, THE MEMBER RULE) when `g` also holds that file's node, so a member whose file the loaded
+/// subgraph does not reach maps to none, as a placeholder, a bare parent and every other node do.
+/// The one file-of-a-definition read [`write_code_neighborhood`] and [`files_reachable`] share.
+fn member_files(g: &Graph) -> BTreeMap<&str, &str> {
+    let held: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+    g.nodes
+        .iter()
+        .filter_map(|n| Some((n.id.as_str(), contextgraph::query::member_file(n)?)))
+        .filter(|(_, file)| held.contains(file))
+        .collect()
+}
+
 /// How many hops the graph arm of a blast radius expands the named code's files (addendum 2.4);
 /// independent of the prompt render's depth in `seeded_subgraph`.
 const BLAST_RADIUS_GRAPH_DEPTH: i64 = 2;
@@ -13146,10 +13149,10 @@ const BLAST_RADIUS_GRAPH_DEPTH: i64 = 2;
 /// reaches it across EXTRACTED edges the whole way. A file whose own definitions fold EXTRACTED
 /// `CONTAINS` edges but which the seed reaches ONLY across an INFERRED reference is INFERRED-tier -
 /// its EXTRACTED self-edges never promote it into `precise`. Files map STRUCTURALLY: a
-/// [`KIND_FILE`](crate::contextgraph::KIND_FILE) node is its own path, a
-/// [`KIND_CODE_ENTITY`](crate::contextgraph::KIND_CODE_ENTITY) maps to its
-/// [`REL_CONTAINS`](crate::contextgraph::REL_CONTAINS) parent file (the same structural recovery
-/// [`write_code_neighborhood`] uses), never by parsing the `<file>::<name>` id. The seed files are
+/// [`KIND_FILE`](crate::contextgraph::KIND_FILE) node is its own path, a member (a named
+/// [`KIND_CODE_ENTITY`](crate::contextgraph::KIND_CODE_ENTITY)) maps to its file by
+/// [`member_files`] (the read [`write_code_neighborhood`] shares, spec 119's
+/// `query::member_file`), never by parsing the `<file>::<path>` id here. The seed files are
 /// always in both tiers (a touched file is in its own radius). Deterministic by construction: the
 /// views are `BTreeSet`-collected, so the returned lists are sorted regardless of traversal order.
 ///
@@ -13171,31 +13174,24 @@ fn confidence_tier_radius(g: &Graph, seed: &[String]) -> BlastRadius {
 /// `allowed` - the one edge set, filtered (spec 29c criterion 2). A breadth-first reachability over
 /// the (undirected) edge set: an allowed edge extends the reached set from either endpoint. Every
 /// reached node is then mapped to its file - a [`KIND_FILE`](crate::contextgraph::KIND_FILE) node is
-/// its own path, a [`KIND_CODE_ENTITY`](crate::contextgraph::KIND_CODE_ENTITY) is recovered from the
-/// [`REL_CONTAINS`](crate::contextgraph::REL_CONTAINS) edge that folded it, and any other node kind
-/// (a decision / finding / doc) maps to no file and is skipped. The seed files themselves are always
-/// included (a touched file is in its own blast radius even when the graph holds no node for it).
+/// its own path, a member (a named [`KIND_CODE_ENTITY`](crate::contextgraph::KIND_CODE_ENTITY))
+/// maps to its file by [`member_files`] when `g` holds that file's node, and any other node (a
+/// placeholder, a bare parent, a decision / finding / doc) maps to no file and is skipped. The walk
+/// crosses `g.edges` alone, so a nested definition reached at the depth bound adds its file but
+/// never transits through it. The seed files themselves are always included (a touched file is in
+/// its own blast radius even when the graph holds no node for it).
 fn files_reachable(g: &Graph, seed: &[String], allowed: &[&str]) -> BTreeSet<String> {
-    // file of a CONTAINED entity: `file --CONTAINS--> entity`, keyed by the contained entity id
-    // (the same structural recovery `write_code_neighborhood` uses; never an id string-parse).
-    let contains_parent: BTreeMap<&str, &str> = g
-        .edges
-        .iter()
-        .filter(|e| e.rel == contextgraph::REL_CONTAINS)
-        .map(|e| (e.to.as_str(), e.from.as_str()))
-        .collect();
+    let member_file = member_files(g);
     let kind_of: BTreeMap<&str, &str> = g
         .nodes
         .iter()
         .map(|n| (n.id.as_str(), n.kind.as_str()))
         .collect();
+    // A file node is its own path; a member its file ([`member_files`]); any other node none.
     let file_of = |id: &str| -> Option<String> {
         match kind_of.get(id).copied() {
             Some(k) if k == contextgraph::KIND_FILE => Some(id.to_string()),
-            Some(k) if k == contextgraph::KIND_CODE_ENTITY => {
-                contains_parent.get(id).map(|f| f.to_string())
-            }
-            _ => None,
+            _ => member_file.get(id).map(|f| f.to_string()),
         }
     };
     let allowed: BTreeSet<&str> = allowed.iter().copied().collect();
@@ -13221,7 +13217,7 @@ fn files_reachable(g: &Graph, seed: &[String], allowed: &[&str]) -> BTreeSet<Str
         }
     }
     // The seed files are always in the radius; every reached node contributes its file, if it has
-    // one (entities and file nodes do; decisions / docs / findings do not).
+    // one (members and file nodes do; placeholders, decisions / docs / findings do not).
     let mut files: BTreeSet<String> = seed.iter().cloned().collect();
     for id in &reached {
         if let Some(f) = file_of(id) {
@@ -19553,13 +19549,13 @@ mod tests {
     /// Fold `payloads` as `type_` events into a fresh graph, in order so each event's position
     /// increases (older first), and return `seed`'s depth-2 subgraph.
     fn fold_subgraph(type_: &str, payloads: Vec<Value>, seed: &[String]) -> Graph {
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        for (i, payload) in payloads.iter().enumerate() {
-            let mut e = Event::new(type_, serde_json::to_vec(payload).unwrap());
-            e.position = (i as u64) + 1;
-            crate::test_support::folds(&graph, std::slice::from_ref(&e));
-        }
-        graph.subgraph(seed, 2).unwrap()
+        crate::test_support::fold_events(
+            payloads
+                .iter()
+                .map(|payload| Event::new(type_, serde_json::to_vec(payload).unwrap())),
+        )
+        .subgraph(seed, 2)
+        .unwrap()
     }
 
     /// The capped section `write` renders for the [`fold_subgraph`] of `payloads`.
@@ -23535,7 +23531,7 @@ mod tests {
     ///  (3) TIGHT-SCOPED to the touched files ("of these files"): a design-intent node reachable in
     ///      the subgraph but whose binding edge targets a NON-seed file, and a design-doc that only
     ///      CITES the file (a doc `references` edge, not a code-binding SPECIFIES/GOVERNS), are NOT
-    ///      surfaced - mirroring c1's CONTAINS-to-seed scoping of the code neighborhood.
+    ///      surfaced - mirroring c1's scoping of the code neighborhood to the seeded files.
     #[test]
     fn design_intent_grounding_renders_the_governing_rule_and_specifying_ra_by_traversal() {
         let seed = vec!["core.rs".to_string()];
@@ -39878,6 +39874,47 @@ mod tests {
         assert!(
             r.precise.iter().all(|f| r.safe.contains(f)),
             "precise must be a subset of safe"
+        );
+    }
+
+    /// THE MEMBER RULE at the blast radius (spec 119): over [`member_graph`], which holds no
+    /// `CONTAINS` edge, a nested method maps to its file, while a placeholder and a member whose
+    /// file node the graph does not hold map to none - each seed always in its own radius.
+    #[test]
+    fn files_reachable_maps_a_member_to_its_held_file_and_a_placeholder_to_none() {
+        use crate::test_support::{
+            file_half, member_graph, FILELESS_MEMBER, LEAF_PLACEHOLDER, NESTED_METHOD,
+        };
+        let g = member_graph();
+        let radius = |seed: &str| -> Vec<String> {
+            files_reachable(&g, &[seed.to_string()], &[contextgraph::TIER_EXTRACTED])
+                .into_iter()
+                .collect()
+        };
+        assert_eq!(
+            radius(NESTED_METHOD),
+            [file_half(NESTED_METHOD), NESTED_METHOD]
+        );
+        assert_eq!(radius(LEAF_PLACEHOLDER), [LEAF_PLACEHOLDER]);
+        assert_eq!(radius(FILELESS_MEMBER), [FILELESS_MEMBER]);
+    }
+
+    /// THE MEMBER RULE at the code neighborhood (spec 119): over [`member_graph`], which holds no
+    /// `CONTAINS` edge, each named member is listed under its file when the graph holds that
+    /// file's node, so `c.rs::U::run`, the placeholder, the bare parent and the artifact get no
+    /// line.
+    #[test]
+    fn the_code_neighborhood_lists_each_member_under_its_held_file() {
+        use crate::test_support::{file_half, member_graph, NESTED_METHOD};
+        let mut b = String::new();
+        write_code_neighborhood(
+            &mut b,
+            &member_graph(),
+            &[file_half(NESTED_METHOD).to_string()],
+        );
+        assert_eq!(
+            b,
+            format!("{CODE_NEIGHBORHOOD_HEADER}\n- Makefile:0   all\n- a.rs:0   new\n- a.rs:0   mate\n\n")
         );
     }
 

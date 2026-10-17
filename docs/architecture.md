@@ -720,7 +720,7 @@ derivations and degrade to a documented "not built yet" state when a derivation 
 concept, a function, or a file), in place, and the two controls compose freely - every
 (subject, lens) cell is defined. A wide re-grain **truncates, it does not lie** (it reuses
 the render budget and a "showing N of M" caption); a cross-grain projection **resolves, it
-does not trust the id** (a bare cross-file placeholder node is resolved to its *defining*
+does not trust the id** (a bare placeholder node is resolved to its *defining*
 file, not the referencing one its id encodes).
 
 **Directed call queries: resolve conservatively, never confidently wrong.** When the
@@ -732,8 +732,8 @@ traversal (`Projection::calls`):
 - `view=calls` with `dir=up` - the **call sites** (reverse: who calls it).
 - `view=calls` with `dir=both` - both directions from the seed.
 
-A hop auto-continues only through **unambiguous** edges: a same-file call, or a cross-file
-call whose name has exactly one definition. A name that resolves to **multiple** definitions
+A hop auto-continues only through **unambiguous** edges: a same-file call landed on its one
+candidate, or a call landed on a placeholder whose name has exactly one definition. A name that resolves to **multiple** definitions
 is not followed automatically - it renders as a "**fans out to N candidates - pick one**"
 frontier the human expands deliberately (the difference between a real execution path and a
 DAG dominated by the wrong same-named definitions). Cycles yield a depth-bounded DAG with

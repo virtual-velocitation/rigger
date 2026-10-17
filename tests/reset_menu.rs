@@ -24,11 +24,10 @@ mod common;
 use common::cli::derived_menu_line_naming;
 use common::cli::derived_menu_lines;
 use common::cli::emit;
-use common::cli::rigger_file;
+use common::cli::rigger_db;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
 use common::cli::temp_store_project;
-use common::cli::with_pre_ledger_run_store;
 use common::cli::NOTHING_TO_SHED_MENU_LINE;
 use std::path::Path;
 
@@ -59,11 +58,11 @@ fn seed_one_dead_run_node(root: &Path) {
 /// Raw row counts of a store's two files, read directly (never through the command under test),
 /// so a before/after comparison proves the bare menu is read-only.
 fn store_row_counts(root: &Path) -> (i64, i64, i64) {
-    let ev = rusqlite::Connection::open(rigger_file(root, "events.db")).unwrap();
+    let ev = rigger_db(root, "events.db");
     let events: i64 = ev
         .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
         .unwrap();
-    let gr = rusqlite::Connection::open(rigger_file(root, "graph.db")).unwrap();
+    let gr = rigger_db(root, "graph.db");
     let nodes: i64 = gr
         .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))
         .unwrap();
@@ -108,18 +107,13 @@ fn bare_reset_names_the_derived_events_of_a_store_whose_rows_name_no_file_identi
     let root = dir.path();
     let entity = common::cli::code_entity;
     let type_ = rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
-    with_pre_ledger_run_store(root, |store| {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                rigger::eventstore::ExpectedRevision::Any,
-                &[
-                    rigger::eventstore::Event::new(type_, entity()),
-                    common::cli::keyed(type_, entity(), "gc/src/odd.rs", 10),
-                ],
-            )
-            .unwrap();
-    });
+    common::cli::seed_pre_ledger_events(
+        root,
+        &[
+            rigger::eventstore::Event::new(type_, entity()),
+            common::cli::keyed(type_, entity(), "gc/src/odd.rs", 10),
+        ],
+    );
 
     let (out, err, ok) = run_rigger(root, &["reset"]);
     assert!(ok, "bare reset must exit 0; stderr: {err}");

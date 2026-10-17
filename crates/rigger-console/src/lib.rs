@@ -33,10 +33,15 @@ extern crate self as rigger;
 mod event_fixtures;
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/graph.rs"]
+mod graph_fixtures;
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
 mod spawn_fixtures;
 #[cfg(test)]
 mod test_support {
     pub use crate::event_fixtures::*;
+    pub use crate::graph_fixtures::*;
     pub use crate::spawn_fixtures::*;
 }

@@ -12,6 +12,10 @@
 //! `serve` entrypoint - carries the c5 seeded neighborhood end-to-end, and that the served root page
 //! ships the KG panel + the select-to-seed wiring the browser runs.
 //!
+//! The member-rule test (spec 119) reads the same `route` dispatch in-process through the shared
+//! `served_json`, since what it proves is which nodes the seed and card routes answer with, the
+//! socket framing being the other tests' subject.
+//!
 //! Criterion 6 (query-path + god-node) and criterion 7 (explain provenance + client tier-filter)
 //! EXTEND the same served route + panel, so their periphery guards live here too, each bound to its
 //! own mechanism; the c5 tests stay scoped to the neighborhood shape (nodes + tier-tagged edges) and
@@ -27,18 +31,23 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
+use common::fixtures::around_nodes;
 use common::fixtures::chain_graph;
 use common::fixtures::edge;
 use common::fixtures::star_graph;
 use common::fixtures::summarized_node as node;
+use common::fixtures::{file_half, member_graph, FILE_MATE, LEAF_PLACEHOLDER, NESTED_METHOD};
 use common::served::body_of;
 use common::served::fetch_served;
 use common::served::node_harness_passes;
+use common::served::served_json;
+use rigger::contextgraph::query::path_leaf;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_IN_COMMUNITY,
-    REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
+    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_FILE, KIND_UNIT, REL_DECIDED,
+    REL_IN_COMMUNITY, REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{self, DashInputs};
+use serde_json::json;
 
 /// A tier-tagged fixture neighborhood: a unit `u1`, the decision `d1` that DECIDED it (extracted),
 /// and a code entity `c1` the decision REFERENCES (inferred). A depth-2 walk from `u1` reaches all
@@ -1130,53 +1139,16 @@ rigger::test_cases! {
 /// community and so stay a real, many-member drill target; the OVERVIEW and SEED dispatch stay
 /// proven over the default (lens-absent) request, unaffected by the added membership edges.
 fn exploration_graph() -> Graph {
-    // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-lens
-    // honesty gate reads it to tell a real definition from a bare cross-file placeholder).
-    let ce = |id: &str| Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: BTreeMap::from([(
-            "name".to_string(),
-            id.rsplit_once("::").map_or(id, |(_, n)| n).to_string(),
-        )]),
-    };
-    let refs = |from: &str, to: &str| Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: REL_REFERENCES.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_EXTRACTED.to_string(),
-    };
-    let membership = |id: &str| Edge {
-        from: id.to_string(),
-        to: "community/1/0".to_string(),
-        rel: REL_IN_COMMUNITY.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_INFERRED.to_string(),
-    };
-    Graph {
-        nodes: vec![
-            ce("src/a/mod.rs::foo"), // file cluster "src/a/mod.rs"; community "community/1/0"
-            ce("src/a/mod.rs::bar"), // file cluster "src/a/mod.rs"; community "community/1/0"
-            ce("src/b/mod.rs::baz"), // file cluster "src/b/mod.rs"
-            Node {
-                id: "d1".to_string(),
-                kind: KIND_DECISION.to_string(),
-                attrs: BTreeMap::new(),
-            }, // no cluster under either lens (spec 63 c1/c3 purity)
-        ],
-        edges: vec![
-            refs("src/a/mod.rs::foo", "src/a/mod.rs::bar"), // intra file / intra community
-            refs("src/a/mod.rs::bar", "src/b/mod.rs::baz"), // cross file
-            refs("d1", "src/a/mod.rs::foo"),                // touches the purity-excluded decision
-            membership("src/a/mod.rs::foo"),
-            membership("src/a/mod.rs::bar"),
-        ],
+    let mut graph = common::fixtures::two_module_graph();
+    for member in ["src/a/mod.rs::foo", "src/a/mod.rs::bar"] {
+        graph.edges.push(edge(
+            member,
+            "community/1/0",
+            REL_IN_COMMUNITY,
+            TIER_INFERRED,
+        ));
     }
+    graph
 }
 
 /// The SERVED `/api/graph` route is ONE endpoint with THREE views selected by parameter (spec 42
@@ -1524,5 +1496,56 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
     assert!(
         !body.contains("polled-neighbor"),
         "the graph route must NOT read the polled provider's decoy graph: {body}"
+    );
+}
+
+/// Spec 119, THE MEMBER RULE at the panel's graph routes: GIVEN [`member_graph`], which holds no
+/// edge, so no `CONTAINS` reaches any node, WHEN the panel asks `/api/graph?seed=` for a file,
+/// THEN depth 0 serves the file alone and depth 1 adds its nested method and its file-mate, never
+/// the placeholder, the bare parent or the `artifact` its id range holds; seeded at the nested
+/// method, depth 1 serves its file beside it; seeded at the placeholder, depth 2 serves it alone;
+/// and the file's `/api/graph?card=` lists the same two members as its `top_entities`.
+#[test]
+fn the_graph_routes_give_a_file_its_members_and_a_member_its_file_with_no_contains() {
+    let graph = member_graph();
+    let file = file_half(NESTED_METHOD);
+    let card_ref =
+        |id: &str, kind: &str, label: &str| json!({"id": id, "kind": kind, "label": label});
+    let view = |id: &str, kind: &str, label: &str| {
+        let mut node = card_ref(id, kind, label);
+        node["degree"] = json!(0);
+        node["god"] = json!(false);
+        node
+    };
+    let member = |id: &str| view(id, KIND_CODE_ENTITY, path_leaf(id));
+    let as_file = view(file, KIND_FILE, file);
+    let placeholder = view(LEAF_PLACEHOLDER, KIND_CODE_ENTITY, LEAF_PLACEHOLDER);
+    for (seed, depth, nodes) in [
+        (file, 0, vec![as_file.clone()]),
+        (
+            file,
+            1,
+            vec![as_file.clone(), member(NESTED_METHOD), member(FILE_MATE)],
+        ),
+        (
+            NESTED_METHOD,
+            1,
+            vec![as_file.clone(), member(NESTED_METHOD)],
+        ),
+        (LEAF_PLACEHOLDER, 2, vec![placeholder]),
+    ] {
+        let target = format!("/api/graph?seed={}&depth={depth}", seed.replace('%', "%25"));
+        assert_eq!(
+            around_nodes(&served_json(&graph, &target)),
+            nodes,
+            "{target}"
+        );
+    }
+    let entity = |id: &str| card_ref(id, KIND_CODE_ENTITY, path_leaf(id));
+    let card = served_json(&graph, &format!("/api/graph?card={file}"));
+    assert_eq!(
+        card["card"]["top_entities"],
+        json!([entity(NESTED_METHOD), entity(FILE_MATE)]),
+        "{card}"
     );
 }

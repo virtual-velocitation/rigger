@@ -1,8 +1,11 @@
 //! Fold fixtures over the graph projector: folding a hand-built JSON event straight onto a
 //! `Projector` (the raw on-log JSON - never an in-crate payload struct - so a test pins the
 //! contract the log actually carries), the on-log payloads the code-ingest, decision and
-//! reference folds read, the canonical spec-53 two-subsystem coupling seed, the live edges and calls
-//! a projector serves, and the read-backs suites take of a folded `Graph`. `apply` returns `Err`
+//! reference folds read, the canonical spec-53 two-subsystem coupling seed, the spec-119
+//! show-renderer seed with the oracles its `rigger_graph` `show` and `around` objects are checked
+//! by, the live edges and calls a projector serves with the spec-119 enum's `CONTAINS` edges they
+//! are checked against, and the read-backs suites take of a folded
+//! `Graph`. `apply` returns `Err`
 //! on a fold failure, so every helper unwraps it: a successful call is itself evidence the
 //! payload folded.
 
@@ -11,8 +14,11 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, KIND_COMMUNITY, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
+    around, entity_site, site_fields, Candidate, EntitySite, Graph, Located, Node, Projection,
+    CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION, KIND_CODE_ENTITY,
+    KIND_COMMUNITY, KIND_DESIGN_DOC, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
+    TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::Event;
 use rigger::retention::GenerationIngested;
@@ -93,13 +99,71 @@ pub fn live_edges(p: &Projector) -> Vec<(String, String, String, i64, u64)> {
     edges
 }
 
-/// Every live `CALLS` edge `p` serves as `(caller, callee)`, sorted.
-pub fn live_calls(p: &Projector) -> Vec<(String, String)> {
+/// Every live `rel` edge `p` serves as `(from, to)`, sorted.
+pub fn live_of(p: &Projector, rel: &str) -> Vec<(String, String)> {
     live_edges(p)
         .into_iter()
-        .filter(|(_, rel, ..)| rel == REL_CALLS)
+        .filter(|(_, edge_rel, ..)| edge_rel == rel)
         .map(|(from, _, to, ..)| (from, to))
         .collect()
+}
+
+/// Every live `CALLS` edge `p` serves as `(caller, callee)`, sorted.
+pub fn live_calls(p: &Projector) -> Vec<(String, String)> {
+    live_of(p, REL_CALLS)
+}
+
+/// Every live `rel` edge `p` serves ([`live_of`]) is exactly `edges`, `(from, to)` ids in that
+/// sorted order, `why` naming the rule the edges follow.
+pub fn assert_live(p: &Projector, rel: &str, edges: &[(&str, &str)], why: &str) {
+    let edges: Vec<(String, String)> = edges
+        .iter()
+        .map(|(from, to)| (from.to_string(), to.to_string()))
+        .collect();
+    assert_eq!(live_of(p, rel), edges, "{why}");
+}
+
+/// Every live `CALLS` edge `p` serves ([`live_calls`]) is exactly `calls`, `(caller, callee)`
+/// ids in that sorted order, `why` naming the rule the edges follow.
+pub fn assert_live_calls(p: &Projector, calls: &[(&str, &str)], why: &str) {
+    assert_live(p, REL_CALLS, calls, why);
+}
+
+/// Every live `REFERENCES` and `CALLS` edge `p` serves, as `(from, rel, to, tier)`, sorted:
+/// where each reference landed and at what tier.
+pub fn landed(p: &Projector) -> Vec<(String, String, String, String)> {
+    let mut edges: Vec<_> = p
+        .whole()
+        .unwrap()
+        .edges
+        .into_iter()
+        .filter(|e| e.rel == REL_REFERENCES || e.rel == REL_CALLS)
+        .map(|e| (e.from, e.rel, e.to, e.tier))
+        .collect();
+    edges.sort();
+    edges
+}
+
+/// The `(from, rel, to, tier)` rows of `f.rs`'s reference and of `f.rs::main`'s call, both
+/// landed on `to` at `tier`, in [`landed`]'s order ([`a_call_from`]).
+pub fn a_call_from_main(to: &str, tier: &str) -> Vec<(String, String, String, String)> {
+    a_call_from("f.rs", "main", to, tier)
+}
+
+/// The `(from, rel, to, tier)` rows of `file`'s reference and of `<file>::<caller>`'s call, both
+/// landed on `to` at `tier`, in [`landed`]'s order.
+pub fn a_call_from(
+    file: &str,
+    caller: &str,
+    to: &str,
+    tier: &str,
+) -> Vec<(String, String, String, String)> {
+    [
+        (file.to_string(), REL_REFERENCES),
+        (format!("{file}::{caller}"), REL_CALLS),
+    ]
+    .map(|(from, rel)| (from, rel.into(), to.into(), tier.into()))
+    .to_vec()
 }
 
 /// Fold `events` into `p` through the public fold, and insist they landed: the one spelling of
@@ -112,9 +176,115 @@ pub fn folds(p: &dyn Projection, events: &[Event]) {
 }
 
 /// Fold `e` onto `p` at log position `pos`.
-fn fold_at(p: &Projector, pos: u64, mut e: Event) {
+pub fn fold_at(p: &Projector, pos: u64, mut e: Event) {
     e.position = pos;
     folds(p, std::slice::from_ref(&e));
+}
+
+/// A fresh in-memory projector with `events` folded onto it one at a time, in order, their log
+/// positions numbered from 1 - the shape a real ingest's append gives them.
+pub fn fold_events(events: impl IntoIterator<Item = Event>) -> Projector {
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (zero_based, event) in events.into_iter().enumerate() {
+        fold_at(&p, zero_based as u64 + 1, event);
+    }
+    p
+}
+
+/// A `type_` event carrying `data`, replay-keyed `key` and valid from `secs` after the epoch.
+pub fn keyed(type_: &str, data: Vec<u8>, key: &str, secs: u64) -> Event {
+    Event::new(type_, data)
+        .with_meta(rigger::ingest::META_REPLAY_KEY, key)
+        .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
+}
+
+/// One derived event stamped with replay key `key`, valid from `secs`, at `pos`.
+pub fn keyed_event(pos: u64, type_: &str, json: serde_json::Value, key: &str, secs: u64) -> Event {
+    let mut e = keyed(type_, serde_json::to_vec(&json).unwrap(), key, secs);
+    e.position = pos;
+    e
+}
+
+/// Fold one [`keyed_event`] onto `p`.
+pub fn apply_keyed(
+    p: &Projector,
+    pos: u64,
+    type_: &str,
+    json: serde_json::Value,
+    key: &str,
+    secs: u64,
+) {
+    folds(p, &[keyed_event(pos, type_, json, key, secs)]);
+}
+
+/// Fold onto `p`, at log position `pos`, the first event of generation `generation` of `file`: a
+/// definition of the function `name` at line 1 ([`apply_generation_head_event`]) - the batch head
+/// a re-extraction of `file` appends, retiring what the generation before it asserted and this
+/// one does not.
+pub fn apply_generation_head(
+    p: &Projector,
+    pos: u64,
+    file: &str,
+    generation: &str,
+    name: &str,
+    secs: u64,
+) {
+    let head = def_json(file, name, 1, true);
+    apply_generation_head_event(
+        p,
+        pos,
+        file,
+        generation,
+        TYPE_CODE_ENTITY_EXTRACTED,
+        head,
+        secs,
+    );
+}
+
+/// Fold onto `p`, at log position `pos`, the `type_` event carrying `head` as the first event of
+/// generation `generation` of `file`: replay-keyed `gc/<file>@<generation>#0` and valid from
+/// `secs`.
+pub fn apply_generation_head_event(
+    p: &Projector,
+    pos: u64,
+    file: &str,
+    generation: &str,
+    type_: &str,
+    head: serde_json::Value,
+    secs: u64,
+) {
+    let key = code_batch_key(file, generation, 0);
+    apply_keyed(p, pos, type_, head, &key, secs);
+}
+
+/// The generation a re-extraction test folds a file's first batch at ([`fold_generation`]).
+pub const GENERATION_BEFORE: &str = "before";
+/// The generation a re-extraction test folds a file's second batch at, retracting what only
+/// [`GENERATION_BEFORE`] asserted.
+pub const GENERATION_AFTER: &str = "after";
+
+/// The replay key of event `index` of generation `generation` of `file`'s code batch, under the
+/// file's identity `gc/<file>`.
+pub fn code_batch_key(file: &str, generation: &str, index: usize) -> String {
+    format!("gc/{file}@{generation}#{index}")
+}
+
+/// Fold `batch`, the extraction of `file` at generation `generation`, onto `p` one event at a
+/// time from the log position after `*pos`, event `index` keyed
+/// [`code_batch_key`]`(file, generation, index)`, advancing `*pos` past it: the shape a ledger
+/// entry's batch folds in, so a later generation retracts what only this one asserted.
+pub fn fold_generation(
+    p: &Projector,
+    pos: &mut u64,
+    file: &str,
+    generation: &str,
+    batch: Vec<Event>,
+) {
+    for (index, e) in batch.into_iter().enumerate() {
+        *pos += 1;
+        let key = code_batch_key(file, generation, index);
+        fold_at(p, *pos, e.with_meta(rigger::ingest::META_REPLAY_KEY, key));
+    }
 }
 
 /// Fold one `type_` event carrying `json` onto `p` at log position `pos`.
@@ -161,6 +331,131 @@ pub fn code_entity_json(
     lang: &str,
 ) -> serde_json::Value {
     serde_json::json!({ "file": file, "name": name, "kind": kind, "line": line, "lang": lang })
+}
+
+/// [`code_entity_json`] carrying `path`, the definition's id path in its file (spec 119, IDS
+/// FOLLOW THE LANGUAGE'S PATH), `name` staying its leaf.
+pub fn path_entity_json(
+    file: &str,
+    name: &str,
+    path: &str,
+    kind: &str,
+    line: u64,
+    lang: &str,
+) -> serde_json::Value {
+    with_path(code_entity_json(file, name, kind, line, lang), Some(path))
+}
+
+/// [`path_entity_json`] carrying `parent`, the id path of the definition enclosing it (spec 119,
+/// CONTAINS IS STRUCTURE), at line 1.
+pub fn child_entity_json(
+    file: &str,
+    name: &str,
+    path: &str,
+    parent: &str,
+    kind: &str,
+) -> serde_json::Value {
+    let mut json = path_entity_json(file, name, path, kind, 1, "rust");
+    json["parent"] = parent.into();
+    json
+}
+
+/// The enum `E` of `a.rs` (spec 119, CONTAINS IS STRUCTURE).
+pub const ENUM_E: &str = "a.rs::E";
+/// The variant `A` of [`ENUM_E`].
+pub const VARIANT_E_A: &str = "a.rs::E::A";
+/// The variant `B` of [`ENUM_E`].
+pub const VARIANT_E_B: &str = "a.rs::E::B";
+/// The live `CONTAINS` edges, `(parent, child)` in sorted order, of `a.rs` defining [`ENUM_E`]
+/// with its one variant [`VARIANT_E_A`].
+pub const E_HOLDS_A: &[(&str, &str)] = &[("a.rs", ENUM_E), (ENUM_E, VARIANT_E_A)];
+
+/// A definition `(file, leaf, path, kind)`, folded carrying its id path (spec 119, IDS FOLLOW THE
+/// LANGUAGE'S PATH).
+pub type PathDef<'a> = (&'a str, &'a str, &'a str, &'a str);
+
+/// The method `a.rs::T::new`.
+pub const T_NEW: PathDef<'static> = ("a.rs", "new", "T::new", "method");
+
+/// The method `a.rs::U::new`, sharing [`T_NEW`]'s file and leaf.
+pub const U_NEW: PathDef<'static> = ("a.rs", "new", "U::new", "method");
+
+/// The candidates `(id, file)` a lookup of `a.rs`'s `new` lists over [`T_NEW`] and [`U_NEW`], in
+/// id order.
+pub const A_RS_NEWS: &[(&str, &str)] = &[("a.rs::T::new", "a.rs"), ("a.rs::U::new", "a.rs")];
+
+/// Fold each Rust definition of `defs` into `p` from position 1, each at its position's line, and
+/// return the next position.
+pub fn fold_path_def_rows(p: &Projector, defs: &[PathDef]) -> u64 {
+    let mut pos = 0;
+    for (file, leaf, path, kind) in defs {
+        pos += 1;
+        let json = path_entity_json(file, leaf, path, kind, pos, "rust");
+        apply_json(p, pos, TYPE_CODE_ENTITY_EXTRACTED, json);
+    }
+    pos + 1
+}
+
+/// `json` carrying `path` under its `path` key when one is given, an id path (spec 119, IDS
+/// FOLLOW THE LANGUAGE'S PATH), and unchanged when `None`.
+pub fn with_path(mut json: serde_json::Value, path: Option<&str>) -> serde_json::Value {
+    if let Some(path) = path {
+        json["path"] = path.into();
+    }
+    json
+}
+
+/// One definition as `(name, kind, line)`.
+pub type DefRow<'a> = (&'a str, &'a str, u64);
+
+/// The id path the renamed definitions of `src/f.rs` share (spec 119, A RENAMED PATH RETIRES ITS
+/// OLD LEAF).
+pub const RENAMED_PATH: &str = "A.B";
+/// The one node [`RENAMED_PATH`] gives `src/f.rs`'s definitions.
+pub const RENAMED_NODE: &str = "src/f.rs::A.B";
+/// The fn `B` at line 2, the old leaf of [`RENAMED_PATH`].
+pub const OLD_LEAF_FN: DefRow<'static> = ("B", "function", 2);
+/// The module `A.B` at line 1, the new leaf of [`RENAMED_PATH`].
+pub const NEW_LEAF_MODULE: DefRow<'static> = ("A.B", "module", 1);
+
+/// The `CodeEntityExtracted` event of the Rust `def` in `src/f.rs` at log position `pos`: event
+/// `index` of generation `generation`'s batch, its head when `index` is 0, valid from `secs`, and
+/// carrying the id path `path` when one is given ([`with_path`]).
+pub fn f_rs_batch_def(
+    pos: u64,
+    generation: &str,
+    index: usize,
+    (name, kind, line): DefRow,
+    path: Option<&str>,
+    secs: u64,
+) -> Event {
+    keyed_event(
+        pos,
+        TYPE_CODE_ENTITY_EXTRACTED,
+        with_path(
+            kind_def_json("src/f.rs", name, kind, line, index == 0),
+            path,
+        ),
+        &code_batch_key("src/f.rs", generation, index),
+        secs,
+    )
+}
+
+/// The `(type, payload)` of each event, in fold order, of `src/b.rs`'s fn `g`, the call it makes
+/// to `leaf` across files and `tests/t.rs`'s test reference to `leaf` at line 3
+/// ([`edge_inferred_evidence_json`]).
+pub fn cross_file_call_and_proof(leaf: &str) -> [(&'static str, serde_json::Value); 3] {
+    [
+        (
+            TYPE_CODE_ENTITY_EXTRACTED,
+            def_json("src/b.rs", "g", 1, true),
+        ),
+        (TYPE_EDGE_INFERRED, call_json("src/b.rs", leaf, "g")),
+        (
+            TYPE_EDGE_INFERRED,
+            edge_inferred_evidence_json("tests/t.rs", leaf, 3),
+        ),
+    ]
 }
 
 /// The `CodeEntityExtracted` payload of one extraction batch's Rust function definition. `fresh`
@@ -276,20 +571,26 @@ pub fn apply_ref(p: &Projector, pos: u64, file: &str, name: &str) {
     apply_json(p, pos, TYPE_EDGE_INFERRED, ref_json(file, name));
 }
 
+/// The test-origin `EdgeInferred` payload: `file` references `name` at line `line` from a test,
+/// the evidence a test's reference to a definition records.
+pub fn edge_inferred_evidence_json(file: &str, name: &str, line: u32) -> serde_json::Value {
+    serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true })
+}
+
 /// Fold into `p`, at log position `pos`, one test-origin reference from `file` line `line` to
-/// `name`: the evidence event a test's reference to a definition records, as raw on-log JSON.
+/// `name` ([`edge_inferred_evidence_json`]), as raw on-log JSON.
 pub fn apply_edge_inferred_evidence(p: &Projector, pos: u64, file: &str, name: &str, line: u32) {
     apply_json(
         p,
         pos,
         TYPE_EDGE_INFERRED,
-        serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true }),
+        edge_inferred_evidence_json(file, name, line),
     );
 }
 
 /// Fold one caller-attributed call (see [`call_json`]) at `pos`. When `name` is defined in
-/// ANOTHER file it lands on a BARE same-file placeholder the detection pass resolves by unique
-/// name-suffix.
+/// ANOTHER file it lands on the BARE same-file placeholder `<file>::%<name>` the detection
+/// pass resolves by its unique leaf.
 pub fn apply_call(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
     apply_json(p, pos, TYPE_EDGE_INFERRED, call_json(file, name, caller));
 }
@@ -371,6 +672,184 @@ pub fn seed_two_subsystems(p: &Projector) -> u64 {
     20
 }
 
+/// The file the show-renderer seed's three definitions live in ([`seed_shown_nodes`]).
+pub const SHOWN_FILE: &str = "src/limits.rs";
+
+/// The ids [`seed_shown_nodes`] folds, each shown by exact id (spec 119, SHOW IS ONE RENDERER): a
+/// const, a field, a definition whose `kind` attr is empty, the extensionless file's definition
+/// `Makefile::all`, a finding, an architecture decision and a doc section.
+pub const SHOWN_IDS: [&str; 7] = [
+    "src/limits.rs::LIMIT",
+    "src/limits.rs::width",
+    "src/limits.rs::blank",
+    "Makefile::all",
+    "f-shown",
+    "docs/decisions/one-renderer.md",
+    "docs/x.md#sec",
+];
+
+/// Fold the nodes of [`SHOWN_IDS`] into `p`: in [`SHOWN_FILE`] a field `width` whose `lang` is
+/// empty (folded first, so the file keeps the `lang` its later definitions give it), the const
+/// `LIMIT` a same-file test reference proves (so it carries `proven_by`, an attr outside the
+/// printed list) and `blank`, whose `kind` attr is empty; `Makefile::all`; the finding `f-shown`
+/// ABOUT [`SHOWN_FILE`] and `Makefile`; an architecture decision whose `doc` holds a newline; and
+/// the section `docs/x.md#sec`.
+pub fn seed_shown_nodes(p: &Projector) {
+    apply_code_entity(p, 1, SHOWN_FILE, "width", CODE_KIND_FIELD, 5, "");
+    apply_code_entity(p, 2, SHOWN_FILE, "LIMIT", CODE_KIND_CONSTANT, 3, "rust");
+    apply_code_entity(p, 3, SHOWN_FILE, "blank", "", 7, "rust");
+    apply_edge_inferred_evidence(p, 4, SHOWN_FILE, "LIMIT", 9);
+    apply_code_entity(p, 5, "Makefile", "all", CODE_KIND_FUNCTION, 1, "make");
+    apply_json(
+        p,
+        6,
+        TYPE_REVIEW_FINDING,
+        serde_json::json!({
+            "id": "f-shown", "by": "lens:sdet", "unit": "u7",
+            "summary": "the width overflows", "about": [SHOWN_FILE, "Makefile"],
+        }),
+    );
+    apply_json(
+        p,
+        7,
+        TYPE_DOC_CONCEPT_EXTRACTED,
+        serde_json::json!({
+            "kind": KIND_ARCH_DECISION, "id": "docs/decisions/one-renderer.md",
+            "title": "One renderer", "doc": "the decision log\nits second line",
+        }),
+    );
+    apply_json(
+        p,
+        8,
+        TYPE_DOC_CONCEPT_EXTRACTED,
+        serde_json::json!({
+            "kind": KIND_DESIGN_DOC, "id": "docs/x.md#sec", "title": "Sec", "doc": "docs/x.md",
+        }),
+    );
+}
+
+/// A rendered node object's keys less its `id`, which must be `id`: the entries the object
+/// carries, compared without order against [`site_fields`].
+fn site_keys(object: &serde_json::Value, id: &str) -> BTreeMap<String, serde_json::Value> {
+    let mut keys = object.as_object().expect("a node object").clone();
+    assert_eq!(
+        keys.remove("id"),
+        Some(serde_json::json!(id)),
+        "the object names its node"
+    );
+    keys.into_iter().collect()
+}
+
+/// The entries [`site_fields`] gives `site`, keyed for an unordered comparison.
+fn fields_of(site: &EntitySite) -> BTreeMap<String, serde_json::Value> {
+    site_fields(site)
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect()
+}
+
+/// The one site `graph` locates for `id`.
+pub fn located_site(graph: &Projector, id: &str) -> EntitySite {
+    let Located::One(site) = graph.locate(id).unwrap() else {
+        panic!("{id} locates one node")
+    };
+    site
+}
+
+/// The [`Located::Many`] a lookup answers with the candidates `(id, file)`, in their order.
+pub fn located_many(cands: &[(&str, &str)]) -> Located {
+    Located::Many(
+        cands
+            .iter()
+            .map(|(id, file)| Candidate {
+                id: id.to_string(),
+                file: file.to_string(),
+            })
+            .collect(),
+    )
+}
+
+/// Each of [`SHOWN_IDS`] beside the one site `graph` locates for it, in their order.
+pub fn shown_sites(graph: &Projector) -> Vec<(&'static str, EntitySite)> {
+    SHOWN_IDS
+        .into_iter()
+        .map(|id| (id, located_site(graph, id)))
+        .collect()
+}
+
+/// Spec 119, SHOW IS ONE RENDERER: the seed's const holds `proven_by`, so a surface printing no
+/// `proven_by` excludes an attr the node carries, never one it lacks.
+pub fn assert_the_shown_const_carries_proven_by(graph: &Projector) {
+    assert_eq!(
+        proven_by_attr(graph, "src/limits.rs::LIMIT").as_deref(),
+        Some("1"),
+        "the const carries proven_by, an attr outside the printed list"
+    );
+}
+
+/// Spec 119, SHOW IS ONE RENDERER: each of `sites`, the `rigger_graph` `show` site objects of
+/// [`SHOWN_IDS`] in their order, is its node's `id` beside the [`site_fields`] entries of the site
+/// `graph` locates for it, compared without order.
+pub fn assert_shows_are_site_fields(graph: &Projector, sites: &[serde_json::Value]) {
+    for ((id, located), site) in shown_sites(graph).iter().zip(sites) {
+        assert_eq!(
+            site_keys(site, id),
+            fields_of(located),
+            "{id}: show is site_fields"
+        );
+    }
+}
+
+/// The node objects of a `rigger_graph` `around` answer, sorted by id.
+pub fn around_nodes(answer: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut nodes = answer["nodes"].as_array().expect("a node list").clone();
+    nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    nodes
+}
+
+/// Spec 119, SHOW IS ONE RENDERER: `finding`, the `rigger_graph` `show` site of the seed's
+/// finding, carries the two `ABOUT` edges the store holds, where an `around` of [`SHOWN_FILE`]
+/// at depth 1 loads one of them, and its `summary`, which every `around` node omits.
+pub fn assert_finding_shows_past_the_depth_bound(finding: &serde_json::Value) {
+    assert_eq!(
+        finding["degree"], 2,
+        "show reads the finding's degree from the store, past the depth bound"
+    );
+    assert_eq!(
+        finding["summary"], "the width overflows",
+        "show keeps the finding's summary"
+    );
+}
+
+/// Spec 119, SHOW IS ONE RENDERER: each of `nodes`, the `rigger_graph` `around` node objects of
+/// [`SHOWN_FILE`] at depth 1, carries no `summary` key and is [`entity_site`] over the `Node`
+/// [`around`] loads from `graph` at the degree the object carries less its `summary` entry,
+/// compared without order.
+pub fn assert_around_is_entity_sites(graph: &Projector, nodes: &[serde_json::Value]) {
+    let loaded = around(graph, &[SHOWN_FILE.to_string()], 1).unwrap();
+    for node in nodes {
+        let id = node["id"].as_str().unwrap();
+        let degree = node["degree"].as_u64().unwrap() as usize;
+        let held = loaded
+            .nodes
+            .iter()
+            .find(|n| n.id == id)
+            .expect("a loaded node");
+        assert_eq!(
+            node.get("summary"),
+            None,
+            "{id}: an around node omits summary"
+        );
+        let mut fields = fields_of(&entity_site(held, degree));
+        fields.remove("summary");
+        assert_eq!(
+            site_keys(node, id),
+            fields,
+            "{id}: an around node is entity_site over its loaded Node, less its summary"
+        );
+    }
+}
+
 /// The live `rel` targets of `member` in `g` (whole() returns only live edges), as a set.
 pub fn live_targets(g: &Graph, rel: &str, member: &str) -> BTreeSet<String> {
     g.edges
@@ -392,11 +871,39 @@ pub fn live_node_ids(g: &Graph, kind: &str) -> Vec<String> {
     ids
 }
 
-/// The attrs node `id` carries in `p`'s whole graph.
-pub fn attrs_of(p: &Projector, id: &str) -> BTreeMap<String, String> {
+/// Every definition `p`'s whole graph holds - a code entity carrying a non-empty `name`, never a
+/// placeholder or a bare node - as its id, sorted.
+pub fn definition_ids(p: &Projector) -> Vec<String> {
+    let mut ids: Vec<String> = p
+        .whole()
+        .unwrap()
+        .nodes
+        .into_iter()
+        .filter(|n| {
+            n.kind == KIND_CODE_ENTITY && n.attrs.get("name").is_some_and(|s| !s.is_empty())
+        })
+        .map(|n| n.id)
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The node `id` of `p`'s whole graph, which must hold it.
+pub fn node_of(p: &Projector, id: &str) -> Node {
     let nodes = p.whole().unwrap().nodes;
     let node = nodes.into_iter().find(|n| n.id == id);
-    node.unwrap_or_else(|| panic!("{id} is held")).attrs
+    node.unwrap_or_else(|| panic!("{id} is held"))
+}
+
+/// The attrs node `id` carries in `p`'s whole graph ([`node_of`]).
+pub fn attrs_of(p: &Projector, id: &str) -> BTreeMap<String, String> {
+    node_of(p, id).attrs
+}
+
+/// The `proven_by` attr node `id` carries in `p`'s whole graph ([`attrs_of`]), `None` when it
+/// carries no proof.
+pub fn proven_by_attr(p: &Projector, id: &str) -> Option<String> {
+    attrs_of(p, id).get("proven_by").cloned()
 }
 
 /// The attrs of a Rust definition `name`, a `kind` at `line`, and of nothing else: a node

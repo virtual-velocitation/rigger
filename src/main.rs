@@ -209,7 +209,7 @@ setup` first - it provisions the driver in .rigger/shim/)\n  \
 rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger graph --show <entity> print an entity's definition site + line-numbered body\n                              \
-(the text half of lookup; resolves a full id or a bare name)\n  \
+(the text half of lookup; resolves a full id, a bare name or a path)\n  \
 rigger graph build          fold the project's source into the graph from a cold\n                              \
 checkout (no run required)\n  \
 rigger graph communities    derive the code lens's coupling communities offline and\n                              \

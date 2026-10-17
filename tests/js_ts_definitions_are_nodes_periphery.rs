@@ -27,8 +27,8 @@ rigger::test_cases! {
     /// WHEN the operator runs `rigger graph build`,
     /// THEN its code entities are the JS lines' nodes, their line-15 type assertion a
     /// `constant`, and the TS lines' (see [`TS_LINES_NODES`]), the call `run()` of the JS lines
-    /// now reaching the abstract `run` rather than a placeholder; its `CALLS` edges are the JS
-    /// lines' and the TS lines' (see [`TS_LINES_CALLS`]).
+    /// landing on the placeholder `run` beside the abstract `run`, a declaration being no call
+    /// target; its `CALLS` edges are the JS lines' and the TS lines' (see [`TS_LINES_CALLS`]).
     #[cfg(feature = "symbols")]
     graph_build_makes_each_ts_definition_a_node_of_its_kind:
         assert_definitions_graph(
@@ -52,62 +52,65 @@ rigger::test_cases! {
 }
 
 /// The nodes the JS lines (1-15) of every JS and TS definitions fixture fold to, as
-/// `(leaf, kind, line)`:
+/// `(id path, leaf, kind, line)` (spec 119, IDS FOLLOW THE LANGUAGE'S PATH):
 ///
 ///  - a declarator takes its value's kind: `named`, `gnamed` and the anonymous generator `g`
-///    each a `function`, the anonymous class `Foo` and the named `Bar` each a `type` beside the
-///    named class `Baz`, and every other value a `constant`, the line-15 one and the valueless
-///    `y` included;
+///    each a `function`, the anonymous class `Foo` and the named `Bar` each a `type`, a named
+///    value of another leaf under its declarator (`named::fexp`, `gnamed::gexp`, `Bar::Baz`), a
+///    member of an anonymous class value under the declarator (`Foo.s`), and every other value a
+///    `constant`, the line-15 one and the valueless `lazy::y` included;
 ///  - a declarator named by a pattern makes each identifier it binds a `constant` (`a`, `c`,
-///    `d`, `r`, `x`, `y`, `z`), the second `y` sharing the first's node, and so does a `for .. of`
-///    declaring one (`k`, `v`, `j`), while `for (q of m)` and `for (o.p of m)` make no node;
-///  - a method is a `method` at its leaf, private with its `#`, string-named between its quotes
-///    and numeric as written, the computed one none, and `constructor` a `constructor`; a class
-///    field is a `field` at the same leaves, the computed one none, and an arrow- or
-///    function-valued one (`act`, `cb`) a `method`.
+///    `d`, `r`, `x`, `y`, `z`), the file-level `y` a node apart from `lazy::y`, and so does a
+///    `for .. of` declaring one (`host::k`, `host::v`, `host::j`), while `for (q of m)` and
+///    `for (o.p of m)` make no node;
+///  - a method is a `method` under its class, private with its `#`, string-named between its
+///    quotes and numeric as written, the computed one none, and `constructor` a `constructor`; a
+///    class field is a `field` at the same leaves after a `.`, the computed one none, and an
+///    arrow- or function-valued one (`Shape::act`, `Shape::cb`) a `method`.
 #[cfg(feature = "symbols")]
-const JS_LINES_NODES: [(&str, &str, u64); 41] = [
-    ("#hid", "field", 11),
-    ("#m", "method", 11),
-    ("1", "method", 11),
-    ("3", "field", 11),
-    ("Bar", "type", 7),
-    ("Baz", "type", 7),
-    ("Foo", "type", 6),
-    ("Shape", "type", 11),
-    ("a", "constant", 9),
-    ("a-b", "method", 11),
-    ("act", "method", 11),
-    ("area", "method", 11),
-    ("c", "constant", 9),
-    ("cb", "method", 11),
-    ("constructor", "constructor", 11),
-    ("d", "constant", 9),
-    ("el", "constant", 15),
-    ("ex", "constant", 14),
-    ("fexp", "function", 3),
-    ("field", "field", 11),
-    ("g", "function", 5),
-    ("gen", "function", 2),
-    ("gexp", "function", 4),
-    ("gnamed", "function", 4),
-    ("handler", "function", 12),
-    ("host", "function", 1),
-    ("j", "constant", 1),
-    ("k", "constant", 1),
-    ("lazy", "function", 8),
-    ("loc", "constant", 1),
-    ("local", "constant", 11),
-    ("named", "function", 3),
-    ("o2", "constant", 13),
-    ("p", "function", 13),
-    ("q-r", "field", 11),
-    ("r", "constant", 9),
-    ("s", "field", 6),
-    ("v", "constant", 1),
-    ("x", "constant", 10),
-    ("y", "constant", 8),
-    ("z", "constant", 10),
+const JS_LINES_NODES: [(&str, &str, &str, u64); 42] = [
+    ("Bar", "Bar", "type", 7),
+    ("Bar::Baz", "Baz", "type", 7),
+    ("Foo", "Foo", "type", 6),
+    ("Foo.s", "s", "field", 6),
+    ("Shape", "Shape", "type", 11),
+    ("Shape.#hid", "#hid", "field", 11),
+    ("Shape.3", "3", "field", 11),
+    ("Shape.field", "field", "field", 11),
+    ("Shape.q-r", "q-r", "field", 11),
+    ("Shape::#m", "#m", "method", 11),
+    ("Shape::1", "1", "method", 11),
+    ("Shape::a-b", "a-b", "method", 11),
+    ("Shape::act", "act", "method", 11),
+    ("Shape::area", "area", "method", 11),
+    ("Shape::cb", "cb", "method", 11),
+    ("Shape::constructor", "constructor", "constructor", 11),
+    ("Shape::constructor::local", "local", "constant", 11),
+    ("a", "a", "constant", 9),
+    ("c", "c", "constant", 9),
+    ("d", "d", "constant", 9),
+    ("el", "el", "constant", 15),
+    ("ex", "ex", "constant", 14),
+    ("g", "g", "function", 5),
+    ("gen", "gen", "function", 2),
+    ("gnamed", "gnamed", "function", 4),
+    ("gnamed::gexp", "gexp", "function", 4),
+    ("handler", "handler", "function", 12),
+    ("host", "host", "function", 1),
+    ("host::j", "j", "constant", 1),
+    ("host::k", "k", "constant", 1),
+    ("host::loc", "loc", "constant", 1),
+    ("host::v", "v", "constant", 1),
+    ("lazy", "lazy", "function", 8),
+    ("lazy::y", "y", "constant", 8),
+    ("named", "named", "function", 3),
+    ("named::fexp", "fexp", "function", 3),
+    ("o2", "o2", "constant", 13),
+    ("o2::p", "p", "function", 13),
+    ("r", "r", "constant", 9),
+    ("x", "x", "constant", 10),
+    ("y", "y", "constant", 10),
+    ("z", "z", "constant", 10),
 ];
 
 /// The placeholders the JS lines' references reach in every fixture, each a name no definition
@@ -116,26 +119,28 @@ const JS_LINES_NODES: [(&str, &str, u64); 41] = [
 const JS_LINES_PLACEHOLDERS: [&str; 8] =
     ["f", "init", "make", "paint", "probe", "spin", "tick", "use"];
 
-/// The `CALLS` edges of the JS lines, `(caller leaf, callee leaf)`: the calls in `host`'s local
+/// The `CALLS` edges of the JS lines, `(caller path, callee leaf)`, each from the node of its
+/// caller's path, `<file>::<path>` (spec 119 criterion 8): the calls in `host`'s local
 /// const and loop from `host`, the two in the constructor's body and in its local const from
-/// `constructor`, the generator value's from `g`, the static field initializer's from `s`, the
-/// method's from `area` and the assigned function's from `handler`. `f()`, the initializer of a
+/// `Shape::constructor`, the generator value's from `g`, the static field initializer's from
+/// `Foo.s`, the method's from `Shape::area` and the assigned function's from `handler`. `f()`, the initializer of a
 /// pattern declarator, takes the file as caller and so is no edge.
 #[cfg(feature = "symbols")]
 const JS_LINES_CALLS: [(&str, &str); 8] = [
-    ("area", "paint"),
-    ("constructor", "init"),
-    ("constructor", "make"),
+    ("Foo.s", "tick"),
+    ("Shape::area", "paint"),
+    ("Shape::constructor", "init"),
+    ("Shape::constructor", "make"),
     ("g", "spin"),
     ("handler", "run"),
     ("host", "probe"),
     ("host", "use"),
-    ("s", "tick"),
 ];
 
 /// The nodes the TS lines (16-23) of the TS and TSX definitions fixtures fold to, as
-/// `(leaf, kind, line)`: the ambient `sig`, the interface's `m`, `s-m` and `4` and the abstract
-/// `run`, `s-a` and `5` each a `declaration`; an interface, an abstract class, an enum and a type
+/// `(id path, leaf, kind, line)`, each member under its interface, class or enum: the ambient
+/// `sig`, the interface's `m`, `s-m` and `4` and the abstract `run`, `s-a` and `5` each a
+/// `declaration`; an interface, an abstract class, an enum and a type
 /// alias each a `type`; an enum member a `variant` with or without a value, string-named between
 /// its quotes and, with a value, numeric (`6`); a property signature a `field`, string-named,
 /// numeric or named by a string alone, a class field a `field` and a function-valued one
@@ -144,76 +149,81 @@ const JS_LINES_CALLS: [(&str, &str); 8] = [
 /// pattern-bound constant `x` of line 10, whose node the kind precedence settles a `constant`
 /// at line 10, so it adds no row.
 #[cfg(feature = "symbols")]
-const TS_LINES_NODES: [(&str, &str, u64); 26] = [
-    ("2", "field", 17),
-    ("4", "declaration", 17),
-    ("5", "declaration", 18),
-    ("6", "variant", 19),
-    ("A.B", "module", 22),
-    ("Abs", "type", 18),
-    ("Alias", "type", 20),
-    ("Blue", "variant", 19),
-    ("Color", "type", 19),
-    ("Dark-red", "variant", 19),
-    ("M.N", "module", 24),
-    ("Red", "variant", 19),
-    ("Shape2", "type", 17),
-    ("X", "constant", 23),
-    ("act2", "method", 18),
-    ("bare", "field", 17),
-    ("e-f", "variant", 19),
-    ("fld", "field", 18),
-    ("m", "declaration", 17),
-    ("p-q", "field", 17),
-    ("prop", "field", 17),
-    ("run", "declaration", 18),
-    ("s-a", "declaration", 18),
-    ("s-m", "declaration", 17),
-    ("s-t", "field", 18),
-    ("sig", "declaration", 16),
+const TS_LINES_NODES: [(&str, &str, &str, u64); 26] = [
+    ("A.B", "A.B", "module", 22),
+    ("Abs", "Abs", "type", 18),
+    ("Abs.fld", "fld", "field", 18),
+    ("Abs.s-t", "s-t", "field", 18),
+    ("Abs::5", "5", "declaration", 18),
+    ("Abs::act2", "act2", "method", 18),
+    ("Abs::run", "run", "declaration", 18),
+    ("Abs::s-a", "s-a", "declaration", 18),
+    ("Alias", "Alias", "type", 20),
+    ("Color", "Color", "type", 19),
+    ("Color::6", "6", "variant", 19),
+    ("Color::Blue", "Blue", "variant", 19),
+    ("Color::Dark-red", "Dark-red", "variant", 19),
+    ("Color::Red", "Red", "variant", 19),
+    ("Color::e-f", "e-f", "variant", 19),
+    ("M.N", "M.N", "module", 24),
+    ("Shape2", "Shape2", "type", 17),
+    ("Shape2.2", "2", "field", 17),
+    ("Shape2.bare", "bare", "field", 17),
+    ("Shape2.p-q", "p-q", "field", 17),
+    ("Shape2.prop", "prop", "field", 17),
+    ("Shape2::4", "4", "declaration", 17),
+    ("Shape2::m", "m", "declaration", 17),
+    ("Shape2::s-m", "s-m", "declaration", 17),
+    ("X", "X", "constant", 23),
+    ("sig", "sig", "declaration", 16),
 ];
 
-/// The placeholders the TS lines' references reach, each a type or call name no definition
-/// gives, the ambient function's file-level `Arg` included.
+/// The placeholders the TS lines' references reach, each a type or call name no call target of
+/// the file gives, the ambient function's file-level `Arg` included, and `run`, which the
+/// JS lines call and the TS lines declare abstract.
 #[cfg(feature = "symbols")]
-const TS_LINES_PLACEHOLDERS: [&str; 10] = [
-    "Arg", "FT", "PQ", "PType", "Ret", "Two", "V", "boot", "mk", "setup",
+const TS_LINES_PLACEHOLDERS: [&str; 11] = [
+    "Arg", "FT", "PQ", "PType", "Ret", "Two", "V", "boot", "mk", "run", "setup",
 ];
 
-/// The `CALLS` edges of the TS lines, `(caller leaf, callee leaf)`: each property signature's
-/// and field's type reference from that member (`p-q`, `2`, `prop`, `fld`), the method and
-/// index signatures' from their interface, the enum member value's call from `Blue`, and the
+/// The `CALLS` edges of the TS lines, `(caller path, callee leaf)`: each property signature's
+/// and field's type reference from that member (`Shape2.p-q`, `Shape2.2`, `Shape2.prop`,
+/// `Abs.fld`), the method and index signatures' from their interface, the enum member value's
+/// call from `Color::Blue`, and the
 /// module's and the namespace's body calls from `x` and `A.B`. The ambient function's types
 /// take the file as caller and so are no edge.
 #[cfg(feature = "symbols")]
 const TS_LINES_CALLS: [(&str, &str); 9] = [
-    ("2", "Two"),
     ("A.B", "setup"),
-    ("Blue", "mk"),
+    ("Abs.fld", "FT"),
+    ("Color::Blue", "mk"),
     ("Shape2", "Ret"),
     ("Shape2", "V"),
-    ("fld", "FT"),
-    ("p-q", "PQ"),
-    ("prop", "PType"),
+    ("Shape2.2", "Two"),
+    ("Shape2.p-q", "PQ"),
+    ("Shape2.prop", "PType"),
     ("x", "boot"),
 ];
 
 /// The graph `rigger graph build` folds from a project whose one file, `path`, is `source`, a JS
 /// or TS definitions fixture, holds exactly the JS lines' nodes, placeholders and `CALLS` edges
-/// and the `nodes`, `placeholders` and `calls` the fixture adds, each id the file and its leaf
-/// and each node of the language the extension names.
+/// and the `nodes`, `placeholders` and `calls` the fixture adds, each caller id the file and its
+/// path, each callee the placeholder of its leaf, and each node of the language the extension
+/// names.
 #[cfg(feature = "symbols")]
 fn assert_definitions_graph(
     (path, source): (&str, &str),
-    nodes: &[(&str, &str, u64)],
+    nodes: &[(&str, &str, &str, u64)],
     placeholders: &[&str],
     calls: &[(&str, &str)],
 ) {
+    use rigger::contextgraph::query::placeholder_id;
+
     let lang = if path.ends_with(".js") { "js" } else { "ts" };
     let mut edges: Vec<(String, String)> = JS_LINES_CALLS
         .iter()
         .chain(calls)
-        .map(|(from, to)| (format!("{path}::{from}"), format!("{path}::{to}")))
+        .map(|(from, to)| (format!("{path}::{from}"), placeholder_id(path, to)))
         .collect();
     edges.sort();
     let edges: Vec<(&str, &str)> = edges
@@ -225,8 +235,7 @@ fn assert_definitions_graph(
         &[&JS_LINES_NODES[..], nodes].concat(),
         &[&JS_LINES_PLACEHOLDERS[..], placeholders].concat(),
         &edges,
-        "every code entity of the built graph: one per definition leaf, none for a computed \
-         member or a for .. of assigning an existing name, one placeholder per undefined name a \
-         reference reaches",
+        "every definition of the built graph at its path, none for a computed member or a for .. \
+         of assigning an existing name, one placeholder per undefined name a reference reaches",
     );
 }

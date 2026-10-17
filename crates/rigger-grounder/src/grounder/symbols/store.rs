@@ -215,6 +215,9 @@ mod tests {
                         kind: Kind::Function,
                         name: "b".into(),
                         line: 2,
+                        end_line: 2,
+                        path: "b".into(),
+                        parent: None,
                         is_test: false,
                         is_out_of_line_module: false,
                         path_override: None,
@@ -224,6 +227,9 @@ mod tests {
                         kind: Kind::Function,
                         name: "a".into(),
                         line: 1,
+                        end_line: 1,
+                        path: "a".into(),
+                        parent: None,
                         is_test: false,
                         is_out_of_line_module: false,
                         path_override: None,
@@ -235,6 +241,25 @@ mod tests {
             },
         );
         idx
+    }
+
+    /// Rewrite the index persisted under `root` through `edit`, over its JSON.
+    fn rewrite_persisted(root: &str, edit: impl FnOnce(&mut serde_json::Value)) {
+        let path = index_path(root);
+        let mut persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        edit(&mut persisted);
+        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+    }
+
+    /// Stamp the index persisted under `root` with the extraction generation `grammar`.
+    fn restamp(root: &str, grammar: &str) {
+        rewrite_persisted(root, |persisted| persisted["grammar"] = grammar.into());
+    }
+
+    /// The first definition of [`sample`]'s file in `persisted`, an index's JSON.
+    fn persisted_def(persisted: &mut serde_json::Value) -> &mut serde_json::Value {
+        &mut persisted["files"]["z.rs"]["defs"][0]
     }
 
     #[test]
@@ -269,21 +294,67 @@ mod tests {
         let root = dir.path().to_str().unwrap();
         save(&sample(), root).unwrap();
         assert!(load(root).is_some(), "a current-generation index loads");
-        let path = index_path(root);
-        let mut persisted: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        persisted["grammar"] = serde_json::Value::String("ts-tags-v0".into());
-        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+        restamp(root, "ts-tags-v0");
         assert!(
             load(root).is_none(),
             "an index from another extraction generation must load as absent"
         );
-        persisted.as_object_mut().unwrap().remove("grammar");
-        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+        rewrite_persisted(root, |persisted| {
+            persisted.as_object_mut().unwrap().remove("grammar");
+        });
         assert!(
             load(root).is_none(),
             "an index predating the generation stamp must load as absent"
         );
+    }
+
+    /// Spec 119 (ONE EXTENT; IDS FOLLOW THE LANGUAGE'S PATH): an index persisted before
+    /// definitions carried `end_line`, or `path`, loads as absent, so the grounder rebuilds it
+    /// rather than serving definitions with no extent or no id path.
+    #[test]
+    fn an_index_whose_definition_lacks_end_line_or_path_loads_as_absent() {
+        for field in ["end_line", "path"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().to_str().unwrap();
+            save(&sample(), root).unwrap();
+            assert_eq!(load(root), Some(sample()), "a current index loads whole");
+            rewrite_persisted(root, |persisted| {
+                persisted_def(persisted)
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(field)
+                    .unwrap_or_else(|| panic!("a current definition persists its {field}"));
+            });
+            assert_eq!(
+                load(root),
+                None,
+                "an index whose definition lacks {field} must load as absent"
+            );
+        }
+    }
+
+    /// Spec 119 (CONTAINS IS STRUCTURE): an index persisted under `ts-tags-v3`, whose definitions
+    /// already carry `path` but no `parent`, loads as absent, so the grounder rebuilds it rather
+    /// than lowering definitions with no parent.
+    #[test]
+    fn a_ts_tags_v3_index_carrying_path_loads_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        save(&sample(), root).unwrap();
+        rewrite_persisted(root, |persisted| {
+            assert_eq!(
+                persisted_def(persisted)["path"],
+                "b",
+                "the persisted definition carries its path"
+            );
+            assert_eq!(
+                persisted_def(persisted).get("parent"),
+                None,
+                "a definition at file level is saved with no parent key"
+            );
+        });
+        restamp(root, "ts-tags-v3");
+        assert_eq!(load(root), None, "a ts-tags-v3 index must load as absent");
     }
 
     #[test]

@@ -1,9 +1,10 @@
 //! Periphery (API) test for the whole-graph exploration FOLD KEY (spec 42, criterion c1):
 //! [`rigger::dash::cluster_key`] folds every knowledge-graph node `(id, kind)` into one exploration
 //! super-node bucket, so the KG panel can render a ~7k-node graph as a few dozen clusters. A node
-//! whose id NAMES A FILE clusters by that file's DIRECTORY (its module); a directory-less repo-root
-//! file falls back to [`rigger::dash::CLUSTER_ROOT`]; every other node - a dev-loop node with no path
-//! id - clusters by its KIND.
+//! whose id NAMES A FILE under its kind's arm of `node_file`'s table clusters by that file's
+//! DIRECTORY (its module); a directory-less repo-root file falls back to
+//! [`rigger::dash::CLUSTER_ROOT`]; every node whose id names no file under its kind's arm - a
+//! dev-loop node, or an extensionless design doc - clusters by its KIND.
 //!
 //! This runs OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::cluster_key` and
 //! `rigger::dash::CLUSTER_ROOT`). The implementer's inside-out unit test in `dash.rs` calls
@@ -14,8 +15,10 @@
 //!     would keep the unit test green but break the boundary; here it fails to compile.
 //!   - The BOUNDARY CLAIMS the doc-comment makes but the unit test does NOT exercise: a leading-dot
 //!     dotfile, a trailing-dot (empty suffix), an empty stem, a multi-dot extension, an empty id, a
-//!     trailing slash, an extensionless file sitting in a directory, and ids carrying multiple `::`
-//!     or `#` separators. Each is an API edge an external caller (a real graph node) can hit.
+//!     trailing slash, an extensionless file sitting in a directory, each as a `file` node (which
+//!     names its file whatever its last segment) and as a design doc (which names one only by its
+//!     extension), and ids carrying multiple `::` or `#` separators. Each is an API edge an
+//!     external caller (a real graph node) can hit.
 //!
 //! This layer does NOT re-assert the implementer's happy-path unit cases; it owns the crate-boundary
 //! reachability and the adversarial edges of the fold contract. `dash` and `contextgraph` are compiled
@@ -38,10 +41,11 @@ fn assert_cluster_keys(cases: &[(&str, &str, &str, &str)]) {
 
 rigger::test_cases! {
     /// The public fold key is reachable across the crate boundary and folds the three canonical
-    /// node shapes as documented: a path-bearing id clusters by its file's DIRECTORY, and a
-    /// non-path dev-loop id clusters by its KIND. This test's VALUE is structural: it proves
-    /// `cluster_key` and `CLUSTER_ROOT` are genuinely `pub` and usable by an external consumer (the
-    /// downstream c2/c3 aggregations), which the in-module unit test cannot prove.
+    /// node shapes as documented: an id naming a file under its kind's arm of `node_file`
+    /// clusters by its file's DIRECTORY, and a decision id, naming none under its kind's arm,
+    /// clusters by its KIND. This test's VALUE is structural: it proves `cluster_key` and
+    /// `CLUSTER_ROOT` are genuinely `pub` and usable by an external consumer (the downstream c2/c3
+    /// aggregations), which the in-module unit test cannot prove.
     cluster_key_is_reachable_over_the_public_crate_boundary: assert_cluster_keys(&[
         // A code entity `<file>::<name>` clusters by its file's module (directory).
         (
@@ -50,19 +54,20 @@ rigger::test_cases! {
             "src/contextgraph",
             "a code entity folds to its file's full directory path",
         ),
-        // A plain path id clusters by its directory whatever its kind.
+        // A design doc's plain path id clusters by its directory.
         (
             "docs/architecture.md",
             KIND_DESIGN_DOC,
             "docs",
             "a plain path id folds to its directory",
         ),
-        // A non-path dev-loop node folds to its KIND, echoed verbatim.
+        // A decision id names no file under its kind's arm, so it folds to its KIND, echoed
+        // verbatim.
         (
             "adj-u42c1-approve",
             KIND_DECISION,
             KIND_DECISION,
-            "a dev-loop node with no path id folds to its kind",
+            "a decision id names no file under its kind's arm, so it folds to its kind",
         ),
         // The repo-root sentinel is reachable and is what a directory-less file folds to.
         (
@@ -72,53 +77,78 @@ rigger::test_cases! {
             "a directory-less repo-root file folds to the CLUSTER_ROOT sentinel",
         ),
     ]);
-    /// The boundary EDGES the doc-comment claims but the implementer's unit test never drives.
-    /// Every assertion here pins a distinct rule of the `names_a_file` predicate that an external
-    /// caller (a real graph node id) can reach; a regression that relaxed any one rule stays green
-    /// in the unit test but turns this test RED.
+    /// The boundary EDGES the doc-comment claims but the implementer's unit test never drives:
+    /// a `file` node names its file whatever its last segment, and a design doc's id names one
+    /// only by the `names_a_file` extension predicate. Every assertion here pins a distinct rule
+    /// an external caller (a real graph node id) can reach; a regression that relaxed any one
+    /// rule stays green in the unit test but turns this test RED.
     cluster_key_honors_the_boundary_edges_of_the_names_a_file_predicate: assert_cluster_keys(&[
-        // LEADING-DOT DOTFILE: `.gitignore`'s only `.` is leading, so its stem is empty - it
-        // is NOT an extensioned path and folds by KIND, never to a directory. (Doc: "a dotfile
-        // like `.gitignore` ... is NOT treated as an extensioned path".)
+        // A `file` node names its file WHATEVER its last segment: a leading-dot dotfile, a
+        // trailing dot, an extensionless name and a trailing slash each fold to the directory
+        // their path names, a directory-less one to the repo-root sentinel.
         (
             ".gitignore",
             KIND_FILE,
-            KIND_FILE,
-            "a repo-root leading-dot dotfile has an empty stem, so it folds by kind, \
-             not to (root)",
+            CLUSTER_ROOT,
+            "a repo-root dotfile `file` node folds to (root)",
         ),
-        // A leading-dot dotfile SITTING IN A DIRECTORY still folds by kind, never to its
-        // directory - the empty-stem rule fires on the last segment regardless of the parent
-        // path.
         (
             "config/.gitignore",
             KIND_FILE,
-            KIND_FILE,
-            "a dotfile inside a directory still folds by kind, not to `config`",
+            "config",
+            "a dotfile `file` node inside a directory folds to that directory",
         ),
-        // A bare-stem last segment like `.env` (leading dot, no directory) - empty stem again.
         (
             "src/.env",
             KIND_FILE,
-            KIND_FILE,
-            "a leading-dot last segment folds by kind even with a directory present",
+            "src",
+            "a leading-dot last segment of a `file` node folds to its directory",
         ),
-        // TRAILING DOT: `notes.` has a non-empty stem but an EMPTY suffix, so it is not
-        // extensioned and folds by KIND. (Doc: an extension needs "a non-empty stem AND a
-        // non-empty suffix".)
         (
             "notes/todo.",
             KIND_FILE,
-            KIND_FILE,
-            "a trailing-dot last segment has an empty suffix, so it folds by kind",
+            "notes",
+            "a trailing-dot `file` node folds to its directory",
         ),
-        // EXTENSIONLESS FILE IN A DIRECTORY: `Makefile` has a directory but no `.`, so it is
-        // not a file and folds by KIND - a directory alone does NOT make an id a path.
         (
             "src/utils/Makefile",
             KIND_FILE,
+            "src/utils",
+            "an extensionless `file` node folds to its directory",
+        ),
+        (
+            "src/nested/",
             KIND_FILE,
-            "an extensionless last segment folds by kind even nested under directories",
+            "src/nested",
+            "a trailing-slash `file` node folds to the directory before its empty last segment",
+        ),
+        // A design doc names a file only when its last segment carries an extension: a `.`
+        // with a non-empty stem AND a non-empty suffix. A dotfile (empty stem), a trailing dot
+        // (empty suffix), an extensionless name and a trailing slash (empty last segment) name
+        // none, so each folds by KIND.
+        (
+            "config/.gitignore",
+            KIND_DESIGN_DOC,
+            KIND_DESIGN_DOC,
+            "a dotfile design doc has an empty stem, so it folds by kind",
+        ),
+        (
+            "notes/todo.",
+            KIND_DESIGN_DOC,
+            KIND_DESIGN_DOC,
+            "a trailing-dot design doc has an empty suffix, so it folds by kind",
+        ),
+        (
+            "docs/README",
+            KIND_DESIGN_DOC,
+            KIND_DESIGN_DOC,
+            "an extensionless design doc folds by kind",
+        ),
+        (
+            "docs/nested/",
+            KIND_DESIGN_DOC,
+            KIND_DESIGN_DOC,
+            "a trailing-slash design doc has an empty last segment and folds by kind",
         ),
         // MULTI-DOT EXTENSION: only the LAST `.` splits stem from suffix, so `app.min.js` is
         // extensioned and clusters by its directory (`stem = app.min`, `ext = js`).
@@ -161,14 +191,6 @@ rigger::test_cases! {
             KIND_DECISION,
             KIND_DECISION,
             "an empty id folds by kind (totality: no panic, no false path match)",
-        ),
-        // TRAILING SLASH: the last segment is empty (no extension), so a directory-shaped id
-        // folds by KIND rather than being mistaken for a file.
-        (
-            "src/nested/",
-            KIND_FILE,
-            KIND_FILE,
-            "a trailing-slash id has an empty last segment and folds by kind",
         ),
     ]);
 }

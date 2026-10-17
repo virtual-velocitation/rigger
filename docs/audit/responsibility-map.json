@@ -1861,7 +1861,15 @@
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"write\" (generic write helper); grouped under `conductor::support`.",
-    "content_hash": "853206f25e981286"
+    "content_hash": "a84263a0e83e3c01"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "member_files",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "577a5073db011d00"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1877,7 +1885,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "0b75de412c4773c1"
+    "content_hash": "8e57f36d22e3d745"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3237,7 +3245,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c9d0f8a6f8548a6d"
+    "content_hash": "1a8736ada80fadf0"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6985,6 +6993,22 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "files_reachable_maps_a_member_to_its_held_file_and_a_placeholder_to_none",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "2f0a019a392f4f57"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "the_code_neighborhood_lists_each_member_under_its_held_file",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "b1e73b32ab57b750"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "grounded_blast_radius_tier_filters_the_subgraph_and_keeps_the_grounder_radius",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -9365,7 +9389,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "686297ae9a96722f"
+    "content_hash": "a2d27b649ee18e9a"
   },
   {
     "file": "src/cli/mod.rs",
@@ -11261,7 +11285,7 @@
     "is_test": false,
     "proposed_module": "dash::reproject",
     "reason": "name contains \"reproject\" (graph reprojection); grouped under `dash::reproject`.",
-    "content_hash": "7fdf53e6fa01f6f7"
+    "content_hash": "c271b460043ce8c4"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12101,7 +12125,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "694123ee3646a812"
+    "content_hash": "8c4bc6f0a2a58c1c"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12109,7 +12133,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "93095dfe55512711"
+    "content_hash": "3eab9baee5e50a5c"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12133,7 +12157,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "256afd6dcfc4732c"
+    "content_hash": "4f9d12e33e3a928c"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12141,7 +12165,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4841a8863a05023f"
+    "content_hash": "f32a9176bfa312e8"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12185,19 +12209,11 @@
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
-    "name": "dispatch_graph",
-    "is_test": true,
-    "proposed_module": "dash::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "45f6e53bce37596c"
-  },
-  {
-    "file": "crates/rigger-dash/src/dash.rs",
     "name": "the_graph_route_dispatches_cluster_overview_and_seed_by_parameter",
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a315016e401c1caa"
+    "content_hash": "05dbf95430536267"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12837,7 +12853,7 @@
     "is_test": true,
     "proposed_module": "dash::tests::metadata_card_c2",
     "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "2a9a843c9b0c59eb"
+    "content_hash": "fc57e90334d081ec"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12881,10 +12897,42 @@
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
+    "name": "cluster_counts",
+    "is_test": true,
+    "proposed_module": "dash::tests::reprojection_views",
+    "reason": "defined inside `reprojection_views`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "5e8913cfd3d673ce"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "unresolved_frontiers",
+    "is_test": true,
+    "proposed_module": "dash::tests::reprojection_views",
+    "reason": "defined inside `reprojection_views`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "f106730e081726e9"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "reproject_files_beside_a_member",
     "is_test": true,
     "proposed_module": "dash::tests::call_target_c4",
     "reason": "defined inside `call_target_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "67a192716665bd01"
+    "content_hash": "6e20dd35a5e9d38f"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "reproject_files_resolves_a_placeholder_onto_the_nested_definition_of_its_leaf",
+    "is_test": true,
+    "proposed_module": "dash::tests::leaf_keys_c1",
+    "reason": "defined inside `leaf_keys_c1`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "f100077aed8d6b86"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "reproject_files_folds_an_extensionless_files_entity_under_its_file",
+    "is_test": true,
+    "proposed_module": "dash::tests::file_half_c13",
+    "reason": "defined inside `file_half_c13`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "be79bae82f4920d7"
   }
 ]

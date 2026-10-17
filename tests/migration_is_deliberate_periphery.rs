@@ -91,7 +91,10 @@ fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_eve
     .unwrap();
 
     let p = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 1u64;
+    // Each event folds at the log position after `pos`. The legacy file's two folds are two
+    // generations of its identity (spec 119, THE MEMBER RULE), so the second retracts the legacy
+    // definition's `name` and it is no member the file's reach loads.
+    let mut pos = 0u64;
 
     // "Before": a legacy node standing in for what a PRE-spec-86 binary's fold would have
     // created for tests/legacy.rs - the state the Design's MIGRATION paragraph names ("existing
@@ -103,13 +106,17 @@ fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_eve
         "file": "tests/legacy.rs", "name": "old_test_helper", "kind": "function",
         "line": 1, "lang": "rust", "fresh": true,
     });
-    let mut legacy_event = Event::new(
+    let legacy_event = Event::new(
         TYPE_CODE_ENTITY_EXTRACTED,
         serde_json::to_vec(&legacy).unwrap(),
     );
-    legacy_event.position = pos;
-    pos += 1;
-    common::fixtures::folds(&p, std::slice::from_ref(&legacy_event));
+    common::fixtures::fold_generation(
+        &p,
+        &mut pos,
+        "tests/legacy.rs",
+        common::fixtures::GENERATION_BEFORE,
+        vec![legacy_event],
+    );
 
     // The unrelated product file's REAL first ingest, through the public pipeline.
     let idx = build_index(root.path().to_str().unwrap(), None);
@@ -117,10 +124,9 @@ fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_eve
         .files()
         .get("keep.rs")
         .expect("fixture precondition: keep.rs is indexed");
-    for mut ev in extract_events("keep.rs", keep_fs) {
-        ev.position = pos;
+    for ev in extract_events("keep.rs", keep_fs) {
         pos += 1;
-        common::fixtures::folds(&p, std::slice::from_ref(&ev));
+        common::fixtures::fold_at(&p, pos, ev);
     }
 
     assert_eq!(
@@ -137,18 +143,20 @@ fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_eve
         .files()
         .get("tests/legacy.rs")
         .expect("fixture precondition: tests/legacy.rs is indexed");
-    let mut boundary_events = extract_events("tests/legacy.rs", legacy_fs);
+    let boundary_events = extract_events("tests/legacy.rs", legacy_fs);
     assert_eq!(
         boundary_events.len(),
         1,
         "a whole tests/-dir file's real re-extraction is exactly one boundary sentinel; got \
          {boundary_events:?}"
     );
-    for ev in boundary_events.iter_mut() {
-        ev.position = pos;
-        pos += 1;
-        common::fixtures::folds(&p, std::slice::from_ref(ev));
-    }
+    common::fixtures::fold_generation(
+        &p,
+        &mut pos,
+        "tests/legacy.rs",
+        common::fixtures::GENERATION_AFTER,
+        boundary_events,
+    );
 
     assert_eq!(
         p.retired_code_entity_count().unwrap(),
@@ -249,17 +257,22 @@ fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_thro
     let target = root.path().join("wrapped.rs");
 
     let p = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 1u64;
+    // Each event folds at the log position after `pos`, both batches as generations of the
+    // file's identity (spec 119, THE MEMBER RULE), so generation 2 retracts `folded`'s `name`
+    // and it is no member the file's reach loads.
+    let mut pos = 0u64;
 
     // Generation 1: real, defines `folded`, through the real pipeline.
     std::fs::write(&target, "pub fn folded() {}\n").unwrap();
     let idx1 = build_index(root.path().to_str().unwrap(), None);
     let fs1 = idx1.files().get("wrapped.rs").expect("wrapped.rs indexed");
-    for mut ev in extract_events("wrapped.rs", fs1) {
-        ev.position = pos;
-        pos += 1;
-        common::fixtures::folds(&p, std::slice::from_ref(&ev));
-    }
+    common::fixtures::fold_generation(
+        &p,
+        &mut pos,
+        "wrapped.rs",
+        common::fixtures::GENERATION_BEFORE,
+        extract_events("wrapped.rs", fs1),
+    );
     let live = p.subgraph(&["wrapped.rs".to_string()], 2).unwrap();
     assert!(
         live.nodes.iter().any(|n| n.id == "wrapped.rs::folded"),
@@ -278,18 +291,20 @@ fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_thro
     .unwrap();
     let idx2 = build_index(root.path().to_str().unwrap(), None);
     let fs2 = idx2.files().get("wrapped.rs").expect("wrapped.rs indexed");
-    let mut boundary_events = extract_events("wrapped.rs", fs2);
+    let boundary_events = extract_events("wrapped.rs", fs2);
     assert_eq!(
         boundary_events.len(),
         1,
         "a product file re-wrapped entirely into #[cfg(test)] extracts to exactly one boundary \
          sentinel; got {boundary_events:?}"
     );
-    for ev in boundary_events.iter_mut() {
-        ev.position = pos;
-        pos += 1;
-        common::fixtures::folds(&p, std::slice::from_ref(ev));
-    }
+    common::fixtures::fold_generation(
+        &p,
+        &mut pos,
+        "wrapped.rs",
+        common::fixtures::GENERATION_AFTER,
+        boundary_events,
+    );
 
     assert_eq!(
         p.retired_code_entity_count().unwrap(),
@@ -314,10 +329,12 @@ fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_thro
 /// the call `lower_file` makes. Parameterized over `entry`, the ingest pipeline under test - see the
 /// `#[test]` below, reproducing the exact probe the adjudicator's own rejection ran by hand
 /// (`tests/_adjudicator_probe_out_of_line.rs`, reverted) through this crate's permanent test
-/// suite instead.
+/// suite instead. `entry` answers each file's batch beside its path, and each ingest folds every
+/// batch as one generation of its file's identity (spec 119, THE MEMBER RULE), so the second
+/// retracts the excluded definition's `name` and it is no member the file's reach loads.
 #[cfg(feature = "symbols")]
 fn assert_out_of_line_declaration_retires_through_the_real_fold_seam(
-    entry: impl Fn(&str) -> Vec<rigger::eventstore::Event>,
+    entry: impl Fn(&str) -> Vec<(String, Vec<rigger::eventstore::Event>)>,
 ) {
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
@@ -336,11 +353,10 @@ fn assert_out_of_line_declaration_retires_through_the_real_fold_seam(
     .unwrap();
 
     let p = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 1u64;
-    for mut ev in entry(root_str) {
-        ev.position = pos;
-        pos += 1;
-        common::fixtures::folds(&p, std::slice::from_ref(&ev));
+    let mut pos = 0u64;
+    for (file, batch) in entry(root_str) {
+        let generation = common::fixtures::GENERATION_BEFORE;
+        common::fixtures::fold_generation(&p, &mut pos, &file, generation, batch);
     }
     let before = p
         .subgraph(&["lib.rs".to_string(), "contract.rs".to_string()], 2)
@@ -366,10 +382,9 @@ fn assert_out_of_line_declaration_retires_through_the_real_fold_seam(
     )
     .unwrap();
     // Deterministic re-ingest through the real PUBLIC pipeline, never a hand-built payload.
-    for mut ev in entry(root_str) {
-        ev.position = pos;
-        pos += 1;
-        common::fixtures::folds(&p, std::slice::from_ref(&ev));
+    for (file, batch) in entry(root_str) {
+        let generation = common::fixtures::GENERATION_AFTER;
+        common::fixtures::fold_generation(&p, &mut pos, &file, generation, batch);
     }
 
     assert_eq!(
@@ -415,7 +430,7 @@ fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_proj
         project_batches_paced(root, 2)
             .0
             .into_iter()
-            .flat_map(|(_, evs, _)| evs)
+            .map(|(file, evs, _)| (file, evs))
             .collect()
     });
 }

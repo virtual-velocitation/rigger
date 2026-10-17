@@ -40,9 +40,13 @@ pub const KIND_FINDING: &str = "finding";
 /// A definition site extracted from source (a function, type, module, and so on): the code
 /// half of the one graph (spec 29a). Folded from a `CodeEntityExtracted` event, so code
 /// structure is a rebuildable projection over the log, not a mutable side index. Its id is
-/// `<file>::<name>`; its attrs carry the name, the rigger `Kind` string, the 1-based line, and
-/// the language it was parsed as.
+/// `<file>::<path>`, the path its language gives it in the file (spec 119, IDS FOLLOW THE
+/// LANGUAGE'S PATH: `T::new`, `S.field`, a file-level definition's own name); its attrs carry the
+/// name, its leaf, the rigger `Kind` string, the 1-based line, and the language it was parsed as.
 pub const KIND_CODE_ENTITY: &str = "code-entity";
+/// The sigil that marks a placeholder's leaf in its id, `<file>::%<leaf>` (spec 119): `%`
+/// begins no identifier in any registered grammar. [`query::leaf_of`] strips exactly one.
+pub const PLACEHOLDER_SIGIL: char = '%';
 /// The code kind (a code entity's `kind` attr) of a constructor: function-like, so a reference
 /// inside one has it as caller.
 pub const CODE_KIND_CONSTRUCTOR: &str = "constructor";
@@ -99,6 +103,20 @@ pub const CODE_KIND_PRECEDENCE: [&str; 16] = [
     CODE_KIND_MODULE,
     CODE_KIND_OTHER,
 ];
+/// Where `kind` stands in [`CODE_KIND_PRECEDENCE`]: a kind outside the list ranks with its last
+/// member, `other`.
+pub fn kind_rank(kind: &str) -> usize {
+    CODE_KIND_PRECEDENCE
+        .iter()
+        .position(|listed| *listed == kind)
+        .unwrap_or(CODE_KIND_PRECEDENCE.len() - 1)
+}
+/// The order that picks one of the definitions sharing a node (spec 116, A SHARED NODE TAKES ONE
+/// KIND; spec 119, ONE PATH, ONE EVENT): a definition of `kind` at `line` ranks by its kind's
+/// place in [`CODE_KIND_PRECEDENCE`] ([`kind_rank`]), then by its line, the lesser first.
+pub fn definition_precedence(kind: &str, line: u32) -> (usize, u32) {
+    (kind_rank(kind), line)
+}
 /// The code kinds no call resolves onto: a data member, and a declaration, whose calls reach
 /// its implementation.
 pub const NON_TARGET_KINDS: [&str; 3] =
@@ -110,9 +128,10 @@ pub const NON_TARGET_KINDS: [&str; 3] =
 pub fn is_call_target(kind: Option<&str>) -> bool {
     kind.is_none_or(|k| !NON_TARGET_KINDS.contains(&k))
 }
-/// A source file container node (spec 29a): the `<rel-path>` node that a file's extracted
-/// code entities hang off. Folded alongside the entities, so a query can reach a file's
-/// structure the same way it reaches the decisions that govern the file.
+/// A source file container node (spec 29a): the `<rel-path>` node that holds a file's top-level
+/// extracted definitions through `CONTAINS`, each nested one hanging off its parent instead
+/// (spec 119, CONTAINS IS STRUCTURE). Folded alongside the entities, so a query can reach a
+/// file's structure the same way it reaches the decisions that govern the file.
 pub const KIND_FILE: &str = "file";
 /// A design-intent doc / doc-section node (spec 29b): a reference-architecture doc,
 /// `architecture.md`, or an addendum (and its `##` sections) ingested as first-class design
@@ -168,8 +187,10 @@ pub const REL_ASSIGNED_TO: &str = "ASSIGNED_TO";
 /// The acting reviewer raised this finding (a DECIDED-style provenance link from
 /// the `by` agent to the finding node).
 pub const REL_RAISED: &str = "RAISED";
-/// A file container node CONTAINS a code entity extracted from it (spec 29a): the structural
-/// edge from a `file` node to each `code-entity` node folded from that file's definitions.
+/// A definition's parent CONTAINS it (spec 29a; spec 119, CONTAINS IS STRUCTURE): the structural
+/// edge from an enum to its variant, a struct, union or variant to its field, an impl or trait
+/// to its associated item, an inline mod or enclosing fn to its item, and from a `file` node to
+/// each `code-entity` node folded from a definition of that file with no parent.
 pub const REL_CONTAINS: &str = "CONTAINS";
 /// A file REFERENCES a code symbol (spec 29a): the structural edge folded from an
 /// `EdgeInferred` event, from the referencing `file` node to the referenced symbol's
@@ -177,7 +198,8 @@ pub const REL_CONTAINS: &str = "CONTAINS";
 /// criterion; this criterion only makes the structural edge exist.
 pub const REL_REFERENCES: &str = "REFERENCES";
 /// A caller-attributed call edge (spec 37): `<file>::<caller> --CALLS--> <callee>`, folded from an
-/// `EdgeInferred` whose `caller` is set - the enclosing definition the reference was attributed to.
+/// `EdgeInferred` whose `caller` is set - the path of the enclosing definition the reference was
+/// attributed to.
 /// It is added ALONGSIDE the file-level [`REL_REFERENCES`] edge (purely additive; the same callee
 /// resolution the REFERENCES edge uses), so one `subgraph` around a symbol answers "who calls it" by
 /// function, not merely "referenced from which file". A reference outside every definition
@@ -262,16 +284,18 @@ pub const REL_REVIEWS_LIGHT: &str = "REVIEWS_LIGHT";
 // three tiers partition the reference set, so the graph keeps EVERY reference: a later traversal
 // reads the EXTRACTED sub-graph as the precise prompt seed and the structural reach
 // EXTRACTED u INFERRED as the blast radius's safe view (addendum 2.4).
-/// An explicit-in-source structural fact: a definition's containment, or a reference resolved to a
-/// call-target definition ([`is_call_target`]) in the SAME file (a call / import / inherit of a
-/// known local symbol; a data member or a declaration of the name resolves none). The highest
+/// An explicit-in-source structural fact: a definition's containment, or a reference resolved to
+/// its ONE same-file call-target candidate ([`is_call_target`]) (a call / import / inherit of a
+/// known local symbol; a data member or a declaration of the name is no candidate). The highest
 /// confidence tier - the precise seed. Every non-code dev-loop edge (DECIDED / GOVERNS / ABOUT /
 /// SUPERSEDES / ...) also folds EXTRACTED: they are explicit facts recorded on the log.
 pub const TIER_EXTRACTED: &str = "extracted";
-/// A derived / transitive link: a reference whose name no call target ([`is_call_target`])
-/// defines in the referencing file but one DOES define in ANOTHER file the graph knows. The
-/// reference is inferred to reach that definition across files - real, but one confidence step
-/// below an explicit same-file reference.
+/// A derived / transitive link: a reference landed on its file's placeholder `<file>::%<name>`,
+/// its file holding no ONE call-target candidate ([`is_call_target`]) of the name when it folded,
+/// whose name some call target the graph knows DOES define: in another file, more than once in
+/// its own, or once in its own when that definition folded after the reference (the definition
+/// arm's upgrade promotes it). The reference is inferred to reach a definition - real, but one
+/// confidence step below a reference resolved to its one same-file candidate.
 pub const TIER_INFERRED: &str = "inferred";
 /// A text-only occurrence: a reference whose name no call target ([`is_call_target`]) defines
 /// ANYWHERE the graph knows - a macro body, a reflection string, a dynamic name, an external
@@ -360,10 +384,10 @@ pub struct CallEdge {
 /// per-node `layer`/`frontier` and per-edge `back` metadata the neighborhood view does not carry.
 ///
 /// `referenced_not_called` is the UP direction's flat, NON-traversed sidecar (empty for `Down`): the
-/// FILE nodes that reference the seed's name at file level (a `REFERENCES` edge to the name) but
-/// carry NO caller-attributed `CALLS` edge to it from within the file - the imports / uses a
-/// "who-uses-this" reader cares about, which the layered caller DAG (functions that CALL the seed)
-/// deliberately does not include. Sorted by id, deterministic across polls.
+/// FILE nodes that reference the seed's leaf at file level (a `REFERENCES` edge whose target binds
+/// the leaf, [`query::node_leaf`]) but carry NO caller-attributed `CALLS` edge to it from within
+/// the file - the imports / uses a "who-uses-this" reader cares about, which the layered caller
+/// DAG (functions that CALL the seed) deliberately does not include. Sorted by id, deterministic across polls.
 #[derive(Clone, Debug, Default)]
 pub struct CallGraph {
     pub nodes: Vec<CallNode>,
@@ -374,47 +398,112 @@ pub struct CallGraph {
 /// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup).
 /// A PORT-owned type (spec 92's fix round moved it here from the sqlite adapter, so
 /// [`Projection::locate`] returns the same kind of type every sibling `Projection` method does,
-/// never a concrete adapter's own type): [`sqlite::Projector::locate`] resolves the query exactly
-/// the way the graph's other surfaces do - a full `<file>::<name>` node id, or a bare name matched
-/// by the pinned name-suffix expression - and returns one of three honest outcomes, never a guess
+/// never a concrete adapter's own type): [`sqlite::Projector::locate`] resolves the query for the
+/// show surfaces (`rigger graph --show` and `rigger_graph`'s `show`) - a full `<file>::<path>` node
+/// id, a bare name matched as a definition's leaf, a path by its id suffix or a flat
+/// `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR PATH), where an
+/// `--around` seed is an exact id only - and returns one of three honest outcomes, never a guess
 /// among candidates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Located {
     /// Exactly one entity resolved: its definition site and graph facts, from which the CLI reads
     /// the line-numbered body out of the working tree.
     One(EntitySite),
-    /// An ambiguous bare name (several definitions share it): the SORTED candidate sites the caller
-    /// picks from. The show surface prints these and NO body (the call-views honesty rule).
+    /// An ambiguous query (several definitions answer one bare name, path or flat
+    /// `<file>::<name>`): the SORTED candidate sites the caller picks from. The show surface
+    /// prints these and NO body (the call-views honesty rule).
     Many(Vec<Candidate>),
     /// Nothing in the graph matched the query.
     None,
 }
 
-/// A single located code entity (spec 58): where its definition lives and how it sits in the graph,
-/// so the show surface can print the site header and bound the body it reads from the working tree.
+/// A single located node (spec 58; spec 119, SHOW IS ONE RENDERER): where it lives, how it sits in
+/// the graph and the attrs it carries, built by [`entity_site`] alone, so every show surface prints
+/// the entries [`site_fields`] gives, the MCP `around` less its `summary`, and the CLI bounds the
+/// body it reads from the working tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntitySite {
-    /// The full `<file>::<name>` node id.
+    /// The node id (`<file>::<path>` for a definition).
     pub id: String,
     /// The definition kind (`function`, `type`, ...), from the node's `kind` attr; falls back to
-    /// the node's graph kind when a bare placeholder carries no definition attr.
+    /// the node's graph kind when the attr is absent or empty, so it is always given.
     pub kind: String,
-    /// The definition's file (the id prefix before `::`) - the working-tree path the body reads.
-    pub file: String,
-    /// The 1-based line of the definition site, from the node's `line` attr (`0` when unknown).
+    /// The file the node names ([`query::node_file`]), the working-tree path the body reads; `None`
+    /// for a node naming no file (a finding, a decision), which has no `line` either.
+    pub file: Option<String>,
+    /// The 1-based line of the definition site, from the node's `line` attr (`0` when absent or
+    /// unparseable, meaning unknown).
     pub line: u32,
-    /// The entity's one-hop degree: the count of currently-live edges incident to it, so the reader
-    /// knows how connected the entity is.
+    /// The node's degree: the count of live edges incident to it in the graph it was read from,
+    /// so the reader knows how connected it is.
     pub degree: usize,
+    /// The node's attrs, whole; [`site_fields`] gives the closed list of them a surface prints.
+    pub attrs: BTreeMap<String, String>,
 }
 
-/// One disambiguation candidate for an ambiguous bare name (spec 58): the full node id and its
+/// The attrs [`site_fields`] gives after the site entries, in their order: the closed list a show
+/// surface prints (`title` and `doc` a knowledge node's, `by`, `unit` and `summary` a finding's,
+/// `partial` a degraded parse's; the MCP `around` drops `summary`); an attr outside it is never
+/// printed.
+const SITE_ATTRS: [&str; 8] = [
+    "name", "lang", "title", "doc", "by", "unit", "summary", "partial",
+];
+
+/// The [`EntitySite`] of `node` at `degree` (spec 119, SHOW IS ONE RENDERER): the ONE rule set
+/// every show surface applies to a node - its file by [`query::node_file`], its `line` attr parsed
+/// (`0` when absent or unparseable), its `kind` attr when non-empty else its graph kind, and its
+/// attrs whole. The adapter's `site_of` calls it over the row it read with that row's one-hop
+/// degree, and the MCP `around` over each node of the `Graph` it loaded with the node's edge count
+/// there, so neither reads a node twice.
+pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
+    let attr = |key: &str| node.attrs.get(key).map(String::as_str);
+    EntitySite {
+        id: node.id.clone(),
+        kind: attr("kind")
+            .filter(|kind| !kind.is_empty())
+            .unwrap_or(&node.kind)
+            .to_string(),
+        file: query::node_file(&node.kind, &node.id).map(str::to_string),
+        line: attr("line").and_then(|line| line.parse().ok()).unwrap_or(0),
+        degree,
+        attrs: node.attrs.clone(),
+    }
+}
+
+/// The ordered closed list of entries a show surface prints for `site` (spec 119, SHOW IS ONE
+/// RENDERER): `file`, `line`, `kind`, `degree`, then [`SITE_ATTRS`]' order - `line` and `degree`
+/// JSON numbers, every other entry its recorded value verbatim. A node with no `file` has no
+/// `line` entry either; `kind` and `degree` are always given; an attr whose value is empty gives
+/// no entry. The CLI prints it (its live healed line and a value's newlines collapsed at print
+/// only), the MCP `show` carries it as keys beside the node's `id`, and the MCP `around` the same
+/// less its `summary` entry.
+pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> {
+    let located = site.file.iter().flat_map(|file| {
+        [
+            ("file", serde_json::Value::from(file.as_str())),
+            ("line", serde_json::Value::from(site.line)),
+        ]
+    });
+    let graph = [
+        ("kind", serde_json::Value::from(site.kind.as_str())),
+        ("degree", serde_json::Value::from(site.degree)),
+    ];
+    let attrs = SITE_ATTRS.into_iter().filter_map(|key| {
+        site.attrs
+            .get(key)
+            .filter(|value| !value.is_empty())
+            .map(|value| (key, serde_json::Value::from(value.as_str())))
+    });
+    located.chain(graph).chain(attrs).collect()
+}
+
+/// One disambiguation candidate for an ambiguous query (spec 58): the full node id and its
 /// file. [`sqlite::Projector::locate`] returns these SORTED by id, so the listing is deterministic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
-    /// The candidate's full `<file>::<name>` node id.
+    /// The candidate's full `<file>::<path>` node id.
     pub id: String,
-    /// The candidate's file (the id prefix before `::`).
+    /// The candidate's file: the file a code-entity id names ([`query::node_file`]).
     pub file: String,
 }
 
@@ -431,9 +520,9 @@ pub const TYPE_ALIAS_UNRESOLVED: &str = "AliasUnresolved";
 /// KIND_FINDING node ABOUT each file, plus a RAISED edge from the acting reviewer.
 pub const TYPE_REVIEW_FINDING: &str = "ReviewFinding";
 /// One definition extracted from a source file (spec 29a): the extraction pass emits one per
-/// definition, and the always-compiled fold turns it into a `code-entity` node plus a
-/// `CONTAINS` edge from the file container node. Always compiled, so the light lane folds it
-/// with the extraction pass absent.
+/// path (spec 119, ONE PATH, ONE EVENT), and the always-compiled fold turns it into a
+/// `code-entity` node plus a `CONTAINS` edge from its parent, the file container node when it has
+/// none (spec 119). Always compiled, so the light lane folds it with the extraction pass absent.
 pub const TYPE_CODE_ENTITY_EXTRACTED: &str = "CodeEntityExtracted";
 /// One reference extracted from a source file (spec 29a): the extraction pass emits one per
 /// reference, and the always-compiled fold turns it into a `REFERENCES` structural edge from
@@ -506,7 +595,7 @@ pub const TYPE_CONCEPT_REALIZED: &str = "ConceptRealized";
 /// re-derives it byte-identically.
 #[derive(Serialize, Deserialize)]
 pub struct CommunityAssigned {
-    /// The member node id being assigned: an existing code-entity (`<file>::<name>`) or file node.
+    /// The member node id being assigned: an existing code-entity (`<file>::<path>`) or file node.
     pub node: String,
     /// The community id this member joins: `community/<resolution>/<n>`. Encodes the resolution
     /// grain, so distinct grains coexist as distinct communities and the `fresh` reset can scope
@@ -579,7 +668,7 @@ pub struct ConceptDerived {
 #[derive(Serialize, Deserialize)]
 pub struct ConceptRealized {
     /// The member node id joining the concept: a design-doc / handbook-rule / spec / rationale node,
-    /// or the code entity (`<file>::<name>`) / file the intent layer attaches to.
+    /// or the code entity (`<file>::<path>`) / file the intent layer attaches to.
     pub node: String,
     /// The concept id this member realizes: `concept/<resolution>/<n>`.
     pub concept: String,
@@ -794,8 +883,10 @@ pub trait Projection: Send + Sync {
     /// reads the projection's record of what it folded against the log.
     fn rebuild_owed(&self) -> Result<bool, Error>;
 
-    /// The connected subgraph reachable from any seed within depth hops,
-    /// following only currently valid edges (the FEED arc / an agent's blast radius).
+    /// The connected subgraph reachable from any seed within depth hops (the FEED arc / an
+    /// agent's blast radius), following only currently valid edges and THE MEMBER RULE's two
+    /// hops (spec 119): a reached file reaches its members ([`query::member_file`]) and a reached
+    /// member its file, each one hop on.
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error>;
 
     /// A directed, depth-bounded traversal over the caller-attributed `CALLS` edges (spec 52),
@@ -804,8 +895,8 @@ pub trait Projection: Send + Sync {
     /// `depth` clamps the hop distance; `tier_floor` is the LOWEST edge confidence tier the walk
     /// follows - [`TIER_INFERRED`] (the default the route passes) excludes the unresolved
     /// [`TIER_AMBIGUOUS`] tier, and passing [`TIER_AMBIGUOUS`] opts it in. A hop that lands on a
-    /// BARE placeholder node, or on a named field, property or declaration, resolves by the shared
-    /// name-suffix onto the call-target definition(s) of that name alone ([`is_call_target`]): a
+    /// BARE placeholder node, or on a named field, property or declaration, resolves by the leaf
+    /// its id names onto the call-target definition(s) of that leaf alone ([`is_call_target`]): a
     /// hop with EXACTLY ONE is auto-followed, a hop with more becomes a marked frontier the walk
     /// does NOT descend (honest by construction). Reached nodes dedup into a
     /// layered DAG; a recursion edge is marked ([`CallEdge::back`]) rather than duplicated.
@@ -834,9 +925,12 @@ pub trait Projection: Send + Sync {
     /// [`with_graph`](crate::mcpserver::Server::with_graph) exactly like [`subgraph`] already is)
     /// can serve it without reaching for the concrete [`sqlite::Projector`] across the crate
     /// boundary - the DI extension that retired the operator MCP surface's second read loop
-    /// rather than adding one. Mirrors [`sqlite::Projector::locate`]: a full `<file>::<name>` id
-    /// resolves directly, a bare name matches by the pinned name-suffix expression, and the three
-    /// outcomes ([`Located`], a port-owned type - see its doc) are never a guess among candidates.
+    /// rather than adding one. Mirrors [`sqlite::Projector::locate`]: a full `<file>::<path>` id
+    /// resolves directly (a nameless code entity's or artifact's only once nothing else does);
+    /// else a bare name matches as a definition's leaf, a path (`Struct.field`) by its id suffix
+    /// and a flat `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR
+    /// PATH); and the three outcomes ([`Located`], a port-owned type - see its doc) are never a
+    /// guess among candidates.
     /// The default returns `Located::None`, so a projection with no locate support (a test double)
     /// degrades honestly rather than erroring - the sqlite `Projector` OVERRIDES it with the real
     /// lookup.
@@ -885,8 +979,21 @@ pub fn around(p: &dyn Projection, seed: &[String], depth: i64) -> Result<Graph, 
 pub struct CodeEntityExtracted {
     /// The definition's file, as a normalized relative path (the file container node id).
     pub file: String,
-    /// The defined symbol's name.
+    /// The defined symbol's name, its leaf.
     pub name: String,
+    /// Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH): the definition's id path in its file when it
+    /// differs from `name` (`T::new`, `S.field`), so its node is `<file>::<path>`. Absent or empty
+    /// reads as `name` ([`CodeEntityExtracted::id_path`]), the form every event recorded before
+    /// the field existed replays as; serde-defaulted and omitted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Spec 119 (CONTAINS IS STRUCTURE): the id path of the definition this one's `CONTAINS`
+    /// comes from (`E` for the variant `E::A`), absent at file level, where the file contains it.
+    /// Absent, empty or naming the definition's own [`CodeEntityExtracted::id_path`] reads as none
+    /// ([`CodeEntityExtracted::parent_path`]), the file containing it; serde-defaulted and omitted
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     /// The rigger `Kind` of the definition, lowercased (e.g. `function`, `type`, `module`).
     pub kind: String,
     /// The 1-based line of the definition site.
@@ -917,6 +1024,28 @@ pub struct CodeEntityExtracted {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
 }
+
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // read only by contextgraph::sqlite's fold, gated out under core-only
+impl CodeEntityExtracted {
+    /// The definition's id path in its file (spec 119, IDS FOLLOW THE LANGUAGE'S PATH): `path`
+    /// when it is present and non-empty, else `name`.
+    pub fn id_path(&self) -> &str {
+        self.path
+            .as_deref()
+            .filter(|path| !path.is_empty())
+            .unwrap_or(&self.name)
+    }
+
+    /// The id path of the definition this one's `CONTAINS` comes from (spec 119, CONTAINS IS
+    /// STRUCTURE): `parent` when it is present, non-empty and not the definition's own
+    /// [`CodeEntityExtracted::id_path`]; `None` otherwise, the file containing it.
+    pub fn parent_path(&self) -> Option<&str> {
+        self.parent
+            .as_deref()
+            .filter(|parent| !parent.is_empty() && *parent != self.id_path())
+    }
+}
+
 /// The `EdgeInferred` payload (spec 29a): one reference the extraction pass emits. Shares the
 /// same one-contract discipline as [`CodeEntityExtracted`]: emitted by the feature-gated pass,
 /// folded by the always-compiled arm.
@@ -943,15 +1072,18 @@ pub struct EdgeInferred {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh: bool,
     /// The enclosing definition this reference was attributed to during extraction (spec 37): the
-    /// caller's name, same-file, the innermost enclosing function before any other definition
-    /// (spec 116). `None` for a top-level reference outside every definition (an import or a
-    /// module-level call; a file-level impl header's trait and type attribute to the impl block,
-    /// a definition of its own). The emit pass carries what extraction attributed onto the
-    /// `SymRef`; the fold, when it is present, adds a `<file>::<caller> --CALLS--> <callee>` edge
-    /// ALONGSIDE the existing file-level `REFERENCES` edge (a later criterion owns that fold).
-    /// Serde-defaulted and omitted when `None`, so a pre-37 log folds as caller-less and a
-    /// caller-less reference serializes byte-identically to before - the CALLS edge is purely
-    /// additive to the code layer.
+    /// caller's path in its file (spec 119 criterion 8: `T::new`; a payload recorded before
+    /// paths carries its leaf, folding to that flat id as its definition then did; a `ts-tags-v3`
+    /// index persisted before criterion 8 lowers none, loading as absent since criterion 9 bumped
+    /// the index version to `ts-tags-v4`), same-file, the innermost
+    /// enclosing function before any other definition (spec 116). `None` for a top-level
+    /// reference outside every definition (an import or a module-level call; a file-level impl
+    /// header's trait and type attribute to the impl block, a definition of its own). The emit
+    /// pass carries what extraction attributed onto the `SymRef`; the fold, when it is present,
+    /// adds a `<file>::<caller> --CALLS--> <callee>` edge ALONGSIDE the existing file-level
+    /// `REFERENCES` edge (a later criterion owns that fold). Serde-defaulted and omitted when
+    /// `None`, so a pre-37 log folds as caller-less and a caller-less reference serializes
+    /// byte-identically to before - the CALLS edge is purely additive to the code layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<String>,
     /// The reference's 1-based source line (spec 86 criterion 2). Unused by a STRUCTURAL reference
@@ -1121,6 +1253,78 @@ pub fn asserted_fact(
 /// are NOT feature-gated and run in BOTH lanes exactly like the fold they guard. They guard what
 /// the emit unit test is structurally blind to: the deserialize direction, the byte-identical
 /// omission of `caller` when it is `None`, and a pre-37 log's tolerance.
+#[cfg(test)]
+mod parent_path_rule {
+    use super::CodeEntityExtracted;
+
+    /// The method at id path `T::s` naming `parent`; [`CodeEntityExtracted::parent_path`] reads
+    /// only its `path` and `parent`.
+    fn method_naming(parent: Option<String>) -> CodeEntityExtracted {
+        CodeEntityExtracted {
+            file: String::new(),
+            name: String::new(),
+            path: Some("T::s".to_owned()),
+            parent,
+            kind: String::new(),
+            line: 1,
+            lang: String::new(),
+            fresh: false,
+            partial: false,
+        }
+    }
+
+    #[test]
+    fn a_parent_absent_empty_or_naming_its_own_path_reads_as_none() {
+        let parents = [
+            Some("T".to_owned()),
+            None,
+            Some(String::new()),
+            Some("T::s".to_owned()),
+        ];
+        let read: Vec<Option<String>> = parents
+            .into_iter()
+            .map(|parent| method_naming(parent).parent_path().map(str::to_owned))
+            .collect();
+        assert_eq!(
+            read,
+            [Some("T".to_owned()), None, None, None],
+            "only a non-empty parent other than the definition's own path is its parent"
+        );
+    }
+}
+
+#[cfg(test)]
+mod kind_rank_rule {
+    use super::{definition_precedence, kind_rank, CODE_KIND_FUNCTION, CODE_KIND_PRECEDENCE};
+    use crate::graph_fixtures::UNLISTED_KIND;
+
+    #[test]
+    fn a_definition_ranks_by_its_kind_s_place_then_its_line() {
+        assert_eq!(
+            [
+                definition_precedence(CODE_KIND_FUNCTION, 9),
+                definition_precedence(UNLISTED_KIND, 2),
+            ],
+            [(3, 9), (15, 2)],
+            "the kind's place in CODE_KIND_PRECEDENCE, then the line"
+        );
+    }
+
+    #[test]
+    fn a_listed_kind_ranks_at_its_place_and_an_unlisted_one_with_other_last() {
+        let ranks: Vec<usize> = CODE_KIND_PRECEDENCE
+            .into_iter()
+            .chain([UNLISTED_KIND])
+            .map(kind_rank)
+            .collect();
+        assert_eq!(
+            ranks,
+            (0..16).chain([15]).collect::<Vec<_>>(),
+            "each listed kind at its place, an unlisted one with other"
+        );
+    }
+}
+
 #[cfg(test)]
 mod caller_wire_contract {
     use super::EdgeInferred;
@@ -1489,6 +1693,159 @@ mod around_neighborhood {
             *p.requests.lock().unwrap(),
             vec![(Direction::Up, 2, TIER_INFERRED.to_string())],
             "the callers walk runs up to the neighborhood's depth at the resolvable tier floor"
+        );
+    }
+}
+
+/// Spec 119, SHOW IS ONE RENDERER: the one rule set [`entity_site`] applies to a node and the one
+/// ordered closed entry list [`site_fields`] gives every show surface, the MCP `around` dropping its
+/// `summary` after.
+#[cfg(test)]
+mod site_renderer {
+    use super::*;
+    use crate::test_support::{node_with_attrs, plain};
+    use serde_json::json;
+
+    /// A node's site takes its file from the kind table, its `line` attr parsed (`0` when absent
+    /// or unparseable), its `kind` attr when non-empty (the graph kind for an empty or absent
+    /// one), the degree it is handed and its attrs whole, an attr outside the printed list
+    /// (`proven_by`) included.
+    #[test]
+    fn entity_site_applies_the_file_line_and_kind_rules_to_a_node() {
+        let all = node_with_attrs(
+            "Makefile::all",
+            KIND_CODE_ENTITY,
+            &[
+                ("name", "all"),
+                ("kind", CODE_KIND_FUNCTION),
+                ("line", "12"),
+                ("proven_by", "1"),
+            ],
+        );
+        assert_eq!(
+            entity_site(&all, 3),
+            EntitySite {
+                id: "Makefile::all".to_string(),
+                kind: CODE_KIND_FUNCTION.to_string(),
+                file: Some("Makefile".to_string()),
+                line: 12,
+                degree: 3,
+                attrs: all.attrs.clone(),
+            },
+            "an extensionless file's definition names its file and keeps every attr"
+        );
+        let site = |node: &Node| {
+            let s = entity_site(node, 0);
+            (s.kind, s.file, s.line)
+        };
+        let named = |file: Option<&str>| file.map(str::to_string);
+        assert_eq!(
+            [
+                node_with_attrs(
+                    "src/a.rs::blank",
+                    KIND_CODE_ENTITY,
+                    &[("kind", ""), ("line", "x")]
+                ),
+                plain("src/a.rs::bare", KIND_CODE_ENTITY),
+                node_with_attrs("f-1", KIND_FINDING, &[("line", "4")]),
+                plain("docs/x.md#sec", KIND_DESIGN_DOC),
+                plain("docs/decisions/one.md", KIND_ARCH_DECISION),
+            ]
+            .iter()
+            .map(site)
+            .collect::<Vec<_>>(),
+            [
+                (KIND_CODE_ENTITY.to_string(), named(Some("src/a.rs")), 0),
+                (KIND_CODE_ENTITY.to_string(), named(Some("src/a.rs")), 0),
+                (KIND_FINDING.to_string(), None, 4),
+                (KIND_DESIGN_DOC.to_string(), named(Some("docs/x.md")), 0),
+                (
+                    KIND_ARCH_DECISION.to_string(),
+                    named(Some("docs/decisions/one.md")),
+                    0
+                ),
+            ],
+            "an empty or absent kind attr gives the graph kind, an unparseable or absent line 0, \
+             and a finding no file"
+        );
+    }
+
+    /// Every entry of the closed list, in its order whatever order the attrs hold them: `file`,
+    /// `line` and `degree` as JSON numbers, a value holding a newline verbatim, and an attr
+    /// outside the list given nothing.
+    #[test]
+    fn site_fields_gives_the_closed_list_in_order_with_line_and_degree_as_numbers() {
+        let node = node_with_attrs(
+            "a.rs::f",
+            KIND_CODE_ENTITY,
+            &[
+                ("partial", "true"),
+                ("summary", "s"),
+                ("unit", "u7"),
+                ("by", "lens"),
+                ("doc", "first\nsecond"),
+                ("title", "t"),
+                ("lang", "rust"),
+                ("name", "f"),
+                ("kind", CODE_KIND_FUNCTION),
+                ("line", "7"),
+                ("proven_by", "1"),
+            ],
+        );
+        assert_eq!(
+            site_fields(&entity_site(&node, 2)),
+            [
+                ("file", json!("a.rs")),
+                ("line", json!(7)),
+                ("kind", json!(CODE_KIND_FUNCTION)),
+                ("degree", json!(2)),
+                ("name", json!("f")),
+                ("lang", json!("rust")),
+                ("title", json!("t")),
+                ("doc", json!("first\nsecond")),
+                ("by", json!("lens")),
+                ("unit", json!("u7")),
+                ("summary", json!("s")),
+                ("partial", json!("true")),
+            ]
+        );
+    }
+
+    /// A node with no file gives neither a `file` nor a `line` entry whatever its `line` attr, an
+    /// empty attr gives no entry, and a node with a file but no line gives line 0.
+    #[test]
+    fn site_fields_gives_no_line_without_a_file_and_no_entry_for_an_empty_value() {
+        let finding = node_with_attrs(
+            "f-1",
+            KIND_FINDING,
+            &[
+                ("line", "4"),
+                ("by", "lens"),
+                ("unit", ""),
+                ("summary", "s"),
+            ],
+        );
+        let section = node_with_attrs("docs/x.md#sec", KIND_DESIGN_DOC, &[("title", "Sec")]);
+        assert_eq!(
+            [
+                site_fields(&entity_site(&finding, 1)),
+                site_fields(&entity_site(&section, 0)),
+            ],
+            [
+                vec![
+                    ("kind", json!(KIND_FINDING)),
+                    ("degree", json!(1)),
+                    ("by", json!("lens")),
+                    ("summary", json!("s")),
+                ],
+                vec![
+                    ("file", json!("docs/x.md")),
+                    ("line", json!(0)),
+                    ("kind", json!(KIND_DESIGN_DOC)),
+                    ("degree", json!(0)),
+                    ("title", json!("Sec")),
+                ],
+            ]
         );
     }
 }

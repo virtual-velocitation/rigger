@@ -8,7 +8,7 @@
 //!    alongside Code's community fold and Files' defining-file fold). A membership-less member keeps
 //!    its KIND bucket, so a re-projection stays whole (nothing silently dropped);
 //!  - the SUBJECT axis: `member_set` dispatches on the subject's OWN node kind - a COMMUNITY re-grains
-//!    to its `IN_COMMUNITY` members, a FILE to its `CONTAINS` entities, a single entity is its own
+//!    to its `IN_COMMUNITY` members, a FILE to its members by `member_file`, a single entity is its own
 //!    singleton set, and an UNKNOWN subject is the empty set (the empty cell the mechanics ship);
 //!  - the SERIALIZED FORM: `Reprojection` is the JSON body the browser consumes, and its
 //!    `#[serde(skip_serializing_if)]` on `unresolved` is a wire contract - the key is ABSENT when the
@@ -317,7 +317,7 @@ const FILE_SUBJECT: &str = "src/pkg/mod.rs";
 const COMM_ALPHA: &str = "community/1/0";
 const COMM_BETA: &str = "community/1/1";
 
-/// A file subject whose three CONTAINED entities re-grain by coupling community: two into alpha, one
+/// A file subject whose three members re-grain by coupling community: two into alpha, one
 /// into beta.
 fn file_over_code_graph() -> Graph {
     Graph {
@@ -330,7 +330,7 @@ fn file_over_code_graph() -> Graph {
             def("src/pkg/mod.rs::e3", "e3"),
         ],
         edges: vec![
-            // The file's CONTAINS membership: its three entities.
+            // A `CONTAINS` edge from the file to each of its three members.
             edge(
                 FILE_SUBJECT,
                 "src/pkg/mod.rs::e1",
@@ -372,8 +372,8 @@ fn file_over_code_graph() -> Graph {
     }
 }
 
-/// A FILE subject re-grains to the entities it CONTAINS (the `member_set` file arm), re-bucketed under
-/// the requested lens: `reproject(graph, file, &Lens::Code)` groups the file's contained entities by
+/// A FILE subject re-grains to its members (the `member_set` file arm, `member_file`), re-bucketed under
+/// the requested lens: `reproject(graph, file, &Lens::Code)` groups the file's members by
 /// coupling community, sized by member count and labelled - proving the subject axis dispatches on the
 /// subject's OWN kind, not only a concept.
 #[test]
@@ -394,7 +394,7 @@ fn file_subject_regrains_its_contained_entities_by_community_under_the_code_lens
             bucket(COMM_ALPHA, 2, Some("alpha")),
             bucket(COMM_BETA, 1, Some("beta")),
         ],
-        "the file's contained entities re-grain into their two communities, sized and labelled: {re:?}"
+        "the file's members re-grain into their two communities, sized and labelled: {re:?}"
     );
     assert!(
         re.unresolved.is_empty(),
@@ -696,12 +696,12 @@ fn ambiguous_files_graph() -> Graph {
     Graph {
         nodes: vec![
             node_with_optional_attrs("concept/9/0", KIND_CONCEPT, &[("label", Some("the idea"))]),
-            plain("src/caller.rs::amb", KIND_CODE_ENTITY),
+            plain("src/caller.rs::%amb", KIND_CODE_ENTITY),
             def("src/p/x.rs::amb", "amb"),
             def("src/q/y.rs::amb", "amb"),
         ],
         edges: vec![edge(
-            "src/caller.rs::amb",
+            "src/caller.rs::%amb",
             "concept/9/0",
             REL_REALIZES,
             TIER_EXTRACTED,
@@ -759,7 +759,7 @@ fn reprojection_json_omits_unresolved_when_empty_and_carries_it_when_present() {
     );
     assert_eq!(
         unresolved[0]["id"].as_str(),
-        Some("src/caller.rs::amb"),
+        Some("src/caller.rs::%amb"),
         "the marked member carries its bare id, never a wrong file attribution: {body}"
     );
     assert_eq!(
@@ -799,7 +799,7 @@ fn served_reproject_fires_for_a_file_subject_and_cluster_drill_takes_precedence(
     assert_eq!(
         keys,
         vec![COMM_ALPHA, COMM_BETA],
-        "the served file re-grain buckets its contained entities by community: {reproj}"
+        "the served file re-grain buckets its members by community: {reproj}"
     );
 
     // A cluster drill with a lens present STILL drills (a Neighborhood: seed + nodes, never a
@@ -822,7 +822,7 @@ fn served_reproject_fires_for_a_file_subject_and_cluster_drill_takes_precedence(
 
 // --- the FILES honesty sentinels: a ZERO-candidate bare member + a NO-file-identity member ----------
 //
-// `reproject_files` resolves a BARE placeholder by name-suffix over the definitions: EXACTLY ONE
+// `reproject_files` resolves a BARE placeholder by its leaf over the definitions: EXACTLY ONE
 // auto-resolves and MORE THAN ONE is marked-unresolved with its candidates - both arms are covered by
 // the mechanics periphery (`helper` -> one, `run` -> two) and the serialize contract above. TWO
 // resolution arms remain that no fixture in either suite hits, yet each is a documented honesty
@@ -840,7 +840,7 @@ fn served_reproject_fires_for_a_file_subject_and_cluster_drill_takes_precedence(
 //    caption rather than a blank, unexplained canvas.
 
 const UNMATCHED_CONCEPT: &str = "concept/7/0";
-const EXTERNAL_BARE: &str = "src/caller.rs::external_symbol";
+const EXTERNAL_BARE: &str = "src/caller.rs::%external_symbol";
 
 /// A concept whose one member is a bare placeholder whose name matches NO definition anywhere.
 fn unmatched_bare_graph() -> Graph {
@@ -1044,7 +1044,7 @@ fn served_explain_overlay_takes_precedence_over_the_reprojection_when_both_are_p
     assert_eq!(
         keys,
         vec![COMM_ALPHA, COMM_BETA],
-        "the re-projection buckets the file's contained entities by community: {reproj}"
+        "the re-projection buckets the file's members by community: {reproj}"
     );
     assert!(
         reproj.get("nodes").is_none(),

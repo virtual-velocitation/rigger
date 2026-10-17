@@ -224,7 +224,7 @@ mod ingest_sinks {
     /// A raw connection of its own to `root`'s events file, for planting what the store's API
     /// never writes.
     fn events_db(root: &Path) -> rusqlite::Connection {
-        rusqlite::Connection::open(common::cli::rigger_file(root, "events.db")).unwrap()
+        common::cli::rigger_db(root, "events.db")
     }
 
     /// Run `sql` against `root`'s events file on a raw connection of its own.
@@ -250,15 +250,7 @@ mod ingest_sinks {
     /// group lookup (its type is not text), so the store cannot answer `identity`'s lookup. Returns
     /// the run stream's length once the recording is appended, before it is made unreadable.
     fn plant_unreadable_recording(root: &Path, identity: &str) -> usize {
-        with_pre_ledger_run_store(root, |store| {
-            store
-                .append(
-                    rigger::conductor::STREAM,
-                    ExpectedRevision::Any,
-                    &[pre_ledger_row(identity, "stale")],
-                )
-                .unwrap();
-        });
+        common::cli::seed_pre_ledger_events(root, &[pre_ledger_row(identity, "stale")]);
         let recorded = read_run_events(root).len();
         set_recording_type(root, identity, "X'FF'");
         recorded
@@ -686,11 +678,7 @@ mod ingest_sinks {
                 legacy.push((*event).clone().with_meta(META_REPLAY_KEY, key.as_str()));
             }
         });
-        with_pre_ledger_run_store(root, |store| {
-            store
-                .append(rigger::conductor::STREAM, ExpectedRevision::Any, &legacy)
-                .unwrap();
-        });
+        common::cli::seed_pre_ledger_events(root, &legacy);
         assert_eq!(
             meta_of(&derived(&read_run_events(root)), META_GROUP),
             vec![String::new(); all.len()],
@@ -913,15 +901,7 @@ mod ingest_sinks {
                 )
                 .unwrap();
         });
-        with_pre_ledger_run_store(root, |store| {
-            store
-                .append(
-                    rigger::conductor::STREAM,
-                    ExpectedRevision::Any,
-                    &[pre_ledger_row(&followed, OLD)],
-                )
-                .unwrap();
-        });
+        common::cli::seed_pre_ledger_events(root, &[pre_ledger_row(&followed, OLD)]);
         let planted: Vec<Option<String>> = now
             .iter()
             .map(|(identity, generation, _)| {

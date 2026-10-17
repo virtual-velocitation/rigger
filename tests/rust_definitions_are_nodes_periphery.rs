@@ -16,22 +16,26 @@ mod symbol_index;
 rigger::test_cases! {
     /// GIVEN a project whose one Rust file is the Rust definitions fixture,
     /// WHEN the operator runs `rigger graph build`,
-    /// THEN the graph's code entities are exactly one node per leaf a production definition gives,
-    /// each carrying exactly its kind and line, and one placeholder per name a reference reaches
-    /// that no definition gives (`X`, `build`, `compute`, `seed`):
+    /// THEN the graph's code entities are exactly one node per production definition, at its
+    /// `<file>::<path>` id (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), each carrying exactly its
+    /// leaf, kind and line, and one placeholder per name a reference reaches that no definition
+    /// gives (`X`, `build`, `compute`, `seed`):
     ///
     ///  - an item const and a fn-local one are a `constant`, an item static and a fn-local one a
     ///    `static`, each variant a `variant`, each named field a `field`, the trait a `trait`, its
     ///    associated type a `type`, its required fn a `declaration`, the proc-macro fn and the
     ///    `macro_rules!` a `macro`, and each `extern crate` a `module`, the aliased one at its
     ///    alias `base` with no node at `core`;
-    ///  - the tuple fields are the nodes `0` and `1`: the two first fields of the tuple struct and
-    ///    of the tuple variant share `0`, which settles at the lower line;
-    ///  - a fn and a field of one leaf share its node, a `function` at the fn's line whichever is
-    ///    above (`size`, `area`), and the field and the method `real` share one, a `method`;
+    ///  - each tuple field is the node of its index under its owner (`Pair.0`, `Pair.1`,
+    ///    `Shape::Tuple.0`), a variant's field under its variant (`Shape::Struct.side`), an
+    ///    associated item under its impl's self type (`Pair::WIDTH`, `X::real`) and a fn-local item
+    ///    under its fn (`host::LOCAL`, `derive::SEED`);
+    ///  - a fn and a same-named field are two nodes (`size` and `Plot.size`, `area` and
+    ///    `Plot.area`), as are a field and a same-named method (`S.real`, `X::real`);
     ///  - no test-attributed member is a node (`2`, `Probe`, `spy`, `PROBE_LIMIT`, `PROBE_TABLE`,
     ///    `probe`, `A`, `t`, `inner`), while the struct, enum, impl, fn and mod whose body opens
-    ///    with one (`S`, `E`, `impl X`, `f`, `outer`) and the sibling beside it (`B`, `real`) are.
+    ///    with one (`S`, `E`, `impl X`, `f`, `outer`) and the sibling beside it (`E::B`, `X::real`)
+    ///    are.
     ///
     /// Its `CALLS` edges are exactly: the call in the item static's initializer from the static,
     /// the one in the const inside the proc-macro fn from the macro, the one in the fn-local const
@@ -41,55 +45,59 @@ rigger::test_cases! {
         common::cli::assert_built_graph_holds(
             ("f.rs", "rust", common::fixtures::RUST_DEFINITIONS_SOURCE),
             &[
-                ("0", "field", 5),
-                ("1", "field", 5),
-                ("Alias", "type", 8),
-                ("B", "variant", 22),
-                ("Bits", "type", 7),
-                ("CACHE", "static", 14),
-                ("Canvas", "type", 9),
-                ("Draw", "trait", 9),
-                ("E", "type", 22),
-                ("LIMIT", "constant", 3),
-                ("LOCAL", "constant", 14),
-                ("Pair", "type", 5),
-                ("Plot", "type", 17),
-                ("S", "type", 21),
-                ("SEED", "constant", 13),
-                ("Shape", "type", 6),
-                ("Struct", "variant", 6),
-                ("TABLE", "static", 4),
-                ("Tuple", "variant", 6),
-                ("Unit", "variant", 6),
-                ("WIDTH", "constant", 10),
-                ("alloc", "module", 1),
-                ("area", "function", 18),
-                ("base", "module", 2),
-                ("derive", "macro", 13),
-                ("f", "function", 24),
-                ("host", "function", 14),
-                ("impl Pair", "impl", 10),
-                ("impl X", "impl", 23),
-                ("nest", "module", 15),
-                ("outer", "module", 25),
-                ("paint", "declaration", 9),
-                ("real", "method", 23),
-                ("shout", "macro", 11),
-                ("side", "field", 6),
-                ("size", "function", 16),
-                ("whole", "field", 7),
-                ("width", "method", 10),
+                ("Alias", "Alias", "type", 8),
+                ("Bits", "Bits", "type", 7),
+                ("Bits.whole", "whole", "field", 7),
+                ("Draw", "Draw", "trait", 9),
+                ("Draw::Canvas", "Canvas", "type", 9),
+                ("Draw::paint", "paint", "declaration", 9),
+                ("E", "E", "type", 22),
+                ("E::B", "B", "variant", 22),
+                ("LIMIT", "LIMIT", "constant", 3),
+                ("Pair", "Pair", "type", 5),
+                ("Pair.0", "0", "field", 5),
+                ("Pair.1", "1", "field", 5),
+                ("Pair::WIDTH", "WIDTH", "constant", 10),
+                ("Pair::width", "width", "method", 10),
+                ("Plot", "Plot", "type", 17),
+                ("Plot.area", "area", "field", 17),
+                ("Plot.size", "size", "field", 17),
+                ("S", "S", "type", 21),
+                ("S.real", "real", "field", 21),
+                ("Shape", "Shape", "type", 6),
+                ("Shape::Struct", "Struct", "variant", 6),
+                ("Shape::Struct.side", "side", "field", 6),
+                ("Shape::Tuple", "Tuple", "variant", 6),
+                ("Shape::Tuple.0", "0", "field", 6),
+                ("Shape::Unit", "Unit", "variant", 6),
+                ("TABLE", "TABLE", "static", 4),
+                ("X::real", "real", "method", 23),
+                ("alloc", "alloc", "module", 1),
+                ("area", "area", "function", 18),
+                ("base", "base", "module", 2),
+                ("derive", "derive", "macro", 13),
+                ("derive::SEED", "SEED", "constant", 13),
+                ("f", "f", "function", 24),
+                ("host", "host", "function", 14),
+                ("host::CACHE", "CACHE", "static", 14),
+                ("host::LOCAL", "LOCAL", "constant", 14),
+                ("impl Pair", "impl Pair", "impl", 10),
+                ("impl X", "impl X", "impl", 23),
+                ("nest", "nest", "module", 15),
+                ("outer", "outer", "module", 25),
+                ("shout", "shout", "macro", 11),
+                ("size", "size", "function", 16),
             ],
             &["X", "build", "compute", "seed"],
             &[
-                ("f.rs::TABLE", "f.rs::build"),
-                ("f.rs::derive", "f.rs::seed"),
-                ("f.rs::host", "f.rs::compute"),
+                ("f.rs::TABLE", "f.rs::%build"),
+                ("f.rs::derive", "f.rs::%seed"),
+                ("f.rs::host", "f.rs::%compute"),
                 ("f.rs::impl Pair", "f.rs::Pair"),
-                ("f.rs::impl X", "f.rs::X"),
+                ("f.rs::impl X", "f.rs::%X"),
             ],
-            "every code entity of the built graph: one per production leaf, none for a \
-             test-attributed member, one placeholder per undefined name a reference reaches",
+            "every code entity of the built graph: one per production definition at its path, none \
+             for a test-attributed member, one placeholder per undefined name a reference reaches",
         );
     /// The persisted index writes a static, a variant and a field under the variant names
     /// `Static`, `Variant` and `Field`, and reads each back as the kind it was saved as.
