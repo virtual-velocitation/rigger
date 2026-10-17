@@ -153,12 +153,14 @@ pub struct Def {
 /// reference occurs inside (the caller), named by its path ([`Def::path`], spec 119 criterion 8:
 /// `T::new`, `outer::inner`). `None` for a top-level reference outside every
 /// definition - an import or a module-level call; a file-level impl header's trait and type
-/// attribute to the impl block, a definition of its own. Set during extraction by attributing the
-/// reference to the innermost function-like definition whose range contains it, else the
-/// innermost definition of any kind but a declaration (spec 116). Serde-defaulted and omitted when
-/// `None` so a pre-37 persisted index folds as caller-less and a caller-less ref serializes
-/// byte-identically to before.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// attribute to the impl block, a definition of its own, and its trait's tagged `type` row to the
+/// self type's definition when the file defines that once (spec 117). Set during extraction by
+/// attributing the reference to the innermost function-like definition whose range contains it,
+/// else the innermost definition of any kind but a declaration (spec 116). Serde-defaulted and
+/// omitted when `None` so a pre-37 persisted index folds as caller-less and a caller-less ref
+/// serializes byte-identically to before. `Default` is the bare reference a tagged one is pushed
+/// from before attribution and the test-region pass fill its caller and test mark.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymRef {
     pub name: String,
     pub line: u32,

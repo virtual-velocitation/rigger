@@ -377,9 +377,8 @@ pub fn extract(
             refs.push(SymRef {
                 name: tagged.name,
                 line: tagged.line,
-                enclosing: None,
-                is_test: false,
                 ref_kind: Some(tagged.kind.to_string()),
+                ..SymRef::default()
             });
         }
     }
