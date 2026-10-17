@@ -9106,8 +9106,8 @@ mod tests {
         // the event streams (events.db). `decide_migration` returns `Rename` ONLY while the legacy
         // namespace still holds streams, and `rename_stream_prefix` is the SOLE step that clears
         // it - so the rename is the irreversible commit point and MUST run LAST. Were the rename
-        // to run first, a graph re-key that then failed (a composite `(id, project)` key collision,
-        // or a locked shared backend) would leave the streams renamed but the graph rows
+        // to run first, a graph re-key that then failed (a composite-key collision in any re-keyed
+        // table, or a locked shared backend) would leave the streams renamed but the graph rows
         // un-re-keyed, and because the legacy namespace is now empty a re-open would NoOp forever,
         // permanently orphaning the pre-mint graph history under the minted read filter. Pin the
         // ordering: a FAILED re-key must leave the stream rename UNCOMMITTED, so the whole
