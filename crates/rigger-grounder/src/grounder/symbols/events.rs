@@ -1688,6 +1688,21 @@ mod tests {
         }
     }
 
+    /// Spec 117 criterion 8: a declaration resolves to the first of its [`super::module_candidates`]
+    /// the index holds, so of `x.rs` and `x/mod.rs` both held, `#[cfg(test)] mod x;` excludes
+    /// `x.rs` alone.
+    #[test]
+    fn a_test_mod_resolves_to_the_first_of_its_candidates_the_index_holds() {
+        assert_eq!(
+            super::out_of_line_test_module_files(&crate::symbol_index::extracted_rust_index(&[
+                ("src/lib.rs", "#[cfg(test)]\nmod x;\n"),
+                ("src/x.rs", "fn y() {}\n"),
+                ("src/x/mod.rs", "fn y() {}\n"),
+            ])),
+            std::collections::BTreeSet::from(["src/x.rs".to_string()])
+        );
+    }
+
     /// The file `mod outer { #[cfg(test)] mod x; }` in [`INLINE_TEST_MOD_TREE`]'s `src/lib.rs`
     /// names, as rustc resolves it.
     const INLINE_TEST_MOD_TARGET: &str = "src/outer/x.rs";
