@@ -5928,11 +5928,11 @@ fn resolve_out_of_line_test_files(files: &[(String, String)]) -> BTreeSet<String
 /// submodule file, whose own children live under a directory NAMED after it (`src/outer.rs`'s
 /// `mod inner;` resolves to `src/outer/inner.rs`, never a `src/inner.rs` sibling). The rule
 /// reads the name alone, so it departs from rustc on some files, among them a crate root of
-/// another name (`src/bin/tool.rs`) and a submodule file named `main.rs` (`src/sub/main.rs`). An earlier version of this function
-/// used the plain PARENT directory unconditionally - correct for a top-level or `mod.rs`
-/// declaring file (where the two coincide) but wrong the moment a transitive second hop's
-/// declaring file is an ordinary nested file, exactly what the resolver-agreement test with the
-/// canonical production resolver caught.
+/// another name (`src/bin/tool.rs`) and a submodule file named `main.rs` (`src/sub/main.rs`).
+/// An earlier version of this function used the plain PARENT directory unconditionally -
+/// correct for a top-level or `mod.rs` declaring file (where the two coincide) but wrong the
+/// moment a transitive second hop's declaring file is an ordinary nested file, exactly what the
+/// resolver-agreement test with the canonical production resolver caught.
 fn declaring_file_module_dir(declaring_file: &str) -> String {
     let dir = Path::new(declaring_file)
         .parent()
@@ -5956,8 +5956,8 @@ fn declaring_file_module_dir(declaring_file: &str) -> String {
 
 /// Resolve one [`OutOfLineMod`]'s target file: a `#[path = ".."]` override first - resolved
 /// relative to `declaring_file`'s own PARENT directory, rustc's own escape hatch from the
-/// file-per-module convention (unconditionally directory-of-file-relative, matching the
-/// production resolver's identical `#[path]` rule) - else `name.rs`, else `name/mod.rs`,
+/// file-per-module convention (directory-of-file-relative at the file's top level, the
+/// production resolver's `#[path]` rule there) - else `name.rs`, else `name/mod.rs`,
 /// resolved relative to `declaring_file`'s own [`declaring_file_module_dir`] (spec 87 Design's
 /// exact three forms) - `None` if nothing at that path exists in `exists` (a mod pointing
 /// outside the given file set, e.g. into `build/`, resolves to nothing and is ignored, matching
@@ -10219,8 +10219,8 @@ mod tests {
         );
         /// outer.rs is test (declared #[cfg(test)] from lib.rs); outer.rs's OWN `mod inner;` has
         /// no local #[cfg(test)] at all, but the whole file is already test, so inner.rs must be
-        /// pulled in too. `outer.rs`'s own children resolve under `src/outer/` (rustc's real
-        /// file-per-module convention for a non-`mod.rs` declaring file), never a `src/inner.rs`
+        /// pulled in too. `outer.rs`'s own children resolve under `src/outer/` (rustc's
+        /// file-per-module convention for a plain submodule file), never a `src/inner.rs`
         /// sibling - `declaring_file_module_dir`'s own doc names the earlier version of this
         /// resolver that got this wrong.
         transitive_closure_pulls_in_a_second_hop_regardless_of_its_own_local_attribute:
@@ -10299,8 +10299,8 @@ mod tests {
             ),
             ("src/generated/probe.rs", "pub fn helper() {}\n"),
         ]);
-        /// `outer.rs`'s own children resolve under `src/outer/` (rustc's real file-per-module
-        /// convention for a non-`mod.rs` declaring file) - this fixture caught a real bug in
+        /// `outer.rs`'s own children resolve under `src/outer/` (rustc's file-per-module
+        /// convention for a plain submodule file) - this fixture caught a real bug in
         /// `resolve_mod_target`'s prior (sibling-directory) resolution, fixed alongside adding
         /// this test; see `declaring_file_module_dir`'s own doc.
         #[cfg(feature = "symbols")]
