@@ -314,13 +314,19 @@ mod tests {
     /// on its own, its record listing every sentence it
     /// reads, the CHECKED members included, never a grouped verdict, with a renamed name's old
     /// spelling counted to zero, nothing added that nothing reads, the red test's body untouched
-    /// by the green commit, every mutable token of the production delta - an operator, an
-    /// offset, an operand, a range argument, an arm's statement, a match arm, an early return -
-    /// mutated by hand one at a time with the red test recorded in a record organised by
-    /// production line - each line naming its tokens, a token inside a query, format or macro
-    /// string included, or marked as carrying none - a green probe pinned or reshaped away, the
-    /// hand enumeration standing beside the mutation gate and the SDET lens probing every token
-    /// the record lacks and comparing its token set with the record line by line, and a probe that edits the tree - the sharpest case of a turn's end being
+    /// by the green commit, every mutable token of the production delta, each class named by its
+    /// source spelling - an operator, an offset, an operand, every argument of every added or
+    /// changed call, an arm's statement, a match arm, every `?`, `return`, `break` and
+    /// `continue` - mutated by hand one at a time with the red test recorded in a record
+    /// organised by production line - each line naming its tokens, a token inside a query,
+    /// format or macro string included, or marked as carrying none - and closed by one tally
+    /// line per spelled class, its hunk and probe counts equal, a green probe pinned or reshaped
+    /// away, the hand enumeration standing beside the mutation gate and the SDET lens probing
+    /// every token the record lacks, comparing its token set with the record line by line and
+    /// counting each class itself against the tally, every constant, static, list, closure or
+    /// predicate the delta adds naming its one home in the sentence-walk record - no other
+    /// spelling, derived from or pinned to the existing one - with the architecture lens
+    /// blocking on a missing or false line, and a probe that edits the tree - the sharpest case of a turn's end being
     /// the session's end - run to completion and restored before the turn ends; the gates'
     /// check names each gate command run to completion inside the turn. Read by its words, so
     /// a rewrap never moves a verdict.

@@ -3591,8 +3591,9 @@ mod tests {
     /// walk's generators as commands over the unit's whole range on every round (the merge base
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
     /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
-    /// per item of the walk's hunk list and paired with it in the record, each FIXED or new
-    /// line's `file:line`
+    /// per item of the walk's hunk list and paired with it in the record, each item the hunks
+    /// add carrying its one-home line in one of the working discipline's three forms, each FIXED
+    /// or new line's `file:line`
     /// witness, one per case the code splits a quantified sentence's subject into with the cases
     /// named, the rule-spelling search over every tracked text file, one
     /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
@@ -3601,11 +3602,14 @@ mod tests {
     /// guard or predicate read as a rewritten rule whose consumer phrases - the notes, Returns
     /// paragraphs, variant docs and oracles of the function's depth-1 callers - that search
     /// runs, and the record the walk owes, the hand probe of every mutable token of the
-    /// production hunks over the unit's whole range - one mutation at a time, the owning crate's
-    /// unit tests and the touched root test binaries run, the file restored - with the
-    /// `<unit>-mutant-probes` record the `sdet` lens completes, organised by production line -
-    /// each added or changed line naming its tokens, a query or format string's included, or
-    /// marked as carrying none - and the foreground wait for
+    /// production hunks over the unit's whole range, each class read by its spelling - every
+    /// argument of every added or changed call, every `?`, `return`, `break` and `continue` - one
+    /// mutation at a time, the owning crate's unit tests and the touched root test binaries run,
+    /// the file restored - with the `<unit>-mutant-probes` record the `sdet` lens completes,
+    /// organised by production line - each added or changed line naming its tokens, a query or
+    /// format string's included, or marked as carrying none - and closed by one tally line per
+    /// spelled class, the `?`, `return`, `break` and `continue` counts the ones the block's awk
+    /// prints, and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
     /// line when the host backgrounds one.
     #[test]
@@ -3822,7 +3826,10 @@ mod tests {
     /// record lacks in a scratch worktree it restores and removes in-turn, and a green probe or
     /// an unrecorded token is BLOCKING; it compares its token set with the record line by line,
     /// a query or format string's tokens counted on their line, and a production line the
-    /// record does not disposition is BLOCKING. The records are the author's instruments, never
+    /// record does not disposition is BLOCKING; it reads the token classes from the working
+    /// discipline's list, carrying no copy of it, counts the `?`, `return`, `break` and
+    /// `continue` with the authors' awk and reads each call's arguments, and a tally short of its
+    /// count is BLOCKING. The records are the author's instruments, never
     /// a gate, so the lens's rule against re-running a green gate does not reach them.
     #[test]
     fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
