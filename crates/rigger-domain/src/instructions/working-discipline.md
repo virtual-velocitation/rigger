@@ -214,7 +214,10 @@ tool that searches them.
   with its assertion. The record is organised by production line: every production line the
   range adds or changes, in file order, either names its mutable tokens, each with its probe,
   or is marked as carrying none with the named reason (a signature, a `use`, a doc line, a
-  brace); a line with no disposition is a record you cannot write. A token inside a query
+  brace); a line with no disposition is a record you cannot write. After its per-line walk the
+  record carries one tally line per spelled class - `<class>: <n> in hunks, <n> probed` - the
+  count of that class's tokens in the production hunks and the count of its probes, the two
+  equal; a short tally is a record you cannot write. A token inside a query
   string, a format string or a macro argument the production code executes is a token of its
   line: a SQL conjunct is a boolean operand, a column name, bound or placeholder passed to a
   query builder is a call argument, and a substr start is an index. A token whose probe leaves
