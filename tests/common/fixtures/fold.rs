@@ -894,10 +894,15 @@ pub fn live_file_and_entity_ids(g: &Graph) -> [Vec<String>; 2] {
     [KIND_FILE, KIND_CODE_ENTITY].map(|kind| live_node_ids(g, kind))
 }
 
+/// Each of `ids`, owned, in the order given.
+pub fn owned_ids(ids: &[&str]) -> Vec<String> {
+    ids.iter().map(|id| id.to_string()).collect()
+}
+
 /// The `file` node ids `files` and the `code-entity` node ids `entities`, each in the order
-/// given: the expected side of a [`live_file_and_entity_ids`] comparison.
+/// given ([`owned_ids`]): the expected side of a [`live_file_and_entity_ids`] comparison.
 pub fn file_and_entity_ids(files: &[&str], entities: &[&str]) -> [Vec<String>; 2] {
-    [files, entities].map(|ids| ids.iter().map(|id| id.to_string()).collect())
+    [files, entities].map(owned_ids)
 }
 
 /// Every definition `p`'s whole graph holds - a code entity carrying a non-empty `name`, never a

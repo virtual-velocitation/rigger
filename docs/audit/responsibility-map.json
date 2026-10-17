@@ -4577,14 +4577,6 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "strs",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4744f387d09eab80"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "path_is_high_risk_matches_by_prefix_and_by_glob",
     "is_test": true,
     "proposed_module": "conductor::tests",

@@ -26969,9 +26969,7 @@ mod tests {
         }
     }
 
-    fn strs(v: &[&str]) -> Vec<String> {
-        v.iter().map(|s| s.to_string()).collect()
-    }
+    use crate::test_support::owned_ids as strs;
 
     #[test]
     fn path_is_high_risk_matches_by_prefix_and_by_glob() {

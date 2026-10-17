@@ -902,7 +902,6 @@ fn a_run_read_through_the_namespace_is_a_log_prefix_whatever_a_concurrent_writer
         ]
     };
     let before = ["d-a", "l-a", "f-b", "", "", "d-c", "f-c", ""];
-    let owned = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
     let read_with_writer = |after: usize, stream: &str, tag: &str| -> (Vec<String>, usize) {
         let counted = ReadCountingStore::new(&backend).interleaving(after, stream, late(tag));
         let events =
@@ -918,7 +917,7 @@ fn a_run_read_through_the_namespace_is_a_log_prefix_whatever_a_concurrent_writer
     assert_eq!(
         read_with_writer(0, &alpha_run, "w0"),
         (
-            owned(&[&before[..], &["d-w0", "s-w0"]].concat()),
+            common::fixtures::owned_ids(&[&before[..], &["d-w0", "s-w0"]].concat()),
             fixture.cost() + 3
         ),
         "a write before the carry-over read: its decision is read by both typed reads, held once"
@@ -926,7 +925,7 @@ fn a_run_read_through_the_namespace_is_a_log_prefix_whatever_a_concurrent_writer
     assert_eq!(
         read_with_writer(1, &alpha_run, "w1"),
         (
-            owned(&[&before[..], &["d-w0", "s-w0", "d-w1", "s-w1"]].concat()),
+            common::fixtures::owned_ids(&[&before[..], &["d-w0", "s-w0", "d-w1", "s-w1"]].concat()),
             fixture.cost() + 2 + 1 + 2
         ),
         "a write between the typed reads is in the slice: read whole, never a decision missing \
