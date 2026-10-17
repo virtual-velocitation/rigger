@@ -746,6 +746,12 @@ pub const RUST_PRELUDE: [&str; 43] = [
 /// The roots a Rust path names the standard library by: a path rooted at one stages nothing.
 const STD_ROOTS: [&str; 3] = ["std", "core", "alloc"];
 
+/// Whether the root segment `segment` names the standard library ([`STD_ROOTS`]): the one test
+/// both a `use` leaf ([`UseLeaf::roots_at_std`]) and a path's leaf ([`excluded`]) read.
+fn is_std_root(segment: &str) -> bool {
+    STD_ROOTS.contains(&segment)
+}
+
 /// Rust's primitive types: a const qualified by one (`u32::MAX`) stages nothing.
 const PRIMITIVE_TYPES: [&str; 17] = [
     "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32",
@@ -799,11 +805,11 @@ struct UseLeaf<'t> {
 }
 
 impl UseLeaf<'_> {
-    /// Whether this leaf's path roots at the standard library ([`STD_ROOTS`]): the one test
+    /// Whether this leaf's path roots at the standard library ([`is_std_root`]), which
     /// [`rust_references`] reads both to stage no `use` row for it and to treat the name it binds
     /// as a standard-library import.
     fn roots_at_std(&self) -> bool {
-        self.root.as_deref().is_some_and(|r| STD_ROOTS.contains(&r))
+        self.root.as_deref().is_some_and(is_std_root)
     }
 }
 
@@ -964,7 +970,7 @@ fn reference_nodes(root: tree_sitter::Node) -> Vec<tree_sitter::Node> {
 /// Whether the leaf `name`, read at `node` under a path whose root segment is `root_seg`, stages
 /// no tagged reference (spec 117): `Self`, a [`RUST_PRELUDE`] name, a leaf the file imports from
 /// the standard library (`std_imports`, an alias by its alias name), a path rooted at the
-/// standard library ([`STD_ROOTS`]) or at such an imported leaf, and a generic or const generic
+/// standard library ([`is_std_root`]) or at such an imported leaf, and a generic or const generic
 /// parameter of an item enclosing `node`.
 fn excluded(
     name: &str,
@@ -976,7 +982,7 @@ fn excluded(
     name == "Self"
         || RUST_PRELUDE.contains(&name)
         || std_imports.contains(&name)
-        || root_seg.is_some_and(|r| STD_ROOTS.contains(&r) || std_imports.contains(&r))
+        || root_seg.is_some_and(|r| is_std_root(r) || std_imports.contains(&r))
         || names_enclosing_generic(name, node, source)
 }
 
