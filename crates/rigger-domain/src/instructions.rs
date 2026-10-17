@@ -326,7 +326,7 @@ mod tests {
     /// every token the record lacks, comparing its token set with the record line by line and
     /// counting each class itself against the tally and re-applying the fitting swallow to
     /// every `?` the record calls unviable, a compiling green one blocking, every constant, static, list, closure or
-    /// predicate the delta adds naming its one home in the sentence-walk record - no other
+    /// predicate the delta adds - a SQL conjunct inside a query string included - naming its one home in the sentence-walk record - no other
     /// spelling, derived from or pinned to the existing one - with the architecture lens
     /// blocking on a missing or false line, and a probe that edits the tree - the sharpest case of a turn's end being
     /// the session's end - run to completion and restored before the turn ends; the gates'
@@ -601,6 +601,9 @@ mod tests {
              and leaves every test green is a BLOCKING finding on its own, naming the site, the \
              swallow and the green run.",
             "Every fact your production delta states has one home.",
+            "A predicate is a boolean expression or a SQL conjunct, one inside a query string, a \
+             format string or a macro argument the production code executes included, read as \
+             the probe rule above reads the tokens of those strings.",
             "The `<unit>-sentence-walk` record carries, beside the count of each constant, \
              static, list, closure or predicate your production hunks add, its one-home line in \
              one of three forms: `no other spelling` with the terms searched - the name count and \
