@@ -2159,18 +2159,18 @@ fn staged_rows_sql() -> String {
 /// new one asserted again is deleted, so no later batch revives that edge ([`assert_link`]); a
 /// design link's prior entry keeps until the identity's next generation ([`advance_generation`]).
 fn settle_references(tx: &Transaction, by: &Asserter, project: &str) -> Result<(), Error> {
-    let rows: Vec<StagedRow> = {
-        let mut stmt = tx.prepare(&staged_rows_sql()).map_err(be)?;
-        let rows = stmt
-            .query_map(params![project, by.identity], |r| {
-                StagedColumns::try_from(r)
-            })
-            .map_err(be)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(be)?;
-        rows.into_iter().map(StagedRow::from).collect()
-    };
-    for row in &rows {
+    let rows: Vec<StagedColumns> = tx
+        .prepare(&staged_rows_sql())
+        .and_then(|mut stmt| {
+            let rows = stmt
+                .query_map(params![project, by.identity], |r| {
+                    StagedColumns::try_from(r)
+                })
+                .and_then(Iterator::collect);
+            rows
+        })
+        .map_err(be)?;
+    for row in &rows.into_iter().map(StagedRow::from).collect::<Vec<_>>() {
         settle_reference(tx, by, row, project)?;
     }
     tx.execute(
@@ -2289,25 +2289,23 @@ fn release_reference(
     target: &str,
     project: &str,
 ) -> Result<(), Error> {
-    let released: Vec<i64> = {
-        let mut stmt = tx
-            .prepare(
-                "DELETE FROM edge_assertions
-                  WHERE project = ?1 AND identity = ?2
-                    AND edge_id IN (SELECT id FROM edges WHERE from_id = ?3 AND to_id = ?4)
-                    AND NOT EXISTS (SELECT 1 FROM refs
-                                     WHERE project = ?1 AND identity = ?2 AND from_id = ?3
-                                       AND target = ?4)
-                 RETURNING edge_id",
-            )
-            .map_err(be)?;
-        let rows = stmt
-            .query_map(params![project, by.identity, from, target], |r| r.get(0))
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be)?;
-        rows
-    };
+    let released: Vec<i64> = tx
+        .prepare(
+            "DELETE FROM edge_assertions
+              WHERE project = ?1 AND identity = ?2
+                AND edge_id IN (SELECT id FROM edges WHERE from_id = ?3 AND to_id = ?4)
+                AND NOT EXISTS (SELECT 1 FROM refs
+                                 WHERE project = ?1 AND identity = ?2 AND from_id = ?3
+                                   AND target = ?4)
+             RETURNING edge_id",
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt
+                .query_map(params![project, by.identity, from, target], |r| r.get(0))
+                .and_then(Iterator::collect);
+            rows
+        })
+        .map_err(be)?;
     for edge in released {
         settle_edge(tx, edge, by.at, project)?;
     }
@@ -4861,7 +4859,7 @@ fn settle_edge(tx: &Transaction, edge: i64, at: i64, project: &str) -> Result<()
                 .query_row(
                     "UPDATE edges SET valid_to = ?2 WHERE id = ?1 RETURNING from_id, to_id, rel",
                     params![edge, at],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    |r| <(String, String, String)>::try_from(r),
                 )
                 .map_err(be)?;
             owe_relabel_of_ends(tx, &from, &to, &rel, project)
