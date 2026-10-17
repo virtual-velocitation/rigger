@@ -3986,6 +3986,39 @@ fn f<Tp>(t: Tp, o: Outer::Inner) { Outer::Mid::<u8>::new(); }
 11 type Inner f
 11 type Mid f",
             ),
+            // A struct literal and an expression path rooted at the standard library stage no
+            // type of their uppercase segment, and a lowercase whole path's final identifier no
+            // const; a segment before the path's last stages nothing, in an expression or a
+            // type.
+            (
+                "a std-rooted literal or path, a lowercase leaf and a prefix segment stage nothing",
+                "\
+fn f(v: Outer::Inner::Leaf) {
+    let a = std::cmp::Ordering::Less { a: 1 };
+    let b = std::cmp::Ordering::Less;
+    let c = Limits::lower;
+    Outer::Inner::make();
+}
+",
+                "\
+1 type Leaf f
+4 type Limits f
+5 type Inner f",
+            ),
+            // A `use` of a standard library root bare or through a braced list imports no leaf,
+            // and a `self` leaf after `super` names no module, aliased or not.
+            (
+                "a std root's use and a self after super import no leaf",
+                "\
+use core;
+use std::{cmp, fmt::Write};
+use super::super::{self};
+use super::super::{self as up};
+use crate::store::Ledger;
+",
+                "\
+5 use Ledger -",
+            ),
         ];
         for (case, src, expected) in cases {
             crate::symbol_index::assert_tagged_refs("rs", src, expected, case);
@@ -3993,12 +4026,13 @@ fn f<Tp>(t: Tp, o: Outer::Inner) { Outer::Mid::<u8>::new(); }
     }
 
     /// Spec 117 criterion 6: the tagged references follow the call references in `refs`, in
-    /// source order.
+    /// source order, and one inside a test region, an impl header's trait row included, is
+    /// marked test code like any reference there.
     #[test]
     fn tagged_references_follow_the_calls_in_source_order() {
         let fs = crate::symbol_index::extracted(
             "rs",
-            "fn a() -> u8 { KITE }\nfn b() -> u8 { KITE + go() }\n",
+            "fn a() -> u8 { KITE }\nfn b() -> u8 { KITE + go() }\n#[cfg(test)]\nmod t { impl Draw for Kestrel {} }\n",
         );
         let refs: Vec<_> = fs
             .refs
@@ -4008,15 +4042,19 @@ fn f<Tp>(t: Tp, o: Outer::Inner) { Outer::Mid::<u8>::new(); }
                     r.name.as_str(),
                     r.enclosing.as_deref(),
                     r.ref_kind.as_deref(),
+                    r.is_test,
                 )
             })
             .collect();
         assert_eq!(
             refs,
             [
-                ("go", Some("b"), None),
-                ("KITE", Some("a"), Some("const")),
-                ("KITE", Some("b"), Some("const")),
+                ("go", Some("b"), None, false),
+                ("Draw", Some("t::impl Draw for Kestrel"), None, true),
+                ("Kestrel", Some("t::impl Draw for Kestrel"), None, true),
+                ("KITE", Some("a"), Some("const"), false),
+                ("KITE", Some("b"), Some("const"), false),
+                ("Draw", Some("t::impl Draw for Kestrel"), Some("type"), true),
             ]
         );
     }
