@@ -1619,7 +1619,7 @@ mod tests {
     #[test]
     fn a_mod_declared_in_a_file_opening_an_inner_cfg_test_joins_the_out_of_line_test_module_files()
     {
-        let idx = crate::symbol_index::extracted_rust_index(&[
+        assert_out_of_line_test_module_files_hold_src_x(&[
             ("src/lib.rs", "#![cfg(test)]\nfn first() {}\nmod x;\n"),
             ("src/x.rs", "fn y() {}\n"),
             (
@@ -1628,8 +1628,12 @@ mod tests {
             ),
             ("src/z.rs", "fn w() {}\n"),
         ]);
+    }
+
+    /// Asserts the out-of-line test module files of the Rust `files` are `src/x.rs` alone.
+    fn assert_out_of_line_test_module_files_hold_src_x(files: &[(&str, &str)]) {
         assert_eq!(
-            super::out_of_line_test_module_files(&idx),
+            super::out_of_line_test_module_files(&crate::symbol_index::extracted_rust_index(files)),
             std::collections::BTreeSet::from(["src/x.rs".to_string()])
         );
     }
@@ -1693,14 +1697,11 @@ mod tests {
     /// `x.rs` alone.
     #[test]
     fn a_test_mod_resolves_to_the_first_of_its_candidates_the_index_holds() {
-        assert_eq!(
-            super::out_of_line_test_module_files(&crate::symbol_index::extracted_rust_index(&[
-                ("src/lib.rs", "#[cfg(test)]\nmod x;\n"),
-                ("src/x.rs", "fn y() {}\n"),
-                ("src/x/mod.rs", "fn y() {}\n"),
-            ])),
-            std::collections::BTreeSet::from(["src/x.rs".to_string()])
-        );
+        assert_out_of_line_test_module_files_hold_src_x(&[
+            ("src/lib.rs", "#[cfg(test)]\nmod x;\n"),
+            ("src/x.rs", "fn y() {}\n"),
+            ("src/x/mod.rs", "fn y() {}\n"),
+        ]);
     }
 
     /// The file `mod outer { #[cfg(test)] mod x; }` in [`INLINE_TEST_MOD_TREE`]'s `src/lib.rs`
