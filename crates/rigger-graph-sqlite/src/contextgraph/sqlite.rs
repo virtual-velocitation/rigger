@@ -862,9 +862,10 @@ impl Projector {
     /// it onto the pre-mint rows, never a second source of truth.
     ///
     /// The caller (the identity migration) re-keys BEFORE recording the migration decision, so
-    /// the minted scope is still empty on the graph and the composite `(id, project)` primary key
-    /// never collides. A no-op returning 0 when nothing is tagged `from`, so a re-open after the
-    /// migration re-keys nothing (idempotent, mirroring `rename_stream_prefix`).
+    /// the minted scope is still empty on the graph and no re-keyed table's composite key, each
+    /// carrying `project`, collides. A failed update in any table fails the whole migration with
+    /// its error and moves nothing. A no-op returning 0 when nothing is tagged `from`, so a
+    /// re-open after the migration re-keys nothing (idempotent, mirroring `rename_stream_prefix`).
     pub fn migrate_project(&self, from: &str, to: &str) -> Result<usize, Error> {
         self.transact(|tx| {
             // Every table re-keys in the same transaction so a crash never leaves an edge under
@@ -880,9 +881,10 @@ impl Projector {
             rekey("edges")?;
             let nodes = rekey("nodes")?;
             for table in PROJECT_KEYED_LEDGERS {
-                if has_table(tx, table)? {
-                    rekey(table)?;
-                }
+                has_table(tx, table).and_then(|held| match held {
+                    true => rekey(table).map(drop),
+                    false => Ok(()),
+                })?;
             }
             Ok(nodes)
         })

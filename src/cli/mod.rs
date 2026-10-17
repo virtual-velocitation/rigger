@@ -1093,13 +1093,13 @@ fn migrate_project_identity(
             // streams LAST. `decide_migration` returns `Rename` ONLY while the legacy namespace
             // still holds streams, and `rename_stream_prefix` is the SOLE step that clears it - so
             // the stream rename is the irreversible commit point. If the process dies (or the
-            // re-key errors: a composite (id, project) collision, or a locked shared backend) after
-            // the re-key but before the rename, the legacy namespace is still populated, a re-open
-            // decides `Rename` again, and the idempotent re-key (which moves 0 rows once done)
-            // replays cleanly to completion. Renaming first would empty the legacy namespace, so a
-            // failed re-key would NoOp forever and orphan the pre-mint graph rows. Re-keying first
-            // also keeps the minted graph scope empty until the DecisionMade fold below, so the
-            // composite (id, project) key never collides.
+            // re-key errors: a composite-key collision in any re-keyed table, or a locked shared
+            // backend) after the re-key but before the rename, the legacy namespace is still
+            // populated, a re-open decides `Rename` again, and the idempotent re-key (which moves
+            // 0 rows once done) replays cleanly to completion. Renaming first would empty the
+            // legacy namespace, so a failed re-key would NoOp forever and orphan the pre-mint graph
+            // rows. Re-keying first also keeps the minted graph scope empty until the DecisionMade
+            // fold below, so no re-keyed table's composite key collides.
             if let Some(g) = graph {
                 g.migrate_project(legacy, minted)?;
             }
@@ -9147,8 +9147,8 @@ mod tests {
         // Force the graph re-key to FAIL: seed the MINTED scope with a node whose id ("pre-d")
         // collides with a legacy node, so `migrate_project`'s `UPDATE nodes SET project=minted`
         // hits the composite `(id, project)` primary key and errors (the whole re-key transaction
-        // rolls back atomically). This is one of the two `migrate_project` Err paths the design
-        // itself flags.
+        // rolls back atomically). A collision on a node's key is one of the `migrate_project` Err
+        // paths the design flags; one on any other re-keyed table's key fails the same way.
         let graph = Projector::open(graph_path, "mint123").unwrap();
         apply_pre_d(&graph, 2, "other.rs");
 
