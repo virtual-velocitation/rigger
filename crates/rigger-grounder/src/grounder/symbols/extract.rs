@@ -796,6 +796,15 @@ struct UseLeaf<'t> {
     root: Option<String>,
 }
 
+impl UseLeaf<'_> {
+    /// Whether this leaf's path roots at the standard library ([`STD_ROOTS`]): the one test
+    /// [`rust_references`] reads both to stage no `use` row for it and to treat the name it binds
+    /// as a standard-library import.
+    fn from_std(&self) -> bool {
+        self.root.as_deref().is_some_and(|r| STD_ROOTS.contains(&r))
+    }
+}
+
 /// RUST'S TAGGED REFERENCES (spec 117, REFERENCES), every one under `root` in source order. A
 /// CONST READ is an `identifier` in expression position, or the final identifier of a whole
 /// expression path (never a prefix, a pattern or a call's head), spelled `^[A-Z][A-Z0-9_]*$`. A
@@ -813,7 +822,7 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
         .collect();
     let std_imports: Vec<&str> = uses
         .iter()
-        .filter(|u| u.root.as_deref().is_some_and(|r| STD_ROOTS.contains(&r)))
+        .filter(|u| u.from_std())
         .map(|u| u.bound.as_str())
         .collect();
     let impls = nodes_of_kind(root, "impl_item");
@@ -830,7 +839,10 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
         .map(|n| n.id())
         .collect();
     let mut out = Vec::new();
-    let mut stage = |node: tree_sitter::Node, kind: &'static str, root_seg: Option<&str>| {
+    let mut stage = |node: tree_sitter::Node,
+                     kind: &'static str,
+                     root_seg: Option<&str>,
+                     impl_from: Option<(std::ops::Range<usize>, String)>| {
         let Ok(name) = node.utf8_text(source) else {
             return;
         };
@@ -840,7 +852,7 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
                 line: node.start_position().row as u32 + 1,
                 pos: node.start_byte(),
                 kind,
-                impl_from: None,
+                impl_from,
             });
         }
     };
@@ -851,8 +863,8 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
                     .iter()
                     .filter(|u| node.byte_range().contains(&u.node.start_byte()));
                 for leaf in leaves {
-                    if !leaf.root.as_deref().is_some_and(|r| STD_ROOTS.contains(&r)) {
-                        stage(leaf.node, REF_KIND_USE, None);
+                    if !leaf.from_std() {
+                        stage(leaf.node, REF_KIND_USE, None, None);
                     }
                 }
             }
@@ -873,12 +885,12 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
                         });
                         match path.and_then(final_identifier) {
                             Some(last) if literal && begins_upper(last, source) => {
-                                stage(last, REF_KIND_TYPE, root_seg.as_deref())
+                                stage(last, REF_KIND_TYPE, root_seg.as_deref(), None)
                             }
-                            _ => stage(node, REF_KIND_TYPE, root_seg.as_deref()),
+                            _ => stage(node, REF_KIND_TYPE, root_seg.as_deref(), None),
                         }
                     }
-                    None => stage(node, REF_KIND_TYPE, None),
+                    None => stage(node, REF_KIND_TYPE, None, None),
                 }
             }
             "scoped_identifier" if is_whole_expression_path(node) => {
@@ -886,7 +898,7 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
                 let root_seg = path.and_then(|p| root_segment(p, source));
                 if let Some(last) = path.and_then(final_identifier) {
                     if begins_upper(last, source) {
-                        stage(last, REF_KIND_TYPE, root_seg.as_deref());
+                        stage(last, REF_KIND_TYPE, root_seg.as_deref(), None);
                     }
                 }
                 let primitive = root_seg
@@ -894,12 +906,12 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
                     .is_some_and(|r| PRIMITIVE_TYPES.contains(&r));
                 if let Some(name) = node.child_by_field_name("name") {
                     if !primitive && is_read(node) && is_const_spelled(name, source) {
-                        stage(name, REF_KIND_CONST, root_seg.as_deref());
+                        stage(name, REF_KIND_CONST, root_seg.as_deref(), None);
                     }
                 }
             }
             "identifier" if is_read(node) && is_const_spelled(node, source) => {
-                stage(node, REF_KIND_CONST, None)
+                stage(node, REF_KIND_CONST, None, None)
             }
             _ => {}
         }
@@ -917,19 +929,12 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
         ) else {
             continue;
         };
-        let root_seg = type_root(trait_node, source);
-        let Ok(name) = leaf.utf8_text(source) else {
-            continue;
-        };
-        if !excluded(name, root_seg.as_deref(), leaf, source, &std_imports) {
-            out.push(TaggedRef {
-                name: name.to_string(),
-                line: leaf.start_position().row as u32 + 1,
-                pos: leaf.start_byte(),
-                kind: REF_KIND_TYPE,
-                impl_from: Some((block.byte_range(), self_leaf.to_string())),
-            });
-        }
+        stage(
+            leaf,
+            REF_KIND_TYPE,
+            type_root(trait_node, source).as_deref(),
+            Some((block.byte_range(), self_leaf.to_string())),
+        );
     }
     out
 }
