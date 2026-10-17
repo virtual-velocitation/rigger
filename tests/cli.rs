@@ -3293,8 +3293,8 @@ fn ground_ranked_via_cli_gives_ambiguous_definitions_zero_degree_and_pools_the_r
         .unwrap_or_else(|| panic!("expected a pooled Standalone reference row; got {out:?}"));
     assert!(
         standalone.contains("(degree 5)"),
-        "the Standalone row alone must carry the real aggregate unattributed reference count - \
-         genuinely different from the ambiguous definitions' degree, never a shared pooled \
+        "the Standalone row alone must carry the real aggregate unattributed call-reference \
+         count - genuinely different from the ambiguous definitions' degree, never a shared pooled \
          number printed on every row; got {out:?}"
     );
 }

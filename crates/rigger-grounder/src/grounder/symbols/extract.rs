@@ -452,7 +452,8 @@ pub fn extract(
     // Spec 86 criterion 1: mark every definition and reference that falls inside a TEST REGION -
     // every test-attributed range (`test_regions`: a definition directly annotated
     // `#[test]`/`#[cfg(test)]`, an impl block or one the name filter drops included, an extern
-    // block, or the whole file opening `#![cfg(test)]`), a definition nested inside one included.
+    // block, a test-attributed `use` or statement (spec 117), or the whole file opening
+    // `#![cfg(test)]`), a definition nested inside one included.
     // Byte-range based, so it is exact regardless of which line a construct starts
     // or ends on; computed AFTER every def's range is known, so a def's own containment check can
     // see siblings and ancestors alike whatever order the tags happened to arrive in.
@@ -655,7 +656,8 @@ fn outermost_node<'t>(
 }
 
 /// The core [`preceded_by_test_attribute`] applies once a candidate node is in hand, and
-/// [`test_regions`] applies to each extern block's own node: self-attributed test either through the node's OWN leading
+/// [`test_regions`] applies to each [`GATED_NON_DEFINITIONS`] node's own (an extern block, a
+/// `use`, a statement): self-attributed test either through the node's OWN leading
 /// inner attribute ([`leading_inner_test_attribute`]) or through an outer attribute stack sitting
 /// as its sibling immediately before it. A tuple field's `pub` is a sibling too, between its
 /// attributes and its type, so the walk first steps over a `visibility_modifier`.
@@ -800,7 +802,7 @@ impl UseLeaf<'_> {
     /// Whether this leaf's path roots at the standard library ([`STD_ROOTS`]): the one test
     /// [`rust_references`] reads both to stage no `use` row for it and to treat the name it binds
     /// as a standard-library import.
-    fn from_std(&self) -> bool {
+    fn roots_at_std(&self) -> bool {
         self.root.as_deref().is_some_and(|r| STD_ROOTS.contains(&r))
     }
 }
@@ -822,7 +824,7 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
         .collect();
     let std_imports: Vec<&str> = uses
         .iter()
-        .filter(|u| u.from_std())
+        .filter(|u| u.roots_at_std())
         .map(|u| u.bound.as_str())
         .collect();
     let impls = nodes_of_kind(root, "impl_item");
@@ -863,7 +865,7 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
                     .iter()
                     .filter(|u| node.byte_range().contains(&u.node.start_byte()));
                 for leaf in leaves {
-                    if !leaf.from_std() {
+                    if !leaf.roots_at_std() {
                         stage(leaf.node, REF_KIND_USE, None, None);
                     }
                 }

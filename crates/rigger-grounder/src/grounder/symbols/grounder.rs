@@ -2043,9 +2043,9 @@ mod tests {
             });
         assert_eq!(
             standalone.degree, 5,
-            "the Standalone row alone carries the real aggregate unattributed reference count - \
-             genuinely different from the ambiguous Def rows' degree, never a shared pooled \
-             number; got {ranked:?}"
+            "the Standalone row alone carries the real aggregate unattributed call-reference \
+             count - genuinely different from the ambiguous Def rows' degree, never a shared \
+             pooled number; got {ranked:?}"
         );
     }
 

@@ -6330,7 +6330,7 @@
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
         "start_line": 270,
-        "end_line": 530
+        "end_line": 531
       },
       {
         "file": "tests/common/source_audit.rs",
