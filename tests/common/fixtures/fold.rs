@@ -216,6 +216,11 @@ pub fn a_call_from(
     .to_vec()
 }
 
+/// One live `REFERENCES` edge from `from` onto `to` at `tier`, as [`landed`] answers it.
+pub fn reference(from: &str, to: &str, tier: &str) -> (String, String, String, String) {
+    (from.into(), REL_REFERENCES.into(), to.into(), tier.into())
+}
+
 /// Fold `events` into `p` through the public fold, and insist they landed: the one spelling of
 /// seeding a graph a test then reads.
 pub fn folds(p: &dyn Projection, events: &[Event]) {

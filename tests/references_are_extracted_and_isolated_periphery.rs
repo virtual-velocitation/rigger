@@ -7,7 +7,10 @@
 //!
 //!  - the graph `rigger graph build` folds: a real tree's tagged references fold no placeholder
 //!    and no edge of the event arm's, each landing instead as the staged row's one edge onto its
-//!    one definition (spec 117, STAGED REFERENCES), while its call folds as before; a file
+//!    one definition (spec 117, STAGED REFERENCES), while its call folds as before; that edge
+//!    lands only while one candidate of its reference's kind answers it - the same file's before
+//!    the project's, `extracted` - retires with its definition and lands again on its return, and
+//!    its file, never its fn, is listed referenced but not called; a file
 //!    rewritten to a `use` that nothing defines keeps its file node and loses every edge, and a
 //!    new `use`-only file gains its file node; and the tagged
 //!    references of a test file, of a `#[cfg(test)]` module or under their own `#[cfg(test)]`
@@ -46,6 +49,31 @@ const DEFINER_ENTITIES: [&str; 3] = [
     "src/shapes.rs::draw",
 ];
 
+/// The code-entity id of the user file's `fn paint`, the fn its type reference and const read
+/// are staged from.
+#[cfg(feature = "symbols")]
+const PAINT: &str = "src/user.rs::paint";
+
+/// The `REFERENCES` and `CALLS` edges a built reference-kinds tree serves, sorted as
+/// [`common::fixtures::landed`] answers them: the user file's call to `draw` on its placeholder,
+/// and one `REFERENCES` edge per `(from, to, tier)` of `references`.
+#[cfg(feature = "symbols")]
+fn the_call_and(references: &[(&str, &str, &str)]) -> Vec<(String, String, String, String)> {
+    let mut landed = common::fixtures::a_call_from(
+        USER,
+        "paint",
+        DRAW_PLACEHOLDER,
+        rigger::contextgraph::TIER_INFERRED,
+    );
+    landed.extend(
+        references
+            .iter()
+            .map(|(from, to, tier)| common::fixtures::reference(from, to, tier)),
+    );
+    landed.sort();
+    landed
+}
+
 /// GIVEN a project whose `src/shapes.rs` defines `Kestrel`, `QUOTA_CAP` and `draw` and whose
 /// `src/user.rs` imports `Kestrel` and, in `fn paint`, takes it as a parameter type, calls `draw`
 /// and reads `QUOTA_CAP`,
@@ -58,41 +86,24 @@ const DEFINER_ENTITIES: [&str; 3] = [
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_folds_a_files_call_and_one_edge_per_staged_reference_and_no_placeholder() {
-    use rigger::contextgraph::{REL_REFERENCES, TIER_INFERRED};
+    use rigger::contextgraph::TIER_INFERRED;
 
     let (_project, graph) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
 
-    let mut landed = common::fixtures::a_call_from(USER, "paint", DRAW_PLACEHOLDER, TIER_INFERRED);
-    landed.extend(
-        [
-            (USER, DEFINER_ENTITIES[0]),
-            ("src/user.rs::paint", DEFINER_ENTITIES[0]),
-            ("src/user.rs::paint", DEFINER_ENTITIES[1]),
-        ]
-        .map(|(from, to)| {
-            (
-                from.to_string(),
-                REL_REFERENCES.to_string(),
-                to.to_string(),
-                TIER_INFERRED.to_string(),
-            )
-        }),
-    );
-    landed.sort();
     assert_eq!(
         common::fixtures::landed(&graph),
-        landed,
+        the_call_and(&[
+            (USER, DEFINER_ENTITIES[0], TIER_INFERRED),
+            (PAINT, DEFINER_ENTITIES[0], TIER_INFERRED),
+            (PAINT, DEFINER_ENTITIES[1], TIER_INFERRED),
+        ]),
         "the call to `draw` lands as before, and each staged reference on its one definition"
     );
     assert_eq!(
         common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),
         common::fixtures::file_and_entity_ids(
             &[DEFINER, USER],
-            &[
-                &DEFINER_ENTITIES[..],
-                &[DRAW_PLACEHOLDER, "src/user.rs::paint"]
-            ]
-            .concat()
+            &[&DEFINER_ENTITIES[..], &[DRAW_PLACEHOLDER, PAINT]].concat()
         ),
         "no placeholder stands for `Kestrel` or `QUOTA_CAP`"
     );
@@ -121,6 +132,133 @@ fn graph_build_over_use_only_files_folds_their_file_nodes_and_no_edge() {
         common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),
         common::fixtures::file_and_entity_ids(&[LEDGER, DEFINER, USER], &DEFINER_ENTITIES),
         "each `use`-only file stands as its file node alone"
+    );
+}
+
+/// GIVEN the built reference-kinds tree, whose `fn paint` reads `QUOTA_CAP` and names `Kestrel`
+/// and whose file imports `Kestrel`, calling neither,
+/// WHEN a reader walks UP from each definition,
+/// THEN each lists `src/user.rs` referenced but not called, the file of the fn its row is staged
+/// from, never `fn paint` itself.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_lists_a_staged_reference_s_file_never_its_fn_as_referenced_not_called() {
+    let (_project, graph) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
+
+    assert_eq!(
+        [DEFINER_ENTITIES[0], DEFINER_ENTITIES[1]]
+            .map(|seed| common::fixtures::referenced_not_called_ids(&graph, seed)),
+        [[USER], [USER]],
+        "a fn-level row lists its file"
+    );
+}
+
+/// `src/shapes.rs` of the reference-kinds tree with its `QUOTA_CAP` definition removed.
+#[cfg(feature = "symbols")]
+const DEFINER_WITHOUT_QUOTA_CAP: &str = "pub struct Kestrel;\npub fn draw() {}\n";
+
+/// GIVEN the built reference-kinds tree,
+/// WHEN the operator removes `QUOTA_CAP` from `src/shapes.rs` and rebuilds, then restores it and
+/// rebuilds again,
+/// THEN the first rebuild retires `fn paint`'s edge onto `QUOTA_CAP` alone, leaving no reader of
+/// it, and the second lands that edge again, every `Kestrel` edge standing throughout.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_rebuild_retires_a_staged_reference_with_its_definition_and_lands_it_on_its_return() {
+    use rigger::contextgraph::TIER_INFERRED;
+
+    let (project, built) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
+    drop(built);
+    let kestrel = [
+        (USER, DEFINER_ENTITIES[0], TIER_INFERRED),
+        (PAINT, DEFINER_ENTITIES[0], TIER_INFERRED),
+    ];
+
+    let removed =
+        common::cli::rebuilt_graph(project.path(), &[(DEFINER, DEFINER_WITHOUT_QUOTA_CAP)]);
+    assert_eq!(
+        common::fixtures::landed(&removed),
+        the_call_and(&kestrel),
+        "the const read's edge retires with its one definition"
+    );
+    assert_eq!(
+        common::fixtures::referenced_not_called_ids(&removed, DEFINER_ENTITIES[1]),
+        Vec::<String>::new(),
+        "nothing references a removed definition"
+    );
+    drop(removed);
+
+    let restored =
+        common::cli::rebuilt_graph(project.path(), &[common::fixtures::REFERENCE_KINDS_TREE[0]]);
+    assert_eq!(
+        common::fixtures::landed(&restored),
+        the_call_and(&[
+            kestrel[0],
+            kestrel[1],
+            (PAINT, DEFINER_ENTITIES[1], TIER_INFERRED)
+        ]),
+        "the restored definition answers the const read again"
+    );
+}
+
+/// A second file of the reference-kinds tree, defining a leaf `Kestrel` too.
+#[cfg(feature = "symbols")]
+const TWIN: &str = "src/twin.rs";
+
+/// GIVEN the built reference-kinds tree,
+/// WHEN the operator adds `src/twin.rs` defining a second `struct Kestrel` and rebuilds, then
+/// rewrites it to define `fn Kestrel` instead and rebuilds again,
+/// THEN two type definitions leave both `Kestrel` rows unresolved with no edge, and a fn - a
+/// candidate of a `use` but never of a type reference - lands `fn paint`'s type reference on the
+/// struct again while the file's `use` stays unresolved between the struct and the fn; the const
+/// read's edge stands throughout.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_rebuild_lands_a_staged_reference_only_while_one_candidate_of_its_kind_answers_it() {
+    use rigger::contextgraph::TIER_INFERRED;
+
+    let (project, built) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
+    drop(built);
+    let quota_cap = (PAINT, DEFINER_ENTITIES[1], TIER_INFERRED);
+
+    let two_types = common::cli::rebuilt_graph(project.path(), &[(TWIN, "pub struct Kestrel;\n")]);
+    assert_eq!(
+        common::fixtures::landed(&two_types),
+        the_call_and(&[quota_cap]),
+        "two type candidates resolve neither `Kestrel` row"
+    );
+    drop(two_types);
+
+    let a_fn = common::cli::rebuilt_graph(project.path(), &[(TWIN, "pub fn Kestrel() {}\n")]);
+    assert_eq!(
+        common::fixtures::landed(&a_fn),
+        the_call_and(&[(PAINT, DEFINER_ENTITIES[0], TIER_INFERRED), quota_cap]),
+        "a fn answers the `use` beside the struct and never the type reference"
+    );
+}
+
+/// GIVEN the reference-kinds tree whose `src/user.rs` also defines its own `struct Kestrel`,
+/// WHEN the operator runs `rigger graph build`,
+/// THEN the file's `use` and `fn paint`'s type reference land on the same-file `Kestrel` at the
+/// `extracted` tier, never on `src/shapes.rs`'s, and the const read on its one definition.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_lands_a_staged_reference_on_its_same_file_definition_extracted() {
+    use rigger::contextgraph::{TIER_EXTRACTED, TIER_INFERRED};
+
+    let [definer, (_, user_source)] = common::fixtures::REFERENCE_KINDS_TREE;
+    let own_kestrel = format!("{user_source}pub struct Kestrel;\n");
+    let (_project, graph) = common::cli::built_graph(&[definer, (USER, &own_kestrel)]);
+
+    let same_file = "src/user.rs::Kestrel";
+    assert_eq!(
+        common::fixtures::landed(&graph),
+        the_call_and(&[
+            (USER, same_file, TIER_EXTRACTED),
+            (PAINT, same_file, TIER_EXTRACTED),
+            (PAINT, DEFINER_ENTITIES[1], TIER_INFERRED),
+        ]),
+        "a same-file candidate is taken before a project one"
     );
 }
 

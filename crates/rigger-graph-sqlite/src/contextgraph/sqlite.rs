@@ -15394,7 +15394,7 @@ mod tests {
             };
             use crate::test_support::{
                 call_json, code_entity_json, definition_event, entry_at, event_of, fold_entry_with,
-                fold_events, kind_def_json, landed, nanos, no_bytes_batch,
+                fold_events, kind_def_json, landed, nanos, no_bytes_batch, reference,
                 referenced_not_called_ids, tagged_ref_json, ONE_COMMUNITY,
             };
 
@@ -15537,11 +15537,6 @@ mod tests {
                     .into_iter()
                     .filter(|(_, rel, ..)| rel == REL_REFERENCES)
                     .collect()
-            }
-
-            /// One live `REFERENCES` edge as [`references`] answers it.
-            fn reference(from: &str, to: &str, tier: &str) -> (String, String, String, String) {
-                (from.into(), REL_REFERENCES.into(), to.into(), tier.into())
             }
 
             /// Every `REFERENCES` edge row of `p` from `from`, live or retired, as
