@@ -167,8 +167,7 @@ const DEFINER_WITHOUT_QUOTA_CAP: &str = "pub struct Kestrel;\npub fn draw() {}\n
 fn graph_rebuild_retires_a_staged_reference_with_its_definition_and_lands_it_on_its_return() {
     use rigger::contextgraph::TIER_INFERRED;
 
-    let (project, built) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
-    drop(built);
+    let (project, _) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
     let kestrel = [
         (USER, DEFINER_ENTITIES[0], TIER_INFERRED),
         (PAINT, DEFINER_ENTITIES[0], TIER_INFERRED),
@@ -217,8 +216,7 @@ const TWIN: &str = "src/twin.rs";
 fn graph_rebuild_lands_a_staged_reference_only_while_one_candidate_of_its_kind_answers_it() {
     use rigger::contextgraph::TIER_INFERRED;
 
-    let (project, built) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
-    drop(built);
+    let (project, _) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
     let quota_cap = (PAINT, DEFINER_ENTITIES[1], TIER_INFERRED);
 
     let two_types = common::cli::rebuilt_graph(project.path(), &[(TWIN, "pub struct Kestrel;\n")]);
