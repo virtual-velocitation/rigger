@@ -227,8 +227,8 @@ conjunct, a column name, bound or placeholder passed to a query builder and a su
 inside a query or format string among them - or is marked as carrying none with its reason (a
 signature, a `use`, a doc line, a brace). After that walk the record carries one tally line per
 spelled class, `<class>: <n> in hunks, <n> probed`, the two counts equal; the `?`, `return`,
-`break` and `continue` counts are the ones this command prints, run in your worktree's root:
-`git diff -U0 $(git merge-base rigger-run HEAD)..HEAD -- crates src | awk '/^\+\+\+ / { f = substr($2, 3); t = 0; if (f ~ /\.rs$/ && f !~ /(^|\/)tests\//) { c = "git show HEAD:" f; n = 0; p = ""; while ((c | getline l) > 0) { n++; if (!t && p ~ /^#\[cfg\(test\)\]/ && l ~ /^(pub(\([a-z]+\))? )?mod [^;]*[{]/) t = n; p = l } close(c) } next } /^@@/ { split($3, a, ","); ln = substr(a[1], 2) + 0; next } /^\+/ { if (f ~ /\.rs$/ && f !~ /(^|\/)tests\// && (!t || ln < t)) { s = substr($0, 2); gsub(/"([^"\\]|\\.)*"/, "", s); sub(/\/\/.*/, "", s); q += gsub(/\?([;.),\] ]|$)/, "", s); r += gsub(/(^|[^A-Za-z0-9_])return([^A-Za-z0-9_]|$)/, " ", s); b += gsub(/(^|[^A-Za-z0-9_])break([^A-Za-z0-9_]|$)/, " ", s); k += gsub(/(^|[^A-Za-z0-9_])continue([^A-Za-z0-9_]|$)/, " ", s) } ln++ } END { print "?: " q + 0 ", return: " r + 0 ", break: " b + 0 ", continue: " k + 0 }'`.
+`break` and `continue` counts are the ones `sh .rigger/gates/token-count.sh` prints, run from
+your worktree's root.
 
 ## Every test must survive mutation testing
 

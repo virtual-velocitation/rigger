@@ -115,9 +115,9 @@ placeholder passed to a query builder a call argument; a substr start an index),
 production line those hunks add or change that the record does not disposition - naming its
 tokens with their probes, or marked as carrying none with its reason - is BLOCKING on its own,
 citing the line. You count the classes yourself as well: the
-`?`, `return`, `break` and `continue` of the production hunks with the authors' count command,
-run in your own worktree's root, and the arguments of each call those hunks add or change, read
-call by call (`git diff -U0 $(git merge-base rigger-run HEAD)..HEAD -- crates src | awk '/^\+\+\+ / { f = substr($2, 3); t = 0; if (f ~ /\.rs$/ && f !~ /(^|\/)tests\//) { c = "git show HEAD:" f; n = 0; p = ""; while ((c | getline l) > 0) { n++; if (!t && p ~ /^#\[cfg\(test\)\]/ && l ~ /^(pub(\([a-z]+\))? )?mod [^;]*[{]/) t = n; p = l } close(c) } next } /^@@/ { split($3, a, ","); ln = substr(a[1], 2) + 0; next } /^\+/ { if (f ~ /\.rs$/ && f !~ /(^|\/)tests\// && (!t || ln < t)) { s = substr($0, 2); gsub(/"([^"\\]|\\.)*"/, "", s); sub(/\/\/.*/, "", s); q += gsub(/\?([;.),\] ]|$)/, "", s); r += gsub(/(^|[^A-Za-z0-9_])return([^A-Za-z0-9_]|$)/, " ", s); b += gsub(/(^|[^A-Za-z0-9_])break([^A-Za-z0-9_]|$)/, " ", s); k += gsub(/(^|[^A-Za-z0-9_])continue([^A-Za-z0-9_]|$)/, " ", s) } ln++ } END { print "?: " q + 0 ", return: " r + 0 ", break: " b + 0 ", continue: " k + 0 }'`); you
+`?`, `return`, `break` and `continue` of the production hunks with the authors' count, `sh .rigger/gates/token-count.sh`
+run from your own worktree's root, and the arguments of each call those hunks add or change,
+read call by call; you
 compare each class's count with the record's tally line for it, and a tally short of your
 count, or a token with no probe, is BLOCKING on its own, citing the class, both counts and the
 unprobed tokens. Every token the record
