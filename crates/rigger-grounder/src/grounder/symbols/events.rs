@@ -692,9 +692,12 @@ fn path_override_names_an_unresolvable_shape(p: &str) -> bool {
 /// nesting-path`). A file named `mod.rs`, `lib.rs` or `main.rs` owns its OWN directory: its
 /// `mod name;` children are same-directory siblings. Every OTHER file is taken as a leaf submodule
 /// whose children sit in a NEW subdirectory named after its own stem (`foo.rs` -> `foo/`).
-/// That is Rust's convention for files so named, not rustc in full: rustc also gives a crate root
-/// of another name (`src/bin/tool.rs`, `build.rs`) and a file loaded through `#[path]`
-/// same-directory children, which this name-only rule puts one directory deeper.
+/// The rule reads the file's name alone, while rustc decides by whether the file is a crate root,
+/// a `mod.rs`, or loaded through `#[path]`, so the two part ways on some files. Among them: a
+/// crate root of another name (`src/bin/tool.rs`, `build.rs`) and a `#[path]`-loaded file not
+/// named `mod.rs`, `lib.rs` or `main.rs`, both of which this rule puts one directory deeper than
+/// rustc; and a submodule file named `lib.rs` or `main.rs` (`src/sub/main.rs`), which this rule
+/// gives its own directory where rustc uses its stem.
 fn module_dir(path: &str) -> String {
     let dir = dir_of(path);
     let base = path.rsplit('/').next().unwrap_or(path);
@@ -708,13 +711,16 @@ fn module_dir(path: &str) -> String {
 /// The candidate files this resolver names for the `mod` declaration `d` in `declaring_path`, in
 /// order, the first a caller holds winning (spec 117 criterion 8): a pure function of the
 /// declaring path and the declaration, reading no index, so a caller matches them against
-/// whatever files it holds. It follows Rust's file-per-module convention for the shapes below,
-/// not rustc in full: an enclosing inline mod carrying its own `#[path]` contributes its name to
-/// the chain, not its path; a declaring crate root other than `lib.rs`/`main.rs` and a file
-/// loaded through `#[path]` take [`module_dir`]'s name-only rule; and with both `<name>.rs` and
-/// `<name>/mod.rs` present, which rustc rejects (E0761), the first candidate wins. Round 9
-/// (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`) closes the
-/// whole `#[path]`-override contract as one enumerated list:
+/// whatever files it holds. It applies Rust's file-per-module convention as the rules below
+/// spell it, and it departs from rustc on some declarations. Among them: every file
+/// [`module_dir`]'s name-only rule places differently from rustc; an enclosing inline mod carrying
+/// its own `#[path]`, which contributes its name to the chain, not its path; a raw-identifier
+/// declaration (`mod r#match;` names `r#match.rs` where rustc reads `match.rs`); a path given
+/// through `#[cfg_attr(.., path = "..")]`, which is not taken as an override; and both
+/// `<name>.rs` and `<name>/mod.rs` present, which rustc rejects (E0761) and where the first
+/// candidate wins here. Round 9
+/// (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`) sets out the
+/// `#[path]`-override rules this code applies as one enumerated list:
 /// 1. A `#[path = ".."]` override on the declaration ([`Def::path_override`], captured
 ///    structurally at extraction time) takes precedence over the convention entirely, naming one
 ///    file or none. BASE DIRECTORY: when the declaration sits at the declaring file's own top
@@ -726,9 +732,10 @@ fn module_dir(path: &str) -> String {
 ///    `mod outer { .. }` blocks ([`Def::enclosing_inline_module_path`]), the base is the
 ///    declaring file's own MODULE directory ([`module_dir`]) with the enclosing inline chain
 ///    appended - one directory component per inline module, outermost first - verified against
-///    real rustc for inline parents carrying no `#[path]` of their own
-///    (`Def::enclosing_inline_module_path`'s doc). ABSOLUTE / SCHEME REJECTION: an
-///    override that is itself an OS-absolute path, a URI scheme, or a Windows drive letter
+///    real rustc for a plain inline parent such as `mod outer`
+///    (`Def::enclosing_inline_module_path`'s doc gives examples where the chain departs).
+///    ABSOLUTE / SCHEME REJECTION: an override that is itself an OS-absolute path, a URI scheme,
+///    or a Windows drive letter
 ///    ([`path_override_names_an_unresolvable_shape`]) names no file, joined onto nothing - rustc
 ///    uses an absolute `#[path]` as-is, never relative to any Rust-side directory, so it can never
 ///    name a key a project-relative index holds; left unguarded, a root-level declaring file's
@@ -775,8 +782,7 @@ fn module_candidates(declaring_path: &str, d: &Def) -> Vec<String> {
 /// Round 7: the one file `d.name` resolves to from `declaring_path`, matched against paths `idx`
 /// ACTUALLY holds (never assumed): the first of its [`module_candidates`] `idx` holds, or `None`
 /// when it holds none - a stale or unresolvable declaration excludes nothing and nothing collapses
-/// onto another file. It is as close to rustc as [`module_candidates`] is, whose doc names the
-/// shapes it does not follow.
+/// onto another file. It is no closer to rustc than [`module_candidates`] is.
 fn resolve_out_of_line_target(idx: &SymbolIndex, declaring_path: &str, d: &Def) -> Option<String> {
     module_candidates(declaring_path, d)
         .into_iter()

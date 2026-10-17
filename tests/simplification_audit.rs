@@ -5923,10 +5923,12 @@ fn resolve_out_of_line_test_files(files: &[(String, String)]) -> BTreeSet<String
 /// The declaring file's OWN "file-per-module" directory - mirrors `crates/rigger-grounder/src/grounder/symbols/
 /// events.rs`'s production `module_dir` exactly (spec 87 round-1 fix,
 /// `resolvers_agree_on_a_transitive_second_hop`): for `mod.rs`/`lib.rs`/`main.rs`, its own
-/// PARENT directory (these three names never introduce a new directory level of their own); for
-/// any other file `name.rs`, `<parent>/name` - real rustc convention: a plain file's own
-/// children live under a directory NAMED after it (`src/outer.rs`'s `mod inner;` resolves to
-/// `src/outer/inner.rs`, never a `src/inner.rs` sibling). An earlier version of this function
+/// PARENT directory (the rule takes these three names to introduce no directory level of their
+/// own); for any other file `name.rs`, `<parent>/name` - rustc's convention for a plain
+/// submodule file, whose own children live under a directory NAMED after it (`src/outer.rs`'s
+/// `mod inner;` resolves to `src/outer/inner.rs`, never a `src/inner.rs` sibling). The rule
+/// reads the name alone, so it departs from rustc on some files, among them a crate root of
+/// another name (`src/bin/tool.rs`) and a submodule file named `main.rs` (`src/sub/main.rs`). An earlier version of this function
 /// used the plain PARENT directory unconditionally - correct for a top-level or `mod.rs`
 /// declaring file (where the two coincide) but wrong the moment a transitive second hop's
 /// declaring file is an ordinary nested file, exactly what the resolver-agreement test with the

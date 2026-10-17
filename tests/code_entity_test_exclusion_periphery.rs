@@ -1029,8 +1029,9 @@ rigger::test_cases! {
 /// `blast_radius_eval.rs`'s own product functions. The declaring file here is deliberately named
 /// `lib.rs` (round 7, `op-u86c1-r7-out-of-line-module-resolution-follows-rust`): a
 /// crate-root/directory-owning basename is what makes a FLAT sibling the Rust-correct resolution
-/// at all, since a non-`lib.rs`/`mod.rs`/`main.rs` declaring file's own children resolve under a
-/// subdirectory named after itself instead (see
+/// at all, since a non-`lib.rs`/`mod.rs`/`main.rs` declaring file that is not itself a crate root
+/// (`src/bin/tool.rs` is one) has its own children resolve under a subdirectory named after
+/// itself instead (see
 /// `an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_correctly`).
 ///
 /// SURFACE CONFIRMED STILL OPEN (`sdet-u86c1-r5-two-confirmed-live-gaps`): probed empirically
@@ -1096,8 +1097,8 @@ rigger::test_cases! {
     /// directory prefix. Mirrors that exact shape (round 7,
     /// `op-u86c1-r7-out-of-line-module-resolution-follows-rust`: `mod.rs` is a directory-owning
     /// basename, so a FLAT sibling is the Rust-correct resolution here - a non-`mod.rs`/`lib.rs`/
-    /// `main.rs` declaring file's own children resolve under a subdirectory named after itself
-    /// instead, see
+    /// `main.rs` declaring file that is not itself a crate root has its own children resolve under
+    /// a subdirectory named after itself instead, see
     /// `an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_correctly`) so
     /// the guarantee criterion 1 makes about this very tree is proven by a fixture, not merely
     /// inferred from the flat-root case generalizing.
@@ -1601,7 +1602,7 @@ rigger::test_cases! {
     /// nesting-path`): `out_of_line_test_module_files` used to resolve a `#[cfg(test)] mod name;`
     /// declaration to `<directory containing the DECLARING file>/<name>.rs`. That coincides with
     /// Rust's own file-per-module convention only when the declaring file is itself a
-    /// directory-style module (`mod.rs`/`lib.rs`/`main.rs`) - both of this repo's two disclosed
+    /// directory-style module (`mod.rs`/`lib.rs`/`main.rs`) or another crate root - both of this repo's two disclosed
     /// live instances (`src/eventstore/mod.rs`, `src/lib.rs`) are exactly that shape, and so is
     /// this file's own `nested/parent.rs` fixture in
     /// `an_out_of_line_cfg_test_module_declaration_in_a_subdirectory_excludes_its_sibling_through_the_public_api`
