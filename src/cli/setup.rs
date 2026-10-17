@@ -3677,6 +3677,12 @@ mod tests {
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers.",
+            "Each item the hunks add - a constant, static, list, closure, predicate or fn - \
+             carries beside its count its one-home line in one of the working discipline's three \
+             forms: `no other spelling` with the terms searched (its name count, its caller \
+             lookup and the fact's distinguishing literal - a table name, a kind string - run \
+             with the count above), `derived from <file:line>` or `pinned to <file:line> by \
+             <test>`.",
             "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
             "On every round, the first and each later one alike, `<base>` is the unit's merge \
              base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
