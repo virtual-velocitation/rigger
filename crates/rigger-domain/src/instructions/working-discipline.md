@@ -203,9 +203,9 @@ tool that searches them.
   boolean operand (negate or remove it), every argument of every call you add or change
   (degenerate it to the value that drops its arm - `None`, zero, the empty value, a sibling's
   value, a bound moved by one), a statement in one arm of a branch (delete it), a match arm
-  (swap it with a sibling), every `?` operator (replace it by a swallow - `let _ = <expr>` or
-  `.ok()` - so the error arm no longer returns), and every `return`, `break` and `continue`
-  (remove it). Check: enumerate the tokens
+  (swap it with a sibling), every `?` operator (replace it by the swallow that compiles for its
+  value, so the error arm yields a value instead of returning), and every `return`, `break` and
+  `continue` (remove it). Check: enumerate the tokens
   from your production hunks over the unit's whole range, the merge base with the run branch to
   head; apply each mutation in your worktree one at a time, run the crate's tests and the
   touched test binaries, read the red, and restore the tree - a probe is over before your turn
