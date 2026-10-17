@@ -254,8 +254,14 @@ tool that searches them.
   other spelling` with the terms searched - the name count and the graph lookup the walk
   already runs, and the fact's distinguishing literal (a table name, a kind string); `derived
   from <file:line>`, the hunk reading the existing spelling; or `pinned to <file:line> by
-  <test>`, where a derivation is impossible and a test holds the two spellings equal. An added
-  item with no line is a record you cannot write. The architecture lens reads the walk record's
+  <test>`, where a derivation is impossible and a test holds the two spellings equal. The `no
+  other spelling` search runs the fragment's distinguishing literal (the column with its
+  operator, the subquery's table) over the whole tree, pre-existing spellings included; a fact
+  the tree already spells is `derived from` that spelling, the hunk and the existing sites
+  reading one fn, or `pinned to` it, and a fact the tree already spells twice is lifted at all
+  three sites - the pre-existing pair is the tree's debt, and the unit's third spelling makes it
+  the unit's. An added item with no line is a record you cannot write. The architecture lens
+  reads the walk record's
   one-home lines for every item the unit adds: an added item with no line, or a line false at
   head - the fact has another spelling the line does not name, or the named derivation or pin
   does not exist - is a BLOCKING finding on its own (DRY, single responsibility).
