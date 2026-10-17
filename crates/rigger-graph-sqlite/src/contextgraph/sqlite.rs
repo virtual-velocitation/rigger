@@ -14785,6 +14785,66 @@ mod tests {
                 );
                 assert_eq!(rows_under(&owed, &tables, &from), counted(&tables, &[0, 0]));
             }
+
+            /// The error a trigger planted by [`refusing_the_rekey_of`] raises.
+            const REFUSED: &str = "re-key refused";
+
+            /// Spec 117, A MIGRATED PROJECT STAYS LIVE: a re-key that fails in `table` fails the
+            /// whole migration with its error and moves nothing, in that table or any other.
+            /// `h1` of `gc/src/f.rs` leaves rows in `nodes`, `edges` and `generations`, and a
+            /// trigger refuses every update of `table`.
+            fn refusing_the_rekey_of(table: &str) {
+                let p = fold_events([]);
+                let from = p.project.clone();
+                holding_h1(&p);
+                let held = rows_under(&p, &PROJECT_KEYED, &from);
+                write_directly(&p, |tx, _| {
+                    tx.execute_batch(&format!(
+                        "CREATE TRIGGER refuse BEFORE UPDATE ON {table}
+                         BEGIN SELECT RAISE(ABORT, '{REFUSED}'); END;"
+                    ))
+                    .unwrap();
+                });
+                assert_eq!(
+                    p.migrate_project(&from, "minted").map_err(|e| e.0),
+                    Err(REFUSED.to_string()),
+                    "the refused re-key of {table} fails the migration"
+                );
+                assert_eq!(
+                    (
+                        rows_under(&p, &PROJECT_KEYED, &from),
+                        rows_under(&p, &PROJECT_KEYED, "minted")
+                    ),
+                    (held, counted(&PROJECT_KEYED, &[0; 9])),
+                    "a refused re-key of {table} leaves every row under the old scope"
+                );
+            }
+
+            /// The edges, the nodes and a ledger: each re-keyed by its own update.
+            #[test]
+            fn a_refused_rekey_of_the_edges_the_nodes_or_a_ledger_moves_nothing() {
+                for table in ["edges", "nodes", "generations"] {
+                    refusing_the_rekey_of(table);
+                }
+            }
+
+            /// Spec 117, A MIGRATED PROJECT STAYS LIVE: [`PROJECT_KEYED`] is every table of a
+            /// fresh graph file that carries a `project` column, read from the file's schema.
+            #[test]
+            fn the_project_keyed_tables_are_every_table_carrying_a_project_column() {
+                let p = fold_events([]);
+                let keyed: Vec<String> = raw_rows(
+                    &p,
+                    "SELECT m.name FROM sqlite_master m JOIN pragma_table_info(m.name) c
+                      WHERE m.type = 'table' AND c.name = 'project'
+                      ORDER BY m.name",
+                    [],
+                    |r| r.get(0),
+                );
+                let mut oracle = PROJECT_KEYED.map(String::from).to_vec();
+                oracle.sort();
+                assert_eq!(keyed, oracle);
+            }
         }
     }
 
