@@ -5218,7 +5218,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-582bf6d9907e",
+    "id": "dup-1065bd3505a8",
     "classification": "near",
     "sites": [
       {
@@ -5237,12 +5237,17 @@
         "content_hash": "5c594c241556f52a"
       },
       {
+        "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
+        "name": "is_std_root",
+        "content_hash": "e647e7c4790ca790"
+      },
+      {
         "file": "tests/common/source_audit.rs",
         "name": "is_keyword",
         "content_hash": "5c594c241556f52a"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/concepts.rs, crates/rigger-domain/src/ingest.rs, tests/common/source_audit.rs)",
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-domain/src/concepts.rs, crates/rigger-domain/src/ingest.rs, crates/rigger-grounder/src/grounder/symbols/extract.rs, tests/common/source_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -6098,7 +6103,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3cd6f7f2cb9b",
+    "id": "dup-6f7131d21aaa",
     "classification": "semantic",
     "sites": [
       {
@@ -6144,7 +6149,7 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
-        "content_hash": "1953385dcb5ae89a"
+        "content_hash": "b1ad5143fd332b66"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -6155,6 +6160,11 @@
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "1103d16a349001ad"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "b1ad5143fd332b66"
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
@@ -6398,7 +6408,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 59 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 60 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
