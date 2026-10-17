@@ -199,8 +199,9 @@ fn graph_rebuild_retires_a_staged_reference_with_its_definition_and_lands_it_on_
     );
 }
 
-/// The live `REFERENCES` edges of `graph` onto the reference-kinds tree's `Kestrel` and `QUOTA_CAP`, each as
-/// [`common::fixtures::live_edges`] answers it, its `valid_from` and `source` included.
+/// The live `REFERENCES` edges of `graph` onto the reference-kinds tree's `Kestrel` and
+/// `QUOTA_CAP`, each as [`common::fixtures::live_edges`] answers it, its `valid_from` and `source`
+/// included.
 #[cfg(feature = "symbols")]
 fn staged_edges(
     graph: &rigger::contextgraph::sqlite::Projector,
