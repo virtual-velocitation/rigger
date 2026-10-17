@@ -1721,8 +1721,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1381-1383` `pruned_copy`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1398-1400` `shadow_of`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:2124-2130` `live_ref_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:3857-3859` `edge_text_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4237-4239` `file_half_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:3856-3858` `edge_text_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4236-4238` `file_half_sql`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:26-28` `stage_id`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:30-32` `gate_id`
@@ -1778,7 +1778,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:449-451` `quarantine_record_key`
 - `crates/rigger-domain/src/contextgraph/query.rs:207-209` `entity_id`
 - `crates/rigger-domain/src/review.rs:339-344` `spec_critique_prompt`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:3801-3803` `id_range_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:3800-3802` `id_range_sql`
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:73-75` `what`
 - `tests/common/fixtures/plan_critique.rs:29-34` `spec_defect_halt_text`
@@ -1834,7 +1834,7 @@ mandatory sweep: error-shaping helper functions - 13 site(s), collected mechanic
 - `crates/rigger-conductor/src/conductor.rs:29969-30029` `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker`
 - `crates/rigger-domain/src/agent.rs:363-365` `no_result_error`
 - `crates/rigger-domain/src/ingest.rs:604-649` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5436-5489` `a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5435-5488` `a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-worktree-git/src/worktree.rs:3689-3716` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
 - `crates/rigger-worktree-git/src/worktree.rs:5028-5082` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
@@ -2125,11 +2125,11 @@ mandatory sweep: .rigger-path string literals - 608 site(s), collected mechanica
                      free"`
 - `crates/rigger-domain/src/instructions.rs:72-72` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
 - `crates/rigger-gates-shell/src/gate.rs:336-336` `".rigger-cache-probe-{}"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8229-8229` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8237-8237` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8245-8245` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8253-8253` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8261-8261` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8228-8228` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8236-8236` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8244-8244` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8252-8252` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8260-8260` `".rigger/workflow.yml"`
 - `crates/rigger-grounder/src/grounder/mod.rs:444-444` `".rigger"`
 - `crates/rigger-grounder/src/grounder/mod.rs:961-961` `".rigger/workflow.yml"`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:527-527` `".rigger"`
@@ -4062,15 +4062,15 @@ mandatory sweep: sqlite Connection::open call sites - 60 site(s), collected mech
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1426-1426` `Connection::open_with_flags`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1445-1445` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1450-1450` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5448-5448` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5466-5466` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5655-5655` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5978-5978` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6510-6510` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10960-10960` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11709-11709` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13958-13958` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:15186-15186` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5447-5447` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5465-5465` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5654-5654` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5977-5977` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6509-6509` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10959-10959` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11708-11708` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13957-13957` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:15185-15185` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1547-1547` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2160-2160` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2182-2182` `Connection::open_with_flags`
@@ -4126,8 +4126,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4046-4058` `calls_out`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4119-4131` `callers_direct`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4045-4057` `calls_out`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4118-4130` `callers_direct`
 
 #### `dup-1cee568104ee` (near, 2 sites)
 
@@ -4135,8 +4135,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5039-5052` `subgraph_finds_the_governing_decision`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13025-13045` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5038-5051` `subgraph_finds_the_governing_decision`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13024-13044` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
 
 #### `dup-e45a2413a3f0` (near, 7 sites)
 
@@ -4144,11 +4144,11 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-graph-sql
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7089-7096` `apply_edge_inferred`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7968-7975` `apply_doc_concept`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8078-8085` `apply_doc_link`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8408-8415` `apply_batch_ref`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10305-10315` `apply_unit_integrated`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7088-7095` `apply_edge_inferred`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7967-7974` `apply_doc_concept`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8077-8084` `apply_doc_link`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8407-8414` `apply_batch_ref`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10304-10314` `apply_unit_integrated`
 - `tests/code_ingest_events.rs:862-869` `apply_ref_json`
 - `tests/code_ingest_events.rs:999-1006` `apply_ref_fresh`
 
@@ -4158,8 +4158,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7105-7124` `apply_code_entity_partial`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7153-7171` `apply_community`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7104-7123` `apply_code_entity_partial`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7152-7170` `apply_community`
 
 #### `dup-84342f753367` (near, 2 sites)
 
@@ -4167,8 +4167,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8088-8211` `design_intent_link_events_fold_into_the_five_design_intent_edges`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8214-8332` `workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8087-8210` `design_intent_link_events_fold_into_the_five_design_intent_edges`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8213-8331` `workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges`
 
 #### `dup-0b2669324614` (near, 2 sites)
 
@@ -4176,8 +4176,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10038-10071` `decision_fold_projects_no_agent_node_or_decided_edge`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10125-10153` `review_finding_projects_no_raised_edge_even_with_an_event_actor`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10037-10070` `decision_fold_projects_no_agent_node_or_decided_edge`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10124-10152` `review_finding_projects_no_raised_edge_even_with_an_event_actor`
 
 #### `dup-c76c4d91d8a8` (near, 2 sites)
 
@@ -4185,8 +4185,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10848-10850` `edge_projects`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11877-11885` `index_names`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10847-10849` `edge_projects`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11876-11884` `index_names`
 
 #### `dup-554a83a84ac8` (near, 2 sites)
 
@@ -4194,8 +4194,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11612-11653` `the_cross_file_inferred_tier_is_order_independent`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11656-11672` `the_definition_upgrade_never_demotes_a_same_file_extracted_reference`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11611-11652` `the_cross_file_inferred_tier_is_order_independent`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11655-11671` `the_definition_upgrade_never_demotes_a_same_file_extracted_reference`
 
 #### `dup-3cee929a82ba` (near, 3 sites)
 
@@ -4203,7 +4203,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-graph-sql
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11786-11788` `edge_desc`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11785-11787` `edge_desc`
 - `src/cli/hygiene.rs:237-243` `runs_menu_line`
 - `src/cli/hygiene.rs:981-986` `pruned_line`
 
@@ -4213,8 +4213,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13069-13100` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13345-13376` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13068-13099` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13344-13375` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
 
 #### `dup-a34b5b595e15` (near, 2 sites)
 
@@ -5289,7 +5289,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-domain/src/metrics.rs:1392-1399` `model_id_base` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/review.rs:772-809` `a_finding_line_has_five_pipe_fields_with_the_severity_second` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/spec.rs:2249-2256` `strip_inline_code_direct_exact_output_pins_a_zero_width_quote_pair` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5285-5287` `locked` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5284-5286` `locked` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:649-661` `normalize_logical_path` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:1280-1285` `class_fields` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:1702-1710` `go_receiver` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

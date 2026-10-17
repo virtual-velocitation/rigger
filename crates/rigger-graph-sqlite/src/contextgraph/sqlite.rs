@@ -2090,32 +2090,32 @@ fn stage_reference(tx: &Transaction, e: &Event, project: &str, by: &Asserter) ->
     let tagged = (e.type_ == TYPE_EDGE_INFERRED)
         .then(|| serde_json::from_slice::<super::EdgeInferred>(&e.data).ok())
         .flatten();
-    let Some((r, kind)) = tagged.and_then(|r| {
+    let staged = tagged.and_then(|r| {
         let kind = (r.ref_kind.clone()).filter(|kind| !reference_candidate_kinds(kind).is_empty());
         kind.map(|kind| (r, kind))
-    }) else {
-        return Ok(());
-    };
-    let file = resolve_in_tx(tx, &r.file);
-    let from = match &r.caller {
-        Some(caller) => resolve_in_tx(tx, &code_entity_id(&file, caller)),
-        None => file,
-    };
-    tx.execute(
-        "INSERT INTO refs (project, identity, generation, from_id, leaf, ref_kind, lang, position)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT DO NOTHING",
-        params![
-            project,
-            by.identity,
-            by.generation,
-            from,
-            r.name,
-            kind,
-            r.lang,
-            e.position as i64
-        ],
-    )
-    .map_err(be)?;
+    });
+    if let Some((r, kind)) = staged {
+        let file = resolve_in_tx(tx, &r.file);
+        let from = match &r.caller {
+            Some(caller) => resolve_in_tx(tx, &code_entity_id(&file, caller)),
+            None => file,
+        };
+        tx.execute(
+            "INSERT INTO refs (project, identity, generation, from_id, leaf, ref_kind, lang, position)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT DO NOTHING",
+            params![
+                project,
+                by.identity,
+                by.generation,
+                from,
+                r.name,
+                kind,
+                r.lang,
+                e.position as i64
+            ],
+        )
+        .map_err(be)?;
+    }
     Ok(())
 }
 
@@ -2185,7 +2185,8 @@ fn settle_references(tx: &Transaction, by: &Asserter, project: &str) -> Result<(
 
 /// Resolve `row` at the end of `by`'s batch and write what changed (spec 117), in one statement
 /// ([`settled_target_sql`]): a row resolving to the target it holds changes nothing, its edge and
-/// that edge's dates included. Otherwise the row takes its new target; its edge onto the old one
+/// that edge's dates included - the statement answers nothing, so no edge is asserted, and the
+/// release keeps the entry a row still targets. Otherwise the row takes its new target; its edge onto the old one
 /// is released ([`release_reference`]); and its edge onto the new one is asserted under the row's
 /// own identity and generation ([`assert_link`]), valid from `by`'s event time and recorded at the
 /// row's staging position, unless a live `REFERENCES` already holds the pair, which the row then
@@ -2196,7 +2197,7 @@ fn settle_reference(
     row: &StagedRow,
     project: &str,
 ) -> Result<(), Error> {
-    let settled = tx
+    let settled: Option<(Option<String>, String, bool)> = tx
         .query_row(
             &settled_target_sql(&reference_candidate_kinds(&row.ref_kind)),
             params![
@@ -2209,13 +2210,11 @@ fn settle_reference(
                 REL_REFERENCES,
                 placeholder_id(&row.from, &row.leaf)
             ],
-            |r| <(Option<String>, String, bool)>::try_from(r),
+            |r| <_>::try_from(r),
         )
         .optional()
         .map_err(be)?;
-    let Some((resolved, tier, held)) = settled else {
-        return Ok(());
-    };
+    let (resolved, tier, held) = settled.unwrap_or_default();
     let asserter = Asserter {
         identity: &row.identity,
         generation: &row.generation,
