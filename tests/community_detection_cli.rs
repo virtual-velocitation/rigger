@@ -61,8 +61,8 @@ fn def(file: &str, name: &str) -> Event {
 }
 
 /// A caller-attributed `EdgeInferred` call (spec 37): `<file>::<caller> --CALLS--> <name>`, landing
-/// on a BARE same-file placeholder the detection pass resolves by unique name-suffix when `name` is
-/// defined in ANOTHER file - the cross-directory coupling detection spans.
+/// on the BARE same-file placeholder `<file>::%<name>` the detection pass resolves by its unique
+/// leaf when `name` is defined in ANOTHER file - the cross-directory coupling detection spans.
 fn call(file: &str, name: &str, caller: &str) -> Event {
     event_of(TYPE_EDGE_INFERRED, call_json(file, name, caller))
 }
@@ -176,7 +176,7 @@ fn the_subcommand_records_a_live_community_layer_over_the_real_store() {
     }
 
     // Subsystem A: `strike` (combat) and `send` (net) couple into ONE community across the directory
-    // line - the bare cross-file placeholder resolved onto the real `send` definition.
+    // line - the bare placeholder resolved onto the real `send` definition.
     let a = member_of(&edges, "src/combat/hit.rs::strike")
         .expect("the combat definition is a live community member");
     assert_eq!(
@@ -197,10 +197,10 @@ fn the_subcommand_records_a_live_community_layer_over_the_real_store() {
         "the thin bridge does not fuse the two subsystems into one community"
     );
 
-    // The bare cross-file placeholders resolved away: only real definitions / files are members.
+    // The bare placeholders resolved away: only real definitions / files are members.
     assert!(
-        member_of(&edges, "src/combat/hit.rs::send").is_none(),
-        "a bare cross-file placeholder is never a live member on its own"
+        member_of(&edges, "src/combat/hit.rs::%send").is_none(),
+        "a bare placeholder is never a live member on its own"
     );
 }
 

@@ -1,22 +1,22 @@
 //! The code-to-events emit pass (spec 29a): lowers an extracted `SymbolIndex` / `FileSymbols`
-//! into `CodeEntityExtracted` (one per definition) and `EdgeInferred` (one per reference) events,
+//! into `CodeEntityExtracted` (one per path) and `EdgeInferred` (one per reference) events,
 //! which the always-compiled context-graph fold ingests into `code-entity` / `file` nodes and
 //! structural edges. Code structure thus becomes a rebuildable projection over the event log, not
 //! a mutable side index. This is the emit half; the fold half lives in `contextgraph::sqlite` and
 //! stays compiled in both lanes.
 
 use crate::contextgraph::{
-    CodeEntityExtracted, EdgeInferred, CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR,
-    CODE_KIND_DECLARATION, CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO,
-    CODE_KIND_METHOD, CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_STATIC,
-    CODE_KIND_TRAIT, CODE_KIND_TYPE, CODE_KIND_VARIABLE, CODE_KIND_VARIANT,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+    definition_precedence, CodeEntityExtracted, EdgeInferred, CODE_KIND_CONSTANT,
+    CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION, CODE_KIND_FIELD, CODE_KIND_FUNCTION,
+    CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD, CODE_KIND_MODULE, CODE_KIND_OTHER,
+    CODE_KIND_PROPERTY, CODE_KIND_STATIC, CODE_KIND_TRAIT, CODE_KIND_TYPE, CODE_KIND_VARIABLE,
+    CODE_KIND_VARIANT, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
 };
 use crate::eventstore::Event;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
 use crate::grounder::symbols::registry::for_path;
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Round 5 (adj-u86c3-r4-out-of-line-exclusion-still-unmigrated): the symbols [`extract_events`]
 /// actually sees for one file - `fs` unchanged, UNLESS `excluded` (this file is the resolved
@@ -170,11 +170,17 @@ fn lower_file(path: &str, symbols: &FileSymbols, excluded: bool) -> Vec<Event> {
     events
 }
 
-/// Emit one file's extracted symbols as events: one `CodeEntityExtracted` per definition, then
-/// one `EdgeInferred` per reference. Each set is emitted in a sorted, deterministic order (defs by
-/// name/line/kind, refs by name/line) so identical source yields byte-identical events - the
-/// determinism-by-construction spec 29a requires. Definitions are emitted before references so the
-/// fold can land a same-file reference on its already-folded definition entity.
+/// Emit one file's extracted symbols as events: one `CodeEntityExtracted` per path (spec 119, ONE
+/// PATH, ONE EVENT), for the definition at that path first by `CODE_KIND_PRECEDENCE`
+/// ([`path_precedence`]), then the lower line, then the order `extract` returns them, carrying
+/// its id path when that differs from its name and its parent's path when it has one, then one
+/// `EdgeInferred` per reference. Each set is emitted in a sorted, deterministic order so identical
+/// source yields byte-identical events - the determinism-by-construction spec 29a requires: refs
+/// by name/line, and defs parent before child (spec 119, A PARENT IS EMITTED BEFORE ITS CHILD), by
+/// the length of each one's parent chain ([`chain_length`]), then leaf, then path, a total order
+/// over one-per-path definitions, so a parent's own event precedes every child's. Definitions are
+/// emitted before references so the fold can land a same-file reference on its already-folded
+/// definition entity.
 ///
 /// The FIRST event of the file's batch carries `fresh` (spec 29a criterion 3): it marks the
 /// extraction-batch boundary, so the fold supersedes the file's PRIOR structural edges before
@@ -217,17 +223,36 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     }
     let mut events = Vec::with_capacity(fs.defs.len() + fs.refs.len());
 
-    let mut defs: Vec<&Def> = fs.defs.iter().filter(|d| !d.is_test).collect();
-    defs.sort_by(|a, b| {
-        a.name
-            .cmp(&b.name)
-            .then(a.line.cmp(&b.line))
-            .then_with(|| kind_str(a.kind).cmp(kind_str(b.kind)))
+    let survivors = fs.defs.iter().filter(|d| !d.is_test);
+    // Spec 119 (ONE PATH, ONE EVENT): one definition per path, the first by
+    // `CODE_KIND_PRECEDENCE`, then the lower line, then the order `extract` returns them.
+    let mut emitted: BTreeMap<&str, &Def> = BTreeMap::new();
+    for d in survivors.clone() {
+        let held = emitted.entry(d.path.as_str()).or_insert(d);
+        if path_precedence(d) < path_precedence(held) {
+            *held = d;
+        }
+    }
+    let mut defs: Vec<&Def> = survivors
+        .filter(|d| std::ptr::eq(emitted[d.path.as_str()], *d))
+        .collect();
+    // Spec 119 (A PARENT IS EMITTED BEFORE ITS CHILD): two distinct paths never tie, so the
+    // emission is a total order independent of `extract`'s.
+    defs.sort_by_cached_key(|&d| {
+        let chain = chain_length(d.parent.as_deref(), &emitted);
+        (chain, d.name.as_str(), d.path.as_str())
     });
     for d in defs {
         let payload = CodeEntityExtracted {
             file: file.to_string(),
             name: d.name.clone(),
+            // Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH): the id path, carried only when it differs
+            // from the name, so a file-level definition's event stays byte-identical to the form
+            // recorded before the field existed.
+            path: (d.path != d.name).then(|| d.path.clone()),
+            // Spec 119 (CONTAINS IS STRUCTURE): the path its `CONTAINS` comes from, absent at
+            // file level.
+            parent: d.parent.clone(),
             kind: kind_str(d.kind).to_string(),
             line: d.line,
             lang: lang.to_string(),
@@ -255,10 +280,10 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
             // The first event of the file's batch marks the re-extraction boundary; set below.
             fresh: false,
             // The enclosing definition this reference was attributed to during extraction (spec
-            // 37): the caller, same-file. Read straight off the `SymRef` in the already-fixed
-            // sorted order, never a new sort key, so the deterministic refs emission is unchanged;
-            // `None` (a top-level reference) is omitted on the wire, keeping the event
-            // byte-identical to the pre-37 form.
+            // 37): the caller, same-file, by its path (spec 119 criterion 8). Read straight off the
+            // `SymRef` in the already-fixed sorted order, never a new sort key, so the
+            // deterministic refs emission is unchanged; `None` (a top-level reference) is omitted
+            // on the wire, keeping the event byte-identical to the pre-37 form.
             caller: r.enclosing.clone(),
             // A STRUCTURAL reference's edge carries no line (spec 86 criterion 2 introduces `line`
             // for evidence only); leaving it 0 keeps this event's wire form byte-identical to
@@ -306,6 +331,24 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     }
 
     events
+}
+
+/// The length of the parent chain above a definition whose parent is `parent` (spec 119, A PARENT
+/// IS EMITTED BEFORE ITS CHILD): 0 at file level, else one link for the parent plus the chain
+/// above the one definition `emitted` holds at its path - each emitted path mapped to its
+/// definition - a parent naming no emitted definition adding nothing above it.
+fn chain_length(parent: Option<&str>, emitted: &BTreeMap<&str, &Def>) -> usize {
+    parent.map_or(0, |path| {
+        1 + emitted
+            .get(path)
+            .map_or(0, |d| chain_length(d.parent.as_deref(), emitted))
+    })
+}
+
+/// Where `d` stands in the order that picks a path's one emitted definition (spec 119, ONE PATH,
+/// ONE EVENT): the [`definition_precedence`] of its kind and line.
+fn path_precedence(d: &Def) -> (usize, u32) {
+    definition_precedence(kind_str(d.kind), d.line)
 }
 
 /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): the STRUCTURAL batch-boundary sentinel for a
@@ -791,7 +834,7 @@ pub fn out_of_line_test_module_files(idx: &SymbolIndex) -> BTreeSet<String> {
 
 /// The lowercase, stable string for a rigger definition `Kind`, carried on the emitted event and
 /// folded onto the code-entity node's `kind` attr. A rigger-owned rendering, never a grammar tag.
-fn kind_str(k: Kind) -> &'static str {
+pub(crate) fn kind_str(k: Kind) -> &'static str {
     match k {
         Kind::Function => CODE_KIND_FUNCTION,
         Kind::Method => CODE_KIND_METHOD,
@@ -866,11 +909,7 @@ mod tests {
             "a reference emits an EdgeInferred event"
         );
 
-        let p = Projector::open(":memory:", "test").unwrap();
-        for (i, mut e) in events.into_iter().enumerate() {
-            e.position = (i + 1) as u64;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-        }
+        let p = crate::test_support::fold_events(events);
 
         let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
         assert!(
@@ -942,6 +981,9 @@ mod tests {
                     kind: Kind::Function,
                     name: "beta".to_string(),
                     line: 9,
+                    end_line: 9,
+                    path: "beta".to_string(),
+                    parent: None,
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
@@ -951,6 +993,9 @@ mod tests {
                     kind: Kind::Function,
                     name: "alpha".to_string(),
                     line: 3,
+                    end_line: 3,
+                    path: "alpha".to_string(),
+                    parent: None,
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
@@ -1053,6 +1098,9 @@ mod tests {
                 kind: Kind::Function,
                 name: "F".to_string(),
                 line: 1,
+                end_line: 1,
+                path: "F".to_string(),
+                parent: None,
                 is_test: false,
                 is_out_of_line_module: false,
                 path_override: None,
@@ -1197,6 +1245,9 @@ mod tests {
                 kind: Kind::Function,
                 name: "product_fn".into(),
                 line: 1,
+                end_line: 1,
+                path: "product_fn".into(),
+                parent: None,
                 is_test: false,
                 is_out_of_line_module: false,
                 path_override: None,
@@ -1592,6 +1643,9 @@ mod tests {
                     kind: Kind::Function,
                     name: "aaa_test_item".into(),
                     line: 5,
+                    end_line: 5,
+                    path: "aaa_test_item".into(),
+                    parent: None,
                     is_test: true,
                     is_out_of_line_module: false,
                     path_override: None,
@@ -1601,6 +1655,9 @@ mod tests {
                     kind: Kind::Function,
                     name: "product_fn".into(),
                     line: 1,
+                    end_line: 1,
+                    path: "product_fn".into(),
+                    parent: None,
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
@@ -1707,11 +1764,7 @@ fn an_integration_test() {
 
         let events = project_events(dir.path().to_str().unwrap());
 
-        let p = Projector::open(":memory:", "test").unwrap();
-        for (i, mut e) in events.into_iter().enumerate() {
-            e.position = (i + 1) as u64;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-        }
+        let p = crate::test_support::fold_events(events);
 
         let g = p
             .subgraph(
@@ -1818,11 +1871,7 @@ fn an_integration_test() {
 
         let events = project_events(dir.path().to_str().unwrap());
 
-        let p = Projector::open(":memory:", "test").unwrap();
-        for (i, mut e) in events.into_iter().enumerate() {
-            e.position = (i + 1) as u64;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-        }
+        let p = crate::test_support::fold_events(events);
 
         let g = p
             .subgraph(
@@ -1984,11 +2033,7 @@ fn an_integration_test() {
 
         let events = project_events(dir.path().to_str().unwrap());
 
-        let p = Projector::open(":memory:", "test").unwrap();
-        for (i, mut e) in events.into_iter().enumerate() {
-            e.position = (i + 1) as u64;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-        }
+        let p = crate::test_support::fold_events(events);
 
         let g = p
             .subgraph(&["broken.js".to_string(), "clean.js".to_string()], 1)
@@ -2385,5 +2430,508 @@ mod tests {
         let named =
             super::file_batches(dir.path().to_str().unwrap(), &["src/absent.rs".to_string()]);
         assert_eq!(wire_owned(&named[0].1), boundary("src/absent.rs"));
+    }
+
+    /// `file`'s real extraction of `source`, the registered query its extension names, lowered by
+    /// `extract_events`.
+    fn extracted_events(file: &str, source: &str) -> Vec<Event> {
+        let (_, ext) = file
+            .rsplit_once('.')
+            .expect("the fixture file has an extension");
+        extract_events(file, &crate::symbol_index::extracted(ext, source))
+    }
+
+    /// A fresh graph holding [`extracted_events`] of `file` and `source`, folded.
+    fn folded_extraction(file: &str, source: &str) -> Projector {
+        let p = Projector::open(":memory:", "test").unwrap();
+        crate::test_support::folds(
+            &p,
+            &crate::event_fixtures::positioned(extracted_events(file, source)),
+        );
+        p
+    }
+
+    /// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: each file's real extraction, folded, names every
+    /// definition `<file>::<path>` - its enclosing definitions' path, `::`, its leaf, `.` before a
+    /// field or property; an impl contributing its self type or `<T as Trait>`, a Go method its
+    /// receiver's base type, a C# file-scoped namespace every declaration after it - and equal-range
+    /// siblings, a name-filtered `_` and a named value equal to its declarator add nothing.
+    #[test]
+    fn each_extracted_definition_folds_at_its_language_path_id() {
+        use crate::csharp_definition_sources::CSHARP_FILE_SCOPED_NAMESPACE;
+        use crate::go_definition_sources::GO_CLOSURE_VAR;
+        use crate::test_support::{definition_ids, ENUM_E, VARIANT_E_A, VARIANT_E_B};
+
+        let cases: [(&str, &str, &[&str]); 7] = [
+            (
+                "a.rs",
+                "struct T;\nstruct U;\nimpl T {\n    fn new() -> T { T }\n    const NAME: u8 = 1;\n}\n\
+                 impl U {\n    fn new() -> U { U }\n}\ntrait Show {\n    fn show(&self);\n}\n\
+                 impl Show for T {\n    fn show(&self) {}\n}\nmod m {\n    struct V;\n    impl V {\n        \
+                 fn make() {}\n    }\n}\nenum E {\n    A,\n    B { a: u8 },\n}\nstruct S {\n    \
+                 field: u8,\n}\nstruct P(u8);\nfn outer() {\n    fn inner() {}\n}\nstruct Foo<X>(X);\n\
+                 impl Foo<u8> {\n    fn new() {}\n}\nconst _: () = {\n    fn a() {}\n};\n\
+                 const _: () = {\n    fn a() {}\n};\n",
+                &[
+                    "a.rs::<T as Show>::show",
+                    ENUM_E,
+                    VARIANT_E_A,
+                    VARIANT_E_B,
+                    "a.rs::E::B.a",
+                    "a.rs::Foo",
+                    "a.rs::Foo.0",
+                    "a.rs::Foo<u8>::new",
+                    "a.rs::P",
+                    "a.rs::P.0",
+                    "a.rs::S",
+                    "a.rs::S.field",
+                    "a.rs::Show",
+                    "a.rs::Show::show",
+                    "a.rs::T",
+                    "a.rs::T::NAME",
+                    "a.rs::T::new",
+                    "a.rs::U",
+                    "a.rs::U::new",
+                    "a.rs::a",
+                    "a.rs::impl Foo<u8>",
+                    "a.rs::impl Show for T",
+                    "a.rs::impl T",
+                    "a.rs::impl U",
+                    "a.rs::m",
+                    "a.rs::m::V",
+                    "a.rs::m::V::make",
+                    "a.rs::m::impl V",
+                    "a.rs::outer",
+                    "a.rs::outer::inner",
+                ],
+            ),
+            (
+                "g.go",
+                "package g\n\ntype Recv struct{}\n\nfunc (r *Recv) Name() {}\n\nconst a, b = f(), g()\n",
+                &["g.go::Recv", "g.go::Recv::Name", "g.go::a", "g.go::b"],
+            ),
+            (
+                GO_CLOSURE_VAR.0,
+                GO_CLOSURE_VAR.1,
+                &["h.go::T", "h.go::a", "h.go::b"],
+            ),
+            (
+                "c.ts",
+                "class C {\n    f = 1;\n}\nconst f = function f() {};\nconst Foo = class Foo {};\n\
+                 function g() {\n    return function g() {};\n}\n",
+                &["c.ts::C", "c.ts::C.f", "c.ts::Foo", "c.ts::f", "c.ts::g", "c.ts::g::g"],
+            ),
+            (
+                "n.cs",
+                "namespace N {\n    class Foo {\n        Foo() {}\n        int P { get; set; }\n    }\n}\n",
+                &["n.cs::N", "n.cs::N::Foo", "n.cs::N::Foo.P", "n.cs::N::Foo::Foo"],
+            ),
+            (
+                CSHARP_FILE_SCOPED_NAMESPACE.0,
+                CSHARP_FILE_SCOPED_NAMESPACE.1,
+                &["s.cs::N", "s.cs::N::Foo"],
+            ),
+            (
+                "p.py",
+                "def outer():\n    def inner():\n        pass\n",
+                &["p.py::outer", "p.py::outer::inner"],
+            ),
+        ];
+        for (file, source, ids) in cases {
+            let p = folded_extraction(file, source);
+            assert_eq!(definition_ids(&p), ids, "{file}: each definition's path id");
+        }
+    }
+
+    /// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: the fold names a `CodeEntityExtracted` carrying a
+    /// `path` `<file>::<path>`, its `name` staying the leaf, and one without `path`, or whose
+    /// `path` is empty, `<file>::<name>`, as every event recorded before `path` existed folds.
+    #[test]
+    fn an_event_folds_at_its_path_and_at_its_name_without_one() {
+        use crate::event_fixtures::positioned;
+        use crate::test_support::{
+            attrs_of, code_entity_json, definition_ids, event_of, folds, path_entity_json,
+        };
+
+        let p = Projector::open(":memory:", "test").unwrap();
+        folds(
+            &p,
+            &positioned(vec![
+                event_of(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    path_entity_json("x.rs", "new", "T::new", "method", 2, "rust"),
+                ),
+                event_of(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    code_entity_json("x.rs", "run", "function", 5, "rust"),
+                ),
+                event_of(
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    path_entity_json("x.rs", "go", "", "function", 7, "rust"),
+                ),
+            ]),
+        );
+        assert_eq!(
+            definition_ids(&p),
+            ["x.rs::T::new", "x.rs::go", "x.rs::run"],
+            "a path names its node; an absent or empty one the name"
+        );
+        assert_eq!(
+            attrs_of(&p, "x.rs::T::new").get("name").map(String::as_str),
+            Some("new"),
+            "the node's name stays its leaf"
+        );
+    }
+
+    /// Spec 119, CONTAINS IS STRUCTURE: each file's real extraction, folded, hangs every
+    /// definition's `CONTAINS` off its parent - a variant off its enum, a field off its variant,
+    /// an associated item off its impl, an item off its inline mod or enclosing fn, a C#
+    /// file-scoped namespace's class off the namespace, a Go method off the receiver type its file
+    /// defines - and the file's off the file alone: a top-level definition, an impl of a type the
+    /// file does not define, a Go method whose receiver the file does not define, what a
+    /// name-filtered `_` holds and a type inside a closure two equal-range siblings share.
+    #[test]
+    fn each_definitions_contains_comes_from_its_parent_and_the_files_only_from_the_file() {
+        use crate::csharp_definition_sources::CSHARP_FILE_SCOPED_NAMESPACE;
+        use crate::go_definition_sources::GO_CLOSURE_VAR;
+        use crate::test_support::{assert_live, ENUM_E, VARIANT_E_A, VARIANT_E_B};
+
+        let cases = [
+            (
+                "a.rs",
+                "enum E {\n    A,\n    B { a: u8 },\n}\nstruct T;\nimpl T {\n    fn new() -> T { T }\n}\n\
+                 impl Display for X {\n    fn fmt(&self) {}\n}\nmod m {\n    fn item() {}\n}\n\
+                 fn outer() {\n    fn inner() {}\n}\nconst _: () = {\n    fn a() {}\n};\n",
+                &[
+                    ("a.rs", ENUM_E),
+                    ("a.rs", "a.rs::T"),
+                    ("a.rs", "a.rs::a"),
+                    ("a.rs", "a.rs::impl Display for X"),
+                    ("a.rs", "a.rs::impl T"),
+                    ("a.rs", "a.rs::m"),
+                    ("a.rs", "a.rs::outer"),
+                    (ENUM_E, VARIANT_E_A),
+                    (ENUM_E, VARIANT_E_B),
+                    (VARIANT_E_B, "a.rs::E::B.a"),
+                    ("a.rs::impl Display for X", "a.rs::<X as Display>::fmt"),
+                    ("a.rs::impl T", "a.rs::T::new"),
+                    ("a.rs::m", "a.rs::m::item"),
+                    ("a.rs::outer", "a.rs::outer::inner"),
+                ][..],
+            ),
+            (
+                "g.go",
+                "package g\n\ntype Recv struct{}\n\nfunc (r *Recv) Name() {}\n\nfunc (o *Other) Run() {}\n",
+                &[
+                    ("g.go", "g.go::Other::Run"),
+                    ("g.go", "g.go::Recv"),
+                    ("g.go::Recv", "g.go::Recv::Name"),
+                ][..],
+            ),
+            (
+                GO_CLOSURE_VAR.0,
+                GO_CLOSURE_VAR.1,
+                &[("h.go", "h.go::T"), ("h.go", "h.go::a"), ("h.go", "h.go::b")][..],
+            ),
+            (
+                CSHARP_FILE_SCOPED_NAMESPACE.0,
+                CSHARP_FILE_SCOPED_NAMESPACE.1,
+                &[("s.cs", "s.cs::N"), ("s.cs::N", "s.cs::N::Foo")][..],
+            ),
+        ];
+        for (file, source, contains) in cases {
+            assert_live(
+                &folded_extraction(file, source),
+                REL_CONTAINS,
+                contains,
+                &format!("{file}: each definition's CONTAINS comes from its parent"),
+            );
+        }
+    }
+
+    /// Spec 119, CONTAINS IS STRUCTURE: a removed variant's `CONTAINS` from its enum retires with
+    /// its file's next generation, folded from the real extraction of each.
+    #[test]
+    fn a_removed_variants_contains_retires_at_the_next_generation() {
+        use crate::rust_definition_sources::{ENUM_E_HOLDING_A, ENUM_E_HOLDING_A_AND_B};
+        use crate::test_support::{
+            assert_live, fold_events, fold_generation, E_HOLDS_A, GENERATION_AFTER,
+            GENERATION_BEFORE,
+        };
+
+        let p = fold_events([]);
+        let mut pos = 0;
+        for (generation, source) in [
+            (GENERATION_BEFORE, ENUM_E_HOLDING_A_AND_B),
+            (GENERATION_AFTER, ENUM_E_HOLDING_A),
+        ] {
+            fold_generation(
+                &p,
+                &mut pos,
+                "a.rs",
+                generation,
+                extracted_events("a.rs", source),
+            );
+        }
+        assert_live(
+            &p,
+            REL_CONTAINS,
+            E_HOLDS_A,
+            "the removed variant's CONTAINS retires with the generation",
+        );
+    }
+
+    /// Spec 119, CONTAINS IS STRUCTURE: a named value one with the class field holding it takes
+    /// the field's parent, so the one event of `class A { f = function f() {} }`'s `f` names `A`,
+    /// and the file-level `A` names none.
+    #[test]
+    fn a_named_value_takes_the_parent_of_the_definition_it_is_one_with() {
+        use crate::event_fixtures::payloads_of_type;
+
+        let events = extracted_events("c.ts", "class A {\n    f = function f() {};\n}\n");
+        let parents: Vec<(serde_json::Value, serde_json::Value)> =
+            payloads_of_type(&events, TYPE_CODE_ENTITY_EXTRACTED)
+                .into_iter()
+                .map(|payload| (payload["name"].clone(), payload["parent"].clone()))
+                .collect();
+        assert_eq!(
+            parents,
+            [
+                ("A".into(), serde_json::Value::Null),
+                ("f".into(), "A".into())
+            ],
+            "each event's (name, parent)"
+        );
+    }
+
+    /// A CALLER IS NAMED BY ITS PATH (spec 119 criterion 8): `extract_events` copies the caller's
+    /// path into `EdgeInferred.caller`, so a call in `impl T { fn new() }` folds its `CALLS` from
+    /// `<file>::T::new` and one in a Go receiver method from `<file>::Recv::name`, while a
+    /// hand-built caller naming a leaf folds from `<file>::<leaf>`.
+    #[test]
+    fn a_call_folds_its_calls_edge_from_its_caller_s_path() {
+        use crate::caller_sources::{
+            GO_RECEIVER_CALLER_CALLS, GO_RECEIVER_CALLER_SOURCE, RUST_METHOD_CALLER_CALLS,
+            RUST_METHOD_CALLER_SOURCE,
+        };
+        use crate::test_support::{apply_call, assert_live_calls, def};
+
+        assert_live_calls(
+            &folded_extraction("a.rs", RUST_METHOD_CALLER_SOURCE),
+            RUST_METHOD_CALLER_CALLS,
+            "the call in `impl T { fn new() }` folds from `T::new`'s path",
+        );
+        assert_live_calls(
+            &folded_extraction("g.go", GO_RECEIVER_CALLER_SOURCE),
+            GO_RECEIVER_CALLER_CALLS,
+            "the calls in the receiver method `name` fold from `Recv::name`'s path",
+        );
+
+        let p = Projector::open(":memory:", "test").unwrap();
+        def(&p, 1, "x.rs", "go");
+        apply_call(&p, 2, "x.rs", "go", "run");
+        assert_live_calls(
+            &p,
+            &[("x.rs::run", "x.rs::go")],
+            "a hand-built leaf caller folds from <file>::<leaf>",
+        );
+    }
+
+    /// Each `CodeEntityExtracted` payload of `events` beside its path, in emission order, the path
+    /// its name where the payload carries none.
+    fn emitted_payloads(events: &[Event]) -> Vec<(String, serde_json::Value)> {
+        crate::event_fixtures::payloads_of_type(events, TYPE_CODE_ENTITY_EXTRACTED)
+            .into_iter()
+            .map(|payload| {
+                let path = payload["path"].as_str().or(payload["name"].as_str());
+                (path.unwrap().to_owned(), payload)
+            })
+            .collect()
+    }
+
+    /// Each `CodeEntityExtracted` of `events` as `<path>@<line>`, in emission order.
+    fn emitted_definitions(events: &[Event]) -> Vec<String> {
+        emitted_payloads(events)
+            .into_iter()
+            .map(|(path, payload)| format!("{path}@{}", payload["line"]))
+            .collect()
+    }
+
+    /// Each `CodeEntityExtracted` of `events` as `<kind> <path>@<line> in <parent>`, in emission
+    /// order, the parent `-` where the payload carries none.
+    fn emitted_entities(events: &[Event]) -> Vec<String> {
+        emitted_payloads(events)
+            .into_iter()
+            .map(|(path, payload)| {
+                let kind = payload["kind"].as_str().unwrap();
+                let parent = payload["parent"].as_str().unwrap_or("-");
+                format!("{kind} {path}@{} in {parent}", payload["line"])
+            })
+            .collect()
+    }
+
+    /// A PARENT IS EMITTED BEFORE ITS CHILD (spec 119 criterion 16): the real extraction emits a
+    /// variant whose leaf sorts before its enum's after the enum, and a method nested in an impl
+    /// inside a mod after the impl, the type it is for and the mod - each definition after every
+    /// definition containing it, a depth's definitions by leaf.
+    #[test]
+    fn extract_events_emits_each_definition_after_every_definition_containing_it() {
+        let events = extracted_events(
+            "a.rs",
+            "enum Z {\n    A,\n}\nmod m {\n    struct B;\n    impl B {\n        fn a() {}\n    }\n}\n",
+        );
+        assert_eq!(
+            emitted_definitions(&events),
+            ["Z@1", "m@4", "Z::A@2", "m::B@5", "m::impl B@6", "m::B::a@7"],
+            "each definition after every definition containing it"
+        );
+    }
+
+    /// A definition of `name` at `line` on `path` under `parent`, as `extract` would set them.
+    fn placed(name: &str, line: u32, path: &str, parent: Option<&str>) -> Def {
+        Def {
+            line,
+            path: path.into(),
+            parent: parent.map(Into::into),
+            ..crate::symbol_index::def(Kind::Function, name)
+        }
+    }
+
+    /// The batch `extract_events` lowers from a Rust file holding `defs` and no reference.
+    fn lowered_rust(defs: Vec<Def>) -> Vec<Event> {
+        extract_events("a.rs", &crate::symbol_index::rust_file(defs, Vec::new()))
+    }
+
+    /// [`emitted_definitions`] of [`lowered_rust`] over `defs`.
+    fn emitted_from(defs: Vec<Def>) -> Vec<String> {
+        emitted_definitions(&lowered_rust(defs))
+    }
+
+    /// A PARENT IS EMITTED BEFORE ITS CHILD (spec 119 criterion 16): the emission sorts by the
+    /// length of each definition's parent chain - a parent counting one link, resolved to the one
+    /// definition emitted at its path, and one naming no emitted definition still one link - then
+    /// by leaf, then by path, the definitions emitted being one per path (spec 119 criterion 10).
+    #[test]
+    fn extract_events_orders_by_parent_chain_then_leaf_then_path() {
+        let emitted = emitted_from(vec![
+            placed("t", 9, "t", None),
+            placed("t", 8, "t", None),
+            placed("n", 1, "U::n", None),
+            placed("n", 2, "T::n", None),
+            placed("a", 3, "Z::a", None),
+            placed("b", 4, "A::b", None),
+            placed("P", 10, "P", None),
+            placed("Q", 11, "Q", None),
+            placed("P", 12, "P", Some("Q")),
+            placed("c", 13, "P::c", Some("P")),
+            placed("d", 14, "Q::d", Some("Q")),
+            placed("o", 15, "gone::o", Some("gone")),
+            placed("b", 16, "lost::b", Some("lost")),
+        ]);
+        assert_eq!(
+            emitted,
+            [
+                "P@10",
+                "Q@11",
+                "Z::a@3",
+                "A::b@4",
+                "T::n@2",
+                "U::n@1",
+                "t@8",
+                "lost::b@16",
+                "P::c@13",
+                "Q::d@14",
+                "gone::o@15",
+            ],
+            "by parent chain, then leaf, then path, one event per path"
+        );
+    }
+
+    /// ONE PATH IS ONE EVENT (spec 119 criterion 10): each file's real extraction emits one event
+    /// per path, its winner the first by `CODE_KIND_PRECEDENCE`, then the lower line, with the
+    /// winner's own kind, line and parent: `fn x` over `mod x;`, the first of two cfg twins and of
+    /// two impls with one header, the production `fn x` over a `#[cfg(test)]` twin at a lower
+    /// line, the function of `const f = function f() {}`, and the field `B` of `class A { B }`
+    /// over a `namespace A.B` above it.
+    #[test]
+    fn extract_events_emits_one_event_per_path_the_first_by_kind_precedence_then_line() {
+        let cases: [(&str, &str, &[&str]); 6] = [
+            ("a.rs", "mod x;\nfn x() {}\n", &["function x@2 in -"]),
+            (
+                "a.rs",
+                "#[cfg(unix)]\nfn x() {}\n#[cfg(not(unix))]\nfn x() {}\n",
+                &["function x@2 in -"],
+            ),
+            (
+                "a.rs",
+                "struct T;\nimpl T {}\nimpl T {}\n",
+                &["type T@1 in -", "impl impl T@2 in -"],
+            ),
+            (
+                "a.rs",
+                "#[cfg(test)]\nfn x() {}\nfn x() {}\n",
+                &["function x@3 in -"],
+            ),
+            (
+                "c.ts",
+                "const f = function f() {};\n",
+                &["function f@1 in -"],
+            ),
+            (
+                "c.ts",
+                crate::js_ts_definition_sources::NAMESPACE_A_B_BESIDE_CLASS_A_FIELD_B,
+                &["type A@2 in -", "field A.B@3 in A"],
+            ),
+        ];
+        for (file, source, winners) in cases {
+            assert_eq!(
+                emitted_entities(&extracted_events(file, source)),
+                winners,
+                "{source:?}: one event per path"
+            );
+        }
+    }
+
+    /// ONE PATH IS ONE EVENT (spec 119 criterion 10): of same-path twins of one precedence the
+    /// lower line wins though `extract` returns it last, and of twins on one line the first
+    /// `extract` returns, each with its own parent.
+    #[test]
+    fn extract_events_keeps_the_lower_line_then_the_first_extract_returns() {
+        let events = lowered_rust(vec![
+            placed("t", 9, "t", None),
+            placed("t", 8, "t", Some("A")),
+            placed("x", 1, "x", Some("A")),
+            placed("x", 1, "x", Some("B")),
+        ]);
+        assert_eq!(
+            emitted_entities(&events),
+            ["function t@8 in A", "function x@1 in A"],
+            "the lower line, then the first extract returns"
+        );
+    }
+
+    /// ONE PATH IS ONE EVENT (spec 119 criterion 10): each generation re-derives the winner, so
+    /// removing the twin that won leaves the other's line and parent.
+    #[test]
+    fn a_removed_twin_leaves_the_other_s_line_and_parent() {
+        use crate::rust_definition_sources::{
+            METHOD_C_IN_THE_FILE_LEVEL_IMPL, METHOD_C_IN_TWO_IMPLS,
+        };
+        let twin_events = |source: &str| -> Vec<String> {
+            emitted_entities(&extracted_events("a.rs", source))
+                .into_iter()
+                .filter(|entity| entity.contains(" a::B::c@"))
+                .collect()
+        };
+        assert_eq!(
+            twin_events(METHOD_C_IN_TWO_IMPLS),
+            ["method a::B::c@4 in a::impl B"],
+            "both twins: the lower line wins"
+        );
+        assert_eq!(
+            twin_events(METHOD_C_IN_THE_FILE_LEVEL_IMPL),
+            ["method a::B::c@8 in impl a::B"],
+            "the winner removed: the other's line and parent"
+        );
     }
 }

@@ -6,6 +6,7 @@
 //! already holds that node as a reference) also adds a read-off here, selected by the language
 //! `extract` is given.
 
+use crate::grounder::symbols::events::kind_str;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 use rigger_domain::wave::normalize_ws;
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
@@ -154,16 +155,52 @@ fn lowered_kind(lang: Lang, tagged: Kind, node: Option<tree_sitter::Node>, sourc
     }
 }
 
-/// A definition as the tag pass and the read-offs record it, ahead of the passes over the whole
-/// file that resolve the rest: `is_test` needs every definition's range (`test_regions` decides
-/// containment over the whole set), and the out-of-line module facts are read from the parsed
-/// tree once every definition is known (only a `Module`-kind definition ever carries them; see
-/// `Def::is_out_of_line_module`).
-fn unresolved_def(kind: Kind, name: String, line: u32) -> Def {
+/// One file's source text with the byte offset each of its lines begins at, computed once per
+/// [`extract`] so [`def_of`] maps a definition's last byte to its line by one binary search
+/// rather than rescanning the text per definition.
+struct Source<'s> {
+    text: &'s str,
+    line_starts: Vec<usize>,
+}
+
+impl<'s> Source<'s> {
+    fn new(text: &'s str) -> Self {
+        Source {
+            text,
+            line_starts: line_start_offsets(text),
+        }
+    }
+}
+
+/// THE ONE CONSTRUCTOR of a `Def` (spec 119, ONE EXTENT): every tagged, read-off and impl
+/// definition [`extract`] records, in every language. `line` is the 1-based line its pass gives
+/// it (a tagged definition's name row, a read-off's as its reader gives it) and `end_line` the
+/// 1-based line of `range`'s last byte, `range` the definition's whole byte range, never below
+/// `line`; a zero-length `range` gives `line`. Its `path` is its `name` here and it has no
+/// `parent`. It is built ahead of the passes over the whole file that resolve the rest: `path`
+/// and `parent` need every definition's range ([`def_paths`] decides containment over the whole
+/// set), as `is_test` does (`test_regions`),
+/// and the out-of-line module facts are read from the parsed tree once every definition is known
+/// (only a `Module`-kind definition ever carries them; see `Def::is_out_of_line_module`).
+fn def_of(
+    source: &Source,
+    range: std::ops::Range<usize>,
+    kind: Kind,
+    name: String,
+    line: u32,
+) -> Def {
+    let end_line = if range.is_empty() {
+        line
+    } else {
+        (line_of_byte(&source.line_starts, range.end - 1) + 1).max(line)
+    };
     Def {
         kind,
+        path: name.clone(),
+        parent: None,
         name,
         line,
+        end_line,
         is_test: false,
         is_out_of_line_module: false,
         path_override: None,
@@ -179,7 +216,7 @@ fn unresolved_def(kind: Kind, name: String, line: u32) -> Def {
 /// `None`.
 fn record_def(
     lang: Lang,
-    source: &[u8],
+    source: &Source,
     node: Option<tree_sitter::Node>,
     tagged: Kind,
     (range, name, line): ReadOff,
@@ -189,9 +226,9 @@ fn record_def(
     if is_nameless(lang, &name) {
         return Some(range);
     }
-    let kind = lowered_kind(lang, tagged, node, source);
-    def_ranges.push((range, name.clone(), kind));
-    defs.push(unresolved_def(kind, name, line));
+    let kind = lowered_kind(lang, tagged, node, source.text.as_bytes());
+    defs.push(def_of(source, range.clone(), kind, name.clone(), line));
+    def_ranges.push((range, name, kind));
     None
 }
 
@@ -200,9 +237,10 @@ fn record_def(
 /// supplies the grammar and its query (unit 2's registry decides WHICH), and everything it
 /// returns is the parser-free `FileSymbols`.
 ///
-/// A tagged definition is named by its leaf ([`def_leaf`]), in `defs` and as a caller alike. A
-/// definition tag whose leaf names nothing ([`is_nameless`]) makes no `Def`, and the references
-/// in its body take the next enclosing definition by the caller rule, else the file. A
+/// A tagged definition is named by its leaf ([`def_leaf`]), in `defs` and in its caller range
+/// alike, and as a caller by its path (`Def.path`, spec 119 criterion 8). A definition tag
+/// whose leaf names nothing ([`is_nameless`]) makes no `Def`, and the references in its body
+/// take the next enclosing definition by the caller rule, else the file. A
 /// definition read off the tree by `lang` is put to that filter too, so a Go `type _ = B` makes
 /// none. An impl block is not: its name is its header, `impl ..`, never empty and never `_`.
 ///
@@ -215,7 +253,9 @@ fn record_def(
 /// pattern declarator or a declaring `for .. in`/`for .. of` binds ([`class_fields`],
 /// [`enum_members`], [`js_bindings`]), and Python's module-level names a pattern or a chain
 /// binds, class-body names and type aliases ([`assigned_names`], [`class_body_names`],
-/// [`type_aliases`]), each recorded as a tagged definition is ([`record_def`]).
+/// [`type_aliases`]), each recorded as a tagged definition is ([`record_def`]). Every definition,
+/// an impl block's included, is built by [`def_of`] from its byte range, which gives its
+/// `end_line`, and takes its id path and parent from [`def_paths`].
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -248,6 +288,7 @@ pub fn extract(
         .parse(source, None)
         .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
     let root = tree.root_node();
+    let text = Source::new(source);
     let mut defs = Vec::new();
     let mut refs = Vec::new();
     // Each definition's byte range (the whole construct, body included - the tag's node range,
@@ -268,11 +309,11 @@ pub fn extract(
         let line = tag.span.start.row as u32 + 1;
         if tag.is_definition {
             // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the name a
-            // definition is filtered by, recorded under and named as a caller by is one.
+            // definition is filtered by, recorded under and ranked by as a caller is one.
             let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
             dropped.extend(record_def(
                 lang,
-                source.as_bytes(),
+                &text,
                 node,
                 kind_of(config.syntax_type_name(tag.syntax_type_id)),
                 (tag.range.clone(), def_leaf(node, name), line),
@@ -295,8 +336,14 @@ pub fn extract(
     // function encloses the impl, which then is their caller, while a reference inside one of its
     // methods still attributes to the method, the innermost function.
     for block in impl_blocks(root, source.as_bytes()) {
-        def_ranges.push((block.range, block.name.clone(), Kind::Impl));
-        defs.push(unresolved_def(Kind::Impl, block.name, block.line));
+        defs.push(def_of(
+            &text,
+            block.range.clone(),
+            Kind::Impl,
+            block.name.clone(),
+            block.line,
+        ));
+        def_ranges.push((block.range, block.name, Kind::Impl));
         for (name, line, pos) in block.targets {
             ref_positions.push(pos);
             refs.push(SymRef {
@@ -347,7 +394,7 @@ pub fn extract(
             let node = root.descendant_for_byte_range(found.0.start, found.0.end);
             dropped.extend(record_def(
                 lang,
-                source.as_bytes(),
+                &text,
                 node,
                 kind,
                 found,
@@ -356,12 +403,23 @@ pub fn extract(
             ));
         }
     }
+    // Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH; CONTAINS IS STRUCTURE): each definition's id path
+    // and parent, decided over every definition's range at once, so a container recorded after
+    // what it holds still prefixes and parents it.
+    for (d, (path, parent)) in defs
+        .iter_mut()
+        .zip(def_paths(root, source.as_bytes(), &def_ranges))
+    {
+        d.path = path;
+        d.parent = parent;
+    }
     // Attribute each reference to its caller (`enclosing_def`: the innermost enclosing function,
-    // else the innermost enclosing definition; spec 116). The
+    // else the innermost enclosing definition; spec 116), named by that definition's path (spec
+    // 119 criterion 8: `T::new`, never the leaf `new`). The
     // reference order is unchanged - `enclosing` is a derived per-reference attribute, never a new
     // sort key, so identical source still yields byte-identical downstream events.
     for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
-        r.enclosing = enclosing_def(&def_ranges, pos);
+        r.enclosing = enclosing_def(&def_ranges, pos).map(|i| defs[i].path.clone());
     }
     // Spec 86 criterion 1: mark every definition and reference that falls inside a TEST REGION -
     // every test-attributed range (`test_regions`: a definition directly annotated
@@ -521,16 +579,24 @@ fn preceded_by_test_attribute(
     root: tree_sitter::Node,
     range: &std::ops::Range<usize>,
 ) -> bool {
-    let Some(mut node) = root.descendant_for_byte_range(range.start, range.end) else {
-        return false;
-    };
+    outermost_node(root, range).is_some_and(|node| node_preceded_by_test_attribute(node, source))
+}
+
+/// The OUTERMOST node below `root` spanning what `range` spans: `descendant_for_byte_range`
+/// answers the deepest node holding `range`, and every parent of that same range is climbed,
+/// stopping below the root, whose range a file of one item shares.
+fn outermost_node<'t>(
+    root: tree_sitter::Node<'t>,
+    range: &std::ops::Range<usize>,
+) -> Option<tree_sitter::Node<'t>> {
+    let mut node = root.descendant_for_byte_range(range.start, range.end)?;
     while let Some(parent) = node
         .parent()
         .filter(|p| p.parent().is_some() && p.byte_range() == node.byte_range())
     {
         node = parent;
     }
-    node_preceded_by_test_attribute(node, source)
+    Some(node)
 }
 
 /// The core [`preceded_by_test_attribute`] applies once a candidate node is in hand, and
@@ -902,21 +968,19 @@ fn nodes_of_kind<'t>(root: tree_sitter::Node<'t>, kind: &str) -> Vec<tree_sitter
 /// The [`ImplBlock`] for one `impl_item` node, or `None` when its self type cannot be read (a
 /// syntax-error recovery shape).
 fn impl_block(node: tree_sitter::Node, source: &[u8]) -> Option<ImplBlock> {
-    let text =
-        |n: tree_sitter::Node| -> Option<String> { Some(normalize_ws(n.utf8_text(source).ok()?)) };
-    let self_type = node.child_by_field_name("type")?;
-    let trait_node = node.child_by_field_name("trait");
-    let name = match trait_node {
-        Some(t) => format!("impl {} for {}", text(t)?, text(self_type)?),
-        None => format!("impl {}", text(self_type)?),
+    let (self_type, trait_name) = impl_halves(node, source)?;
+    let name = match trait_name {
+        Some(t) => format!("impl {t} for {self_type}"),
+        None => format!("impl {self_type}"),
     };
-    let targets = trait_node
+    let targets = node
+        .child_by_field_name("trait")
         .into_iter()
-        .chain(std::iter::once(self_type))
+        .chain(node.child_by_field_name("type"))
         .filter_map(base_type_identifier)
         .filter_map(|id| {
             Some((
-                text(id)?,
+                collapsed(id, source)?,
                 id.start_position().row as u32 + 1,
                 id.start_byte(),
             ))
@@ -930,8 +994,173 @@ fn impl_block(node: tree_sitter::Node, source: &[u8]) -> Option<ImplBlock> {
     })
 }
 
+/// The two halves of the `impl_item` `node`'s header, each as written with its whitespace
+/// collapsed ([`collapsed`]): its self type and, for a trait impl, its trait; `None` when its
+/// self type, or the trait it names, cannot be read (a syntax-error recovery shape).
+fn impl_halves(node: tree_sitter::Node, source: &[u8]) -> Option<(String, Option<String>)> {
+    let self_type = collapsed(node.child_by_field_name("type")?, source)?;
+    let trait_name = match node.child_by_field_name("trait") {
+        Some(t) => Some(collapsed(t, source)?),
+        None => None,
+    };
+    Some((self_type, trait_name))
+}
+
+/// The source text of `node` with each whitespace run one space and its ends trimmed
+/// ([`normalize_ws`]); `None` when that text is no UTF-8.
+fn collapsed(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    Some(normalize_ws(node.utf8_text(source).ok()?))
+}
+
+/// THE PATH PASS (spec 119, IDS FOLLOW THE LANGUAGE'S PATH): each definition's id path in its
+/// file, index-aligned with `def_ranges`, the ranges THE NAME FILTER leaves, so a definition it
+/// drops (`const _: () = { .. }`) contributes nothing and what it held takes the next container.
+/// A definition's container is the innermost definition whose range STRICTLY holds its own
+/// ([`container_of`]), a range two definitions share holding nothing (Go's `const a, b = f(), g()`
+/// makes siblings, and what both hold is their sibling), and a C# file-scoped namespace, whose
+/// node holds only its name, holds every declaration after it. Its path is the container's
+/// prefix, `::`, its leaf, `.` before a `Field` or `Property` leaf; at file level, its leaf. A
+/// container's prefix is its own path, but that an impl gives its self type, or `<T as Trait>`,
+/// in place of its header ([`impl_halves`]), so `impl T { fn new() }` gives `impl T` and
+/// `T::new`. Two definitions take a path of their own: a Go method is `<receiver base
+/// type>::<name>` ([`go_receiver`]), and a JS or TS named function, generator or class value
+/// whose name is the leaf of the declarator, assignment, pair or class field holding it
+/// ([`is_named_value`]) takes that container's path (`const f = function f() {}` is `f`).
+///
+/// Beside each path it answers the definition's PARENT (spec 119, CONTAINS IS STRUCTURE), the
+/// path its `CONTAINS` comes from: its container's path, but that a named value takes its
+/// container's parent, being one definition with it, and a Go method the path of its receiver
+/// base type when a definition of the file sits there; `None` at file level.
+fn def_paths(
+    root: tree_sitter::Node,
+    source: &[u8],
+    def_ranges: &[(std::ops::Range<usize>, String, Kind)],
+) -> Vec<(String, Option<String>)> {
+    let nodes: Vec<_> = def_ranges
+        .iter()
+        .map(|(range, _, _)| outermost_node(root, range).filter(|n| n.byte_range() == *range))
+        .collect();
+    let spans: Vec<_> = def_ranges
+        .iter()
+        .zip(&nodes)
+        .map(|((range, _, _), node)| match node {
+            Some(n) if n.kind() == "file_scoped_namespace_declaration" => range.start..source.len(),
+            _ => range.clone(),
+        })
+        .collect();
+    let containers: Vec<_> = (0..spans.len()).map(|i| container_of(&spans, i)).collect();
+    // A container's span strictly holds what it contains, so the longest spans are resolved first.
+    let mut order: Vec<usize> = (0..spans.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(spans[i].len()));
+    let receivers: Vec<_> = nodes
+        .iter()
+        .map(|node| node.and_then(|n| go_receiver(n, source)))
+        .collect();
+    let mut paths = vec![String::new(); def_ranges.len()];
+    let mut prefixes = vec![String::new(); def_ranges.len()];
+    let mut parents: Vec<Option<String>> = vec![None; def_ranges.len()];
+    for i in order {
+        let (_, leaf, kind) = &def_ranges[i];
+        let under = |prefix: Option<&str>, sep: &str, leaf: &str| match prefix {
+            Some(prefix) => format!("{prefix}{sep}{leaf}"),
+            None => leaf.to_string(),
+        };
+        let prefix = containers[i].map(|c| prefixes[c].as_str());
+        let sep = if matches!(kind, Kind::Field | Kind::Property) {
+            "."
+        } else {
+            "::"
+        };
+        let path = match (nodes[i], containers[i]) {
+            (Some(n), Some(c)) if is_named_value(n, leaf, &def_ranges[c].1) => {
+                parents[i] = parents[c].clone();
+                paths[c].clone()
+            }
+            _ => {
+                parents[i] = containers[i].map(|c| paths[c].clone());
+                match &receivers[i] {
+                    Some(receiver) => format!("{receiver}::{leaf}"),
+                    None => under(prefix, sep, leaf),
+                }
+            }
+        };
+        let prefix_out = match nodes[i]
+            .filter(|n| n.kind() == "impl_item")
+            .and_then(|n| impl_halves(n, source))
+        {
+            Some((self_type, Some(t))) => under(prefix, "::", &format!("<{self_type} as {t}>")),
+            Some((self_type, None)) => under(prefix, "::", &self_type),
+            None => path.clone(),
+        };
+        paths[i] = path;
+        prefixes[i] = prefix_out;
+    }
+    // A Go method's parent is the definition at its receiver type's path, which only a file-level
+    // definition's path can equal, once every path is known; else the file.
+    for (parent, receiver) in parents.iter_mut().zip(receivers) {
+        if let Some(receiver) = receiver {
+            *parent = paths.contains(&receiver).then_some(receiver);
+        }
+    }
+    paths.into_iter().zip(parents).collect()
+}
+
+/// The index of the definition whose span STRICTLY holds span `i` of `spans` most narrowly - the
+/// innermost container, a span equal to `i`'s never one - among the spans exactly one definition
+/// has, a span two equal-range siblings share holding nothing; `None` at file level.
+fn container_of(spans: &[std::ops::Range<usize>], i: usize) -> Option<usize> {
+    let inner = &spans[i];
+    spans
+        .iter()
+        .enumerate()
+        .filter(|(_, span)| {
+            let holds = |at: &usize| (span.start..=span.end).contains(at);
+            *span != inner && holds(&inner.start) && holds(&inner.end)
+        })
+        .filter(|(_, span)| spans.iter().filter(|other| other == span).count() == 1)
+        .min_by_key(|(_, span)| span.len())
+        .map(|(j, _)| j)
+}
+
+/// Whether `node`, a definition named `leaf`, is a NAMED VALUE (spec 119): a JS or TS
+/// `function_expression`, `generator_function` or `class` (node types no other registered grammar
+/// has) that is the value of a declarator, an assignment, a pair or a class field whose
+/// definition, its container, is named `leaf` too (`container_leaf`), so the two are one
+/// definition at the container's path.
+fn is_named_value(node: tree_sitter::Node, leaf: &str, container_leaf: &str) -> bool {
+    matches!(
+        node.kind(),
+        "function_expression" | "generator_function" | "class"
+    ) && node.parent().is_some_and(|p| {
+        matches!(
+            p.kind(),
+            "variable_declarator"
+                | "assignment_expression"
+                | "pair"
+                | "field_definition"
+                | "public_field_definition"
+        )
+    }) && leaf == container_leaf
+}
+
+/// The receiver base type of `node` when it holds a `receiver`, which only a Go
+/// `method_declaration` does among the registered grammars: the type of its receiver's parameter
+/// by its base identifier ([`base_type_identifier`]), pointer, package qualifier and type
+/// arguments stripped (`(r *pkg.T[K])` gives `T`); `None` for any other node, or a receiver naming
+/// no single type.
+fn go_receiver(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let receiver = node.child_by_field_name("receiver")?;
+    let mut cursor = receiver.walk();
+    let parameter = receiver
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "parameter_declaration")?;
+    let base = base_type_identifier(parameter.child_by_field_name("type")?)?;
+    Some(base.utf8_text(source).ok()?.to_string())
+}
+
 /// The identifier a type names, through its path (`a::b::T` -> `T`, Go's `pkg.T` -> `T`),
-/// generic arguments (`T<U>` -> `T`, Go's `T[U]` -> `T`) and reference or pointer (`&T` -> `T`);
+/// generic arguments (`T<U>` -> `T`, Go's `T[U]` -> `T`) and reference or pointer (`&T` -> `T`,
+/// Go's `*T` -> `T`, whose grammar holds its pointee as its one named child, under no field);
 /// `None` for a shape that names no single type (a tuple, a slice, a function type).
 fn base_type_identifier(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
     let mut cur = node;
@@ -939,9 +1168,10 @@ fn base_type_identifier(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
         cur = match cur.kind() {
             "type_identifier" => return Some(cur),
             "scoped_type_identifier" | "qualified_type" => cur.child_by_field_name("name")?,
-            "generic_type" | "reference_type" | "pointer_type" => {
-                cur.child_by_field_name("type")?
-            }
+            "generic_type" | "reference_type" => cur.child_by_field_name("type")?,
+            "pointer_type" => cur
+                .child_by_field_name("type")
+                .or_else(|| cur.named_child(0))?,
             _ => return None,
         };
     }
@@ -1277,7 +1507,8 @@ fn comma_separated_groups(tt: tree_sitter::Node) -> Vec<Vec<tree_sitter::Node>> 
     groups
 }
 
-/// The name of the reference at `pos`'s CALLER: the innermost FUNCTION-LIKE definition
+/// The index in `def_ranges` of the reference at `pos`'s CALLER, whose `defs` entry at that
+/// index names it by its path (spec 119 criterion 8): the innermost FUNCTION-LIKE definition
 /// (`Function`, `Method`, `Constructor`, `Macro`) whose byte range contains `pos`, else the
 /// innermost definition of any other kind that does, else `None` when `pos` lies outside every
 /// definition (a top-level reference such as an import or a module-level call), the file then
@@ -1292,92 +1523,124 @@ fn comma_separated_groups(tt: tree_sitter::Node) -> Vec<Vec<tree_sitter::Node>> 
 fn enclosing_def(
     def_ranges: &[(std::ops::Range<usize>, String, Kind)],
     pos: usize,
-) -> Option<String> {
+) -> Option<usize> {
     def_ranges
         .iter()
-        .filter(|(range, _, kind)| *kind != Kind::Declaration && range.contains(&pos))
-        .min_by_key(|entry| {
-            let (range, name, kind) = *entry;
+        .enumerate()
+        .filter(|(_, (range, _, kind))| *kind != Kind::Declaration && range.contains(&pos))
+        .min_by_key(|(_, (range, name, kind))| {
             let function_like = matches!(
                 kind,
                 Kind::Function | Kind::Method | Kind::Constructor | Kind::Macro
             );
             (!function_like, range.end - range.start, range.start, name)
         })
-        .map(|(_, name, _)| name.clone())
+        .map(|(i, _)| i)
 }
 
-/// A definition's 1-based inclusive LINE extent: its site line and the last line of the WHOLE
-/// tagged construct (its body included). Both are derived from the tree-sitter tag range, so the
-/// end is the grammar's OWN node boundary - the closing brace of a braced language, the dedent of a
-/// Python block, the closing backtick of a Go raw string - never a hand-rolled per-language guess.
+/// Where [`locate_extent`] bounds a definition's body. Each variant counts only the definitions
+/// at the recorded path, when one is given ([`Recorded::path`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DefExtent {
-    /// The definition name (the same name the `<file>::<name>` graph id carries).
-    pub name: String,
-    /// The 1-based site line: the definition's name row - IDENTICAL to the `line` [`Def`] records
-    /// and the graph persists, so a located entity's recorded line matches this extent's start.
-    pub start_line: u32,
-    /// The 1-based, inclusive line the whole construct (body included) ends on - the last line of
-    /// the tree-sitter node range. Always `>= start_line`.
-    pub end_line: u32,
+pub enum Extent {
+    /// The 1-based, inclusive line range `[start, end]` of the definition's whole construct, its
+    /// body included: `start` the recorded line when a definition still sits there, else the live
+    /// line a drifted one healed to.
+    Bounded { start: u32, end: u32 },
+    /// No production definition of the name and kind sits at the recorded line or anywhere else
+    /// in the file, nor a lone one of the name at that line (deleted, not merely moved).
+    Missing,
+    /// The recorded line drifted and production definitions of the name and kind sit at this many
+    /// distinct lines, so which one moved cannot be told.
+    Ambiguous(usize),
 }
 
-/// The 1-based line extent of every definition in `source`, under the INJECTED grammar (the SAME
-/// `(grammar, tag query)` pair [`extract`] runs and the registry supplies). This is the ONE
-/// multi-grammar extent authority the show surface bounds a body with: because the end line is read
-/// from the grammar's own tree-sitter node range, it generalizes across every ingested grammar
-/// (Rust, Python, Go, JS/TS, C#) instead of a Rust-only brace lexer - so a destructuring parameter
-/// (`fn f(Point { x, y }: Point) {`), a Python nested `def`, a Go backtick raw string, and a JS
-/// single-quote string carrying a lone `{` are all bounded by the parser, never a lexer that
-/// mis-reads them. It shares the tag mechanism ([`tree_sitter_tags`]) with `extract`; it projects
-/// the node's END line rather than lowering the persisted `Def`, so it records nothing and changes
-/// no serialized form. A definition whose byte range cannot be mapped is skipped (the same
-/// defensive guard `extract` uses), never a panic.
-pub fn definition_extents(
+/// A definition as its graph node records it, the one [`locate_extent`] bounds.
+#[derive(Clone, Copy, Debug)]
+pub struct Recorded<'a> {
+    /// Its leaf, the node's `name`.
+    pub name: &'a str,
+    /// Its id path in its file, the node id's text after the file (spec 119, IDS FOLLOW THE
+    /// LANGUAGE'S PATH); `None` for an id holding no `::`, found by name, kind and line alone.
+    pub path: Option<&'a str>,
+    /// Its kind, a `kind_str` rendering, as the node carries it.
+    pub kind: &'a str,
+    /// Its recorded 1-based line.
+    pub line: u32,
+}
+
+/// THE ONE EXTENT a `rigger graph --show` body is bounded by (spec 119, ONE EXTENT): [`extract`]
+/// runs over `source` under the INJECTED grammar and tags query, exactly as the code graph is
+/// extracted, and the `recorded` definition - named `name`, of kind `kind`, recorded at `line`,
+/// and, when its `path` is given, at that id path ([`Def::path`]), so a drifted `T::new` never
+/// heals onto `U::new` - is found among the production definitions - those not `is_test`, as
+/// `extract_events` drops them, since the graph holds no other - by three tiers, in order, its
+/// [`Def::end_line`] bounding the body, every tier reading only the definitions of the name at
+/// the given path:
+///
+/// 1. name, kind and line: the recorded site still holds it; when several do, the widest
+///    `end_line` wins.
+/// 2. name and line, the kind ignored, when exactly one definition matches: a definition whose
+///    kind changed in place since the last ingest still bounds at its recorded line.
+/// 3. name and kind at any line (spec 92): the recorded line drifted, and healing is safe only
+///    when one distinct line holds them (the widest `end_line` there winning); more lines are
+///    [`Extent::Ambiguous`], none [`Extent::Missing`].
+///
+/// The kind is compared through `kind_str`, so a field beside a same-named fn, or a variant
+/// inside its same-named enum, never widens or blocks a tier-1 or tier-3 match; at the recorded
+/// line tier 2 ignores the kind, so a lone same-named field there bounds the body when it sits at
+/// the path sought: with no `path` given, any such field; with one, only a field whose own path is
+/// that path - a field under a named container (`S.h`) never matches a function's (`h`), while a
+/// file-level field, under an anonymous class or a binding the name filter drops (Go's `var _`),
+/// has its leaf as its path and does. An `Err` is a grammar or query that cannot run over the
+/// source.
+pub fn locate_extent(
     source: &str,
+    lang: Lang,
     ts_language: &tree_sitter::Language,
     tags_query: &str,
-) -> Result<Vec<DefExtent>, String> {
-    let config = TagsConfiguration::new(ts_language.clone(), tags_query, "")
-        .map_err(|e| format!("symbols: tags config: {e}"))?;
-    let mut ctx = TagsContext::new();
-    let (tags, _) = ctx
-        .generate_tags(&config, source.as_bytes(), None)
-        .map_err(|e| format!("symbols: generate tags: {e}"))?;
-    // Byte offset at which each 0-based line begins, so a construct's end byte maps to its end line
-    // by one binary search rather than rescanning the source per definition.
-    let line_starts = line_start_offsets(source);
-    let mut out = Vec::new();
-    for tag in tags {
-        let tag = tag.map_err(|e| format!("symbols: tag: {e}"))?;
-        if !tag.is_definition {
-            continue;
-        }
-        let Some(name) = source.get(tag.name_range.start..tag.name_range.end) else {
-            continue;
-        };
-        // The site line is the name row, exactly as `extract` records it into `Def::line`.
-        let start_line = tag.span.start.row as u32 + 1;
-        // The construct's LAST byte (the tag range is exclusive at its end); its line is the extent
-        // end. Empty source or a zero-length range degrades to `start_line` via the `.max` below.
-        let last_byte = tag
-            .range
-            .end
-            .saturating_sub(1)
-            .min(source.len().saturating_sub(1));
-        let end_line = (line_of_byte(&line_starts, last_byte) + 1).max(start_line);
-        out.push(DefExtent {
-            name: name.to_string(),
-            start_line,
-            end_line,
+    recorded: Recorded,
+) -> Result<Extent, String> {
+    let Recorded {
+        name,
+        path,
+        kind,
+        line,
+    } = recorded;
+    let symbols = extract(source, lang, ts_language, tags_query)?;
+    let named: Vec<&Def> = symbols
+        .defs
+        .iter()
+        .filter(|d| !d.is_test && d.name == name && path.is_none_or(|path| d.path == path))
+        .collect();
+    // The widest end of each line holding a definition of the name and kind: tier 1 reads the
+    // recorded line's, tier 3 the one line's when one is all there is.
+    let mut of_kind: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    for d in named.iter().filter(|d| kind_str(d.kind) == kind) {
+        let end = of_kind.entry(d.line).or_insert(d.end_line);
+        *end = (*end).max(d.end_line);
+    }
+    if let Some(&end) = of_kind.get(&line) {
+        return Ok(Extent::Bounded { start: line, end });
+    }
+    if let [only] = named.iter().filter(|d| d.line == line).collect::<Vec<_>>()[..] {
+        return Ok(Extent::Bounded {
+            start: line,
+            end: only.end_line,
         });
     }
-    Ok(out)
+    Ok(match of_kind.len() {
+        0 => Extent::Missing,
+        1 => {
+            let (start, end) = of_kind.into_iter().next().expect("one line");
+            Extent::Bounded { start, end }
+        }
+        n => Extent::Ambiguous(n),
+    })
 }
 
 /// The byte offset at which each 0-based line begins. `offsets[0]` is always `0`; each `\n` opens
-/// the next line at the byte after it. Used to map a tree-sitter node's end byte to its end line.
+/// the next line at the byte after it. [`Source`] holds them, so [`def_of`] maps a definition's
+/// last byte to its end line.
 fn line_start_offsets(source: &str) -> Vec<usize> {
     let mut offsets = vec![0usize];
     for (i, b) in source.bytes().enumerate() {
@@ -1459,7 +1722,7 @@ pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>()
         for expected in [
             ("EventStore", 3, Some("impl EventStore for Sqlite")),
             ("Sqlite", 3, Some("impl EventStore for Sqlite")),
-            ("helper", 3, Some("append")),
+            ("helper", 3, Some("<Sqlite as EventStore>::append")),
             (
                 "EventStore",
                 4,
@@ -1473,7 +1736,7 @@ pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>()
             ("EventStore", 5, Some("impl EventStore for Wrapper<T>")),
             ("Wrapper", 5, Some("impl EventStore for Wrapper<T>")),
             ("Sqlite", 6, Some("impl Sqlite")),
-            ("open_connection", 6, Some("open")),
+            ("open_connection", 6, Some("Sqlite::open")),
             ("open", 7, Some("open_store")),
             ("append", 7, Some("open_store")),
             ("make", 7, Some("open_store")),
@@ -1649,7 +1912,8 @@ setup!();
         }
 
         // The call inside the NESTED `fn inner` (line 13) attributes to the INNERMOST function
-        // `inner`, not the outer `outer` - proving innermost containment, not merely any encloser.
+        // `inner`, not the outer `outer` - proving innermost containment, not merely any encloser -
+        // named by its path `outer::inner` (spec 119 criterion 8).
         let g_nested = fs
             .refs
             .iter()
@@ -1657,7 +1921,7 @@ setup!();
             .expect("G() inside the nested inner fn is extracted");
         assert_eq!(
             g_nested.enclosing.as_deref(),
-            Some("inner"),
+            Some("outer::inner"),
             "a call in a nested function attributes to the innermost enclosing function"
         );
     }
@@ -1670,35 +1934,55 @@ setup!();
     /// function enclosing them; and a top-level reference has the file, no caller.
     #[test]
     fn a_reference_s_caller_is_its_innermost_enclosing_function_else_definition_else_file() {
-        let fs = crate::symbol_index::extracted("rs", crate::caller_sources::RUST_CALLER_SOURCE);
-        assert_eq!(
-            crate::symbol_index::refs_with_callers(&fs),
-            vec![
+        crate::symbol_index::assert_callers(
+            "rs",
+            crate::caller_sources::RUST_CALLER_SOURCE,
+            &[
                 (3, "Draw", Some("impl Draw for Widget")),
                 (3, "Widget", Some("impl Draw for Widget")),
-                (3, "paint", Some("draw")),
+                (3, "paint", Some("<Widget as Draw>::draw")),
                 (6, "Draw", Some("host")),
                 (6, "Local", Some("host")),
-                (6, "brush", Some("draw")),
+                (6, "brush", Some("host::<Local as Draw>::draw")),
                 (7, "declare", Some("host")),
-                (7, "measure", Some("area")),
-                (8, "dig", Some("deep")),
+                (7, "measure", Some("host::Shape::area")),
+                (8, "dig", Some("host::inner::deep")),
                 (8, "setup", Some("host")),
                 (10, "boot", Some("outer")),
                 (11, "announce", Some("Top")),
                 (12, "start", None),
-            ]
+            ],
         );
     }
 
-    /// The caller [`enclosing_def`] gives `pos` over hand-built `(range, leaf, kind)`
-    /// definition ranges.
+    /// A CALLER IS NAMED BY ITS PATH (spec 119 criterion 8): a reference's `enclosing` is its
+    /// caller's `Def.path`, never its leaf - a call in `impl T { fn new() }` is `T::new`'s and one
+    /// in a Go receiver method `Recv::name`'s.
+    #[test]
+    fn a_reference_s_enclosing_is_its_caller_s_path() {
+        crate::symbol_index::assert_callers(
+            "rs",
+            crate::caller_sources::RUST_METHOD_CALLER_SOURCE,
+            &[(2, "T", Some("impl T")), (3, "helper", Some("T::new"))],
+        );
+        crate::symbol_index::assert_callers(
+            "go",
+            crate::caller_sources::GO_RECEIVER_CALLER_SOURCE,
+            &[
+                (5, "Recv", Some("Recv::name")),
+                (5, "helper", Some("Recv::name")),
+            ],
+        );
+    }
+
+    /// The leaf of the caller [`enclosing_def`] picks for `pos` over hand-built
+    /// `(range, leaf, kind)` definition ranges.
     fn caller(ranges: &[(std::ops::Range<usize>, &str, Kind)], pos: usize) -> Option<String> {
         let ranges: Vec<_> = ranges
             .iter()
             .map(|(range, leaf, kind)| (range.clone(), leaf.to_string(), *kind))
             .collect();
-        enclosing_def(&ranges, pos)
+        enclosing_def(&ranges, pos).map(|i| ranges[i].1.clone())
     }
 
     /// THE NAME FILTER DROPS A NAMELESS DEFINITION (spec 116 criterion 3), pinned per language
@@ -1958,16 +2242,16 @@ setup!();
     /// header's self type stays the impl's.
     #[test]
     fn a_call_in_a_rust_data_definition_is_its_function_s_else_the_definition_s() {
-        let fs = crate::symbol_index::extracted("rs", RUST_DEFINITIONS_SOURCE);
-        assert_eq!(
-            crate::symbol_index::refs_with_callers(&fs),
-            vec![
+        crate::symbol_index::assert_callers(
+            "rs",
+            RUST_DEFINITIONS_SOURCE,
+            &[
                 (4, "build", Some("TABLE")),
                 (10, "Pair", Some("impl Pair")),
                 (13, "seed", Some("derive")),
                 (14, "compute", Some("host")),
                 (23, "X", Some("impl X")),
-            ]
+            ],
         );
     }
 
@@ -2059,7 +2343,7 @@ pub fn bang() {}
         lines: &[u32],
         expected: &[(u32, &str, Kind)],
     ) {
-        let entry = crate::grounder::symbols::registry::for_extension(ext).unwrap();
+        let entry = crate::symbol_index::registered(ext);
         let fs = extract(src, lang, &entry.language, entry.tags_query).unwrap();
         let on_lines: Vec<_> = crate::symbol_index::defs_by_line(&fs)
             .into_iter()
@@ -2587,34 +2871,25 @@ fn product() {}
         // side by every extraction here and by `extracts_a_rust_definition_and_a_reference`.
     }
 
-    /// Fetch the single extent named `name` from a `(source, grammar, query)` run, failing loudly
-    /// if the grammar did not tag it - so an extent assertion never silently passes on a miss.
-    fn extent_of(
-        source: &str,
-        ts_language: &tree_sitter::Language,
-        tags_query: &str,
-        name: &str,
-    ) -> DefExtent {
-        definition_extents(source, ts_language, tags_query)
-            .unwrap_or_else(|e| panic!("definition_extents failed: {e}"))
+    /// The `(line, end_line)` of the one definition named `name` the grammar and query registered
+    /// for the extension `ext` extract from `source`, failing loudly when there is none, so an
+    /// extent assertion never silently passes on a miss.
+    fn extent_of(ext: &str, source: &str, name: &str) -> (u32, u32) {
+        let symbols = crate::symbol_index::extracted(ext, source);
+        crate::symbol_index::extents_by_line(&symbols)
             .into_iter()
-            .find(|d| d.name == name)
-            .unwrap_or_else(|| panic!("no extent named {name:?} in the tagged source"))
+            .find(|(_, _, extent_name)| *extent_name == name)
+            .map(|(line, end_line, _)| (line, end_line))
+            .unwrap_or_else(|| panic!("no definition named {name:?} in the extracted source"))
     }
 
-    /// Each `(name, start_line, end_line, why)` of `expected` is the extent `(language, query)`
-    /// tags for that definition of `source`.
-    fn assert_extents(
-        source: &str,
-        language: tree_sitter::Language,
-        query: &str,
-        expected: &[(&str, u32, u32, &str)],
-    ) {
-        for (name, start_line, end_line, why) in expected {
-            let e = extent_of(source, &language, query, name);
+    /// Each `(name, line, end_line, why)` of `expected` is the extent the extension `ext`'s
+    /// registered grammar and query give that definition of `source`.
+    fn assert_extents(ext: &str, source: &str, expected: &[(&str, u32, u32, &str)]) {
+        for (name, line, end_line, why) in expected {
             assert_eq!(
-                (e.start_line, e.end_line),
-                (*start_line, *end_line),
+                extent_of(ext, source, name),
+                (*line, *end_line),
                 "{name}: {why}"
             );
         }
@@ -2630,14 +2905,13 @@ fn product() {}
             // `config` on line 1 destructures a `Point { x, y }` param (a brace ON the
             // signature); its body runs to the closing brace on line 4.
             assert_extents(
+                "rs",
                 "\
 fn config(Point { x, y }: Point) -> u32 {
     let sum = x + y;
     sum
 }
 ",
-                tree_sitter_rust::LANGUAGE.into(),
-                tree_sitter_rust::TAGS_QUERY,
                 &[(
                     "config",
                     1,
@@ -2649,14 +2923,13 @@ fn config(Point { x, y }: Point) -> u32 {
             // The `= {}` default-argument shape of the same defect: a brace that opens and closes
             // on the signature line still must not bound the body.
             assert_extents(
+                "rs",
                 "\
 fn with_default(opts: Opts) {
     let empty = Opts {};
     use_it(empty);
 }
 ",
-                tree_sitter_rust::LANGUAGE.into(),
-                tree_sitter_rust::TAGS_QUERY,
                 &[(
                     "with_default",
                     1,
@@ -2674,6 +2947,7 @@ fn with_default(opts: Opts) {
             // brace and falls back to the next-def-by-line, truncating the outer body at its
             // nested child; Python's block boundary is the dedent, which the grammar resolves.
             assert_extents(
+                "py",
                 "\
 def outer(n):
     def inner(k):
@@ -2681,8 +2955,6 @@ def outer(n):
     total = inner(n)
     return total
 ",
-                tree_sitter_python::LANGUAGE.into(),
-                tree_sitter_python::TAGS_QUERY,
                 &[
                     (
                         "outer",
@@ -2705,6 +2977,7 @@ def outer(n):
             // is a string. The following function is a DISTINCT extent, proving `open` did not
             // swallow it.
             assert_extents(
+                "js",
                 "\
 function open() {
     const brace = '{';
@@ -2714,8 +2987,6 @@ function next() {
     return 2;
 }
 ",
-                tree_sitter_javascript::LANGUAGE.into(),
-                tree_sitter_javascript::TAGS_QUERY,
                 &[
                     (
                         "open",
@@ -2732,15 +3003,226 @@ function next() {
 
     #[test]
     fn extent_of_a_one_line_definition_is_a_single_line() {
-        // A one-line body: start and end lines coincide. Guards the `end_line.max(start_line)`
-        // floor and the end-byte-to-line mapping on the smallest construct.
-        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let e = extent_of(
-            "fn tiny() {}\n",
-            &language,
-            tree_sitter_rust::TAGS_QUERY,
-            "tiny",
+        // A one-line body: its line and end line coincide. Guards the end-byte-to-line mapping on
+        // the smallest construct.
+        assert_eq!(extent_of("rs", "fn tiny() {}\n", "tiny"), (1, 1));
+    }
+
+    /// The `end_line` [`def_of`] gives a definition at `line` spanning `range` of `text`.
+    fn end_line_of(text: &str, range: std::ops::Range<usize>, line: u32) -> u32 {
+        def_of(&Source::new(text), range, Kind::Function, "f".into(), line).end_line
+    }
+
+    crate::test_cases! {
+        /// A range ends on its last byte's line: `ab\ncd` ends on line 2.
+        a_range_ends_on_the_line_of_its_last_byte: assert_eq!(end_line_of("ab\ncd\nef", 0..5, 1), 2);
+        /// A range whose last byte is a newline ends on the line that newline closes, never the
+        /// next one.
+        a_range_ending_with_a_newline_ends_on_the_line_it_closes:
+            assert_eq!(end_line_of("ab\ncd\n", 0..3, 1), 1);
+        /// A zero-length range gives `end_line` = `line`, though the byte before it sits on a
+        /// later line.
+        a_zero_length_range_ends_on_its_own_line: assert_eq!(end_line_of("a\nb\nc\n", 5..5, 1), 1);
+        /// An empty source gives `end_line` = `line`.
+        an_empty_source_ends_on_its_own_line: assert_eq!(end_line_of("", 0..0, 3), 3);
+        /// A range whose last byte sits above `line` ends on `line`, never below it.
+        a_range_ending_above_its_line_ends_on_its_line: assert_eq!(end_line_of("a\nb\nc\n", 0..1, 3), 3);
+    }
+
+    crate::test_cases! {
+        /// Rust: the tagged `tagged` ends on its closing brace and its `line` is its name row, below
+        /// its attribute and its visibility; the read-off tuple fields `0` and `1` end on their own
+        /// type's line; the impl block ends on its closing brace and its method `get` on its own
+        /// line.
+        every_rust_definition_ends_on_its_constructs_last_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "rs", "\
+#[derive(Debug)]
+pub struct Pair(u8, u16);
+
+#[inline]
+pub(crate)
+fn tagged() {
+    let _ = 1;
+}
+
+impl Pair {
+    fn get(&self) {}
+}
+",
+            )),
+            [
+                (2, 2, "0"),
+                (2, 2, "1"),
+                (2, 2, "Pair"),
+                (6, 8, "tagged"),
+                (10, 12, "impl Pair"),
+                (11, 11, "get")
+            ]
         );
-        assert_eq!((e.start_line, e.end_line), (1, 1));
+        /// Go: the tagged `S` and `Run` end on their closing braces; the read-off embedded field
+        /// `Base` ends on its own line.
+        every_go_definition_ends_on_its_constructs_last_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "go", "\
+package p
+
+type S struct {
+	Base
+	n int
+}
+
+func Run() {
+}
+",
+            )),
+            [(3, 6, "S"), (4, 4, "Base"), (5, 5, "n"), (8, 9, "Run")]
+        );
+        /// Python: the decorated `tagged`'s `line` is its name row below its decorator and it ends
+        /// on its block's last line; the read-off class-body name `slot` ends on its own line.
+        every_python_definition_ends_on_its_constructs_last_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "py", "\
+@decorator
+def tagged():
+    return 1
+
+class K:
+    slot: int
+",
+            )),
+            [(2, 3, "tagged"), (5, 6, "K"), (6, 6, "slot")]
+        );
+        /// JS: the tagged class `C` and method `m` end on their closing braces; the read-off class
+        /// field `f` ends on its own line.
+        every_js_definition_ends_on_its_constructs_last_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "js", "\
+class C {
+  f = 1;
+  m() {
+    return 2;
+  }
+}
+",
+            )),
+            [(1, 6, "C"), (2, 2, "f"), (3, 5, "m")]
+        );
+        /// TS: the decorated class `D`'s `line` is its name row below its decorator; the tagged
+        /// enum `E` ends on its closing brace and its read-off member `A` on its own line.
+        every_ts_definition_ends_on_its_constructs_last_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "ts", "\
+@sealed
+class D {}
+enum E {
+  A,
+}
+",
+            )),
+            [(2, 2, "D"), (3, 5, "E"), (4, 4, "A")]
+        );
+        /// C#: the attributed method `M`'s `line` is its name row below its attribute and its
+        /// return type; the tagged class `K` ends on its closing brace and the read-off operator
+        /// `+` on its own line.
+        every_csharp_definition_ends_on_its_constructs_last_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "cs", "\
+class K
+{
+    [Obsolete]
+    public void
+    M() { }
+    public static K operator +(K a, K b) => a;
+}
+",
+            )),
+            [(1, 7, "K"), (5, 5, "M"), (6, 6, "+")]
+        );
+    }
+
+    /// Where [`locate_extent`] bounds the Rust definition named `name` of kind `kind` recorded at
+    /// `line` in `source`, at no path, under the registered Rust grammar and query.
+    fn located(source: &str, name: &str, kind: Kind, line: u32) -> Extent {
+        let entry = crate::symbol_index::registered("rs");
+        locate_extent(
+            source,
+            entry.lang,
+            &entry.language,
+            entry.tags_query,
+            Recorded {
+                name,
+                path: None,
+                kind: kind_str(kind),
+                line,
+            },
+        )
+        .expect("the registered query runs over the source")
+    }
+
+    crate::test_cases! {
+        /// Tier 1: two definitions of the recorded name and kind at the recorded line bound by the
+        /// wider.
+        two_tier_one_matches_bound_by_the_wider: assert_eq!(
+            located("fn a() {} fn a() {\n}\n", "a", Kind::Function, 1),
+            Extent::Bounded { start: 1, end: 2 }
+        );
+        /// Tier 1 reads the kind: a variant inside its same-named enum, both on the recorded line,
+        /// bounds to the variant, never the wider enum.
+        a_variant_inside_its_same_named_enum_bounds_to_the_variant: assert_eq!(
+            located("enum V { V {\n    a: u8,\n},\n}\n", "V", Kind::Variant, 1),
+            Extent::Bounded { start: 1, end: 3 }
+        );
+        /// Tier 2: a definition whose kind changed at its recorded name and line bounds there,
+        /// beside a same-named definition of the recorded kind elsewhere in the file.
+        a_definition_whose_kind_changed_in_place_bounds_at_its_recorded_line: assert_eq!(
+            located(crate::extent_sources::KIND_CHANGED_IN_PLACE_SOURCE, "f", Kind::Function, 1),
+            Extent::Bounded { start: 1, end: 2 }
+        );
+        /// Tier 2 takes exactly one: two same-named definitions of other kinds at the recorded line
+        /// fall to tier 3, which heals to the one of the recorded kind.
+        two_other_kinds_at_the_recorded_line_fall_to_the_third_tier: assert_eq!(
+            located("struct g {} const g: u8 = 0;\nfn g() {\n}\n", "g", Kind::Function, 1),
+            Extent::Bounded { start: 2, end: 3 }
+        );
+        /// Tier 3: a drifted fn beside a same-named field heals to the fn, the field never making
+        /// the name ambiguous.
+        a_drifted_fn_beside_a_same_named_field_heals: assert_eq!(
+            located(crate::extent_sources::FN_BESIDE_SAME_NAMED_FIELD_SOURCE, "h", Kind::Function, 1),
+            Extent::Bounded { start: 5, end: 6 }
+        );
+        /// Tier 3 reads production definitions only: a drifted fn beside its `#[cfg(test)]` twin
+        /// heals to the production one.
+        a_drifted_production_fn_beside_a_cfg_test_twin_bounds_to_the_production_one: assert_eq!(
+            located("\nfn x() {\n}\n#[cfg(test)]\nfn x() {}\n", "x", Kind::Function, 1),
+            Extent::Bounded { start: 2, end: 3 }
+        );
+        /// Tier 3 refuses an ambiguous name: two drifted definitions of the name and kind at two
+        /// lines are left unbounded.
+        an_ambiguous_drifted_name_is_left_unbounded: assert_eq!(
+            located("fn other() {}\nfn dup() {}\nfn dup() {}\n", "dup", Kind::Function, 1),
+            Extent::Ambiguous(2)
+        );
+        /// Two same-named definitions of other kinds at the recorded line, and none of the recorded
+        /// kind anywhere, are missing: tier 2 takes exactly one, tier 3 finds no line.
+        two_other_kinds_at_the_recorded_line_and_none_of_its_kind_are_missing: assert_eq!(
+            located(crate::extent_sources::TWO_OTHER_KINDS_AT_ONE_LINE_SOURCE, "g", Kind::Function, 1),
+            Extent::Missing
+        );
+        /// A name no definition carries anywhere in the file is missing.
+        a_name_defined_nowhere_is_missing: assert_eq!(
+            located("fn other() {}\n", "gone", Kind::Function, 1),
+            Extent::Missing
+        );
+    }
+
+    /// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: two definitions with no byte between them, the
+    /// second starting where the first ends, are siblings at file level, neither one holding the
+    /// other although each holds one end of the other's range.
+    #[test]
+    fn adjacent_definitions_are_siblings_never_each_others_container() {
+        let symbols = crate::symbol_index::extracted("rs", "fn a(){}fn b(){}\n");
+        let paths: Vec<&str> = symbols.defs.iter().map(|d| d.path.as_str()).collect();
+        assert_eq!(paths, ["a", "b"], "adjacent definitions sit side by side");
     }
 }

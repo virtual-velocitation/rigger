@@ -2,10 +2,12 @@
 
 use std::collections::BTreeMap;
 
+use rigger::contextgraph::query::{card, path_leaf, split_id};
 use rigger::contextgraph::{
-    CallEdge, CallGraph, Direction, Edge, Graph, Node, Projection, KIND_CODE_ENTITY, KIND_CONCEPT,
-    KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, KIND_UNIT, REL_ABOUT, REL_CALLS,
-    REL_GOVERNS, REL_REALIZES, REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
+    CallEdge, CallGraph, Direction, Edge, Graph, Node, Projection, KIND_ARTIFACT, KIND_CODE_ENTITY,
+    KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, KIND_UNIT,
+    REL_ABOUT, REL_CALLS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES,
+    TIER_EXTRACTED, TIER_INFERRED,
 };
 
 /// A `kind` node with no attributes.
@@ -214,10 +216,31 @@ pub fn governs(graph_edges: &[Edge]) -> Vec<(String, String, u64, i64)> {
     out
 }
 
+/// The tier of the one edge with relation `rel` landing on `to`, out of a subgraph.
+pub fn edge_tier(g: &Graph, rel: &str, to: &str) -> String {
+    let matches: Vec<&Edge> = g
+        .edges
+        .iter()
+        .filter(|e| e.rel == rel && e.to == to)
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one {rel} edge to {to}; got {matches:?}"
+    );
+    matches[0].tier.clone()
+}
+
 /// The call walk of `p` from `seed` in `direction`, five hops deep, at the inferred floor.
 pub fn call_walk(p: &dyn Projection, seed: &str, direction: Direction) -> CallGraph {
     p.calls(&[seed.to_string()], direction, 5, TIER_INFERRED)
         .unwrap()
+}
+
+/// The ids of the files the UP view of `p` from `seed` lists referenced but not called.
+pub fn referenced_not_called_ids(p: &dyn Projection, seed: &str) -> Vec<String> {
+    let up = call_walk(p, seed, Direction::Up);
+    up.referenced_not_called.into_iter().map(|n| n.id).collect()
 }
 
 /// The reached nodes of a `CallGraph` carrying a frontier, each with its candidates, sorted.
@@ -292,7 +315,7 @@ pub fn subject_graph() -> Graph {
 }
 
 /// A code-entity DEFINITION node: its `name` attr marks it a real definition (not a bare
-/// cross-file placeholder), exactly as the extraction fold records.
+/// placeholder), exactly as the extraction fold records.
 pub fn def_node(id: &str, name: &str) -> Node {
     node_with_optional_attrs(
         id,
@@ -301,9 +324,119 @@ pub fn def_node(id: &str, name: &str) -> Node {
     )
 }
 
-/// A code-entity DEFINITION node of code kind `kind`, named by its id's leaf: what the
-/// extraction fold records for a definition of that kind.
+/// A code-entity node whose `name` attr is present and EMPTY: no definition, since an empty name
+/// reads as absent (spec 119), so it resolves as a bare placeholder does.
+pub fn empty_named_node(id: &str) -> Node {
+    node_with_attrs(id, KIND_CODE_ENTITY, &[("name", "")])
+}
+
+/// A code-entity definition named by its id's leaf (`src/a.rs::foo` named `foo`): [`def_node`]
+/// over [`split_id`]'s rest half, the shape the extraction fold gives a flat definition.
+pub fn leaf_named_node(id: &str) -> Node {
+    def_node(id, split_id(id).1.expect("a code-entity id holds `::`"))
+}
+
+/// A small two-module + decision graph a route dispatch is proven over: the named definitions
+/// ([`leaf_named_node`]) `src/a/mod.rs::foo` and `::bar` and `src/b/mod.rs::baz`, and a decision
+/// `d1`, with the live references `foo -> bar` (one file), `bar -> baz` (across files) and
+/// `d1 -> foo` (touching the decision no file cluster holds).
+pub fn two_module_graph() -> Graph {
+    let refs = |from: &str, to: &str| edge(from, to, REL_REFERENCES, TIER_EXTRACTED);
+    Graph {
+        nodes: vec![
+            leaf_named_node("src/a/mod.rs::foo"),
+            leaf_named_node("src/a/mod.rs::bar"),
+            leaf_named_node("src/b/mod.rs::baz"),
+            plain("d1", KIND_DECISION),
+        ],
+        edges: vec![
+            refs("src/a/mod.rs::foo", "src/a/mod.rs::bar"),
+            refs("src/a/mod.rs::bar", "src/b/mod.rs::baz"),
+            refs("d1", "src/a/mod.rs::foo"),
+        ],
+    }
+}
+
+/// A code-entity DEFINITION node of code kind `kind`, named by its id's leaf ([`leaf_named_node`]):
+/// what the extraction fold records for a definition of that kind.
 pub fn kinded_def_node(id: &str, kind: &str) -> Node {
-    let (_, leaf) = id.split_once("::").expect("a code entity id");
-    node_with_attrs(id, KIND_CODE_ENTITY, &[("name", leaf), ("kind", kind)])
+    let mut node = leaf_named_node(id);
+    node.attrs.insert("kind".to_string(), kind.to_string());
+    node
+}
+
+/// The community a test built by [`one_community_graph`] holds its members in, and the first
+/// community the seeded community fixture labels.
+pub const ONE_COMMUNITY: &str = "community/1/0";
+
+/// A code kind string outside `CODE_KIND_PRECEDENCE`, which ranks with `other`.
+pub const UNLISTED_KIND: &str = "alien";
+/// A second code kind string outside `CODE_KIND_PRECEDENCE`, sorting after [`UNLISTED_KIND`] and
+/// `other`.
+pub const LATER_UNLISTED_KIND: &str = "zeta";
+
+/// A graph of the one community node `community` followed by `members`, each held by a live
+/// inferred `IN_COMMUNITY` edge in `members` order: the subject a re-projection folds.
+pub fn one_community_graph(community: &str, members: Vec<Node>) -> Graph {
+    let edges = members
+        .iter()
+        .map(|m| edge(&m.id, community, REL_IN_COMMUNITY, TIER_INFERRED))
+        .collect();
+    let mut nodes = vec![plain(community, KIND_COMMUNITY)];
+    nodes.extend(members);
+    Graph { nodes, edges }
+}
+
+/// The `file` row of the card [`card`] gives `id` in `graph`: `None` when `id` has no card or its
+/// card names no file.
+pub fn card_file(graph: &Graph, id: &str) -> Option<String> {
+    card(graph, id).and_then(|c| c.file)
+}
+
+/// THE MEMBER RULE's nested method (spec 119): a definition two levels into its file `a.rs`.
+pub const NESTED_METHOD: &str = "a.rs::T::new";
+/// The flat id `<file>::<leaf>` of [`NESTED_METHOD`]'s leaf in its file: the id a decision holds
+/// by leaf alone.
+pub const FLAT_LEAF_ID: &str = "a.rs::new";
+/// A file-level definition beside [`NESTED_METHOD`] in its file.
+pub const FILE_MATE: &str = "a.rs::mate";
+/// The placeholder of [`NESTED_METHOD`]'s leaf in its file: a nameless code entity.
+pub const LEAF_PLACEHOLDER: &str = "a.rs::%new";
+/// A bare parent in [`NESTED_METHOD`]'s file: a nameless code entity a child's parent edge made.
+pub const BARE_PARENT: &str = "a.rs::P";
+/// An `artifact` in [`NESTED_METHOD`]'s file range, the kind a finding's mention settles.
+pub const RANGE_ARTIFACT: &str = "a.rs::x";
+/// A target of the extensionless file `Makefile`.
+pub const MAKE_TARGET: &str = "Makefile::all";
+/// A definition whose file no node of [`member_graph`] holds.
+pub const FILELESS_MEMBER: &str = "c.rs::U::run";
+
+/// The file half of the code-entity id `id` ([`split_id`]): the file it is a member of.
+pub fn file_half(id: &str) -> &str {
+    split_id(id).0
+}
+
+/// THE MEMBER RULE's graph (spec 119), holding no edge, so no `CONTAINS` reaches any node: the
+/// file of [`NESTED_METHOD`] beside that method, [`FILE_MATE`], [`LEAF_PLACEHOLDER`], [`BARE_PARENT`] and
+/// [`RANGE_ARTIFACT`]; the file of [`MAKE_TARGET`] beside that target; and [`FILELESS_MEMBER`].
+/// Each definition and the artifact carry their path's leaf as `name` ([`def_node`]), so only the
+/// artifact's kind keeps it from membership.
+pub fn member_graph() -> Graph {
+    let named = |id: &str| def_node(id, path_leaf(id));
+    let mut artifact = named(RANGE_ARTIFACT);
+    artifact.kind = KIND_ARTIFACT.to_string();
+    Graph {
+        nodes: vec![
+            plain(file_half(NESTED_METHOD), KIND_FILE),
+            named(NESTED_METHOD),
+            named(FILE_MATE),
+            plain(LEAF_PLACEHOLDER, KIND_CODE_ENTITY),
+            plain(BARE_PARENT, KIND_CODE_ENTITY),
+            artifact,
+            plain(file_half(MAKE_TARGET), KIND_FILE),
+            named(MAKE_TARGET),
+            named(FILELESS_MEMBER),
+        ],
+        edges: Vec::new(),
+    }
 }

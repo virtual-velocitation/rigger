@@ -10,7 +10,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use crate::contextgraph::{wired, Fold, Located, Projection};
+use crate::contextgraph::query::whole_graph_degree;
+use crate::contextgraph::{entity_site, site_fields, wired, EntitySite, Fold, Located, Projection};
 use crate::driver::workflow::Driver;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::grounder::Grounder;
@@ -664,10 +665,13 @@ impl<'a> Server<'a> {
     /// `rigger_graph` (spec 92, criterion 4's fix round): the STRUCTURE (`around`) and
     /// resolution (`show`) lookups, both over the SAME `graph` port `with_graph` already wires
     /// for the workflow bridge's event fold - `around` serves [`crate::contextgraph::around`] (the
-    /// trait's [`Projection::subgraph`] plus the seed's cross-file callers), `show` the trait's
+    /// trait's [`Projection::subgraph`] plus the seed's callers), `show` the trait's
     /// [`Projection::locate`] added alongside this fix, so no second graph-reading implementation
-    /// is needed for either selector. Only reachable on the lookup surface; [`call_tool`] never
-    /// dispatches here otherwise.
+    /// is needed for either selector. Both render a node through [`site_object`] (spec 119, SHOW
+    /// IS ONE RENDERER): `show` the located site whole, `around` every node of the loaded `Graph`
+    /// by [`entity_site`] at its edge count there, less the [`AROUND_OMITTED`] `summary` entry.
+    /// Only reachable on the lookup surface;
+    /// [`call_tool`] never dispatches here otherwise.
     fn tool_graph(&self, args: &Value) -> Result<Value, ToolError> {
         let show = args.get("show").and_then(Value::as_str).unwrap_or("");
         let around = args.get("around").and_then(Value::as_str).unwrap_or("");
@@ -687,22 +691,24 @@ impl<'a> Server<'a> {
                     "status": "many",
                     "candidates": cands.iter().map(|c| json!({"id": c.id, "file": c.file})).collect::<Vec<_>>(),
                 }),
-                Located::One(site) => json!({
-                    "status": "one",
-                    "site": {
-                        "id": site.id,
-                        "file": site.file,
-                        "line": site.line,
-                        "kind": if site.kind.is_empty() { "?" } else { site.kind.as_str() },
-                        "degree": site.degree,
-                    },
-                }),
+                Located::One(site) => json!({"status": "one", "site": site_object(&site, &[])}),
             });
         }
         let g = crate::contextgraph::around(graph, &[around.to_string()], depth)
             .map_err(|e| e.to_string())?;
+        // Each loaded node through the one renderer, its degree its edges in this merged graph
+        // (`whole_graph_degree` over it): no node is read a second time from the store.
         Ok(json!({
-            "nodes": g.nodes.iter().map(|n| json!({"id": n.id, "kind": n.kind})).collect::<Vec<_>>(),
+            "nodes": g
+                .nodes
+                .iter()
+                .map(|n| {
+                    site_object(
+                        &entity_site(n, whole_graph_degree(&g, &n.id)),
+                        &AROUND_OMITTED,
+                    )
+                })
+                .collect::<Vec<_>>(),
             "edges": g.edges.iter().map(|e| json!({"from": e.from, "rel": e.rel, "to": e.to})).collect::<Vec<_>>(),
         }))
     }
@@ -1026,6 +1032,26 @@ fn err(id: Value, code: i64, message: &str) -> String {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}).to_string()
 }
 
+/// The [`site_fields`] entries an `around` node leaves out (spec 119, the operator ruling
+/// `spec-119-around-omits-summary`): `summary`, the one unbounded attr, so a neighbourhood hands
+/// back ids and site facts, never every finding's prose; `show` keeps it.
+const AROUND_OMITTED: [&str; 1] = ["summary"];
+
+/// A located node as the `rigger_graph` tool renders it on `show` and on every `around` node
+/// (spec 119, SHOW IS ONE RENDERER): its `id` beside each [`site_fields`] entry not in `omitted`
+/// as a key, the values as `site_fields` gives them (`line` and `degree` JSON numbers, every
+/// other entry verbatim). `show` omits nothing, `around` [`AROUND_OMITTED`].
+fn site_object(site: &EntitySite, omitted: &[&str]) -> Value {
+    let mut object = serde_json::Map::from_iter([("id".to_string(), json!(site.id))]);
+    object.extend(
+        site_fields(site)
+            .into_iter()
+            .filter(|(entry, _)| !omitted.contains(entry))
+            .map(|(entry, value)| (entry.to_string(), value)),
+    );
+    Value::Object(object)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1041,13 +1067,13 @@ mod tests {
         serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap()
     }
 
-    /// A `tools/call` request (id 1) for tool `name` with empty arguments.
-    fn tools_call(name: &str) -> String {
+    /// A `tools/call` request (id 1) for tool `name` with `arguments`.
+    fn tools_call(name: &str, arguments: Value) -> String {
         json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": {"name": name, "arguments": {}},
+            "params": {"name": name, "arguments": arguments},
         })
         .to_string()
     }
@@ -1067,7 +1093,7 @@ mod tests {
         let driver = Driver::new();
         let server = Server::new(&driver, &store, "run");
 
-        let peers = call(&server, &tools_call("rigger_peers"));
+        let peers = call(&server, &tools_call("rigger_peers", json!({})));
         let ids = |section: &str| -> Vec<String> {
             peers["result"]["structuredContent"][section]
                 .as_array()
@@ -1081,7 +1107,7 @@ mod tests {
         assert_eq!(ids("findings"), ["f-b", "f-c"]);
         assert_eq!(store.reads(), fixture.reads("run", 1));
 
-        let activity = call(&server, &tools_call("rigger_activity"));
+        let activity = call(&server, &tools_call("rigger_activity", json!({})));
         assert_eq!(activity["result"]["structuredContent"], json!([]));
         assert_eq!(store.reads(), fixture.reads("run", 2));
 
@@ -1090,7 +1116,7 @@ mod tests {
         let bound = Server::new(&driver, &store, "run")
             .with_progress(&progress, scratch.path().to_str().unwrap())
             .with_spawn("u/implementer#0");
-        let resp = call(&bound, &tools_call("rigger_scratch"));
+        let resp = call(&bound, &tools_call("rigger_scratch", json!({})));
         assert!(
             resp.get("result").is_some(),
             "rigger_scratch answers: {resp}"
@@ -2054,7 +2080,7 @@ mod tests {
         workflow_surface_rejects_ground_and_graph_as_unknown_tools: for name in ["rigger_ground", "rigger_graph"] {
             assert_error_reply(
                 None,
-                &tools_call(name),
+                &tools_call(name, json!({})),
                 None,
                 -32602,
                 &format!(
@@ -2182,6 +2208,94 @@ mod tests {
         assert_eq!(structured["site"]["file"], "src/widget.rs");
         assert_eq!(structured["site"]["line"], 7);
         assert_eq!(structured["site"]["kind"], "fn");
+    }
+
+    /// The `rigger_graph` answer to `arguments` of a lookup surface wired to `graph`: the
+    /// structured content the show-renderer tests read (spec 119, SHOW IS ONE RENDERER).
+    fn shown_graph_answer(
+        graph: &crate::contextgraph::sqlite::Projector,
+        arguments: Value,
+    ) -> Value {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let grounder = crate::grounder::Nop;
+        let server = Server::new(&driver, &store, "run")
+            .with_graph(graph)
+            .with_grounder(Ok(&grounder));
+        call(&server, &tools_call("rigger_graph", arguments))["result"]["structuredContent"].clone()
+    }
+
+    /// Spec 119, SHOW IS ONE RENDERER: the MCP `show` gives each node by exact id as its `id` and
+    /// the `site_fields` entries as keys - `line` and `degree` JSON numbers, a `doc` holding a
+    /// newline verbatim, an empty `lang` and the `proven_by` attr giving no key, an empty `kind`
+    /// attr giving the graph kind, and the finding its `by`, `unit` and `summary` with no `file`
+    /// and no `line` - each object equal, without order, to `site_fields` of the located site.
+    #[test]
+    fn rigger_graph_show_gives_each_node_its_id_and_its_site_fields_as_keys() {
+        use crate::contextgraph::sqlite::Projector;
+        use crate::test_support::{seed_shown_nodes, SHOWN_IDS};
+
+        let graph = Projector::open(":memory:", "test").unwrap();
+        seed_shown_nodes(&graph);
+        let sites =
+            SHOWN_IDS.map(|id| shown_graph_answer(&graph, json!({"show": id}))["site"].clone());
+        assert_eq!(
+            sites,
+            [
+                json!({"id": "src/limits.rs::LIMIT", "file": "src/limits.rs", "line": 3,
+                       "kind": "constant", "degree": 1, "name": "LIMIT", "lang": "rust"}),
+                json!({"id": "src/limits.rs::width", "file": "src/limits.rs", "line": 5,
+                       "kind": "field", "degree": 1, "name": "width"}),
+                json!({"id": "src/limits.rs::blank", "file": "src/limits.rs", "line": 7,
+                       "kind": "code-entity", "degree": 1, "name": "blank", "lang": "rust"}),
+                json!({"id": "Makefile::all", "file": "Makefile", "line": 1,
+                       "kind": "function", "degree": 1, "name": "all", "lang": "make"}),
+                json!({"id": "f-shown", "kind": "finding", "degree": 2, "by": "lens:sdet",
+                       "unit": "u7", "summary": "the width overflows"}),
+                json!({"id": "docs/decisions/one-renderer.md",
+                       "file": "docs/decisions/one-renderer.md", "line": 0,
+                       "kind": "arch-decision", "degree": 0, "title": "One renderer",
+                       "doc": "the decision log\nits second line"}),
+                json!({"id": "docs/x.md#sec", "file": "docs/x.md", "line": 0,
+                       "kind": "design-doc", "degree": 0, "title": "Sec", "doc": "docs/x.md"}),
+            ],
+            "each node's site object"
+        );
+        crate::test_support::assert_the_shown_const_carries_proven_by(&graph);
+        crate::test_support::assert_shows_are_site_fields(&graph, &sites);
+    }
+
+    /// Spec 119, SHOW IS ONE RENDERER: the MCP `around` renders every node of the `Graph` it
+    /// loaded - the seed file and the definitions and finding one hop from it - as `entity_site`
+    /// over the loaded `Node` less its `summary` entry, its degree the node's edges in that
+    /// merged graph, with no per-node `site_of` or `one_hop_degree` read: the finding, at the
+    /// depth bound, shows the one `ABOUT` edge the graph holds and no `summary`, where `show`
+    /// gives it the two edges the store holds and its `summary`.
+    #[test]
+    fn rigger_graph_around_renders_each_loaded_node_with_its_degree_in_the_merged_graph() {
+        use crate::contextgraph::sqlite::Projector;
+        use crate::test_support::{seed_shown_nodes, SHOWN_FILE};
+
+        let graph = Projector::open(":memory:", "test").unwrap();
+        seed_shown_nodes(&graph);
+        let answer = shown_graph_answer(&graph, json!({"around": SHOWN_FILE, "depth": 1}));
+        let shown = |id: &str| shown_graph_answer(&graph, json!({"show": id}))["site"].clone();
+        let nodes = crate::test_support::around_nodes(&answer);
+        assert_eq!(
+            nodes,
+            [
+                json!({"id": "f-shown", "kind": "finding", "degree": 1, "by": "lens:sdet",
+                       "unit": "u7"}),
+                json!({"id": "src/limits.rs", "file": "src/limits.rs", "line": 0,
+                       "kind": "file", "degree": 4, "lang": "rust"}),
+                shown("src/limits.rs::LIMIT"),
+                shown("src/limits.rs::blank"),
+                shown("src/limits.rs::width"),
+            ],
+            "every loaded node at its degree in the merged graph, each definition as show gives it"
+        );
+        crate::test_support::assert_around_is_entity_sites(&graph, &nodes);
+        crate::test_support::assert_finding_shows_past_the_depth_bound(&shown("f-shown"));
     }
 
     /// Spec 101: a wired graph that owes its rebuild is refused by every tool whose answer depends
@@ -2363,7 +2477,7 @@ mod tests {
         spawn_bound_surface_has_no_result_tool: for name in ["rigger_next", "rigger_result", "rigger_activity"] {
             assert_error_reply(
                 Some("u/implementer#0"),
-                &tools_call(name),
+                &tools_call(name, json!({})),
                 None,
                 -32602,
                 &format!("{name} must be UNDISPATCHABLE on the spawn-bound surface"),

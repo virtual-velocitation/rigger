@@ -10,9 +10,9 @@
     "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
   },
   {
-    "id": "dup-b6dc10b9c376",
+    "id": "dup-0a7aeeeffe48",
     "disposition": "not-a-duplicate",
-    "reason": "Each function formats a different durable key or message from different fields (review-round start, a review reject's failed record, the plan-critique spec-defect stop's lesson, SpecDefect and completion records, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id); the shared token shape is a one-line `format!`, and each replay key is the one named key fn its writers and readers share."
+    "reason": "Each function formats a different durable key or message from different fields (review-round start, a review reject's failed record, the plan-critique spec-defect stop's lesson, SpecDefect and completion records, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id, a test fold's code-batch replay key); the shared token shape is a one-line `format!`, and each replay key is the one named key fn its writers and readers share."
   },
   {
     "id": "dup-4b3a37bb0a60",
@@ -225,11 +225,6 @@
     "reason": "Both already read through the shared `raw_rows`; one selects every edge row's project tag, the other the schema's own index names from `sqlite_master`."
   },
   {
-    "id": "dup-30a334181642",
-    "disposition": "not-a-duplicate",
-    "reason": "Both already build through the shared `community_graph`; they are two different fixtures (one three-function district with a caller and a callee, two districts joined by one cross-district call)."
-  },
-  {
     "id": "dup-b8d5ee4b6f2b",
     "disposition": "not-a-duplicate",
     "reason": "Three different map queries over one fixture: landmark ranking by degree, case-insensitive name search, and the kind/degree fields a search hit carries."
@@ -355,7 +350,7 @@
     "reason": "Each ingest half's own file-batch entry point over a different source: the design pass walks the tree for concept and link events, the symbols pass parses code at the default parse width, and the workflow pass lowers `.rigger/workflow.yml` into one batch."
   },
   {
-    "id": "dup-c1d968c10781",
+    "id": "dup-833f66b34f28",
     "disposition": "not-a-duplicate",
     "reason": "Two different lowerings sharing a name: symbols lowers one file's parsed `FileSymbols` into code-entity and edge events, while workflowdef lowers the workflow definition's stages, gates and roles into concept and link events."
   },
@@ -410,7 +405,7 @@
     "reason": "The cli fixture writes a worker agent plus a one-stage workflow with an appended block, while the probe fixture writes a caller-given body verbatim into a bare `.rigger` dir for the lightweight readers."
   },
   {
-    "id": "dup-df1f9764f4e9",
+    "id": "dup-f4a922d43ae9",
     "disposition": "not-a-duplicate",
     "reason": "Two different fixture graphs for two different contracts: a hub over the render budget plus a small community for the drill and overview client contract, versus a two-file plus decision graph for the files-lens route dispatch."
   },
@@ -655,7 +650,7 @@
     "reason": "Two dedup tests over different scenarios (repeated governs edges versus arrival-order independence) with different assertions."
   },
   {
-    "id": "dup-269f626ea28e",
+    "id": "dup-cb84d409b08d",
     "disposition": "not-a-duplicate",
     "reason": "`graph show` face tests over different degraded states that call the already-shared helpers with different arguments and assert different notes."
   },
@@ -830,9 +825,9 @@
     "reason": "`run::read::read_current_run` is the one composition of the run read, its slice and its id; the conductor's `RunCtx` method and the MCP server method only bind their own store and stream to it and map its error into their own error type."
   },
   {
-    "id": "dup-17929143626a",
+    "id": "dup-28ac8c722172",
     "disposition": "not-a-duplicate",
-    "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store's current run, the on-disk run stream) and take the id from it."
+    "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method only reads its own event source (the served store's current run) and takes the id from it."
   },
   {
     "id": "dup-4f6fb68b58e5",
@@ -845,19 +840,14 @@
     "reason": "Two unrelated one-line `format!` wrappers sharing only their token shape: the rebuild-owed note a read-only surface prints versus the platform's product binary file name."
   },
   {
-    "id": "dup-2c822fd14970",
+    "id": "dup-e45a2413a3f0",
     "disposition": "not-a-duplicate",
-    "reason": "Fold helpers that each build a different event type or payload (inferred edges with and without evidence, doc concepts, doc links, batch refs, unit integration, lang-less refs) over the shared `apply_json`."
+    "reason": "Fold helpers that each build a different event type or payload (inferred edges, doc concepts, doc links, batch refs, unit integration, lang-less refs) over the shared `apply_json`."
   },
   {
     "id": "dup-c51171ae2133",
     "disposition": "not-a-duplicate",
     "reason": "Non-boundary tests for two different layers (community assignment versus concept derivation) with different event types and folds."
-  },
-  {
-    "id": "dup-ddaf372936d3",
-    "disposition": "not-a-duplicate",
-    "reason": "Serialized-literal stability tests for two different layers (community versus concept) with different literals."
   },
   {
     "id": "dup-5f6fcac3a66f",
@@ -870,9 +860,9 @@
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   },
   {
-    "id": "dup-05d3dd27c2af",
+    "id": "dup-f876dbc68da1",
     "disposition": "not-a-duplicate",
-    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper); they share only the `format!` shape."
+    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper); they share only the `format!` shape."
   },
   {
     "id": "dup-ffc17308c029",
@@ -905,9 +895,9 @@
     "reason": "Two port methods of the `Namespaced` decorator, each forwarding its own inner call; the shared work (scoping the stream name) is already the one `scoped` both call."
   },
   {
-    "id": "dup-b4990598bfd7",
+    "id": "dup-26b14e332411",
     "disposition": "not-a-duplicate",
-    "reason": "Two different SQL statements over the one shared `group_expr`: the partial group index's `CREATE INDEX` and the lookup's `SELECT` that seeks it; the shared expression is already the one function both call."
+    "reason": "Different SQL composed over one shared expression function: the partial group index's `CREATE INDEX` and the lookup's `SELECT` that seeks it over `group_expr`, and the graph store's member expression (`member_sql`) over `node_leaf_sql`; each shared expression is already the one function its readers call."
   },
   {
     "id": "dup-3eb116c3c4c8",
@@ -920,9 +910,9 @@
     "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, landing an interleaved write) is already the one `record`/`land_interleaved` pair both call."
   },
   {
-    "id": "dup-340eefdbe122",
+    "id": "dup-ff98ca74f1ca",
     "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect) over different inputs."
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect, the `<file>::` id-range SQL predicate the graph store's file-range readers embed) over different inputs."
   },
   {
     "id": "dup-da45cd3da239",

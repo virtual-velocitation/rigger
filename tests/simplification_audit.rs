@@ -1583,10 +1583,7 @@ fn impl_self_type(header: &str) -> String {
     // in the wrong place, leaving the where-clause text glued onto the self type.
     let no_where_clause = strip_trailing_where_clause(no_leading_keyword);
     let generic_stripped = no_where_clause.split('<').next().unwrap_or(no_where_clause);
-    generic_stripped
-        .rsplit("::")
-        .next()
-        .unwrap_or(generic_stripped)
+    common::last_path_segment(generic_stripped)
         .trim()
         .to_string()
 }
@@ -4989,7 +4986,7 @@ fn bucket_names(shape: &GodFileShape, n: usize) -> String {
         .buckets
         .iter()
         .take(n)
-        .map(|b| format!("`{}`", b.module.rsplit("::").next().unwrap_or(&b.module)))
+        .map(|b| format!("`{}`", common::last_path_segment(&b.module)))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -5024,7 +5021,7 @@ fn production_split_scope(file: &str, root_file: &str, dest_dir: &str) -> String
     let stems: Vec<&str> = s
         .buckets
         .iter()
-        .map(|b| b.module.rsplit("::").next().unwrap_or(&b.module))
+        .map(|b| common::last_path_segment(&b.module))
         .collect();
     format!(
         "- Scope: {} mapped functions across {} proposed modules (roughly {bucket_lines} lines \

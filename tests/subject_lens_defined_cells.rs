@@ -35,6 +35,7 @@ mod common;
 use common::fixtures::def_node as def;
 use common::fixtures::edge;
 use common::fixtures::node_with_optional_attrs;
+use common::fixtures::ONE_COMMUNITY;
 use common::lens::{lens, shared_member_graph, OTHER_D, SHARED_MEMBER, SUB_C};
 use common::served::served_json;
 use rigger::contextgraph::TIER_EXTRACTED;
@@ -65,7 +66,7 @@ const FILE_SUBJECT: &str = "src/pkg/mod.rs";
 const COMM_X: &str = "community/1/0";
 const COMM_Y: &str = "community/1/1";
 
-/// A file whose two contained entities are in COMMUNITIES but realize NO concept. So under the code
+/// A file whose two members are in COMMUNITIES but realize NO concept. So under the code
 /// lens the cell is FULL (two community buckets), while under the concepts lens the cell is EMPTY (the
 /// members are part of no concept) - proving the empty-cell state is per-lens membership, not the
 /// subject.
@@ -208,10 +209,9 @@ fn the_code_lens_empty_cell_and_the_files_lens_resolving_its_one_member_carry_no
 // --- THE PARTIAL (MIXED-MEMBERSHIP) CELL: at least one, but not every, member folds derived ----------
 
 const MIXED_FILE: &str = "src/mix/mod.rs";
-const MIXED_COMM: &str = "community/1/0";
 const MIXED_CONCEPT: &str = "concept/1/0";
 
-/// A file subject with two contained entities where EXACTLY ONE folds into a derived bucket: `e1` is
+/// A file subject with two members where EXACTLY ONE folds into a derived bucket: `e1` is
 /// both in a community AND realizes a concept, while `e2` carries no membership at all. So under EITHER
 /// derived lens the re-grain is PARTIALLY membered (one derived bucket beside one kind-fallback
 /// bucket) - the boundary no other empty-cell fixture reaches (every other one is all-membered or
@@ -220,7 +220,7 @@ fn mixed_membership_graph() -> Graph {
     Graph {
         nodes: vec![
             node_with_optional_attrs(MIXED_FILE, KIND_FILE, &[("label", None)]),
-            node_with_optional_attrs(MIXED_COMM, KIND_COMMUNITY, &[("label", Some("cx"))]),
+            node_with_optional_attrs(ONE_COMMUNITY, KIND_COMMUNITY, &[("label", Some("cx"))]),
             node_with_optional_attrs(MIXED_CONCEPT, KIND_CONCEPT, &[("label", Some("cc"))]),
             def("src/mix/mod.rs::e1", "e1"),
             def("src/mix/mod.rs::e2", "e2"),
@@ -241,7 +241,7 @@ fn mixed_membership_graph() -> Graph {
             // e1 folds into a derived bucket under BOTH lenses; e2 folds into neither.
             edge(
                 "src/mix/mod.rs::e1",
-                MIXED_COMM,
+                ONE_COMMUNITY,
                 REL_IN_COMMUNITY,
                 TIER_EXTRACTED,
             ),
@@ -285,7 +285,7 @@ fn a_partially_membered_derived_cell_is_full_under_both_derived_lenses() {
             // e2 keeps its kind-fallback bucket ("code-entity" sorts before "community/..").
             kind_bucket(1),
             Cluster {
-                key: MIXED_COMM.to_string(),
+                key: ONE_COMMUNITY.to_string(),
                 count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: Some("cx".to_string()),

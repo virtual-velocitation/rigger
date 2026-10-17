@@ -19,9 +19,9 @@
 //! named by PURPOSE: a curated module-path -> purpose table ([`district_purpose`]), falling back to
 //! the module's own bare name - NEVER to a file name - for a module this table does not cover
 //! ([`module_of`] never returns a string carrying `.` or `/`, so a fallback purpose can never look
-//! like a path). An entity's own display name is its code-entity `name` attr (its symbol name),
-//! falling back to its id's name-suffix (never its raw `<file>::<name>` id, which would leak the
-//! file) - see [`build`]'s own comment.
+//! like a path). An entity's own display name is its leaf (`node_leaf`: its non-empty `name` attr,
+//! its symbol name, else the leaf its id names; never its raw `<file>::<name>` id, which would leak
+//! the file) - see [`build`]'s own comment.
 //!
 //! **Three units share this ABI; this module owns exactly one slice of it** (the plan-critique
 //! record `adv-pc84-text-treatment-ownership-confirmed` / `op-pc84-approve-spec84-dag`): districts,
@@ -37,7 +37,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::contextgraph::query::{file_of, name_suffix, Buckets, Lens};
+use crate::contextgraph::query::{node_file, node_leaf, Buckets, Lens};
 use crate::contextgraph::{
     Graph, Node, CODE_KIND_CONSTANT, CODE_KIND_FUNCTION, CODE_KIND_TRAIT, CODE_KIND_TYPE,
     KIND_CODE_ENTITY, KIND_FINDING, REL_ABOUT, REL_CALLS, REL_REFERENCES,
@@ -132,8 +132,8 @@ pub(crate) fn district_purpose(module: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct MapEntity {
     pub id: String,
-    /// The entity's display name - its `name` attr (the symbol name), or, absent that (a bare
-    /// cross-file placeholder), its id's name-suffix ([`name_suffix`]) - NEVER the raw
+    /// The entity's display name - its leaf ([`node_leaf`]: its non-empty `name` attr, the symbol
+    /// name, or, absent that (a bare placeholder), the leaf its id names) - NEVER the raw
     /// `<file>::<name>` id, which would leak the file it lives in onto the canvas.
     pub name: String,
     /// The definition kind (`function`, `type`, ...) - the map's "kind dot" colour key.
@@ -209,6 +209,12 @@ const INNER_R: f64 = 44.0;
 const RING_STEP: f64 = 30.0;
 const GOLDEN_ANGLE: f64 = 2.399_963_229_728_653;
 
+/// The label a map entity is drawn with: its leaf ([`node_leaf`]: a non-empty `name`, else the
+/// leaf its id names less one placeholder sigil), else its whole id (spec 119).
+fn entity_label(node: &Node) -> String {
+    node_leaf(node).map_or_else(|| node.id.clone(), str::to_string)
+}
+
 /// Build the map once from an already-loaded, already-community-derived [`Graph`] (the payload
 /// `graph_load` parses, after `rigger graph communities` has run - an UNDERIVED graph simply
 /// yields an empty model, never an error: see the CONSTRAINTS WALK's "empty graph" case, which is
@@ -232,16 +238,16 @@ pub fn build(graph: &Graph) -> MapModel {
 
     let mut by_community: BTreeMap<&str, Vec<&Node>> = BTreeMap::new();
     for n in &graph.nodes {
-        // A code entity with NO `name` attr is a BARE cross-file placeholder (`Coupling::
-        // from_graph`'s own words: "A code-entity node carrying a `name` attr is a real
-        // definition ... a code-entity with NO `name` attr is a bare cross-file placeholder"),
-        // never a real definition - `Coupling::from_graph` canonicalizes every RESOLVABLE bare
-        // reference onto its unique call-target definition, but an AMBIGUOUS one (more than one
-        // same-named call target elsewhere, or none) keeps its own placeholder id and still
-        // joins a community as a coupling-graph member. Such a node carries no `kind` either, so
-        // drawing it would violate "every visible node ... has a placed label and kind dot" -
-        // it is excluded here by the `name` attr alone: every named node is drawn, a data
-        // member or a declaration included.
+        // A code entity with NO `name` attr is a BARE placeholder, never a real
+        // definition. `Coupling::from_graph` canonicalizes every RESOLVABLE bare reference onto
+        // its unique call-target definition, reading a definition as a node with a non-empty
+        // name (`query::node_name`), but an AMBIGUOUS one (more than one call target of its leaf
+        // elsewhere, or none) keeps its own placeholder id and still joins a community as a
+        // coupling-graph member. Such a node carries no `kind` either, so drawing it would
+        // violate "every visible node ... has a placed label and kind dot". The map admits a
+        // node here by the presence of its `name` key alone, empty or not: every named node is
+        // drawn, a data member or a declaration included, and labelled by its leaf
+        // ([`entity_label`]).
         if n.kind != KIND_CODE_ENTITY || !n.attrs.contains_key("name") {
             continue;
         }
@@ -266,7 +272,7 @@ pub fn build(graph: &Graph) -> MapModel {
     for (c, members) in &by_community {
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
         for n in members {
-            if let Some(file) = file_of(&n.id) {
+            if let Some(file) = node_file(&n.kind, &n.id) {
                 *counts.entry(module_of(file)).or_default() += 1;
             }
         }
@@ -329,14 +335,9 @@ pub fn build(graph: &Graph) -> MapModel {
                 max_x = max_x.max(x);
                 min_y = min_y.min(y);
                 max_y = max_y.max(y);
-                let name = node
-                    .attrs
-                    .get("name")
-                    .cloned()
-                    .unwrap_or_else(|| name_suffix(&node.id).to_string());
                 entities.push(MapEntity {
                     id: node.id.clone(),
-                    name,
+                    name: entity_label(node),
                     kind: node.attrs.get("kind").cloned().unwrap_or_default(),
                     community: (*c).to_string(),
                     district: purpose.clone(),
@@ -1217,6 +1218,7 @@ mod tests {
     use super::*;
     use crate::contextgraph::{CommunityAssigned, Edge, Node, REL_IN_COMMUNITY, TIER_EXTRACTED};
     use crate::eventstore::Position;
+    use crate::test_support::ONE_COMMUNITY;
 
     fn code_node(id: &str, name: &str, kind: &str) -> Node {
         let mut attrs = std::collections::BTreeMap::new();
@@ -1421,11 +1423,12 @@ mod tests {
     }
 
     /// A graph of `members` - `(entity id, community)` pairs, each a `function` named by its
-    /// id's own tail - plus the live `calls` edges between them.
+    /// id's leaf ([`kinded_def_node`](crate::test_support::kinded_def_node)) - plus the live
+    /// `calls` edges between them.
     fn community_graph(members: &[(&str, &str)], calls: &[(&str, &str)]) -> Graph {
         let nodes = members
             .iter()
-            .map(|(id, _)| code_node(id, id.rsplit("::").next().unwrap(), "function"))
+            .map(|(id, _)| crate::test_support::kinded_def_node(id, "function"))
             .collect();
         let edges = members
             .iter()
@@ -1442,7 +1445,7 @@ mod tests {
     /// The `members` of one community build into exactly one district, whose purpose is
     /// `purpose` (`why` says which rule decided it).
     fn assert_one_district_purpose(members: &[&str], purpose: &str, why: &str) {
-        let members: Vec<(&str, &str)> = members.iter().map(|id| (*id, "community/1/0")).collect();
+        let members: Vec<(&str, &str)> = members.iter().map(|id| (*id, ONE_COMMUNITY)).collect();
         let model = build(&community_graph(&members, &[]));
         assert_eq!(model.districts.len(), 1, "{:?}", model.districts);
         assert_eq!(model.districts[0].purpose, purpose, "{why}");
@@ -1476,6 +1479,14 @@ mod tests {
             "zzz",
             "the module with the true majority of members (zzz: 3) must dominate over a \
              lexicographically-earlier minority (aaa: 1)",
+        );
+        /// Spec 119 criterion 13, THE FILE HALF IS ONE READ: an extensionless file's
+        /// definitions (`Makefile::all`) are counted in `Makefile`'s district, so its two
+        /// members outvote the one `aaa` member.
+        build_counts_an_extensionless_files_entity_in_its_files_district: assert_one_district_purpose(
+            &["Makefile::all", "Makefile::build", "src/aaa.rs::g"],
+            "Makefile",
+            "the two members of the file `Makefile` must dominate the one `aaa` member",
         );
     }
 
@@ -1559,8 +1570,8 @@ mod tests {
             code_node("src/a.rs::c_fn", "c_fn", "function"),
         ];
         let edges = vec![
-            in_community("src/a.rs::a_fn", "community/1/0"),
-            in_community("src/a.rs::b_fn", "community/1/0"),
+            in_community("src/a.rs::a_fn", ONE_COMMUNITY),
+            in_community("src/a.rs::b_fn", ONE_COMMUNITY),
             live_edge("src/a.rs::a_fn", "src/a.rs::b_fn", REL_CALLS),
             live_edge("src/a.rs::b_fn", "src/a.rs::a_fn", REL_REFERENCES),
             // neither CALLS nor REFERENCES: dropped despite both endpoints being mapped.
@@ -1578,6 +1589,25 @@ mod tests {
         assert_eq!(rels.len(), 2, "unexpected edge set: {rels:?}");
         assert!(rels.contains(&("src/a.rs::a_fn", "src/a.rs::b_fn", REL_CALLS)));
         assert!(rels.contains(&("src/a.rs::b_fn", "src/a.rs::a_fn", REL_REFERENCES)));
+    }
+
+    #[test]
+    fn an_entity_is_labelled_by_its_node_leaf_else_by_its_id() {
+        // Spec 119 criterion 1: a placeholder by its leaf less one sigil, a file by its id.
+        let bare = |id: &str, kind: &str| Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        assert_eq!(
+            [
+                entity_label(&bare("b.rs::%new", KIND_CODE_ENTITY)),
+                entity_label(&bare("b.rs::%%x", KIND_CODE_ENTITY)),
+                entity_label(&bare("src/a.rs", "file")),
+                entity_label(&code_node("a.rs::T::new", "new", "function")),
+            ],
+            ["new", "%x", "src/a.rs", "new"]
+        );
     }
 
     #[test]
@@ -1651,7 +1681,7 @@ mod tests {
         // never a raw event this pure module would have to parse itself.
         let _ = CommunityAssigned {
             node: "x".to_string(),
-            community: "community/1/0".to_string(),
+            community: ONE_COMMUNITY.to_string(),
             resolution: 1.0,
             hash: String::new(),
             fresh: true,
@@ -2102,9 +2132,9 @@ mod tests {
     fn caller_callee_graph() -> Graph {
         community_graph(
             &[
-                ("src/a.rs::a_fn", "community/1/0"),
-                ("src/a.rs::b_fn", "community/1/0"),
-                ("src/a.rs::c_fn", "community/1/0"),
+                ("src/a.rs::a_fn", ONE_COMMUNITY),
+                ("src/a.rs::b_fn", ONE_COMMUNITY),
+                ("src/a.rs::c_fn", ONE_COMMUNITY),
             ],
             &[
                 ("src/a.rs::a_fn", "src/a.rs::b_fn"),
@@ -2290,11 +2320,11 @@ mod tests {
         // degree leaf whose only edge is to the hub. Selecting the hub must still draw the
         // leaf even though its rank alone would never clear the zoom-0 budget.
         let mut nodes = vec![code_node("src/a.rs::hub", "hub", "function")];
-        let mut edges = vec![in_community("src/a.rs::hub", "community/1/0")];
+        let mut edges = vec![in_community("src/a.rs::hub", ONE_COMMUNITY)];
         for i in 0..9 {
             let id = format!("src/a.rs::leaf_{i}");
             nodes.push(code_node(&id, &format!("leaf_{i}"), "function"));
-            edges.push(in_community(&id, "community/1/0"));
+            edges.push(in_community(&id, ONE_COMMUNITY));
             edges.push(live_edge("src/a.rs::hub", &id, REL_CALLS));
         }
         let model = build(&Graph { nodes, edges });
@@ -2339,11 +2369,11 @@ mod tests {
         // A hub with 30 callees (CARD_NEIGHBOR_CAP is 20) - the card's own `degree` must be the
         // TRUE count (30), while `calls` is capped to the top 20 by degree.
         let mut nodes = vec![code_node("src/a.rs::hub", "hub", "function")];
-        let mut edges = vec![in_community("src/a.rs::hub", "community/1/0")];
+        let mut edges = vec![in_community("src/a.rs::hub", ONE_COMMUNITY)];
         for i in 0..30 {
             let id = format!("src/a.rs::callee_{i:02}");
             nodes.push(code_node(&id, &format!("callee_{i:02}"), "function"));
-            edges.push(in_community(&id, "community/1/0"));
+            edges.push(in_community(&id, ONE_COMMUNITY));
             edges.push(live_edge("src/a.rs::hub", &id, REL_CALLS));
         }
         let model = build(&Graph { nodes, edges });

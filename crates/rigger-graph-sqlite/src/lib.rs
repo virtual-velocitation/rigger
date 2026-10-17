@@ -10,6 +10,8 @@ pub mod contextgraph;
 #[cfg(any(test, feature = "store", not(feature = "core")))]
 use rigger_domain::eventstore;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_domain::ingest;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::retention;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_domain::spawn;

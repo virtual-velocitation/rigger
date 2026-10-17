@@ -1,6 +1,6 @@
 //! Periphery (API / integration / contract) tests for spec 63's FILES LENS (criterion 3): the
 //! default `Lens::Files` whole-graph fold, purified the same shape as the already-merged code lens
-//! (criterion 1). Only [`KIND_CODE_ENTITY`] nodes fold, each keyed by its OWN FILE ([`file_of`]) -
+//! (criterion 1). Only [`KIND_CODE_ENTITY`] nodes fold, each keyed by its OWN FILE ([`node_file`]) -
 //! never its directory, never its kind - so a cluster IS a file, sized by its CONTAINED-ENTITY count;
 //! weighted cross-file coupling edges connect files that reference each other; and drilling ANY
 //! cluster is unconditionally empty, because a file is this lens's atomic LEAF subject. Handoff
@@ -27,9 +27,10 @@
 //!    is always complete - trivially, vacuously - since it is always empty). The unit test asserts
 //!    Rust struct equality, never the JSON keys' presence / absence.
 //!  - THE CARD HANDOFF SEAM surviving this criterion's purity: [`neighborhood`] is LENS-AGNOSTIC (a
-//!    generic BFS over every currently-valid edge, regardless of relation), so a file's `CONTAINS`-
-//!    linked entities stay reachable that way - the metadata card's job (criterion 2) - even though
-//!    this criterion makes the SAME entities unreachable as cluster-fold NODES. Proving that
+//!    generic BFS over every currently-valid edge, regardless of relation, and the file-member
+//!    hops of spec 119's member rule), so a file's `CONTAINS`-linked entities stay reachable that
+//!    way - the metadata card's job (criterion 2) - even though this criterion makes the SAME
+//!    entities unreachable as cluster-fold NODES. Proving that
 //!    boundary needs the real `neighborhood` / served-route seam, which the in-module fold test never
 //!    drives.
 //!
@@ -38,14 +39,14 @@
 
 mod common;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use common::fixtures::edge;
 use common::fixtures::plain;
 use common::served::served as served_over;
 use common::served::served_json as served_json_over;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, REL_CONTAINS,
+    Edge, Graph, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, REL_CONTAINS,
     REL_REFERENCES, TIER_EXTRACTED,
 };
 use rigger::dash::{
@@ -53,20 +54,13 @@ use rigger::dash::{
     WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 
-/// A code-entity DEFINITION node under `<file>::<name>` (so [`file_of`] folds it to `<file>`),
-/// carrying a `name` attr matching its own entity-name suffix - exactly as the extraction fold always
-/// sets for a REAL definition, the files-lens honesty gate's (spec 63 c3) marker that this is not a
-/// bare cross-file placeholder. Every fixture in this file models an entity's own file, never a
-/// cross-file reference, so this is the correct shape throughout; [`bare_ce`] below is the dedicated
-/// placeholder shape the honesty-gate tests need.
-fn ce(id: &str) -> Node {
-    let name = id.rsplit_once("::").map_or(id, |(_, n)| n);
-    Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: BTreeMap::from([("name".to_string(), name.to_string())]),
-    }
-}
+// `ce`: a code-entity DEFINITION node under `<file>::<name>` (so `node_file` folds it to `<file>`),
+// named by its id's leaf - exactly as the extraction fold always sets for a REAL definition, the
+// files-lens honesty gate's (spec 63 c3) marker that this is not a bare placeholder.
+// Every fixture in this file models an entity's own file, never a cross-file reference, so this is
+// the correct shape throughout; [`bare_ce`] below is the dedicated placeholder shape the
+// honesty-gate tests need.
+use common::fixtures::leaf_named_node as ce;
 
 /// A currently-valid REFERENCES edge between two ids.
 fn refs(from: &str, to: &str) -> Edge {
@@ -173,7 +167,7 @@ fn files_lens_overview_buckets_code_entities_by_file_and_excludes_every_other_no
 /// THE WHOLE-GRAPH FOLD'S OWN "NEVER BLANKED" CONTRACT (spec 63 c3, FILES-LENS PURITY, the sibling
 /// fix to [`REPROJECT_FILES_UNRESOLVED`]'s reprojection-cell contract): a NON-EMPTY graph whose Files
 /// fold admits NOTHING at all - every node either falls outside `KIND_CODE_ENTITY` or is a bare
-/// cross-file placeholder [`clustered_overview`] cannot honestly attribute to one file - must still
+/// placeholder [`clustered_overview`] cannot honestly attribute to one file - must still
 /// carry [`WHOLE_GRAPH_FILES_UNRESOLVED`] as its `empty_state`, never a bare `None` that dash.html's
 /// `renderKgOverview` would otherwise mistake for a truly empty graph and caption "empty graph -
 /// nothing to explore yet" on a graph that plainly is not. This is the IDENTICAL defect class this
@@ -210,16 +204,16 @@ fn clustered_overview_under_files_lens_carries_an_accurate_empty_state_when_the_
          caption, never a bare None that reads as a truly empty graph: {overview:?}"
     );
 
-    // Every code entity here IS a bare cross-file placeholder with ZERO matching definitions
+    // Every code entity here IS a bare placeholder with ZERO matching definitions
     // anywhere in the graph (no real code-entity definition exists at all) - unresolvable honestly, so
     // the fold still admits nothing even though `KIND_CODE_ENTITY` nodes exist. (A real definition
     // would fold under its own file regardless of whether it also candidates for some OTHER bare
     // placeholder's ambiguous resolution - that shape is a different, already-covered test:
-    // `clustered_overview_resolves_bare_cross_file_placeholders_by_unique_name_suffix`.)
+    // `clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf`.)
     let only_unresolvable_placeholders = Graph {
         nodes: vec![
-            plain("src/caller.rs::ghost_one", KIND_CODE_ENTITY),
-            plain("src/caller.rs::ghost_two", KIND_CODE_ENTITY),
+            plain("src/caller.rs::%ghost_one", KIND_CODE_ENTITY),
+            plain("src/caller.rs::%ghost_two", KIND_CODE_ENTITY),
         ],
         edges: vec![],
     };
@@ -346,7 +340,7 @@ fn files_lens_merges_same_file_entities_and_keeps_different_files_apart() {
 
 /// THE WHOLE-GRAPH FOLD'S OWN RESOLUTION HONESTY (spec 63 c3, FILES-LENS PURITY): a BARE cross-file
 /// placeholder (no `name` attr) names the file that REFERENCES it in its own id, never the file that
-/// DEFINES it, so [`clustered_overview`] must resolve it by entity-name suffix over the graph's real
+/// DEFINES it, so [`clustered_overview`] must resolve it by its leaf over the graph's real
 /// definitions - the SAME resolution [`reproject`] already performs for the re-projection surface -
 /// rather than folding it to the wrong (referencing) file. Three shapes in one graph: a name with
 /// EXACTLY ONE definition resolves to that definition's file (and its coupling edge crosses files
@@ -355,20 +349,20 @@ fn files_lens_merges_same_file_entities_and_keeps_different_files_apart() {
 /// `unresolved` sidecar at this altitude, unlike the re-projection surface) - never mis-attributed to
 /// the referencing file their own id encodes.
 #[test]
-fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_name_suffix() {
+fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf() {
     // `helper`: ONE definition (target.rs) - the bare placeholder in caller.rs's namespace resolves
     // to target.rs, so caller.rs's own cluster count stays at just `foo`, target.rs's count rises to
     // 2 (its real definition plus the resolved reference), and the foo->helper coupling now crosses
     // files instead of collapsing to an intra-cluster edge.
     const CALLER_FOO: &str = "src/caller.rs::foo";
-    const HELPER_BARE: &str = "src/caller.rs::helper";
+    const HELPER_BARE: &str = "src/caller.rs::%helper";
     const HELPER_DEF: &str = "src/target.rs::helper";
     // `ghost`: ZERO definitions anywhere - excluded entirely (never attributed to its own referencing
     // file `src/caller.rs`).
-    const GHOST_BARE: &str = "src/caller.rs::ghost";
+    const GHOST_BARE: &str = "src/caller.rs::%ghost";
     // `ambiguous`: TWO definitions (x.rs and y.rs) - excluded entirely (never attributed to either
     // candidate file, nor to its own referencing file).
-    const AMBIGUOUS_BARE: &str = "src/caller.rs::ambiguous";
+    const AMBIGUOUS_BARE: &str = "src/caller.rs::%ambiguous";
     const AMBIGUOUS_DEF_ONE: &str = "src/x.rs::ambiguous";
     const AMBIGUOUS_DEF_TWO: &str = "src/y.rs::ambiguous";
 
@@ -469,8 +463,9 @@ fn files_lens_drill_is_unconditionally_empty_at_the_public_boundary() {
 }
 
 /// THE CARD HANDOFF SEAM (criterion 2, not this one's) survives this criterion's cluster-fold purity
-/// intact: [`neighborhood`] is LENS-AGNOSTIC - a generic BFS over every currently-valid edge - so a
-/// file's `CONTAINS`-linked entities stay reachable there even though the SAME entities are now
+/// intact: [`neighborhood`] is LENS-AGNOSTIC - a generic BFS over every currently-valid edge and
+/// the file-member hops of spec 119's member rule - so a file's `CONTAINS`-linked entities stay
+/// reachable there even though the SAME entities are now
 /// unreachable as files-lens cluster NODES. This is the exact handoff spec 63's Goal describes: a
 /// file's top entities live on the metadata card, not as cluster members.
 #[test]

@@ -13,6 +13,13 @@
 //!    `declaration`: the kind string a code entity event carries and the variant name the
 //!    persisted index carries.
 //!
+//! It also guards, on the graph `rigger graph build` folds, spec 119 criterion 8, A CALLER IS
+//! NAMED BY ITS PATH: a call in a Rust method of `impl T` and one in a Go receiver method each
+//! hang off the method's own definition node at its path, never a nameless node at its leaf. On
+//! the persisted symbol index, a `ts-tags-v3` index saved before that criterion, its callers by
+//! leaf, is not served since spec 119 criterion 9 bumped the index version to `ts-tags-v4`: the
+//! grounder rebuilds it from the tree, so its call folds from the method's path.
+//!
 //! It also holds the wire form of the eight older kinds (spec 116 criterion 4 moved their kind
 //! strings onto shared constants): the emit pass still lowers each to the string it always did.
 
@@ -40,29 +47,106 @@ fn graph_build_hangs_each_call_off_its_innermost_enclosing_function() {
         ("a.js", common::fixtures::JS_CALLER_SOURCE),
     ]);
 
-    let calls = common::fixtures::live_calls(&graph);
-    let expected: Vec<(String, String)> = [
-        ("a.js::h", "a.js::k"),
-        ("a.js::outer", "a.js::f"),
-        ("a.js::y", "a.js::g"),
-        ("lib.rs::Top", "lib.rs::announce"),
-        ("lib.rs::area", "lib.rs::measure"),
-        ("lib.rs::deep", "lib.rs::dig"),
-        ("lib.rs::draw", "lib.rs::brush"),
-        ("lib.rs::draw", "lib.rs::paint"),
-        ("lib.rs::host", "lib.rs::Draw"),
-        ("lib.rs::host", "lib.rs::Local"),
-        ("lib.rs::host", "lib.rs::declare"),
-        ("lib.rs::host", "lib.rs::setup"),
-        ("lib.rs::impl Draw for Widget", "lib.rs::Draw"),
-        ("lib.rs::impl Draw for Widget", "lib.rs::Widget"),
-        ("lib.rs::outer", "lib.rs::boot"),
-    ]
-    .map(|(from, to)| (from.to_string(), to.to_string()))
-    .to_vec();
-    assert_eq!(
-        calls, expected,
-        "every CALLS edge of the built graph, each from the caller the function-first rule names"
+    common::fixtures::assert_live_calls(
+        &graph,
+        &[
+            ("a.js::h", "a.js::%k"),
+            ("a.js::outer", "a.js::%f"),
+            ("a.js::y", "a.js::%g"),
+            ("lib.rs::<Widget as Draw>::draw", "lib.rs::%paint"),
+            ("lib.rs::Top", "lib.rs::%announce"),
+            ("lib.rs::host", "lib.rs::%declare"),
+            ("lib.rs::host", "lib.rs::%setup"),
+            ("lib.rs::host", "lib.rs::Draw"),
+            ("lib.rs::host", "lib.rs::host::Local"),
+            ("lib.rs::host::<Local as Draw>::draw", "lib.rs::%brush"),
+            ("lib.rs::host::Shape::area", "lib.rs::%measure"),
+            ("lib.rs::host::inner::deep", "lib.rs::%dig"),
+            ("lib.rs::impl Draw for Widget", "lib.rs::Draw"),
+            ("lib.rs::impl Draw for Widget", "lib.rs::Widget"),
+            ("lib.rs::outer", "lib.rs::%boot"),
+        ],
+        "every CALLS edge of the built graph, each from the caller the function-first rule names",
+    );
+}
+
+/// GIVEN a project whose one file calls `helper` from a method: a Rust `new` of `impl T`, or a Go
+/// receiver method `name` of `*Recv`,
+/// WHEN the operator runs `rigger graph build`,
+/// THEN every `CALLS` edge of the method hangs off its own definition node at its path,
+/// `a.rs::T::new` or `g.go::Recv::name`, the node carrying its leaf, kind and line, never a
+/// nameless node at its leaf `a.rs::new` or `g.go::name` (spec 119 criterion 8, A CALLER IS
+/// NAMED BY ITS PATH).
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_hangs_a_method_s_calls_off_the_method_s_path() {
+    let cases = [
+        (
+            ("a.rs", "rust", common::fixtures::RUST_METHOD_CALLER_SOURCE),
+            &[
+                ("T", "T", "type", 1),
+                ("T::new", "new", "method", 3),
+                ("helper", "helper", "function", 5),
+                ("impl T", "impl T", "impl", 2),
+            ][..],
+            common::fixtures::RUST_METHOD_CALLER_CALLS,
+        ),
+        (
+            ("g.go", "go", common::fixtures::GO_RECEIVER_CALLER_SOURCE),
+            &[
+                ("Recv", "Recv", "type", 3),
+                ("Recv::name", "name", "method", 5),
+                ("helper", "helper", "function", 7),
+            ][..],
+            common::fixtures::GO_RECEIVER_CALLER_CALLS,
+        ),
+    ];
+    for (file, definitions, calls) in cases {
+        common::cli::assert_built_graph_holds(
+            file,
+            definitions,
+            &[],
+            calls,
+            "every code entity of the built graph is a definition at its path, the method's caller \
+             node among them",
+        );
+    }
+}
+
+/// GIVEN a project whose `a.rs` calls `helper` from `impl T { fn new() }` and whose persisted
+/// symbol index, stamped `ts-tags-v3`, was saved before spec 119 criterion 8 named a caller by
+/// its path: the method at its path `T::new`, the call attributed to the method's leaf `new`,
+/// WHEN the production whole-project ingest emits the project and the graph folds its events,
+/// THEN the index is not served, `ts-tags-v4` being current since criterion 9: it is rebuilt
+/// from the tree, so the call's `CALLS` edges fold from the method's path `a.rs::T::new`, never
+/// from the flat id `a.rs::new` the persisted index names.
+#[cfg(feature = "symbols")]
+#[test]
+fn the_ingest_rebuilds_a_ts_tags_v3_index_saved_with_a_leaf_caller_and_folds_from_the_path() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    std::fs::write(
+        root.join("a.rs"),
+        common::fixtures::RUST_METHOD_CALLER_SOURCE,
+    )
+    .unwrap();
+    symbol_index::persist_stamped(
+        root.to_str().unwrap(),
+        "ts-tags-v3",
+        &symbol_index::rust_index_json(
+            "a.rs",
+            serde_json::json!([
+                { "kind": "Method", "name": "new", "line": 3, "end_line": 3, "path": "T::new" },
+                { "kind": "Function", "name": "helper", "line": 5, "end_line": 5, "path": "helper" },
+            ]),
+            serde_json::json!([{ "name": "helper", "line": 3, "enclosing": "new" }]),
+        ),
+    );
+
+    common::fixtures::assert_live_calls(
+        &common::fixtures::fold_events(common::project_events(root.to_str().unwrap())),
+        common::fixtures::RUST_METHOD_CALLER_CALLS,
+        "a ts-tags-v3 index saved with a leaf caller is rebuilt, its call folding from the path",
     );
 }
 
@@ -80,7 +164,13 @@ fn opened_over_an_index_stamped(grammar: &str) -> (Vec<String>, String) {
     symbol_index::persist_stamped(
         root,
         grammar,
-        r#"{"files":{"lib.rs":{"lang":"Rust","defs":[{"kind":"Function","name":"ghost","line":1}],"refs":[]}}}"#,
+        &symbol_index::rust_index_json(
+            "lib.rs",
+            serde_json::json!([
+                { "kind": "Function", "name": "ghost", "line": 1, "end_line": 1, "path": "ghost" }
+            ]),
+            serde_json::json!([]),
+        ),
     );
 
     let _grounder = Symbols::open(root, None);
@@ -97,21 +187,23 @@ fn opened_over_an_index_stamped(grammar: &str) -> (Vec<String>, String) {
     (names, persisted["grammar"].as_str().unwrap().to_string())
 }
 
-/// A persisted index stamped `ts-tags-v2` is not served: opening the grounder over it rebuilds
-/// the index from the tree and persists the rebuild under `ts-tags-v3`. One already stamped
-/// `ts-tags-v3` is served as persisted, the tree unread.
+/// A persisted index stamped `ts-tags-v2` or `ts-tags-v3` is not served: opening the grounder
+/// over it rebuilds the index from the tree and persists the rebuild under `ts-tags-v4`. One
+/// already stamped `ts-tags-v4` is served as persisted, the tree unread.
 #[cfg(feature = "symbols")]
 #[test]
-fn opening_the_grounder_over_a_ts_tags_v2_index_rebuilds_it_under_ts_tags_v3() {
+fn opening_the_grounder_over_an_older_index_rebuilds_it_under_ts_tags_v4() {
+    for older in ["ts-tags-v2", "ts-tags-v3"] {
+        assert_eq!(
+            opened_over_an_index_stamped(older),
+            (vec!["real".to_string()], "ts-tags-v4".to_string()),
+            "a {older} index is rebuilt from the tree and re-stamped"
+        );
+    }
     assert_eq!(
-        opened_over_an_index_stamped("ts-tags-v2"),
-        (vec!["real".to_string()], "ts-tags-v3".to_string()),
-        "a ts-tags-v2 index is rebuilt from the tree and re-stamped"
-    );
-    assert_eq!(
-        opened_over_an_index_stamped("ts-tags-v3"),
-        (vec!["ghost".to_string()], "ts-tags-v3".to_string()),
-        "a ts-tags-v3 index is served as persisted"
+        opened_over_an_index_stamped("ts-tags-v4"),
+        (vec!["ghost".to_string()], "ts-tags-v4".to_string()),
+        "a ts-tags-v4 index is served as persisted"
     );
 }
 

@@ -39,7 +39,7 @@ use common::repo::repo_text;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
@@ -848,24 +848,11 @@ fn seed_both_stores(root: &Path, rounds: u64) {
         events.extend(pre_ledger_batch("alpha", 1_000 + r));
     }
 
-    let events_db = rigger_file(root, "events.db");
-    let backend = Store::open(events_db.to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &id);
-    Namespaced::new(
-        &common::fixtures::PreLedgerStore {
-            db: &events_db,
-            inner: &backend,
-        },
-        &id,
-    )
-    .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
-    .expect("seed the event log");
+    common::cli::seed_pre_ledger_events(root, &events);
 
     // Fold the log AS WRITTEN - each event carrying the position the store gave it - so the graph
     // is the projection of this log rather than of a pre-append copy of it.
-    let written = store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .expect("read the seeded log back");
+    let written = common::cli::read_run_events(root);
     let graph = Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id)
         .expect("open the context graph");
     common::fixtures::folds(&graph, &written);

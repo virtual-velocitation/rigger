@@ -3,15 +3,15 @@
 //! route. Selecting a SUBJECT and flipping the LENS re-grains THAT subject's member set at the
 //! chosen altitude - it does NOT switch to a whole-graph overview. The projection rule is: resolve
 //! the subject's MEMBER SET at its own grain (a concept's `REALIZES` members; a community's members;
-//! a file's contained entities; a single entity is its own set), then re-bucket that set under the
+//! a file's members by `query::member_file`; a single entity is its own set), then re-bucket that set under the
 //! requested lens. So a concept under `lens=code` shows its members grouped by coupling community,
 //! and under `lens=files` shows the DISTINCT FILES those members resolve to.
 //!
 //! This criterion OWNS the re-projection MECHANICS and its RESOLUTION HONESTY:
 //!
 //!  - CROSS-GRAIN RESOLUTION never trusts the id. Projecting members to files resolves a BARE
-//!    cross-file placeholder node (a call target in the CALLER's namespace, carrying no `name` attr)
-//!    to its DEFINING file by the pinned name-suffix match: EXACTLY ONE definition auto-resolves to
+//!    placeholder node (a call target in the CALLER's namespace, carrying no `name` attr)
+//!    to its DEFINING file by its leaf: EXACTLY ONE definition auto-resolves to
 //!    that definition's file; MORE THAN ONE (or zero) surfaces as a MARKED-UNRESOLVED entry carrying
 //!    the sorted candidate definition ids - never a wrong attribution to the referencing file the id
 //!    encodes.
@@ -32,7 +32,7 @@ use common::fixtures::def_node as def;
 use common::fixtures::edge;
 use common::fixtures::node_with_optional_attrs;
 use common::fixtures::plain;
-use common::lens::lens;
+use common::lens::{lens, SUB_C_FILES_ROUTE};
 use common::served::served_json;
 use rigger::contextgraph::{
     Graph, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
@@ -54,8 +54,8 @@ const BAZ: &str = "src/gamma/c.rs::baz";
 // The concept's BARE placeholder members: call targets sitting in a.rs's namespace with NO `name`
 // attr (the definition lives elsewhere). `HELPER` resolves to a SINGLE definition file; `RUN`'s name
 // has TWO definitions, so it is marked-unresolved rather than attributed to a wrong file.
-const HELPER_BARE: &str = "src/alpha/a.rs::helper";
-const RUN_BARE: &str = "src/alpha/a.rs::run";
+const HELPER_BARE: &str = "src/alpha/a.rs::%helper";
+const RUN_BARE: &str = "src/alpha/a.rs::%run";
 
 // The standalone DEFINITION nodes the bare members resolve against (NOT members of the concept).
 const HELPER_DEF: &str = "src/delta/d.rs::helper";
@@ -236,10 +236,7 @@ fn the_served_graph_route_reprojects_a_seed_under_a_lens() {
     );
 
     // --- seed + lens=files via the route: distinct defining files + the unresolved sidecar ---
-    let files = served_json(
-        &reproj_graph(),
-        "/api/graph?seed=concept%2F1%2F0&lens=files",
-    );
+    let files = served_json(&reproj_graph(), SUB_C_FILES_ROUTE);
     let file_keys: Vec<&str> = files["clusters"]
         .as_array()
         .expect("clusters array")

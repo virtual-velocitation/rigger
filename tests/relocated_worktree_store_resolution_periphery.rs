@@ -29,14 +29,9 @@ use std::path::Path;
 mod common;
 use common::cli::open_graph;
 use common::cli::run_rigger;
-use common::cli::run_stream_identity;
 use common::fixtures::apply_code_entity;
 use common::git::run_git;
 use common::mcp::McpSession;
-
-use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, EventStore};
 
 /// `git init` plus one real commit under `root` - a bare `git init` has no commit for `git
 /// worktree add -b <new-branch>` to branch from.
@@ -113,15 +108,6 @@ fn owning_graph_with_relocated_worktree(root: &Path, worktree: &Path, branch: &s
     .expect("write the worktree's workflow");
 }
 
-/// The structured answer of one `rigger_graph` tool call with `arguments` over `mcp`.
-fn graph_tool(mcp: &mut McpSession, arguments: serde_json::Value) -> serde_json::Value {
-    let resp = mcp.call(
-        "tools/call",
-        serde_json::json!({"name": "rigger_graph", "arguments": arguments}),
-    );
-    resp["result"]["structuredContent"].clone()
-}
-
 /// The node ids of a `rigger_graph` `around` answer.
 fn node_ids(around: &serde_json::Value) -> Vec<String> {
     around["nodes"]
@@ -140,12 +126,7 @@ fn node_ids(around: &serde_json::Value) -> Vec<String> {
 /// proves the subprocess's write genuinely landed on disk at `root`, not merely that the
 /// child process exited 0.
 fn decision_summaries_in(root: &Path) -> Vec<String> {
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap())
-        .expect("open the real store for readback");
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .expect("read the real store's stream")
+    common::cli::read_run_events(root)
         .into_iter()
         .filter(|e| e.type_ == "DecisionMade")
         .map(|e| String::from_utf8_lossy(&e.data).into_owned())
@@ -253,12 +234,12 @@ fn rigger_mcp_spawn_from_a_relocated_worktree_serves_and_folds_into_the_owning_r
     owning_graph_with_relocated_worktree(root, &worktree, "rigger/u/m");
 
     let mut mcp = McpSession::start_with(&worktree, &["mcp", "--spawn", "u/implementer#0"]);
-    let show = graph_tool(&mut mcp, serde_json::json!({"show": "alpha"}));
+    let show = mcp.graph_tool(serde_json::json!({"show": "alpha"}));
     assert_eq!(
         show["site"]["id"], "a.rs::alpha",
         "rigger_graph show from the worktree must find the owning graph's entity; got:\n{show}"
     );
-    let around = graph_tool(&mut mcp, serde_json::json!({"around": "a.rs"}));
+    let around = mcp.graph_tool(serde_json::json!({"around": "a.rs"}));
     assert!(
         node_ids(&around).contains(&"a.rs::alpha".to_string()),
         "rigger_graph around from the worktree must answer the owning graph's neighbourhood; \

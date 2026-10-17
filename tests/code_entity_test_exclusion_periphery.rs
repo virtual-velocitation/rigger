@@ -350,18 +350,14 @@ fn a_pre86_persisted_index_with_no_is_test_key_loads_defaulting_every_item_to_fa
 /// the shared fixture of the per-round back-compat checks below, each of which simulates an
 /// index written before one more additive field existed. `written_by` names that binary.
 fn legacy_module_def(keys: &str, written_by: &str) -> Def {
-    let legacy = format!(
-        r#"{{
-  "files": {{
-    "legacy_mod.rs": {{
-      "lang": "Rust",
-      "defs": [
-        {{ "kind": "Module", "name": "legacy_child", "line": 1{keys} }}
-      ],
-      "refs": []
-    }}
-  }}
-}}"#
+    let def: serde_json::Value = serde_json::from_str(&format!(
+        r#"{{ "kind": "Module", "name": "legacy_child", "line": 1{keys} }}"#
+    ))
+    .expect("the legacy definition is JSON");
+    let legacy = symbol_index::rust_index_json(
+        "legacy_mod.rs",
+        serde_json::json!([def]),
+        serde_json::json!([]),
     );
     legacy_file(
         &legacy,
@@ -457,20 +453,6 @@ mod tests {
 }
 ";
 
-/// A fresh in-memory projector with `events` folded onto it in order, their log positions
-/// numbered from 1 - the shape a real ingest's append gives them.
-#[cfg(feature = "symbols")]
-fn fold_events(
-    events: impl IntoIterator<Item = rigger::eventstore::Event>,
-) -> rigger::contextgraph::sqlite::Projector {
-    let p = rigger::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-    for (zero_based, mut event) in events.into_iter().enumerate() {
-        event.position = zero_based as u64 + 1;
-        common::fixtures::folds(&p, std::slice::from_ref(&event));
-    }
-    p
-}
-
 /// Writes each `(path, source)` pair (parent directories created) under a fresh temp root,
 /// folds that tree's whole-project ingest onto a fresh projector and returns the subgraph
 /// `depth` hops around `seeds` - the public `project_batches` -> `Projector` path every
@@ -490,7 +472,7 @@ fn ingested_subgraph(
         std::fs::write(path, source).unwrap();
     }
     let seeds: Vec<String> = seeds.iter().map(|s| s.to_string()).collect();
-    fold_events(common::project_events(root.path().to_str().unwrap()))
+    common::fixtures::fold_events(common::project_events(root.path().to_str().unwrap()))
         .subgraph(&seeds, depth)
         .unwrap()
 }
@@ -597,8 +579,8 @@ fn ingesting_product_and_test_code_through_the_public_api_graphs_only_the_produc
     // contributed no batch - the concrete reason the files lens can never list it as a subject).
     let must_be_absent: BTreeSet<&str> = BTreeSet::from([
         "widget.rs::tests",
-        "widget.rs::drive",
-        "widget.rs::widget_works",
+        "widget.rs::tests::drive",
+        "widget.rs::tests::widget_works",
         "tests/widget_periphery.rs::an_outside_in_test",
         "tests/widget_periphery.rs",
     ]);
@@ -793,8 +775,8 @@ rigger::test_cases! {
             NoneGraphed(
                 &[
                     "trailingcomment.rs::tests",
-                    "trailingcomment.rs::helper",
-                    "trailingcomment.rs::it_works",
+                    "trailingcomment.rs::tests::helper",
+                    "trailingcomment.rs::tests::it_works",
                 ],
                 "a #[cfg(test)] module with a trailing same-line comment on its own \
                  attribute, and everything nested inside it, must still be excluded from \
@@ -882,8 +864,8 @@ rigger::test_cases! {
             NoneGraphed(
                 &[
                     "multiline.rs::tests",
-                    "multiline.rs::helper",
-                    "multiline.rs::it_works",
+                    "multiline.rs::tests::helper",
+                    "multiline.rs::tests::it_works",
                 ],
                 "a #[cfg(\\n test\\n)] attribute wrapped across three physical lines must \
                  still gate the module it decorates, and everything nested inside it, out \
@@ -971,8 +953,8 @@ rigger::test_cases! {
             NoneGraphed(
                 &[
                     "trailingcomma.rs::tests",
-                    "trailingcomma.rs::helper",
-                    "trailingcomma.rs::it_works",
+                    "trailingcomma.rs::tests::helper",
+                    "trailingcomma.rs::tests::it_works",
                 ],
                 "a #[cfg(any(\\n    test,\\n))] attribute - a single-element predicate \
                  with a rustfmt-style trailing comma - must still gate the module it \
@@ -1023,8 +1005,8 @@ rigger::test_cases! {
             NoneGraphed(
                 &[
                     "innerattr.rs::tests",
-                    "innerattr.rs::helper",
-                    "innerattr.rs::it_works",
+                    "innerattr.rs::tests::helper",
+                    "innerattr.rs::tests::it_works",
                 ],
                 "a mod gated by the INNER #![cfg(test)] attribute form (the attribute as \
                  the first node inside the mod's own body, not a sibling preceding it) \
@@ -1245,7 +1227,7 @@ fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_
          and no named EdgeInferred; got {contract_batch:?}"
     );
 
-    let g = fold_events(batches.into_iter().flat_map(|(_, events, _)| events))
+    let g = common::fixtures::fold_events(batches.into_iter().flat_map(|(_, events, _)| events))
         .subgraph(&["lib.rs".to_string(), "contract.rs".to_string()], 3)
         .unwrap();
     assert!(
@@ -1389,7 +1371,7 @@ fn a_non_module_definitions_stray_out_of_line_flag_never_triggers_cross_file_exc
     let root = root.path().to_str().unwrap();
     store::save(&idx, root).unwrap();
 
-    let g = fold_events(common::project_events(root))
+    let g = common::fixtures::fold_events(common::project_events(root))
         .subgraph(&["host/excluded_file/victim.rs".to_string()], 3)
         .unwrap();
     assert!(
@@ -1455,7 +1437,7 @@ rigger::test_cases! {
                  elsewhere",
             ),
             NoneGraphed(
-                &["widgetimpl.rs::helper", "widgetimpl.rs::it_works"],
+                &["widgetimpl.rs::Widget::helper", "widgetimpl.rs::Widget::it_works"],
                 "every method inside a #[cfg(test)]-attributed impl block is test code, \
                  whether or not it carries an attribute of its own - exactly as a plain \
                  helper inside a #[cfg(test)] mod already is by containment - since an \
@@ -1473,7 +1455,7 @@ rigger::test_cases! {
             // an ordinary impl block); only a method inside a genuinely ordinary impl block
             // catches it.
             Graphed(
-                "widgetimpl.rs::ordinary_method",
+                "widgetimpl.rs::Ordinary::ordinary_method",
                 "a method inside an ORDINARY (non-test) impl block must stay graphed even \
                  though the same file also has a #[cfg(test)]-attributed impl block \
                  elsewhere; got {:?}",
@@ -1525,7 +1507,7 @@ rigger::test_cases! {
                  elsewhere",
             ),
             NoneGraphed(
-                &["innerimpl.rs::helper", "innerimpl.rs::it_works"],
+                &["innerimpl.rs::Widget::helper", "innerimpl.rs::Widget::it_works"],
                 "an impl block gated by its OWN inner #![cfg(test)] attribute must exclude \
                  its methods exactly like the outer-attribute form already does",
             ),
@@ -1819,7 +1801,7 @@ fn design_doc_graph(md: &str) -> rigger::contextgraph::Graph {
 
     let mut events = concept_events(&extract_concepts("docs/architecture.md", md));
     events.extend(link_events(&extract_links("docs/architecture.md", md)));
-    fold_events(events)
+    common::fixtures::fold_events(events)
         .subgraph(&["docs/architecture.md".to_string()], 3)
         .unwrap()
 }
@@ -2033,14 +2015,15 @@ const DEV_ONLY_FILES: &[(&str, &str, &str, u32)] = &[
     ),
 ];
 
-/// The spec's production controls, each `(path, source, the definitions it holds)`: a path
-/// that reads close to a pattern and is production. Each calls `by_production_only`.
+/// The spec's production controls, each `(path, source, the id paths of the definitions it
+/// holds)`: a path that reads close to a pattern and is production. Each calls
+/// `by_production_only`.
 #[cfg(feature = "symbols")]
 const PRODUCTION_CONTROLS: &[(&str, &str, &[&str])] = &[
     (
         "Contest/a.cs",
         "class Contest {\n    void Run() {\n        Lib.by_production_only();\n    }\n}\n",
-        &["Contest", "Run"],
+        &["Contest", "Contest::Run"],
     ),
     (
         "FooTests/lib.rs",
@@ -2073,7 +2056,7 @@ const PRODUCTION_CONTROLS: &[(&str, &str, &[&str])] = &[
 /// `project_batches` -> `Projector` path over a real tree in every registered language: a file
 /// at each DEV-ONLY PATHS pattern is no node, holds no node and ends no edge, and its one call
 /// is the one proof on the production definition it names; each production control is a file
-/// node containing its definitions and proves nothing; and `src/tests/mod.rs`, which a pattern
+/// node holding its definitions, each contained by its parent, and proves nothing; and `src/tests/mod.rs`, which a pattern
 /// names and `#[cfg(test)] mod tests;` declares, is no node and proves nothing either.
 #[cfg(feature = "symbols")]
 #[test]
@@ -2100,7 +2083,9 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
     let seeds: Vec<&str> = files.iter().map(|&(path, _)| path).collect();
     let g = ingested_subgraph(&files, &seeds, 3);
 
-    // Every file node is production, and each control contains exactly its definitions.
+    // Every file node is production, and each control holds exactly its definitions, each
+    // contained by its parent (spec 119, CONTAINS IS STRUCTURE): the file, but for the one
+    // control method, contained by its class.
     let file_nodes: BTreeSet<&str> = g
         .nodes
         .iter()
@@ -2117,6 +2102,7 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
             .into_iter()
             .map(|(from, _, to)| (from, to))
             .collect();
+    const NESTED: (&str, &str) = ("Contest/a.cs::Contest", "Contest/a.cs::Contest::Run");
     let control_definitions: Vec<(&str, String)> = PRODUCTION_CONTROLS
         .iter()
         .flat_map(|&(path, _, names)| {
@@ -2129,7 +2115,10 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
         contained,
         control_definitions
             .iter()
-            .map(|(path, id)| (*path, id.as_str()))
+            .map(|(path, id)| match id.as_str() {
+                child if child == NESTED.1 => NESTED,
+                id => (*path, id),
+            })
             .collect()
     );
 

@@ -52,6 +52,17 @@ extern crate self as rigger;
 #[path = "../../../tests/common/fixtures/fold.rs"]
 mod test_support;
 
+/// The event fixtures the fold tests stamp a batch's log positions with, compiled here from the
+/// same file as the root crate's tests.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/events.rs"]
+mod event_fixtures;
+
 /// The graph fixtures the sink-check tests take the read half of their projection double from,
 /// compiled here from the same file as the root crate's tests.
 #[cfg(all(
@@ -83,8 +94,10 @@ mod caller_sources;
 #[path = "../../../tests/common/fixtures/name_filter_sources.rs"]
 mod name_filter_sources;
 
-/// THE RUST DEFINITIONS FIXTURE the Rust definition tests extract, compiled here from the same
-/// file as the root crate's tests. It names no crate; only the default lane's tests extract it.
+/// THE RUST DEFINITIONS FIXTURE the Rust definition tests extract, and the enum `E` sources the
+/// CONTAINS IS STRUCTURE tests and the twin-method sources the ONE PATH IS ONE EVENT tests extract,
+/// compiled here from the same file as the root crate's tests. It names no crate; only the
+/// default lane's tests extract it.
 #[cfg(all(
     test,
     feature = "symbols",
@@ -113,9 +126,9 @@ mod go_definition_sources;
 #[path = "../../../tests/common/fixtures/csharp_definition_sources.rs"]
 mod csharp_definition_sources;
 
-/// THE JS AND TS DEFINITIONS FIXTURES the JS and TS definition tests extract, compiled here from
-/// the file the shared fixtures live in. They name no crate; only the default lane's tests
-/// extract them.
+/// THE JS AND TS DEFINITIONS FIXTURES the JS and TS definition tests extract, and the namespace
+/// source the ONE PATH IS ONE EVENT tests extract, compiled here from the file the shared fixtures
+/// live in. They name no crate; only the default lane's tests extract them.
 #[cfg(all(
     test,
     feature = "symbols",
@@ -133,6 +146,16 @@ mod js_ts_definition_sources;
 ))]
 #[path = "../../../tests/common/fixtures/python_definition_sources.rs"]
 mod python_definition_sources;
+
+/// THE EXTENT SOURCES the extent tests locate in, compiled here from the file the shared fixtures
+/// live in. They name no crate; only the default lane's tests extract them.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/extent_sources.rs"]
+mod extent_sources;
 
 /// The symbol index fixtures the extractor's and the registry's tests share with the root crate's
 /// tests (the stamped `index.json` writer, a source read through the registry, the definition

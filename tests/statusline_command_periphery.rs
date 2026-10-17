@@ -16,6 +16,7 @@ mod common;
 use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
+use common::cli::setup_ok;
 use common::cli::temp_project;
 use common::cli::temp_store_project;
 
@@ -112,8 +113,7 @@ fn status_line_on_a_project_with_no_store_yet_renders_a_graceful_placeholder() {
     let dir = temp_project();
     let root = dir.path();
 
-    let (_out, err, ok) = run_rigger(root, &["setup"]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    setup_ok(root, &[]);
     assert!(
         !root.join(".rigger").join("events.db").exists(),
         "this test only means something in the literal post-setup, no-store-yet state"
@@ -154,8 +154,7 @@ fn setup_registers_the_statusline_command() {
     let dir = temp_project();
     let root = dir.path();
 
-    let (out, err, ok) = run_rigger(root, &["setup"]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    let out = setup_ok(root, &[]);
     assert!(
         out.contains("registered") && out.contains("status line"),
         "setup must report registering the status line command; got:\n{out}"
@@ -176,8 +175,7 @@ fn setup_registers_the_statusline_command() {
     );
 
     // A rerun on an up-to-date repo is a silent no-op for this artifact.
-    let (out2, err2, ok2) = run_rigger(root, &["setup"]);
-    assert!(ok2, "the rerun must succeed; stderr:\n{err2}");
+    let out2 = setup_ok(root, &[]);
     assert!(
         !out2.contains("status line"),
         "a rerun on an up-to-date repo must not re-report the status line registration; got:\n{out2}"
@@ -197,8 +195,7 @@ fn setup_reports_a_drifted_statusline_command_as_refreshed() {
     let dir = temp_project();
     let root = dir.path();
 
-    let (_out, err, ok) = run_rigger(root, &["setup"]);
-    assert!(ok, "the first setup must succeed; stderr:\n{err}");
+    setup_ok(root, &[]);
 
     // Hand-corrupt ONLY the statusLine entry (an older build's command, or a hand edit) -
     // every other artifact `setup` just installed stays exactly as it is.
@@ -215,8 +212,7 @@ fn setup_reports_a_drifted_statusline_command_as_refreshed() {
     )
     .unwrap();
 
-    let (out2, err2, ok2) = run_rigger(root, &["setup"]);
-    assert!(ok2, "the repair rerun must succeed; stderr:\n{err2}");
+    let out2 = setup_ok(root, &[]);
     assert!(
         out2.contains("refreshed the drifted rigger status line command"),
         "a drifted statusLine entry must be reported as refreshed, not silently repaired; got:\n{out2}"

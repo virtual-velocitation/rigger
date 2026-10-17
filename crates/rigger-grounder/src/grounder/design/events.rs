@@ -165,7 +165,6 @@ fn text_batch(rel: &str, text: &str) -> Vec<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contextgraph::sqlite::Projector;
     use crate::contextgraph::{
         Projection, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE,
         REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES,
@@ -205,11 +204,7 @@ mod tests {
             "every emitted event is a DocConceptExtracted"
         );
 
-        let p = Projector::open(":memory:", "test").unwrap();
-        for (i, mut e) in events.into_iter().enumerate() {
-            e.position = (i + 1) as u64;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-        }
+        let p = crate::test_support::fold_events(events);
 
         let g = p
             .subgraph(
@@ -322,11 +317,7 @@ mod tests {
             "the pass emits only DocConceptExtracted / DocLinkExtracted events"
         );
 
-        let p = Projector::open(":memory:", "test").unwrap();
-        for (i, mut e) in events.into_iter().enumerate() {
-            e.position = (i + 1) as u64;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-        }
+        let p = crate::test_support::fold_events(events);
 
         let g = p
             .subgraph(

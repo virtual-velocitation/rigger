@@ -651,11 +651,11 @@ pub(crate) mod tests {
         (1, "probe", Some("host")),
         (1, "use", Some("host")),
         (5, "spin", Some("g")),
-        (6, "tick", Some("s")),
+        (6, "tick", Some("Foo.s")),
         (10, "f", None),
-        (11, "init", Some("constructor")),
-        (11, "make", Some("constructor")),
-        (11, "paint", Some("area")),
+        (11, "init", Some("Shape::constructor")),
+        (11, "make", Some("Shape::constructor")),
+        (11, "paint", Some("Shape::area")),
         (12, "run", Some("handler")),
     ];
 
@@ -696,13 +696,13 @@ pub(crate) mod tests {
     const TS_LINES_REFERENCES: [(u32, &str, Option<&str>); 11] = [
         (16, "Arg", None),
         (16, "Ret", None),
-        (17, "PQ", Some("p-q")),
-        (17, "PType", Some("prop")),
+        (17, "PQ", Some("Shape2.p-q")),
+        (17, "PType", Some("Shape2.prop")),
         (17, "Ret", Some("Shape2")),
-        (17, "Two", Some("2")),
+        (17, "Two", Some("Shape2.2")),
         (17, "V", Some("Shape2")),
-        (18, "FT", Some("fld")),
-        (19, "mk", Some("Blue")),
+        (18, "FT", Some("Abs.fld")),
+        (19, "mk", Some("Color::Blue")),
         (21, "boot", Some("x")),
         (22, "setup", Some("A.B")),
     ];
@@ -861,9 +861,7 @@ pub(crate) mod tests {
     /// expression, an arrow function, a generator function and a class: the node types the
     /// last `value: [..]` alternation of the query lists, its constant pattern composing last.
     fn assert_constant_enumeration(ext: &str, node_types: &str) {
-        let query = for_extension(ext)
-            .expect("the extension is registered")
-            .tags_query;
+        let query = crate::symbol_index::registered(ext).tags_query;
         let at = query
             .rfind("value: [")
             .expect("the query holds a value alternation");
@@ -968,8 +966,7 @@ pub(crate) mod tests {
             ("py", "def compute():\n    return 1\n", "compute"),
         ];
         for (ext, src, expected) in cases {
-            let entry = for_extension(ext)
-                .unwrap_or_else(|| panic!("extension {ext} should be registered"));
+            let entry = crate::symbol_index::registered(ext);
             let fs = extract(src, entry.lang, &entry.language, entry.tags_query)
                 .unwrap_or_else(|e| panic!("extraction failed for .{ext}: {e}"));
             assert!(
@@ -1062,8 +1059,9 @@ pub(crate) mod tests {
     }
 
     /// A persisted index stamped `ts-tags-v2`, the generation before the caller rule changed
-    /// what `SymRef.enclosing` holds, is not current and loads as absent; one stamped
-    /// `ts-tags-v3` is current and loads.
+    /// what `SymRef.enclosing` holds, is not current and loads as absent, as is one stamped
+    /// `ts-tags-v3`, the generation before a definition carried its parent (spec 119, CONTAINS IS
+    /// STRUCTURE); one stamped `ts-tags-v4` is current and loads.
     #[test]
     fn a_persisted_ts_tags_v2_index_is_not_current() {
         use crate::grounder::symbols::model::SymbolIndex;
@@ -1083,8 +1081,13 @@ pub(crate) mod tests {
         );
         assert_eq!(
             persisted("ts-tags-v3"),
+            (false, false),
+            "a ts-tags-v3 index is not current and loads as absent"
+        );
+        assert_eq!(
+            persisted("ts-tags-v4"),
             (true, true),
-            "a ts-tags-v3 index is current and loads"
+            "a ts-tags-v4 index is current and loads"
         );
     }
 
@@ -1202,18 +1205,18 @@ pub(crate) mod tests {
                     (3, "g", Some("a")),
                     (6, "h", Some("m")),
                     (6, "k", Some("m")),
-                    (8, "Base", Some("Base")),
-                    (8, "Coord", Some("x")),
-                    (8, "Gen", Some("Gen")),
-                    (8, "Ptr", Some("Ptr")),
-                    (8, "Qual", Some("Qual")),
-                    (8, "Side", Some("side")),
-                    (8, "int", Some("Gen")),
+                    (8, "Base", Some("Shape.Base")),
+                    (8, "Coord", Some("Shape.x")),
+                    (8, "Gen", Some("Shape.Gen")),
+                    (8, "Ptr", Some("Shape.Ptr")),
+                    (8, "Qual", Some("Shape.Qual")),
+                    (8, "Side", Some("Shape.side")),
+                    (8, "int", Some("Shape.Gen")),
                     (9, "Alias", Some("Alias")),
                     (9, "Base", Some("Alias")),
                     (10, "Canvas", Some("Drawer")),
                     (11, "probe", Some("host")),
-                    (12, "Shape", Some("area")),
+                    (12, "Shape", Some("Shape::area")),
                     (13, "Canvas", None),
                     (14, "Shape", None),
                     (15, "Base", None),
@@ -1285,19 +1288,19 @@ pub(crate) mod tests {
                     (19, "~Ext", Kind::Declaration),
                 ],
                 &[
-                    (7, "Probe", Some("Cell")),
-                    (7, "Probe", Some("Cell")),
-                    (7, "Probe", Some("made")),
-                    (10, "Probe", Some("Moved")),
-                    (11, "Probe", Some("Size")),
-                    (12, "Probe", Some("Foo")),
-                    (13, "Probe", Some("~Foo")),
-                    (14, "Go", Some("+")),
-                    (14, "Probe", Some("+")),
-                    (15, "Probe", Some("implicit operator int")),
-                    (16, "Probe", Some("this")),
-                    (17, "Probe", Some("Inner")),
-                    (17, "Probe", Some("Run")),
+                    (7, "Probe", Some("S.T::Cell")),
+                    (7, "Probe", Some("S.T::Cell")),
+                    (7, "Probe", Some("S.T::Cell.made")),
+                    (10, "Probe", Some("S.T::Foo.Moved")),
+                    (11, "Probe", Some("S.T::Foo.Size")),
+                    (12, "Probe", Some("S.T::Foo::Foo")),
+                    (13, "Probe", Some("S.T::Foo::~Foo")),
+                    (14, "Go", Some("S.T::Foo::+")),
+                    (14, "Probe", Some("S.T::Foo::+")),
+                    (15, "Probe", Some("S.T::Foo::implicit operator int")),
+                    (16, "Probe", Some("S.T::Foo::this")),
+                    (17, "Probe", Some("S.T::Foo::Run")),
+                    (17, "Probe", Some("S.T::Foo::Run::Inner")),
                 ],
             );
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the registered JS
@@ -1420,34 +1423,48 @@ pub(crate) mod tests {
                 ],
                 &[
                     (2, "probe", Some("host")),
-                    (9, "make", Some("k")),
-                    (13, "paint", Some("inner")),
+                    (9, "make", Some("Shape.k")),
+                    (13, "paint", Some("Shape::area::inner")),
                     (18, "f", None),
                     (19, "f", None),
                 ],
             );
-        /// The Python query bounds a single-target module-level assignment by the whole
-        /// assignment (`z = 1`, `w: int`, and one of each other value type the grammar admits)
-        /// and every def and class by its block, and gives a
-        /// chained assignment's targets (`x = y = f()`) and every other bound or read-off name
-        /// no extent, the binding walk and the read-offs alone making them.
-        the_python_query_bounds_a_single_target_assignment_and_no_chained_one: assert_eq!(
-            crate::symbol_index::extents_by_line("py", PYTHON_DEFINITIONS_SOURCE),
+        /// Every Python definition carries its extent (spec 119, ONE EXTENT): a single-target
+        /// module-level assignment (`z = 1`, `w: int`, and one of each other value type the
+        /// grammar admits) is bounded by the whole assignment and every def and class by its
+        /// block, while a chained assignment's targets (`x = y = f()`) and every other bound or
+        /// read-off name, each read off a one-line range, end on their own line.
+        the_python_query_bounds_an_assignment_whole_and_a_chained_target_by_its_own_line: assert_eq!(
+            crate::symbol_index::extents_by_line(&crate::symbol_index::extracted(
+                "py", PYTHON_DEFINITIONS_SOURCE)),
             [
                 (1, 5, "host"),
                 (3, 5, "Local"),
                 (4, 5, "run"),
                 (6, 16, "Shape"),
+                (7, 7, "h"),
+                (8, 8, "e"),
+                (8, 8, "g"),
+                (9, 9, "k"),
                 (10, 13, "area"),
                 (12, 13, "inner"),
                 (15, 16, "deco"),
+                (17, 17, "a"),
+                (17, 17, "b"),
+                (18, 18, "c"),
+                (18, 18, "d"),
+                (19, 19, "x"),
+                (19, 19, "y"),
                 (20, 20, "z"),
                 (21, 21, "w"),
+                (24, 24, "X"),
                 (25, 25, "u"),
                 (26, 26, "m"),
                 (27, 27, "n"),
+                (28, 28, "j"),
+                (28, 28, "q"),
+                (29, 29, "Y"),
             ]
-            .map(|(start, end, name): (u32, u32, &str)| (start, end, name.to_string()))
         );
         /// The JS query's constant enumeration is the JS grammar's `expression` subtypes,
         /// flattened through `primary_expression`, but the four the function and class

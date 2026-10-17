@@ -91,7 +91,7 @@ Two rules make the cells well-defined. **Wide re-grains truncate, they do not li
 members span 200 files re-grained to `FILES` reuses the existing render budget and its "showing N of M"
 caption rather than pretending to draw all of them. **Cross-grain projection resolves, it does not
 trust the id**: projecting a concept or file "down/up" to another grain follows membership and
-definition edges, and a bare cross-file placeholder node is resolved to its *defining* file, not the
+definition edges, and a bare placeholder node is resolved to its *defining* file, not the
 referencing file its id encodes - otherwise a symbol is attributed to the wrong file exactly in the
 cross-file cases. The whole-graph overview is the "nothing selected" case at the current altitude.
 
@@ -105,7 +105,8 @@ undirected one flipped, because each hop must resolve a bare cross-file callee t
 it can continue. Three rules keep the result honest:
 
 - **Resolve conservatively.** A hop auto-continues only through edges that are unambiguous: a same-file
-  `extracted` call, or a cross-file `inferred` call whose name has exactly one definition. A hop whose
+  `extracted` call landed on its one candidate, or a call landed on a placeholder whose name has
+  exactly one definition. A hop whose
   name resolves to **multiple** definitions is not followed automatically - it renders as a
   **"fans out to N candidates - pick one"** frontier the human expands deliberately. This is the
   difference between a real execution path and a DAG dominated by the eleven wrong `new`s; auto-
@@ -192,15 +193,17 @@ The inspector must work on a cold checkout of any repository, with no build hist
   indexed-but-never-built repo shows an empty panel. The seeded-neighbourhood, whole-graph, and call
   views all read the projection through the section-6 provider, so none of them dead-end on a repo with
   no run history.
-- The call views use only `CALLS`/`REFERENCES` and the `<file>::<name>` id scheme the extractor produces
-  for every supported grammar; name resolution is language-neutral, and object-oriented method-name
+- The call views use only `CALLS`/`REFERENCES` and the `<file>::<path>` id scheme the extractor produces
+  for every supported grammar, a definition's path its enclosing definitions' path and its own name; name resolution is language-neutral, and object-oriented method-name
   collision is handled by the conservative traversal (section 3), not by pretending precision.
 - `FILES` needs only code ingest; `CODE` needs the community pass; `CONCEPTS` needs the concept pass;
   the rationale overlay is simply empty on a project with no decisions. Each degrades independently.
-- Directed traversal and name resolution stay sub-linear on large repositories via two additive indexes
-  - a partial index on the live-edge relation, and an expression index on the entity-name attribute -
-  added through the existing additive-migration pattern, with the resolution query phrased to use the
-  exact name-suffix expression the index materialises (a mismatched expression silently misses it).
+- Directed traversal and name resolution stay sub-linear on large repositories via additive indexes
+  - a partial index on the live-edge relation, and the leaf index `idx_nodes_leaf`, an expression index
+  on a definition's leaf (its non-empty `name` attribute, `NULLIF(json_extract(attrs, '$.name'), '')`)
+  after the project - added through the existing additive-migration pattern, with every node-side
+  resolution query phrased to use the exact leaf expression the index materialises (a mismatched
+  expression silently misses it).
 
 ## Delivery
 

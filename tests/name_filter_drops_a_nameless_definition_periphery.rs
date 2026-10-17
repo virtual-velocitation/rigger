@@ -30,12 +30,12 @@ fn graph_build_makes_no_node_of_a_go_blank_definition_and_keeps_a_js_and_python_
     let entities: Vec<String> = [
         "a.js::_",
         "b.py::_",
+        "main.go::%int",
+        "main.go::%other",
+        "main.go::%probe",
+        "main.go::%reach",
         "main.go::T",
-        "main.go::int",
         "main.go::named",
-        "main.go::other",
-        "main.go::probe",
-        "main.go::reach",
     ]
     .map(str::to_string)
     .to_vec();
@@ -44,7 +44,7 @@ fn graph_build_makes_no_node_of_a_go_blank_definition_and_keeps_a_js_and_python_
         entities,
         "every code entity of the built graph: none for a Go `_`, one for a JS and a Python `_`"
     );
-    let calls: Vec<(String, String)> = vec![("main.go::named".into(), "main.go::other".into())];
+    let calls: Vec<(String, String)> = vec![("main.go::named".into(), "main.go::%other".into())];
     assert_eq!(
         common::fixtures::live_calls(&graph),
         calls,

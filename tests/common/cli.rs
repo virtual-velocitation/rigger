@@ -11,6 +11,8 @@ use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 
+pub use super::fixtures::keyed;
+
 /// A throwaway project directory that is its own (commit-less) git repo, so the project
 /// identity the binary resolves for it is its basename, stable across every call a test makes.
 pub fn temp_project() -> tempfile::TempDir {
@@ -89,6 +91,12 @@ pub fn rigger_file(root: &Path, name: &str) -> PathBuf {
     root.join(RIGGER_DIR).join(name)
 }
 
+/// A raw connection of its own to the store file `name` under `root`'s rigger dir, for reading or
+/// planting what the store's API never writes.
+pub fn rigger_db(root: &Path, name: &str) -> rusqlite::Connection {
+    rusqlite::Connection::open(rigger_file(root, name)).unwrap()
+}
+
 /// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success).
 pub fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     run_rigger_envs(cwd, args, &[])
@@ -100,6 +108,34 @@ pub fn run_rigger_ok(cwd: &Path, args: &[&str]) -> String {
     let (out, err, ok) = run_rigger(cwd, args);
     assert!(ok, "rigger {} must exit 0; stderr:\n{err}", args.join(" "));
     out
+}
+
+/// Run `rigger graph --around <seed> --depth <depth>` in `cwd` ([`run_rigger`]) and return
+/// (stdout, stderr, success).
+pub fn run_around(cwd: &Path, seed: &str, depth: i64) -> (String, String, bool) {
+    run_rigger(
+        cwd,
+        &["graph", "--around", seed, "--depth", &depth.to_string()],
+    )
+}
+
+/// Every printed `edge <from> -<rel>-> <to>` line of a `rigger graph --around` transcript, parsed
+/// into its (from, rel, to) triple - never substring-matched, so an assertion about which edges
+/// printed is a claim about the parsed fields, not a text search a coincidental substring could
+/// satisfy.
+pub fn edge_lines(out: &str) -> Vec<(String, String, String)> {
+    out.lines()
+        .filter_map(|l| {
+            let rest = l.trim_start().strip_prefix("edge ")?;
+            let (from, rest) = rest.split_once(" -")?;
+            let (rel, to) = rest.split_once("-> ")?;
+            Some((
+                from.trim().to_string(),
+                rel.trim().to_string(),
+                to.trim().to_string(),
+            ))
+        })
+        .collect()
 }
 
 /// Run `rigger <args...>` in `cwd` with extra environment `envs` and return
@@ -115,6 +151,13 @@ pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (Str
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.success(),
     )
+}
+
+/// `rigger setup` in `cwd` with extra environment `envs`, which must succeed: its stdout.
+pub fn setup_ok(cwd: &Path, envs: &[(&str, &str)]) -> String {
+    let (out, err, ok) = run_rigger_envs(cwd, &["setup"], envs);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    out
 }
 
 /// `rigger <args...>` in `cwd` with extra environment `envs`, as [`run_rigger_envs`] runs it, for
@@ -290,6 +333,27 @@ pub fn run_stream_identity(root: &Path) -> String {
         .unwrap_or_else(|| "rigger".to_string())
 }
 
+/// The fold rule a `graph.db` records (its `user_version`).
+pub fn user_version(db: &Path) -> i64 {
+    super::fixtures::pragma_i64(db, "user_version")
+}
+
+/// Whether an open of the `graph.db` at `db` for `project` owes a rebuild.
+pub fn rebuild_owed(db: &Path, project: &str) -> bool {
+    use rigger::contextgraph::Projection;
+    Projector::open(db.to_str().unwrap(), project)
+        .unwrap()
+        .rebuild_owed()
+        .unwrap()
+}
+
+/// The fold rule a `graph.db` records after an open of it for `project`, and whether that open
+/// owes a rebuild.
+pub fn version_and_owed(db: &Path, project: &str) -> (i64, bool) {
+    let owed = rebuild_owed(db, project);
+    (user_version(db), owed)
+}
+
 /// Seed `(type, json body)` run events directly into `root`'s namespaced run stream, standing
 /// in for the conductor minting them - the `rigger emit` surface refuses conductor-owned
 /// boundary types (spec 22), so a test that must seed them appends through the store.
@@ -331,6 +395,16 @@ pub fn with_pre_ledger_run_store<R>(root: &Path, f: impl FnOnce(&dyn EventStore)
     f(&store)
 }
 
+/// Append `events` to `root`'s own run stream as a binary before the ledger recorded them
+/// ([`with_pre_ledger_run_store`]), so a test seeds the derived events a store now refuses.
+pub fn seed_pre_ledger_events(root: &Path, events: &[Event]) {
+    with_pre_ledger_run_store(root, |store| {
+        store
+            .append(rigger::conductor::STREAM, ExpectedRevision::Any, events)
+            .unwrap();
+    });
+}
+
 /// Every event in `root`'s namespaced run stream, oldest first.
 pub fn read_run_events(root: &Path) -> Vec<Event> {
     with_run_store(root, |store| {
@@ -338,6 +412,12 @@ pub fn read_run_events(root: &Path) -> Vec<Event> {
             .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
             .unwrap()
     })
+}
+
+/// The id of the run [`rigger::run::current_run_id`] resolves over `root`'s own run stream
+/// ([`read_run_events`]), `None` before any run started.
+pub fn current_run_id_of(root: &Path) -> Option<String> {
+    rigger::run::current_run_id(&read_run_events(root))
 }
 
 /// `root`'s run stream as `(position, revision, type)`, oldest first.
@@ -364,6 +444,117 @@ pub fn run_payloads(root: &Path, type_: &str) -> Vec<serde_json::Value> {
         .filter(|e| e.type_ == type_)
         .map(|e| serde_json::from_slice(&e.data).unwrap())
         .collect()
+}
+
+/// Write the `nodes` row `id` of graph kind `kind` under `project` straight into the graph store
+/// `conn` holds open, its `attrs` the JSON object text given, else NULL: a row no fold writes
+/// (a nameless node at a line, an older store's node).
+pub fn insert_node(
+    conn: &rusqlite::Connection,
+    project: &str,
+    id: &str,
+    kind: &str,
+    attrs: Option<&str>,
+) {
+    conn.execute(
+        "INSERT INTO nodes (id, kind, attrs, project) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![id, kind, attrs, project],
+    )
+    .unwrap();
+}
+
+/// Seed `root` as a project whose own `.rigger/graph.db` holds `graph`'s nodes and edges alone,
+/// each written straight into the store under `root`'s run-stream identity - a node by
+/// [`insert_node`], its `attrs` the JSON object of the node's own, an edge as its `edges` row - and
+/// hand back that projection: a graph no fold writes, read by the binary and the library alike.
+pub fn planted_graph(root: &Path, graph: &rigger::contextgraph::Graph) -> Projector {
+    seed_rigger_dir(root);
+    let planted = open_graph(root);
+    let conn = rigger_db(root, "graph.db");
+    let project = run_stream_identity(root);
+    for n in &graph.nodes {
+        let attrs = serde_json::to_string(&n.attrs).unwrap();
+        insert_node(&conn, &project, &n.id, &n.kind, Some(&attrs));
+    }
+    for e in &graph.edges {
+        conn.execute(
+            "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                e.from,
+                e.to,
+                e.rel,
+                e.valid_from,
+                e.valid_to,
+                e.source,
+                project,
+                e.tier
+            ],
+        )
+        .unwrap();
+    }
+    planted
+}
+
+/// The stdout `rigger graph --show <query>` prints when several definitions answer `query`: the
+/// candidate count, then each `(id, file)` of `cands` on its own line, in their order, and no body.
+pub fn ambiguous_show(query: &str, cands: &[(&str, &str)]) -> String {
+    let mut out = format!(
+        "show \"{query}\": {} candidates - the name is ambiguous, re-run --show on one id:\n",
+        cands.len()
+    );
+    for (id, file) in cands {
+        out.push_str(&format!("  {id}   ({file})\n"));
+    }
+    out
+}
+
+/// Every line `rigger graph --show <query>` prints over `root`, in order.
+pub fn show_lines(root: &Path, query: &str) -> Vec<String> {
+    run_rigger_ok(root, &["graph", "--show", query])
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The first two lines `rigger graph --show <query>` prints over `root` ([`show_lines`]): the
+/// header naming the id it shows and that definition's site line.
+pub fn show_head(root: &Path, query: &str) -> Vec<String> {
+    let mut lines = show_lines(root, query);
+    lines.truncate(2);
+    lines
+}
+
+/// `rigger graph --show <file>::<path>`'s stdout over `root` seeded as a project whose working
+/// tree holds `source` at `file` and whose graph records the definition at the id path `path`
+/// (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), named by the text after the path's last `::`, of
+/// kind `kind` at `line` in `lang`.
+pub fn show_recorded(
+    root: &Path,
+    file: &str,
+    source: &str,
+    path: &str,
+    kind: &str,
+    line: u64,
+    lang: &str,
+) -> String {
+    seed_rigger_dir(root);
+    super::fixtures::write_text(root, file, source);
+    let name = super::last_path_segment(path);
+    super::fixtures::apply_json(
+        &open_graph(root),
+        1,
+        rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+        super::fixtures::path_entity_json(file, name, path, kind, line, lang),
+    );
+    run_rigger_ok(
+        root,
+        &[
+            "graph",
+            "--show",
+            &rigger::contextgraph::query::entity_id(file, path),
+        ],
+    )
 }
 
 /// Hold `graph_db` under another writer's write lock while `run` runs, past every busy timeout
@@ -469,63 +660,76 @@ pub fn open_graph(root: &Path) -> Projector {
 /// `(root-relative path, source text)` pair; the project lives as long as the returned directory.
 pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, Projector) {
     let dir = temp_project();
-    for (path, source) in files {
-        std::fs::write(dir.path().join(path), source).unwrap();
-    }
-    run_rigger_ok(dir.path(), &["graph", "build"]);
-    let graph = open_graph(dir.path());
+    let graph = rebuilt_graph(dir.path(), files);
     (dir, graph)
 }
 
+/// The graph `rigger graph build` folds over the project at `root` once each of `files`, a
+/// `(root-relative path, source text)` pair, is written there: a first build, or a rebuild over
+/// the files' next generation.
+pub fn rebuilt_graph(root: &Path, files: &[(&str, &str)]) -> Projector {
+    for (path, source) in files {
+        std::fs::write(root.join(path), source).unwrap();
+    }
+    run_rigger_ok(root, &["graph", "build"]);
+    open_graph(root)
+}
+
 /// GIVEN a project whose one file `path`, in the language `lang`, holds `source`, WHEN the
-/// operator runs `rigger graph build`, THEN the built graph's code entities are exactly one
-/// node per `definitions` row, a (leaf, kind, line) triple, each carrying exactly that kind and
-/// line, and one per `placeholders` leaf, a name a reference reaches that no definition gives
-/// (`entities_why` says what makes no node), and its `CALLS` edges are exactly `calls`.
+/// operator runs `rigger graph build`, THEN the built graph's definitions and placeholders are
+/// exactly one node `<path>::<id path>` per `definitions` row, an (id path, leaf, kind, line)
+/// quadruple (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), each carrying exactly that leaf as its
+/// name, kind and line, and one placeholder `<path>::%<leaf>` ([`placeholder_id`]) per
+/// `placeholders` leaf, a name a reference reaches that no one same-file call target gives
+/// (`entities_why` says what makes no node), and its `CALLS` edges are exactly `calls`. Any other
+/// code entity is the nameless node a call folds from, named in `calls`.
+///
+/// [`placeholder_id`]: rigger::contextgraph::query::placeholder_id
 pub fn assert_built_graph_holds(
     (path, lang, source): (&str, &str, &str),
-    definitions: &[(&str, &str, u64)],
+    definitions: &[(&str, &str, &str, u64)],
     placeholders: &[&str],
     calls: &[(&str, &str)],
     entities_why: &str,
 ) {
-    use super::fixtures::{attrs_of, definition_in, live_calls, live_node_ids};
+    use super::fixtures::{
+        assert_live_calls, attrs_of, definition_ids, definition_in, live_node_ids,
+    };
+    use rigger::contextgraph::query::{entity_id, leaf_of, placeholder_id};
     use rigger::contextgraph::KIND_CODE_ENTITY;
 
     let (_project, graph) = built_graph(&[(path, source)]);
-    let id = |leaf: &str| format!("{path}::{leaf}");
-    let mut entities: Vec<String> = definitions
-        .iter()
-        .map(|(name, _, _)| *name)
-        .chain(placeholders.iter().copied())
-        .map(id)
+    let held: std::collections::BTreeSet<String> = definition_ids(&graph)
+        .into_iter()
+        .chain(
+            live_node_ids(&graph.whole().unwrap(), KIND_CODE_ENTITY)
+                .into_iter()
+                .filter(|node| leaf_of(node).is_some()),
+        )
         .collect();
-    entities.sort();
-    assert_eq!(
-        live_node_ids(&graph.whole().unwrap(), KIND_CODE_ENTITY),
-        entities,
-        "{entities_why}"
-    );
-    let carried: Vec<_> = definitions
+    let ids: Vec<String> = definitions
         .iter()
-        .map(|(name, _, _)| attrs_of(&graph, &id(name)))
+        .map(|(id_path, _, _, _)| entity_id(path, id_path))
         .collect();
+    let entities: std::collections::BTreeSet<String> = ids
+        .iter()
+        .cloned()
+        .chain(placeholders.iter().map(|leaf| placeholder_id(path, leaf)))
+        .collect();
+    assert_eq!(held, entities, "{entities_why}");
+    let carried: Vec<_> = ids.iter().map(|id| attrs_of(&graph, id)).collect();
     let expected: Vec<_> = definitions
         .iter()
-        .map(|(name, kind, line)| definition_in(lang, name, kind, *line))
+        .map(|(_, name, kind, line)| definition_in(lang, name, kind, *line))
         .collect();
     assert_eq!(
         carried, expected,
         "each definition node carries its kind and line, and nothing else"
     );
-    let calls: Vec<(String, String)> = calls
-        .iter()
-        .map(|(from, to)| (from.to_string(), to.to_string()))
-        .collect();
-    assert_eq!(
-        live_calls(&graph),
+    assert_live_calls(
+        &graph,
         calls,
-        "every CALLS edge of the built graph, each from the caller the fixture gives it"
+        "every CALLS edge of the built graph, each from the caller the fixture gives it",
     );
 }
 
@@ -625,16 +829,69 @@ pub fn hold_the_rebuild(root: &Path) -> rigger::contextgraph::sqlite::RebuildLoc
     Projector::lock_rebuild(rigger_file(root, "graph.db").to_str().unwrap()).unwrap()
 }
 
+/// Whether `line` is a numbered source line (`<n> | <text>`) of a `rigger graph --show` body.
+pub fn is_body_line(line: &str) -> bool {
+    line.trim_start()
+        .split_once(" | ")
+        .map(|(pre, _)| pre.trim().parse::<u32>().is_ok())
+        .unwrap_or(false)
+}
+
 /// The number of numbered source lines (`<n> | <text>`) in a `rigger graph --show` body.
 pub fn body_line_count(out: &str) -> usize {
-    out.lines()
-        .filter(|l| {
-            l.trim_start()
-                .split_once(" | ")
-                .map(|(pre, _)| pre.trim().parse::<u32>().is_ok())
-                .unwrap_or(false)
+    out.lines().filter(|l| is_body_line(l)).count()
+}
+
+/// The entry and value pairs a `rigger graph --show` output prints, in order (spec 119, SHOW IS
+/// ONE RENDERER): the header's `file`, `line`, `kind` and `degree` (no `site:` part for a node with
+/// no file), then one `  <entry> <value>` line each until the body or the note.
+pub fn printed_site_entries(out: &str) -> Vec<(String, String)> {
+    let mut lines = out.lines().skip(1);
+    let header = lines.next().expect("a header line");
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    let rest = match header.strip_prefix("  site: ") {
+        Some(site) => {
+            let (at, rest) = site.split_once("   ").expect("a site part");
+            let (file, line) = at.rsplit_once(':').expect("a file:line site");
+            pairs.extend([("file", file), ("line", line)]);
+            rest
+        }
+        None => header.trim_start(),
+    };
+    pairs.extend(
+        rest.split("   ")
+            .take_while(|part| !part.starts_with('('))
+            .map(|part| part.split_once(' ').expect("an entry")),
+    );
+    pairs.extend(
+        lines
+            .take_while(|line| !line.starts_with("  (") && !is_body_line(line))
+            .map(|line| line.trim_start().split_once(' ').expect("an entry line")),
+    );
+    pairs
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
+/// The [`site_fields`](rigger::contextgraph::site_fields) entries of `site` after the CLI's two
+/// print transforms (spec 119, SHOW IS ONE RENDERER): `line` the live line the body came from,
+/// and each string value's newlines spaces - the pairs [`printed_site_entries`] reads back.
+pub fn site_entries_as_printed(
+    site: &rigger::contextgraph::EntitySite,
+    live_line: u32,
+) -> Vec<(String, String)> {
+    rigger::contextgraph::site_fields(site)
+        .into_iter()
+        .map(|(key, value)| {
+            let text = match value {
+                _ if key == "line" => live_line.to_string(),
+                serde_json::Value::String(text) => text.replace('\n', " "),
+                number => number.to_string(),
+            };
+            (key.to_string(), text)
         })
-        .count()
+        .collect()
 }
 
 /// The line `rigger graph build` prints for a build that counted `events` batch events, with
@@ -757,13 +1014,6 @@ pub fn nanos(secs: u64) -> i64 {
     Duration::from_secs(secs).as_nanos() as i64
 }
 
-/// A `type_` event carrying `data`, replay-keyed `key` and valid from `secs` after the epoch.
-pub fn keyed(type_: &str, data: Vec<u8>, key: &str, secs: u64) -> Event {
-    Event::new(type_, data)
-        .with_meta(rigger::ingest::META_REPLAY_KEY, key)
-        .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
-}
-
 /// The payload of one extracted code entity, `alpha` in `src/a.rs`.
 pub fn code_entity() -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
@@ -817,11 +1067,7 @@ pub fn seed_derived_duplicates(root: &Path) {
             .with_valid_from(UNIX_EPOCH + Duration::from_secs(1_000 + r as u64)),
         );
     }
-    with_pre_ledger_run_store(root, |store| {
-        store
-            .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
-            .unwrap();
-    });
+    seed_pre_ledger_events(root, &events);
 }
 
 /// The `worker` agent definition (sonnet, Read/Edit) that runs without a worktree

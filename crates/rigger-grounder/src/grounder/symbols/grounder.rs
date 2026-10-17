@@ -8,6 +8,7 @@
 use crate::grounder::symbols::model::{percentile_cutoff, Lang, SymbolIndex};
 use crate::grounder::symbols::{build_index, reindex_files, store};
 use crate::grounder::{BlastRadius, Grep, Grounder, RankedRef, Ref};
+use rigger_domain::contextgraph::query::path_leaf;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
@@ -207,7 +208,7 @@ impl CodeTerms {
         {
             self.names.push(Named {
                 text: piece.to_string(),
-                name: last_segment(piece).to_string(),
+                name: path_leaf(piece).to_string(),
             });
         }
     }
@@ -232,12 +233,6 @@ fn is_path(term: &str) -> bool {
         || term
             .rsplit_once('.')
             .is_some_and(|(stem, ext)| !stem.is_empty() && FILE_EXTENSIONS.contains(&ext))
-}
-
-/// The symbol a path-shaped name ends in: `grounder::tree_bytes` -> `tree_bytes`, `a.b` -> `b`.
-fn last_segment(term: &str) -> &str {
-    let tail = term.rsplit("::").next().unwrap_or(term);
-    tail.rsplit('.').next().unwrap_or(tail)
 }
 
 /// `text` with every bracketed `<...>` and `(...)` group removed (nesting included), so
@@ -2188,7 +2183,7 @@ mod tests {
         );
     }
 
-    /// Test-only fixture: a definition at `line`, real fields elsewhere immaterial to
+    /// Test-only fixture: a one-line definition at `line`, real fields elsewhere immaterial to
     /// [`scored_hits`]'s tie-break (`is_test`/`is_out_of_line_module`/`path_override`/
     /// `enclosing_inline_module_path` all left at their inert defaults).
     fn hand_def(name: &str, line: u32) -> Def {
@@ -2196,6 +2191,9 @@ mod tests {
             kind: Kind::Function,
             name: name.to_string(),
             line,
+            end_line: line,
+            path: name.to_string(),
+            parent: None,
             is_test: false,
             is_out_of_line_module: false,
             path_override: None,

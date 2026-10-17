@@ -6,10 +6,11 @@
 //! tests (which feed a hand-built graph) are structurally blind to:
 //!
 //!  - the CROSS-FILE resolution over a real `whole()` read. A reference in one file to a symbol
-//!    defined in another folds onto a BARE same-file placeholder (spec 29a keeps cross-file name
-//!    resolution out of the fold); detection must redirect that placeholder onto the unique real
-//!    definition, so a community spans the directory boundary between caller and callee. The unit
-//!    tests hand-build already-resolved edges and never exercise this over the projection.
+//!    defined in another folds onto the BARE same-file placeholder `<file>::%<leaf>` (spec 29a
+//!    keeps cross-file name resolution out of the fold); detection must redirect that placeholder
+//!    onto the unique real definition, so a community spans the directory boundary between caller
+//!    and callee. The unit tests hand-build already-resolved edges and never exercise this over
+//!    the projection.
 //!  - the REBUILD-BYTE-IDENTICAL contract through the ACTUAL fold. The pass's `CommunityAssigned`
 //!    events, replayed from scratch into a fresh projection, must reproduce the same community nodes
 //!    (including the degree-derived label) and the same live `IN_COMMUNITY` edges - the rebuildable
@@ -49,10 +50,10 @@ fn the_pass_groups_densely_coupled_entities_across_directory_lines() {
     let (assignment, _events) = run_pass(&p, next);
     let m: BTreeMap<String, String> = assignment.members.iter().cloned().collect();
 
-    // The bare cross-file placeholders resolved away - only real definitions and files are members.
+    // The bare placeholders resolved away - only real definitions and files are members.
     assert!(
-        !m.contains_key("src/combat/hit.rs::send"),
-        "a bare cross-file placeholder is never a member on its own"
+        !m.contains_key("src/combat/hit.rs::%send"),
+        "a bare placeholder is never a member on its own"
     );
 
     // Subsystem A: `strike` (combat) and `send` (net) share one community across the directory line.

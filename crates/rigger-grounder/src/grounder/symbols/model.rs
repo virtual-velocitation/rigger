@@ -45,13 +45,39 @@ pub enum Kind {
     Other,
 }
 
-/// A definition site: kind, name, and 1-based line. The span is a plain integer, never a
-/// `tree_sitter::Range` (dependency direction, 5.5.2).
+/// A definition site: kind, name, 1-based line and 1-based end line. The span is plain integers,
+/// never a `tree_sitter::Range` (dependency direction, 5.5.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Def {
     pub kind: Kind,
     pub name: String,
     pub line: u32,
+    /// Spec 119 (ONE EXTENT): the 1-based line the definition's whole construct ends on, its body
+    /// included - the row of the last byte of its byte range plus one, never below `line`, and
+    /// `line` itself for a zero-length range ([`crate::grounder::symbols::extract::extract`] sets
+    /// it on every definition). No serde default: an index persisted before it existed fails to
+    /// deserialize, so [`crate::grounder::symbols::store::load`] answers it absent and it is
+    /// rebuilt, never a live index mixing a defaulted 0 with real values.
+    pub end_line: u32,
+    /// Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH): the definition's id path in its file - the path
+    /// of the definitions enclosing it, `::`, its leaf (`.` before a field or property), `name`
+    /// itself at file level - so its node is `<file>::<path>`
+    /// ([`crate::grounder::symbols::extract::extract`] sets it on every definition). No serde
+    /// default, as `end_line`: an index persisted before it existed loads as absent and is
+    /// rebuilt.
+    pub path: String,
+    /// Spec 119 (CONTAINS IS STRUCTURE): the [`Def::path`] of the definition this one's
+    /// `CONTAINS` comes from ([`crate::grounder::symbols::extract::extract`] sets it): its
+    /// container's path - the innermost definition that alone strictly holds it, a span two
+    /// definitions share holding nothing (in `var a, b = func() { type T struct{} }(), 1` the file
+    /// holds `T`), or the C# file-scoped namespace a declaration after it sits in - but that a JS
+    /// or TS named value takes its container's parent, being one definition with it, and a Go
+    /// method the path of its receiver base type when a definition of the file sits there; `None`
+    /// where that names no definition, the file containing it. Serde-defaulted and omitted when
+    /// `None`; an index persisted before it existed is of an older [`GRAMMAR_TAGS_VERSION`], so it
+    /// loads as absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     /// Spec 86 criterion 1: whether this definition is TEST code - directly annotated
     /// `#[test]`/`#[cfg(test)]` (or any `cfg(...)` predicate naming the `test` token, e.g.
     /// `#[cfg(all(test, feature = "x"))]`), or nested inside such a definition (a plain helper
@@ -124,7 +150,8 @@ pub struct Def {
 }
 
 /// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
-/// reference occurs inside (the caller). `None` for a top-level reference outside every
+/// reference occurs inside (the caller), named by its path ([`Def::path`], spec 119 criterion 8:
+/// `T::new`, `outer::inner`). `None` for a top-level reference outside every
 /// definition - an import or a module-level call; a file-level impl header's trait and type
 /// attribute to the impl block, a definition of its own. Set during extraction by attributing the
 /// reference to the innermost function-like definition whose range contains it, else the
@@ -176,9 +203,11 @@ pub struct FileSymbols {
 /// is distinguishable on replay from one the current set would produce, and so a persisted
 /// [`SymbolIndex`] built under an older set loads as absent and is rebuilt (gap 104); so does a
 /// change to what extraction records under an unchanged query, the caller a reference carries
-/// (`SymRef::enclosing`) included. Parser-free, so it lives in the model both feature lanes
-/// compile.
-pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v3";
+/// (`SymRef::enclosing`) and a definition's parent (`Def::parent`) included: `ts-tags-v4` is
+/// spec 119's one bump, at the index's last shape change (GENERATIONS), so a `ts-tags-v3` index -
+/// callers by leaf, or by path with no parent - loads as absent and is rebuilt.
+/// Parser-free, so it lives in the model both feature lanes compile.
+pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v4";
 
 /// The whole-project index. Deterministic containers only (`BTreeMap`): iterating it for
 /// serialization is stable across processes, unlike a `HashMap` whose iteration order is
@@ -325,6 +354,9 @@ mod tests {
                     kind: Kind::Function,
                     name: "apply_damage".into(),
                     line: 1,
+                    end_line: 1,
+                    path: "apply_damage".into(),
+                    parent: None,
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,
@@ -421,6 +453,9 @@ mod tests {
                     kind: Kind::Method,
                     name: "apply_damage".into(),
                     line: 7,
+                    end_line: 7,
+                    path: "apply_damage".into(),
+                    parent: None,
                     is_test: false,
                     is_out_of_line_module: false,
                     path_override: None,

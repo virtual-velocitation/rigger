@@ -1,0 +1,410 @@
+# 118 - Tests are pointer nodes
+
+**Goal:** the knowledge graph is the lookup surface every persona uses; a question it cannot answer
+becomes a grep. "Which tests exercise this fn" has no answer: a proof is a `file:line` string in a
+production node's attrs (`proven_by`, `proof_evidence`), never the test, a helper's references
+prove nothing, and test locations rank beside production in `ground`. 237 definitions under paths
+the tree no longer holds (`src/dash.rs::*`, `src/grounder/symbols/*`) are still live: `show
+DashInputs` answers two candidates, one of them `src/dash.rs::DashInputs`, because the whole-tree
+walk never names a file removed outside an integration reindex. This spec makes each test one
+pointer node with direct `PROVES` edges, derives proof through helpers at read time with no
+project losing evidence, keeps tests out of every production view and ranking, and retires gone
+files at the whole-tree walk.
+
+## Design
+
+**TESTS ARE POINTER NODES, decided here.** Spec 86's boundary, restated: test pointer records are
+evidence; no test internal is a node. THE FOLD STORES FACTS AND DERIVES NOTHING TRANSITIVE (fewest
+moving parts): every test fact is a function of one file's bytes, so spec 107's rebuild equality
+holds with no recompute trigger. `Def` gains `test_fn` (TEST FUNCTIONS, Notes), and ONE emitter,
+`events::test_events(file, fs)`, gaining `excluded` at criterion 4 (`test_events(file, fs, excluded)`), lands beside
+`proof_events` at criterion 12 and REPLACES it at criterion 3 (from 3 a caller-less `is_test` event folds nothing, criterion 3's); before 3 a caller-less `is_test` event still folds into `proofs` as today and, from 2, a caller-carrying one is a row, so the card
+keeps reading `proofs` until 3 moves it. It reads `events::is_dev_only`, emits for dev-only code and stamps no `fresh`; a definition or reference is dev-only by ONE predicate, `events::dev_only(file, is_test)` (its file `is_dev_only`, or the `is_test` flag its caller hands, `Def.is_test` for a definition and `SymRef.is_test` for a reference), landing two-argument at criterion 12 and gaining `excluded` at 4 with `counts_as_test` (`dev_only(file, excluded, is_test)`, `excluded` also making it hold), which `counts_as_test`, the helper emission and `scored_hits`' production scope (its definition and reference hits, `grounder.rs:335-340`) all call, `scored_hits` handing it `excluded` `false` (TEST FUNCTIONS), `extract_events`' production filter (its whole-file early return and its `!d.is_test` and `!r.is_test` filters, `symbols/events.rs:173-178`, `:206`) being `dev_only` negated from 12, its batch bytes as at the base, and spec 117's tagged-reference filter, landing before `dev_only` exists, re-spelled through it at 12; the batch is ordered structural events, `proof_events`' events (today's place, a slot present on trees 12 and 14 only), helpers, tests, then rows, an order for emit determinism only, since rows resolve at the batch's end, and the `EdgeInferred` arm routes a caller-carrying `is_test` event to the row arm before any supersede, so no test row reaches `supersede_file_proof`; from 12 to 3 `lower_file` calls `test_events` for non-excluded files only, as it calls `proof_events` today:
+- each test function as a `CodeEntityExtracted` of kind `test`, folded to ONE node of graph kind
+  `test` (`KIND_TEST`), id `<file>::!<path>`, spelled by ONE pure function `contextgraph::test_id(file, path)` in rigger-domain beside spec 119's `placeholder_id` (criterion 2's, `test_events` calling it at 12 for the emitted id) (the `!` marks a test as `%` marks a placeholder, so a
+  `#[test] fn x` beside a `#[cfg(not(test))] fn x`, or a fn gaining or losing `#[test]`, gives two
+  ids; `KIND_TEST` joins `PROMOTING_KINDS` (`sqlite.rs:3744-3754`, criterion 2's, `ensure_node` reading it), so a decision, finding or lesson naming a test id settles it `test` in either fold order, and a knowledge-held `!` id whose test retired is a bare `artifact` whose `PROVES` retire with the generation, accepted by name as spec 119 accepts flat ids, `settled_kind`, `sqlite.rs:3759`, settling the mention's `artifact` once the test's assertion lapses, the lapse being base `settled_kind` behaviour (`settle_node`, `:1978`), and the promotion's one owner criterion 2, the first production writer of a `test` node, for both halves, `ensure_node`'s upsert and `settled_kind` each reading `PROMOTING_KINDS`, sharing no table, no arm and no reader with criterion 13's fold state), attrs `name`, `span` (`file:start-end`, from `Def.end_line`, so `test_events` reads spans
+  from `fs` with no re-parse and walk and sink batches agree), `doc` (the doc's first line) and `fixtures`; `fixtures` is exact and per-file, stored as its spans joined by spec 117's `contextgraph::LIST_SEP`:
+  the spans of the same-file helpers whose leaf a call reference of the test names, then of those helpers' call references, to a fixed point, sorted and deduplicated; its fold creates no file node and no `CONTAINS`; `test_events` emits one event per test
+  path, the lowest-line twin's, its rows unioned as for helpers and its `doc` by spec 117's lowest-line-that-has-one rule, test twins collapsing as helper twins do (call references unioned) before the `fixtures` walk, and a hand-built log's second event at one path merges last writer per attr key (`json_patch`, `sqlite.rs:3705`), accepted by name;
+- every other dev-only definition of spec 116's call-target kinds (`contextgraph::is_call_target`, the set `call`'s KIND CANDIDATES entry names), `module`, `impl` and `variant` excepted (a member of a dev-only type or impl is a helper in its own right; a variant belongs to its parent and an `impl` to its members, so an impl header is never a root), a dev-only field, property or declaration being dev-only and nothing more, no helper row and no root; each helper keeping its KINDS kind and marked by a serde-defaulted `helper` payload field (PAYLOADS), folded to a row of ONE `helpers` table (project, identity, generation, path, leaf, kind, lang, span), never a node, a SET keyed (project, identity, generation, path, kind), upserted per event, which serves duplicate events inside one batch as spec 117's set key does, and dropped by spec 117's drop (in `apply_generation`'s resolved branch, before the batch's first `fold`) and by nothing else, twins sharing the key being one row with the lowest-line span;
+- each call reference (`ref_kind` `call`, method included) a test or helper makes as a `refs` row of origin `test` or `helper` from the
+  innermost enclosing test or helper (enclosure decided by the definition's `line`-`end_line` span from `fs`, never by `SymRef.enclosing` alone, ties broken by the smallest span, then the candidate whose path is `SymRef.enclosing`'s, then the lowest (line, path, kind)), carried as `caller`: a test-origin row's caller is the test's
+  id path with its `!` mark (`!<path>`, a JS or TS file node's `!<stem>`), a helper-origin row's the
+  bare helper path, so the fold tells them apart by the `!` (`tests/setup.js`'s `function setup()`
+  rows carry `setup`, its file node's `!setup`), on an `is_test` `EdgeInferred` as `proof_events`
+  (`symbols/events.rs:393-433`) carries a reference today; a call no test or helper encloses (a Python test file's module-level call) carries the empty caller `""` (a root or nothing, by NO PROJECT LOSES
+  EVIDENCE, below), while an older `is_test` event (`:415`), its caller absent, folds nothing from 3
+  on. So `fixture.build()` stages a call row of leaf `build` that resolves to the one same-file
+  helper `build` (method included) and reaches production only through that helper's own rows; with
+  no same-file helper it takes the production tiers. Spec 117 rules that a `ref_kind` event with an empty identity or reaching `fold_new` stages and settles no `refs` row (its criterion 1's), its `fresh` head still running (its criterion 6's); a test, helper or file row event follows that rule, and a `test` entity event there folds nothing (criterion 2's), nor a `helper` one (criterion 13's), having no head since `test_events` stamps no `fresh` (criterion 12's): `apply_generation`'s resolved branch folds `test` and `helper` entity events itself, as it stages 117's rows, and `fold_event`'s arm, the one `fold_new` reaches, writes nothing for them, the call site being the discriminator (criterion 13's, 2 adding the `test` arm to the dispatch 13 brings). On tree 13 a kind-`test` event reaches the base definition arm, so criterion 2's `fold_new` clause is red there. A row of a `test`, `helper` or `file` origin never creates a file node (criterion 2's); the unresolved read lists none of them, each being a `call` row and spec 117's read listing `type`, `const` and `use` rows only. `ref_kind` `call` is the discriminator: no `production` row is ever `call`, so spec 117's set key, which holds `ref_kind`, keeps a production fn's rows apart from test and helper rows and 117's unresolved read needs no filter; a test, helper or file row's `from` is `code_entity_id(file, caller)` unaliased (the file id for the empty caller), `from` being what separates test and helper rows in the set key, and same-path helpers share their rows. The `origin` column joins `refs` at 13 (criterion 13's), outside the set key, defaulting to `production` for every row 117's arm writes, the row arm writing `test`, `helper` and `file` from 2, read by the settlement's candidate order and edge choice and by `proof_closure`'s per-origin following.
+The ONLY edge the fold writes is a DIRECT `PROVES` (`REL_PROVES`, because "which tests exercise
+this fn" is a question `REFERENCES` would mix with code uses), from a test node to the production
+definition its own row resolves to, one per (test, definition), asserted and retired as any `refs`
+row's edge (the one-retirer rule), taking spec 117's tiers by resolution scope (same-file `extracted`, project-wide `inferred`), every tier followed by `proof_closure` and `proves`: a test row resolves over the one same-file helper of its leaf
+among its KIND CANDIDATES (a helper reference, no edge), the one same-file production candidate, the one production candidate in the project of the row's own language, in that order (Rust's scoping of a `mod tests` helper over `use super::*`), several at any tier leaving it unresolved with no fall-through; a `test` node is never a candidate, every reader of spec 119's `node_leaf_sql()` landed through criterion 11 taking graph kind `code-entity` only (criterion 11's, table below), criterion 8's test tier the one reader outside it; the same rule (several same-file helpers of one leaf = unresolved, never followed) is ONE pure function in rigger-domain, `contextgraph::sole_helper(candidates) -> Option<_>` (criterion 2's), which `test_events` for `fixtures`, the fold arm's first tier and `proof_closure` all call, beside ONE pure helper-closure walk, `contextgraph::helper_closure` (criterion 12's), a fixed point taking a neighbour function, which `Projector::proof_closure` walks backward (criterion 3's), `Projection::proves`' inner body walks forward from one test (criterion 6's), and the emit-time fixture spans walk forward over same-file leaves. `sole_helper`'s candidates are distinct (path, kind) keys at every call site, `test_events` collapsing same-key twins (lowest-line span, call references unioned) before the `fixtures` walk, so emit and fold agree. A dropped `span` or
+`fixtures` is retracted as any key a newer generation no longer asserts (`record_assertion`,
+`sqlite.rs:3767-3851`). Every row, test-, helper- and file-origin alike, resolves through spec 117's ONE settlement at its batch's end (`apply_generation`'s resolved branch), language-scoped: a test- or helper-origin row by the order above (same-file helper first, no fall-through), a file-origin row by the production tiers alone, writing the row's OUTCOME (`resolved`, `helper`, `none` or `several`), in a new `outcome` column (criterion 13's), null for a `production` row, and `resolved target` on `resolved` only; `proof_closure` seeds a test-origin proof from live `PROVES` edges, `proof_closure` and, from 6, `proves`' inner body being the production readers of `PROVES` (`test_graph.rs`'s raw-SQL `PROVES` graphs exercising that path), and a helper- or file-origin proof from `resolved target`, matching requested ids against those two sources only; ONE pure function in rigger-domain, `contextgraph::proof_hop(row)` (criterion 3's), answers a row's next hop by outcome, a `test` row's `resolved` through its `PROVES` edge, a `helper` or `file` row's to its stored target, a `test` or `helper` row's `helper` to the helper `sole_helper` gives over the row's file and leaf, every origin's `none` to the project helper tier and `several` to none, `proof_closure` calling it; the project helper tier is the one helper of the row's leaf and language anywhere in the project, the row's own file included (a `test` or `helper` row reaching it found no same-file helper at tier 1, and a `file` row's production tiers never read helpers, so criterion 2's production-tiers clause stands). Everything
+transitive is READ-TIME through two `Projection` port reads the sqlite projector implements,
+`proven_by(defs)` (criterion 3's), the BULK read taking a set of production ids and answering each one's distinct test and root ids, and its inverse `proves(test)` (criterion 6's), answering the proven definitions as `Node`s,
+`proven_by` walking BACKWARD from each requested definition over the direct `PROVES` edges and the test, helper and file rows reaching it (by outcome, above) and `proves` forward from one test, each with a visited set, `proves`' inner body inverting `proof_hop` through `helper_closure`'s neighbour function, so `d` is in `proves(t)` exactly when `t` is in `proven_by(d)`; every
+proof count is of distinct tests and roots. The carrier is the `Graph` itself: `Graph`
+(`contextgraph.rs:246-249`) gains a serde-defaulted `proven_by` map (production id -> its distinct test and root ids, sorted by id), holding an entry, possibly empty, for every production id the loader asked about, the asked set being the nodes of graph kind `code-entity` carrying `name`, so `around` re-walks nothing a load answered, which the two loaders that hand a `Graph` to anything, `Projector::subgraph`
+(`sqlite.rs:1638`) and `Projector::whole` (`:595`), fill by ONE `proven_by` call over the production ids they return, its first production callers, `site_of` calling it with one and `contextgraph::around` once after its callers walk's merge, over the merged production ids absent from the loaded map, as over a test seed's returned definitions, so a seed's closure runs once in `site_of` (through `locate`) and once per load, accepted by name; so `card` (`query.rs:1284`) keeps its signature
+and reads the map, alike in the dash (`dash.rs:3271`) and in the console, whose `graph_load`
+(`query.rs:1723`) deserializes the dash's payload with the map in it. `proven_by` and
+`proof_evidence` attrs and the `proofs` table retire (PROOF READERS, Notes), criterion 3's schema
+change dropping the table. EVERY LANGUAGE KEEPS ITS EVIDENCE: `proof_events` makes every call
+reference of a `tests/` file proof evidence in any language (`symbols/events.rs:394`, `:399-400`,
+called for every file at `:85-87`), so the pointer-node mechanism above runs for every registered
+language and only the marker setting `Def.test_fn` varies (TEST FUNCTIONS, Notes), each applying in dev-only code only. A proof landing across languages (spec 116's `shim/shim.test.mjs` on a uniquely named Rust definition through `resolve_proofs`) is DROPPED at 3, accepted by name: it is a landing no call can make (a JS call reaches no Rust definition), so no evidence is lost. Evidence is CALLS only, as `proof_events` today: a test, helper or file row is staged for `ref_kind` `call` (method included) only and only such rows write `PROVES`, a `type`, `const`, `use` or `module` reference inside a test region staging nothing, so spec 117 criterion 6's "`proofs` unchanged" holds on every tree before criterion 3. JS and TS tests are calls (`it(..)`), not definitions, so no `Def` can carry the
+marker: a dev-only JS or TS file is ONE test node, id `<file>::!<stem>`, `name` the file's stem,
+`span` `file:1-<FileSymbols.end_line>` (`FileSymbols` gaining `end_line`, criterion 12's, written
+by `extract`, at least 1 as spec 119's `def_of` keeps `Def.end_line`), no `doc` (JS and TS have no file doc), and every call no helper encloses is that node's row; `ts-tags-v6` re-versions the index at criterion 12 and no
+interim binary is installed, so every index the landed binary loads was written by it, and a
+cold-start walk lowering the index and a sink lowering fresh bytes read the same fields and emit the
+same batch. A dev-only file of any other language holding no marked definition emits only its helpers and their rows, and no file-level node: its references are helper rows the read-time
+walk already carries to the tests calling them, so a file node would count each proof twice.
+
+| Reader of `node_leaf_sql()` (spec 119) | Disposition |
+|---|---|
+| `definitions_with_suffix` (`sqlite.rs:3137`, behind `locate`'s fallthrough, `resolve_down_hop` and `callers_of`), `reference_tier`'s cross-file read (`:3422`), `definition_retired`'s node side (`:2043`), `resolve_proofs` (`:3517`, retired at 3) | KEPT: each already filters graph kind `code-entity` |
+| `same_file_candidates`, whose call-target test reads the attr kind a test node's `test` passes | gains the graph-kind filter `code-entity` |
+| `locate`'s leaf, path and file-qualified steps (every node carrying `name`) | gain the graph-kind filter `code-entity`, tests answering at criterion 8's tier; the exact-id step (`sqlite.rs:816-819`) is the base's, kind-agnostic and untouched, as spec 119's criterion 7 keeps it, so a test id answers `show` by exact id from tree 11 |
+| spec 117's row resolution | its candidates graph kind `code-entity` only |
+| `migrate_indexes`' leaf index | an index, no reader |
+| `locate`'s test tier | reads `node_leaf_sql()` filtered to graph kind `test`, the one reader outside `code-entity` (criterion 8's) |
+
+**NO PROJECT LOSES EVIDENCE, decided here.** ROOTS are defined constructively: every helper outside the helper walk's closure from marked tests and file roots is a member of an UNREACHED COMPONENT (the helpers mutually reachable through its rows), and each component with no caller outside itself is ONE root, named by its lowest (file, path) member, whose rows are evidence (an unmarked harness fn, `#[rstest]`, a `benches/` or `examples/` fn, a setup hook; two unmarked helpers calling each other that no test calls being one root). The FILE ROOT is the emitter's, which
+holds the path and the flag: `test_events` gives a call no test or helper encloses the empty caller `""` and origin `file` in a file that is `is_dev_only` (or, from criterion 4, `excluded`) and not JS or TS, and in a production file's test-attributed region alike (`#[cfg(test)] mod tests { proptest!{..} }` staging a root row, so no project loses evidence); a module-level macro invocation stages one `file`-origin row of the macro's leaf and its body stages nothing, accepted as today (the Rust query tags the invocation's name alone, `symbols/registry.rs:39`, and leaves its token tree unparsed); that emission and its exclusion are criterion 14's code and assertion, at the `test_events` seam, its `excluded` half criterion 4's. At the emitter, origin `file` IS the present-and-empty `caller` (PAYLOADS): no origin travels on the wire, and criterion 14's seam assertion reads the payload's `caller` alone. The projector reads only
+the origin, a `file`-origin row making its file a root (criterion 3's); this is the ONE root rule,
+every other mention pointing here. `proven_by` names a root `<file>::?<path>`, the file root `<file>::?`, both spelled by ONE pure function `contextgraph::root_id(file, path)` (criterion 3's), the `?` keeping a root string from equalling a production id (unmarked) or a test id (`!`), a string-named member whose content begins with `!` or `?` (`"!x"`) read as a test caller or equal to a root string being accepted by name as spec 119 accepts `"%x"`, so `tests/setup.js`'s unreached `setup` is `tests/setup.js::?setup` beside its file node
+`tests/setup.js::!setup`; `proves(test)` is defined for test ids only, and a root id answers `none`
+to `show`, `around` and the bare query, having no node. Roots are computed at read time over `helpers` and `refs` by ONE pure function in rigger-domain, `contextgraph::proof_roots(..)` (criterion 3's), the root rule over the unreached helper graph, so fold order cannot move them; ONE function, `Projector::proof_closure`, walks BACKWARD from the requested ids: the live `PROVES` edges and the helper and file rows whose stored target is a requested id, and for a `helper`-outcome row's helper or a helper-origin row's caller, the rows targeting that helper (a `none`-outcome row of its leaf and language counting when it is that leaf's one project helper), transitively; every caller of a helper so reached lies inside the same walk, so the roots among them are computed there, and a load's cost is its ids' fan-in, accepted by name; `proven_by` calls it once per call, so a `Graph` load (the conductor's two prompt reads, `conductor.rs:10767`, `:10948`, among them) computes it once through its one bulk call and `site_of` once through its call over one id (criterion 3's); `subgraph`, `whole` and `site_of` fill (criterion 3's) through connection-taking inner functions, `proof_closure` and the bulk `proven_by` body (and, criterion 6's, `proves`' body for `site_of`), the `Projection::proven_by` and `Projection::proves` port methods being wrappers over them, so no port method runs while `locate` holds the non-reentrant connection mutex (`sqlite.rs:815`, its node reads at `:817`, `:825`); an uncalled dead
+helper thereby counts as evidence, accepted, as it does today. An out-of-line `#[cfg(test)] mod x;`
+target (107's `excluded: true`) is dev-only by the `excluded` flag, which `is_dev_only` does not read, and gets pointer nodes like
+any dev-only file (criterion 4's): `lower_file` hands `test_events` the un-hollowed `fs` and the
+`excluded` flag, which makes every definition dev-only, while `for_extraction`
+(`symbols/events.rs:28-39`) still hollows the `fs` `extract_events` sees, closing the gap
+`proof_events`' doc discloses (`:373-382`). `Projection::proven_by`, `proves` and `current_identities` default to the empty answer, as `ground_tests` does, so no adapter's signature changes and `around`'s test doubles stand. A test reaching a command fn by spawning the binary is
+OUT of scope (Notes).
+
+**WHOLE-GRAPH VIEWS SKIP TEST NODES, decided here.** Test nodes are evidence; whole-graph views skip them in two named places, the load skip (criterion 1's) and the `calls` seed narrowing (criterion 11's), the `around` route's freedom from test nodes being 11's: `Projector::subgraph` and `Projector::whole` return no `test` node and no edge with a `test` node at one end (a `PROVES` edge, or a knowledge edge to a test id a decision names) through `KIND_TEST`'s skip (criterion 1's), and the reach walk itself never crosses a `PROVES` edge or enters a `test` node (`subgraph`'s CTE, `sqlite.rs:1653-1662`, and `whole`'s edge read), so a production seed never reaches another definition through a test that proves both, and `subgraph`'s seed set is narrowed to non-`test` nodes before the walk, beside the reach walk's skip (criterion 1's), as `calls`' narrowing is criterion 11's; criterion 1's fixture holds one test proving two definitions, seeded at one, depth 2, and the pure-core views (`query.rs`'s lenses, `community.rs`,
+`concepts.rs`) receive only a `Graph` one of them loaded (directly, through `contextgraph::around`,
+or through the console's `graph_load` of the dash's payload), so they carry no skip of their own. On tree 1 `contextgraph::around` over a test seed still returns the callers walk's layer-0 `test` node until 11 narrows the `calls` seeds, accepted by name for an uninstalled interim tree.
+The direct reads read test nodes by id or kind and are named: `show` and `around` of a test id
+(criterion 6), `one_hop_degree` dropping `PROVES` (criterion 11), the bare query's test tier
+(criterion 8), and resolution, where a `test` node is never a candidate. `contextgraph::around` detects a test seed by the existing port read `Projection::locate` (`contextgraph.rs:722`), a seed being a test seed only when `locate` answers `Located::One` whose id is the seed byte for byte and of kind `test` (spec 117's `--around` rule); it calls `Projection::proves` and returns exactly those definitions as depth-0 nodes with no edges and no test node, filling their `Graph.proven_by` through the one bulk call, `subgraph` untouched (criterion 6's); `Projection::proves`' nodes join spec 117's CUT list, cut through `contextgraph::doc_first_line` in its inner body, `site_of` reading ids only; a test-seed `around` prints no queried-node line, no doc line and no `proven by` entry, the last criterion 7's guard. A test proving nothing answers the existing nothing-found line on the CLI and an empty graph on MCP, accepted by name. A seed list is a test seed's path only when every seed is a test, answering the union of each seed's `proves`, each definition once, in id order, filled by the one bulk `proven_by` call; else it takes the production path, a test seed contributing nothing (criterion 1's `subgraph` seed narrowing and, for `Projection::calls`, the seed narrowing criterion 11 owns); `proves` or `proven_by` handed an id of the wrong kind answers the empty set, criterion 6's `contextgraph.rs` test-seed clause carrying the union and the mixed list and criterion 3's the wrong-kind id. Every reader spec 117 and spec 119 table gets one disposition for a `PROVES` edge, a `test` node, a `helpers` row or the `origin` column, under one rule: a test node joins no community and owes no relabel, and the retirement arms treat `PROVES` as any row's edge.
+
+| Reader (spec 117 or 119 table, bddbadd4) | Disposition | Owner |
+|---|---|---|
+| `Projector::subgraph`'s reach walk and `whole`'s edge read | REPLACED: cross no `PROVES`, load no `test` node and no edge touching one (above) | 1 |
+| `Coupling::from_graph`, `confidence_tier_radius`, `files_reachable`, `write_code_neighborhood`, the console map, `neighborhood_of`, `member_set` | KEPT: each reads a loaded `Graph`, which holds no `test` node or `PROVES` | 1 |
+| `add_edge`'s relabel debt (`sqlite.rs:3902-3905`), `relabel_owed_communities`' label degree (`:2116-2150`), `ensure_node`'s `owe_relabel_of` (`:3740`), spec 117's debt at `settle_edge`'s stamp and `assert_link`'s in-place revival | KEPT: the debt and the degree read only `CALLS`, `REFERENCES` and `CONTAINS`, and a `test` node holds no `IN_COMMUNITY` edge, so it joins no community and owes no relabel; a `PROVES` edge owes no relabel at `settle_edge`'s stamp or `assert_link`'s revival, for either endpoint | 2 |
+| `definition_retired` and the definition arm's tier upgrade (`:2037-2045`, `:2500-2504`) | KEPT: `PROVES` is outside their `rel IN (REFERENCES, CALLS)`, and spec 117's discriminator excludes a row's edge too | 2 |
+| `supersede_file_edges` with spec 119's `<file>::` range arm (`:3007-3020`) | KEPT: its rels are `CONTAINS`, `REFERENCES` and `CALLS`, so a `PROVES` from `<file>::!x` inside the range is no second retirer; it retires by its row's generation | 2 |
+| `count_prunable` (`:686-712`) | KEPT: a retired `PROVES` whose generation's assertions are dropped is prunable as any row's edge | 2 |
+| `retired_code_entity_count` (`:888-906`), spec 117's module-row `CONTAINS` readers | KEPT: the count reads `code-entity` nodes only, and a test node folds no `CONTAINS` | 2 |
+| `referenced_not_called` (`:3335-3373`), the call arm's `REFERENCES` twin (`:2584-2593`) | KEPT: a test row writes `PROVES`, a helper or file row no edge, and a caller-carrying `is_test` event folds no `CALLS` | 2 |
+| `Projector::migrate_project` (spec 117's row, `sqlite.rs:781-799`) | REPLACED: re-keys `helpers` in the same transaction as `refs`, a migrated project's `helpers` rows staying live (criterion 13's `contextgraph/sqlite.rs` fixtures) | 13 |
+| spec 117's settlement and edge writer, reading `origin` | `REFERENCES` for a `production` row, `PROVES` for a `test` row, no edge for a `helper` or `file` row; candidate order by origin (above) | 2 |
+| spec 117's settlement's helper tier, `proof_closure` and, from 6, `proves`' inner body, reading `helpers` | the only `helpers` readers; no spec 117 or 119 reader reads it | 2 |
+| spec 117's unresolved read (`site_of`) | KEPT: it lists `type`, `const` and `use` rows only, and every test, helper and file row is `call` | 2 |
+| spec 119's `node_leaf_sql()` readers | the table above | 11 |
+| spec 119's `query::member_file`, `member_sql()` | KEPT: a `test` node's graph kind is not `code-entity`, so it is no member | 11 |
+| `proof_closure`, reading `origin` | a `file`-origin row makes its file a root | 3 |
+| `Projection::proves`' inner body, reading `helpers`, `origin`, `outcome` and live `PROVES` | the forward twin of `proof_closure`, the only other reader | 6 |
+| `Projection::calls`' seed set (`sqlite.rs:1709-1720`), which `layered_call_walk` seeds (`:1076-1079`) and `calls_up` hands `referenced_not_called` (`:1033`) | NARROWED to non-`test` nodes once, as `subgraph`'s seed set is, a `file`, knowledge or `artifact` seed keeping its layer-0 node, before either reads it, so `calls` over a test seed answers no node and no edge, and `around`'s merge (`contextgraph.rs:736-743`) and the dash calls view (`src/cli/dashboard.rs:554`) carry no filter of their own; no hop returns a `test` node, since no production fold writes a `CALLS` edge at one, and spec 119's `node_has_name` and `callers_of` rows stand as its criterion 1 has them | 11 |
+
+**A GONE FILE RETIRES AT THE WHOLE-TREE WALK, decided here.** Spec 107 retires a `gc` identity only
+when a walk hands its path ("A deleted `gc` file's identity holds `gc`'s batch for no bytes once the
+walk's deletion ingest recorded it, so that ingest retires the file's facts"; SINK OUTCOMES row
+10), and the whole-tree walk hands only the paths the symbols index lists
+(`symbols/events.rs:72-75`), so a file removed outside an integration reindex is never named: the
+237. `ingest_project_batched` takes the `gc` identities the graph holds,
+`Projection::current_identities(prefix)`, a new port read of `generations`, which both sinks pass, a plain read that consults no owed mark, on an owed graph the handed identities following 107's rows 4 and 14;
+the walk hands each held identity the index does not list its path, `gc`'s batch for no bytes when a new `grounder::tree_has` finds it absent and else its extraction of the bytes 107's `grounder::tree_bytes` reads, under flag `false`, a held path with no registered grammar being handed the no-bytes batch (107's `gc` function maps a path with no grammar to it), and hands `gc`'s batch for no bytes to every index-listed path `tree_has` finds absent (a lagging index) only when the held set `current_identities(prefix)` holds it, so a never-held absent path is handed nothing and gains no `generations` row, `tree_has` being an existence test under the guard `tree_bytes` applies (107's `in_walk_scope`, then a regular file), which `tree_bytes` calls for that guard, reading no bytes: one scope check and one stat per index-listed or held unlisted path per walk, a cost the walk does not pay today (`project_batches_paced` lowers from the loaded index with no disk check, `symbols/events.rs:74-85` on 107's tree), accepted by name; and 107's
+`entry_of_batch` reads the path: row 10 or 11 records an entry with no blob that retires the file's
+facts, `refs` rows and `helpers` rows; a path the tree holds (a stale index) meets 107's row 6 and
+records nothing when its extraction under flag `false` reproduces the held generation, and row 9
+records its extraction only when it differs (edited since, or held under `excluded: true`), unless
+it has left the walk's scope (107's `in_walk_scope`), when 107's row 11 hands it no bytes and it
+retires like a gone file, the walk's scope being the authority; until the index lists such a held
+path, an out-of-line test target among them ingests as production for one walk, accepted. The 237
+leave at the version-4 rebuild, since no entry of theirs resolves (107's WHAT A REBUILD REPRODUCES: an older extraction's entry folds nothing at a rebuild), and criterion 5 retires a file gone after it at its next walk. A
+definition a file no longer defines retires by the generation rule (spec 101). The held-set handoff is `cfg(feature = "symbols")`, its light-lane stub handing nothing, as 107 lands each stub with its function. `gd` and `gw` keep 107's rule.
+
+**SHOW PRINTS PROOF, decided here.** `site_fields` gains, after spec 117's `unresolved` and in this order, the entries `span`, `fixtures` and `proves` (criterion 6's) and `proven by` (criterion 7's). A test node prints no body (it has no `file`, so spec 119 prints it none), a test's `proves(test)`, carried on a new `EntitySite.proves` that `site_of` fills through `proves`' inner body, as the `proves` entry, its ids joined by `contextgraph::LIST_SEP`, omitted when empty, and `around <test id>` answers its `proves(test)` definitions (criterion 6's), printing no `proven by` entry, criterion 7's guard on 6's artifact. On a production node,
+`show` and `around` print `proven_by` as the `proven by` entry (criterion 7's), its value the ids joined by `contextgraph::LIST_SEP` on every surface with no count, omitted when empty, an id holding `LIST_SEP` (an impl header's generics, `a.rs::Map<K, V>::get`) accepted by name, the CLI `--around` printing `  proven by <ids>` after spec 117's `unresolved` line under the same `Located::One` byte-for-byte rule as spec 117's lines (a bare-leaf query printing none), `show` from a new `EntitySite.proven_by` that `site_of` fills through `proven_by`'s inner body (criterion 3's) and `around` filling the queried node's entry from the loaded `Graph.proven_by` after `entity_site`, its neighbours untouched, adding no read (spec 119's criterion 4 standing), for the queried node only and none for its neighbours; the degree beside it counts no `PROVES` edge, asserted once, by criterion 11; criterion 7's assertion is the entry and its ids only. The `Graph.proven_by` map's surface is `card`, the pure-core view over any `Graph`, an `around` graph included; it is not criterion 7's `proven by` entry: the CLI and MCP `around` print none for a test seed, and neighbours never carry one. At 3 the `show` carrier is asserted at `site_of`'s `EntitySite` alone, its printing
+first observable at 7; `site_of` pays one `proof_closure` per call for it on trees 3-6, before any
+surface prints it, accepted. A bare query answers in spec 119's order with one tier added: its first step, the exact id of any node but its excepted set (the base's exact-id step, criterion 11's table row), its leaf, path and file-qualified steps over code entities, then tests by leaf, then its fifth, excepted exact-id step, several at one tier listed as candidates, a test `Candidate` carrying the file half of its id (`query::split_id`) (criterion 8's). A test answers by exact id or by leaf only; a path or file-qualified query naming a test answers none.
+
+**GROUND RANKS PRODUCTION BY DEFAULT, decided here.** `scored_hits` is the ONE seam that filters: it
+takes a scope, production or tests, and every existing caller passes production, so
+`Grounder::ground` (the MCP `rigger_ground`, `mcpserver.rs:642-646`, and the conductor's prompt
+seed, `grounder.rs:360-364`), `ground_ranked` and `has_strong_match` (the CLI `rigger ground`,
+`src/cli/graph.rs:769-773`, which has no test flag) answer production only; a new
+`Grounder::ground_tests(query, k)`, defaulting to no rows as `has_strong_match` defaults
+(`crates/rigger-domain/src/grounder.rs:128`), so no adapter's signature changes, has the symbols
+grounder rank test locations only (scope tests: in its one pass over `idx.files()`
+(`grounder.rs:271`) every definition `events::counts_as_test` accepts, and each dev-only JS or TS file, known from its path and `fs.lang`, as one definition-weight hit named by its stem at line 1, the test node's own location, so an empty one still ranks and a removed one leaves with its index entry), and `rigger_ground` calls it when its arguments carry `kind:
+"test"`, refusing any other `kind` with the accepted values (`test`, or none) named (criterion 9's).
+A dev-only helper or fixture (`tests/common/fixtures/*`), ranked below product today, ranks in neither scope, so the conductor's prompt seed no longer reaches it, accepted by name, a dev-only JS or TS file excepted: its stem hit ranks under tests and its inner helpers in neither. The production scope drops a reference hit `dev_only` accepts (`r.is_test`, or its file `is_dev_only`), and the tests scope holds no reference hit. In an out-of-line test module target not named by `is_dev_only` only a definition that is not `Def.is_test` (a helper, a `#[tokio::test]` fn) ranks as production and is absent from `ground_tests`, accepted by name (spec 116's OUT OF SCOPE), a self-attributed `#[test]` fn there counting as a test by `Def.is_test` (`symbols/extract.rs:203-226`): criterion 9's TEST LOCATION is a definition `counts_as_test` accepts under `excluded` `false`, or a dev-only JS or TS file's stem hit.
+
+**GENERATIONS AND THE REBUILD.** `GRAMMAR_TAGS_VERSION` becomes `ts-tags-v6` (from spec 117's `ts-tags-v5`) at criterion 12 (the persisted `Def.test_fn` and `FileSymbols.end_line`), its observable a persisted `ts-tags-v5` index loading as absent in `symbols/store.rs`'s tests (criterion 12's). `PROJECTION_VERSION` becomes 4 (from spec 119's 3, which spec 117 keeps) at criterion 3: proof attrs and `proofs`
+retire and a caller-less `is_test` entry folds nothing, so a `graph.db` folded at 3 owes its rebuild, criterion 3's `contextgraph/sqlite.rs` observable; the `helpers` table and the `origin` and `outcome` columns (defaults `origin` `production`, `outcome` null) arrive with the schema the version-4 rebuild brings up on its fresh shadow (3's bump), a new store getting them from `schema` at open (criterion 13's); a store that owes its rebuild opens as it stands under spec 117's owed-open rule (its GENERATIONS), and ONE adapter predicate, `Projector::proof_schema_present` (criterion 13's), answers whether the `helpers` table and the `origin` and `outcome` columns are present, which `migrate_project`, `proof_closure` and `proves`' inner body each call, so until the version-4 rebuild a `refs` lacking `origin` and `outcome` or an absent `helpers` gives `Projector::proof_closure` no proof (criterion 3's) and `Projection::proves`' inner body nothing (criterion 6's), `cmd_graph` answering on an owed graph, and `migrate_project`'s `helpers` re-key moves nothing over an absent table (criterion 13's); the version-4 rebuild folds only entries this binary reproduces (107's rule), `rigger graph build` refilling `refs`, `helpers` and the code layer, and criterion 3's fixture records its entries with the tree-3 extraction under a stamped version 3; no binary of a tree before 3 opens an operator store, the installed binary being refreshed only at landing. After landing the operator runs `rigger setup` and `rigger graph build`; a `CommunityAssigned` or `ConceptRealized` the version-4 rebuild folds against a code node no entry restores yet is recorded detached by `attach` (`sqlite.rs:2188-2230`), and `ensure_node`'s revive of `detached_attachments` (`:3727-3739`) re-attaches it when `rigger graph build` restores that node, so communities and concepts need no re-derivation. Expected then:
+one `test` node per test function (about 4,000 by the audit's count), and, from the version-4 rebuild, no live definition (a node
+carrying `name`) under `src/dash.rs` or `src/grounder/symbols/`. ROW COUNT, estimated by a literal search at bddbadd4 of every `tests/`, `benches/` and `examples/` file and every `#[cfg(test)] mod` region for `fn` items and, per fn, its distinct `ident(` call leaves (keywords and macros excluded): 3,900 test fns (an attribute whose last segment is `test`) and 2,709 others, the `helpers` rows' order of size, and 57,459 (fn, leaf) pairs, 41,263 under tests and 16,196 under helpers, the `call` rows' order of size; a common leaf holds that many live rows (`unwrap` in 2,697 fns, `new` in 1,742), each re-read by spec 117's batch-end settlement at every batch defining that leaf, a settlement cost over a whole-tree walk accepted by name, as the read-time fan-in is.
+
+**UNIT ORDER AND BASE, decided here.** Launched on rigger-run after spec 117 lands (its `refs` table, one-retirer rule and `contextgraph::LIST_SEP`, spec 116's `is_dev_only` and kinds, and spec 119's
+`Def.end_line`, nested ids, `site_fields` and KIND CANDIDATES, are preconditions), the binary is refreshed and the store is migrated. Criteria land 1, 11, 13, 2, 12, 14, then 3 to 10, each needing the one before (11 to 14, appended without renumbering, land among the first as spec 119's criterion 13 does; the fold side, 13 then 2, lands before the emitter 12 so every event 12 emits folds through an arm that exists, and 14 before 3 so the file roots carry `proof_events`' file-level evidence before it retires); ARTIFACT OWNERSHIP (Notes) gives every artifact one owner,
+which is its first production caller's criterion, and the landing simulation is read off it: no
+criterion's assertion touches an artifact whose owner lands after it. This spec touches 107's
+`events::lower_file`, `ingest_project_batched` and `walk_batches`; 107's batch and rebuild tests compute their generation through the binary (no test holds a literal `@<hash>` key), so a batch-changing criterion (3, 4, 12, 14) edits none of them. A criterion changing a signature, payload or struct adapts every caller and constructor in
+its unit. The audit gate holds because each function lands with its first production caller. The
+test side splits by mechanism with no half on either tree, each under the planner's
+3,000-added-line cap (UNIT SIZE, Notes): 11 lands the read-side guards over `test_graph.rs` as 1 lands the load skip; 13 lands the fold state (`helpers`, `origin`, `outcome`); 2 folds pointer nodes, rows and direct `PROVES` from hand-built events and promotes `KIND_TEST`; 12 marks and emits them beside `proof_events` and 14 emits the file roots, `proofs` serving the card through spec 86's existing card tests until 3, none of 13, 2, 12 and 14 adding an assertion of its own on it; 3 derives proof at read time (roots,
+`proven_by`, the `Graph` and `EntitySite` carriers, the card) and retires `proof_events` and
+`proofs` in the same unit. The out-of-line lowering (4) adds dev-only files to 12's emitter, so 12's, 14's
+and 3's trees hold whole pointer nodes without it, those files making no test node as before. Pairs
+read off the table, each "yes" (6's `around <test id>` red on 5, which loads nothing for it): 1 before 12 (spec 86's files-lens test holds on 12's tree only because
+1 skips `KIND_TEST`; 1 asserts views over graphs `tests/common/fixtures/test_graph.rs` writes with
+raw SQL, retiring a node by stamping its edges' `valid_to` and moving its row to
+`retired_nodes`); 1 before 11 (11 asserts over 1's `test_graph.rs`); 11 before 13 (13's directly written test node passes 11's guards); 13 before 2 (2's rows write 13's columns and its settlement reads 13's `helpers`, 13's rebuild clause covering `helpers` and the column defaults only); 2 before 12 (12's events fold through 2's arms); 12 before 14 (14 extends 12's `test_events`); 14 before 3 (3 retires `proof_events`, whose file-level evidence 14's file roots carry); 2 before 3 (3 reads 2's rows and `PROVES`; 1's equality is over nodes and edges,
+the `proven_by` map outside it, re-expressed so by 3); 12 before 4 (4 asserts pointer nodes from 12's emitter); 13
+before 5 (5 asserts `refs` and `helpers` rows dropped); 3 before 6 (6's `around <test id>` fills its definitions' `Graph.proven_by` through 3's bulk call); 3 before 7 (7 prints 3's `EntitySite.proven_by` and `Graph.proven_by`); 6 before 8 (8 asserts resolution only). LANDING TREES (Notes) names the tree each criterion is red on and the tree it is green on.
+
+**CONSTRAINTS WALK, decided.**
+- *Empty:* a dev-only file with no test stamps its generation through `extract_events`' structural sentinel (`events.rs:260-264`); a JS or TS test file with no reference is a
+  node with no row.
+- *Repeated:* an unchanged file re-records nothing (107 row 3); a retired gone identity stays in
+  `generations` at its no-bytes generation, so every later walk hands it again and meets 107 row 3,
+  one primary-key read each, accepted.
+- *Reverted:* A, B, A records three entries (107) and ends on A's test nodes, rows and helpers.
+- *DROPPED:* a test, helper or file removed drops every row and helper its file's old generation
+  staged, so `proven_by` reads it no more; a helper moved into production becomes a definition and
+  a test row naming it a direct `PROVES`; a deleted file retires at the next whole-tree walk
+  (criterion 5) or integration reindex (107); a file renamed retires its test node with its
+  identity's generation.
+- *Fold order:* no fold order changes a `PROVES` edge's existence or a `proven_by` answer (each row settles at its own batch's end, the helper closure is read-time).
+- *Cycles:* `proven_by` follows helpers calling each other once each; an unreached cycle is one root (NO PROJECT LOSES
+  EVIDENCE); a cycle reaching no production definition proves nothing.
+- *Concurrent ingests:* two sinks folding one file meet 107's re-recording rows; rows and helpers change with the generation in one transaction; a load's or a `show`'s node reads and its proof reads share no transaction, a tear accepted by name: in-process reads run under the connection mutex (`sqlite.rs:1651-1700`), so only a fold another process commits between a load's statements can pair one generation's nodes with another's proof map, and the next load heals it; the test-seed `around`'s three port reads (`locate`, `proves`, `proven_by`) are the same accepted tear.
+- *Trees walked:* both sinks walk 107's ONE ROOT, `tree_root(store_dir)`, the tree holding the store (a run refusing a linked worktree, `resolve_main_worktree_or_refuse`), so only that tree's walk hands the held set; that tree walked at a checkout lacking a held file and then at one holding it retires the identity and restores it with a third entry, 107's revert A, B, A with B the no-bytes batch, accepted by name as 107 accepts a revert.
+- *Crash-resume:* each batch folds in one transaction; a rebuild resumes as 107 decided.
+- *Cold start:* `helpers` and `refs` live in `graph.db`.
+- *Existing data:* an older caller-less `is_test` entry folds nothing from criterion 3; a `graph.db` folded at 3 owes its rebuild, its proof attrs going with it.
+
+**STATE PLACEMENT.** Test nodes, `helpers` rows, test rows and `PROVES` edges are `graph.db`
+projections of the ledger and the tree, every row keyed by its staging identity and generation; the
+batch is a pure function of one file's bytes and flag (107); `helpers` and the `origin` and `outcome` columns are fold state in the rebuild comparison surface, row for row after a rebuild outside 107's listed instances, criterion 13's rebuild clause covering `helpers` and the column defaults only and the rebuild equality of test-, helper- and file-origin rows' `origin`, `outcome` and `resolved target` being criterion 2's, the row arm's; transitive proof is computed at read
+time and stored nowhere.
+
+## Notes (non-criteria)
+
+ARTIFACT OWNERSHIP. Owner = the criterion of the artifact's first production caller (for a field,
+table or constant, its first production reader or writer); "-" = not retired.
+
+| Artifact | Owner | First production caller | Tree it first exists on | Retired by |
+| --- | --- | --- | --- | --- |
+| `KIND_TEST`, `REL_PROVES`, the load's skip and the reach walk's, the seed set narrowed to non-`test` nodes before the walk, the reader rows of WHOLE-GRAPH VIEWS owned by 1 | 1 | `Projector::subgraph`, `Projector::whole` | criterion 1 | - |
+| `tests/common/fixtures/test_graph.rs` | 1 | test only | criterion 1 | - |
+| per-language `Def.test_fn` markers (TEST FUNCTIONS), syntactic only, `GRAMMAR_TAGS_VERSION` `ts-tags-v6` | 12 | `extract`, `SymbolIndex::is_current` | criterion 12 | - |
+| `contextgraph::sole_helper` | 2 | the fold arm | criterion 2 | - |
+| `contextgraph::helper_closure` | 12 | `test_events` | criterion 12 | - |
+| `events::counts_as_test(file, def)` and `events::dev_only(file, is_test)`, the one dev-only predicate for definitions and references, each two-argument, `extract_events`' production filter as `dev_only` negated and spec 117's tagged-reference filter re-spelled through it | 12 | `test_events`, `counts_as_test`, `extract_events` | criterion 12 | - |
+| the JS/TS dev-only file as one test node, `FileSymbols.end_line` and the span from it | 12 | `test_events` | criterion 12 | - |
+| `events::test_events(file, fs)`, two-argument, one event per test path, batch order, span from `Def.end_line`, test and helper events stamping no `fresh` | 12 | `lower_file` | criterion 12 | - |
+| the empty-caller `file`-origin emission, a production file's test-attributed region included | 14 | `test_events` | criterion 14 | - |
+| payload `span`, `fixtures`; the `test` fold arm, `fold_event`'s arm writing nothing for a `test` event, and the caller-carrying `is_test` routing; `!` test id | 2 | the entity fold arm | criterion 2 | - |
+| payload `helper`; the `helper` fold arm; `helpers` set keyed (project, identity, generation, path, kind), dropped by 117's drop and re-keyed by `Projector::migrate_project` with `refs` | 13 | the entity fold arm | criterion 13 | - |
+| the resolved branch's dispatch folding entity events itself beside 117's row staging, `fold_event`'s arm writing nothing for a `helper` event, the dispatch 2's `test` arm joins | 13 | `apply_generation` | criterion 13 | - |
+| `Projector::proof_schema_present`, whether the proof schema (the `helpers` table, the `origin` and `outcome` columns) is present, also read by the proof closure (3) and the proves body (6) | 13 | `Projector::migrate_project` | criterion 13 | - |
+| `one_hop_degree` counting no `PROVES` | 11 | `site_of` | criterion 11 | - |
+| `KIND_TEST` in `PROMOTING_KINDS` | 2 | `ensure_node`, `settled_kind` | criterion 2 | - |
+| every `node_leaf_sql()` reader and `locate` step landed through 11 taking graph kind `code-entity` only, the `calls` seed set narrowed to non-`test` nodes, the TEST-SIDE readers owned by 11 | 11 | `same_file_candidates`, `locate`, spec 117's settlement, `Projection::calls` | criterion 11 | - |
+| test rows, direct `PROVES`, the test- and helper-origin candidate order, several-helpers rule, every test, helper and file row's target and `outcome` written by 117's settlement and their rebuild equality, the reader rows of WHOLE-GRAPH VIEWS owned by 2 | 2 | the reference fold arm | criterion 2 | - |
+| the `refs` `origin` column (default `production`), outside the set key, the `outcome` column, null for a `production` row, the reader row of WHOLE-GRAPH VIEWS owned by 13 | 13 | the projection open, the reference fold arm | criterion 13 | - |
+| `test`-, `helper`- and `file`-origin rows creating no file node | 2 | the reference fold arm | criterion 2 | - |
+| addendum `context-management.md:236` (node and edge kinds) | 2 | - | criterion 2 | - |
+| read-time roots (unreached components, the `file`-origin row's file root), `Projector::proof_closure` reading live `PROVES` edges, `resolved target` and the project helper tier on a `none` outcome, the reader row of WHOLE-GRAPH VIEWS owned by 3 | 3 | `Projection::proven_by` | criterion 3 | - |
+| `contextgraph::proof_hop(row)`, one-argument, a row's next hop by outcome | 3 | `Projector::proof_closure` | criterion 3 | - |
+| `contextgraph::test_id(file, path)`, the `!` id | 2 | the `test` fold arm | criterion 2 | - |
+| `contextgraph::root_id(file, path)`, the `?` id | 3 | `Projector::proof_closure` | criterion 3 | - |
+| `contextgraph::proof_roots(..)`, the root rule over the unreached helper graph | 3 | `Projector::proof_closure` | criterion 3 | - |
+| `Projection::proven_by` bulk port read, sqlite implementation, its connection-taking inner body | 3 | `Projector::subgraph`, `Projector::whole`, `site_of`, `contextgraph::around` | criterion 3 | - |
+| `Graph.proven_by` map and `card` reading it | 3 | `Projector::subgraph`, `Projector::whole`; `card` | criterion 3 | - |
+| `EntitySite.proven_by` filled by `site_of` through `proven_by`'s inner body | 3 | `site_of` | criterion 3 | - |
+| card count and list, `dash.html` PROOF row | 3 | `query.rs` card | criterion 3 | - |
+| the caller-less `is_test` rule (folding nothing) | 3 | the reference fold arm | criterion 3 | - |
+| `PROJECTION_VERSION` 4 | 3 | the projection open | criterion 3 | - |
+| `proofs`, `write_proof`, `resolve_proofs`, `fold_test_evidence`, `supersede_file_proof`, proof attrs | - | - | base (117) | 3 |
+| `proof_events` | - | - | base (117) | 3 |
+| `test_events`', `counts_as_test`'s and `dev_only`'s `excluded` argument (every definition dev-only), the file-root rule's `excluded` half, `for_extraction` unchanged | 4 | `lower_file` | criterion 4 | - |
+| `Projection::current_identities`, the walk's held set with its light-lane stub, an out-of-scope held path retired, an absent index-listed path handed the no-bytes batch only when held, `grounder::tree_has`, the existence check of each index-listed and held unlisted path, which `tree_bytes` calls for its guard | 5 | both sinks | criterion 5 | - |
+| `Projection::proves` port read, its inner body's forward walk through `helper_closure` and its nodes' `doc` cut through `contextgraph::doc_first_line`, `EntitySite.proves`, `around <test id>` (its seed detected by `Projection::locate`, its definitions' `Graph.proven_by`, no queried-node line), the `span`, `fixtures` and `proves` entries | 6 | `site_of`, `contextgraph::around` | criterion 6 | - |
+| `proven by` entry, reading 3's `EntitySite.proven_by` under `show` and 3's `Graph.proven_by` for the queried node under `around` | 7 | `site_fields` | criterion 7 | - |
+| the bare query's test tier, reading `node_leaf_sql()` filtered to graph kind `test`, a test `Candidate` carrying its id's file half | 8 | `locate`'s test-tier step | criterion 8 | - |
+| `scored_hits` scope (the `test` rank key, `grounder.rs:246-257`, going with it; under tests the `test_fn` definitions and one stem hit per dev-only JS/TS file and no reference hit), the production scope's drop of a reference hit `dev_only` accepts, `Grounder::ground_tests`, `rigger_ground`'s `kind` argument | 9 | `ground`, `ground_ranked`, `has_strong_match`, `tool_ground` | criterion 9 | - |
+
+UNIT SIZE (added lines, code and tests, estimated as 107 did): 1 ~400; 11 ~220 (the degree ~30, the filters ~80, tests ~110); 13 ~430 (the `helper` arm, `helpers`, the `origin` and `outcome` columns ~240, tests ~190); 2 ~470 (the `test` arm, rows, direct `PROVES` and the promotion ~210, tests ~260); 12 ~800 (`test_events` ~250, the five markers, `counts_as_test` and the JS/TS file node ~180, tests ~370 with one fixture per language); 14 ~150 (the file-root emission ~50, tests ~100); 3 ~1,350 (roots and `proof_closure` ~130, the two port reads ~180, the
+`Graph.proven_by` map and its loaders ~120, `EntitySite.proven_by` ~40, card ~60, `proof_events`
+and `proofs` removal net negative, tests ~800); 4 ~400; 5 ~500; 6 ~400; 7 ~300; 8 ~300; 9 ~440.
+Every unit is under the 3,000-line cap.
+
+KIND CANDIDATES. A test, helper or file row is a `call` and takes the `call` set, spec 116's call-target kinds (`contextgraph::is_call_target`), over helpers by their `kind` column as over definitions; a `test` node is never a candidate.
+
+TEST FUNCTIONS. `extract`, which takes no path (`symbols/extract.rs:40-88`), sets `Def.test_fn`
+from the syntactic marker alone; a definition COUNTS as a test only when `test_fn` holds and its file
+is `is_dev_only` (or, from criterion 4, `excluded`) or the definition is `Def.is_test`, ONE function beside `is_dev_only`, `events::counts_as_test(file, def)` in rigger-grounder, landing two-argument at criterion 12 and gaining `excluded` at 4 (`counts_as_test(file, excluded, def)`, `lower_file` passing the batch's flag and `scored_hits` passing `false`, ranking reading the path predicate alone as spec 116's OUT OF SCOPE keeps it), called by `test_events` and by
+`scored_hits`' tests scope and nowhere else, so a production `def test_connection` in `src/net.py`
+is a production node and ranks production only. Markers: Rust a fn carrying an attribute whose last
+path segment is `test` (`#[test]`, `#[tokio::test]`); Go a func or method named `Test*`, `Benchmark*`,
+`Example*` or `Fuzz*`; Python a function or method named `test*`; C# a method carrying a `Fact`,
+`Theory`, `Test` or `TestMethod` attribute, read off its attribute lists. JS and TS: no marker; the
+whole file is one test node (TESTS ARE POINTER NODES).
+
+PROOF READERS, each moved to `proven_by` by criterion 3: the writer (`write_proof`, `proof_keys`,
+`supersede_file_proof`, `resolve_proofs`, `fold_test_evidence`, `contextgraph/sqlite.rs:3439-3617`,
+and `ensure_node`'s merge comment at `:3668-3675`); the card (`query.rs:1219-1228`, `:1310-1322`,
+its count of distinct tests and its list of their ids); `Projector::migrate_project`'s `proofs` re-key (spec 117's criterion 7, removed with the table); the card's PROOF row
+(`crates/rigger-dash/src/dash.html:873-882`, wording kept); the card tests
+(`crates/rigger-dash/src/dash.rs:10121-10165`, `tests/proof_row_renders_on_the_card.rs`,
+`tests/proof_lands_on_the_card_periphery.rs`, `tests/compaction_generations_periphery.rs:1022-1130,
+1747`); the doc comments of `EdgeInferred` (`contextgraph.rs:838-848`) and `proof_events`
+(`symbols/events.rs:313-433`). No metrics reader exists. `docs/audit/*` quote the attrs as a dated
+record and stay.
+
+SPEC 86 AMENDMENT. At this spec's landing the operator, not a unit, adds one sentence to
+`specs/86-tests-are-evidence-not-knowledge.md`'s Design: "Each test function is one pointer node
+(spec 118) whose PROVES edges are the evidence; no test internal is a node."
+
+KINDS. `test` joins spec 116's KINDS as a payload kind folding to graph kind `test`, never `code-entity`, so spec 119's `member_file` and `node_file` kind table give a test node none, its location its `span`; `helper` is a payload marker, not a kind, its definition folding to no node.
+
+PAYLOADS. `CodeEntityExtracted { .., span?, fixtures?, helper }` (`helper` defaulting to false); an `is_test` `EdgeInferred` whose `caller` is present and non-empty is a test or helper row, present and empty a `file`-origin row, and absent the legacy event criterion 3 folds to nothing; each carries `ref_kind` `call`, the fifth payload value beside spec 117's `type`, `const`, `use` and `module`, never `module`. The row arm requires `is_test`, a present `caller` and `ref_kind` `call` together; every other `is_test` event is the legacy event, the base's `is_test` check preceding every `ref_kind` arm (`sqlite.rs:2541-2543`), and an event without `is_test` folds as spec 117's PAYLOADS has it: an absent `ref_kind` a call folded as today, `type`, `const` and `use` a `REFERENCES` row, `module` a `CONTAINS` row and any other value, `call` included, nothing. `Def { .., test_fn }`; `FileSymbols { .., end_line }`. Every payload
+field is serde-defaulted and omitted when absent.
+
+OUT OF SCOPE. A test calling a `tests/common` helper whose leaf equals exactly one production
+definition gets a direct `PROVES` to it, accepted: the row carries no call path, and ordering the
+project-helper tier by one would add a field. A binary-spawning test -> the command fn it reaches:
+the graph is project-agnostic, and a CLI dispatch map from `run_rigger("verb")` strings to command
+fns is project knowledge, not a grammar fact. `gd`/`gw` retirement (107's).
+
+TEST DISPOSITIONS.
+
+| Test | First broken by | Disposition |
+|---|---|---|
+| spec 86's files-lens test | 1 | kept; holds through `KIND_TEST`'s skip |
+| fold-level and `tests/cli.rs` node-count or no-node tests over fixtures holding test code | 12 | re-pinned with `test` nodes, production assertions unchanged (`PROVES` counts in no degree from 11) |
+| spec 116's DEV-ONLY CODE MAKES NO NODE per-pattern test | 12 | re-expressed: no production-kind node, test pointer nodes allowed; no project loses `proven_by` before 3 or at 3 (`proofs` serves the card before 3, the cross-language landing dropped at 3 as no call's evidence, EVERY LANGUAGE KEEPS ITS EVIDENCE), every language's `tests/` evidence (`events.rs:394`, `:399-400`) reaching it through pointer nodes or read-time roots (unmarked harness fns, `benches/`, `examples/`, file-level references) |
+| spec 117 criterion 6's dev-only clause (a reference in a `#[cfg(test)]` region or a dev-only file emitting no `ref_kind` event) | 12 | RE-EXPRESSED: no `type`, `const`, `use` or `module` event, criterion 12's rows carrying `ref_kind` `call` |
+| criterion 12's batch-order clause | 3 | RE-EXPRESSED: the same tree-independent order, `proof_events`' slot present on trees 12 and 14 only |
+| criterion 2's caller-carrying `is_test` clause | 3 | RE-EXPRESSED to its row half: the event stages a row, `proofs` being gone |
+| spec 117 criterion 6's "`proofs` unchanged" clause | 3 | DELETED: `proofs` retires at 3 |
+| spec 117 criterion 7's `proofs` clause (every `proofs` row under the new project) | 3 | DELETED: `proofs` retires at 3 |
+| criterion 1's load-equality tests | 3 | re-expressed: equality over nodes and edges, the `Graph.proven_by` map outside it |
+| every PROOF READERS test | 3 | re-expressed over `proven_by`, the card's wording unchanged, its count of distinct tests and roots |
+| tests pinning an out-of-line test module's batch as the empty boundary with no evidence | 4 | re-expressed: its pointer nodes and rows |
+| spec 116's criteria 4 and 5 and spec 119's criteria 1 and 3 proof clauses (no proof moving onto a field, a proof moved off at generation 2, a proof on its one same-file candidate, two candidates naming none) | 3 | re-expressed over `PROVES` and `proven_by` through the test row's candidate order, outcomes unchanged |
+| `scored_hits`, `ground`, `ground_ranked` and `rigger_ground` tests placing test locations below product, and spec 116's `scored_hits` test-marking test | 9 | re-expressed: excluded by default, ranked by `ground_tests` under `kind: "test"` |
+| `show` and MCP `show` tests comparing a production node's whole entry set over real extraction (spec 117 re-pinned the same set, `tests/graph_show_*` and the MCP show tests, for `doc`) | 7 | none found: of the tests at 1775b728 calling `--show` or the MCP `show`, the three over a real `rigger graph build` (`tests/workflow_definition_and_js_constants_periphery.rs`) build fixtures holding no test code, and the rest fold hand-built events holding no `is_test` event (`tests/graph_show_*`, `tests/cli.rs`, `mcpserver.rs`) or assert the owed-rebuild note (`tests/compaction_generations_periphery.rs`), so no shown node gains `proven by` |
+| tests reading raw `edges` rows or counts over fixtures holding test code | 12 | none found: a search at 1775b728 of the 107 tests reading `edges` (`FROM edges`, `.edges.iter()`, `.edges.len()`, an edge count) for test code in their body finds three, `an_is_test_edge_creates_no_file_node_and_no_edge_of_any_kind` (`contextgraph/sqlite.rs:10794`, a hand-built caller-less event no emitter changes), `ingesting_product_and_test_code_through_the_public_api_graphs_only_the_product` (`tests/code_entity_test_exclusion_periphery.rs:538`, reading a loaded subgraph, which skips `PROVES` from 1) and `proof_lands_through_the_public_pipeline_independent_of_the_implementers_own_fixture` (`tests/proof_lands_on_the_card_periphery.rs:93`, a PROOF READERS test re-expressed at 3) |
+| tests pinning the stored projection version as a literal | 3 | re-pinned: spec 119 criterion 11's `tests/cli.rs` clause (its stored version reading 3 after the rebuild, 119 at 6feec67c) reads 4, its hand-stamped `user_version` 2 still owing; the base's literal readers (`tests/compaction_generations_periphery.rs:3454` among them, at bddbadd4 and 1775b728 alike) read `PROJECTION_VERSION` from spec 116's criterion 5 on and the `user_version = 0` fixtures still owe, kept |
+| 107's batch, rebuild and sink tests | - | kept: each computes its generation through the binary |
+
+LANDING TREES. Each criterion's assertions are red on the tree before it and green on its own; no earlier criterion asserts the opposite value of the same observable, but the six TEST DISPOSITIONS rows 12 and 3 break: spec 117 criterion 6's dev-only clause, re-expressed at 12, criterion 12's batch-order and criterion 2's caller-carrying `is_test` clauses, re-expressed, spec 117 criterion 6's "`proofs` unchanged" and criterion 7's `proofs` clause, deleted, and criterion 1's load-equality clause, re-expressed at 3. Criterion 7's `around <test id>` absence clause is a guard on 6's artifact, green from 6 and exempt from the red rule, as criterion 2's knowledge-held `!` id lapsing to `artifact` is a guard on 2's own promotion, and as are these regression guards, green on the tree before their criterion: 11's `show <test id>` by exact id, 12's and 9's production `def test_connection`, 5's unchanged tree and 8's exact-id tier query.
+
+| Criterion | Red on (why) | Green on |
+|---|---|---|
+| 1 load skip | 0, the base (`subgraph` and `whole` load a `test` node and `PROVES` edge `test_graph.rs` writes, and the reach walk crosses `PROVES` to a second proven definition; a test seed is expanded) | 1 |
+| 11 read guards | 1 (`one_hop_degree` counts a `PROVES` edge `test_graph.rs` writes, `same_file_candidates` and `locate`'s leaf step take a `test` node carrying `name`, `calls` walks a test seed) | 11 |
+| 13 fold state | 11 (no `helpers` table, no `origin` or `outcome` column) | 13 |
+| 2 pointer node | 13 (a hand-built `test` event folds no `test` node, no test row, no `PROVES`, a kind-`test` event through `fold_new` folds at the base definition arm, a decision-named test id settles `artifact`) | 2 |
+| 12 marked and emitted | 2 (no `Def.test_fn`, no `test_events`: a marked test emits no test event, a `ts-tags-v5` index loads) | 12 |
+| 14 file root | 12 (a dev-only file's module-level call and a production file's test region emit no `file`-origin row) | 14 |
+| 3 read time | 14 (no `proven_by`, the card reads `proofs`, a caller-less `is_test` event folds into `proofs`, a `graph.db` at version 3 owes nothing) | 3 |
+| 4 out-of-line | 3 (a file reached only by `#[cfg(test)] mod x;` makes no test node) | 4 |
+| 5 gone file | 4 (the walk never hands a held identity the index does not list, nor a listed path the tree lacks) | 5 |
+| 6 test shows | 5 (`around <test id>` loads nothing, no `span`, `fixtures` or `proves` entry) | 6 |
+| 7 proven by | 6 (no `proven by` entry) | 7 |
+| 8 bare query | 7 (no test tier: no step answers a test by leaf) | 8 |
+| 9 ground | 8 (test locations rank below product by default; a dev-only reference hit ranks in the default scope; no `kind` argument) | 9 |
+| 10 lanes | - | 10 |
+
+DOCUMENT EDITS, each to the criterion whose change makes it false: `docs/architecture-addendum-
+context-management.md:236` (the unified graph's node and edge kinds) to criterion 2, adding `test`
+and `PROVES`. `docs/architecture.md:780-790` names the four derived event types, which no criterion
+changes.
+
+## Global constraints
+
+- Hyphens, never em or en dashes, ASCII only, in every added line.
+- A line citation names the symbol at the pre-107 HEAD it was read on (bddbadd4); after 107 lands the
+  symbol name governs, the line being a pointer only.
+- No new event type; no new dependency.
+- Every lane `.rigger/gates/lanes.sh` runs green (fmt, clippy -D warnings, test).
+- The planner's batch order is UNIT ORDER's sequence (1, 11, 13, 2, 12, 14, then 3 to 10), never checkbox position.
+- Every batch is a pure function of one file's path, bytes and flag; every rebuild deterministic
+  (107).
+- The light lane compiles no extraction (`symbols/mod.rs:20-28`): 12's and 14's `symbols/` clauses, 3's periphery clause, 4, 5 and 9 assert in the default lane; 1, 11, 12's `symbols/store.rs` clause (ungated, the `ts-tags-v5` index), the `contextgraph/sqlite.rs` clauses of 13, 2 and 3 (3's version-3 fixture among them, its after-rebuild half in the default lane only, since 107's light-lane `resolve_entry` stub answers every entry unresolved), and 6-8 load or render hand-built input in the default and light lanes; the core lane, compiling neither `contextgraph/sqlite.rs`, the MCP server nor the grounder and running no root-crate test, holds only the `contextgraph.rs` clauses of 3 and 6, which also run in the default and light lanes.
+
+## Done when
+
+- [ ] a test proves WHOLE-GRAPH VIEWS SKIP TEST NODES: `Projector::subgraph` and `Projector::whole` load no `test` node and no edge touching one, so no lens, community or concept view over a graph `subgraph` or `whole` loaded shows one,
+  asserted in root integration tests over graphs `tests/common/fixtures/test_graph.rs` writes, each
+  loaded graph and each view's projection over it, in id ordering, equal to those over the graph
+  with every test node and every edge touching one removed, a decision's edge to a test id included, a node the fixture retired included, one test proving two definitions seeded at one at depth 2, and in one
+  `contextgraph/sqlite.rs` test on the load, `subgraph` seeded at a test node loading nothing and a mixed seed list loading only its non-test seeds' reach. This criterion OWNS what ARTIFACT OWNERSHIP gives
+  criterion 1; test nodes are criterion 2's, NOT this one's.
+- [ ] a test proves A TEST IS A POINTER NODE WITH DIRECT PROVES: each `test` event folds to one `test` node whose rows write a direct `PROVES` to the production definition they resolve to,
+  asserted in `contextgraph/sqlite.rs`'s tests over hand-built events: pointer attrs, ids spelled by `test_id`, a same-file helper shadowing a production leaf, two same-file helpers of one leaf leaving the row unresolved, a test beside a same-path production fn at its `!` id, a test row, a helper row and a file root row folded with origin `test`, `helper` and `file`, a helper row naming a same-file helper and a production fn settling `helper`, each such row's `outcome` stored, a test id a decision names settling `test` in both fold orders, a knowledge-held `!` id whose test retired lapsing to `artifact`, a `test` entity event with an empty identity or through `fold_new` folding nothing, a test's fold making no file node and no `CONTAINS`, a hand-built second event at one test path merging last writer per attr key, a test event superseding none of its file's edges, a caller-carrying `is_test` event staging a row and no `proofs` entry, no `test`-, `helper`- or `file`-origin row creating a file node, a `helper` or `file` row writing no edge, and a `file`-origin row whose leaf a same-file helper defines settling on the production tiers, and a rebuild over the same entries leaving every row's `origin`, `outcome` and `resolved target` as the incremental fold wrote them. This criterion OWNS what ARTIFACT OWNERSHIP gives
+  criterion 2; the fold state is criterion 13's, the emitter criterion 12's and read-time proof criterion 3's, NOT this one's.
+- [ ] a test proves PROOF IS DERIVED AT READ TIME: `proven_by(def)` names each test node and root reaching `def` directly or through dev-only helpers in any file, the card reading `Graph.proven_by` and `site_of` filling `EntitySite.proven_by`,
+  asserted in `contextgraph/sqlite.rs`'s tests (a `tests/common` helper, a chain, a cycle, a removed
+  helper, a `#[rstest]` fn and a `benches/` fn each a root, two unmarked helpers calling each other one root, a helper-origin row's production target read from its stored `resolved target`, no production tier resolved at read time, the project helper tier taken on a `none` outcome, a `file`-origin row's included, and never on `several`, a `file`-origin row naming `<file>::?`,
+  hand-built rows with no `file`-origin row naming no file root, a `graph.db` folded at `PROJECTION_VERSION` 3 owing its rebuild, opened and read before setup answering no test proof, its `refs` lacking `origin` and `outcome` and no `helpers` table present, and after setup's rebuild its proofs, a caller-less `is_test` event folding nothing, `proven_by` handed an id of the wrong kind answering the empty set) and in
+  `tests/proof_lands_on_the_card_periphery.rs`, the card reading the loaded `Graph`'s `proven_by`
+  map and counting distinct tests and roots, `proofs` and `proof_events` gone; and in `contextgraph.rs`'s tests an `around` graph's merged callers carrying their `proven_by` and the hop rule asserted once, in `proof_hop`, and roots computed in `proof_roots`, asserted once there. This criterion OWNS
+  what ARTIFACT OWNERSHIP gives criterion 3; `PROVES` rows are criterion 2's and the entry criterion 7's, NOT this one's.
+- [ ] a test proves AN OUT-OF-LINE TEST MODULE GETS POINTER NODES: each test function in a file reached only by `#[cfg(test)] mod x;` is a pointer node whose references prove production definitions,
+  asserted in `symbols/events.rs`'s tests through the fold, a nested `mod y;` under the target
+  included, a module-level `proptest!{..}` in the target emitted with caller `""` and origin `file`, and no production-kind node from either file. This criterion OWNS what ARTIFACT
+  OWNERSHIP gives criterion 4; the emitter is criterion 12's, NOT this one's.
+- [ ] a test proves A GONE FILE RETIRES AT THE WHOLE-TREE WALK: a whole-tree walk retires every definition of a `gc` identity the graph holds whose file the tree and the symbols index no longer hold,
+  asserted at both sinks (the run's, through a recording store, and `rigger graph build` in
+  `tests/cli.rs`) with an entry recorded with no blob, the file's nodes, `refs` and `helpers` rows
+  retired, a held path the index lacks whose bytes changed recording its extraction with the flag clear, a path the index lists but the tree lacks retired, an index-listed absent path the graph never held handed nothing, no `generations` row after the walk, a held path outside the walk's scope retired, and an unchanged tree recording nothing. This criterion OWNS what ARTIFACT OWNERSHIP gives
+  criterion 5; the sink rows are spec 107's, NOT this one's.
+- [ ] a test proves A TEST SHOWS WHAT IT PROVES: `show` of a test node prints its `span`, `fixtures` and `proves(test)` as `site_fields` entries and no body,
+  asserted in `tests/cli.rs` and the MCP server's tests by exact id, a test node printing `span`, `fixtures` and `proves` in that order, a test proving nothing printing no `proves`, an owed store whose `refs` lacks `origin` and `outcome` and holds no `helpers` table answering `proves` nothing, and `around <test id>` answering its `proves(test)` definitions as depth-0 nodes with no edges, no test node, no queried-node line and no doc line; and in `contextgraph.rs`'s tests the `Graph` a test-seed `around` returns, its `proven_by` naming the test for each definition, an all-test seed list answering the union of its seeds' `proves` in id order and a mixed list taking the production path. This criterion OWNS what
+  ARTIFACT OWNERSHIP gives criterion 6; `proof_closure` is criterion 3's, NOT this one's.
+- [ ] a test proves TESTS ARE NO CODE NEIGHBOURS: `show` and `around` on a production node print `proven_by` only as the `proven by` entry, its ids joined by `contextgraph::LIST_SEP`,
+  asserted in `tests/cli.rs` and the MCP server's tests over a fn two tests prove, one through a
+  helper, its entry giving both ids sorted by id after any `unresolved` entry, a fn no test proves printing none, no `around` neighbour carrying one, and `around <test id>` printing no `proven by` entry, a guard on 6's artifact. This criterion OWNS what ARTIFACT OWNERSHIP gives
+  criterion 7; `proven_by` and `EntitySite.proven_by` are criterion 3's and the degree criterion 11's, NOT this one's.
+- [ ] a test proves THE BARE QUERY ANSWERS IN ORDER: a bare query answers the exact id before spec 119's code-entity steps and tests by leaf after them, several at one tier listed as candidates,
+  asserted in `tests/cli.rs` and the MCP server's tests, one query per tier and one per tie. This
+  criterion OWNS what ARTIFACT OWNERSHIP gives criterion 8; the exact-id tier is the base's step, NOT this one's.
+- [ ] a test proves GROUND RANKS PRODUCTION BY DEFAULT: `ground`, `ground_ranked`, `has_strong_match` and `rigger_ground` answer no test location unless `rigger_ground` carries `kind: "test"`, which ranks test functions only,
+  asserted in `symbols/grounder.rs`'s, `tests/cli.rs`'s and the MCP server's tests, a dev-only
+  `x.test.js` ranking under `kind: "test"` as one hit `x.test` at line 1 and never by default, an empty one ranking too, a
+  production `def test_connection` ranking production only, a reference hit in dev-only code absent from the production scope, the tests scope holding no reference hit, and `kind: "fn"` refused naming `test`.
+  This criterion OWNS what ARTIFACT OWNERSHIP gives criterion 9; the boundary is the base's
+  `is_dev_only`, NOT this one's.
+- [ ] every lane `.rigger/gates/lanes.sh` runs green (fmt, clippy, test). This criterion OWNS only the lanes over the integrated result.
+- [ ] a test proves READ SIDES IGNORE TEST NODES: no degree counts a `PROVES` edge, and no resolution or bare-query leaf step takes a `test` node,
+  asserted in root integration tests over graphs `tests/common/fixtures/test_graph.rs` writes, as
+  criterion 1's are, and in `contextgraph/sqlite.rs`'s tests over nodes written directly
+  (`ensure_node`): a proven fn's degree counting no `PROVES`, a test `x` beside a production fn `x`
+  neither a call's nor a row's candidate nor in `show x`'s leaf, path or file-qualified answer,
+  `calls` seeded at a test node answering no node and no edge in either direction and seeded at a `file` node keeping its layer-0 node, and `show <test id>` answering it by exact id. This criterion OWNS
+  what ARTIFACT OWNERSHIP gives criterion 11; the test nodes the fold writes and the `PROMOTING_KINDS` promotion are criterion 2's, NOT this one's.
+- [ ] a test proves TESTS ARE MARKED AND EMITTED: `extract` marks each language's test functions and `test_events` emits each marked dev-only test or dev-only JS or TS file as one test event with its helpers and rows,
+  asserted in `symbols/events.rs`'s tests through the fold: exact `fixtures`, each test's `span` from its `Def.end_line`, one fixture per language (a Rust `#[tokio::test]`, a Go `TestX` in `x_test.go` and a Python `test_x` each with its direct `PROVES`, a C# `[Fact]` method, a JS `x.test.js` file one node `<file>::!x.test` with `span` `file:1-<end_line>`, an empty one `file:1-1`, whose `it(..)` body writes a `PROVES`, and a Go helpers-only `_test.go` file making no node), a production `def test_connection` in `src/net.py` staying a production node, a dev-only `impl` and a dev-only declaration staging no helper, two tests at one path emitting one event, the lowest-line twin's, with both twins' rows and the doc of the lowest-line twin that has one, test and helper events stamping no `fresh`, and one file's batch emitted in the stated order; and in `symbols/store.rs`'s tests a persisted `ts-tags-v5` index loading as absent. This criterion OWNS what ARTIFACT OWNERSHIP gives
+  criterion 12; the fold arms are criterion 2's and 13's, NOT this one's.
+- [ ] a test proves THE FOLD STATE HOLDS HELPERS AND OUTCOMES: a `helper` event folds to one `helpers` row and never a node, every `refs` row carrying its `origin` and `outcome`,
+  asserted in `contextgraph/sqlite.rs`'s tests over hand-built events: duplicate `helper` events inside one batch leaving one `helpers` row per key, a new generation dropping the identity's prior `helpers` rows, a `helper` entity event with an empty identity or through `fold_new` folding nothing, a helper event superseding none of its file's edges, a production row's `origin` `production` and its `outcome` null, a rebuild over the same entries leaving `helpers` and every production row's `origin` `production` and `outcome` null as the incremental fold wrote them, a migrated project's `helpers` rows staying live, and an owed store with no `helpers` table migrating the tables it holds. This criterion OWNS what ARTIFACT OWNERSHIP gives
+  criterion 13; the rows' settlement and the `KIND_TEST` promotion are criterion 2's, NOT this one's.
+- [ ] a test proves A CALL NO TEST ENCLOSES IS A FILE ROOT ROW: `test_events` emits a call no test or helper encloses with caller `""` and origin `file`,
+  asserted at the `test_events` seam in `symbols/events.rs`'s tests: a dev-only Python file's module-level call and a production file's `#[cfg(test)] mod tests { proptest!{..} }` each emitted with caller `""` and origin `file`. This criterion OWNS what ARTIFACT OWNERSHIP gives
+  criterion 14; the `file`-origin row's settlement is criterion 2's and its root criterion 3's, NOT this one's.

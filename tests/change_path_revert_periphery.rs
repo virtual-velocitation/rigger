@@ -54,6 +54,8 @@ use common::git::run_git;
 
 use common::cli::ingested_count;
 use common::cli::read_run_events;
+#[cfg(feature = "symbols")]
+use common::cli::run_around;
 use common::cli::run_rigger;
 
 /// Drive `graph build` in `root` and return what it reported ingesting, failing loudly rather than
@@ -143,7 +145,7 @@ fn inspector_view(
     root: &std::path::Path,
     seed: &str,
 ) -> (BTreeSet<(String, String)>, BTreeSet<String>) {
-    let (out, err, ok) = run_rigger(root, &["graph", "--around", seed, "--depth", "2"]);
+    let (out, err, ok) = run_around(root, seed, 2);
     assert!(
         ok,
         "graph --around {seed} must succeed; stderr: {err}; stdout: {out}"

@@ -72,6 +72,8 @@ mod common;
 #[cfg(feature = "symbols")]
 use common::cli::ingested_count;
 #[cfg(feature = "symbols")]
+use common::cli::run_around;
+#[cfg(feature = "symbols")]
 use common::cli::run_rigger;
 #[cfg(feature = "symbols")]
 use common::cli::run_stream_identity;
@@ -225,10 +227,7 @@ fn graph_show_and_around_expose_stage_gate_and_agent_entities_with_needs_and_run
         );
     }
 
-    let (around, err, ok) = run_rigger(
-        root,
-        &["graph", "--around", "stage:implement", "--depth", "1"],
-    );
+    let (around, err, ok) = run_around(root, "stage:implement", 1);
     assert!(
         ok,
         "graph --around stage:implement must succeed; stderr: {err}"
@@ -245,10 +244,7 @@ fn graph_show_and_around_expose_stage_gate_and_agent_entities_with_needs_and_run
         );
     }
 
-    let (checkin_around, err2, ok2) = run_rigger(
-        root,
-        &["graph", "--around", "stage:checkin", "--depth", "1"],
-    );
+    let (checkin_around, err2, ok2) = run_around(root, "stage:checkin", 1);
     assert!(
         ok2,
         "graph --around stage:checkin must succeed; stderr: {err2}"
@@ -284,10 +280,7 @@ fn graph_around_reflects_the_review_panel_fallback_rule_for_a_real_workflow_yml(
 
     // plan-critique: its OWN adversary/adjudicator, and ONLY those - never the workflow panel's
     // lenses, which it never named.
-    let (pc, err, ok) = run_rigger(
-        root,
-        &["graph", "--around", "stage:plan-critique", "--depth", "1"],
-    );
+    let (pc, err, ok) = run_around(root, "stage:plan-critique", 1);
     assert!(
         ok,
         "graph --around stage:plan-critique must succeed; stderr: {err}"
@@ -305,10 +298,7 @@ fn graph_around_reflects_the_review_panel_fallback_rule_for_a_real_workflow_yml(
 
     // implement: no adversary/adjudicator/review of its own, but it DOES run a gate - falls back
     // to defaults.review in full (lenses AND adversary AND adjudicator).
-    let (imp, err2, ok2) = run_rigger(
-        root,
-        &["graph", "--around", "stage:implement", "--depth", "1"],
-    );
+    let (imp, err2, ok2) = run_around(root, "stage:implement", 1);
     assert!(
         ok2,
         "graph --around stage:implement must succeed; stderr: {err2}"
@@ -329,7 +319,7 @@ fn graph_around_reflects_the_review_panel_fallback_rule_for_a_real_workflow_yml(
     // plan: the producer, with no review fields - must get NO REVIEWS edge at all (the run never
     // reviews a producer's units, so it must not silently inherit the workflow panel just because
     // SOME other stage happens to).
-    let (plan, err3, ok3) = run_rigger(root, &["graph", "--around", "stage:plan", "--depth", "1"]);
+    let (plan, err3, ok3) = run_around(root, "stage:plan", 1);
     assert!(
         ok3,
         "graph --around stage:plan must succeed; stderr: {err3}"
@@ -409,10 +399,7 @@ fn graph_around_tags_a_tiers_light_reviewer_with_reviews_light_never_the_plain_r
     // implement: no review fields of its own, but it DOES run a gate - falls back to
     // defaults.review, which now carries a tiers.light roster. Both halves of that ONE panel must
     // land, split onto their own relations.
-    let (imp, err, ok) = run_rigger(
-        root,
-        &["graph", "--around", "stage:implement", "--depth", "1"],
-    );
+    let (imp, err, ok) = run_around(root, "stage:implement", 1);
     assert!(
         ok,
         "graph --around stage:implement must succeed; stderr: {err}"
@@ -456,10 +443,7 @@ fn graph_around_tags_a_tiers_light_reviewer_with_reviews_light_never_the_plain_r
     // checkin: names its OWN review: block (its own lenses/adjudicator, its own tiers) - the
     // direct, non-fallback path reviewers_of also splits. Its edges must come ONLY from its own
     // panel, never the workflow-wide defaults.review panel it does not inherit.
-    let (chk, err2, ok2) = run_rigger(
-        root,
-        &["graph", "--around", "stage:checkin", "--depth", "1"],
-    );
+    let (chk, err2, ok2) = run_around(root, "stage:checkin", 1);
     assert!(
         ok2,
         "graph --around stage:checkin must succeed; stderr: {err2}"
@@ -559,10 +543,7 @@ fn graph_show_and_around_expose_plain_top_level_js_and_mjs_constants_without_dou
 
     // The neighborhood surface: both constants appear as NODES when a reader asks what
     // workflows/rigger.js defines - not merely findable by name in isolation.
-    let (around, err5, ok5) = run_rigger(
-        root,
-        &["graph", "--around", "workflows/rigger.js", "--depth", "1"],
-    );
+    let (around, err5, ok5) = run_around(root, "workflows/rigger.js", 1);
     assert!(
         ok5,
         "graph --around workflows/rigger.js must succeed; stderr: {err5}"

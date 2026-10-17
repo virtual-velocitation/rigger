@@ -21,6 +21,7 @@ use common::cli::graph_build_line;
 use common::cli::plant_stale_marker;
 use common::cli::read_run_events;
 use common::cli::reported_reclaimed_bytes;
+use common::cli::run_around;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::run_rigger_ok;
@@ -28,6 +29,7 @@ use common::cli::run_stream_identity;
 use common::cli::seed_order_signature;
 use common::cli::seed_run_events;
 use common::cli::seed_store;
+use common::cli::setup_ok;
 use common::cli::step_line;
 use common::cli::temp_project;
 use common::cli::temp_repoless_project;
@@ -299,7 +301,7 @@ fn rigger_result_folds_an_adjudicator_discard_into_the_persisted_graph() {
     };
 
     // Before any verdict, both findings are reachable from the file they are ABOUT.
-    let (before, err, ok) = run_rigger(root, &["graph", "--around", file, "--depth", "2"]);
+    let (before, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph must succeed; stderr: {err}");
     let before_ids = graph_node_ids(&before);
     for id in ["f-discard", "f-open"] {
@@ -321,7 +323,7 @@ fn rigger_result_folds_an_adjudicator_discard_into_the_persisted_graph() {
     // After the recorded verdict folds into graph.db, the discarded finding's edges are
     // invalidated so `subgraph` (valid_to IS NULL) no longer reaches it; the un-disposed
     // finding is untouched and stays live.
-    let (after, err, ok) = run_rigger(root, &["graph", "--around", file, "--depth", "2"]);
+    let (after, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph must succeed after the verdict; stderr: {err}");
     let after_ids = graph_node_ids(&after);
     assert!(
@@ -441,7 +443,7 @@ fn reset_runs_prunes_dead_runs_from_the_graph_keeping_lessons_active_run_and_reu
     };
 
     // Before the reset every provenance node is reachable from the shared file.
-    let (before, err, ok) = run_rigger(root, &["graph", "--around", file, "--depth", "2"]);
+    let (before, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph must succeed; stderr: {err}");
     let before_ids = graph_node_ids(&before);
     for id in [
@@ -475,7 +477,7 @@ fn reset_runs_prunes_dead_runs_from_the_graph_keeping_lessons_active_run_and_reu
     // After the reset the superseded/pre-boundary decisions and findings are gone, but every
     // lesson (including the PRE-BOUNDARY one), the ACTIVE run's decision + finding, and the
     // cross-run-reused id all remain.
-    let (after, err, ok) = run_rigger(root, &["graph", "--around", file, "--depth", "2"]);
+    let (after, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph must succeed after reset; stderr: {err}");
     let after_ids = graph_node_ids(&after);
     for id in ["pre-d", "pre-f", "r1-d", "r1-f"] {
@@ -587,7 +589,7 @@ fn reset_runs_reclaims_superseded_edges_retired_before_the_active_run_and_report
 
     // LIVE is sacrosanct: keep-d's ACTIVE-run GOVERNS(new.rs) survived, so the live graph a grounding
     // consumer reads still shows keep-d governing new.rs after the reclamation removed only history.
-    let (graph, err, ok) = run_rigger(root, &["graph", "--around", "new.rs", "--depth", "2"]);
+    let (graph, err, ok) = run_around(root, "new.rs", 2);
     assert!(ok, "graph must succeed after reset; stderr: {err}");
     assert!(
         graph.contains("keep-d"),
@@ -2415,7 +2417,8 @@ const OLDER_STORE_KINDS_BATCH: [(&str, &str); 5] = [
 /// Go, C# and JS files no entry names, holding a package-level `var`, a property and a class's
 /// `constructor` method,
 /// WHEN the operator runs `rigger setup` then `rigger graph build`,
-/// THEN `rigger graph --show` of each new kind's leaf prints its kind, a call naming the second
+/// THEN `rigger graph --show` of each new kind's leaf prints its path id and kind, a call naming
+/// the second
 /// field's leaf walks down past the field to the other file's fn, the kept entry stands while the
 /// unreproduced one folds nothing at the rebuild and its file is extracted again by the build.
 #[cfg(feature = "symbols")]
@@ -2464,10 +2467,7 @@ fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
             record_folded_entry(&store, &graph, rigger::conductor::STREAM, &entry, batch);
         }
     }
-    rusqlite::Connection::open(&graph_db)
-        .unwrap()
-        .execute_batch("PRAGMA user_version = 1;")
-        .unwrap();
+    common::fixtures::stamp_user_version(&graph_db, 1);
     let index = rigger::grounder::symbols::store::index_path(root.to_str().unwrap());
     std::fs::create_dir_all(index.parent().unwrap()).unwrap();
     std::fs::write(index, OLDER_STORE_INDEX).unwrap();
@@ -2484,8 +2484,7 @@ fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
     }
     let identities = ["gc/src/clock.rs", "gc/src/kinds.rs"];
 
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     let after_setup = held_generations(
         &Projector::open(graph_db.to_str().unwrap(), &project).unwrap(),
         &identities,
@@ -2519,21 +2518,25 @@ fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
         .map(shown),
         [
             expected("src/kinds.rs::ORIGIN", "static"),
-            expected("src/kinds.rs::Waxing", "variant"),
-            expected("src/kinds.rs::radius", "field"),
+            expected("src/kinds.rs::Phase::Waxing", "variant"),
+            expected("src/kinds.rs::Moon.radius", "field"),
             expected("src/kinds.rs::orbit", "macro"),
-            expected("src/kinds.rs::ebb", "declaration"),
+            expected("src/kinds.rs::Tide::ebb", "declaration"),
             expected("lunar.go::Albedo", "variable"),
-            expected("crater.cs::Depth", "property"),
-            expected("probe.js::constructor", "constructor"),
+            expected("crater.cs::Crater.Depth", "property"),
+            expected("probe.js::Probe::constructor", "constructor"),
         ],
-        "each new kind's leaf is shown at its own site with its kind"
+        "each new kind's leaf is shown at its own site, its path id, with its kind"
     );
     assert_eq!(
         run_rigger_ok(root, &["graph", "--show", "elapsed"]),
-        "show \"elapsed\": 2 candidates - the name is ambiguous, re-run --show on one id:\n\
-         \x20 src/clock.rs::elapsed   (src/clock.rs)\n\
-         \x20 src/kinds.rs::elapsed   (src/kinds.rs)\n",
+        common::cli::ambiguous_show(
+            "elapsed",
+            &[
+                ("src/clock.rs::elapsed", OLDER_STORE_CLOCK_PATH),
+                ("src/kinds.rs::Moon.elapsed", OLDER_STORE_KINDS_PATH)
+            ]
+        ),
         "the second field's leaf lists the field beside the other file's fn"
     );
 
@@ -11291,8 +11294,7 @@ fn validate_warns_when_the_installed_workflow_drifts_from_the_embedded_copy() {
 
     // `rigger setup` scaffolds a valid config AND installs the workflow byte-identical
     // to the embedded copy. Stub npm so the shim's install is a no-op.
-    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
 
     // Identical installed vs embedded -> validate is drift-SILENT and succeeds.
     let (out, err, ok) = run_rigger(root, &["validate"]);
@@ -13440,8 +13442,7 @@ fn setup_agents_import_is_reported_even_when_nothing_else_drifted() {
     // Bring the repo fully up to date: scaffold + install workflow + provision the shim
     // (npm stubbed to a no-op). Then mark the shim install COMPLETE so a re-run's
     // provision step is itself a no-op.
-    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "the initial rigger setup must succeed; stderr:\n{err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     let marker = root
         .join(".rigger")
         .join("shim")
@@ -13494,8 +13495,7 @@ fn setup_output_names_the_blessed_path_dashboard_url_and_headless_twins() {
 
     // A first setup on an empty repo actually changes things (scaffold + workflow + shim),
     // so it takes the reported-change path and prints the orientation block.
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
 
     // 1. The blessed native path: `/rigger <spec>`, discoverable in `/workflows`.
     assert!(
@@ -13530,8 +13530,7 @@ fn setup_output_names_the_blessed_path_dashboard_url_and_headless_twins() {
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
     std::fs::write(&marker, "{}").unwrap();
 
-    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok2, "a rerun of rigger setup must succeed; stderr:\n{err2}");
+    let out2 = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         !out2.contains("/workflows")
             && !out2.contains(&dashboard_url)
@@ -13547,8 +13546,7 @@ fn setup_output_names_the_blessed_path_dashboard_url_and_headless_twins() {
 fn installed_rigger_workflow() -> String {
     let dir = temp_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     let installed = root.join(".claude").join("workflows").join("rigger.js");
     std::fs::read_to_string(&installed).unwrap_or_else(|e| {
         panic!(
@@ -13696,8 +13694,7 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
     // Drive the REAL `rigger setup` subcommand (RIGGER_NPM stubs npm so the shim step needs no
     // network; run_rigger_envs sets RIGGER_NO_DASH so no live dashboard starts - the breadcrumbs
     // are created by hand below to model the dash having written them).
-    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
 
     // 1. CLI -> init_project -> disk wiring: the consumer's on-disk `.gitignore` ignores ALL
     //    THREE dash breadcrumbs, exactly as it does for the other machine-local installs.
@@ -13798,15 +13795,13 @@ fn setup_writes_a_machine_independent_gitignore_under_a_hostile_global_config() 
     );
 
     // Drive the REAL `rigger setup` under that hostile global config.
-    let (_out, err, ok) = run_rigger_envs(
+    setup_ok(
         root,
-        &["setup"],
         &[
             ("RIGGER_NPM", "true"),
             ("GIT_CONFIG_GLOBAL", global_config_str),
         ],
     );
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
 
     // The committed `.gitignore` carries EVERY setup-written pattern despite the hostile global
     // excludes - the artifact is self-contained and portable to a clean-HOME teammate/CI. The
@@ -17210,8 +17205,7 @@ fn setup_installs_the_using_rigger_skill_with_project_overlay() {
     .unwrap();
 
     // npm is stubbed to a no-op so the shim provision step does not need a real npm.
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
 
     let skill_path = root.join(".claude/skills/using-rigger/SKILL.md");
     let workflow_path = root.join(".claude/workflows/rigger.js");
@@ -17279,8 +17273,7 @@ fn setup_installs_every_registry_skill_into_the_consumer_project() {
     let proj = temp_project();
     let root = proj.path();
 
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
 
     let using_rigger_installed = root.join(".claude/skills/using-rigger/SKILL.md");
     let planning_installed = root.join(".claude/skills/planning-a-spec/SKILL.md");
@@ -17319,8 +17312,7 @@ fn setup_installs_every_registry_skill_into_the_consumer_project() {
         .modified()
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(20));
-    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok2, "a no-op setup rerun must succeed; stderr:\n{err2}");
+    let out2 = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         !out2.contains("installed the planning-a-spec skill")
             && !out2.contains("refreshed the drifted planning-a-spec skill"),
@@ -17426,8 +17418,7 @@ fn assert_setup_installs_each_skill(names: &[&str]) -> tempfile::TempDir {
     let proj = temp_project();
     let root = proj.path();
 
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
 
     let mut installed_before = Vec::new();
     for &name in names {
@@ -17465,8 +17456,7 @@ fn assert_setup_installs_each_skill(names: &[&str]) -> tempfile::TempDir {
     // A no-op rerun leaves every one of them untouched: no install/refresh report line,
     // and not even a moved mtime.
     std::thread::sleep(std::time::Duration::from_millis(20));
-    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok2, "a no-op setup rerun must succeed; stderr:\n{err2}");
+    let out2 = setup_ok(root, &[("RIGGER_NPM", "true")]);
     for (name, installed_path, before) in installed_before {
         assert!(
             !out2.contains(&format!("installed the {name} skill"))
@@ -17836,11 +17826,7 @@ fn setup_ships_the_spec_preflight_skill_and_refreshes_it_on_drift() {
         "the drifted copy is the installed one with exactly one line deleted"
     );
     std::fs::write(&installed_path, &dropped).unwrap();
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(
-        ok,
-        "a setup rerun over a drifted skill must succeed; stderr:\n{err}"
-    );
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         out.contains(
             "refreshed the drifted spec-preflight skill (.claude/skills/spec-preflight/SKILL.md)"
@@ -17940,8 +17926,7 @@ fn installed_skill_mtimes(
 fn setup_gives_a_set_up_project_missing_only_the_preflight_skill_that_skill_alone() {
     let proj = temp_project();
     let root = proj.path();
-    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "the first rigger setup must succeed; stderr:\n{err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     let skills_dir = root.join(".claude/skills");
     std::fs::remove_dir_all(skills_dir.join("spec-preflight")).unwrap();
     let before = installed_skill_mtimes(&skills_dir, "spec-preflight");
@@ -17958,11 +17943,7 @@ fn setup_gives_a_set_up_project_missing_only_the_preflight_skill_that_skill_alon
     );
 
     std::thread::sleep(std::time::Duration::from_millis(20));
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(
-        ok,
-        "the upgrading rigger setup must succeed; stderr:\n{err}"
-    );
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
         out.lines()
             .filter(|line| line.contains(" skill (.claude/skills/"))
@@ -18016,15 +17997,13 @@ fn setup_overwrites_a_hand_authored_project_preflight_copy_and_never_one_outside
     let home_mtime = std::fs::metadata(&home_copy).unwrap().modified().unwrap();
 
     std::thread::sleep(std::time::Duration::from_millis(20));
-    let (out, err, ok) = run_rigger_envs(
+    let out = setup_ok(
         &root,
-        &["setup"],
         &[
             ("RIGGER_NPM", "true"),
             ("HOME", home.path().to_str().expect("a utf-8 home")),
         ],
     );
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
     assert!(
         out.contains(
             "refreshed the drifted spec-preflight skill (.claude/skills/spec-preflight/SKILL.md)"
@@ -18681,8 +18660,7 @@ fn setup_installs_graph_hygiene_guidance_into_consumer_skill() {
 
     // npm is stubbed to a no-op so the shim provision step does not need a real npm; this
     // mirrors the sibling setup-install test.
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         out.contains(".claude/skills/using-rigger/SKILL.md"),
         "setup must report installing the using-rigger skill into the consumer project; got:\n{out}"
@@ -18871,8 +18849,7 @@ fn seed_stale_tracked_docs(root: &Path) {
 /// `stage_rigger_shim`), the hook's own re-render at commit time is byte-identical to what is
 /// already staged - the "matching render" fixture spec 70 crit 1 needs.
 fn setup_selfhosting_repo_with_fresh_docs(root: &Path) {
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         out.contains("pre-commit hook"),
         "setup must install the pre-commit hook; got:\n{out}"
@@ -18910,8 +18887,7 @@ fn setup_precommit_hook_refuses_when_the_staged_render_has_drifted() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
 
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         out.contains("pre-commit hook"),
         "setup must report installing the pre-commit hook; got:\n{out}"
@@ -19160,8 +19136,7 @@ fn setup_precommit_hook_stays_inert_in_an_operator_repo() {
 
     // `rigger setup` installs the SAME hook here (it cannot know at install time whether the
     // repo tracks the docs).
-    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         root.join(".git/hooks/pre-commit").exists(),
         "the hook is installed in an operator repo too"
@@ -19210,8 +19185,7 @@ fn setup_precommit_hook_stays_inert_in_an_operator_repo() {
 /// to do on the next ordinary commit, so any later "not STALE" / "still STALE" assertion actually
 /// discriminates whether that commit's hook regenerated the docs.
 fn setup_selfhosting_repo_with_stale_docs(root: &Path) {
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         out.contains("pre-commit hook"),
         "setup must install the pre-commit hook; got:\n{out}"
@@ -19452,8 +19426,7 @@ fn setup_precommit_hook_is_idempotent_no_duplicate_block_on_rerun() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
 
-    let (_o, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "the first setup must succeed; stderr:\n{err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     let hook_path = root.join(".git/hooks/pre-commit");
     let first = std::fs::read_to_string(&hook_path).unwrap();
     assert_eq!(
@@ -19462,8 +19435,7 @@ fn setup_precommit_hook_is_idempotent_no_duplicate_block_on_rerun() {
         "one managed block after the first setup; got:\n{first}"
     );
 
-    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok2, "the second setup must succeed; stderr:\n{err2}");
+    let out2 = setup_ok(root, &[("RIGGER_NPM", "true")]);
     let second = std::fs::read_to_string(&hook_path).unwrap();
     assert_eq!(
         first, second,
@@ -19668,8 +19640,7 @@ fn setup_precommit_hook_stays_inert_when_only_one_doc_is_tracked() {
 
     // Install the hook the SAME way everywhere (it cannot know at install time what the repo
     // will track).
-    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
 
     // Track ONLY the skill (a stale committed copy), NOT the handbook - the degenerate
     // partial-tracking state. Committed with `--no-verify` so the just-installed hook does not
@@ -19741,9 +19712,7 @@ fn setup_precommit_hook_refusal_aborts_a_chained_hook_body() {
 
     // `rigger setup` chains its block BEFORE the existing hook body (spec 24); seed genuinely
     // STALE tracked docs so the final commit's hook has real drift to refuse.
-    let (setup_out, setup_err, setup_ok) =
-        run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(setup_ok, "rigger setup must succeed; stderr:\n{setup_err}");
+    let setup_out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         setup_out.contains("pre-commit hook"),
         "setup must install the pre-commit hook; got:\n{setup_out}"
@@ -19844,8 +19813,7 @@ fn setup_precommit_hook_refusal_names_only_the_drifted_file() {
 fn setup_precommit_hook_refusal_leaves_the_fresh_render_in_the_working_tree() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         out.contains("pre-commit hook"),
         "setup must install the pre-commit hook; got:\n{out}"
@@ -25461,8 +25429,7 @@ fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
     let dir = temp_project();
     let root = dir.path();
 
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         out.contains("registered the rigger MCP server"),
         "setup must report registering the MCP server; got:\n{out}"
@@ -25505,8 +25472,7 @@ fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
     );
 
     // A rerun on an up-to-date repo is a silent no-op for both new artifacts.
-    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok2, "the rerun must succeed; stderr:\n{err2}");
+    let out2 = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         !out2.contains("registered the rigger MCP server")
             && !out2.contains("installed the graph-first lookup hook")
@@ -26455,9 +26421,9 @@ fn guard_write_denies_every_malformed_payload_shape_completely() {
 // rigger", "malformed input degrades to allow") that no test anywhere exercised, the built-in
 // `Grep` tool call driven through the compiled binary (previously proven only against the pure
 // decision function), `rigger mcp`'s API edges (an unknown tool, missing required arguments, a
-// malformed JSON-RPC line) which the happy-path test never sends, the brand-new
-// `operator_tool_graph`/`entity_site_json` JSON wiring on a SUCCESSFUL `show` resolution (never
-// exercised anywhere - the happy-path test only tries `around` on an unknown entity), and the
+// malformed JSON-RPC line) which the happy-path test never sends, the `rigger_graph` tool's
+// JSON wiring on a SUCCESSFUL `show` resolution (never exercised anywhere - the happy-path test
+// only tries `around` on an unknown entity), and the
 // installed skill/handbook text proven only against the in-process render function, never
 // against the file `rigger docs` actually writes.
 // ===========================================================================================
@@ -26474,8 +26440,7 @@ fn setup_reports_a_drifted_operator_mcp_server_as_refreshed_through_the_full_com
     let dir = temp_project();
     let root = dir.path();
 
-    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "the first setup must succeed; stderr:\n{err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
 
     // Hand-corrupt ONLY the operator MCP entry (an older build's path, or a hand edit) -
     // every other artifact `setup` installed a moment ago stays exactly as it is.
@@ -26486,8 +26451,7 @@ fn setup_reports_a_drifted_operator_mcp_server_as_refreshed_through_the_full_com
     )
     .unwrap();
 
-    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok2, "the repair rerun must succeed; stderr:\n{err2}");
+    let out2 = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         out2.contains("refreshed the drifted rigger MCP server entry"),
         "a drifted entry must be reported as refreshed, not silently repaired; got:\n{out2}"
@@ -27015,9 +26979,378 @@ fn mcp_survives_a_malformed_json_line_and_keeps_answering_afterward() {
     assert!(out.status.success());
 }
 
-/// `rigger_graph`'s `show` selector - brand new JSON wiring (`operator_tool_graph`'s `show`
-/// arm and `entity_site_json`) that no test anywhere else exercises: the happy-path test above
-/// only ever tries `around` on an unknown entity. Seeds one real code-entity definition into
+/// Spec 119, SHOW IS ONE RENDERER: GIVEN a graph holding a const, a field, a definition whose
+/// `kind` attr is empty, `Makefile::all`, a finding, an architecture decision and a doc section,
+/// WHEN the operator runs `rigger graph --show` on each exact id, THEN a node with a file prints
+/// today's `site:` header line, one line per remaining `site_fields` entry (a `doc` holding a
+/// newline on one line with spaces; an empty `lang` and the `proven_by` attr printing nothing)
+/// and its body note, while the finding prints its kind, degree, `by`, `unit` and `summary` with
+/// no `site:`, no body and no note; and each output's header and entry lines, read back as
+/// ordered entry and value pairs, equal `site_fields` of the located site after the CLI's newline
+/// transform.
+#[test]
+fn graph_show_prints_each_node_through_the_one_site_renderer() {
+    use common::fixtures::{seed_shown_nodes, SHOWN_IDS};
+
+    let dir = temp_project();
+    let root = dir.path();
+    common::cli::seed_rigger_dir(root);
+    seed_shown_nodes(&common::cli::open_graph(root));
+
+    let shown = SHOWN_IDS.map(|id| run_rigger_ok(root, &["graph", "--show", id]));
+    let stale =
+        |at: &str| format!("  (source unavailable at {at}; the recorded location may be stale)\n");
+    assert_eq!(
+        shown,
+        [
+            "show src/limits.rs::LIMIT\n\
+             \x20 site: src/limits.rs:3   kind constant   degree 1\n\
+             \x20 name LIMIT\n\
+             \x20 lang rust\n"
+                .to_string()
+                + &stale("src/limits.rs:3"),
+            "show src/limits.rs::width\n\
+             \x20 site: src/limits.rs:5   kind field   degree 1\n\
+             \x20 name width\n"
+                .to_string()
+                + &stale("src/limits.rs:5"),
+            "show src/limits.rs::blank\n\
+             \x20 site: src/limits.rs:7   kind code-entity   degree 1\n\
+             \x20 name blank\n\
+             \x20 lang rust\n"
+                .to_string()
+                + &stale("src/limits.rs:7"),
+            "show Makefile::all\n\
+             \x20 site: Makefile:1   kind function   degree 1\n\
+             \x20 name all\n\
+             \x20 lang make\n"
+                .to_string()
+                + &stale("Makefile:1"),
+            "show f-shown\n\
+             \x20 kind finding   degree 2\n\
+             \x20 by lens:sdet\n\
+             \x20 unit u7\n\
+             \x20 summary the width overflows\n"
+                .to_string(),
+            "show docs/decisions/one-renderer.md\n\
+             \x20 site: docs/decisions/one-renderer.md:0   kind arch-decision   degree 0\n\
+             \x20 title One renderer\n\
+             \x20 doc the decision log its second line\n"
+                .to_string()
+                + &stale("docs/decisions/one-renderer.md:0"),
+            "show docs/x.md#sec\n\
+             \x20 site: docs/x.md:0   kind design-doc   degree 0\n\
+             \x20 title Sec\n\
+             \x20 doc docs/x.md\n"
+                .to_string()
+                + &stale("docs/x.md:0"),
+        ],
+        "each node's show output"
+    );
+
+    let graph = common::cli::open_graph(root);
+    common::fixtures::assert_the_shown_const_carries_proven_by(&graph);
+    for ((id, site), out) in common::fixtures::shown_sites(&graph).iter().zip(&shown) {
+        assert_eq!(
+            common::cli::printed_site_entries(out),
+            common::cli::site_entries_as_printed(site, site.line),
+            "{id}: the CLI prints site_fields"
+        );
+    }
+}
+
+/// Spec 119, SHOW IS ONE RENDERER: GIVEN a definition the graph records at line 1 of a file whose
+/// working tree now holds it at line 3, WHEN the operator runs `rigger graph --show` on its id,
+/// THEN it prints `show <id>`, the healed `site:` header with its `(recorded line 1, now 3)` note,
+/// its `name` and `lang` entry lines, then the body from the live line; and the header and entry
+/// lines read back equal `site_fields` after both CLI transforms, the live line among them.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_prints_the_entry_lines_between_a_healed_header_and_the_body() {
+    let dir = temp_project();
+    let root = dir.path();
+    let out = common::cli::show_recorded(
+        root,
+        "src/heal.rs",
+        "\n\nfn healed() -> u8 {\n    1\n}\n",
+        "healed",
+        "function",
+        1,
+        "rust",
+    );
+    assert_eq!(
+        out.lines().take(5).collect::<Vec<_>>(),
+        [
+            "show src/heal.rs::healed",
+            "  site: src/heal.rs:3   kind function   degree 1   (recorded line 1, now 3)",
+            "  name healed",
+            "  lang rust",
+            "       3 | fn healed() -> u8 {",
+        ],
+        "the entry lines sit between the healed header and the body"
+    );
+    let site =
+        common::fixtures::located_site(&common::cli::open_graph(root), "src/heal.rs::healed");
+    assert_eq!(
+        common::cli::printed_site_entries(&out),
+        common::cli::site_entries_as_printed(&site, 3),
+        "the healed show prints site_fields at the live line"
+    );
+}
+
+/// Spec 119, ONE EXTENT: GIVEN a `.tsx` file whose constant `App::v` holds a JSX element, which
+/// only the TSX grammar parses as one, WHEN the operator runs `rigger graph --show` on its id, THEN
+/// its body is bounded to its own line under the TSX grammar (the plain TypeScript grammar would
+/// bound it through the next line); and no `definition_extents` or `DefExtent`, the retired second
+/// extent reader, remains in any crate or the binary's source.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
+    let dir = temp_project();
+    let root = dir.path();
+    let out = common::cli::show_recorded(
+        root,
+        "src/App.tsx",
+        "export function App() {\n  const v = <b>x</b>;\n  return v;\n}\n",
+        "App::v",
+        "constant",
+        2,
+        "ts",
+    );
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        [
+            "show src/App.tsx::App::v",
+            "  site: src/App.tsx:2   kind constant   degree 1",
+            "  name v",
+            "  lang ts",
+            "       2 |   const v = <b>x</b>;",
+        ],
+        "the TSX grammar bounds the constant to its own line"
+    );
+    let retired: Vec<_> = common::repo::production_sources(&common::repo::repo_root())
+        .into_iter()
+        .filter(|(_, text)| text.contains("definition_extents") || text.contains("DefExtent"))
+        .map(|(rel, _)| rel)
+        .collect();
+    assert!(
+        retired.is_empty(),
+        "the second extent reader is retired, yet these sources name it: {retired:?}"
+    );
+}
+
+/// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a built graph of a file whose `impl T` and
+/// `impl U` each define `new`, WHEN the working tree moves both down two lines and the operator
+/// runs `rigger graph --show` on `T::new`'s exact id, THEN its body heals to `T::new`'s live
+/// lines alone, the path telling it from `U::new`, which shares its name and kind.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_heals_a_drifted_method_by_its_path_beside_a_same_named_one() {
+    let dir = temp_project();
+    let root = dir.path();
+    let source = "struct T;\nstruct U;\nimpl T {\n    fn new() -> T {\n        T\n    }\n}\n\
+                  impl U {\n    fn new() -> U {\n        U\n    }\n}\n";
+    common::fixtures::write_text(root, "src/pair.rs", source);
+    run_rigger_ok(root, &["graph", "build"]);
+    common::fixtures::write_text(root, "src/pair.rs", &format!("// one\n// two\n{source}"));
+
+    assert_eq!(
+        common::cli::show_lines(root, "src/pair.rs::T::new"),
+        [
+            "show src/pair.rs::T::new",
+            "  site: src/pair.rs:6   kind method   degree 1   (recorded line 4, now 6)",
+            "  name new",
+            "  lang rust",
+            "       6 |     fn new() -> T {",
+            "       7 |         T",
+            "       8 |     }",
+        ],
+        "the drifted T::new heals to its own body, never U::new's"
+    );
+}
+
+/// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a graph recording the method `T::new` at line 4
+/// of a file whose working tree has deleted it while `U::new`, of the same name and kind, sits at
+/// that line, WHEN the operator runs `rigger graph --show` on `T::new`'s id, THEN no body is
+/// printed and the note names the path it was sought at, `U::new` never bounding it.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_notes_a_deleted_method_at_its_path_beside_a_same_named_one() {
+    let dir = temp_project();
+    let out = common::cli::show_recorded(
+        dir.path(),
+        "src/pair.rs",
+        "struct T;\nstruct U;\nimpl U {\n    fn new() -> U {\n        U\n    }\n}\n",
+        "T::new",
+        "method",
+        4,
+        "rust",
+    );
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        [
+            "show src/pair.rs::T::new",
+            "  site: src/pair.rs:4   kind method   degree 1",
+            "  name new",
+            "  lang rust",
+            "  (no production definition named \"new\" at path \"T::new\" of kind method at line 4 \
+             or elsewhere in src/pair.rs in the current working tree; the recorded location may be \
+             stale)",
+        ],
+        "a deleted T::new is noted at its path, never bounded by U::new at its line"
+    );
+}
+
+/// Spec 119, A BARE SHOW FINDS A LEAF OR PATH: GIVEN a built graph of a Rust file whose structs
+/// `Struct` and `Other` each hold a `field`, WHEN the operator runs `rigger graph --show
+/// Struct.field`, THEN it shows `Struct`'s field alone, the leaf `field` filtered on the id
+/// suffix `::Struct.field`, never listing `Other`'s.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_answers_a_struct_field_by_its_path() {
+    let dir = temp_project();
+    let root = dir.path();
+    common::fixtures::write_text(
+        root,
+        "src/shape.rs",
+        "pub struct Struct {\n    pub field: u8,\n}\npub struct Other {\n    pub field: u8,\n}\n",
+    );
+    run_rigger_ok(root, &["graph", "build"]);
+    assert_eq!(
+        common::cli::show_lines(root, "Struct.field"),
+        [
+            "show src/shape.rs::Struct.field",
+            "  site: src/shape.rs:2   kind field   degree 1",
+            "  name field",
+            "  lang rust",
+            "       2 |     pub field: u8,",
+        ],
+        "the path form shows Struct's field alone"
+    );
+}
+
+/// Spec 119, AN OLDER GRAPH IS REBUILT: GIVEN a log holding one hand-built extraction batch of
+/// `src/f.rs` whose method `new` sits at the path `T::new`, folded into a `graph.db` then stamped
+/// with fold rule 2 and holding a row at the flat id `src/f.rs::new` carrying `name`, as a binary
+/// folding before path ids left it, WHEN the operator runs `rigger setup`, THEN the file owed its
+/// rebuild, records fold rule 3 after it, no row at the flat id carries `name`, and the path id
+/// `src/f.rs::T::new` does.
+#[test]
+fn rigger_setup_rebuilds_a_rule_2_graph_db_leaving_no_flat_nested_id_named() {
+    use common::cli::{
+        exists, insert_node, open_graph, read_run_events, rigger_db, rigger_file,
+        run_stream_identity, temp_store_project, user_version, version_and_owed,
+    };
+    let dir = temp_store_project();
+    let root = dir.path();
+    let batch = [common::fixtures::f_rs_batch_def(
+        1,
+        "h1",
+        0,
+        ("new", "method", 3),
+        Some("T::new"),
+        10,
+    )];
+    common::cli::seed_pre_ledger_events(root, &batch);
+    common::fixtures::folds(&open_graph(root), &read_run_events(root));
+    let graph_db = rigger_file(root, "graph.db");
+    let project = run_stream_identity(root);
+    insert_node(
+        &rigger_db(root, "graph.db"),
+        &project,
+        "src/f.rs::new",
+        rigger::contextgraph::KIND_CODE_ENTITY,
+        Some(r#"{"name":"new"}"#),
+    );
+    common::fixtures::stamp_user_version(&graph_db, 2);
+    let named = |id: &str| {
+        exists(
+            &graph_db,
+            "SELECT EXISTS (SELECT 1 FROM nodes
+              WHERE id = ?1 AND json_extract(attrs, '$.name') IS NOT NULL)",
+            id,
+        )
+    };
+    assert_eq!(
+        (
+            version_and_owed(&graph_db, &project),
+            named("src/f.rs::new"),
+            named("src/f.rs::T::new")
+        ),
+        ((2, true), true, true),
+        "the rule-2 file owes its rebuild and names both the flat and the path id"
+    );
+
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (
+            user_version(&graph_db),
+            named("src/f.rs::new"),
+            named("src/f.rs::T::new")
+        ),
+        (3, false, true),
+        "the rebuilt file records fold rule 3, no row at the flat nested id carries name and the \
+         path id does"
+    );
+}
+
+/// Spec 119, A BARE SHOW FINDS A LEAF OR PATH: GIVEN a project, WHEN the operator runs `rigger
+/// graph --around new`, a bare name where a seed is an exact id, THEN the empty answer's note
+/// names the exact-id seed form `<file>::<path>` and `rigger graph --show`, which resolves a bare
+/// name.
+#[test]
+fn graph_around_a_bare_name_notes_the_seed_form_and_show() {
+    let dir = temp_project();
+    let root = dir.path();
+    common::cli::seed_rigger_dir(root);
+    assert_eq!(
+        run_rigger_ok(root, &["graph", "--around", "new"])
+            .lines()
+            .collect::<Vec<_>>(),
+        [
+            "subgraph around \"new\" (depth 2):",
+            "  (nothing found; a seed is an exact id, `<file>::<path>`, and `rigger graph --show \
+             <name>` resolves a bare name; has `rigger run` been run yet?)",
+        ],
+        "an empty around names the seed form and --show"
+    );
+}
+
+/// Spec 119, ONE EXTENT: GIVEN a code entity with a file and a non-zero line but no `name` attr,
+/// beside a definition of its leaf in the working tree, WHEN the operator runs `rigger graph
+/// --show` on its id, THEN it prints the "no production definition named" note with its id in place of the
+/// name and no body, on every lane, never bounding a body by a cut of the id.
+#[test]
+fn graph_show_notes_a_nameless_node_by_its_id() {
+    let dir = temp_project();
+    let root = dir.path();
+    common::fixtures::write_text(root, "src/x.rs", "fn thing() {}\n");
+    let nameless = common::fixtures::node_with_attrs(
+        "src/x.rs::thing",
+        "code-entity",
+        &[("kind", "function"), ("line", "1")],
+    );
+    drop(common::cli::planted_graph(
+        root,
+        &rigger::contextgraph::Graph {
+            nodes: vec![nameless],
+            edges: Vec::new(),
+        },
+    ));
+
+    assert_eq!(
+        run_rigger_ok(root, &["graph", "--show", "src/x.rs::thing"]),
+        "show src/x.rs::thing\n  site: src/x.rs:1   kind function   degree 0\n  (no production \
+         definition named \"src/x.rs::thing\" of kind function at line 1 or elsewhere in src/x.rs \
+         in the current working tree; the recorded location may be stale)\n",
+        "a nameless node at a line is noted by its id"
+    );
+}
+
+/// `rigger_graph`'s `show` selector - its JSON wiring (`Server::tool_graph`'s `show` arm, the
+/// site object built from `site_fields`) on a bare-name resolution, where the happy-path test above
+/// only ever tries `around` on an unknown entity (the show-renderer test below drives every
+/// exact id and a resolving `around`). Seeds one real code-entity definition into
 /// `graph.db` (the same `CodeEntityExtracted` fold a real extraction pass would produce, the
 /// ALWAYS-compiled arm so this holds in both feature lanes) and proves a SUCCESSFUL resolution
 /// serializes its site fields correctly over the wire, and an unresolved `show` still answers
@@ -27070,6 +27403,57 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
 
     let out = mcp.finish();
     assert!(out.status.success());
+}
+
+/// Spec 119, SHOW IS ONE RENDERER, at the `rigger mcp` binary: GIVEN the show-renderer seed
+/// folded into the project's `graph.db`, WHEN an MCP client calls `rigger_graph` with `show` on
+/// each exact id and with `around` on the seed file at depth 1, THEN each `show` site is the
+/// node's `id` beside the `site_fields` entries of the site the graph locates, and every `around`
+/// node is `entity_site` over the `Node` the merged graph loads, less its `summary`, at its edge
+/// count there - the file at 4, each definition and the finding at 1 - so the finding, at the
+/// depth bound, shows one edge fewer than the 2 `show` gives it and no summary, which `show`
+/// keeps.
+#[test]
+fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
+    use common::fixtures::{
+        around_nodes, assert_around_is_entity_sites, assert_finding_shows_past_the_depth_bound,
+        assert_shows_are_site_fields, seed_shown_nodes, SHOWN_FILE, SHOWN_IDS,
+    };
+
+    let dir = temp_store_project();
+    let root = dir.path();
+    common::cli::seed_rigger_dir(root);
+    seed_shown_nodes(&common::cli::open_graph(root));
+
+    let mut mcp = McpSession::start(root);
+    let sites = SHOWN_IDS.map(|id| mcp.graph_tool(serde_json::json!({"show": id}))["site"].clone());
+    let nodes =
+        around_nodes(&mcp.graph_tool(serde_json::json!({"around": SHOWN_FILE, "depth": 1})));
+    let out = mcp.finish();
+    assert!(out.status.success(), "rigger mcp exits cleanly");
+
+    assert_eq!(
+        nodes
+            .iter()
+            .map(|node| (
+                node["id"].as_str().unwrap(),
+                node["degree"].as_u64().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("f-shown", 1),
+            ("src/limits.rs", 4),
+            ("src/limits.rs::LIMIT", 1),
+            ("src/limits.rs::blank", 1),
+            ("src/limits.rs::width", 1),
+        ],
+        "every loaded node at its edge count in the merged graph"
+    );
+    let finding = SHOWN_IDS.iter().position(|id| *id == "f-shown").unwrap();
+    assert_finding_shows_past_the_depth_bound(&sites[finding]);
+    let graph = common::cli::open_graph(root);
+    assert_shows_are_site_fields(&graph, &sites);
+    assert_around_is_entity_sites(&graph, &nodes);
 }
 
 /// The shipped skill's lookup section states the graph-first rule for a human reader
@@ -28051,8 +28435,7 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
     let dir = temp_project();
     let root = dir.path();
     common::cli::init_event_log(root);
-    let (_, settle_err, settled) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(settled, "premise: setup settles the project: {settle_err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     let project = run_stream_identity(root);
     write_text(root, SOURCE_PATH, SOURCE_BODY);
     write_text(root, TEST_MODULE_PATH, TEST_MODULE_BODY);
@@ -28597,9 +28980,9 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
 /// (`gc/src/a.rs`), a design batch of that same file (`gd/src/a.rs`), a second source file whose
 /// latest recording is already a ledger entry (`gc/src/b.rs`), and one event naming no identity.
 fn seed_six_derived_events_of_three_file_identities(root: &Path) {
-    use common::cli::{keyed, pre_ledger_batch, with_pre_ledger_run_store};
+    use common::cli::{keyed, pre_ledger_batch};
     use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED};
-    use rigger::eventstore::{Event, ExpectedRevision};
+    use rigger::eventstore::Event;
 
     let entity = common::cli::code_entity;
     let concept = br#"{"kind":"gate","id":"gate:a","title":"a","doc":"src/a.rs"}"#.to_vec();
@@ -28613,11 +28996,7 @@ fn seed_six_derived_events_of_three_file_identities(root: &Path) {
         common::fixtures::generation_ingested("gc", "src/b.rs", "b2", "", false).event(1),
         Event::new(TYPE_CODE_ENTITY_EXTRACTED, entity()),
     ];
-    with_pre_ledger_run_store(root, |store| {
-        store
-            .append(rigger::conductor::STREAM, ExpectedRevision::Any, &seeded)
-            .unwrap();
-    });
+    common::cli::seed_pre_ledger_events(root, &seeded);
 }
 
 /// Given a store recorded before the ledger holding six derived events of three file identities
@@ -28636,8 +29015,7 @@ fn bare_reset_previews_what_the_derived_reset_then_sheds_and_says_none_is_left_o
     let dir = temp_project();
     let root = dir.path();
     common::cli::init_event_log(root);
-    let (_, settle_err, settled) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(settled, "premise: setup settles the project: {settle_err}");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
     seed_six_derived_events_of_three_file_identities(root);
 
     // What the log holds of the derived index, read from its rows and never from the command:

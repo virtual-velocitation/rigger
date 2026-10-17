@@ -18,7 +18,7 @@
 //!    INCLUDED only when the caller lowers the floor to `ambiguous` (the public `tier_floor` param);
 //!  - the DEPTH clamp: the public `depth` bounds the layers the walk returns;
 //!  - the `Direction::Up` arm (spec 52 criterion 3, now landed): over the SAME real call, UP resolves
-//!    the caller back onto the seed's definition through its bare cross-file placeholder (the reverse
+//!    the caller back onto the seed's definition through its bare placeholder (the reverse
 //!    name-match), where DOWN reaches the callee - the two directions are genuine mirror walks;
 //!  - the DEGENERATE edges: a missing seed, and a seed with no calls, each degrade to an empty /
 //!    seed-only view rather than erroring;
@@ -36,8 +36,8 @@
 //!  - the UP FRONTIER: a cross-file caller whose call name has MULTIPLE definitions comes back a
 //!    marked `frontier` carrying its SORTED candidate ids and is NOT ascended (the reverse of the DOWN
 //!    conservative-resolution policy; the crate's UP unit test exercises it only inside the crate);
-//!  - UP PROJECT SCOPING across the THREE project-filtered reads the UP walk adds (same-file callers,
-//!    cross-file callers through bare placeholders, and the referenced-but-not-called file scan) - a
+//!  - UP PROJECT SCOPING across the THREE project-filtered reads the UP walk adds (direct callers,
+//!    callers through bare placeholders, and the referenced-but-not-called file scan) - a
 //!    leak in any one is a bug the DOWN scoping test cannot catch;
 //!  - the UP DEPTH clamp and the DETERMINISTIC emitted order: a caller tree walked at a depth bound
 //!    returns its in-bound layers in the production `(layer, id)` order, asserted on the raw node Vec
@@ -141,12 +141,12 @@ fn calls_down_surfaces_a_multi_candidate_hop_as_a_marked_frontier_and_never_desc
         )
         .unwrap();
 
-    // The bare cross-file callee `src/c.rs::target` is returned as a layer-1 FRONTIER carrying the
+    // The bare cross-file callee `src/c.rs::%target` is returned as a layer-1 FRONTIER carrying the
     // sorted candidate definition ids - NOT resolved to either candidate.
     let frontier = cg
         .nodes
         .iter()
-        .find(|n| n.node.id == "src/c.rs::target")
+        .find(|n| n.node.id == "src/c.rs::%target")
         .expect("the multi-candidate callee is returned as a (frontier) node");
     assert_eq!(
         frontier.layer, 1,
@@ -180,7 +180,7 @@ fn calls_down_surfaces_a_multi_candidate_hop_as_a_marked_frontier_and_never_desc
     );
     assert_eq!(
         call_node_ids(&cg),
-        vec!["src/c.rs::caller", "src/c.rs::target"],
+        vec!["src/c.rs::%target", "src/c.rs::caller"],
         "exactly the seed and the marked frontier callee",
     );
     // The one edge lands on the frontier placeholder and is a forward (non-back) CALLS edge.
@@ -188,7 +188,7 @@ fn calls_down_surfaces_a_multi_candidate_hop_as_a_marked_frontier_and_never_desc
         call_edge_pairs(&cg),
         vec![(
             "src/c.rs::caller".to_string(),
-            "src/c.rs::target".to_string()
+            "src/c.rs::%target".to_string()
         )],
         "the single edge points at the frontier, not at any candidate",
     );
@@ -242,19 +242,19 @@ fn the_tier_floor_excludes_an_ambiguous_call_by_default_and_includes_it_only_whe
         .unwrap();
     assert_eq!(
         call_node_ids(&ambiguous_floor),
-        vec!["src/c.rs::caller", "src/c.rs::nowheredef"],
+        vec!["src/c.rs::%nowheredef", "src/c.rs::caller"],
         "lowering the floor to `ambiguous` opts the unresolved tier in - the callee is reached",
     );
     assert_eq!(
         call_edge_pairs(&ambiguous_floor),
         vec![(
             "src/c.rs::caller".to_string(),
-            "src/c.rs::nowheredef".to_string()
+            "src/c.rs::%nowheredef".to_string()
         )],
         "the previously-excluded ambiguous CALLS edge is now followed",
     );
     assert_eq!(
-        call_layer(&ambiguous_floor, "src/c.rs::nowheredef"),
+        call_layer(&ambiguous_floor, "src/c.rs::%nowheredef"),
         Some(1),
         "the opted-in callee is a layer-1 terminal leaf (defined nowhere, nothing to descend)",
     );
@@ -302,8 +302,8 @@ fn the_depth_bound_clamps_the_layers_the_walk_returns() {
 fn the_up_direction_mirrors_the_down_walk_resolving_the_caller_through_its_bare_placeholder() {
     // Spec 52 criterion 3 (now landed), over the library's PUBLIC surface: UP is the genuine mirror
     // of DOWN. `b.rs::caller` calls `callee`, which is DEFINED in `a.rs` - a CROSS-FILE call whose
-    // edge lands on the bare `b.rs::callee` placeholder in the caller's own file namespace. DOWN from
-    // the caller resolves that placeholder FORWARD onto the definition; UP from the definition
+    // edge lands on the bare `b.rs::%callee` placeholder in the caller's own file namespace. DOWN
+    // from the caller resolves that placeholder FORWARD onto the definition; UP from the definition
     // resolves it in REVERSE back onto the caller (the reverse name-match). A naive reverse walk that
     // only matched the literal edge target would connect neither direction across the file boundary.
     let p = Projector::open(":memory:", "test").unwrap();
@@ -311,7 +311,7 @@ fn the_up_direction_mirrors_the_down_walk_resolving_the_caller_through_its_bare_
     apply_def(&p, 2, "src/b.rs", "caller", 1, true);
     apply_call(&p, 3, "src/b.rs", "callee", "caller");
 
-    // Control / DOWN: from the caller the walk resolves the bare cross-file placeholder forward onto
+    // Control / DOWN: from the caller the walk resolves the bare placeholder forward onto
     // the real definition `a.rs::callee`.
     let down = p
         .calls(
@@ -328,7 +328,7 @@ fn the_up_direction_mirrors_the_down_walk_resolving_the_caller_through_its_bare_
     );
 
     // UP: over that SAME real call, from the definition the walk resolves the caller back through the
-    // bare `b.rs::callee` placeholder - the mirror of DOWN. The caller sits at layer 1; the bare
+    // bare `b.rs::%callee` placeholder - the mirror of DOWN. The caller sits at layer 1; the bare
     // placeholder is resolved away; the edge keeps the real CALLS direction (caller -> callee).
     let up = p
         .calls(
@@ -350,8 +350,8 @@ fn the_up_direction_mirrors_the_down_walk_resolving_the_caller_through_its_bare_
         call_node_ids(&up),
     );
     assert!(
-        !up.nodes.iter().any(|n| n.node.id == "src/b.rs::callee"),
-        "the bare cross-file placeholder is resolved away, not returned; nodes were {:?}",
+        !up.nodes.iter().any(|n| n.node.id == "src/b.rs::%callee"),
+        "the bare placeholder is resolved away, not returned; nodes were {:?}",
         call_node_ids(&up),
     );
     assert_eq!(
@@ -659,7 +659,7 @@ fn the_up_walk_surfaces_a_multi_candidate_caller_as_a_marked_frontier_and_never_
 fn the_up_walk_is_project_scoped_across_a_shared_graph_db_including_the_referenced_not_called_reads(
 ) {
     // Spec 28 / spec 52 read isolation for the UP direction, on a REAL shared graph.db. The UP walk
-    // issues THREE project-filtered reads a DOWN walk does not - same-file callers, cross-file callers
+    // issues THREE project-filtered reads a DOWN walk does not - direct callers, callers
     // through bare placeholders, and the referenced-but-not-called file scan - so a leak in ANY of the
     // three is a bug the DOWN scoping test cannot catch. Two projects share ONE file; both define the
     // seed `target` (so the seed id exists in each), but only `other` records callers and an import.

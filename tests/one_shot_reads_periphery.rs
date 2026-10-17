@@ -25,7 +25,7 @@ use std::io::Cursor;
 use std::path::Path;
 use std::process::Stdio;
 
-use common::cli::{rigger_file, run_rigger, run_stream_identity, temp_store_project};
+use common::cli::{rigger_db, rigger_file, run_rigger, run_stream_identity, temp_store_project};
 use common::fixtures::{
     ev, generation_ingested, run_started, seed_one_shot_fixture, seed_one_shot_progress, types_of,
     CountedRead, HandBuiltLog, OneShotFixture, PreLedgerStore, ReadCountingStore,
@@ -296,7 +296,7 @@ fn scoped_run_stream(root: &Path) -> String {
 /// `events` row) selects with `set` (an SQL assignment), around the store's own write guards - a
 /// log state only a stale or broken writer leaves. Returns how many rows it rewrote.
 fn rewrite_run_stream(root: &Path, set: &str, condition: &str) -> usize {
-    let conn = rusqlite::Connection::open(rigger_file(root, "events.db")).unwrap();
+    let conn = rigger_db(root, "events.db");
     conn.execute(
         &format!("UPDATE events SET {set} WHERE stream = ?1 AND ({condition})"),
         [scoped_run_stream(root)],

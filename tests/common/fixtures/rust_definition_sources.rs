@@ -1,7 +1,10 @@
 //! THE RUST DEFINITIONS FIXTURE: the one source text RUST DEFINITIONS ARE NODES (every Rust
 //! definition type is a definition of its kind) is proven over, once on the symbols the
-//! registered Rust query extracts and once on the graph a build folds. It names no crate, so
-//! every lane compiles it.
+//! registered Rust query extracts and once on the graph a build folds; and the enum `E` before
+//! and after its variant `B` is removed, the sources CONTAINS IS STRUCTURE (spec 119) retires a
+//! variant's `CONTAINS` over; and the method `a::B::c` in two impls and then in one, the sources
+//! ONE PATH IS ONE EVENT (spec 119) picks and hands over a path's one event over. It names no
+//! crate, so every lane compiles it.
 
 /// THE RUST DEFINITIONS FIXTURE (spec 116 criterion 6): one Rust file holding every Rust
 /// definition type. Lines 1-2 an `extern crate` without and with an alias; 3-4 an item const
@@ -41,3 +44,20 @@ impl X { #[cfg(test)] fn t() {} fn real() {} }
 fn f() { #[cfg(test)] let x = 1; }
 mod outer { #[cfg(test)] mod inner {} }
 ";
+
+/// The enum `E` holding the variants `A` and `B` (spec 119, CONTAINS IS STRUCTURE), each
+/// contained by `E` and `E` by its file.
+pub const ENUM_E_HOLDING_A_AND_B: &str = "enum E {\n    A,\n    B,\n}\n";
+
+/// [`ENUM_E_HOLDING_A_AND_B`] with its variant `B` removed: `E` holds `A` alone.
+pub const ENUM_E_HOLDING_A: &str = "enum E {\n    A,\n}\n";
+
+/// The method `c` of `a::B` defined twice (spec 119, ONE PATH IS ONE EVENT): at line 4 in the
+/// `impl B` inside `mod a`, and at line 8 in the file-level `impl a::B`.
+pub const METHOD_C_IN_TWO_IMPLS: &str =
+    "mod a {\n    struct B;\n    impl B {\n        fn c() {}\n    }\n}\nimpl a::B {\n    fn c() {}\n}\n";
+
+/// [`METHOD_C_IN_TWO_IMPLS`] with the `impl B` inside `mod a` blanked out: `c` at line 8 alone,
+/// in the file-level `impl a::B`.
+pub const METHOD_C_IN_THE_FILE_LEVEL_IMPL: &str =
+    "mod a {\n    struct B;\n\n\n\n}\nimpl a::B {\n    fn c() {}\n}\n";

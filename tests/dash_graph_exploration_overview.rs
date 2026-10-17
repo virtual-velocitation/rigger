@@ -32,8 +32,7 @@
 
 mod common;
 use common::fixtures::edge_valid_to;
-
-use std::collections::BTreeMap;
+use common::fixtures::{leaf_named_node, plain};
 
 use rigger::contextgraph::{
     Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, REL_REFERENCES, TIER_EXTRACTED,
@@ -42,20 +41,14 @@ use rigger::dash::{clustered_overview, Cluster, ClusterEdge, ClusterOverview, Le
 
 /// A graph node (the overview reads only its id, kind, and - for a code entity, spec 63 c3's files-
 /// lens honesty gate - whether it carries a `name` attr; never its label). A [`KIND_CODE_ENTITY`]
-/// node carries a `name` attr matching its own entity-name suffix, exactly as the extraction fold
-/// always sets for a REAL definition (never a bare cross-file placeholder, which is what a MISSING
-/// `name` attr means to that gate) - every fixture in this file models one entity's own file, never a
-/// cross-file placeholder, so this is the correct shape for all of them.
+/// node carries a `name` attr naming its id's leaf ([`leaf_named_node`]), exactly as the
+/// extraction fold always sets for a REAL definition (never a bare placeholder, which is
+/// what a MISSING `name` attr means to that gate) - every fixture in this file models one entity's
+/// own file, never a placeholder, so this is the correct shape for all of them.
 fn node(id: &str, kind: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: if kind == KIND_CODE_ENTITY {
-            let name = id.rsplit_once("::").map_or(id, |(_, n)| n);
-            BTreeMap::from([("name".to_string(), name.to_string())])
-        } else {
-            BTreeMap::new()
-        },
+    match kind {
+        KIND_CODE_ENTITY => leaf_named_node(id),
+        _ => plain(id, kind),
     }
 }
 

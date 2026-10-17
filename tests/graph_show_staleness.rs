@@ -16,11 +16,11 @@
 //!
 //! The LINE-DRIFT shape's contract CHANGED under spec 92 (FRESH ON EVERY INTEGRATION, criterion 1),
 //! which supersedes this criterion's original "always refuse a drifted line" rule
-//! (`adj-u58c1-r3-approve`) for the case a name-only search resolves unambiguously: the surface now
-//! HEALS to the moved definition's LIVE line and shows its real body, noting the drift, in the
-//! `symbols` lane (the light lane still derives no extent, so it still shows no body at all - the
-//! "never wrong text" invariant it existed to prove is now the narrower, permanent one: a NEIGHBOUR
-//! at the recorded line is never shown under another entity's header, in EITHER lane).
+//! (`adj-u58c1-r3-approve`) for the case a search by name and kind resolves unambiguously: the
+//! surface now HEALS to the moved definition's LIVE line and shows its real body, noting the drift,
+//! in the `symbols` lane (the light lane still derives no extent, so it still shows no body at
+//! all; the "never wrong text" invariant it existed to prove is now the narrower, permanent one: a
+//! NEIGHBOUR at the recorded line is never shown under another entity's header, in EITHER lane).
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
@@ -85,16 +85,17 @@ fn graph_show_degrades_gracefully_when_the_recorded_file_is_missing() {
     );
 }
 
-/// DRIFT SHAPE (b): the recorded LINE drifted so that a DIFFERENT (neighbouring) definition now sits
-/// at the entity's recorded site. The criterion's sharpest clause - "never wrong text presented as
-/// current" - means the surface must NEVER lift that NEIGHBOUR's body under the drifted entity's
-/// header. Under spec 92 the drifted entity's OWN body is a different matter: when its name is
-/// unambiguous elsewhere in the file, the `symbols` lane now HEALS to it and shows the live body
-/// (never refuses); the light lane still cannot derive any extent at all, so it still shows no body
-/// for anything. Both lanes still EXIT SUCCESS.
+/// DRIFT SHAPE (b): the recorded LINE drifted so that a DIFFERENT (neighbouring) definition now
+/// sits at the entity's recorded site. The criterion's sharpest clause - "never wrong text
+/// presented as current" - means the surface must NEVER lift that NEIGHBOUR's body under the
+/// drifted entity's header. Under spec 92 the drifted entity's OWN body is a different matter: when
+/// its name and kind are unambiguous among the file's production definitions elsewhere, the
+/// `symbols` lane now HEALS to it and
+/// shows the live body (never refuses); the light lane still cannot derive any extent at all, so it
+/// still shows no body for anything. Both lanes still EXIT SUCCESS.
 ///
-/// The "never a neighbour's body" invariant is asserted in BOTH lanes: the symbols lane's name-only
-/// fallback only ever searches for the QUERIED name, so `other` can never surface under `moved`'s
+/// The "never a neighbour's body" invariant is asserted in BOTH lanes: the symbols lane's fallback
+/// only ever searches for the QUERIED name and kind, so `other` can never surface under `moved`'s
 /// header regardless of which line it occupies; the light lane derives no extent at all. The
 /// site-header and body-presence expectations differ per lane (symbols heals to the live line and
 /// shows the real body; light shows no body from the still-recorded stale line), so those are

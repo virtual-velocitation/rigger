@@ -1,9 +1,47 @@
-//! Fixtures for the dash's lens suites: the lens under test and the graphs it folds.
+//! Fixtures for the dash's lens suites and the code lens's coupling layer: the lens under test,
+//! the graphs it folds and the rows a fold is asserted by.
 
+use rigger::community::Coupling;
 use rigger::contextgraph::{Graph, KIND_CODE_ENTITY, KIND_CONCEPT, REL_REALIZES, TIER_EXTRACTED};
-use rigger::dash::{clustered_overview, Cluster, ClusterEdge, Lens};
+use rigger::dash::{clustered_overview, reproject, Cluster, ClusterEdge, Lens};
 
 use super::fixtures::{edge, node_with_attrs, node_with_optional_attrs};
+
+/// The files lens over `graph`, whole and re-grained to `subject`, whose `members` it asserts:
+/// the `whole <key> <count>` of each whole-graph cluster and the `whole <from> -- <to> <weight>`
+/// of each cluster edge, then the `concept <key> <count>` of each bucket of the subject's members
+/// and the `concept <id> <- <candidates>` of each unresolved one.
+pub fn files_lens_rows(graph: &Graph, subject: &str, members: usize) -> Vec<String> {
+    let overview = clustered_overview(graph, &Lens::Files);
+    let regrain = reproject(graph, subject, &Lens::Files);
+    assert_eq!(regrain.total, members, "the concept has {members} members");
+    let mut rows: Vec<String> = Vec::new();
+    for c in &overview.clusters {
+        rows.push(format!("whole {} {}", c.key, c.count));
+    }
+    for e in &overview.edges {
+        rows.push(format!("whole {} -- {} {}", e.from, e.to, e.weight));
+    }
+    for c in &regrain.clusters {
+        rows.push(format!("concept {} {}", c.key, c.count));
+    }
+    for u in &regrain.unresolved {
+        rows.push(format!("concept {} <- {:?}", u.id, u.candidates));
+    }
+    rows
+}
+
+/// The `<node> <degree>` row of each node of the coupling layer the code lens detects
+/// communities over, built from `graph`.
+pub fn coupling_rows(graph: &Graph) -> Vec<String> {
+    let coupling = Coupling::from_graph(graph);
+    coupling
+        .nodes()
+        .iter()
+        .zip(coupling.degrees())
+        .map(|(node, degree)| format!("{node} {degree}"))
+        .collect()
+}
 
 /// Lens `name` (`code`, `concepts`, ...) at resolution grain `1`.
 pub fn lens(name: &str) -> Lens {
@@ -12,6 +50,8 @@ pub fn lens(name: &str) -> Lens {
 
 /// The concept subject of [`shared_member_graph`].
 pub const SUB_C: &str = "concept/1/0";
+/// The served `/api/graph` route re-graining [`SUB_C`] by the files lens.
+pub const SUB_C_FILES_ROUTE: &str = "/api/graph?seed=concept%2F1%2F0&lens=files";
 /// The other, larger concept of [`shared_member_graph`].
 pub const OTHER_D: &str = "concept/1/1";
 /// The member of [`shared_member_graph`] that realizes BOTH concepts.
