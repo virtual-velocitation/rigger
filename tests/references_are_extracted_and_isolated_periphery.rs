@@ -65,11 +65,9 @@ fn the_call_and(references: &[(&str, &str, &str)]) -> Vec<(String, String, Strin
         DRAW_PLACEHOLDER,
         rigger::contextgraph::TIER_INFERRED,
     );
-    landed.extend(
-        references
-            .iter()
-            .map(|(from, to, tier)| common::fixtures::reference(from, to, tier)),
-    );
+    for (from, to, tier) in references {
+        landed.push(common::fixtures::reference(from, to, tier));
+    }
     landed.sort();
     landed
 }
