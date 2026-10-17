@@ -1027,11 +1027,11 @@ rigger::test_cases! {
 /// blast_radius_eval;` (`crates/rigger-conductor/src/blast_radius_eval.rs`), and this fixture is that exact shape, using a
 /// plain, unattributed `pub fn` in the declared file exactly like
 /// `blast_radius_eval.rs`'s own product functions. The declaring file here is deliberately named
-/// `lib.rs` (round 7, `op-u86c1-r7-out-of-line-module-resolution-follows-rust`): a
-/// crate-root/directory-owning basename is what makes a FLAT sibling the Rust-correct resolution
-/// at all, since a non-`lib.rs`/`mod.rs`/`main.rs` declaring file that is not itself a crate root
-/// (`src/bin/tool.rs` is one) has its own children resolve under a subdirectory named after
-/// itself instead (see
+/// `lib.rs` (round 7, `op-u86c1-r7-out-of-line-module-resolution-follows-rust`): the resolver's
+/// `module_dir` reads the declaring file's name alone, giving a file named `lib.rs`, `mod.rs` or
+/// `main.rs` FLAT same-directory children, which is where rustc puts a crate root `lib.rs`'s
+/// children, and giving a file of any other name children under a subdirectory named after its
+/// stem (see
 /// `an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_correctly`).
 ///
 /// SURFACE CONFIRMED STILL OPEN (`sdet-u86c1-r5-two-confirmed-live-gaps`): probed empirically
@@ -1095,10 +1095,10 @@ rigger::test_cases! {
     /// resolving to `src/eventstore/contract.rs`) is the OTHER branch: a `mod.rs`-named declaring
     /// file that itself lives in a subdirectory, so the resolved sibling path carries that same
     /// directory prefix. Mirrors that exact shape (round 7,
-    /// `op-u86c1-r7-out-of-line-module-resolution-follows-rust`: `mod.rs` is a directory-owning
-    /// basename, so a FLAT sibling is the Rust-correct resolution here - a non-`mod.rs`/`lib.rs`/
-    /// `main.rs` declaring file that is not itself a crate root has its own children resolve under
-    /// a subdirectory named after itself instead, see
+    /// `op-u86c1-r7-out-of-line-module-resolution-follows-rust`: `module_dir` reads the file's
+    /// name alone and gives a `mod.rs` FLAT sibling children, which is where rustc puts a
+    /// `mod.rs`'s children too, while a declaring file named anything but `mod.rs`/`lib.rs`/
+    /// `main.rs` has its children resolved under a subdirectory named after its stem, see
     /// `an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_correctly`) so
     /// the guarantee criterion 1 makes about this very tree is proven by a fixture, not merely
     /// inferred from the flat-root case generalizing.
@@ -1601,14 +1601,14 @@ rigger::test_cases! {
     /// `sdet-u86c1-r6-out-of-line-mod-resolution-uses-declaring-files-directory-not-rusts-own-module-
     /// nesting-path`): `out_of_line_test_module_files` used to resolve a `#[cfg(test)] mod name;`
     /// declaration to `<directory containing the DECLARING file>/<name>.rs`. That coincides with
-    /// Rust's own file-per-module convention only when the declaring file is itself a
-    /// directory-style module (`mod.rs`/`lib.rs`/`main.rs`) or another crate root - both of this repo's two disclosed
-    /// live instances (`src/eventstore/mod.rs`, `src/lib.rs`) are exactly that shape, and so is
+    /// rustc's placement for some declaring files, among them a `mod.rs` and a crate root such as
+    /// `src/lib.rs` - both of this repo's two disclosed live instances (`src/eventstore/mod.rs`,
+    /// `src/lib.rs`) are exactly that shape, and so is
     /// this file's own `nested/parent.rs` fixture in
     /// `an_out_of_line_cfg_test_module_declaration_in_a_subdirectory_excludes_its_sibling_through_the_public_api`
     /// above, which places the target in the SAME directory as the declaring file. But an ORDINARY,
-    /// non-`mod.rs` file that is itself a non-root submodule (e.g. `src/extract.rs`, declared via
-    /// `mod extract;` from its own parent) puts ITS OWN children in a subdirectory named after
+    /// non-`mod.rs` file that is itself a non-root submodule loaded without `#[path]` (e.g.
+    /// `src/extract.rs`, from `mod extract;`) puts ITS OWN children in a subdirectory named after
     /// itself - `src/extract/child.rs` - never as a sibling in `src/`. This fixture reproduces that
     /// exact shape and pins the fix: `module_dir` now computes the declaring file's own MODULE
     /// directory (its own directory only for mod.rs/lib.rs/main.rs, else `<its own directory>/<its
