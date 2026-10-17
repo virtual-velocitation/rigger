@@ -182,7 +182,7 @@ pub fn extracted_rust_index(files: &[(&str, &str)]) -> SymbolIndex {
 }
 
 /// The file `mod outer { #[cfg(test)] mod x; }` in [`INLINE_TEST_MOD_TREE`]'s `src/lib.rs`
-/// names, as rustc resolves it.
+/// names: the first of its module candidates the tree holds.
 pub const INLINE_TEST_MOD_TARGET: &str = "src/outer/x.rs";
 
 /// The entity id of the `helper` [`INLINE_TEST_MOD_TREE`] defines in [`INLINE_TEST_MOD_TARGET`].

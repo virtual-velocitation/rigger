@@ -4268,7 +4268,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-grounder/
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-grounder/src/grounder/symbols/events.rs:862-871` `lang_str`
+- `crates/rigger-grounder/src/grounder/symbols/events.rs:870-879` `lang_str`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1487-1492` `direction_sql`
 
 #### `dup-476c04e8fc6f` (semantic, 3 sites)
