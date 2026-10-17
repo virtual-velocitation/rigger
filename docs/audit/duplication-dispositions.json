@@ -860,9 +860,9 @@
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   },
   {
-    "id": "dup-f876dbc68da1",
+    "id": "dup-2bc45edfd3d1",
     "disposition": "not-a-duplicate",
-    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper); they share only the `format!` shape."
+    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, an id's file half before it, a staged reference row's liveness term, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper); they share only the `format!` shape."
   },
   {
     "id": "dup-ffc17308c029",
@@ -895,9 +895,9 @@
     "reason": "Two port methods of the `Namespaced` decorator, each forwarding its own inner call; the shared work (scoping the stream name) is already the one `scoped` both call."
   },
   {
-    "id": "dup-26b14e332411",
+    "id": "dup-b4990598bfd7",
     "disposition": "not-a-duplicate",
-    "reason": "Different SQL composed over one shared expression function: the partial group index's `CREATE INDEX` and the lookup's `SELECT` that seeks it over `group_expr`, and the graph store's member expression (`member_sql`) over `node_leaf_sql`; each shared expression is already the one function its readers call."
+    "reason": "Different SQL composed over one shared expression function: the partial group index's `CREATE INDEX` and the lookup's `SELECT` that seeks it over `group_expr`, which is already the one function both call."
   },
   {
     "id": "dup-3eb116c3c4c8",
@@ -935,7 +935,7 @@
     "reason": "`RunCtx::append_and_fold` is the run's one-event case: it stamps the run id and appends through the run's folding store (`Deps::folding`), whose append delegates to `ingest::FoldingStore::append_and_fold`, the one append-then-fold body, rather than re-implementing it."
   },
   {
-    "id": "dup-0f62ab248065",
+    "id": "dup-6b847cf11fc4",
     "disposition": "not-a-duplicate",
     "reason": "The CLI suite seeds a two-subsystem coupling graph into the real on-disk store through the folding store's `append_and_fold`, while the fold suite folds a different single-hub graph straight onto an in-memory projector."
   },

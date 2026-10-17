@@ -12,16 +12,16 @@ use super::query::{
     entity_id, leaf_of, node_file, node_leaf, node_name, path_leaf, placeholder_id, split_id,
 };
 use super::{
-    definition_precedence, entity_site, CallEdge, CallGraph, CallNode, Candidate, Direction, Edge,
-    EntitySite, EntryBatch, EntryFold, Error, FoldAccess, Graph, Located, Node, Projection,
-    KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
-    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
-    KIND_LESSON, KIND_RATIONALE, KIND_STAGE, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
-    PLACEHOLDER_SIGIL, REBUILD_OWED, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS,
-    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED,
-    REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES,
-    REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED,
-    TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
+    definition_precedence, entity_site, reference_candidate_kinds, CallEdge, CallGraph, CallNode,
+    Candidate, Direction, Edge, EntitySite, EntryBatch, EntryFold, Error, FoldAccess, Graph,
+    Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
+    KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING,
+    KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE, NON_TARGET_KINDS,
+    OWED_LOST_FOLD, OWED_OLDER_RULE, PLACEHOLDER_SIGIL, REBUILD_OWED, REL_ABOUT, REL_CALLS,
+    REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY,
+    REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
+    REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
+    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
     TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
     TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
@@ -96,6 +96,13 @@ CREATE TABLE IF NOT EXISTS relabel_owed (
   project TEXT NOT NULL, community TEXT NOT NULL,
   PRIMARY KEY (project, community)
 );
+CREATE TABLE IF NOT EXISTS refs (
+  project TEXT NOT NULL, identity TEXT NOT NULL, generation TEXT NOT NULL,
+  from_id TEXT NOT NULL, leaf TEXT NOT NULL, ref_kind TEXT NOT NULL, lang TEXT NOT NULL,
+  position INTEGER NOT NULL, target TEXT,
+  PRIMARY KEY (project, identity, from_id, leaf, ref_kind)
+);
+CREATE INDEX IF NOT EXISTS idx_refs_leaf ON refs(project, leaf);
 ";
 
 /// The fold rule `graph.db` was folded under, recorded as the file's `user_version`. Rule 1 is
@@ -131,7 +138,7 @@ DROP TABLE IF EXISTS proofs;
 /// rows [`Projector::migrate_project`] re-keys with the facts, each only when the file holds it
 /// with that column, since a file that owes its rebuild is opened as it stands and may predate
 /// any of them.
-const PROJECT_KEYED_LEDGERS: [&str; 7] = [
+const PROJECT_KEYED_LEDGERS: [&str; 8] = [
     "generations",
     "node_assertions",
     "edge_assertions",
@@ -139,6 +146,7 @@ const PROJECT_KEYED_LEDGERS: [&str; 7] = [
     "retired_nodes",
     "detached_attachments",
     "relabel_owed",
+    "refs",
 ];
 
 /// The state a rebuild ([`Projector::rebuild`]) keeps in the shadow file it folds and, from the
@@ -1108,8 +1116,9 @@ impl Projector {
     ///   ascended a second time.
     /// - **Referenced-but-not-called.** Beyond the traversed caller DAG, the UP view carries a flat,
     ///   NON-traversed [`CallGraph::referenced_not_called`] list: the FILE nodes that reference the
-    ///   seed's leaf at file level but call it from no function within them (top-level imports / uses)
-    ///   - the who-uses-this sites the caller DAG deliberately excludes.
+    ///   seed's leaf at file level (top-level imports / uses) or from a definition within them (a
+    ///   staged reference, spec 117) but call it from no function within them - the who-uses-this
+    ///   sites the caller DAG deliberately excludes.
     /// - **Tier floor / determinism / isolation.** Identical to [`calls_down`](Projector::calls_down):
     ///   an edge is followed only at/above `tier_floor`; neighbor and candidate reads are `ORDER BY`
     ///   sorted and the result is sorted, so the same graph and seed yield a byte-identical
@@ -1968,9 +1977,14 @@ fn record_applied(tx: &Transaction, position: Position) -> Result<bool, Error> {
 /// [`fold`] at the entry's position and valid-time - which [`fold_event`] reads for every edge it
 /// adds - under the ENTRY's identity and generation, never a key the event carries. The first
 /// event folded installs the generation ([`advance_generation`]), so an entry no source resolves
-/// installs none and leaves the identity's facts as they stood. Every community the batch owed a
-/// relabel is labelled before this returns ([`relabel_owed_communities`]). The `applied` row
-/// cannot guard the batch's events, which share the entry's position.
+/// installs none and leaves the identity's facts as they stood, its `refs` rows included. Any other
+/// batch drops every `refs` row its identity staged - each at an older generation, since an entry
+/// naming the current one is a re-recording - before its first event, and stages each tagged
+/// reference after its event folds ([`stage_reference`]); its end settles every row it staged or
+/// whose leaf it defines ([`settle_references`]) - here alone, never in [`fold_new`] (spec 117,
+/// STAGED REFERENCES). Every community the batch owed a relabel is
+/// labelled before this returns ([`relabel_owed_communities`]), the row edges' debt included.
+/// The `applied` row cannot guard the batch's events, which share the entry's position.
 fn fold_entry(
     tx: &Transaction,
     entry: &Event,
@@ -1990,19 +2004,325 @@ fn fold_entry(
         generation: &named.generation,
         at: to_nanos(entry.valid_from),
     };
-    for mut e in batch()?.unwrap_or_default() {
+    let events = batch()?.unwrap_or_default();
+    if events.is_empty() {
+        return Ok(EntryFold::BatchAsked);
+    }
+    tx.execute(
+        "DELETE FROM refs WHERE project = ?1 AND identity = ?2",
+        params![project, by.identity],
+    )
+    .map_err(be)?;
+    for mut e in events {
         e.position = entry.position;
         e.valid_from = entry.valid_from;
         fold(tx, &e, project, &by)?;
+        stage_reference(tx, &e, project, &by)?;
     }
+    settle_references(tx, &by, project)?;
     relabel_owed_communities(tx)?;
     Ok(EntryFold::BatchAsked)
 }
 
+/// A `refs` row read back for its batch-end settlement (spec 117, STAGED REFERENCES): its
+/// `rowid`, the identity and generation that staged it, the node it is read `from`, the `leaf` it
+/// names, its `ref_kind`, its `lang`, the log `position` of its staging and the `target` it was
+/// last resolved to.
+struct StagedRow {
+    rowid: i64,
+    identity: String,
+    generation: String,
+    from: String,
+    leaf: String,
+    ref_kind: String,
+    lang: String,
+    position: Position,
+    target: Option<String>,
+}
+
+/// Stage `e`, a batch event `by` asserts, as a `refs` row of `by`'s identity and generation when
+/// it is a tagged reference of a kind with candidates ([`reference_candidate_kinds`]; spec 117,
+/// STAGED REFERENCES): read from its caller's node, else its file's, either alias-resolved
+/// ([`resolve_in_tx`]), for its leaf at its log position, unresolved until its batch's end
+/// ([`settle_references`]). The rows are a set: two references of one leaf and kind from one
+/// node are one row, the generation implied, since an identity's rows all stand at the one
+/// generation that staged them.
+fn stage_reference(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Result<(), Error> {
+    let tagged = (e.type_ == TYPE_EDGE_INFERRED)
+        .then(|| serde_json::from_slice::<super::EdgeInferred>(&e.data).ok())
+        .flatten();
+    let Some((r, kind)) = tagged.and_then(|r| {
+        let kind = (r.ref_kind.clone()).filter(|kind| !reference_candidate_kinds(kind).is_empty());
+        kind.map(|kind| (r, kind))
+    }) else {
+        return Ok(());
+    };
+    let file = resolve_in_tx(tx, &r.file);
+    let from = match &r.caller {
+        Some(caller) => resolve_in_tx(tx, &code_entity_id(&file, caller)),
+        None => file,
+    };
+    tx.execute(
+        "INSERT INTO refs (project, identity, generation, from_id, leaf, ref_kind, lang, position)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT DO NOTHING",
+        params![
+            project,
+            by.identity,
+            by.generation,
+            from,
+            r.name,
+            kind,
+            r.lang,
+            e.position as i64
+        ],
+    )
+    .map_err(be)?;
+    Ok(())
+}
+
+/// The SQL term a `refs` row aliased `row` is LIVE by (spec 117): it was staged at its identity's
+/// current generation in its project.
+fn live_ref_sql(row: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM generations g
+                  WHERE g.project = {row}.project AND g.identity = {row}.identity
+                    AND g.generation = {row}.generation)"
+    )
+}
+
+/// The live `refs` rows of project `?1` a batch of identity `?2` settles ([`settle_references`]):
+/// the identity's own, sought by the key's `(project, identity)` prefix, and any identity's naming
+/// a leaf of a node `?2` asserts, sought by `idx_refs_leaf`, in identity order - so of two rows
+/// one batch resolves onto one pair, the lesser identity's asserts it ([`pair_held`]).
+fn staged_rows_sql() -> String {
+    format!(
+        "SELECT r.rowid, r.identity, r.generation, r.from_id, r.leaf, r.ref_kind, r.lang,
+                r.position, r.target
+           FROM refs r
+          WHERE r.rowid IN (
+                  SELECT rowid FROM refs WHERE project = ?1 AND identity = ?2
+                  UNION
+                  SELECT rowid FROM refs WHERE project = ?1 AND leaf IN (
+                    SELECT {} FROM node_assertions WHERE project = ?1 AND identity = ?2))
+            AND {}
+          ORDER BY r.identity",
+        node_leaf_sql(),
+        live_ref_sql("r")
+    )
+}
+
+/// Settle `refs` at the end of `by`'s batch (spec 117, RESOLUTION SETTLES ONCE PER BATCH): each
+/// live row its identity holds and each live row of any identity naming a leaf its prior or new
+/// generation defines (its identity's node assertions) is resolved against the batch's final
+/// definitions ([`settle_reference`]), in identity order ([`staged_rows_sql`]). Then every entry
+/// the identity's prior generation recorded of a `REFERENCES` edge - an entry at another
+/// generation than `by`'s, the older ones gone with the generation's advance - that no row of the
+/// new one asserted again is deleted, so no later batch revives that edge ([`assert_link`]); a
+/// design link's prior entry keeps until the identity's next generation ([`advance_generation`]).
+fn settle_references(tx: &Transaction, by: &Asserter, project: &str) -> Result<(), Error> {
+    let rows: Vec<StagedRow> = {
+        let mut stmt = tx.prepare(&staged_rows_sql()).map_err(be)?;
+        let rows = stmt
+            .query_map(params![project, by.identity], |r| {
+                Ok(StagedRow {
+                    rowid: r.get(0)?,
+                    identity: r.get(1)?,
+                    generation: r.get(2)?,
+                    from: r.get(3)?,
+                    leaf: r.get(4)?,
+                    ref_kind: r.get(5)?,
+                    lang: r.get(6)?,
+                    position: r.get::<_, i64>(7)? as Position,
+                    target: r.get(8)?,
+                })
+            })
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be)?;
+        rows
+    };
+    for row in &rows {
+        settle_reference(tx, by, row, project)?;
+    }
+    tx.execute(
+        "DELETE FROM edge_assertions
+          WHERE project = ?1 AND identity = ?2 AND generation != ?3
+            AND edge_id IN (SELECT id FROM edges WHERE rel = ?4)",
+        params![project, by.identity, by.generation, REL_REFERENCES],
+    )
+    .map_err(be)?;
+    Ok(())
+}
+
+/// Resolve `row` at the end of `by`'s batch and write what changed (spec 117): a row resolving to
+/// the target it holds changes nothing, its edge and that edge's dates included. Otherwise the
+/// row takes its new target; its edge onto the old one is released ([`release_reference`]); and
+/// its edge onto the new one is asserted under the row's own identity and generation
+/// ([`assert_link`]), valid from `by`'s event time and recorded at the row's staging position,
+/// unless a live `REFERENCES` already holds the pair ([`pair_held`]), which the row then leaves as
+/// the pair's one edge.
+fn settle_reference(
+    tx: &Transaction,
+    by: &Asserter,
+    row: &StagedRow,
+    project: &str,
+) -> Result<(), Error> {
+    let resolved = resolve_reference(tx, row, project)?;
+    if resolved.as_ref().map(|(target, _)| target) == row.target.as_ref() {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE refs SET target = ?2 WHERE rowid = ?1",
+        params![row.rowid, resolved.as_ref().map(|(target, _)| target)],
+    )
+    .map_err(be)?;
+    let asserter = Asserter {
+        identity: &row.identity,
+        generation: &row.generation,
+        at: by.at,
+    };
+    if let Some(old) = &row.target {
+        release_reference(tx, &asserter, &row.from, old, project)?;
+    }
+    match resolved {
+        Some((target, tier)) if !pair_held(tx, &row.from, &target, &row.leaf, project)? => {
+            assert_link(
+                tx,
+                &asserter,
+                &row.from,
+                &target,
+                REL_REFERENCES,
+                by.at,
+                row.position,
+                project,
+                tier,
+            )
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The one definition `row` resolves to now and the tier of its edge (spec 117, STAGED
+/// REFERENCES): the one candidate in the file `row` is read from, [`TIER_EXTRACTED`], else the
+/// one in the project, [`TIER_INFERRED`], else none - no candidate or several, never a guess.
+fn resolve_reference(
+    tx: &Transaction,
+    row: &StagedRow,
+    project: &str,
+) -> Result<Option<(String, &'static str)>, Error> {
+    let file = split_id(&row.from).0;
+    if let [one] = reference_candidates(tx, row, project, Some(file))?.as_slice() {
+        return Ok(Some((one.clone(), TIER_EXTRACTED)));
+    }
+    Ok(
+        match reference_candidates(tx, row, project, None)?.as_slice() {
+            [one] => Some((one.clone(), TIER_INFERRED)),
+            _ => None,
+        },
+    )
+}
+
+/// The definitions of `row`'s leaf of a kind its `ref_kind` resolves onto
+/// ([`reference_candidate_kinds`]) in `row`'s language, in `project` and, given a `file`, in that
+/// file's `<file>::` id range, sorted by id ([`leaf_definitions_sql`]).
+fn reference_candidates(
+    tx: &Transaction,
+    row: &StagedRow,
+    project: &str,
+    file: Option<&str>,
+) -> Result<Vec<String>, Error> {
+    let rule = format!(
+        "json_extract(attrs, '$.kind') IN ({}) AND json_extract(attrs, '$.lang') = ?5",
+        kinds_sql(&reference_candidate_kinds(&row.ref_kind))
+    );
+    leaf_definitions(
+        tx,
+        &rule,
+        params![row.leaf, KIND_CODE_ENTITY, project, file, row.lang],
+    )
+}
+
+/// Whether a live `REFERENCES` from `from` onto `target`, or onto the placeholder of `leaf` under
+/// `from` ([`placeholder_id`]), already holds the pair a row resolving `from` onto `target` names
+/// (spec 117): a call's twin, the pair's one writer, which the call arm writes from the file
+/// whether it landed on the file's definition or on the placeholder - so only a file-level row's
+/// `from` meets a placeholder - or another identity's row on the same pair.
+fn pair_held(
+    tx: &Transaction,
+    from: &str,
+    target: &str,
+    leaf: &str,
+    project: &str,
+) -> Result<bool, Error> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM edges
+                         WHERE project = ?1 AND from_id = ?2 AND rel = ?3 AND valid_to IS NULL
+                           AND to_id IN (?4, ?5))",
+        params![
+            project,
+            from,
+            REL_REFERENCES,
+            target,
+            placeholder_id(from, leaf)
+        ],
+        |r| r.get(0),
+    )
+    .map_err(be)
+}
+
+/// Release the edge a row of `by`'s identity read from `from` held onto `target` once the row
+/// resolves elsewhere (spec 117, ONE RETIRER): while another row of the identity still targets the
+/// pair nothing changes - the check reads every row of the identity, all of them staged by its one
+/// latest batch; otherwise every entry of each edge from `from` onto `target` is deleted - the
+/// identity's own, since a live edge on the pair holds it for any other row ([`pair_held`]) - and
+/// the edge settled at `by`'s event time ([`settle_edge`]), retired when no live assertion holds
+/// it. A row that asserted nothing names no entry, so it changes no edge.
+fn release_reference(
+    tx: &Transaction,
+    by: &Asserter,
+    from: &str,
+    target: &str,
+    project: &str,
+) -> Result<(), Error> {
+    let shared: bool = tx
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM refs
+                             WHERE project = ?1 AND identity = ?2 AND from_id = ?3
+                               AND target = ?4)",
+            params![project, by.identity, from, target],
+            |r| r.get(0),
+        )
+        .map_err(be)?;
+    if shared {
+        return Ok(());
+    }
+    let released: Vec<i64> = {
+        let mut stmt = tx
+            .prepare(
+                "DELETE FROM edge_assertions
+                  WHERE project = ?1
+                    AND edge_id IN (SELECT id FROM edges WHERE from_id = ?2 AND to_id = ?3)
+                 RETURNING edge_id",
+            )
+            .map_err(be)?;
+        let rows = stmt
+            .query_map(params![project, from, target], |r| r.get(0))
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be)?;
+        rows
+    };
+    for edge in released {
+        settle_edge(tx, edge, by.at, project)?;
+    }
+    Ok(())
+}
+
 /// Fold one event, asserted by `by` ([`Asserter`]), under the GENERATION RULE (spec 101,
 /// [`rigger_domain::ingest::derived_generation`]): when the event opens a newer generation of its
-/// identity, the prior generation's design links are retired BEFORE it folds (each one the newer
-/// generation asserts again is revived in place by [`assert_link`]), and every node the prior
+/// identity, the prior generation's asserted edges - design links and staged references' edges -
+/// are retired BEFORE it folds (each one the newer generation asserts again is revived in place by
+/// [`assert_link`], a staged reference's at its batch's end), and every node the prior
 /// generation asserted that nothing live still holds is retired AFTER it folds
 /// ([`retire_unheld_nodes`]) - after, because the event's own arm is what retires the code half's
 /// prior edges (its `fresh` head) and re-asserts the nodes it keeps.
@@ -2034,10 +2354,11 @@ fn current_generation(
 /// Record `by`'s generation as its identity's current one, answering the PRIOR generation when
 /// this one supersedes it (`None` on the identity's first generation, on a re-recording of the
 /// current one, and for an event outside the rule). On a supersession the prior generation's live
-/// design links are retired at `at` - all but one another live asserter still asserts (an unkeyed
-/// recording, [`assert_link`]) - and assertions of any generation older than the prior one are
-/// dropped: the prior generation's are kept, because they are what [`assert_link`] revives from
-/// and what [`retire_unheld_nodes`] settles.
+/// asserted edges - its design links and its staged references' edges (spec 117) - are retired at
+/// `at`, all but one another live asserter still asserts (an unkeyed recording, [`assert_link`]),
+/// and assertions of any generation older than the prior one are dropped: the prior generation's
+/// are kept, because they are what [`assert_link`] revives from and what [`retire_unheld_nodes`]
+/// settles.
 fn advance_generation(
     tx: &Transaction,
     by: &Asserter,
@@ -2296,8 +2617,9 @@ fn definition_name(tx: &Transaction, id: &str, project: &str) -> Result<Option<S
 /// (spec 101, "convergences undo with their definition"; spec 119, renamed to another leaf at its
 /// path), the inverse of the definition arm's two
 /// convergences: every live cross-file reference whose target text binds `name`
-/// ([`edge_binds_leaf_sql`], spelled `<file>::<name>` or `<file>::%<name>`) tiered INFERRED because
-/// a definition of it existed is demoted to AMBIGUOUS when no other call target has `name` as its
+/// ([`edge_binds_leaf_sql`], spelled `<file>::<name>` or `<file>::%<name>`) and that no assertion
+/// holds - a staged reference's edge is its row's to settle ([`settle_references`]) - tiered
+/// INFERRED because a definition of it existed is demoted to AMBIGUOUS when no other call target has `name` as its
 /// leaf ([`node_leaf_sql`], nested or not: [`reference_tier`]'s own rule), and the test proofs of `name` are resolved again without it ([`resolve_proofs`]): what
 /// landed on `id` waits for, or moves to, the definition that now answers the name, and a retired
 /// `id` keeps no proof to come back with.
@@ -2307,6 +2629,7 @@ fn definition_retired(tx: &Transaction, id: &str, name: &str, project: &str) -> 
             "UPDATE edges SET tier = ?1
               WHERE rel IN (?2, ?3) AND tier = ?4 AND project = ?5 AND valid_to IS NULL
                 AND {}
+                AND id NOT IN (SELECT edge_id FROM edge_assertions)
                 AND NOT EXISTS (
                   SELECT 1 FROM nodes n
                    WHERE n.project = ?5 AND {} = ?6
@@ -2891,8 +3214,10 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             ensure_node(tx, by, &file, KIND_FILE, &file_attrs, project)?;
             // Spec 117 (REFERENCES): a tagged reference - a type reference, a const read or a
             // `use` - runs the structural head above alone, the `fresh` supersede and its file
-            // node, so a `use`-only file gains its file node; it folds no `REFERENCES` or `CALLS`
-            // edge and no node beyond the file's.
+            // node, so a `use`-only file gains its file node; this arm folds no `REFERENCES` or
+            // `CALLS` edge and no node beyond the file's from it. A ledger entry's batch stages it
+            // as a `refs` row after it folds ([`stage_reference`]), an edge only once its batch's
+            // end resolves it ([`settle_references`]).
             if r.ref_kind.is_some() {
                 return Ok(());
             }
@@ -3028,7 +3353,17 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
             };
             ensure_node(tx, by, &from, KIND_ARTIFACT, &[], project)?;
             ensure_node(tx, by, &to, KIND_ARTIFACT, &[], project)?;
-            assert_link(tx, by, &from, &to, rel, at, e.position, project)?;
+            assert_link(
+                tx,
+                by,
+                &from,
+                &to,
+                rel,
+                at,
+                e.position,
+                project,
+                TIER_EXTRACTED,
+            )?;
         }
         TYPE_SPAWN_RESULT => {
             // Disposition-expiry (spec 25, criterion 1 - the DISCARD trigger): an
@@ -3439,11 +3774,17 @@ fn node_row(conn: &Connection, id: &str, project: &str) -> Result<Option<Node>, 
 /// one of [`NON_TARGET_KINDS`], an absent `kind` coalescing to the empty string, which is none
 /// of them.
 fn call_target_sql() -> String {
-    let kinds: Vec<String> = NON_TARGET_KINDS.iter().map(|k| format!("'{k}'")).collect();
     format!(
         "COALESCE(json_extract(attrs, '$.kind'), '') NOT IN ({})",
-        kinds.join(", ")
+        kinds_sql(&NON_TARGET_KINDS)
     )
+}
+
+/// The code kinds `kinds` as the items of a SQL list, each a quoted literal: what a node row's
+/// `kind` attr is compared against ([`call_target_sql`], [`reference_candidates`]).
+fn kinds_sql(kinds: &[&str]) -> String {
+    let kinds: Vec<String> = kinds.iter().map(|k| format!("'{k}'")).collect();
+    kinds.join(", ")
 }
 
 /// The store form of [`node_leaf`](super::query::node_leaf) over a node row's `attrs` (spec 119):
@@ -3476,7 +3817,8 @@ fn member_sql() -> String {
     let leaf = node_leaf_sql();
     format!(
         "CASE WHEN kind = '{KIND_CODE_ENTITY}' AND {leaf} IS NOT NULL
-              THEN NULLIF(substr(id, 1, instr(id, '::') - 1), '') END"
+              THEN {} END",
+        file_half_sql("id")
     )
 }
 
@@ -3625,13 +3967,23 @@ fn definitions_with_suffix(
     admitted: Admitted,
     file: Option<&str>,
 ) -> Result<Vec<String>, Error> {
-    let mut stmt = conn
-        .prepare(&leaf_definitions_sql(&admitted_sql(admitted)))
-        .map_err(be)?;
+    leaf_definitions(
+        conn,
+        &admitted_sql(admitted),
+        params![leaf, KIND_CODE_ENTITY, project, file],
+    )
+}
+
+/// The ids [`leaf_definitions_sql`] selects admitting `rule`, its `?1` to `?4` and whatever
+/// `rule` binds after them bound to `params`, in its order.
+fn leaf_definitions(
+    conn: &Connection,
+    rule: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<String>, Error> {
+    let mut stmt = conn.prepare(&leaf_definitions_sql(rule)).map_err(be)?;
     let ids = stmt
-        .query_map(params![leaf, KIND_CODE_ENTITY, project, file], |r| {
-            r.get::<_, String>(0)
-        })
+        .query_map(params, |r| r.get::<_, String>(0))
         .map_err(be)?
         .collect::<Result<_, _>>()
         .map_err(be)?;
@@ -3878,12 +4230,18 @@ fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallHop
     Ok(out)
 }
 
-/// The referencing leg's projection of [`seed_leaf_leg_sql`]: the edge's source, a file container.
-const REFERENCING_FILE: &str = "e.from_id";
+/// Both legs' projection of [`seed_leaf_leg_sql`]: the file of the edge's source, the source
+/// itself when it is a file container, else its [`file_half_sql`] - a staged reference read from a
+/// fn names its fn (spec 117), a call its `<file>::<caller>`, whose file is what a leg lists.
+fn source_file_sql() -> String {
+    format!("COALESCE({}, e.from_id)", file_half_sql("e.from_id"))
+}
 
-/// The calling leg's projection of [`seed_leaf_leg_sql`]: the file half of the edge's
-/// `<file>::<caller>` source, cut in SQL.
-const CALLING_FILE: &str = "substr(e.from_id, 1, instr(e.from_id, '::') - 1)";
+/// The file half of the id `column` holds, cut in SQL at its first `::`: NULL for an id with no
+/// `::` or an empty file half, where [`split_id`] names the whole id or an empty file.
+fn file_half_sql(column: &str) -> String {
+    format!("NULLIF(substr({column}, 1, instr({column}, '::') - 1), '')")
+}
 
 /// One leg of [`referenced_not_called`]: `projected` over every live `?1` edge `e` in project `?2`
 /// whose target binds a leaf of the JSON array `?3`, a UNION of two seeks: the target text bound
@@ -3906,16 +4264,18 @@ fn seed_leaf_leg_sql(projected: &str) -> String {
     )
 }
 
-/// The FILE nodes that reference the seed's leaves at file level but call them from no function
-/// within them (spec 52 criterion 3 - the UP direction's "referenced but not called" sidecar).
-/// Sorted by id, scoped to `project`.
+/// The FILE nodes that reference the seed's leaves at file level or from a definition within them
+/// but call them from no function within them (spec 52 criterion 3 - the UP direction's
+/// "referenced but not called" sidecar). Sorted by id, scoped to `project`.
 ///
-/// A file references a leaf when it carries a live `REFERENCES` edge whose target binds it
-/// ([`seed_leaf_leg_sql`]: the target text spelled `<file>::<leaf>` or `<file>::%<leaf>`, or a
-/// target node named the leaf, as a reference landed on a nested `<file>::T::new` is for `new`);
-/// it CALLS the leaf when some caller inside it (a `<file>::<caller>` source) carries a live `CALLS`
-/// edge to such a target. The result is the set difference - files that reference but never call -
-/// the imports / uses a who-uses-this reader wants beside the caller DAG. The seed leaves are the
+/// A file references a leaf when it, or a definition within it (a staged reference read from a fn,
+/// spec 117), carries a live `REFERENCES` edge whose target binds it ([`seed_leaf_leg_sql`]: the
+/// target text spelled `<file>::<leaf>` or `<file>::%<leaf>`, or a target node named the leaf, as
+/// a reference landed on a nested `<file>::T::new` is for `new`), listed as its file
+/// ([`source_file_sql`]); it CALLS the leaf when some caller inside it (a `<file>::<caller>`
+/// source) carries a live `CALLS` edge to such a target. The result is the set difference - files
+/// that reference but never call - the imports / uses a who-uses-this reader wants beside the
+/// caller DAG. The seed leaves are the
 /// [`node_leaf`]s of the seed ids that exist as nodes; a seed that is not a node, or a node with no
 /// leaf (no `name` and no `::` in its id), contributes nothing. Empty when no seed has a leaf.
 fn referenced_not_called(
@@ -3937,9 +4297,10 @@ fn referenced_not_called(
     }
     let leaves_json = serde_json::to_string(&leaves).map_err(be)?;
 
-    // Files that reference any seed leaf at file level (a REFERENCES edge from the file container).
+    // Files that reference any seed leaf (a REFERENCES edge from the file container, or from a
+    // definition within it, a staged reference's, listed as its file).
     let mut ref_stmt = conn
-        .prepare(&seed_leaf_leg_sql(REFERENCING_FILE))
+        .prepare(&seed_leaf_leg_sql(&source_file_sql()))
         .map_err(be)?;
     let referencing: Vec<String> = ref_stmt
         .query_map(params![REL_REFERENCES, project, leaves_json], |r| r.get(0))
@@ -3948,7 +4309,9 @@ fn referenced_not_called(
         .map_err(be)?;
 
     // Files that CALL any seed leaf from within (the file part of each caller-attributed CALLS edge).
-    let mut call_stmt = conn.prepare(&seed_leaf_leg_sql(CALLING_FILE)).map_err(be)?;
+    let mut call_stmt = conn
+        .prepare(&seed_leaf_leg_sql(&source_file_sql()))
+        .map_err(be)?;
     let calling: BTreeSet<String> = call_stmt
         .query_map(params![REL_CALLS, project, leaves_json], |r| r.get(0))
         .map_err(be)?
@@ -4453,17 +4816,33 @@ fn add_edge(
     .map_err(be)?;
     let id = tx.last_insert_rowid();
     // A new structural edge raises both endpoints' degree, which a community label weighs.
-    if [REL_CALLS, REL_REFERENCES, REL_CONTAINS].contains(&rel) {
-        owe_relabel_of(tx, from, false, project)?;
-        owe_relabel_of(tx, to, false, project)?;
-    }
-    Ok(id)
+    owe_relabel_of_ends(tx, from, to, rel, project).map(|()| id)
 }
 
-/// Settle live design edge `edge` from its LIVE assertions ([`live_edge_assertions`]): an edge no
-/// live assertion holds any more is retired at `at`; one still held takes its dates from them -
-/// valid since the earliest of their runs began, last asserted at the newest of their recordings -
-/// so what a superseded generation said about it is gone with that generation.
+/// Owe a relabel to the communities of both ends of a `rel` edge from `from` to `to` whose
+/// liveness just changed, when it is a structural edge (`CALLS`, `REFERENCES` or `CONTAINS`):
+/// its endpoints' degree, which a community label weighs ([`relabel_owed_communities`]), moved.
+fn owe_relabel_of_ends(
+    tx: &Transaction,
+    from: &str,
+    to: &str,
+    rel: &str,
+    project: &str,
+) -> Result<(), Error> {
+    match [REL_CALLS, REL_REFERENCES, REL_CONTAINS].contains(&rel) {
+        true => [from, to]
+            .into_iter()
+            .try_for_each(|end| owe_relabel_of(tx, end, false, project)),
+        false => Ok(()),
+    }
+}
+
+/// Settle live asserted edge `edge` - a design link, or a staged reference's edge (spec 117) -
+/// from its LIVE assertions ([`live_edge_assertions`]): an edge no live assertion holds any more
+/// is retired at `at`, owing its endpoints a relabel when it is structural
+/// ([`owe_relabel_of_ends`]); one still held takes its dates from them - valid since the earliest
+/// of their runs began, last asserted at the newest of their recordings - so what a superseded
+/// generation said about it is gone with that generation.
 ///
 /// [`live_edge_assertions`]: SCHEMA
 fn settle_edge(tx: &Transaction, edge: i64, at: i64, project: &str) -> Result<(), Error> {
@@ -4478,23 +4857,31 @@ fn settle_edge(tx: &Transaction, edge: i64, at: i64, project: &str) -> Result<()
         .optional()
         .map_err(be)?;
     match held {
-        Some((since, source)) => tx.execute(
-            "UPDATE edges SET valid_from = ?2, source = ?3 WHERE id = ?1",
-            params![edge, since, source],
-        ),
-        None => tx.execute(
-            "UPDATE edges SET valid_to = ?2 WHERE id = ?1",
-            params![edge, at],
-        ),
+        Some((since, source)) => tx
+            .execute(
+                "UPDATE edges SET valid_from = ?2, source = ?3 WHERE id = ?1",
+                params![edge, since, source],
+            )
+            .map(drop)
+            .map_err(be),
+        None => {
+            let (from, to, rel): (String, String, String) = tx
+                .query_row(
+                    "UPDATE edges SET valid_to = ?2 WHERE id = ?1 RETURNING from_id, to_id, rel",
+                    params![edge, at],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .map_err(be)?;
+            owe_relabel_of_ends(tx, &from, &to, &rel, project)
+        }
     }
-    .map_err(be)?;
-    Ok(())
 }
 
-/// Assert a design link under the generation rule (spec 101). Every asserter records its own
-/// assertion of the edge: the valid time its unbroken run of assertions began (`since`) and its
-/// newest recording (`source`), and the edge takes its dates from its live assertions
-/// ([`settle_edge`]). A link the identity's PRIOR generation asserted continues that run - retired
+/// Assert a `tier` link under the generation rule (spec 101): a design link, at
+/// [`TIER_EXTRACTED`], or a staged reference's edge (spec 117, ONE RETIRER). Every asserter
+/// records its own assertion of the edge: the valid time its unbroken run of assertions began
+/// (`since`) and its newest recording (`source`), and the edge takes its dates from its live
+/// assertions ([`settle_edge`]). A link the identity's PRIOR generation asserted continues that run - retired
 /// when this generation opened ([`advance_generation`]) unless another asserter held it, it is
 /// REVIVED in place - and keeps the date the run began; a link the prior generation did not assert
 /// is new from `at`, whatever an older generation once said: a generation that dropped it broke the
@@ -4510,6 +4897,7 @@ fn assert_link(
     at: i64,
     src: Position,
     project: &str,
+    tier: &str,
 ) -> Result<(), Error> {
     let revived: Option<i64> = tx
         .query_row(
@@ -4530,14 +4918,14 @@ fn assert_link(
                  ORDER BY e.id DESC
                  LIMIT 1)
              RETURNING id",
-            params![from, to, rel, project, TIER_EXTRACTED, by.identity],
+            params![from, to, rel, project, tier, by.identity],
             |r| r.get(0),
         )
         .optional()
         .map_err(be)?;
     let id = match revived {
         Some(id) => id,
-        None => add_edge(tx, from, to, rel, at, src, project, TIER_EXTRACTED)?,
+        None => add_edge(tx, from, to, rel, at, src, project, tier)?,
     };
     // The run this assertion belongs to: its own generation's (a re-recording), the prior
     // generation's (an unbroken continuation), or a new one from `at`.

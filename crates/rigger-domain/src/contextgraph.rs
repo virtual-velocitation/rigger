@@ -387,8 +387,9 @@ pub struct CallEdge {
 /// per-node `layer`/`frontier` and per-edge `back` metadata the neighborhood view does not carry.
 ///
 /// `referenced_not_called` is the UP direction's flat, NON-traversed sidecar (empty for `Down`): the
-/// FILE nodes that reference the seed's leaf at file level (a `REFERENCES` edge whose target binds
-/// the leaf, [`query::node_leaf`]) but carry NO caller-attributed `CALLS` edge to it from within
+/// FILE nodes that reference the seed's leaf at file level or from a definition within them (a
+/// `REFERENCES` edge whose target binds the leaf, [`query::node_leaf`], a staged reference's from
+/// the fn that reads it, spec 117) but carry NO caller-attributed `CALLS` edge to it from within
 /// the file - the imports / uses a "who-uses-this" reader cares about, which the layered caller
 /// DAG (functions that CALL the seed) deliberately does not include. Sorted by id, deterministic across polls.
 #[derive(Clone, Debug, Default)]
@@ -530,7 +531,9 @@ pub const TYPE_CODE_ENTITY_EXTRACTED: &str = "CodeEntityExtracted";
 /// One reference extracted from a source file (spec 29a): the extraction pass emits one per
 /// reference, and the always-compiled fold turns a call reference into a `REFERENCES` structural
 /// edge from the file container node to the referenced symbol's code-entity id; a tagged one
-/// (`ref_kind`, spec 117) folds its file container node alone.
+/// (`ref_kind`, spec 117) folds its file container node alone, and a ledger entry's batch stages
+/// it as a row whose `REFERENCES` edge lives while one definition answers it (spec 117, STAGED
+/// REFERENCES).
 pub const TYPE_EDGE_INFERRED: &str = "EdgeInferred";
 /// One design-intent concept extracted from a doc (spec 29b): the design-intent extraction pass
 /// emits one per concept, and the always-compiled fold turns it into a `design-doc` /
@@ -1059,6 +1062,22 @@ pub const REF_KIND_CONST: &str = "const";
 /// The [`EdgeInferred::ref_kind`] of a USE (spec 117): one imported leaf of a Rust `use`.
 pub const REF_KIND_USE: &str = "use";
 
+/// The definition kinds a reference of `ref_kind` resolves onto (spec 117, KIND CANDIDATES): a
+/// [`REF_KIND_TYPE`] a type or a trait, a [`REF_KIND_CONST`] a constant or a static, a
+/// [`REF_KIND_USE`] every kind of [`CODE_KIND_PRECEDENCE`] a `use` can import - all but a method
+/// and the [`NON_TARGET_KINDS`] - and any other value none, so it stages no row.
+pub fn reference_candidate_kinds(ref_kind: &str) -> Vec<&'static str> {
+    match ref_kind {
+        REF_KIND_TYPE => vec![CODE_KIND_TYPE, CODE_KIND_TRAIT],
+        REF_KIND_CONST => vec![CODE_KIND_CONSTANT, CODE_KIND_STATIC],
+        REF_KIND_USE => CODE_KIND_PRECEDENCE
+            .into_iter()
+            .filter(|kind| *kind != CODE_KIND_METHOD && !NON_TARGET_KINDS.contains(kind))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The `EdgeInferred` payload (spec 29a): one reference the extraction pass emits. Shares the
 /// same one-contract discipline as [`CodeEntityExtracted`]: emitted by the feature-gated pass,
 /// folded by the always-compiled arm.
@@ -1125,10 +1144,12 @@ pub struct EdgeInferred {
     pub partial: bool,
     /// Spec 117 (REFERENCES): the kind of a non-call reference, a Rust type reference, const
     /// read or imported leaf ([`REF_KIND_TYPE`], [`REF_KIND_CONST`] or [`REF_KIND_USE`]); absent
-    /// for a call, which folds as before the field existed. The fold runs a tagged event's
+    /// for a call, which folds as before the field existed. The event arm runs a tagged event's
     /// structural head alone (the `fresh` supersede and the file node) and folds nothing else
-    /// from it. Serde-defaulted and omitted when absent, so a call's wire form is byte-identical
-    /// to before.
+    /// from it; a ledger entry's batch stages it as a row, an edge while one definition of its
+    /// [`reference_candidate_kinds`] answers its name (spec 117, STAGED REFERENCES).
+    /// Serde-defaulted and omitted when absent, so a call's wire form is byte-identical to
+    /// before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_kind: Option<String>,
 }

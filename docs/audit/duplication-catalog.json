@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-f876dbc68da1",
+    "id": "dup-2bc45edfd3d1",
     "classification": "near",
     "sites": [
       {
@@ -79,7 +79,17 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "live_ref_sql",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "edge_text_sql",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "file_half_sql",
         "content_hash": "6fd90a8c2eed6379"
       },
       {
@@ -6422,30 +6432,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-26b14e332411",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "member_sql",
-        "content_hash": "0b8660f5890d2a0c"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "group_index_sql",
-        "content_hash": "0b8660f5890d2a0c"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "latest_in_group_sql",
-        "content_hash": "0b8660f5890d2a0c"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-c650c3e62b50",
     "classification": "exact",
     "sites": [
@@ -7140,6 +7126,25 @@
       }
     ],
     "proposed_home": "namespace::namespaced",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-b4990598bfd7",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "group_index_sql",
+        "content_hash": "0b8660f5890d2a0c"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "name": "latest_in_group_sql",
+        "content_hash": "0b8660f5890d2a0c"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -8420,13 +8425,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-0f62ab248065",
+    "id": "dup-6b847cf11fc4",
     "classification": "semantic",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
         "name": "seed_coupling",
-        "content_hash": "ee30c3d8f24eef00"
+        "content_hash": "6be01d79c9a2b86a"
       },
       {
         "file": "tests/community_fold_periphery.rs",

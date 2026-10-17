@@ -174,7 +174,7 @@ pub fn file_of(id: &str) -> Option<&str> {
 /// `None` when the id holds no `::`). The domain owns the id format `<file>::<path>`, and this is
 /// its in-memory cut: [`node_file`], [`file_of`] and [`leaf_of`] read it, the store's show site
 /// and candidates taking their file from [`node_file`]; the store spells the file half in SQL
-/// over its id range.
+/// over its id range and as a cut at the first `::`, which its test holds to this one.
 pub fn split_id(id: &str) -> (&str, Option<&str>) {
     match id.split_once("::") {
         Some((file, rest)) => (file, Some(rest)),
@@ -1606,7 +1606,8 @@ pub struct Neighborhood {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
     /// The UP call view's "referenced but not called" sidecar (spec 52 c4): the FILE nodes that
-    /// import / use the seed's leaf at file level but call it from no function. Carried verbatim
+    /// import / use the seed's leaf at file level, or reference it from a definition within them
+    /// (spec 117), but call it from no function. Carried verbatim
     /// from [`crate::contextgraph::CallGraph::referenced_not_called`], sorted by id. Empty (and
     /// omitted) for a DOWN walk and for every non-call view.
     #[serde(skip_serializing_if = "Vec::is_empty")]
