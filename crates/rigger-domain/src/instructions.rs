@@ -316,8 +316,8 @@ mod tests {
     /// spelling counted to zero, nothing added that nothing reads, the red test's body untouched
     /// by the green commit, every mutable token of the production delta, each class named by its
     /// source spelling - an operator, an offset, an operand, every argument of every added or
-    /// changed call, an arm's statement, a match arm, every `?`, `return`, `break` and
-    /// `continue` - mutated by hand one at a time with the red test recorded in a record
+    /// changed call, an arm's statement, a match arm, every `?` (swallowed by the spelling that
+    /// compiles for its value), `return`, `break` and `continue` - mutated by hand one at a time with the red test recorded in a record
     /// organised by production line - each line naming its tokens, a token inside a query,
     /// format or macro string included, or marked as carrying none - and closed by one tally
     /// line per spelled class, its hunk and probe counts equal, a green probe pinned or reshaped
@@ -552,8 +552,8 @@ mod tests {
              change (degenerate it to the value that drops its arm - `None`, zero, the empty \
              value, a sibling's value, a bound moved by one), a statement in one arm of a branch \
              (delete it), a match arm (swap it with a sibling), every `?` operator (replace it by \
-             a swallow - `let _ = <expr>` or `.ok()` - so the error arm no longer returns), and \
-             every `return`, `break` and `continue` (remove it)",
+             the swallow that compiles for its value, so the error arm yields a value instead of \
+             returning), and every `return`, `break` and `continue` (remove it)",
             "enumerate the tokens from your production hunks over the unit's whole range, the \
              merge base with the run branch to head",
             "apply each mutation in your worktree one at a time, run the crate's tests and the \
