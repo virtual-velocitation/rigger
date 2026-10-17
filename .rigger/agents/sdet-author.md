@@ -208,7 +208,9 @@ new qualifier or CHECKED with the reason it does not reach it.
 Every mutable token of your production delta is probed on your committed tree: list the tokens
 from the production hunks of `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src`
 with the test regions left out (files under a `tests/` directory and hunks inside a
-`#[cfg(test)]` module); after each single mutation run the owning crate's unit tests,
+`#[cfg(test)]` module), each class the working discipline's rule spells read by its spelling -
+every argument of every call you add or change, every `?`, every `return`, `break` and
+`continue` among them; after each single mutation run the owning crate's unit tests,
 `cargo test -p <crate> --lib` for a file under `crates/` or `cargo test --lib --bin rigger` for
 one under `src/`, and each root test binary the unit touched by `cargo test --test <name>`, then
 restore the file with `git checkout -- <file>` before the next. The `<unit>-mutant-probes`
@@ -219,7 +221,10 @@ it lacks. The record walks the production lines of
 in file order: each added or changed line names its mutable tokens with their probes - a SQL
 conjunct, a column name, bound or placeholder passed to a query builder and a substr start
 inside a query or format string among them - or is marked as carrying none with its reason (a
-signature, a `use`, a doc line, a brace).
+signature, a `use`, a doc line, a brace). After that walk the record carries one tally line per
+spelled class, `<class>: <n> in hunks, <n> probed`, the two counts equal; the `?`, `return`,
+`break` and `continue` counts are the ones this command prints, run in your worktree's root:
+`git diff -U0 $(git merge-base rigger-run HEAD)..HEAD -- crates src | awk '/^\+\+\+ / { f = substr($2, 3); t = 0; if (f ~ /\.rs$/ && f !~ /(^|\/)tests\//) { c = "git show HEAD:" f; n = 0; p = ""; while ((c | getline l) > 0) { n++; if (!t && p ~ /^#\[cfg\(test\)\]/ && l ~ /^(pub(\([a-z]+\))? )?mod [^;]*[{]/) t = n; p = l } close(c) } next } /^@@/ { split($3, a, ","); ln = substr(a[1], 2) + 0; next } /^\+/ { if (f ~ /\.rs$/ && f !~ /(^|\/)tests\// && (!t || ln < t)) { s = substr($0, 2); gsub(/"([^"\\]|\\.)*"/, "", s); sub(/\/\/.*/, "", s); q += gsub(/\?([;.),\] ]|$)/, "", s); r += gsub(/(^|[^A-Za-z0-9_])return([^A-Za-z0-9_]|$)/, " ", s); b += gsub(/(^|[^A-Za-z0-9_])break([^A-Za-z0-9_]|$)/, " ", s); k += gsub(/(^|[^A-Za-z0-9_])continue([^A-Za-z0-9_]|$)/, " ", s) } ln++ } END { print "?: " q + 0 ", return: " r + 0 ", break: " b + 0 ", continue: " k + 0 }'`.
 
 ## Every test must survive mutation testing
 
