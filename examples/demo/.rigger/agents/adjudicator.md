@@ -24,4 +24,6 @@ When you reject, say exactly what must change and which acceptance criterion or
 principle it violates, so the next iteration is targeted, not a guess. End your
 output with a single JSON line: {"verdict":"approve"} or {"verdict":"reject"} -
 reject blocks integration no matter what the static gates say. Record the verdict
-and its reasoning with rigger_emit so the next iteration inherits it.
+and its reasoning so the next iteration inherits it by running `rigger emit
+DecisionMade '<one JSON object with id, governs and summary>'` through Bash from the
+worktree root - your tools carry no `rigger_emit` tool.
