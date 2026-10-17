@@ -4010,6 +4010,32 @@ mod tests {
         );
     }
 
+    /// The adjudicator's tools carry no MCP tool, so its persona sends its reasoning record
+    /// through the CLI it runs with Bash, never through a `rigger_emit` tool the role lacks.
+    #[test]
+    fn the_adjudicator_records_its_reasoning_through_the_cli_its_tools_carry() {
+        let text = committed_persona("adjudicator.md");
+        let wanted = "You MAY also record your reasoning so the next iteration inherits it, \
+                      through the CLI your tools carry - your role carries no `rigger_emit` \
+                      tool: run `rigger emit DecisionMade '<one JSON object with id, governs \
+                      and summary>'` through Bash from the worktree root, and record your \
+                      progress with `rigger progress <id> '<activity>'`, `<id>` being your own \
+                      spawn id as your prompt names it; the finding ids you cite in `upheld` \
+                      and `discarded` are the ids of the events the lenses and the adversary \
+                      emitted, and this record is supplementary context, NEVER a substitute \
+                      for the verdict line on your result output.";
+        assert!(text.contains(wanted), "adjudicator.md must say {wanted:?}");
+        for banned in [
+            "record your reasoning with `rigger_emit`",
+            "the exact `rigger_emit` ids",
+        ] {
+            assert!(
+                !text.contains(banned),
+                "adjudicator.md still says {banned:?}"
+            );
+        }
+    }
+
     /// The implementer runs the hand-over checks, never the whole suite: no sentence of its
     /// persona sends it to run `cargo test` over the workspace before it reports.
     #[test]
