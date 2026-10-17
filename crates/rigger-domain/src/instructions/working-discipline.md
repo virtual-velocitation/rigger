@@ -198,10 +198,14 @@ tool that searches them.
   rewriting its body. Check: diff the test between its red commit and head.
 - **Every mutable token of your production delta is pinned.** Every token of the production
   code you add or change whose mutation would leave the behaviour wrong turns some test red when
-  it is mutated; the list is open: a comparison operator (flip its bound), an arithmetic offset
-  (drop the +1 or -1), a boolean operand (negate or remove it), a call argument that is a range,
-  index or bound (degenerate it), a statement in one arm of a branch (delete it), a match arm
-  (swap it with a sibling), an early return or continue (remove it). Check: enumerate the tokens
+  it is mutated; the list names each class by the spelling you read in the source, and it is
+  open: a comparison operator (flip its bound), an arithmetic offset (drop the +1 or -1), a
+  boolean operand (negate or remove it), every argument of every call you add or change
+  (degenerate it to the value that drops its arm - `None`, zero, the empty value, a sibling's
+  value, a bound moved by one), a statement in one arm of a branch (delete it), a match arm
+  (swap it with a sibling), every `?` operator (replace it by a swallow - `let _ = <expr>` or
+  `.ok()` - so the error arm no longer returns), and every `return`, `break` and `continue`
+  (remove it). Check: enumerate the tokens
   from your production hunks over the unit's whole range, the merge base with the run branch to
   head; apply each mutation in your worktree one at a time, run the crate's tests and the
   touched test binaries, read the red, and restore the tree - a probe is over before your turn
