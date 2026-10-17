@@ -1625,8 +1625,7 @@ mod tests {
     #[test]
     fn a_mod_declared_in_a_file_opening_an_inner_cfg_test_joins_the_out_of_line_test_module_files()
     {
-        let mut idx = super::SymbolIndex::default();
-        for (path, src) in [
+        let idx = crate::symbol_index::extracted_rust_index(&[
             ("src/lib.rs", "#![cfg(test)]\nfn first() {}\nmod x;\n"),
             ("src/x.rs", "fn y() {}\n"),
             (
@@ -1634,12 +1633,78 @@ mod tests {
                 "#[cfg(test)]\nuse y;\nfn first() {}\nmod z;\n",
             ),
             ("src/z.rs", "fn w() {}\n"),
-        ] {
-            idx.insert_file(path.to_string(), crate::symbol_index::extracted("rs", src));
-        }
+        ]);
         assert_eq!(
             super::out_of_line_test_module_files(&idx),
             std::collections::BTreeSet::from(["src/x.rs".to_string()])
+        );
+    }
+
+    /// The file `mod outer { #[cfg(test)] mod x; }` in [`INLINE_TEST_MOD_TREE`]'s `src/lib.rs`
+    /// names, as rustc resolves it.
+    const INLINE_TEST_MOD_TARGET: &str = "src/outer/x.rs";
+
+    /// A crate root declaring `x` out of line under `#[cfg(test)]` inside the inline `mod outer`,
+    /// beside [`INLINE_TEST_MOD_TARGET`] defining `helper`, and no `src/x.rs`.
+    const INLINE_TEST_MOD_TREE: [(&str, &str); 2] = [
+        (
+            "src/lib.rs",
+            "mod outer {\n    #[cfg(test)]\n    mod x;\n}\n",
+        ),
+        (INLINE_TEST_MOD_TARGET, "pub fn helper() {}\n"),
+    ];
+
+    /// Spec 117 criterion 8, A DEV-ONLY INLINE MOD'S TARGET IS DEV-ONLY: the file a
+    /// `#[cfg(test)] mod x;` inside an inline `mod outer` names, `outer/x.rs` under the declaring
+    /// file's module directory, joins the out-of-line test module files.
+    #[test]
+    fn an_inline_mods_cfg_test_mod_target_joins_the_out_of_line_test_module_files() {
+        assert_eq!(
+            super::out_of_line_test_module_files(&crate::symbol_index::extracted_rust_index(
+                &INLINE_TEST_MOD_TREE
+            )),
+            std::collections::BTreeSet::from([INLINE_TEST_MOD_TARGET.to_string()])
+        );
+    }
+
+    /// Spec 117 criterion 8: [`INLINE_TEST_MOD_TARGET`] folded as production, then re-recorded at
+    /// its next generation under the flag the out-of-line test module files give it, retires its
+    /// production nodes, its file node with them.
+    #[test]
+    fn an_inline_mods_cfg_test_mod_target_re_recorded_dev_only_retires_its_production_nodes() {
+        use crate::test_support::{
+            file_and_entity_ids, fold_events, fold_generation, live_file_and_entity_ids,
+            GENERATION_AFTER, GENERATION_BEFORE,
+        };
+
+        let idx = crate::symbol_index::extracted_rust_index(&INLINE_TEST_MOD_TREE);
+        let symbols = &idx.files()[INLINE_TEST_MOD_TARGET];
+        let p = fold_events([]);
+        let mut pos = 0;
+        fold_generation(
+            &p,
+            &mut pos,
+            INLINE_TEST_MOD_TARGET,
+            GENERATION_BEFORE,
+            super::lower_file(INLINE_TEST_MOD_TARGET, symbols, false),
+        );
+        assert_eq!(
+            live_file_and_entity_ids(&p.whole().unwrap()),
+            file_and_entity_ids(&[INLINE_TEST_MOD_TARGET], &["src/outer/x.rs::helper"]),
+            "folded as production, the target holds its file and its definition"
+        );
+        let excluded = super::out_of_line_test_module_files(&idx).contains(INLINE_TEST_MOD_TARGET);
+        fold_generation(
+            &p,
+            &mut pos,
+            INLINE_TEST_MOD_TARGET,
+            GENERATION_AFTER,
+            super::lower_file(INLINE_TEST_MOD_TARGET, symbols, excluded),
+        );
+        assert_eq!(
+            live_file_and_entity_ids(&p.whole().unwrap()),
+            file_and_entity_ids(&[], &[]),
+            "re-recorded under its dev-only flag, the target's production nodes retire"
         );
     }
 

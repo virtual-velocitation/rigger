@@ -2438,10 +2438,9 @@ mod tests {
         use crate::rust_definition_sources::{
             REFERENCE_KINDS_DEFINER as DEFINER, REFERENCE_KINDS_USER as USER,
         };
-        let mut idx = SymbolIndex::default();
-        for (path, src) in crate::rust_definition_sources::REFERENCE_KINDS_TREE {
-            idx.insert_file(path.into(), crate::symbol_index::extracted("rs", src));
-        }
+        let idx = crate::symbol_index::extracted_rust_index(
+            &crate::rust_definition_sources::REFERENCE_KINDS_TREE,
+        );
         assert_eq!(
             crate::symbol_index::tagged_refs(&idx.files()[USER]),
             crate::rust_definition_sources::REFERENCE_KINDS_USER_TAGGED

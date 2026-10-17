@@ -1,5 +1,5 @@
 //! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file
-//! index, saving it through the real `store` boundary and reading the bytes back, writing a
+//! index, building one from Rust sources, saving it through the real `store` boundary and reading the bytes back, writing a
 //! hand-authored `index.json` under the current extraction generation and loading a legacy one
 //! through the real `store::load`, building a tree's index and reloading it, projecting a file's definitions, its test-marked
 //! definitions and references and its call references with their callers, checking a language's definition
@@ -11,7 +11,7 @@
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention
 //! `tests/common/mod.rs` keeps). Every lane compiles it; `registered` and `extracted`, with
 //! `assert_definitions_fixture` and `assert_callers` through it, alone reach a grammar and are held by the `symbols`
-//! lane only.
+//! lane only, as is `extracted_rust_index`, which calls `extracted`.
 
 #![allow(dead_code)]
 
@@ -168,6 +168,17 @@ pub fn extracted(ext: &str, src: &str) -> FileSymbols {
     let entry = registered(ext);
     rigger::grounder::symbols::extract::extract(src, entry.lang, &entry.language, entry.tags_query)
         .expect("the registered query extracts the source")
+}
+
+/// An index holding each `(path, src)` of `files` as the Rust symbols [`extracted`] reads off
+/// `src`, under `path`.
+#[cfg(feature = "symbols")]
+pub fn extracted_rust_index(files: &[(&str, &str)]) -> SymbolIndex {
+    let mut idx = SymbolIndex::default();
+    for (path, src) in files {
+        idx.insert_file(path.to_string(), extracted("rs", src));
+    }
+    idx
 }
 
 /// Every definition of `fs` as `(line, end line, name)`, sorted: the one projection of each
