@@ -2257,13 +2257,13 @@ fn settled_target_sql(kinds: &[&str]) -> String {
         "json_extract(attrs, '$.kind') IN ({}) AND json_extract(attrs, '$.lang') = ?5",
         kinds_sql(kinds)
     );
-    let one = |file: &str| {
+    let one = |in_file: bool| {
         format!(
-            "(SELECT CASE WHEN COUNT(*) = 1 THEN MIN(id) END FROM ({}))",
-            leaf_definitions_sql(&rule, file)
+            "(SELECT id FROM (SELECT id, COUNT(*) OVER () AS n FROM ({})) WHERE n = 1)",
+            leaf_definitions_sql(&rule, in_file)
         )
     };
-    let (same, any) = (one("?4"), one("NULL"));
+    let (same, any) = (one(true), one(false));
     format!(
         "UPDATE refs SET target = COALESCE({same}, {any})
           WHERE rowid = ?6 AND target IS NOT COALESCE({same}, {any})
@@ -3899,19 +3899,24 @@ fn named_call_target(conn: &Connection, id: &str, project: &str) -> Result<Optio
 const UNASSERTED_EDGE_SQL: &str = "id NOT IN (SELECT edge_id FROM edge_assertions)";
 
 /// The read of the code-entity nodes a leaf names, each admitted by the SQL term `rule`: `?1` the
-/// leaf, `?2` the code-entity kind, `?3` the project and `file` the SQL value of the file whose
-/// `<file>::` id range the candidates lie in, or NULL for every file. Phrased with the pinned
-/// [`node_leaf_sql`] after the project so it seeks the leaf index `idx_nodes_leaf`.
-fn leaf_definitions_sql(rule: &str, file: &str) -> String {
+/// leaf, `?2` the code-entity kind, `?3` the project and, when `in_file`, `?4` the file whose
+/// `<file>::` id range the candidates lie in, or NULL for every file; without `in_file` every
+/// file's candidates. Phrased with the pinned [`node_leaf_sql`] after the project so it seeks the
+/// leaf index `idx_nodes_leaf`.
+fn leaf_definitions_sql(rule: &str, in_file: bool) -> String {
+    let file = if in_file {
+        format!("AND (?4 IS NULL OR ({}))", id_range_sql("id", "?4"))
+    } else {
+        String::new()
+    };
     format!(
         "SELECT id FROM nodes
           WHERE project = ?3 AND {} = ?1
             AND kind = ?2
             AND {rule}
-            AND ({file} IS NULL OR ({}))
+            {file}
           ORDER BY id",
-        node_leaf_sql(),
-        id_range_sql("id", file)
+        node_leaf_sql()
     )
 }
 
@@ -3968,7 +3973,7 @@ fn definitions_with_suffix(
     file: Option<&str>,
 ) -> Result<Vec<String>, Error> {
     let mut stmt = conn
-        .prepare(&leaf_definitions_sql(&admitted_sql(admitted), "?4"))
+        .prepare(&leaf_definitions_sql(&admitted_sql(admitted), true))
         .map_err(be)?;
     let ids = stmt
         .query_map(params![leaf, KIND_CODE_ENTITY, project, file], |r| {
@@ -12256,7 +12261,7 @@ mod tests {
                 query_plan(&p, &pinned, []),
                 query_plan(
                     &p,
-                    &leaf_definitions_sql(&admitted_sql(Admitted::LiveCallTargets), "?4"),
+                    &leaf_definitions_sql(&admitted_sql(Admitted::LiveCallTargets), true),
                     same_file,
                 ),
             ] {
