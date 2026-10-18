@@ -1053,5 +1053,10 @@
     "id": "dup-9c17d63a062c",
     "disposition": "not-a-duplicate",
     "reason": "Each of the three blast-radius tests is already one call of the shared `assert_safe` fixture and differs only in its literals: a held path grounding on its own file, a trailing-underscore span matching its family by prefix, and a span matching only on identifier boundaries are three separate grounding rules, each pinned by its own named test so a regression names the rule it broke."
+  },
+  {
+    "id": "dup-aa4a3a0dfc34",
+    "disposition": "not-a-duplicate",
+    "reason": "`alias_json` and `ref_json` build two different on-log payloads, an `AliasDefined` alias and canonical against an `EdgeInferred` file, name and lang, sharing only the one-line `json!` literal shape."
   }
 ]

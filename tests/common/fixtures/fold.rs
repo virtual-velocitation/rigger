@@ -17,9 +17,9 @@ use rigger::contextgraph::{
     around, entity_site, site_fields, Candidate, EntitySite, EntryFold, Graph, Located, Node,
     Projection, CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_TYPE,
     KIND_ARCH_DECISION, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, LIST_SEP,
-    META_ACTOR, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE, REL_CALLS, REL_IN_COMMUNITY,
-    REL_REFERENCES, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_EDGE_INFERRED, TYPE_REVIEW_FINDING,
+    META_ACTOR, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE, REL_CALLS, REL_CONTAINS,
+    REL_IN_COMMUNITY, REL_REFERENCES, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
+    TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::Event;
 use rigger::retention::GenerationIngested;
@@ -222,6 +222,31 @@ pub fn landed(p: &Projector) -> Vec<(String, String, String, String)> {
         .collect();
     edges.sort();
     edges
+}
+
+/// Every live module `CONTAINS` edge `p` serves - one onto a `file` node (spec 117, A MODULE ROW
+/// REACHES ITS FILE) - as `(from, to, tier)`, sorted.
+pub fn module_edges(p: &Projector) -> Vec<(String, String, String)> {
+    let g = p.whole().unwrap();
+    let files: BTreeSet<&str> = g
+        .nodes
+        .iter()
+        .filter(|n| n.kind == KIND_FILE)
+        .map(|n| n.id.as_str())
+        .collect();
+    let mut edges: Vec<_> = g
+        .edges
+        .iter()
+        .filter(|e| e.rel == REL_CONTAINS && files.contains(e.to.as_str()))
+        .map(|e| (e.from.clone(), e.to.clone(), e.tier.clone()))
+        .collect();
+    edges.sort();
+    edges
+}
+
+/// The `AliasDefined` payload: `alias` names the node `canonical`.
+pub fn alias_json(alias: &str, canonical: &str) -> serde_json::Value {
+    serde_json::json!({ "alias": alias, "canonical": canonical })
 }
 
 /// The `(from, rel, to, tier)` rows of `f.rs`'s reference and of `f.rs::main`'s call, both

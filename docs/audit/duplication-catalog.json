@@ -8325,6 +8325,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-aa4a3a0dfc34",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "alias_json",
+        "content_hash": "900f8e4854ed74e5"
+      },
+      {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "ref_json",
+        "content_hash": "a701c937883397c7"
+      }
+    ],
+    "proposed_home": "fold::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-c3c8358993cf",
     "classification": "near",
     "sites": [

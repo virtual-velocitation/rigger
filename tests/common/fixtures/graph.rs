@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 
 use rigger::contextgraph::query::{card, path_leaf, split_id};
 use rigger::contextgraph::{
-    CallEdge, CallGraph, Direction, Edge, Graph, Node, Projection, KIND_ARTIFACT, KIND_CODE_ENTITY,
-    KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, KIND_UNIT,
-    REL_ABOUT, REL_CALLS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES,
-    TIER_EXTRACTED, TIER_INFERRED,
+    CallEdge, CallGraph, Direction, Edge, Graph, Node, Projection, CODE_KIND_MODULE, KIND_ARTIFACT,
+    KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE, KIND_FINDING,
+    KIND_LESSON, KIND_UNIT, REL_ABOUT, REL_CALLS, REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY,
+    REL_REALIZES, REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
 };
 
 /// A `kind` node with no attributes.
@@ -414,6 +414,31 @@ pub const FILELESS_MEMBER: &str = "c.rs::U::run";
 /// The file half of the code-entity id `id` ([`split_id`]): the file it is a member of.
 pub fn file_half(id: &str) -> &str {
     split_id(id).0
+}
+
+/// The file declaring `mod x;` (spec 117, A MODULE ROW REACHES ITS FILE).
+pub const DECLARING_FILE: &str = "src/lib.rs";
+/// The `mod` node of [`DECLARING_FILE`]'s `mod x;`.
+pub const MOD_NODE: &str = "src/lib.rs::x";
+/// The first candidate file of [`MOD_NODE`]'s declaration.
+pub const MODULE_FILE: &str = "src/x.rs";
+/// The second candidate file of [`MOD_NODE`]'s declaration, the directory-module form.
+pub const DIR_MODULE_FILE: &str = "src/x/mod.rs";
+
+/// A module declaration's graph (spec 117): [`DECLARING_FILE`] containing [`MOD_NODE`], whose
+/// module row's `CONTAINS` reaches the `file` node [`MODULE_FILE`].
+pub fn module_graph() -> Graph {
+    Graph {
+        nodes: vec![
+            plain(DECLARING_FILE, KIND_FILE),
+            kinded_def_node(MOD_NODE, CODE_KIND_MODULE),
+            plain(MODULE_FILE, KIND_FILE),
+        ],
+        edges: vec![
+            edge(DECLARING_FILE, MOD_NODE, REL_CONTAINS, TIER_EXTRACTED),
+            edge(MOD_NODE, MODULE_FILE, REL_CONTAINS, TIER_EXTRACTED),
+        ],
+    }
 }
 
 /// THE MEMBER RULE's graph (spec 119), holding no edge, so no `CONTAINS` reaches any node: the

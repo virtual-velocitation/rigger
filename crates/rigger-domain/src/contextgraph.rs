@@ -1081,6 +1081,9 @@ pub const REF_KIND_TYPE: &str = "type";
 pub const REF_KIND_CONST: &str = "const";
 /// The [`EdgeInferred::ref_kind`] of a USE (spec 117): one imported leaf of a Rust `use`.
 pub const REF_KIND_USE: &str = "use";
+/// The [`EdgeInferred::ref_kind`] of a MODULE row (spec 117, A MODULE ROW REACHES ITS FILE): one
+/// Rust `mod x;`, its `name` the candidate files of the declaration joined by `\n`.
+pub const REF_KIND_MODULE: &str = "module";
 
 /// The definition kinds a reference of `ref_kind` resolves onto (spec 117, KIND CANDIDATES): a
 /// [`REF_KIND_TYPE`] a type or a trait, a [`REF_KIND_CONST`] a constant or a static, a

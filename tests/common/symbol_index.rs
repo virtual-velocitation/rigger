@@ -198,6 +198,19 @@ pub const INLINE_TEST_MOD_TREE: [(&str, &str); 2] = [
     (INLINE_TEST_MOD_TARGET, "pub fn helper() {}\n"),
 ];
 
+/// A Rust source declaring the module `x` out of line.
+pub const MOD_X: &str = "mod x;\n";
+/// [`MOD_X`] under `#[cfg(test)]`.
+pub const CFG_TEST_MOD_X: &str = "#[cfg(test)]\nmod x;\n";
+/// [`MOD_X`] through a `#[path]` override naming `gen/real.rs`.
+pub const PATH_MOD_X: &str = "#[path = \"gen/real.rs\"]\nmod x;\n";
+/// [`MOD_X`] through an absolute `#[path]` override, which names no file.
+pub const ABSOLUTE_PATH_MOD_X: &str = "#[path = \"/etc/x.rs\"]\nmod x;\n";
+/// [`MOD_X`] inside the inline `mod outer`.
+pub const INLINE_MOD_X: &str = "mod outer {\n    mod x;\n}\n";
+/// A Rust source defining the fn `y`.
+pub const FN_Y: &str = "fn y() {}\n";
+
 /// Every definition of `fs` as `(line, end line, name)`, sorted: the one projection of each
 /// `Def`'s extent the extent tests compare whole.
 pub fn extents_by_line(fs: &FileSymbols) -> Vec<(u32, u32, &str)> {

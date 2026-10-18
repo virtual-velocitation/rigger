@@ -10824,7 +10824,7 @@ mod tests {
     #[test]
     fn aliases_collapse_synonyms_onto_one_node() {
         let p = Projector::open(":memory:", "test").unwrap();
-        let alias = serde_json::json!({"alias": "the editor", "canonical": "content-editor"});
+        let alias = crate::test_support::alias_json("the editor", "content-editor");
         let mut ae = Event::new(TYPE_ALIAS_DEFINED, serde_json::to_vec(&alias).unwrap());
         ae.position = 1;
         crate::test_support::folds(&p, std::slice::from_ref(&ae));
@@ -15616,27 +15616,42 @@ mod tests {
                     .collect()
             }
 
-            /// Every `REFERENCES` edge row of `p` from `from`, live or retired, as
-            /// `(to, valid_from, valid_to, source)` in row order.
+            /// Every `REFERENCES` edge row of `p` from `from` ([`edge_rows`]).
             fn reference_rows(p: &Projector, from: &str) -> Vec<(String, i64, Option<i64>, i64)> {
+                edge_rows(p, from, REL_REFERENCES)
+            }
+
+            /// Every `rel` edge row of `p` from `from`, live or retired, as
+            /// `(to, valid_from, valid_to, source)` in row order.
+            fn edge_rows(
+                p: &Projector,
+                from: &str,
+                rel: &str,
+            ) -> Vec<(String, i64, Option<i64>, i64)> {
                 raw_rows(
                     p,
                     "SELECT to_id, valid_from, valid_to, source FROM edges
                       WHERE from_id = ?1 AND rel = ?2 ORDER BY id",
-                    params![from, REL_REFERENCES],
+                    params![from, rel],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
             }
 
-            /// Every `edge_assertions` entry of `p`'s project naming a `REFERENCES` edge, as
-            /// `(identity, generation, from, to)` sorted.
+            /// Every `edge_assertions` entry of `p`'s project naming a `REFERENCES` edge
+            /// ([`assertions_of`]).
             fn reference_assertions(p: &Projector) -> Vec<(String, String, String, String)> {
+                assertions_of(p, REL_REFERENCES)
+            }
+
+            /// Every `edge_assertions` entry of `p`'s project naming a `rel` edge, as
+            /// `(identity, generation, from, to)` sorted.
+            fn assertions_of(p: &Projector, rel: &str) -> Vec<(String, String, String, String)> {
                 raw_rows(
                     p,
                     "SELECT a.identity, a.generation, e.from_id, e.to_id
                        FROM edge_assertions a JOIN edges e ON e.id = a.edge_id
                       WHERE e.rel = ?1 AND a.project = ?2 ORDER BY a.identity, e.from_id, e.to_id",
-                    [REL_REFERENCES, &p.project],
+                    [rel, &p.project],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
             }
@@ -15969,7 +15984,7 @@ mod tests {
                     &p,
                     1,
                     TYPE_ALIAS_DEFINED,
-                    serde_json::json!({ "alias": "src/a.rs::old", "canonical": READ }),
+                    crate::test_support::alias_json("src/a.rs::old", READ),
                 );
                 a_reads(
                     &p,
@@ -16578,7 +16593,7 @@ mod tests {
                     &p,
                     1,
                     TYPE_ALIAS_DEFINED,
-                    serde_json::json!({ "alias": "src/c.rs::x", "canonical": READ }),
+                    crate::test_support::alias_json("src/c.rs::x", READ),
                 );
                 b_defines(&p, "b1", 2, 10, &[("CAP", CODE_KIND_CONSTANT)]);
                 a_reads(
@@ -16697,7 +16712,7 @@ mod tests {
                     &p,
                     1,
                     TYPE_ALIAS_DEFINED,
-                    serde_json::json!({ "alias": "src/old.rs", "canonical": A }),
+                    crate::test_support::alias_json("src/old.rs", A),
                 );
                 a_reads(
                     &p,
@@ -16720,7 +16735,7 @@ mod tests {
                     &p,
                     1,
                     TYPE_ALIAS_DEFINED,
-                    serde_json::json!({ "alias": "src/c.rs::x", "canonical": READ }),
+                    crate::test_support::alias_json("src/c.rs::x", READ),
                 );
                 let c_reads = vec![
                     definition_event(C, "x", CODE_KIND_FUNCTION, 1, true),
@@ -17247,6 +17262,258 @@ mod tests {
                     site_read(&p),
                     Err(crate::test_support::UNREADABLE_LEAF.to_string())
                 );
+            }
+
+            /// Spec 117, A MODULE ROW REACHES ITS FILE: a `mod x;`'s module row, its leaf the
+            /// declaration's candidates joined by `\n`, is a `CONTAINS` from the `mod` node onto
+            /// the first candidate holding a `file` node, settled at the end of every batch that
+            /// stages it or asserts a node at one of its candidates.
+            mod module_rows {
+                use super::*;
+                use crate::contextgraph::{CODE_KIND_MODULE, REF_KIND_MODULE};
+                use crate::test_support::{
+                    alias_json, module_edges, DECLARING_FILE, DIR_MODULE_FILE, MODULE_FILE,
+                    MOD_NODE,
+                };
+
+                /// The fn `y` [`holds`] defines in [`MODULE_FILE`].
+                const MODULE_FN: &str = "src/x.rs::y";
+                /// The fn `w` beside [`MOD_NODE`] in [`DECLARING_FILE`].
+                const DECLARING_FN: &str = "src/lib.rs::w";
+                /// The canonical file the alias [`MODULE_FILE`] names.
+                const MOVED_FILE: &str = "src/moved.rs";
+
+                /// The candidates of [`MOD_NODE`]'s declaration, joined as its row's leaf.
+                fn candidates() -> String {
+                    [MODULE_FILE, DIR_MODULE_FILE].join("\n")
+                }
+
+                /// The module row [`DECLARING_FILE`] stages at `generation` and `position`,
+                /// resolved to `target`.
+                fn module_row(generation: &str, position: i64, target: Option<&str>) -> Row {
+                    let leaf = candidates();
+                    let key = (MOD_NODE, leaf.as_str(), REF_KIND_MODULE);
+                    row(DECLARING_FILE, generation, key, position, target)
+                }
+
+                /// [`DECLARING_FILE`]'s `mod x;` and its module row, as batch events after
+                /// `before`.
+                fn declaration(before: Vec<Event>) -> Vec<Event> {
+                    let mut batch = before;
+                    let fresh = batch.is_empty();
+                    batch.push(definition_event(
+                        DECLARING_FILE,
+                        "x",
+                        CODE_KIND_MODULE,
+                        2,
+                        fresh,
+                    ));
+                    batch.push(tagged(
+                        DECLARING_FILE,
+                        &candidates(),
+                        REF_KIND_MODULE,
+                        Some("x"),
+                    ));
+                    batch
+                }
+
+                /// Fold generation `generation` of [`DECLARING_FILE`] declaring `mod x;`.
+                fn declares(p: &Projector, generation: &str, pos: u64, secs: u64) {
+                    fold(
+                        p,
+                        DECLARING_FILE,
+                        generation,
+                        pos,
+                        secs,
+                        declaration(vec![]),
+                    );
+                }
+
+                /// Fold generation `generation` of `file` defining the fn `y`.
+                fn holds(p: &Projector, file: &str, generation: &str, pos: u64, secs: u64) {
+                    fold_defining(p, file, generation, pos, secs, &[("y", CODE_KIND_FUNCTION)]);
+                }
+
+                /// The one live module edge from [`MOD_NODE`] onto `file`, `extracted`.
+                fn declared(file: &str) -> Vec<(String, String, String)> {
+                    vec![(MOD_NODE.into(), file.into(), TIER_EXTRACTED.into())]
+                }
+
+                /// A target with no file node leaves the row unresolved; the row resolves to the
+                /// one candidate holding a `file` node, though it is not the first listed, its
+                /// edge `extracted`, its `source` the staging batch's position and its valid-time
+                /// the resolving batch's, the declaring file folded before or after it ending on
+                /// the one edge.
+                #[test]
+                fn a_module_row_resolves_to_its_first_candidate_holding_a_file_node_in_either_fold_order(
+                ) {
+                    let declared_first = fold_events([]);
+                    declares(&declared_first, "l1", 1, 10);
+                    assert_eq!(
+                        (rows(&declared_first), module_edges(&declared_first)),
+                        (vec![module_row("l1", 1, None)], vec![]),
+                        "a target with no file node leaves the row unresolved"
+                    );
+                    holds(&declared_first, DIR_MODULE_FILE, "d1", 2, 20);
+                    let held_first = fold_events([]);
+                    holds(&held_first, DIR_MODULE_FILE, "d1", 1, 10);
+                    declares(&held_first, "l1", 2, 20);
+                    for (p, staged_at) in [(&declared_first, 1), (&held_first, 2)] {
+                        assert_eq!(
+                            rows(p),
+                            [module_row("l1", staged_at, Some(DIR_MODULE_FILE))]
+                        );
+                        assert_eq!(module_edges(p), declared(DIR_MODULE_FILE));
+                        assert_eq!(
+                            edge_rows(p, MOD_NODE, REL_CONTAINS),
+                            [(DIR_MODULE_FILE.to_string(), nanos(20), None, staged_at)],
+                            "source is the staging position, valid-time the resolving batch's"
+                        );
+                    }
+                }
+
+                /// Of two candidates holding a `file` node the first listed takes the row: its
+                /// edge onto the second is stamped at the batch that adds the first.
+                #[test]
+                fn of_two_candidates_holding_a_file_node_the_first_listed_takes_the_row() {
+                    let p = fold_events([]);
+                    declares(&p, "l1", 1, 10);
+                    holds(&p, DIR_MODULE_FILE, "d1", 2, 20);
+                    holds(&p, MODULE_FILE, "f1", 3, 30);
+                    assert_eq!(rows(&p), [module_row("l1", 1, Some(MODULE_FILE))]);
+                    assert_eq!(module_edges(&p), declared(MODULE_FILE));
+                    assert_eq!(
+                        edge_rows(&p, MOD_NODE, REL_CONTAINS),
+                        [
+                            (DIR_MODULE_FILE.to_string(), nanos(20), Some(nanos(30)), 1),
+                            (MODULE_FILE.to_string(), nanos(30), None, 1),
+                        ]
+                    );
+                }
+
+                /// The target retired stamps the edge and unresolves the row; restored in a later
+                /// batch it writes a new edge row, leaving the gap.
+                #[test]
+                fn a_target_retired_then_restored_leaves_a_gap() {
+                    let p = fold_events([]);
+                    declares(&p, "l1", 1, 10);
+                    holds(&p, MODULE_FILE, "f1", 2, 20);
+                    fold(&p, MODULE_FILE, "f2", 3, 30, no_bytes_batch(MODULE_FILE));
+                    assert_eq!(
+                        (rows(&p), module_edges(&p)),
+                        (vec![module_row("l1", 1, None)], vec![]),
+                        "the retired target unresolves the row"
+                    );
+                    holds(&p, MODULE_FILE, "f3", 4, 40);
+                    assert_eq!(
+                        edge_rows(&p, MOD_NODE, REL_CONTAINS),
+                        [
+                            (MODULE_FILE.to_string(), nanos(20), Some(nanos(30)), 1),
+                            (MODULE_FILE.to_string(), nanos(40), None, 1),
+                        ]
+                    );
+                }
+
+                /// Module resolution writes no node: unresolved or resolved, the graph holds the
+                /// files and their definitions alone.
+                #[test]
+                fn module_resolution_writes_no_node() {
+                    let p = fold_events([]);
+                    declares(&p, "l1", 1, 10);
+                    assert_eq!(node_ids(&p), [DECLARING_FILE, MOD_NODE]);
+                    holds(&p, MODULE_FILE, "f1", 2, 20);
+                    assert_eq!(
+                        node_ids(&p),
+                        [DECLARING_FILE, MOD_NODE, MODULE_FILE, MODULE_FN]
+                    );
+                }
+
+                /// A candidate an alias maps resolves to its canonical `file` node whichever
+                /// folds first.
+                #[test]
+                fn an_aliased_candidate_resolves_to_its_canonical_file_in_either_fold_order() {
+                    for held_first in [true, false] {
+                        let p = fold_events([]);
+                        apply_json(
+                            &p,
+                            1,
+                            TYPE_ALIAS_DEFINED,
+                            alias_json(MODULE_FILE, MOVED_FILE),
+                        );
+                        let (held_at, declared_at) = if held_first { (2, 3) } else { (3, 2) };
+                        holds(&p, MOVED_FILE, "m1", held_at, held_at * 10);
+                        declares(&p, "l1", declared_at, declared_at * 10);
+                        assert_eq!(
+                            module_edges(&p),
+                            declared(MOVED_FILE),
+                            "held first: {held_first}"
+                        );
+                    }
+                }
+
+                /// A dropped `mod x;` drops its row and its edge, and the prior generation's
+                /// entry of that edge is gone at the batch's end.
+                #[test]
+                fn a_dropped_mods_row_edge_and_prior_entry_are_gone_at_the_batch_end() {
+                    let p = fold_events([]);
+                    declares(&p, "l1", 1, 10);
+                    holds(&p, MODULE_FILE, "f1", 2, 20);
+                    assert_eq!(
+                        assertions_of(&p, REL_CONTAINS),
+                        [(
+                            crate::test_support::gc_identity(DECLARING_FILE),
+                            "l1".into(),
+                            MOD_NODE.into(),
+                            MODULE_FILE.into()
+                        )]
+                    );
+                    let kept = definition_event(DECLARING_FILE, "w", CODE_KIND_FUNCTION, 1, true);
+                    fold(&p, DECLARING_FILE, "l2", 3, 30, vec![kept]);
+                    assert_eq!((rows(&p), module_edges(&p)), (vec![], vec![]));
+                    assert_eq!(assertions_of(&p, REL_CONTAINS), []);
+                }
+
+                /// A `mod` node's community label degree counts no module `CONTAINS`: of `w` and
+                /// `x`, one community each holding one `CONTAINS` from their file, the label stays
+                /// `w`, the lesser name, after `x`'s module row resolves and the community pass
+                /// re-runs.
+                #[test]
+                fn a_module_contains_counts_in_no_community_label_degree() {
+                    let p = fold_events([]);
+                    let w = definition_event(DECLARING_FILE, "w", CODE_KIND_FUNCTION, 1, true);
+                    fold(&p, DECLARING_FILE, "l1", 1, 10, declaration(vec![w]));
+                    let assign = |pos: u64, hash: &str| {
+                        apply_community(&p, pos, MOD_NODE, ONE_COMMUNITY, 1.0, hash, true);
+                        apply_community(&p, pos + 1, DECLARING_FN, ONE_COMMUNITY, 1.0, hash, false);
+                    };
+                    assign(2, "h1");
+                    assert_eq!(label(&p, ONE_COMMUNITY), Some("w".to_string()));
+                    holds(&p, MODULE_FILE, "f1", 4, 40);
+                    assign(5, "h2");
+                    assert_eq!(module_edges(&p), declared(MODULE_FILE));
+                    assert_eq!(label(&p, ONE_COMMUNITY), Some("w".to_string()));
+                }
+
+                /// A module `CONTAINS` owes no relabel, onto a live `file` node or a retired one,
+                /// where a `CONTAINS` onto a code entity owes both its ends theirs.
+                #[test]
+                fn a_module_contains_owes_no_relabel_where_one_onto_a_code_entity_does() {
+                    let p = fold_events([]);
+                    declares(&p, "l1", 1, 10);
+                    holds(&p, MODULE_FILE, "f1", 2, 20);
+                    apply_community(&p, 3, MOD_NODE, "c-mod", 1.0, "h", true);
+                    apply_community(&p, 4, MODULE_FILE, "c-file", 1.0, "h", false);
+                    apply_community(&p, 5, MODULE_FN, "c-y", 1.0, "h", false);
+                    let owed = |to: &str| {
+                        owed_by(&p, |tx, project| {
+                            owe_relabel_of_ends(tx, MOD_NODE, to, REL_CONTAINS, project).unwrap()
+                        })
+                    };
+                    assert_eq!(owed(MODULE_FILE), Vec::<String>::new());
+                    assert_eq!(owed(MODULE_FN), ["c-mod", "c-y"]);
+                    fold(&p, MODULE_FILE, "f2", 6, 60, no_bytes_batch(MODULE_FILE));
+                    assert_eq!(owed(MODULE_FILE), Vec::<String>::new(), "a retired file");
+                }
             }
         }
     }

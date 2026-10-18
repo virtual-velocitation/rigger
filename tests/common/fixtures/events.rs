@@ -74,6 +74,23 @@ pub fn tagged_payloads(payloads: &[serde_json::Value]) -> Vec<(&str, &str)> {
         .collect()
 }
 
+/// The `(name, caller, ref_kind)` of each of `payloads` (an `EdgeInferred`'s), each absent one
+/// `None`, in order.
+pub fn named_references(
+    payloads: &[serde_json::Value],
+) -> Vec<(Option<&str>, Option<&str>, Option<&str>)> {
+    payloads
+        .iter()
+        .map(|p| {
+            (
+                p["name"].as_str(),
+                p["caller"].as_str(),
+                p["ref_kind"].as_str(),
+            )
+        })
+        .collect()
+}
+
 /// `events` stamped with 1-based log positions, as the store stamps them on append, so a
 /// position-sensitive read (a cursor, `?since=`, a position-ordered fold) sees a realistic
 /// monotonic stream.

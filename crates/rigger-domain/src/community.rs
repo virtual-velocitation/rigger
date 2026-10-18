@@ -872,6 +872,18 @@ mod tests {
         );
     }
 
+    /// Spec 117, A MODULE ROW REACHES ITS FILE: a `mod` node's `CONTAINS` onto its module's
+    /// `file` node declares the module and couples nothing, while its file's `CONTAINS` onto the
+    /// `mod` node couples the two, so the module file joins no community.
+    #[test]
+    fn from_graph_couples_no_mod_to_its_module_file() {
+        use crate::test_support::{module_graph, DECLARING_FILE, MOD_NODE};
+        assert_eq!(
+            Coupling::from_graph(&module_graph()).nodes,
+            [DECLARING_FILE, MOD_NODE]
+        );
+    }
+
     #[test]
     fn from_graph_canonicalises_a_placeholder_onto_the_nested_definition_of_its_leaf() {
         // Spec 119 criterion 1: `b.rs`'s placeholder `%new` and `c.rs`'s empty-named one both

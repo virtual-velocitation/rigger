@@ -27116,7 +27116,7 @@ fn graph_around_an_alias_prints_the_canonical_files_node_and_unresolved_lines() 
         &common::cli::open_graph(dir.path()),
         4,
         rigger::contextgraph::TYPE_ALIAS_DEFINED,
-        serde_json::json!({ "alias": UNRESOLVED_ALIAS, "canonical": UNRESOLVED_FILE }),
+        common::fixtures::alias_json(UNRESOLVED_ALIAS, UNRESOLVED_FILE),
     );
     let [aliased, canonical] =
         [UNRESOLVED_ALIAS, UNRESOLVED_FILE].map(|seed| run_around(dir.path(), seed, 1).0);

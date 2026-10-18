@@ -39897,6 +39897,22 @@ mod tests {
         assert_eq!(radius(FILELESS_MEMBER), [FILELESS_MEMBER]);
     }
 
+    /// Spec 117, A MODULE ROW REACHES ITS FILE: over [`module_graph`], a `mod` node's radius
+    /// reaches its declaring file through that file's `CONTAINS` and no file through its own
+    /// module `CONTAINS`, a declaration having no radius effect.
+    #[test]
+    fn files_reachable_reaches_no_file_through_a_module_contains() {
+        use crate::test_support::{module_graph, DECLARING_FILE, MOD_NODE};
+        assert_eq!(
+            files_reachable(
+                &module_graph(),
+                &[MOD_NODE.to_string()],
+                &[contextgraph::TIER_EXTRACTED]
+            ),
+            [DECLARING_FILE, MOD_NODE].map(String::from).into()
+        );
+    }
+
     /// THE MEMBER RULE at the code neighborhood (spec 119): over [`member_graph`], which holds no
     /// `CONTAINS` edge, each named member is listed under its file when the graph holds that
     /// file's node, so `c.rs::U::run`, the placeholder, the bare parent and the artifact get no

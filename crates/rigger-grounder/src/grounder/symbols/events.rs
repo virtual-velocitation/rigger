@@ -1635,7 +1635,7 @@ mod tests {
     {
         assert_out_of_line_test_module_files_hold_src_x(&[
             ("src/lib.rs", "#![cfg(test)]\nfn first() {}\nmod x;\n"),
-            ("src/x.rs", "fn y() {}\n"),
+            ("src/x.rs", crate::symbol_index::FN_Y),
             (
                 "src/main.rs",
                 "#[cfg(test)]\nuse y;\nfn first() {}\nmod z;\n",
@@ -1659,47 +1659,31 @@ mod tests {
     /// else `x.rs` then `x/mod.rs` under the module directory and the enclosing inline-mod chain.
     #[test]
     fn module_candidates_name_the_candidates_of_each_tabled_declaration_in_order() {
+        use crate::symbol_index::{ABSOLUTE_PATH_MOD_X, INLINE_MOD_X, MOD_X, PATH_MOD_X};
         let cases: [(&str, &str, &[&str]); 10] = [
-            (
-                "src/lib.rs",
-                "#[path = \"gen/real.rs\"]\nmod x;\n",
-                &["src/gen/real.rs"],
-            ),
+            ("src/lib.rs", PATH_MOD_X, &["src/gen/real.rs"]),
             ("lib.rs", "#[path = \"real.rs\"]\nmod x;\n", &["real.rs"]),
             (
                 "src/lib.rs",
                 "mod outer {\n    #[path = \"real.rs\"]\n    mod x;\n}\n",
                 &["src/outer/real.rs"],
             ),
-            ("src/lib.rs", "#[path = \"/etc/x.rs\"]\nmod x;\n", &[]),
+            ("src/lib.rs", ABSOLUTE_PATH_MOD_X, &[]),
             ("src/lib.rs", "#[path = \"../../x.rs\"]\nmod x;\n", &[]),
-            ("src/lib.rs", "mod x;\n", &["src/x.rs", "src/x/mod.rs"]),
-            (
-                "src/foo.rs",
-                "mod x;\n",
-                &["src/foo/x.rs", "src/foo/x/mod.rs"],
-            ),
-            ("lib.rs", "mod x;\n", &["x.rs", "x/mod.rs"]),
+            ("src/lib.rs", MOD_X, &["src/x.rs", "src/x/mod.rs"]),
+            ("src/foo.rs", MOD_X, &["src/foo/x.rs", "src/foo/x/mod.rs"]),
+            ("lib.rs", MOD_X, &["x.rs", "x/mod.rs"]),
             (
                 "src/lib.rs",
-                "mod outer {\n    mod x;\n}\n",
+                INLINE_MOD_X,
                 &["src/outer/x.rs", "src/outer/x/mod.rs"],
             ),
-            (
-                "lib.rs",
-                "mod outer {\n    mod x;\n}\n",
-                &["outer/x.rs", "outer/x/mod.rs"],
-            ),
+            ("lib.rs", INLINE_MOD_X, &["outer/x.rs", "outer/x/mod.rs"]),
         ];
         for (declaring, src, candidates) in cases {
             let symbols = crate::symbol_index::extracted("rs", src);
-            let declaration = symbols
-                .defs
-                .iter()
-                .find(|d| d.is_out_of_line_module)
-                .expect("the source declares a module out of line");
             assert_eq!(
-                super::module_candidates(declaring, declaration),
+                super::module_candidates(declaring, out_of_line_declaration(&symbols)),
                 candidates,
                 "{declaring}: {src}"
             );
@@ -1711,7 +1695,7 @@ mod tests {
     /// `src/foo` names the candidates `src/foo.rs` does.
     #[test]
     fn module_candidates_of_a_declaring_file_without_the_rust_extension_keep_its_whole_name() {
-        let symbols = crate::symbol_index::extracted("rs", "mod x;\n");
+        let symbols = crate::symbol_index::extracted("rs", crate::symbol_index::MOD_X);
         let declaration = &symbols.defs[0];
         assert_eq!(
             super::module_candidates("src/foo", declaration),
@@ -1725,9 +1709,9 @@ mod tests {
     #[test]
     fn a_test_mod_resolves_to_the_first_of_its_candidates_the_index_holds() {
         assert_out_of_line_test_module_files_hold_src_x(&[
-            ("src/lib.rs", "#[cfg(test)]\nmod x;\n"),
-            ("src/x.rs", "fn y() {}\n"),
-            ("src/x/mod.rs", "fn y() {}\n"),
+            ("src/lib.rs", crate::symbol_index::CFG_TEST_MOD_X),
+            ("src/x.rs", crate::symbol_index::FN_Y),
+            ("src/x/mod.rs", crate::symbol_index::FN_Y),
         ]);
     }
 
@@ -3146,16 +3130,7 @@ mod tests {
             &super::extract_events("a.rs", &fs),
             TYPE_EDGE_INFERRED,
         );
-        let refs: Vec<_> = edges
-            .iter()
-            .map(|p| {
-                (
-                    p["name"].as_str(),
-                    p["caller"].as_str(),
-                    p["ref_kind"].as_str(),
-                )
-            })
-            .collect();
+        let refs = crate::event_fixtures::named_references(&edges);
         let header = Some("impl Draw for Kestrel");
         assert_eq!(
             refs,
@@ -3174,7 +3149,7 @@ mod tests {
     #[test]
     fn a_use_a_field_type_and_a_const_read_reach_their_one_definition_in_either_fold_order() {
         use crate::contextgraph::TIER_INFERRED;
-        use crate::test_support::{fold_asked, landed};
+        use crate::test_support::landed;
 
         let a = (
             "src/a.rs",
@@ -3186,10 +3161,6 @@ mod tests {
             "pub const QUOTA_CAP: u8 = 1;\npub struct Kestrel;\npub fn helper() {}\n",
         );
         let c = ("src/c.rs", b.1);
-        let fold = |p: &Projector, pos: u64, (file, source): (&str, &str)| {
-            let batch = super::bytes_batch(file, Some(source.as_bytes()), false);
-            fold_asked(p, file, "g1", pos, pos, batch);
-        };
         let references = |p: &Projector| -> Vec<(String, String, String)> {
             landed(p)
                 .into_iter()
@@ -3206,14 +3177,148 @@ mod tests {
         .into();
         for order in [[a, b], [b, a]] {
             let p = Projector::open(":memory:", "test").unwrap();
-            fold(&p, 1, order[0]);
-            fold(&p, 2, order[1]);
+            fold_source(&p, 1, order[0]);
+            fold_source(&p, 2, order[1]);
             assert_eq!(references(&p), resolved, "{:?} first", order[0].0);
-            fold(&p, 3, c);
+            fold_source(&p, 3, c);
             assert_eq!(
                 references(&p),
                 [],
                 "a second definition of each leaf leaves every row unresolved"
+            );
+        }
+    }
+
+    /// The one out-of-line `mod` declaration `symbols` holds.
+    fn out_of_line_declaration(symbols: &FileSymbols) -> &Def {
+        symbols
+            .defs
+            .iter()
+            .find(|d| d.is_out_of_line_module)
+            .expect("the source declares a module out of line")
+    }
+
+    /// Fold `file` holding `source` as generation `g1` of its ledger entry at log position `pos`,
+    /// valid from `pos` seconds, its batch the walk's ([`super::bytes_batch`]) - the fold that
+    /// stages a row.
+    fn fold_source(p: &Projector, pos: u64, (file, source): (&str, &str)) {
+        let batch = super::bytes_batch(file, Some(source.as_bytes()), false);
+        crate::test_support::fold_asked(p, file, "g1", pos, pos, batch);
+    }
+
+    /// Spec 117 criterion 3: [`super::extract_events`] lowers an out-of-line `mod` declaration to
+    /// one module row from its `mod` node's path, named by its [`super::module_candidates`]
+    /// joined by `\n`, and a declaration naming no candidate to none.
+    #[test]
+    fn extract_events_lowers_a_mod_declaration_to_one_module_row_naming_its_candidates() {
+        use crate::contextgraph::REF_KIND_MODULE;
+        use crate::graph_fixtures::DECLARING_FILE;
+        use crate::symbol_index::{ABSOLUTE_PATH_MOD_X, INLINE_MOD_X, MOD_X};
+        for source in [MOD_X, INLINE_MOD_X, ABSOLUTE_PATH_MOD_X] {
+            let symbols = crate::symbol_index::extracted("rs", source);
+            let declaration = out_of_line_declaration(&symbols);
+            let candidates = super::module_candidates(DECLARING_FILE, declaration).join("\n");
+            let edges = crate::event_fixtures::payloads_of_type(
+                &super::extract_events(DECLARING_FILE, &symbols),
+                TYPE_EDGE_INFERRED,
+            );
+            let rows: Vec<_> = crate::event_fixtures::named_references(&edges)
+                .into_iter()
+                .filter(|(.., kind)| *kind == Some(REF_KIND_MODULE))
+                .collect();
+            let expected: Vec<_> = (!candidates.is_empty())
+                .then_some((
+                    Some(candidates.as_str()),
+                    Some(declaration.path.as_str()),
+                    Some(REF_KIND_MODULE),
+                ))
+                .into_iter()
+                .collect();
+            assert_eq!(rows, expected, "{source}");
+        }
+    }
+
+    /// Spec 117 criterion 3, A MODULE ROW REACHES ITS FILE: over the real extraction folded as
+    /// ledger entries, each tabled declaration in [`DECLARING_FILE`] - a `#[path]` override,
+    /// `x.rs`, `x/mod.rs`, both, and `mod outer { mod x; }` - is one `extracted` `CONTAINS` from
+    /// its `mod` node onto the first of its [`super::module_candidates`] holding a `file` node,
+    /// whichever file folds first, and none while no candidate holds one.
+    ///
+    /// [`DECLARING_FILE`]: crate::graph_fixtures::DECLARING_FILE
+    #[test]
+    fn a_mod_declaration_reaches_the_first_candidate_holding_a_file_node_in_either_fold_order() {
+        use crate::contextgraph::{query::entity_id, TIER_EXTRACTED};
+        use crate::graph_fixtures::DECLARING_FILE;
+        use crate::symbol_index::{FN_Y, INLINE_MOD_X, MOD_X, PATH_MOD_X};
+        use crate::test_support::module_edges;
+        // (the declaring source, the candidates folded as files by index, the one reached)
+        let cases: [(&str, &[usize], usize); 5] = [
+            (PATH_MOD_X, &[0], 0),
+            (MOD_X, &[0], 0),
+            (MOD_X, &[1], 1),
+            (MOD_X, &[0, 1], 0),
+            (INLINE_MOD_X, &[0], 0),
+        ];
+        for (source, held, reached) in cases {
+            let symbols = crate::symbol_index::extracted("rs", source);
+            let declaration = out_of_line_declaration(&symbols);
+            let candidates = super::module_candidates(DECLARING_FILE, declaration);
+            let edge = (
+                entity_id(DECLARING_FILE, &declaration.path),
+                candidates[reached].clone(),
+                TIER_EXTRACTED.to_string(),
+            );
+            for declared_first in [true, false] {
+                let p = Projector::open(":memory:", "test").unwrap();
+                let mut pos = 0;
+                let mut fold = |file: &str, source: &str| {
+                    pos += 1;
+                    fold_source(&p, pos, (file, source));
+                };
+                if declared_first {
+                    fold(DECLARING_FILE, source);
+                    assert_eq!(module_edges(&p), [], "{source}: no candidate holds a file");
+                }
+                for &i in held {
+                    fold(&candidates[i], FN_Y);
+                }
+                if !declared_first {
+                    fold(DECLARING_FILE, source);
+                }
+                assert_eq!(
+                    module_edges(&p),
+                    std::slice::from_ref(&edge),
+                    "{source}: declared first {declared_first}"
+                );
+            }
+        }
+    }
+
+    /// Spec 117 criterion 3: a `mod x;` in dev-only code stages no row - one under
+    /// `#[cfg(test)]`, one in a file under `tests/`, and one in a file the walk lowers under its
+    /// excluded flag - so its first candidate folded as a file gains no module edge.
+    #[test]
+    fn a_mod_declaration_in_dev_only_code_stages_no_row() {
+        use crate::graph_fixtures::DECLARING_FILE;
+        use crate::symbol_index::{CFG_TEST_MOD_X, FN_Y, MOD_X};
+        use crate::test_support::module_edges;
+        let under_tests = format!("tests/{DECLARING_FILE}");
+        let cases = [
+            (DECLARING_FILE, CFG_TEST_MOD_X, false),
+            (under_tests.as_str(), MOD_X, false),
+            (DECLARING_FILE, MOD_X, true),
+        ];
+        for (file, source, excluded) in cases {
+            let symbols = crate::symbol_index::extracted("rs", source);
+            let target = &super::module_candidates(file, out_of_line_declaration(&symbols))[0];
+            let p = Projector::open(":memory:", "test").unwrap();
+            let batch = super::bytes_batch(file, Some(source.as_bytes()), excluded);
+            crate::test_support::fold_asked(&p, file, "g1", 1, 1, batch);
+            fold_source(&p, 2, (target, FN_Y));
+            assert_eq!(
+                module_edges(&p),
+                [],
+                "{file}: {source}, excluded {excluded}"
             );
         }
     }
