@@ -25527,12 +25527,7 @@ fn assert_mcp_serves_its_three_tools(
     );
     check_ground(&ground);
 
-    let out = mcp.finish();
-    assert!(
-        out.status.success(),
-        "rigger mcp must exit 0; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    mcp.finish_cleanly();
 }
 
 rigger::test_cases! {
@@ -25673,12 +25668,7 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
         "rigger_scratch must answer a non-empty path; got:\n{scratch}"
     );
 
-    let out = mcp.finish();
-    assert!(
-        out.status.success(),
-        "rigger mcp --spawn must exit 0; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    mcp.finish_cleanly();
 
     // The DECISION landed, stamped with the bound spawn; the REFUSED one landed nothing.
     let recorded = read_run_events(root);
@@ -25790,12 +25780,7 @@ fn mcp_without_spawn_never_creates_the_progress_store() {
     // One real round trip (`call` panics unless it answers exactly one JSON-RPC line).
     mcp.call("tools/list", serde_json::json!({}));
 
-    let out = mcp.finish();
-    assert!(
-        out.status.success(),
-        "rigger mcp must exit 0; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    mcp.finish_cleanly();
     assert!(
         !root.join(".rigger").join("progress.db").exists(),
         "a plain `rigger mcp` with no --spawn must never create progress.db"
@@ -25832,12 +25817,7 @@ fn mcp_without_spawn_reports_progress_and_scratch_as_unknown_tools_over_stdio() 
         );
     }
 
-    let out = mcp.finish();
-    assert!(
-        out.status.success(),
-        "rigger mcp must survive and exit 0 after the refused calls; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    mcp.finish_cleanly();
 }
 
 /// PERIPHERY (round 2, closes `sdet-u104-mcp-spawn-scratch-no-real-parity-test-with-cmd-scratch`,
@@ -26928,12 +26908,7 @@ fn mcp_tool_call_edges_report_errors_for_unknown_tool_and_missing_required_argum
         "the session must keep answering after error responses; got:\n{list}"
     );
 
-    let out = mcp.finish();
-    assert!(
-        out.status.success(),
-        "rigger mcp must exit 0 after an error-only session; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    mcp.finish_cleanly();
 }
 
 /// A malformed (non-JSON) line on `rigger mcp`'s stdin answers a JSON-RPC PARSE ERROR

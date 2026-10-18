@@ -1825,12 +1825,7 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
         serde_json::json!({"position": store.log().last().unwrap().position, "folded": true}),
         "the emit succeeds and says it folded; got: {emitted}"
     );
-    let finished = mcp.finish();
-    assert!(
-        finished.status.success(),
-        "the session exits cleanly on EOF; stderr: {}",
-        String::from_utf8_lossy(&finished.stderr)
-    );
+    mcp.finish_cleanly();
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
     assert_eq!(
         graph, fresh,
@@ -2315,12 +2310,7 @@ fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
     holder.execute_batch("BEGIN IMMEDIATE").unwrap();
     let locked = mcp.tool_call("rigger_emit", decision("d-locked"));
     holder.execute_batch("ROLLBACK").unwrap();
-    let finished = mcp.finish();
-    assert!(
-        finished.status.success(),
-        "the session exits cleanly on EOF; stderr: {}",
-        String::from_utf8_lossy(&finished.stderr)
-    );
+    mcp.finish_cleanly();
 
     let log = read_run_events(root);
     let last = log.last().unwrap();

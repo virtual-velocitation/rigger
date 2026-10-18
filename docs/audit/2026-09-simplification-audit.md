@@ -1783,7 +1783,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:73-75` `what`
 - `tests/common/fixtures/plan_critique.rs:29-34` `spec_defect_halt_text`
-- `tests/compaction_generations_periphery.rs:3429-3434` `closed_unit_line`
+- `tests/compaction_generations_periphery.rs:3419-3424` `closed_unit_line`
 - `tests/new_run_critique_refusal_periphery.rs:138-140` `no_critic_line`
 - `tests/no_os_kill_audit.rs:52-54` `join`
 
@@ -1968,7 +1968,7 @@ mandatory sweep: Command::new call sites - 89 site(s), collected mechanically re
 - `tests/cli.rs:13785-13785` `Command::new`
 - `tests/cli.rs:18729-18729` `Command::new`
 - `tests/cli.rs:23788-23788` `Command::new`
-- `tests/cli.rs:26852-26852` `Command::new`
+- `tests/cli.rs:26832-26832` `Command::new`
 - `tests/common/cli.rs:20-20` `Command::new`
 - `tests/common/cli.rs:73-73` `Command::new`
 - `tests/common/cli.rs:313-313` `Command::new`
@@ -2865,26 +2865,26 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:24163-24163` `".rigger/dash.marker"`
 - `tests/cli.rs:24643-24643` `".rigger"`
 - `tests/cli.rs:24796-24796` `".rigger"`
-- `tests/cli.rs:25705-25705` `".rigger"`
-- `tests/cli.rs:25800-25800` `".rigger"`
-- `tests/cli.rs:26036-26036` `".rigger"`
-- `tests/cli.rs:26490-26490` `"the hook must be inert on a project without .rigger/; got:\n{out}"`
-- `tests/cli.rs:26496-26496` `".rigger"`
-- `tests/cli.rs:26515-26515` `".rigger"`
-- `tests/cli.rs:26541-26541` `".rigger"`
-- `tests/cli.rs:26577-26577` `".rigger"`
-- `tests/cli.rs:26616-26616` `".rigger"`
-- `tests/cli.rs:26808-26808` `".rigger"`
-- `tests/cli.rs:26841-26841` `".rigger"`
-- `tests/cli.rs:27508-27508` `".rigger"`
-- `tests/cli.rs:27753-27753` `".rigger"`
-- `tests/cli.rs:27808-27808` `".rigger"`
-- `tests/cli.rs:27839-27839` `"scaffolded .rigger/instructions/README.md"`
-- `tests/cli.rs:27843-27843` `".rigger/instructions/README.md"`
-- `tests/cli.rs:27913-27913` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:27951-27951` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28411-28411` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28429-28429` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:25695-25695` `".rigger"`
+- `tests/cli.rs:25785-25785` `".rigger"`
+- `tests/cli.rs:26016-26016` `".rigger"`
+- `tests/cli.rs:26470-26470` `"the hook must be inert on a project without .rigger/; got:\n{out}"`
+- `tests/cli.rs:26476-26476` `".rigger"`
+- `tests/cli.rs:26495-26495` `".rigger"`
+- `tests/cli.rs:26521-26521` `".rigger"`
+- `tests/cli.rs:26557-26557` `".rigger"`
+- `tests/cli.rs:26596-26596` `".rigger"`
+- `tests/cli.rs:26788-26788` `".rigger"`
+- `tests/cli.rs:26821-26821` `".rigger"`
+- `tests/cli.rs:27483-27483` `".rigger"`
+- `tests/cli.rs:27728-27728` `".rigger"`
+- `tests/cli.rs:27783-27783` `".rigger"`
+- `tests/cli.rs:27814-27814` `"scaffolded .rigger/instructions/README.md"`
+- `tests/cli.rs:27818-27818` `".rigger/instructions/README.md"`
+- `tests/cli.rs:27888-27888` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:27926-27926` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28386-28386` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28404-28404` `"gw/.rigger/workflow.yml"`
 - `tests/common/cli.rs:291-291` `".rigger"`
 - `tests/common/cli.rs:302-302` `".rigger"`
 - `tests/common/cli.rs:323-323` `".rigger"`
@@ -2909,10 +2909,10 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/workflow_probe.rs:16-16` `"create .rigger"`
 - `tests/compaction_generations_periphery.rs:1192-1192` `".rigger"`
 - `tests/compaction_generations_periphery.rs:1277-1277` `".rigger"`
-- `tests/compaction_generations_periphery.rs:2468-2468` `"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
+- `tests/compaction_generations_periphery.rs:2458-2458` `"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
          {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \
          decision (position {position}){fold}\n"`
-- `tests/compaction_generations_periphery.rs:3756-3756` `".rigger"`
+- `tests/compaction_generations_periphery.rs:3746-3746` `".rigger"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:138-138` `".rigger"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:139-139` `"write the .rigger/{rel} fixture: {e}"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:149-149` `".rigger"`
@@ -4099,12 +4099,12 @@ mandatory sweep: sqlite Connection::open call sites - 60 site(s), collected mech
 - `tests/compaction_generations_periphery.rs:1117-1117` `Connection::open`
 - `tests/compaction_generations_periphery.rs:1173-1173` `Connection::open`
 - `tests/compaction_generations_periphery.rs:1283-1283` `Connection::open`
-- `tests/compaction_generations_periphery.rs:2254-2254` `Connection::open`
-- `tests/compaction_generations_periphery.rs:2314-2314` `Connection::open`
-- `tests/compaction_generations_periphery.rs:2530-2530` `Connection::open`
-- `tests/compaction_generations_periphery.rs:2824-2824` `Connection::open`
-- `tests/compaction_generations_periphery.rs:3083-3083` `Connection::open`
-- `tests/compaction_generations_periphery.rs:4204-4204` `Connection::open`
+- `tests/compaction_generations_periphery.rs:2249-2249` `Connection::open`
+- `tests/compaction_generations_periphery.rs:2309-2309` `Connection::open`
+- `tests/compaction_generations_periphery.rs:2520-2520` `Connection::open`
+- `tests/compaction_generations_periphery.rs:2814-2814` `Connection::open`
+- `tests/compaction_generations_periphery.rs:3073-3073` `Connection::open`
+- `tests/compaction_generations_periphery.rs:4194-4194` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:86-86` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:100-100` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:213-213` `Connection::open`
@@ -4527,7 +4527,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/cli.rs:800-807` `migrated_lines`
 - `tests/common/cli.rs:814-819` `derived_menu_line_naming`
 - `tests/common/cli.rs:1423-1428` `bloat_advisory_naming`
-- `tests/compaction_generations_periphery.rs:4878-4883` `runs_prunable`
+- `tests/compaction_generations_periphery.rs:4868-4873` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
 
@@ -4726,7 +4726,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:16446-16458` `status_json_appends_no_dashboard_entry_when_none_was_ever_recorded`
 - `tests/cli.rs:24205-24222` `prime_given_a_spec_path_names_the_spec_lint_as_a_next_step`
 - `tests/cli.rs:24225-24247` `prime_given_a_spec_path_names_the_spec_lint_alongside_recent_decisions`
-- `tests/cli.rs:25741-25773` `mcp_rejects_a_malformed_spawn_flag_or_unexpected_arguments`
+- `tests/cli.rs:25731-25763` `mcp_rejects_a_malformed_spawn_flag_or_unexpected_arguments`
 - `tests/graph_show_periphery.rs:112-129` `graph_show_and_around_with_no_store_print_the_not_found_note`
 - `tests/reset_build_cache_periphery.rs:103-129` `reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything`
 - `tests/reset_build_cache_periphery.rs:167-177` `reset_build_cache_flag_is_registered_and_rejects_a_duplicate`
@@ -4793,7 +4793,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:16568-16579` `status_prints_no_dashboard_line_when_none_was_ever_recorded`
 - `tests/cli.rs:24192-24202` `prime_with_no_spec_path_never_mentions_the_spec_lint`
 - `tests/cli.rs:24613-24622` `workflow_with_no_spec_path_never_mentions_the_spec_lint`
-- `tests/cli.rs:27833-27853` `init_scaffolds_the_instructions_readme_and_names_it`
+- `tests/cli.rs:27808-27828` `init_scaffolds_the_instructions_readme_and_names_it`
 
 #### `dup-84fea880d212` (near, 2 sites)
 
@@ -4802,7 +4802,7 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:16867-16897` `docs_ships_three_verb_lookup_guidance_to_consumers`
-- `tests/cli.rs:27627-27674` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
+- `tests/cli.rs:27602-27649` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
 
 #### `dup-21b08556e493` (exact, 2 sites)
 
@@ -5005,7 +5005,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/compaction_genera
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/compaction_generations_periphery.rs:2126-2132` `holds_table`
+- `tests/compaction_generations_periphery.rs:2121-2127` `holds_table`
 - `tests/one_shot_reads_periphery.rs:310-312` `poison`
 
 #### `dup-515218e72204` (near, 2 sites)
