@@ -104,6 +104,16 @@ impl McpSession {
         self.tool_call("rigger_graph", arguments)["result"]["structuredContent"].clone()
     }
 
+    /// The site object the `rigger_graph` `show` of `id` answers ([`graph_tool`](Self::graph_tool)).
+    pub fn shown_site(&mut self, id: &str) -> serde_json::Value {
+        self.graph_tool(serde_json::json!({"show": id}))["site"].clone()
+    }
+
+    /// The `rigger_graph` `around` answer of `seed` at depth 1 ([`graph_tool`](Self::graph_tool)).
+    pub fn around_answer(&mut self, seed: &str) -> serde_json::Value {
+        self.graph_tool(serde_json::json!({"around": seed, "depth": 1}))
+    }
+
     /// The `initialize` handshake a well-behaved MCP client (the shim's SDK client included)
     /// performs first, once per session; it must succeed.
     pub fn initialize(&mut self) {
@@ -167,5 +177,15 @@ impl McpSession {
         self.child
             .wait_with_output()
             .expect("the rigger stdio session must exit")
+    }
+
+    /// [`finish`](Self::finish) the session and insist it exited cleanly.
+    pub fn finish_cleanly(self) {
+        let out = self.finish();
+        assert!(
+            out.status.success(),
+            "the rigger stdio session exits cleanly; stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 }

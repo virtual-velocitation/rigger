@@ -26969,8 +26969,7 @@ fn mcp_survives_a_malformed_json_line_and_keeps_answering_afterward() {
         "a well-formed request right after a malformed one must still succeed; got:\n{line2}"
     );
 
-    let out = mcp.finish();
-    assert!(out.status.success());
+    mcp.finish_cleanly();
 }
 
 /// Spec 119, SHOW IS ONE RENDERER: GIVEN a graph holding a const, a field, a definition whose
@@ -27542,8 +27541,7 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
         "an unresolved show query must answer honestly none, never error; got:\n{missing}"
     );
 
-    let out = mcp.finish();
-    assert!(out.status.success());
+    mcp.finish_cleanly();
 }
 
 /// Spec 119, SHOW IS ONE RENDERER, at the `rigger mcp` binary: GIVEN the show-renderer seed
@@ -27567,11 +27565,9 @@ fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
     seed_shown_nodes(&common::cli::open_graph(root));
 
     let mut mcp = McpSession::start(root);
-    let sites = SHOWN_IDS.map(|id| mcp.graph_tool(serde_json::json!({"show": id}))["site"].clone());
-    let nodes =
-        around_nodes(&mcp.graph_tool(serde_json::json!({"around": SHOWN_FILE, "depth": 1})));
-    let out = mcp.finish();
-    assert!(out.status.success(), "rigger mcp exits cleanly");
+    let sites = SHOWN_IDS.map(|id| mcp.shown_site(id));
+    let nodes = around_nodes(&mcp.around_answer(SHOWN_FILE));
+    mcp.finish_cleanly();
 
     assert_eq!(
         nodes
@@ -27595,6 +27591,30 @@ fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
     let graph = common::cli::open_graph(root);
     assert_shows_are_site_fields(&graph, &sites);
     assert_around_is_entity_sites(&graph, &nodes);
+}
+
+/// Spec 117, UNRESOLVED REFERENCES ARE A READ, at the `rigger mcp` binary: GIVEN the project's own
+/// `graph.db` holding the rows `seed_unresolved_references` stages, WHEN an MCP client calls
+/// `rigger_graph` with `show` on `src/reader.rs` and on `src/definer.rs` and with `around` on
+/// `src/reader.rs` at depth 1, THEN the reader's site carries its leaves joined by
+/// `contextgraph::LIST_SEP` as one `unresolved` key beside its `partial`, the definer's carries no
+/// `unresolved` key, and no node of the `around` carries one.
+#[test]
+fn mcp_rigger_graph_show_carries_a_files_unresolved_leaves_and_around_carries_none() {
+    use common::fixtures::{
+        assert_around_lists_no_unresolved, assert_show_lists_unresolved_leaves, RESOLVING_FILE,
+        UNRESOLVED_FILE,
+    };
+
+    let dir = common::cli::unresolved_project();
+    common::cli::seed_store(dir.path());
+    let mut mcp = McpSession::start(dir.path());
+    let [reader, definer] = [UNRESOLVED_FILE, RESOLVING_FILE].map(|id| mcp.shown_site(id));
+    let around = mcp.around_answer(UNRESOLVED_FILE);
+    mcp.finish_cleanly();
+
+    assert_show_lists_unresolved_leaves(&reader, &definer);
+    assert_around_lists_no_unresolved(&around);
 }
 
 /// The shipped skill's lookup section states the graph-first rule for a human reader

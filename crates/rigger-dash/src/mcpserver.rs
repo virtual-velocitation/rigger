@@ -2315,10 +2315,9 @@ mod tests {
     /// spec 119's `entity_site` fields alone, none of its three nodes an `unresolved` key.
     #[test]
     fn rigger_graph_show_carries_a_files_unresolved_leaves_and_around_carries_none() {
-        use crate::contextgraph::LIST_SEP;
         use crate::test_support::{
-            around_nodes, fold_events, seed_unresolved_references, RESOLVING_FILE, UNRESOLVED_FILE,
-            UNRESOLVED_LEAVES,
+            assert_around_lists_no_unresolved, assert_show_lists_unresolved_leaves, fold_events,
+            seed_unresolved_references, RESOLVING_FILE, UNRESOLVED_FILE,
         };
 
         let graph = fold_events([]);
@@ -2327,27 +2326,8 @@ mod tests {
             shown_site(&graph, UNRESOLVED_FILE),
             shown_site(&graph, RESOLVING_FILE),
         );
-        assert_eq!(
-            [
-                reader.get("partial"),
-                reader.get("unresolved"),
-                definer.get("unresolved")
-            ],
-            [
-                Some(&json!("true")),
-                Some(&json!(UNRESOLVED_LEAVES.join(LIST_SEP))),
-                None
-            ],
-            "show carries the file's unresolved leaves beside partial, and no key for an empty list"
-        );
-        assert_eq!(
-            around_nodes(&around_answer(&graph, UNRESOLVED_FILE))
-                .iter()
-                .map(|node| node.get("unresolved"))
-                .collect::<Vec<_>>(),
-            [None, None, None],
-            "around carries no unresolved key on any node"
-        );
+        assert_show_lists_unresolved_leaves(&reader, &definer);
+        assert_around_lists_no_unresolved(&around_answer(&graph, UNRESOLVED_FILE));
     }
 
     /// Spec 101: a wired graph that owes its rebuild is refused by every tool whose answer depends

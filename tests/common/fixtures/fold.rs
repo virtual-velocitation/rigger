@@ -16,10 +16,10 @@ use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     around, entity_site, site_fields, Candidate, EntitySite, EntryFold, Graph, Located, Node,
     Projection, CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_TYPE,
-    KIND_ARCH_DECISION, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, META_ACTOR,
-    REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
-    TYPE_REVIEW_FINDING,
+    KIND_ARCH_DECISION, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, LIST_SEP,
+    META_ACTOR, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE, REL_CALLS, REL_IN_COMMUNITY,
+    REL_REFERENCES, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
+    TYPE_EDGE_INFERRED, TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::Event;
 use rigger::retention::GenerationIngested;
@@ -1053,6 +1053,43 @@ pub fn assert_finding_shows_past_the_depth_bound(finding: &serde_json::Value) {
     assert_eq!(
         finding["summary"], "the width overflows",
         "show keeps the finding's summary"
+    );
+}
+
+/// Spec 117, UNRESOLVED REFERENCES ARE A READ: `reader`, the `rigger_graph` `show` site of
+/// [`UNRESOLVED_FILE`] over [`seed_unresolved_references`], carries its `partial` and its
+/// [`UNRESOLVED_LEAVES`] joined by [`LIST_SEP`] as one `unresolved` key, and `definer`, that of
+/// [`RESOLVING_FILE`], which lists none, carries no `unresolved` key.
+pub fn assert_show_lists_unresolved_leaves(
+    reader: &serde_json::Value,
+    definer: &serde_json::Value,
+) {
+    assert_eq!(
+        [
+            reader.get("partial"),
+            reader.get("unresolved"),
+            definer.get("unresolved")
+        ],
+        [
+            Some(&serde_json::json!("true")),
+            Some(&serde_json::json!(UNRESOLVED_LEAVES.join(LIST_SEP))),
+            None
+        ],
+        "show carries the file's unresolved leaves beside partial, and no key for an empty list"
+    );
+}
+
+/// Spec 117, UNRESOLVED REFERENCES ARE A READ: `answer`, the `rigger_graph` `around` of
+/// [`UNRESOLVED_FILE`] at depth 1 over [`seed_unresolved_references`], loads the file and its two
+/// fns, none of them carrying an `unresolved` key.
+pub fn assert_around_lists_no_unresolved(answer: &serde_json::Value) {
+    assert_eq!(
+        around_nodes(answer)
+            .iter()
+            .map(|node| node.get("unresolved"))
+            .collect::<Vec<_>>(),
+        [None, None, None],
+        "around carries no unresolved key on any node"
     );
 }
 
