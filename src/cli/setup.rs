@@ -3696,6 +3696,10 @@ mod tests {
              format or macro string - is quoted with its `file:line` under the record's `ADDED \
              PREDICATES` heading with its one-home line, a changed condition among them listed \
              there too, and two of one fact are lifted to one home or `pinned to` each other.",
+            "A set of named members - an array of constants, an `IN (..)` list, a `matches!` or \
+             `match` arm per member, an `||` chain of equalities - runs the count above once per \
+             member's name, every statement, `match` or macro call holding two or more members \
+             read as a second spelling of the set, and its line names the member sites it read.",
             "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
             "On every round, the first and each later one alike, `<base>` is the unit's merge \
              base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
