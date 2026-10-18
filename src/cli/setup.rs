@@ -4106,14 +4106,13 @@ mod tests {
              adds yourself from its production hunks by shape as well as by name - every \
              boolean expression of the shapes the built-in rule lists for its `ADDED PREDICATES`, \
              a boolean expression or SQL conjunct inside a query string, format string or macro \
-             argument included - and read the `<unit>-sentence-walk` \
-             record's one-home lines for every item of it, its `ADDED PREDICATES` list included, \
-             and an added item with no line, two added predicates of one fact with two lines, or \
-             a line false at head (the fact has another spelling the line does not name, or the \
-             named derivation or pin does not exist), is BLOCKING (DRY, single responsibility), \
-             cited with both spellings' `file:line`.",
-            "For every added set of named members - an array or slice of constants, an `IN (..)` \
-             list, a `matches!` or `match` arm per member, an `||` chain of equalities - you run \
+             argument included - and read the `<unit>-sentence-walk` record's one-home lines for \
+             every item of it, its `ADDED PREDICATES` list included, and an added item with no \
+             line, two added predicates of one fact with two lines, or a line false at head (the \
+             fact has another spelling the line does not name, or the named derivation or pin \
+             does not exist), is BLOCKING (DRY, single responsibility), cited with both \
+             spellings' `file:line`.",
+            "For every added set of named members, of the forms the built-in rule names, you run \
              the member search yourself, the count of each member's name, every statement, \
              `match` or macro call holding two or more of them read as a second spelling of the \
              set, and a second spelling the one-home line does not name is BLOCKING on its own.",
@@ -4121,6 +4120,14 @@ mod tests {
             assert!(
                 flat.contains(wanted),
                 "architecture-reviewer.md must say {wanted:?}"
+            );
+        }
+        // The predicate shapes and the set forms are listed once, in the working discipline's
+        // one-home rule; the lens names that list and carries no copy of it.
+        for copied in ["`retain`, `position`", "an `||` chain of equalities"] {
+            assert!(
+                !flat.contains(copied),
+                "architecture-reviewer.md names the built-in's list instead of copying {copied:?}"
             );
         }
     }
