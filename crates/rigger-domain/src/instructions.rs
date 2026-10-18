@@ -541,6 +541,11 @@ mod tests {
              oracles - against the condition at head: a consumer sentence stating the \
              pre-change answer that the record does not carry FIXED or CHECKED is a BLOCKING \
              finding on its own.",
+            "The lens runs the two-term search itself - the feature's name AND the rule's noun \
+             phrase for each rule the change rewrites, the function's name AND the old answer's \
+             noun for each changed condition it derives, both terms on one joined line with any \
+             words between them: a hit the record lacks, or a hit CHECKED with a reason that does \
+             not hold at head, is a BLOCKING finding on its own.",
             "The lens reads every sentence it re-reads claim by claim against the unit's \
              change, with a witness per claim at head, and a sentence it cannot witness is a \
              BLOCKING finding on its own.",
