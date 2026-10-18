@@ -3950,6 +3950,10 @@ mod tests {
              list, is BLOCKING on its own, citing the statement's `file:line` and the term.",
             "You are also the enforcement of the built-in rule that every sentence about the \
              changed behaviour is true at head.",
+            "The author's `<unit>-sentence-walk` record names what each generator returned and \
+             carries one rule-spelling search per term pair of each rule the change rewrites - \
+             the built-in's two-term form, the feature's name AND the rule's noun phrase on one \
+             joined line - or names that set empty.",
             "you re-derive each generator's set on the review tree from the diff and the graph",
             "each hunk's identifiers, doc links (`[...]`) and constants included",
             "the depth-1 callers (`rigger graph --around <file>::<item> --depth 1`)",
