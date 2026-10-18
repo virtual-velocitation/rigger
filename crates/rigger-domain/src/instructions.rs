@@ -485,12 +485,20 @@ mod tests {
             "has spellings no generator above reaches: prose that states it without naming a \
              changed item",
             "every spelling of each rewritten rule is walked too",
-            "the distinguishing phrases of the rule's OLD statement and of the labels its cases \
-             carried - the words a sentence stating it cannot be written without, and each name \
-             the docs, test names and comments give a case the old rule decided",
-            "two phrases when one would miss a spelling",
-            "run one recorded search for each over every tracked text line: code, doc comments, \
-             body comments, test names and docs, assertion messages, specs and operator docs",
+            "write down, for the rule's OLD statement and for each label its cases carried, a \
+             pair of short terms: the feature's name as the code spells it (the flag \
+             `--around`, the fn, field, variant or table the rule concerns) and the rule's \
+             shortest distinguishing noun phrase (`exact id`, `import`, `collision`)",
+            "the words a sentence stating it cannot be written without, and each name the docs, \
+             test names and comments give a case the old rule decided",
+            "run one recorded search for each pair over every tracked text line: code, doc \
+             comments, body comments, test names and docs, assertion messages, specs and \
+             operator docs",
+            "a hit is a line, joined with the line before, that holds both terms, in either \
+             order and with any words, names or code spans between them",
+            "A term is a name or a noun phrase of at most three words: a search whose one term is \
+             a sentence fragment of more than three words misses the sentence that puts the \
+             feature's name or a qualifier between its words, and is a record you cannot write.",
             "The record carries each search's command, its hit count and every hit",
             "CHECKED with the named way it is not a spelling of the retired rule (a spec's \
              account of the pre-change state, a history note, a different rule sharing the \
@@ -652,6 +660,12 @@ mod tests {
         assert!(
             !words.contains("the token sequence its body cannot be written without"),
             "the shape search's unit is the statement, not the whole body"
+        );
+        // A rule-spelling search conjoins the feature's name with the rule's noun phrase, so
+        // the rule no longer offers a single phrase as the search's one term.
+        assert!(
+            !words.contains("two phrases when one would miss a spelling"),
+            "the rule search runs a term pair, not one phrase or two"
         );
     }
 
