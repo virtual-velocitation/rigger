@@ -1724,7 +1724,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:2120-2126` `live_ref_sql`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:3965-3967` `edge_text_sql`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4358-4360` `file_half_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:17094-17098` `refusing`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:17095-17099` `refusing`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:26-28` `stage_id`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:30-32` `gate_id`
@@ -4076,8 +4076,8 @@ mandatory sweep: sqlite Connection::open call sites - 60 site(s), collected mech
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6673-6673` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11140-11140` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11889-11889` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:14175-14175` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:15437-15437` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:14176-14176` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:15438-15438` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1547-1547` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2160-2160` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2182-2182` `Connection::open_with_flags`
@@ -4143,7 +4143,7 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5202-5215` `subgraph_finds_the_governing_decision`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13242-13262` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13243-13263` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
 
 #### `dup-e45a2413a3f0` (near, 7 sites)
 
@@ -4220,8 +4220,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13286-13317` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13562-13593` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13287-13318` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13563-13594` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
 
 #### `dup-a34b5b595e15` (near, 2 sites)
 
@@ -5293,7 +5293,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9714 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9715 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4996-5037` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15078-15100` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

@@ -12158,11 +12158,16 @@ mod tests {
         use rigger_domain::contextgraph::query::node_leaf;
 
         /// The assertion of a recording outside the generation rule: never retracted.
-        pub(super) const UNKEYED: Asserter<'static> = Asserter {
-            identity: "",
-            generation: "",
-            at: 0,
-        };
+        pub(super) const UNKEYED: Asserter<'static> = keyed("", "");
+
+        /// An assertion by `identity` at `generation`, valid from time zero.
+        pub(super) const fn keyed<'e>(identity: &'e str, generation: &'e str) -> Asserter<'e> {
+            Asserter {
+                identity,
+                generation,
+                at: 0,
+            }
+        }
 
         /// Run `write` in one committed transaction on `p`'s own connection: the direct writes a
         /// test makes beneath the fold - a nested id planted before any payload carries its path,
@@ -12370,11 +12375,7 @@ mod tests {
         #[test]
         fn an_empty_named_nodes_settle_fires_no_definition_retired() {
             let p = Projector::open(":memory:", "test").unwrap();
-            let first = Asserter {
-                identity: "gc/x",
-                generation: "g1",
-                at: 0,
-            };
+            let first = keyed("gc/x", "g1");
             let second = Asserter {
                 generation: "g2",
                 ..first
@@ -15614,7 +15615,7 @@ mod tests {
         /// changes a definition of its leaf. Every batch here folds through
         /// `Projection::apply_generation`, the one fold that stages a row.
         mod staged_references {
-            use super::super::leaf_keys_resolution::write_directly;
+            use super::super::leaf_keys_resolution::{keyed, write_directly};
             use super::ledger_entries::{
                 label, owe_without_refs, view_over_a_missing_table, MISSING_TABLE, SETUP_PAYS,
             };
@@ -17802,11 +17803,7 @@ mod tests {
                         declares(&p, 1, 10);
                         let identity = crate::test_support::gc_identity(NAMING_DOC);
                         write_directly(&p, |tx, project| {
-                            let by = Asserter {
-                                identity: &identity,
-                                generation: &identity,
-                                at: 0,
-                            };
+                            let by = keyed(&identity, &identity);
                             ensure_node(tx, &by, MODULE_FILE, kind, &[], project).unwrap();
                         });
                         assert_eq!(settled_by(&p, NAMING_DOC), expected, "{kind}");
