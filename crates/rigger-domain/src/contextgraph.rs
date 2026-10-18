@@ -1815,6 +1815,7 @@ mod site_renderer {
                 line: 12,
                 degree: 3,
                 attrs: all.attrs.clone(),
+                unresolved: vec![],
             },
             "an extensionless file's definition names its file and keeps every attr"
         );
@@ -1891,6 +1892,22 @@ mod site_renderer {
                 ("unit", json!("u7")),
                 ("summary", json!("s")),
                 ("partial", json!("true")),
+            ]
+        );
+    }
+
+    /// Spec 117, UNRESOLVED REFERENCES ARE A READ: a site's unresolved leaves give the entry
+    /// `unresolved` after `partial`, joined by [`LIST_SEP`].
+    #[test]
+    fn site_fields_gives_the_unresolved_leaves_after_partial_joined_by_the_list_separator() {
+        let file = node_with_attrs("src/lister.rs", KIND_FILE, &[("partial", "true")]);
+        let mut site = entity_site(&file, 2);
+        site.unresolved = vec!["Quill".to_string(), "Rook".to_string()];
+        assert_eq!(
+            site_fields(&site)[4..],
+            [
+                ("partial", json!("true")),
+                ("unresolved", json!("Quill, Rook")),
             ]
         );
     }

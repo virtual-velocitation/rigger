@@ -14536,6 +14536,43 @@ mod tests {
                 (dir, p, mark)
             }
 
+            /// Make `p`'s file one that owes its rebuild and holds no `refs` table: a file folded
+            /// under an older rule, opened as it stands (spec 117, GENERATIONS).
+            pub(in crate::contextgraph::sqlite::tests) fn owe_without_refs(p: &Projector) {
+                write_directly(p, |tx, _| {
+                    tx.execute_batch("DROP TABLE refs; PRAGMA user_version = 0;")
+                        .unwrap();
+                });
+                assert!(
+                    p.rebuild_owed().unwrap(),
+                    "premise: the file owes its rebuild"
+                );
+            }
+
+            /// The error a read of a table [`view_over_a_missing_table`] replaced meets.
+            pub(in crate::contextgraph::sqlite::tests) const MISSING_TABLE: &str =
+                "no such table: main.gone";
+
+            /// Replace `p`'s `table` by a view over a table the file does not hold, so a read of
+            /// its columns fails with [`MISSING_TABLE`].
+            pub(in crate::contextgraph::sqlite::tests) fn view_over_a_missing_table(
+                p: &Projector,
+                table: &str,
+            ) {
+                write_directly(p, |tx, _| {
+                    tx.execute_batch(&format!(
+                        "DROP TABLE {table}; CREATE VIEW {table} AS SELECT * FROM gone;"
+                    ))
+                    .unwrap();
+                });
+            }
+
+            /// `p`'s migration of the project `from` to `minted`: the rows it moved, or its
+            /// error's text.
+            fn migrate_to_minted(p: &Projector, from: &str) -> Result<usize, String> {
+                p.migrate_project(from, "minted").map_err(|e| e.0)
+            }
+
             /// `p` holding generation `h1` of `gc/src/f.rs`, folded from the entry at position 7
             /// valid from 10s: the definitions `alpha` and `gone`.
             fn holding_h1(p: &Projector) {
@@ -15149,7 +15186,7 @@ mod tests {
                 let held = counted(&PROJECT_KEYED, &[6, 6, 1, 7, 2, 1, 1, 1, 1, 0]);
                 assert_eq!(rows_under(&old, &PROJECT_KEYED, &from), held);
 
-                assert_eq!(old.migrate_project(&from, "minted").unwrap(), 6);
+                assert_eq!(migrate_to_minted(&old, &from).unwrap(), 6);
                 assert_eq!(
                     rows_under(&old, &PROJECT_KEYED, "minted"),
                     held,
@@ -15161,7 +15198,7 @@ mod tests {
                     "no row stays under the old scope"
                 );
                 let migrated = projection_but_applied(&old);
-                assert_eq!(old.migrate_project(&from, "minted").unwrap(), 0);
+                assert_eq!(migrate_to_minted(&old, &from).unwrap(), 0);
                 assert_eq!(
                     projection_but_applied(&old),
                     migrated,
@@ -15199,10 +15236,7 @@ mod tests {
                 });
                 assert!(owed.rebuild_owed().unwrap());
                 let tables = ["nodes", "edges"];
-                assert_eq!(
-                    owed.migrate_project(&from, "minted").map_err(|e| e.0),
-                    Ok(3)
-                );
+                assert_eq!(migrate_to_minted(&owed, &from), Ok(3));
                 assert_eq!(
                     rows_under(&owed, &tables, "minted"),
                     counted(&tables, &[3, 2])
@@ -15270,7 +15304,7 @@ mod tests {
                     .unwrap();
                 });
                 assert_eq!(
-                    p.migrate_project(&from, "minted").map_err(|e| e.0),
+                    migrate_to_minted(&p, &from),
                     Err(REFUSED.to_string()),
                     "the refused re-key of {table} fails the migration"
                 );
@@ -15301,16 +15335,8 @@ mod tests {
                 let p = fold_events([]);
                 let from = p.project.clone();
                 holding_h1(&p);
-                write_directly(&p, |tx, _| {
-                    tx.execute_batch(
-                        "DROP TABLE generations; CREATE VIEW generations AS SELECT * FROM gone;",
-                    )
-                    .unwrap();
-                });
-                assert_eq!(
-                    p.migrate_project(&from, "minted").map_err(|e| e.0),
-                    Err("no such table: main.gone".to_string())
-                );
+                view_over_a_missing_table(&p, "generations");
+                assert_eq!(migrate_to_minted(&p, &from), Err(MISSING_TABLE.to_string()));
                 let tables = ["nodes", "edges"];
                 assert_eq!(rows_under(&p, &tables, &from), counted(&tables, &[3, 2]));
             }
@@ -15340,47 +15366,45 @@ mod tests {
             #[test]
             fn a_refs_row_moves_with_its_edges_and_the_next_generation_drops_it() {
                 use crate::contextgraph::REF_KIND_CONST;
-                use crate::test_support::{entry_at, fold_entry_with, tagged_ref_json};
+                use crate::test_support::{fold_asked, tagged_ref};
                 let old = fold_events([]);
                 let from = old.project.clone();
-                let fold_batch = |p: &Projector, file: &str, generation: &str, pos: u64, batch| {
-                    let entry = entry_at("gc", file, generation, pos, 10 * pos);
-                    assert_eq!(fold_entry_with(p, &entry, batch), EntryFold::BatchAsked);
-                };
                 let cap =
                     crate::test_support::kind_def_json("src/b.rs", "CAP", "constant", 1, true);
-                fold_batch(
+                fold_asked(
                     &old,
                     "src/b.rs",
                     "b1",
                     1,
+                    10,
                     vec![event_of(TYPE_CODE_ENTITY_EXTRACTED, cap)],
                 );
                 let read = crate::test_support::def_json("src/a.rs", "read", 1, true);
-                let reads = tagged_ref_json("src/a.rs", "CAP", REF_KIND_CONST, Some("read"));
-                fold_batch(
+                fold_asked(
                     &old,
                     "src/a.rs",
                     "a1",
                     2,
+                    20,
                     vec![
                         event_of(TYPE_CODE_ENTITY_EXTRACTED, read),
-                        event_of(TYPE_EDGE_INFERRED, reads),
+                        tagged_ref("src/a.rs", "CAP", REF_KIND_CONST, Some("read")),
                     ],
                 );
                 let moved = ["refs", "edge_assertions"];
                 assert_eq!(rows_under(&old, &moved, &from), counted(&moved, &[1, 1]));
-                old.migrate_project(&from, "minted").unwrap();
+                migrate_to_minted(&old, &from).unwrap();
                 assert_eq!(rows_under(&old, &moved, "minted"), counted(&moved, &[1, 1]));
                 assert_eq!(rows_under(&old, &moved, &from), counted(&moved, &[0, 0]));
 
                 let minted = rescoped(old, "minted");
                 let read = crate::test_support::def_json("src/a.rs", "read", 1, true);
-                fold_batch(
+                fold_asked(
                     &minted,
                     "src/a.rs",
                     "a2",
                     3,
+                    30,
                     vec![event_of(TYPE_CODE_ENTITY_EXTRACTED, read)],
                 );
                 assert_eq!(
@@ -15402,18 +15426,11 @@ mod tests {
                 let owed = fold_events([]);
                 let from = owed.project.clone();
                 holding_h1(&owed);
-                write_directly(&owed, |tx, _| {
-                    tx.execute_batch("DROP TABLE refs; PRAGMA user_version = 0;")
-                        .unwrap();
-                });
-                assert!(owed.rebuild_owed().unwrap());
+                owe_without_refs(&owed);
                 let held = &PROJECT_KEYED[..9];
                 let counts = [3, 2, 1, 3, 0, 0, 0, 0, 0];
                 assert_eq!(rows_under(&owed, held, &from), counted(held, &counts));
-                assert_eq!(
-                    owed.migrate_project(&from, "minted").map_err(|e| e.0),
-                    Ok(3)
-                );
+                assert_eq!(migrate_to_minted(&owed, &from), Ok(3));
                 assert_eq!(rows_under(&owed, held, "minted"), counted(held, &counts));
                 assert_eq!(rows_under(&owed, held, &from), counted(held, &[0; 9]));
             }
@@ -15427,7 +15444,9 @@ mod tests {
         /// `Projection::apply_generation`, the one fold that stages a row.
         mod staged_references {
             use super::super::leaf_keys_resolution::write_directly;
-            use super::ledger_entries::{label, SETUP_PAYS};
+            use super::ledger_entries::{
+                label, owe_without_refs, view_over_a_missing_table, MISSING_TABLE, SETUP_PAYS,
+            };
             use super::*;
             use crate::contextgraph::{
                 CODE_KIND_CONSTANT, CODE_KIND_DECLARATION, CODE_KIND_FIELD, CODE_KIND_FUNCTION,
@@ -15435,10 +15454,11 @@ mod tests {
                 CODE_KIND_TYPE, CODE_KIND_VARIANT, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE,
             };
             use crate::test_support::{
-                call_json, code_entity_json, definition_event, entry_at, event_of,
-                fold_entry_result, fold_entry_with, fold_events, kind_def_json, landed, nanos,
-                no_bytes_batch, reference, referenced_not_called_ids, tagged_ref_json,
-                ONE_COMMUNITY,
+                call_json, code_entity_json, definition_event, entry_asked, entry_at, event_of,
+                fold_asked as fold, fold_entry_result, fold_entry_with, fold_events, kind_def_json,
+                landed, nanos, no_bytes_batch, reference, referenced_not_called_ids,
+                seed_unresolved_references, tagged_ref as tagged, tagged_ref_json, ONE_COMMUNITY,
+                RESOLVING_FILE, UNRESOLVED_FILE, UNRESOLVED_LEAVES, UNRESOLVED_SCAN,
             };
 
             /// The file whose functions read what the other files define.
@@ -15509,32 +15529,9 @@ mod tests {
                 )
             }
 
-            /// The `ref_kind` reference `file` makes to `name` from `caller`, else from the file,
-            /// as a batch event.
-            fn tagged(file: &str, name: &str, ref_kind: &str, caller: Option<&str>) -> Event {
-                event_of(
-                    TYPE_EDGE_INFERRED,
-                    tagged_ref_json(file, name, ref_kind, caller),
-                )
-            }
-
             /// [`READ`]'s `const` read of `name`, as a batch event.
             fn read_of(name: &str) -> Event {
                 tagged(A, name, REF_KIND_CONST, Some("read"))
-            }
-
-            /// Fold `batch` as generation `generation` of `gc/<file>`, its entry at log position
-            /// `pos` valid from `secs`, and insist the batch was asked for.
-            fn fold(
-                p: &Projector,
-                file: &str,
-                generation: &str,
-                pos: u64,
-                secs: u64,
-                batch: Vec<Event>,
-            ) {
-                let entry = entry_at("gc", file, generation, pos, secs);
-                assert_eq!(fold_entry_with(p, &entry, batch), EntryFold::BatchAsked);
             }
 
             /// Fold generation `generation` of [`B`] defining each `(name, kind)` of `names`.
@@ -16181,7 +16178,7 @@ mod tests {
             fn doc_linked_to_a_then_b(p: &Projector) {
                 for (generation, pos, to) in [("h1", 4, A), ("h2", 5, B)] {
                     let (entry, batch) = doc_linking(generation, pos, to);
-                    assert_eq!(fold_entry_with(p, &entry, batch), EntryFold::BatchAsked);
+                    entry_asked(p, &entry, batch);
                 }
             }
 
@@ -17077,10 +17074,7 @@ mod tests {
                 let (_dir, path) = crate::test_support::temp_graph_db();
                 let incremental = Projector::open(&path, "test").unwrap();
                 for (entry, batch) in &batches {
-                    assert_eq!(
-                        fold_entry_with(&incremental, entry, batch.clone()),
-                        EntryFold::BatchAsked
-                    );
+                    entry_asked(&incremental, entry, batch.clone());
                 }
                 let refs_dump = |p: &Projector| -> Vec<String> {
                     projection_but_applied(p)
@@ -17107,6 +17101,115 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(refs_dump(&Projector::open(&path, "test").unwrap()), folded);
+            }
+
+            /// The leaves the site `p` locates for `id` lists unresolved (spec 117, UNRESOLVED
+            /// REFERENCES ARE A READ).
+            fn listed(p: &Projector, id: &str) -> Vec<String> {
+                crate::test_support::located_site(p, id).unresolved
+            }
+
+            /// The site read of [`UNRESOLVED_FILE`] over `p`, its error as text.
+            fn site_read(p: &Projector) -> Result<Located, String> {
+                p.locate(UNRESOLVED_FILE).map_err(|e| e.0)
+            }
+
+            /// Spec 117, UNRESOLVED REFERENCES ARE A READ: a file node's site lists the sorted
+            /// distinct leaves of its live `type`, `const` and `use` rows, file-level and each
+            /// fn's, that resolve to nothing - a leaf two fns read once, a leaf another row of its
+            /// `from` resolves never, nor a resolved row's or another file's - while a file staging
+            /// no row and a fn node reading unresolved leaves list nothing.
+            #[test]
+            fn a_files_site_lists_the_sorted_distinct_leaves_its_live_rows_leave_unresolved() {
+                let p = fold_events([]);
+                seed_unresolved_references(&p);
+                assert_eq!(
+                    [UNRESOLVED_FILE, RESOLVING_FILE, UNRESOLVED_SCAN].map(|id| listed(&p, id)),
+                    [UNRESOLVED_LEAVES.map(String::from).to_vec(), vec![], vec![]]
+                );
+            }
+
+            /// Spec 117, UNRESOLVED REFERENCES ARE A READ: rows written into `refs` directly beside
+            /// [`seed_unresolved_references`]'s - an unresolved `module` row from the file at its
+            /// live generation, and an unresolved `type` row from its fn at a generation its
+            /// identity no longer holds - list nothing.
+            #[test]
+            fn an_unresolved_module_row_and_a_row_of_an_older_generation_list_nothing() {
+                let p = fold_events([]);
+                seed_unresolved_references(&p);
+                write_directly(&p, |tx, project| {
+                    tx.execute(
+                        "INSERT INTO refs
+                           (project, identity, generation, from_id, leaf, ref_kind, lang, position)
+                         SELECT project, identity, generation, ?2, 'src/reader/x.rs', 'module',
+                                'rust', 2
+                           FROM generations WHERE project = ?1 AND identity = ?3
+                         UNION ALL SELECT ?1, ?3, 'g-older', ?4, 'Stale', 'type', 'rust', 1",
+                        params![
+                            project,
+                            UNRESOLVED_FILE,
+                            crate::test_support::gc_identity(UNRESOLVED_FILE),
+                            UNRESOLVED_SCAN
+                        ],
+                    )
+                    .unwrap();
+                });
+                assert_eq!(listed(&p, UNRESOLVED_FILE), UNRESOLVED_LEAVES);
+            }
+
+            /// Spec 117, UNRESOLVED REFERENCES ARE A READ: two projects sharing one graph file
+            /// each list their own rows of one file: `theirs` holding
+            /// [`seed_unresolved_references`]'s, `ours` the same file staging none at the log
+            /// position after them.
+            #[test]
+            fn a_files_site_lists_its_own_projects_rows_alone() {
+                let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
+                seed_unresolved_references(&theirs);
+                let scan = definition_event(UNRESOLVED_FILE, "scan", CODE_KIND_FUNCTION, 1, true);
+                fold(&ours, UNRESOLVED_FILE, "g-ours", 4, 40, vec![scan]);
+                assert_eq!(
+                    (
+                        listed(&ours, UNRESOLVED_FILE),
+                        listed(&theirs, UNRESOLVED_FILE)
+                    ),
+                    (vec![], UNRESOLVED_LEAVES.map(String::from).to_vec())
+                );
+            }
+
+            /// Spec 117, GENERATIONS: a file that owes its rebuild, opened as it stands with no
+            /// `refs` table, answers a file node's site listing nothing.
+            #[test]
+            fn an_owed_store_with_no_refs_table_lists_nothing() {
+                let p = fold_events([]);
+                seed_unresolved_references(&p);
+                owe_without_refs(&p);
+                assert!(listed(&p, UNRESOLVED_FILE).is_empty());
+            }
+
+            /// A `refs` whose columns cannot be read fails a file's site read: the table replaced
+            /// by a view over a table the file does not hold.
+            #[test]
+            fn an_unreadable_refs_fails_a_files_site_read() {
+                let p = fold_events([]);
+                seed_unresolved_references(&p);
+                view_over_a_missing_table(&p, "refs");
+                assert_eq!(site_read(&p), Err(MISSING_TABLE.to_string()));
+            }
+
+            /// A file row whose leaf cannot be read fails the site read: every `refs` row's leaf
+            /// made a blob.
+            #[test]
+            fn an_unreadable_leaf_fails_a_files_site_read() {
+                let p = fold_events([]);
+                seed_unresolved_references(&p);
+                write_directly(&p, |tx, _| {
+                    tx.execute_batch(crate::test_support::UNREADABLE_LEAVES)
+                        .unwrap();
+                });
+                assert_eq!(
+                    site_read(&p),
+                    Err(crate::test_support::UNREADABLE_LEAF.to_string())
+                );
             }
         }
     }
@@ -17153,9 +17256,10 @@ mod tests {
         apply_def(&p, 1, "u.rs", "helper", 1, true);
         apply_call(&p, 2, "u.rs", "helper", "helper");
         for (pos, file) in [(3, "u.rs"), (4, "v.rs")] {
-            let mut head = crate::test_support::tagged_ref_json(file, "Ledger", "use", None);
+            let mut head = crate::test_support::marked_partial(
+                crate::test_support::tagged_ref_json(file, "Ledger", "use", None),
+            );
             head["fresh"] = true.into();
-            head["partial"] = true.into();
             apply_json(&p, pos, TYPE_EDGE_INFERRED, head);
         }
         assert_eq!(

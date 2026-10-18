@@ -15,10 +15,11 @@ use std::time::{Duration, UNIX_EPOCH};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     around, entity_site, site_fields, Candidate, EntitySite, EntryFold, Graph, Located, Node,
-    Projection, CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, KIND_ARCH_DECISION,
-    KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, META_ACTOR, REL_CALLS,
-    REL_IN_COMMUNITY, REL_REFERENCES, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
-    TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_REVIEW_FINDING,
+    Projection, CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_TYPE,
+    KIND_ARCH_DECISION, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, META_ACTOR,
+    REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
+    TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::Event;
 use rigger::retention::GenerationIngested;
@@ -144,6 +145,25 @@ pub fn fold_entry_result(
 ) -> Result<EntryFold, String> {
     p.apply_generation(entry, Box::new(move || Ok(Some(batch))))
         .map_err(|e| e.0)
+}
+
+/// Fold `entry` onto `p` with `batch` as its batch ([`fold_entry_with`]) and insist the batch was
+/// asked for.
+pub fn entry_asked(p: &dyn Projection, entry: &Event, batch: Vec<Event>) {
+    assert_eq!(fold_entry_with(p, entry, batch), EntryFold::BatchAsked);
+}
+
+/// Fold `batch` as generation `generation` of `gc/<file>`, its entry at log position `pos` valid
+/// from `secs` ([`entry_at`]), and insist the batch was asked for ([`entry_asked`]).
+pub fn fold_asked(
+    p: &dyn Projection,
+    file: &str,
+    generation: &str,
+    pos: u64,
+    secs: u64,
+    batch: Vec<Event>,
+) {
+    entry_asked(p, &entry_at("gc", file, generation, pos, secs), batch);
 }
 
 /// Every live edge `p` serves as `(from, rel, to, valid_from, source)`, sorted.
@@ -544,6 +564,12 @@ pub fn kind_def_json(
     })
 }
 
+/// `head` marked `partial`, as a degraded parse's head is.
+pub fn marked_partial(mut head: serde_json::Value) -> serde_json::Value {
+    head["partial"] = true.into();
+    head
+}
+
 /// The Rust definition of `name`, a `kind` at `line` in `file` ([`kind_def_json`]), as an unkeyed
 /// batch event, its batch's head when `fresh`.
 pub fn definition_event(file: &str, name: &str, kind: &str, line: u64, fresh: bool) -> Event {
@@ -591,6 +617,104 @@ pub fn tagged_ref_json(
         json["caller"] = caller.into();
     }
     json
+}
+
+/// The `ref_kind` reference `file` makes to `name` from `caller`, else from the file
+/// ([`tagged_ref_json`]), as an unkeyed batch event.
+pub fn tagged_ref(file: &str, name: &str, ref_kind: &str, caller: Option<&str>) -> Event {
+    event_of(
+        TYPE_EDGE_INFERRED,
+        tagged_ref_json(file, name, ref_kind, caller),
+    )
+}
+
+/// The file whose rows [`seed_unresolved_references`] stages: a file-level `use`, and the fns
+/// `scan` and `glance` reading what [`RESOLVING_FILE`] defines and what nothing does.
+pub const UNRESOLVED_FILE: &str = "src/reader.rs";
+
+/// The fn `scan` of [`UNRESOLVED_FILE`], a node reading unresolved leaves that is no file.
+pub const UNRESOLVED_SCAN: &str = "src/reader.rs::scan";
+
+/// The leaves of [`UNRESOLVED_FILE`]'s live rows that resolve to nothing, sorted and distinct
+/// (spec 117, UNRESOLVED REFERENCES ARE A READ).
+pub const UNRESOLVED_LEAVES: [&str; 4] = ["Elsewhere", "Hinted", "NOWHERE", "Unbuilt"];
+
+/// The file [`seed_unresolved_references`] defines the constant `CEILING` and the types `Halved`
+/// and `Hinted` in, staging no row of its own.
+pub const RESOLVING_FILE: &str = "src/definer.rs";
+
+/// The statement making every `refs` row's leaf a blob of its own bytes, which no read of it as
+/// text takes.
+pub const UNREADABLE_LEAVES: &str = "UPDATE refs SET leaf = CAST(leaf AS BLOB)";
+
+/// The error a read of a `refs` row's leaf as text meets once [`UNREADABLE_LEAVES`] ran.
+pub const UNREADABLE_LEAF: &str = "Invalid column type Blob at index: 0, name: leaf";
+
+/// Fold, each through `Projection::apply_generation` (the one fold that stages a row; spec 117):
+/// [`RESOLVING_FILE`] defining `CEILING`, `Halved` and `Hinted`; then [`UNRESOLVED_FILE`], its head
+/// carrying `partial`, whose file-level `use` of `Elsewhere`, whose fn `scan`'s `type` `Unbuilt`,
+/// `const` `CEILING`, `type` and `const` `Halved` and `type` `Hinted`, and whose fn `glance`'s
+/// `type` `Unbuilt`, `const` `NOWHERE` and `const` `Hinted` leave [`UNRESOLVED_LEAVES`]
+/// unresolved - `Unbuilt` read by two fns, `Halved` absent, its `type` row from `scan` resolving
+/// where its `const` row does not, and `Hinted` listed, its one resolving row read from `scan` and
+/// not from `glance`; then `src/bystander.rs`, whose file-level `type` of `Outlier` resolves to
+/// nothing.
+pub fn seed_unresolved_references(p: &dyn Projection) {
+    let fold = |file: &str, generation: &str, pos: u64, batch: Vec<Event>| {
+        fold_asked(p, file, generation, pos, 10 * pos, batch);
+    };
+    let defines = |name: &str, kind: &str, line: u64| {
+        definition_event(RESOLVING_FILE, name, kind, line, line == 1)
+    };
+    fold(
+        RESOLVING_FILE,
+        "g-definer",
+        1,
+        vec![
+            defines("CEILING", CODE_KIND_CONSTANT, 1),
+            defines("Halved", CODE_KIND_TYPE, 2),
+            defines("Hinted", CODE_KIND_TYPE, 3),
+        ],
+    );
+    let head = marked_partial(kind_def_json(
+        UNRESOLVED_FILE,
+        "scan",
+        CODE_KIND_FUNCTION,
+        1,
+        true,
+    ));
+    let from = |name: &str, ref_kind: &str, caller: Option<&str>| {
+        tagged_ref(UNRESOLVED_FILE, name, ref_kind, caller)
+    };
+    let (scan, glance) = (Some("scan"), Some("glance"));
+    fold(
+        UNRESOLVED_FILE,
+        "g-reader",
+        2,
+        vec![
+            event_of(TYPE_CODE_ENTITY_EXTRACTED, head),
+            definition_event(UNRESOLVED_FILE, "glance", CODE_KIND_FUNCTION, 2, false),
+            from("Elsewhere", REF_KIND_USE, None),
+            from("Unbuilt", REF_KIND_TYPE, scan),
+            from("CEILING", REF_KIND_CONST, scan),
+            from("Halved", REF_KIND_TYPE, scan),
+            from("Halved", REF_KIND_CONST, scan),
+            from("Hinted", REF_KIND_TYPE, scan),
+            from("Unbuilt", REF_KIND_TYPE, glance),
+            from("NOWHERE", REF_KIND_CONST, glance),
+            from("Hinted", REF_KIND_CONST, glance),
+        ],
+    );
+    let bystander = "src/bystander.rs";
+    fold(
+        bystander,
+        "g-bystander",
+        3,
+        vec![
+            definition_event(bystander, "observe", CODE_KIND_FUNCTION, 1, true),
+            tagged_ref(bystander, "Outlier", REF_KIND_TYPE, None),
+        ],
+    );
 }
 
 /// The `DecisionMade` payload. Each entry in `governs` folds a `decision --GOVERNS--> file` edge; a

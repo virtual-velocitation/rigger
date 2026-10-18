@@ -234,6 +234,7 @@ fn an_entity_of_an_empty_name_answers_no_bare_lookup() {
             line: 1,
             degree: 1,
             attrs: definition("open", "function", 1),
+            unresolved: vec![],
         }),
         "a named fn answers its leaf"
     );

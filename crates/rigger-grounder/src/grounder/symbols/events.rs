@@ -3173,8 +3173,8 @@ mod tests {
     /// definition whichever file folds first, and none once `src/c.rs` defines each leaf again.
     #[test]
     fn a_use_a_field_type_and_a_const_read_reach_their_one_definition_in_either_fold_order() {
-        use crate::contextgraph::{EntryFold, TIER_INFERRED};
-        use crate::test_support::{entry_at, fold_entry_with, landed};
+        use crate::contextgraph::TIER_INFERRED;
+        use crate::test_support::{fold_asked, landed};
 
         let a = (
             "src/a.rs",
@@ -3188,8 +3188,7 @@ mod tests {
         let c = ("src/c.rs", b.1);
         let fold = |p: &Projector, pos: u64, (file, source): (&str, &str)| {
             let batch = super::bytes_batch(file, Some(source.as_bytes()), false);
-            let entry = entry_at("gc", file, "g1", pos, pos);
-            assert_eq!(fold_entry_with(p, &entry, batch), EntryFold::BatchAsked);
+            fold_asked(p, file, "g1", pos, pos, batch);
         };
         let references = |p: &Projector| -> Vec<(String, String, String)> {
             landed(p)

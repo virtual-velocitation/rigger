@@ -496,6 +496,39 @@ pub fn planted_graph(root: &Path, graph: &rigger::contextgraph::Graph) -> Projec
     planted
 }
 
+/// An alias the CLI's alias tests define of
+/// [`UNRESOLVED_FILE`](super::fixtures::UNRESOLVED_FILE) (spec 117).
+pub const UNRESOLVED_ALIAS: &str = "src/aka.rs";
+
+/// A [`temp_project`] whose own graph holds the rows
+/// [`seed_unresolved_references`](super::fixtures::seed_unresolved_references) stages (spec 117,
+/// UNRESOLVED REFERENCES ARE A READ).
+pub fn unresolved_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    seed_rigger_dir(dir.path());
+    super::fixtures::seed_unresolved_references(&open_graph(dir.path()));
+    dir
+}
+
+/// The error `rigger graph --around <seed> --depth 1` fails with over an [`unresolved_project`]
+/// once `sql` ran on its graph, the command printing nothing on stdout and its stderr that error
+/// alone, after the binary's `rigger: graph: ` prefix.
+pub fn around_unresolved_fails_after(sql: &str, seed: &str) -> String {
+    let dir = unresolved_project();
+    rigger_db(dir.path(), "graph.db")
+        .execute_batch(sql)
+        .unwrap();
+    let (out, err, ok) = run_around(dir.path(), seed, 1);
+    assert!(
+        out.is_empty() && !ok,
+        "the around fails printing nothing; stderr:\n{err}"
+    );
+    err.strip_prefix("rigger: graph: ")
+        .map(str::trim_end)
+        .unwrap_or_else(|| panic!("a graph error; stderr:\n{err}"))
+        .to_string()
+}
+
 /// The stdout `rigger graph --show <query>` prints when several definitions answer `query`: the
 /// candidate count, then each `(id, file)` of `cands` on its own line, in their order, and no body.
 pub fn ambiguous_show(query: &str, cands: &[(&str, &str)]) -> String {

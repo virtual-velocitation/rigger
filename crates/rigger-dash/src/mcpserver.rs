@@ -2225,6 +2225,18 @@ mod tests {
         call(&server, &tools_call("rigger_graph", arguments))["result"]["structuredContent"].clone()
     }
 
+    /// The site object the `rigger_graph` `show` of `id` answers over `graph`
+    /// ([`shown_graph_answer`]).
+    fn shown_site(graph: &crate::contextgraph::sqlite::Projector, id: &str) -> Value {
+        shown_graph_answer(graph, json!({"show": id}))["site"].clone()
+    }
+
+    /// The `rigger_graph` `around` answer of `seed` at depth 1 over `graph`
+    /// ([`shown_graph_answer`]).
+    fn around_answer(graph: &crate::contextgraph::sqlite::Projector, seed: &str) -> Value {
+        shown_graph_answer(graph, json!({"around": seed, "depth": 1}))
+    }
+
     /// Spec 119, SHOW IS ONE RENDERER: the MCP `show` gives each node by exact id as its `id` and
     /// the `site_fields` entries as keys - `line` and `degree` JSON numbers, a `doc` holding a
     /// newline verbatim, an empty `lang` and the `proven_by` attr giving no key, an empty `kind`
@@ -2237,8 +2249,7 @@ mod tests {
 
         let graph = Projector::open(":memory:", "test").unwrap();
         seed_shown_nodes(&graph);
-        let sites =
-            SHOWN_IDS.map(|id| shown_graph_answer(&graph, json!({"show": id}))["site"].clone());
+        let sites = SHOWN_IDS.map(|id| shown_site(&graph, id));
         assert_eq!(
             sites,
             [
@@ -2278,8 +2289,8 @@ mod tests {
 
         let graph = Projector::open(":memory:", "test").unwrap();
         seed_shown_nodes(&graph);
-        let answer = shown_graph_answer(&graph, json!({"around": SHOWN_FILE, "depth": 1}));
-        let shown = |id: &str| shown_graph_answer(&graph, json!({"show": id}))["site"].clone();
+        let answer = around_answer(&graph, SHOWN_FILE);
+        let shown = |id: &str| shown_site(&graph, id);
         let nodes = crate::test_support::around_nodes(&answer);
         assert_eq!(
             nodes,
@@ -2296,6 +2307,47 @@ mod tests {
         );
         crate::test_support::assert_around_is_entity_sites(&graph, &nodes);
         crate::test_support::assert_finding_shows_past_the_depth_bound(&shown("f-shown"));
+    }
+
+    /// Spec 117, UNRESOLVED REFERENCES ARE A READ: the MCP `show` of a file node carries its
+    /// unresolved leaves as one `unresolved` key, joined by `LIST_SEP`, beside its `partial`; a
+    /// file listing none carries no `unresolved` key; and the MCP `around` of the file carries
+    /// spec 119's `entity_site` fields alone, none of its three nodes an `unresolved` key.
+    #[test]
+    fn rigger_graph_show_carries_a_files_unresolved_leaves_and_around_carries_none() {
+        use crate::contextgraph::LIST_SEP;
+        use crate::test_support::{
+            around_nodes, fold_events, seed_unresolved_references, RESOLVING_FILE, UNRESOLVED_FILE,
+            UNRESOLVED_LEAVES,
+        };
+
+        let graph = fold_events([]);
+        seed_unresolved_references(&graph);
+        let (reader, definer) = (
+            shown_site(&graph, UNRESOLVED_FILE),
+            shown_site(&graph, RESOLVING_FILE),
+        );
+        assert_eq!(
+            [
+                reader.get("partial"),
+                reader.get("unresolved"),
+                definer.get("unresolved")
+            ],
+            [
+                Some(&json!("true")),
+                Some(&json!(UNRESOLVED_LEAVES.join(LIST_SEP))),
+                None
+            ],
+            "show carries the file's unresolved leaves beside partial, and no key for an empty list"
+        );
+        assert_eq!(
+            around_nodes(&around_answer(&graph, UNRESOLVED_FILE))
+                .iter()
+                .map(|node| node.get("unresolved"))
+                .collect::<Vec<_>>(),
+            [None, None, None],
+            "around carries no unresolved key on any node"
+        );
     }
 
     /// Spec 101: a wired graph that owes its rebuild is refused by every tool whose answer depends
