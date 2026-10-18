@@ -271,7 +271,15 @@ tool that searches them.
   the tree already spells is `derived from` that spelling, the hunk and the existing sites
   reading one fn, or `pinned to` it, and a fact the tree already spells twice is lifted at all
   three sites - the pre-existing pair is the tree's debt, and the unit's third spelling makes it
-  the unit's. An added item with no line is a record you cannot write. The architecture lens
+  the unit's. The walk's item list is derived from the production hunks by shape as well as by
+  name, since a predicate has no name the count could list: every boolean expression the hunks
+  add - an `if`, `else if`, `while` or match-guard condition, each operand of an `&&` or `||`
+  chain inside one, the body of a closure passed to `filter`, `any`, `all`, `retain`, `position`
+  or `find`, and every conjunct inside a query string, format string or macro argument the
+  production code executes - is an item, quoted with its `file:line` under the record's `ADDED
+  PREDICATES` heading with its one-home line. A predicate that is also a changed condition
+  appears in both lists, its rule search in one and its one-home line in the other, and neither
+  entry stands in for the other. An added item with no line is a record you cannot write. The architecture lens
   derives the set of added constants, statics, lists, closures and predicates itself from the
   production hunks, query strings included, and compares it with the record's one-home lines:
   an added item the record has no line for is a BLOCKING finding on its own. The architecture
