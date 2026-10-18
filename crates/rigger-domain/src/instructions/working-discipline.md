@@ -296,7 +296,11 @@ tool that searches them.
   lens reads the walk record's
   one-home lines for every item the unit adds: an added item with no line, or a line false at
   head - the fact has another spelling the line does not name, or the named derivation or pin
-  does not exist - is a BLOCKING finding on its own (DRY, single responsibility).
+  does not exist - is a BLOCKING finding on its own (DRY, single responsibility). The
+  architecture lens derives the added set by the same shapes, the `ADDED PREDICATES` list and
+  every added set of named members included, and runs the member search itself for every added
+  set: an added predicate with no line, two added predicates of one fact with two lines, or a
+  second spelling of a set the line does not name, is a BLOCKING finding on its own.
 - **A probe that edits your tree is over before your turn is.** A reversion probe, or any check
   that edits your worktree, runs to completion and restores the tree before your turn ends,
   never as a detached or background job: the attempt checkpoint commits whatever the worktree
