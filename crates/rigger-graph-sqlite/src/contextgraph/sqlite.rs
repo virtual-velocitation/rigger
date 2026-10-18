@@ -15745,6 +15745,16 @@ mod tests {
                 fold(p, A, generation, pos, secs, batch);
             }
 
+            /// A projector where [`B`] defines `CAP` (generation `b1`, position 1, 10 s) and then
+            /// [`READ`] reads it (generation `a1`, position 2, 20 s): one resolved `const` row
+            /// and its live `REFERENCES` edge onto [`CAP`].
+            fn const_read_resolved() -> Projector {
+                let p = fold_events([]);
+                b_defines(&p, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
+                a_reads(&p, "a1", 2, 20, vec![read_of("CAP")]);
+                p
+            }
+
             /// The `(from, rel, to, tier)` of every live `REFERENCES` edge of `p`, sorted.
             fn references(p: &Projector) -> Vec<(String, String, String, String)> {
                 landed(p)
@@ -15833,6 +15843,32 @@ mod tests {
                         "source is the staging position, valid-time the resolving batch's"
                     );
                 }
+            }
+
+            /// A `ref_kind` this binary stages none of ([`staged_rel`] answers it nothing), as a
+            /// row another binary sharing the store writes.
+            const FOREIGN_KIND: &str = "foreign";
+
+            /// A resolved row of a kind this binary stages none of, written into the shared store
+            /// by another binary, settles nothing: a later batch defining its leaf, which reaches
+            /// it through the leaf, leaves its target and its edge as they were.
+            #[test]
+            fn a_row_of_a_kind_this_binary_stages_none_of_keeps_its_target_and_its_edge() {
+                let p = const_read_resolved();
+                write_directly(&p, |tx, project| {
+                    tx.execute(
+                        "UPDATE refs SET ref_kind = ?2 WHERE project = ?1",
+                        params![project, FOREIGN_KIND],
+                    )
+                    .unwrap();
+                });
+                let planted = (rows(&p), reference_rows(&p, READ));
+                assert_eq!(
+                    planted.0,
+                    [row(A, "a1", (READ, "CAP", FOREIGN_KIND), 2, Some(CAP))]
+                );
+                fold_defining(&p, C, "c1", 3, 30, &[("CAP", CODE_KIND_CONSTANT)]);
+                assert_eq!((rows(&p), reference_rows(&p, READ)), planted);
             }
 
             /// Two candidates of a row's kinds, or none, leave it unresolved with no edge and
@@ -16166,9 +16202,7 @@ mod tests {
             /// its own staging identity, so one file dropping its read retires its edge alone.
             #[test]
             fn two_staging_files_rows_settle_independently() {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                a_reads(&p, "a1", 2, 20, vec![read_of("CAP")]);
+                let p = const_read_resolved();
                 let c_reads = vec![
                     definition_event(C, "use_it", CODE_KIND_FUNCTION, 1, true),
                     tagged(C, "CAP", REF_KIND_CONST, Some("use_it")),
@@ -16217,9 +16251,7 @@ mod tests {
             /// event time, and restored in a later batch writes a new edge row.
             #[test]
             fn a_definition_kept_leaves_the_edge_and_removed_then_restored_writes_a_new_row() {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                a_reads(&p, "a1", 2, 20, vec![read_of("CAP")]);
+                let p = const_read_resolved();
                 b_defines(
                     &p,
                     "b2",
@@ -16248,9 +16280,7 @@ mod tests {
             /// row, valid since the first resolution, its `source` moved to the new staging.
             #[test]
             fn the_staging_file_re_extracted_with_the_read_kept_continues_the_edge() {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                a_reads(&p, "a1", 2, 20, vec![read_of("CAP")]);
+                let p = const_read_resolved();
                 a_reads(&p, "a2", 3, 30, vec![read_of("CAP")]);
                 assert_eq!(
                     reference_rows(&p, READ),
@@ -16268,9 +16298,7 @@ mod tests {
             /// generation.
             #[test]
             fn a_prior_generations_row_edge_entry_no_new_row_asserts_is_gone_at_the_batch_end() {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                a_reads(&p, "a1", 2, 20, vec![read_of("CAP")]);
+                let p = const_read_resolved();
                 a_reads(&p, "a2", 3, 30, vec![]);
                 assert_eq!(reference_assertions(&p), []);
                 assert_eq!(
@@ -16499,9 +16527,7 @@ mod tests {
             /// `referenced_not_called` lists the file of a fn-level row's edge, never the fn.
             #[test]
             fn referenced_not_called_lists_a_fn_level_rows_file_never_the_fn() {
-                let p = fold_events([]);
-                b_defines(&p, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
-                a_reads(&p, "a1", 2, 20, vec![read_of("CAP")]);
+                let p = const_read_resolved();
                 assert_eq!(referenced_not_called_ids(&p, CAP), [A]);
             }
 
