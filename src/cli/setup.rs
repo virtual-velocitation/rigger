@@ -4103,11 +4103,10 @@ mod tests {
         let flat = rigger::wave::normalize_ws(&committed_persona("architecture-reviewer.md"));
         for wanted in [
             "you derive the set of constants, statics, lists, closures and predicates the unit \
-             adds yourself from its production hunks by shape as well as by name - every `if`, \
-             `else if`, `while` or match-guard condition, each operand of an `&&` or `||` chain \
-             inside one, the body of a closure passed to `filter`, `any`, `all`, `retain`, \
-             `position` or `find`, and a boolean expression or SQL conjunct inside a query \
-             string, format string or macro argument - and read the `<unit>-sentence-walk` \
+             adds yourself from its production hunks by shape as well as by name - every \
+             boolean expression of the shapes the built-in rule lists for its `ADDED PREDICATES`, \
+             a boolean expression or SQL conjunct inside a query string, format string or macro \
+             argument included - and read the `<unit>-sentence-walk` \
              record's one-home lines for every item of it, its `ADDED PREDICATES` list included, \
              and an added item with no line, two added predicates of one fact with two lines, or \
              a line false at head (the fact has another spelling the line does not name, or the \
