@@ -4102,6 +4102,11 @@ mod tests {
              a line false at head (the fact has another spelling the line does not name, or the \
              named derivation or pin does not exist), is BLOCKING (DRY, single responsibility), \
              cited with both spellings' `file:line`.",
+            "For every added set of named members - an array or slice of constants, an `IN (..)` \
+             list, a `matches!` or `match` arm per member, an `||` chain of equalities - you run \
+             the member search yourself, the count of each member's name, every statement, \
+             `match` or macro call holding two or more of them read as a second spelling of the \
+             set, and a second spelling the one-home line does not name is BLOCKING on its own.",
         ] {
             assert!(
                 flat.contains(wanted),
