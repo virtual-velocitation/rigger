@@ -148,12 +148,18 @@ tool that searches them.
   the code decides by, such as what a call lands on or what a tier means - has spellings no
   generator above reaches: prose that states it without naming a changed item. So every
   spelling of each rewritten rule is walked too, and its search is an instrument, not a claim:
-  write down the distinguishing phrases of the rule's OLD statement and of the labels its cases
-  carried - the words a sentence stating it cannot be written without, and each name the docs,
-  test names and comments give a case the old rule decided (a "cross-file caller" for the calls
-  only the old rule sent across files); two phrases when one would miss a spelling - and run
-  one recorded search for each over every tracked text line: code, doc comments, body
-  comments, test names and docs, assertion messages, specs and operator docs. The record
+  write down, for the rule's OLD statement and for each label its cases carried, a pair of short
+  terms: the feature's name as the code spells it (the flag `--around`, the fn, field, variant
+  or table the rule concerns) and the rule's shortest distinguishing noun phrase (`exact id`,
+  `import`, `collision`) - the words a sentence stating it cannot be written without, and each
+  name the docs, test names and comments give a case the old rule decided (a "cross-file
+  caller" for the calls only the old rule sent across files) - and run one recorded search for
+  each pair over every tracked text line: code, doc comments, body comments, test names and
+  docs, assertion messages, specs and operator docs, where a hit is a line, joined with the line
+  before, that holds both terms, in either order and with any words, names or code spans
+  between them. A term is a name or a noun phrase of at most three words: a search whose one
+  term is a sentence fragment of more than three words misses the sentence that puts the
+  feature's name or a qualifier between its words, and is a record you cannot write. The record
   carries each search's command, its hit count and every hit, each FIXED, or CHECKED with the
   named way it is not a spelling of the retired rule (a spec's account of the pre-change
   state, a history note, a different rule sharing the words). A rewritten rule with no search
