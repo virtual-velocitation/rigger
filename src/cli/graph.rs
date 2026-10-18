@@ -48,9 +48,17 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
         return Err("graph: --around <id> or --show <entity> is required".into());
     }
     let gp = owning_graph_to_read()?;
-    let g = contextgraph::around(&gp, &[around.clone()], depth)?;
+    // The queried id (spec 117, UNRESOLVED REFERENCES ARE A READ): the query resolved once through
+    // the port, an alias to its canonical id, else the query as typed. Its one site read answers
+    // the queried node's unresolved leaves.
+    let queried = Projection::resolve(&gp, &around)?.unwrap_or(around.clone());
+    let g = contextgraph::around(&gp, std::slice::from_ref(&queried), depth)?;
+    let unresolved = match gp.locate(&queried)? {
+        Located::One(site) => site.unresolved,
+        _ => Vec::new(),
+    };
     println!("subgraph around {around:?} (depth {depth}):");
-    print_around_subgraph(&g, &around);
+    print_around_subgraph(&g, &queried, &unresolved);
     Ok(())
 }
 
@@ -85,10 +93,14 @@ const AROUND_GOVERNANCE_CAP: usize = 10;
 ///   inbound `SUPERSEDES` edge carries its superseder's fresh position, which would let the
 ///   stale decision crowd a live one out of the cap if it counted).
 ///
+/// The queried node `around`'s line is followed by `  unresolved <count>`, the count of its
+/// `unresolved` leaves (spec 117), when it lists any; no other node prints one.
+///
 /// An empty subgraph prints one note naming the seed form (spec 119, A BARE SHOW FINDS A LEAF OR
-/// PATH): a seed is an exact id, `<file>::<path>`, never resolved from a bare name, and
-/// `rigger graph --show <name>` is the verb that resolves one.
-fn print_around_subgraph(g: &contextgraph::Graph, around: &str) {
+/// PATH): a seed is an exact id, `<file>::<path>`, or an alias [`cmd_graph`] resolves to one (spec
+/// 117), never resolved from a bare name, and `rigger graph --show <name>` is the verb that
+/// resolves one.
+fn print_around_subgraph(g: &contextgraph::Graph, around: &str, unresolved: &[String]) {
     use std::collections::{BTreeMap, BTreeSet};
 
     let is_narrative =
@@ -101,6 +113,9 @@ fn print_around_subgraph(g: &contextgraph::Graph, around: &str) {
 
     for n in &code_nodes {
         println!("  node {:<24} {}", n.id, n.kind);
+        if n.id == around && !unresolved.is_empty() {
+            println!("  unresolved {}", unresolved.len());
+        }
     }
     for e in &g.edges {
         if code_ids.contains(e.from.as_str()) && code_ids.contains(e.to.as_str()) {
@@ -350,7 +365,7 @@ fn print_site_header(site: &contextgraph::EntitySite, file: &str, live_line: u32
 /// so each entry stays one line (the MCP key carrying it verbatim).
 fn print_site_entries(site: &contextgraph::EntitySite) {
     for (entry, value) in contextgraph::site_fields(site) {
-        // The header's entries; every entry after them is a recorded string value.
+        // The header's entries; every entry after them is a string value.
         if matches!(entry, "file" | "line" | "kind" | "degree") {
             continue;
         }

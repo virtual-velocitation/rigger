@@ -17,11 +17,12 @@ use super::{
     Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
     KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING,
     KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE, NON_TARGET_KINDS,
-    OWED_LOST_FOLD, OWED_OLDER_RULE, PLACEHOLDER_SIGIL, REBUILD_OWED, REL_ABOUT, REL_CALLS,
-    REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY,
-    REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
-    REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
-    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
+    OWED_LOST_FOLD, OWED_OLDER_RULE, PLACEHOLDER_SIGIL, REBUILD_OWED, REF_KIND_CONST,
+    REF_KIND_TYPE, REF_KIND_USE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS,
+    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED,
+    REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES,
+    REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED,
+    TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
     TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
     TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
@@ -957,13 +958,16 @@ impl Projector {
     }
 
     /// Build an [`EntitySite`] from a resolved node: [`entity_site`]'s rules over the row read,
-    /// at its one-hop live-edge degree. Read-only; used by [`locate`](Projector::locate). The
+    /// at its one-hop live-edge degree, a `file` node's unresolved references read beside it
+    /// ([`unresolved_leaves`]). Read-only; used by [`locate`](Projector::locate). The
     /// body's extent is NOT bounded here: the show surface derives it from the working tree
     /// through the shared multi-grammar symbols authority (the grammar's own node boundary), so
     /// the graph adapter carries no structural end-line guess.
     fn site_of(&self, conn: &Connection, node: Node) -> Result<EntitySite, Error> {
         let degree = one_hop_degree(conn, &node.id, &self.project)?;
-        Ok(entity_site(&node, degree))
+        let mut site = entity_site(&node, degree);
+        site.unresolved = unresolved_leaves(conn, &node, &self.project)?;
+        Ok(site)
     }
 
     /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE, VALIDATE ADVISORY): the count of
@@ -3717,6 +3721,37 @@ fn one_hop_degree(conn: &Connection, id: &str, project: &str) -> Result<usize, E
     Ok(n as usize)
 }
 
+/// A file node's unresolved references (spec 117, UNRESOLVED REFERENCES ARE A READ), read at
+/// read time and never stored: the sorted distinct leaves of its live `type`, `const` and `use`
+/// rows in `project` - those read from the file or from an id in its `<file>::` range
+/// ([`id_range_sql`]), staged at their identity's current generation ([`live_ref_sql`]) - of which
+/// no row of the same `from` and leaf resolves, so a module row is never listed. Any other node,
+/// and a file that owes its rebuild opened with no `refs` table ([`column_exists`]), lists none.
+fn unresolved_leaves(conn: &Connection, node: &Node, project: &str) -> Result<Vec<String>, Error> {
+    if node.kind != KIND_FILE || !column_exists(conn, "refs", "leaf")? {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "SELECT r.leaf FROM refs r
+          WHERE r.project = ?2 AND (r.from_id = ?1 OR {}) AND r.ref_kind IN ({}) AND {}
+          GROUP BY r.from_id, r.leaf
+         HAVING COUNT(r.target) = 0",
+        id_range_sql("r.from_id", "?1"),
+        kinds_sql(&[REF_KIND_TYPE, REF_KIND_CONST, REF_KIND_USE]),
+        live_ref_sql("r")
+    );
+    let leaves: BTreeSet<String> = conn
+        .prepare(&sql)
+        .and_then(|mut stmt| {
+            let leaves = stmt
+                .query_map(params![node.id, project], |r| r.get(0))
+                .and_then(Iterator::collect);
+            leaves
+        })
+        .map_err(be)?;
+    Ok(leaves.into_iter().collect())
+}
+
 /// The confidence rank of a tier (spec 52 / 29a addendum 6.2): `extracted` (2, the precise
 /// seed) > `inferred` (1, a derived cross-file link) > `ambiguous` (0, grep-visible-only); any
 /// other value ranks `unrecognized`. A directed walk follows an edge only when its rank is at or
@@ -3764,8 +3799,9 @@ fn call_target_sql() -> String {
     )
 }
 
-/// The code kinds `kinds` as the items of a SQL list, each a quoted literal: what a node row's
-/// `kind` attr is compared against ([`call_target_sql`], [`settled_target_sql`]).
+/// The kinds `kinds` as the items of a SQL list, each a quoted literal: the code kinds a node
+/// row's `kind` attr is compared against ([`call_target_sql`], [`settled_target_sql`]) and the
+/// `ref_kind`s a `refs` row's is ([`unresolved_leaves`]).
 fn kinds_sql(kinds: &[&str]) -> String {
     let kinds: Vec<String> = kinds.iter().map(|k| format!("'{k}'")).collect();
     kinds.join(", ")
@@ -3785,8 +3821,8 @@ fn node_leaf_sql() -> &'static str {
 /// byte after `:`), so a seek of an index on `column` answers it and no `LIKE`/`GLOB` wildcard a
 /// real path could hold is read. The one spelling every reader of a file's id range embeds: the
 /// leaf lookup filtered to a file ([`leaf_definitions_sql`]), a file's supersession
-/// ([`supersede_file_edges`]), its relabel debt ([`owe_relabel_of`]) and `subgraph`'s member hop
-/// ([`reach_sql`]).
+/// ([`supersede_file_edges`]), its relabel debt ([`owe_relabel_of`]), `subgraph`'s member hop
+/// ([`reach_sql`]) and its unresolved references ([`unresolved_leaves`]).
 fn id_range_sql(column: &str, file: &str) -> String {
     format!("{column} >= {file} || '::' AND {column} < {file} || ':;'")
 }

@@ -423,9 +423,10 @@ pub enum Located {
 }
 
 /// A single located node (spec 58; spec 119, SHOW IS ONE RENDERER): where it lives, how it sits in
-/// the graph and the attrs it carries, built by [`entity_site`] alone, so every show surface prints
-/// the entries [`site_fields`] gives, the MCP `around` less its `summary`, and the CLI bounds the
-/// body it reads from the working tree.
+/// the graph and the attrs it carries, those built by [`entity_site`] alone, so every show surface
+/// prints the entries [`site_fields`] gives, the MCP `around` less its `summary`, and the CLI
+/// bounds the body it reads from the working tree. Only the adapter's site read fills its
+/// [`unresolved`](EntitySite::unresolved) leaves (spec 117, UNRESOLVED REFERENCES ARE A READ).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntitySite {
     /// The node id (`<file>::<path>` for a definition).
@@ -444,7 +445,15 @@ pub struct EntitySite {
     pub degree: usize,
     /// The node's attrs, whole; [`site_fields`] gives the closed list of them a surface prints.
     pub attrs: BTreeMap<String, String>,
+    /// A `file` node's unresolved references (spec 117, UNRESOLVED REFERENCES ARE A READ): the
+    /// sorted distinct leaves of its live `type`, `const` and `use` rows that resolve to nothing,
+    /// read at its site read; empty for any other node and for a site [`entity_site`] builds.
+    pub unresolved: Vec<String>,
 }
+
+/// The one separator a list-valued [`site_fields`] entry joins its items by (spec 117), so a
+/// surface prints a list one way.
+pub const LIST_SEP: &str = ", ";
 
 /// The attrs [`site_fields`] gives after the site entries, in their order: the closed list a show
 /// surface prints (`title` and `doc` a knowledge node's, `by`, `unit` and `summary` a finding's,
@@ -459,7 +468,8 @@ const SITE_ATTRS: [&str; 8] = [
 /// (`0` when absent or unparseable), its `kind` attr when non-empty else its graph kind, and its
 /// attrs whole. The adapter's `site_of` calls it over the row it read with that row's one-hop
 /// degree, and the MCP `around` over each node of the `Graph` it loaded with the node's edge count
-/// there, so neither reads a node twice.
+/// there, so neither reads a node twice. It lists no unresolved leaf, which the adapter's site read
+/// alone adds (spec 117).
 pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
     let attr = |key: &str| node.attrs.get(key).map(String::as_str);
     EntitySite {
@@ -472,16 +482,18 @@ pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
         line: attr("line").and_then(|line| line.parse().ok()).unwrap_or(0),
         degree,
         attrs: node.attrs.clone(),
+        unresolved: Vec::new(),
     }
 }
 
 /// The ordered closed list of entries a show surface prints for `site` (spec 119, SHOW IS ONE
-/// RENDERER): `file`, `line`, `kind`, `degree`, then [`SITE_ATTRS`]' order - `line` and `degree`
-/// JSON numbers, every other entry its recorded value verbatim. A node with no `file` has no
-/// `line` entry either; `kind` and `degree` are always given; an attr whose value is empty gives
-/// no entry. The CLI prints it (its live healed line and a value's newlines collapsed at print
-/// only), the MCP `show` carries it as keys beside the node's `id`, and the MCP `around` the same
-/// less its `summary` entry.
+/// RENDERER): `file`, `line`, `kind`, `degree`, then [`SITE_ATTRS`]' order, then `unresolved`
+/// (spec 117) - `line` and `degree` JSON numbers, `unresolved` the site's unresolved leaves joined
+/// by [`LIST_SEP`], every other entry its recorded value verbatim. A node with no `file` has no
+/// `line` entry either; `kind` and `degree` are always given; an attr whose value is empty, and an
+/// empty unresolved list, give no entry. The CLI prints it (its live healed line and a value's
+/// newlines collapsed at print only), the MCP `show` carries it as keys beside the node's `id`,
+/// and the MCP `around` the same less its `summary` entry.
 pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> {
     let located = site.file.iter().flat_map(|file| {
         [
@@ -499,7 +511,13 @@ pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> 
             .filter(|value| !value.is_empty())
             .map(|value| (key, serde_json::Value::from(value.as_str())))
     });
-    located.chain(graph).chain(attrs).collect()
+    let unresolved = (!site.unresolved.is_empty())
+        .then(|| ("unresolved", site.unresolved.join(LIST_SEP).into()));
+    located
+        .chain(graph)
+        .chain(attrs)
+        .chain(unresolved)
+        .collect()
 }
 
 /// One disambiguation candidate for an ambiguous query (spec 58): the full node id and its
