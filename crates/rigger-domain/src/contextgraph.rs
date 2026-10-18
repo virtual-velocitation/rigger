@@ -1393,10 +1393,13 @@ mod kind_rank_rule {
 mod reference_candidate_kinds_rule {
     use super::*;
 
+    /// The reference kinds each test below asks the rule about: the three it names candidates
+    /// for, a module row's kind, a call's and the empty value.
+    const ASKED: [&str; 6] = ["type", "const", "use", "module", "call", ""];
+
     #[test]
     fn each_reference_kind_names_its_candidate_kinds_and_any_other_none() {
-        let candidates =
-            ["type", "const", "use", "module", "call", ""].map(reference_candidate_kinds);
+        let candidates = ASKED.map(reference_candidate_kinds);
         assert_eq!(
             candidates,
             [
@@ -1421,6 +1424,19 @@ mod reference_candidate_kinds_rule {
                 vec![],
             ],
             "a use imports any kind but a method, a field, a property or a declaration"
+        );
+    }
+
+    /// [`LEAF_REF_KINDS`] is the rule's own set: exactly the asked kinds it names a candidate
+    /// for, in their order, so a module row's kind is never among them.
+    #[test]
+    fn the_leaf_reference_kinds_are_the_kinds_the_rule_names_candidates_for() {
+        assert_eq!(
+            ASKED
+                .into_iter()
+                .filter(|kind| !reference_candidate_kinds(kind).is_empty())
+                .collect::<Vec<_>>(),
+            LEAF_REF_KINDS
         );
     }
 }

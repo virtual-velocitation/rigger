@@ -27410,9 +27410,9 @@ fn rigger_setup_rebuilds_a_rule_2_graph_db_leaving_no_flat_nested_id_named() {
 }
 
 /// Spec 119, A BARE SHOW FINDS A LEAF OR PATH: GIVEN a project, WHEN the operator runs `rigger
-/// graph --around new`, a bare name where a seed is an exact id, THEN the empty answer's note
-/// names the exact-id seed form `<file>::<path>` and `rigger graph --show`, which resolves a bare
-/// name.
+/// graph --around new`, a bare name where a seed is an exact id or an alias of one (spec 117),
+/// THEN the empty answer's note names that seed form, `<file>::<path>` or its alias, and `rigger
+/// graph --show`, which resolves a bare name.
 #[test]
 fn graph_around_a_bare_name_notes_the_seed_form_and_show() {
     let dir = temp_project();
@@ -27424,8 +27424,8 @@ fn graph_around_a_bare_name_notes_the_seed_form_and_show() {
             .collect::<Vec<_>>(),
         [
             "subgraph around \"new\" (depth 2):",
-            "  (nothing found; a seed is an exact id, `<file>::<path>`, and `rigger graph --show \
-             <name>` resolves a bare name; has `rigger run` been run yet?)",
+            "  (nothing found; a seed is an exact id, `<file>::<path>`, or an alias of one, and \
+             `rigger graph --show <name>` resolves a bare name; has `rigger run` been run yet?)",
         ],
         "an empty around names the seed form and --show"
     );
