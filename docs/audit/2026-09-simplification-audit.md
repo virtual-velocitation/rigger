@@ -2647,7 +2647,7 @@ halting. The explicit mid-campaign-edit escape (a live\n                        
 run otherwise HALTS loudly on definition drift)\n\n\
 storage and graph live in ./.rigger/ (per project, like .git/), scoped to the\n\
 project identity so one backend can hold many projects without their data mixing.\n"`
-- `tests/a_module_row_reaches_its_file_periphery.rs:115-115` `"graph communities: detected 1 community over 2 coupled node(s) at resolution 1 \
+- `tests/a_module_row_reaches_its_file_periphery.rs:114-114` `"graph communities: detected 1 community over 2 coupled node(s) at resolution 1 \
          (2 membership event(s) recorded into .rigger/graph.db)\n"`
 - `tests/architecture_current_surface.rs:93-93` `".rigger/store.conn"`
 - `tests/architecture_current_surface.rs:145-145` `"docs/architecture.md must describe the system that exists today (spec 56, \

@@ -85,8 +85,7 @@ fn graph_rebuild_settles_a_mod_declaration_as_its_candidates_and_its_declaration
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_around_a_mod_node_prints_its_contains_onto_its_module_file() {
-    let (project, _graph) =
-        common::cli::built_graph(&[(DECLARING_FILE, MOD_X), (MODULE_FILE, FN_Y)]);
+    let (project, _) = common::cli::built_graph(&[(DECLARING_FILE, MOD_X), (MODULE_FILE, FN_Y)]);
     assert_eq!(
         common::cli::run_around(project.path(), MOD_NODE, 1).0,
         "subgraph around \"src/lib.rs::x\" (depth 1):\n\
@@ -106,7 +105,7 @@ fn graph_around_a_mod_node_prints_its_contains_onto_its_module_file() {
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_communities_couples_no_mod_node_to_its_module_file() {
-    let (project, _graph) = common::cli::built_graph(&[
+    let (project, _) = common::cli::built_graph(&[
         (DECLARING_FILE, MOD_X),
         (MODULE_FILE, symbol_index::USE_ONLY_SOURCE),
     ]);

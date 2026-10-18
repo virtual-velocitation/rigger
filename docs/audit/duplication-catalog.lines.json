@@ -1994,8 +1994,8 @@
       },
       {
         "file": "tests/a_module_row_reaches_its_file_periphery.rs",
-        "start_line": 115,
-        "end_line": 115
+        "start_line": 114,
+        "end_line": 114
       },
       {
         "file": "tests/architecture_current_surface.rs",
