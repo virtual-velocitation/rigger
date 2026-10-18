@@ -300,14 +300,18 @@ mod tests {
     /// a set witnessed once per case the code splits it into, a failing case making it false, a
     /// sentence CHECKED as a
     /// different rule shown to answer that rule's question and one answering a rewritten rule's
-    /// question a spelling of it, each spelling of a rule the change rewrites found by a recorded search per
-    /// distinguishing phrase of its old statement and of each label its cases carried, a
+    /// question a spelling of it, each spelling of a rule the change rewrites found by a
+    /// recorded search per pair of short terms - the feature's name as the code spells it and
+    /// the rule's noun phrase, both on one joined line, a sentence fragment as one term a record
+    /// the author cannot write - for its old statement and each label its cases carried, a
     /// boolean term a production hunk adds to or removes from a filter, guard or predicate
     /// rewriting the rule its function answers, whose old statement its depth-1 callers' notes,
-    /// Returns paragraphs, variant docs and oracles spell and are searched by, the SDET
-    /// lens re-deriving each generator's set over that range, reading every witness, re-running
-    /// each search and re-reading every hit against head, deriving the changed-condition set
-    /// itself and reading every consumer sentence against it, and reading every sentence it
+    /// Returns paragraphs, variant docs and oracles spell and are searched by in the same pair
+    /// form (the function's name and the old answer's noun), the SDET lens re-deriving each
+    /// generator's set over that range, reading every witness, re-running each search and
+    /// re-reading every hit against head, deriving the changed-condition set itself and reading
+    /// every consumer sentence against it, running the two-term search itself for each
+    /// rewritten rule and changed condition, and reading every sentence it
     /// re-reads claim by claim against the unit's change with a witness per claim at head, a
     /// sentence it cannot witness blocking on its own, a quantified claim's cases enumerated by
     /// the lens and listed each with its witness, one witnessed case or a failing case blocking
@@ -329,9 +333,13 @@ mod tests {
     /// green one blocking, every constant, static, list, closure or predicate the delta adds - a
     /// SQL conjunct inside a query string included - naming its one home in the sentence-walk
     /// record - no other spelling, its distinguishing literal searched over the whole tree, derived
-    /// from or pinned to the existing one, a fact spelled twice lifted at all three sites - with
-    /// the architecture lens deriving the added set itself from the production hunks, query strings
-    /// included, and blocking on a missing or false line, and a probe that edits the tree - the
+    /// from or pinned to the existing one, a fact spelled twice lifted at all three sites - every
+    /// boolean expression the hunks add listed by shape under `ADDED PREDICATES` with its line, a
+    /// changed condition among them in both lists, two predicates of one fact lifted to one home
+    /// or pinned to each other, an added set of named members searched by each member's name,
+    /// with the architecture lens deriving the added set itself by the same shapes from the
+    /// production hunks, query strings included, running the member search itself, and blocking
+    /// on a missing or false line, and a probe that edits the tree - the
     /// sharpest case of a turn's end being the session's end - run to completion and restored
     /// before the turn ends; the gates'
     /// check names each gate command run to completion inside the turn. Read by its words, so

@@ -3593,16 +3593,19 @@ mod tests {
     /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
     /// per item of the walk's hunk list and paired with it in the record, each item the hunks
     /// add - a SQL conjunct inside a query string included - carrying its one-home line in one
-    /// of the working discipline's three forms, each FIXED
-    /// or new line's `file:line`
-    /// witness, one per case the code splits a quantified sentence's subject into with the cases
-    /// named, the rule-spelling search over every tracked text file, one
-    /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
-    /// phrase in another case or split by a rewrap still a hit) whose command and hits the walk pastes for the `sdet`
-    /// lens to re-run, each boolean term a production hunk adds to or removes from a filter,
-    /// guard or predicate read as a rewritten rule whose consumer phrases - the notes, Returns
-    /// paragraphs, variant docs and oracles of the function's depth-1 callers - that search
-    /// runs, and the record the walk owes, the hand probe of every mutable token of the
+    /// of the working discipline's three forms, the item list read by shape as well as by name
+    /// with every added predicate under `ADDED PREDICATES` and a set of named members searched
+    /// by each member's name, each FIXED or new line's `file:line` witness, one per case the
+    /// code splits a quantified sentence's subject into with the cases named, the rule-spelling
+    /// search over every tracked text file, one run per pair of short terms - the feature's name
+    /// and the rule's noun phrase, both on one joined line with any words between - for a
+    /// rewritten rule's old statement and each label its cases carried (a term in another case
+    /// or a sentence split by a rewrap still a hit) whose command and hits the walk pastes for
+    /// the `sdet` lens to re-run, each boolean term a production hunk adds to or removes from a
+    /// filter, guard or predicate read as a rewritten rule whose consumer phrases - the notes,
+    /// Returns paragraphs, variant docs and oracles of the function's depth-1 callers - that
+    /// search runs as the function's name and the old answer's noun, and the record the walk
+    /// owes, the hand probe of every mutable token of the
     /// production hunks over the unit's whole range, each class read by its spelling - every
     /// argument of every added or changed call, every `?` (swallowed by the spelling the working
     /// discipline lists for its value), `return`, `break` and `continue` - one
@@ -3882,7 +3885,12 @@ mod tests {
     /// BLOCKING; it derives the changed-condition set itself - each boolean
     /// term the unit's production hunks add to or remove from a filter, guard or predicate -
     /// and reads every consumer sentence of that function against it, and one stating the
-    /// pre-change answer that the record does not carry is BLOCKING; every sentence it reads, a
+    /// pre-change answer that the record does not carry is BLOCKING; it reads the record's
+    /// rule-spelling searches as the built-in's term pairs and runs the feature's name AND the
+    /// rule's noun phrase itself for each rewritten rule, the function's name AND the old
+    /// answer's noun for each changed condition, with the authors' command and carrying no copy
+    /// of its awk, and a hit the record lacks or a CHECKED reason that does not hold at head is
+    /// BLOCKING; every sentence it reads, a
     /// CHECKED member, an omitted member or a search hit, it reads claim by claim against the
     /// unit's change with a `file:line` witness per claim at head, a conditional claim against
     /// whether the diff changes its condition and a cross-surface claim against each surface it
@@ -4085,8 +4093,11 @@ mod tests {
 
     /// The architecture lens is the enforcement of the built-in rule that every fact the
     /// production delta states has one home: it derives the added items itself from the
-    /// production hunks, a SQL conjunct inside a query string included, reads the walk record's
-    /// one-home line for each, and a missing line or one false at head is BLOCKING.
+    /// production hunks by shape as well as by name, a SQL conjunct inside a query string
+    /// included, reads the walk record's one-home line for each, its `ADDED PREDICATES` list
+    /// included, and a missing line, two lines for two predicates of one fact or one false at
+    /// head is BLOCKING; for every added set of named members it runs the member search itself,
+    /// and a second spelling the line does not name is BLOCKING.
     #[test]
     fn the_architecture_lens_reads_the_one_home_line_of_every_added_item() {
         let flat = rigger::wave::normalize_ws(&committed_persona("architecture-reviewer.md"));
