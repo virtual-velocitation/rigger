@@ -282,7 +282,14 @@ tool that searches them.
   entry stands in for the other. Two added predicates stating one fact - the same condition at
   two sites, or one condition and its negation - are one fact spelled twice: lifted to one home
   both sites read (a fn or a value) or `pinned to` each other by a test that holds them equal,
-  never two `no other spelling` lines. An added item with no line is a record you cannot write. The architecture lens
+  never two `no other spelling` lines. An added set of named members - an array or slice of
+  constants, an `IN (..)` list, a `matches!` or a `match` with an arm per member, an `||` chain
+  of equalities - runs its `no other spelling` search as the name count of EACH member, and
+  every site where two or more of the members occur within one statement, one `match` or one
+  macro call is read as a candidate second spelling of the set: one found makes the set
+  `derived from` a single named home both sites read (a const list or a fn), or the hunk's
+  spelling is a DRY defect lifted before hand-over, and the one-home line names the member sites
+  it read. An added item with no line is a record you cannot write. The architecture lens
   derives the set of added constants, statics, lists, closures and predicates itself from the
   production hunks, query strings included, and compares it with the record's one-home lines:
   an added item the record has no line for is a BLOCKING finding on its own. The architecture
