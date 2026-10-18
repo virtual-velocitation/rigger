@@ -152,8 +152,8 @@ list - every item the hunks touch, new or pre-existing, its body or its doc chan
 item's count run as
 `git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) { print FILENAME ":" FNR }'`
 with its name, and the record pairs each item of the hunk list with its count, the lines read
-and its callers. Each item the hunks add - a constant, static, list, closure, predicate or fn -
-carries beside its count its one-home line in one of the working discipline's three forms: `no
+and its callers. Each item the hunks add - a constant, static, list, closure, predicate - a SQL
+conjunct inside a query string included - or fn - carries beside its count its one-home line in one of the working discipline's three forms: `no
 other spelling` with the terms searched (its name count, its caller lookup and the fact's
 distinguishing literal - a table name, a kind string - run with the count above), `derived from
 <file:line>` or `pinned to <file:line> by <test>`. On every round, the first and each later one alike, `<base>` is the
@@ -192,8 +192,8 @@ Every mutable token of your production delta is probed on your committed tree: l
 from the production hunks of `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src`
 with the test regions left out (files under a `tests/` directory and hunks inside a
 `#[cfg(test)]` module), each class the working discipline's rule spells read by its spelling -
-every argument of every call you add or change, every `?`, every `return`, `break` and
-`continue` among them; after each single mutation run the owning crate's unit tests,
+every argument of every call you add or change, every `?` (swallowed by the spelling the
+working discipline lists for its value), every `return`, `break` and `continue` among them; after each single mutation run the owning crate's unit tests,
 `cargo test -p <crate> --lib` for a file under `crates/` or `cargo test --lib --bin rigger` for
 one under `src/`, and each root test binary the unit touched by `cargo test --test <name>`, then
 restore the file with `git checkout -- <file>` before the next. The `<unit>-mutant-probes`

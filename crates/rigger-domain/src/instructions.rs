@@ -316,18 +316,24 @@ mod tests {
     /// spelling counted to zero, nothing added that nothing reads, the red test's body untouched
     /// by the green commit, every mutable token of the production delta, each class named by its
     /// source spelling - an operator, an offset, an operand, every argument of every added or
-    /// changed call, an arm's statement, a match arm, every `?`, `return`, `break` and
-    /// `continue` - mutated by hand one at a time with the red test recorded in a record
-    /// organised by production line - each line naming its tokens, a token inside a query,
-    /// format or macro string included, or marked as carrying none - and closed by one tally
-    /// line per spelled class, its hunk and probe counts equal, a green probe pinned or reshaped
-    /// away, the hand enumeration standing beside the mutation gate and the SDET lens probing
-    /// every token the record lacks, comparing its token set with the record line by line and
-    /// counting each class itself against the tally, every constant, static, list, closure or
-    /// predicate the delta adds naming its one home in the sentence-walk record - no other
-    /// spelling, derived from or pinned to the existing one - with the architecture lens
-    /// blocking on a missing or false line, and a probe that edits the tree - the sharpest case of a turn's end being
-    /// the session's end - run to completion and restored before the turn ends; the gates'
+    /// changed call, an arm's statement, a match arm, every `?` (swallowed by the spelling that
+    /// compiles for its value, `unviable` only when every swallow of the list fails to compile with
+    /// each error quoted, never when its type has a default), `return`, `break` and `continue` -
+    /// mutated by hand one at a time with the red test recorded in a record organised by production
+    /// line - each line naming its tokens, a token inside a query, format or macro string included,
+    /// or marked as carrying none - and closed by one tally line per spelled class, its hunk and
+    /// probe counts equal, a green probe pinned or reshaped away, the hand enumeration standing
+    /// beside the mutation gate and the SDET lens probing every token the record lacks, comparing
+    /// its token set with the record line by line and counting each class itself against the tally
+    /// and re-applying the fitting swallow to every `?` the record calls unviable, a compiling
+    /// green one blocking, every constant, static, list, closure or predicate the delta adds - a
+    /// SQL conjunct inside a query string included - naming its one home in the sentence-walk
+    /// record - no other spelling, its distinguishing literal searched over the whole tree, derived
+    /// from or pinned to the existing one, a fact spelled twice lifted at all three sites - with
+    /// the architecture lens deriving the added set itself from the production hunks, query strings
+    /// included, and blocking on a missing or false line, and a probe that edits the tree - the
+    /// sharpest case of a turn's end being the session's end - run to completion and restored
+    /// before the turn ends; the gates'
     /// check names each gate command run to completion inside the turn. Read by its words, so
     /// a rewrap never moves a verdict.
     #[test]
@@ -552,8 +558,14 @@ mod tests {
              change (degenerate it to the value that drops its arm - `None`, zero, the empty \
              value, a sibling's value, a bound moved by one), a statement in one arm of a branch \
              (delete it), a match arm (swap it with a sibling), every `?` operator (replace it by \
-             a swallow - `let _ = <expr>` or `.ok()` - so the error arm no longer returns), and \
-             every `return`, `break` and `continue` (remove it)",
+             the swallow that compiles for its value, so the error arm yields a value instead of \
+             returning), and every `return`, `break` and `continue` (remove it)",
+            "The `?` swallows are `let _ = <expr>;` or `.ok()` where the value is unused, \
+             `.unwrap_or_default()` where the value is used and its type has a default, and \
+             `.unwrap_or(<the type's empty value>)` otherwise; a `?` is `unviable` only when \
+             every swallow of this list fails to compile, each tried at its site with its \
+             compiler error quoted in the record, and a `?` whose value's type has a default is \
+             never unviable.",
             "enumerate the tokens from your production hunks over the unit's whole range, the \
              merge base with the run branch to head",
             "apply each mutation in your worktree one at a time, run the crate's tests and the \
@@ -588,7 +600,14 @@ mod tests {
              itself, string literals and test regions left out, reads each added or changed \
              call's arguments, and compares each class's count with the record's tally line: a \
              short tally, or a token with no probe, is a BLOCKING finding on its own.",
+            "For every `?` the record disposes as `unviable` the lens applies, in its scratch \
+             worktree, the swallow of this list that fits the value's type: one that compiles \
+             and leaves every test green is a BLOCKING finding on its own, naming the site, the \
+             swallow and the green run.",
             "Every fact your production delta states has one home.",
+            "A predicate is a boolean expression or a SQL conjunct, one inside a query string, a \
+             format string or a macro argument the production code executes included, read as \
+             the probe rule above reads the tokens of those strings.",
             "The `<unit>-sentence-walk` record carries, beside the count of each constant, \
              static, list, closure or predicate your production hunks add, its one-home line in \
              one of three forms: `no other spelling` with the terms searched - the name count and \
@@ -596,6 +615,16 @@ mod tests {
              table name, a kind string); `derived from <file:line>`, the hunk reading the \
              existing spelling; or `pinned to <file:line> by <test>`, where a derivation is \
              impossible and a test holds the two spellings equal.",
+            "The `no other spelling` search runs the fragment's distinguishing literal (the \
+             column with its operator, the subquery's table) over the whole tree, pre-existing \
+             spellings included; a fact the tree already spells is `derived from` that spelling, \
+             the hunk and the existing sites reading one fn, or `pinned to` it, and a fact the \
+             tree already spells twice is lifted at all three sites - the pre-existing pair is \
+             the tree's debt, and the unit's third spelling makes it the unit's.",
+            "The architecture lens derives the set of added constants, statics, lists, closures \
+             and predicates itself from the production hunks, query strings included, and \
+             compares it with the record's one-home lines: an added item the record has no line \
+             for is a BLOCKING finding on its own.",
             "The architecture lens reads the walk record's one-home lines for every item the \
              unit adds: an added item with no line, or a line false at head - the fact has \
              another spelling the line does not name, or the named derivation or pin does not \
