@@ -170,8 +170,9 @@ tool that searches them.
   notes they print, their Returns paragraphs, the docs of the variants the answer maps to and
   the oracles that assert them, read from the function's callers at depth 1 in the project's
   graph and their callers' output sentences. For each changed condition write down the rule it
-  changes - the question the function answers - and the distinguishing phrases of the old answer
-  as the consumers spell them, and run the rule search for each: every hit is FIXED, carrying the
+  changes - the question the function answers - and, for each phrase of the old answer as the
+  consumers spell it, the pair of the function's name as the code spells it and the old
+  answer's noun, and run the rule search for each pair: every hit is FIXED, carrying the
   new qualifier, or CHECKED with the named reason the qualifier does not reach it (a call that
   passes no path, say). The SDET
   lens re-derives each generator's set on the review tree from the diff and the graph - the
