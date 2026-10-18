@@ -3592,7 +3592,8 @@ mod tests {
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
     /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
     /// per item of the walk's hunk list and paired with it in the record, each item the hunks
-    /// add carrying its one-home line in one of the working discipline's three forms, each FIXED
+    /// add - a SQL conjunct inside a query string included - carrying its one-home line in one
+    /// of the working discipline's three forms, each FIXED
     /// or new line's `file:line`
     /// witness, one per case the code splits a quantified sentence's subject into with the cases
     /// named, the rule-spelling search over every tracked text file, one
@@ -3603,7 +3604,8 @@ mod tests {
     /// paragraphs, variant docs and oracles of the function's depth-1 callers - that search
     /// runs, and the record the walk owes, the hand probe of every mutable token of the
     /// production hunks over the unit's whole range, each class read by its spelling - every
-    /// argument of every added or changed call, every `?`, `return`, `break` and `continue` - one
+    /// argument of every added or changed call, every `?` (swallowed by the spelling the working
+    /// discipline lists for its value), `return`, `break` and `continue` - one
     /// mutation at a time, the owning crate's unit tests and the touched root test binaries run,
     /// the file restored - with the `<unit>-mutant-probes` record the `sdet` lens completes,
     /// organised by production line - each added or changed line naming its tokens, a query or
@@ -3681,12 +3683,12 @@ mod tests {
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers.",
-            "Each item the hunks add - a constant, static, list, closure, predicate or fn - \
-             carries beside its count its one-home line in one of the working discipline's three \
-             forms: `no other spelling` with the terms searched (its name count, its caller \
-             lookup and the fact's distinguishing literal - a table name, a kind string - run \
-             with the count above), `derived from <file:line>` or `pinned to <file:line> by \
-             <test>`.",
+            "Each item the hunks add - a constant, static, list, closure, predicate - a SQL \
+             conjunct inside a query string included - or fn - carries beside its count its \
+             one-home line in one of the working discipline's three forms: `no other \
+             spelling` with the terms searched (its name count, its caller lookup and the \
+             fact's distinguishing literal - a table name, a kind string - run with the count \
+             above), `derived from <file:line>` or `pinned to <file:line> by <test>`.",
             "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
             "On every round, the first and each later one alike, `<base>` is the unit's merge \
              base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
@@ -3766,8 +3768,9 @@ mod tests {
              inside a query or format string among them - or is marked as carrying none with \
              its reason (a signature, a `use`, a doc line, a brace).",
             "each class the working discipline's rule spells read by its spelling - every \
-             argument of every call you add or change, every `?`, every `return`, `break` and \
-             `continue` among them",
+             argument of every call you add or change, every `?` (swallowed by the spelling the \
+             working discipline lists for its value), every `return`, `break` and `continue` \
+             among them",
             "After that walk the record carries one tally line per spelled class, `<class>: <n> \
              in hunks, <n> probed`, the two counts equal",
             "the `?`, `return`, `break` and `continue` counts are the ones `sh \
@@ -3832,7 +3835,10 @@ mod tests {
     /// record does not disposition is BLOCKING; it reads the token classes from the working
     /// discipline's list, carrying no copy of it, counts the `?`, `return`, `break` and
     /// `continue` with `.rigger/gates/token-count.sh` and reads each call's arguments, and a tally short of its
-    /// count is BLOCKING. The records are the author's instruments, never
+    /// count is BLOCKING; for every `?` the record calls unviable it applies, in the same
+    /// scratch worktree, the swallow of the working discipline's list that fits the value's
+    /// type, carrying no copy of that list, and one that compiles and leaves every test green is
+    /// BLOCKING. The records are the author's instruments, never
     /// a gate, so the lens's rule against re-running a green gate does not reach them.
     #[test]
     fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
@@ -3971,6 +3977,10 @@ mod tests {
              with `git worktree remove <scratch>` before your turn ends",
             "A probe that leaves every test green is BLOCKING, and so is a token the record \
              carries no probe for",
+            "For every `?` the author's record disposes as `unviable` you apply, in the same \
+             scratch worktree, the swallow of the working discipline's `?` list that fits the \
+             value's type, and run the same tests: one that compiles and leaves every test green \
+             is BLOCKING on its own, citing the site, the swallow and the green run.",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
@@ -3990,20 +4000,27 @@ mod tests {
             !flat.contains("gsub("),
             "sdet.md names the token-count script instead of spelling its awk"
         );
+        assert!(
+            !flat.contains(".unwrap_or_default()"),
+            "sdet.md refers to the working discipline's `?` swallow list instead of re-spelling it"
+        );
     }
 
     /// The architecture lens is the enforcement of the built-in rule that every fact the
-    /// production delta states has one home: it reads the walk record's one-home line for each
-    /// item the unit adds, and a missing line or one false at head is BLOCKING.
+    /// production delta states has one home: it derives the added items itself from the
+    /// production hunks, a SQL conjunct inside a query string included, reads the walk record's
+    /// one-home line for each, and a missing line or one false at head is BLOCKING.
     #[test]
     fn the_architecture_lens_reads_the_one_home_line_of_every_added_item() {
         let flat = rigger::wave::normalize_ws(&committed_persona("architecture-reviewer.md"));
-        let wanted = "you read the `<unit>-sentence-walk` record's one-home lines for every \
-                      constant, static, list, closure or predicate the unit adds, and an added \
-                      item with no line, or a line false at head (the fact has another spelling \
-                      the line does not name, or the named derivation or pin does not exist), \
-                      is BLOCKING (DRY, single responsibility), cited with both spellings' \
-                      `file:line`.";
+        let wanted = "you derive the set of constants, statics, lists, closures and \
+                      predicates the unit adds yourself from its production hunks - a boolean \
+                      expression or SQL conjunct inside a query string, format string or macro \
+                      argument included - and read the `<unit>-sentence-walk` record's one-home \
+                      lines for every item of it, and an added item with no line, or a line false \
+                      at head (the fact has another spelling the line does not name, or the \
+                      named derivation or pin does not exist), is BLOCKING (DRY, single \
+                      responsibility), cited with both spellings' `file:line`.";
         assert!(
             flat.contains(wanted),
             "architecture-reviewer.md must say {wanted:?}"

@@ -2405,26 +2405,26 @@ __END__
 - `src/cli/setup.rs:3183-3183` `".rigger/workflow.yml"`
 - `src/cli/setup.rs:3413-3413` `".rigger"`
 - `src/cli/setup.rs:3441-3441` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:3647-3647` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:3649-3649` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:3650-3650` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:3651-3651` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:3661-3661` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:3664-3664` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:3678-3678` `"The count and the caller lookup run once per item of the walk's hunk list - every \
+- `src/cli/setup.rs:3649-3649` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:3651-3651` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:3652-3652` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:3653-3653` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:3663-3663` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:3666-3666` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:3680-3680` `"The count and the caller lookup run once per item of the walk's hunk list - every \
              item the hunks touch, new or pre-existing, its body or its doc changed - each \
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers."`
-- `src/cli/setup.rs:3773-3773` `"the `?`, `return`, `break` and `continue` counts are the ones `sh \
+- `src/cli/setup.rs:3776-3776` `"the `?`, `return`, `break` and `continue` counts are the ones `sh \
              .rigger/gates/token-count.sh` prints, run from your worktree's root"`
-- `src/cli/setup.rs:3775-3775` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:3932-3932` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:3778-3778` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:3938-3938` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
-- `src/cli/setup.rs:3954-3954` `"You count the classes yourself as well: the `?`, `return`, `break` and `continue` \
+- `src/cli/setup.rs:3960-3960` `"You count the classes yourself as well: the `?`, `return`, `break` and `continue` \
              of the production hunks with the authors' count, `sh .rigger/gates/token-count.sh` \
              run from your own worktree's root, and the arguments of each call those hunks add \
              or change, read call by call"`
