@@ -13146,7 +13146,9 @@ const BLAST_RADIUS_GRAPH_DEPTH: i64 = 2;
 ///   (addendum 2.4), so it is never crossed.
 ///
 /// Neither view crosses a module declaration's `CONTAINS` onto its file (spec 117,
-/// [`files_reachable`]): a declaration has no radius effect.
+/// [`files_reachable`]), though `g` itself may hold the module file: the subgraph the radius is
+/// computed over is walked across every edge, a declaration's included, so another edge of `g`
+/// can still reach that file.
 ///
 /// It is a REACHABILITY filter, not a flat edge scan: a file is EXTRACTED-tier only when the seed
 /// reaches it across EXTRACTED edges the whole way. A file whose own definitions fold EXTRACTED
@@ -13177,7 +13179,8 @@ fn confidence_tier_radius(g: &Graph, seed: &[String]) -> BlastRadius {
 /// `allowed` - the one edge set, filtered (spec 29c criterion 2). A breadth-first reachability over
 /// the (undirected) edge set: an allowed edge extends the reached set from either endpoint, but a
 /// module declaration's `CONTAINS` onto its file ([`contextgraph::declares_a_module`], spec 117),
-/// which has no radius effect. Every reached node is then mapped to its file - a
+/// which this walk never crosses; a file `g` holds stays reachable across its other edges. Every
+/// reached node is then mapped to its file - a
 /// [`KIND_FILE`](crate::contextgraph::KIND_FILE) node is its own path, a member (a named [`KIND_CODE_ENTITY`](crate::contextgraph::KIND_CODE_ENTITY))
 /// maps to its file by [`member_files`] when `g` holds that file's node, and any other node (a
 /// placeholder, a bare parent, a decision / finding / doc) maps to no file and is skipped. The walk
@@ -39895,9 +39898,9 @@ mod tests {
         assert_eq!(radius(FILELESS_MEMBER), [FILELESS_MEMBER]);
     }
 
-    /// Spec 117, A MODULE ROW REACHES ITS FILE: over [`module_graph`], a `mod` node's radius
-    /// reaches its declaring file through that file's `CONTAINS` and no file through its own
-    /// module `CONTAINS`, a declaration having no radius effect.
+    /// Spec 117, A MODULE ROW REACHES ITS FILE: over [`module_graph`], the files a `mod` node
+    /// reaches are its declaring file, through that file's `CONTAINS`, and none through its own
+    /// module `CONTAINS`, which the walk never crosses.
     #[test]
     fn files_reachable_reaches_no_file_through_a_module_contains() {
         use crate::test_support::{module_graph, DECLARING_FILE, MOD_NODE};

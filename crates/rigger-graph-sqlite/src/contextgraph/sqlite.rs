@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS refs (
   PRIMARY KEY (project, identity, from_id, leaf, ref_kind)
 );
 CREATE INDEX IF NOT EXISTS idx_refs_leaf ON refs(project, leaf);
+CREATE INDEX IF NOT EXISTS idx_refs_kind ON refs(project, ref_kind);
 ";
 
 /// The fold rule `graph.db` was folded under, recorded as the file's `user_version`. Rule 1 is
@@ -2127,9 +2128,9 @@ fn live_ref_sql(row: &str) -> String {
 /// The live `refs` rows of project `?1` a batch of identity `?2` settles ([`settle_references`]):
 /// the identity's own, sought by the key's `(project, identity)` prefix; any identity's naming
 /// a leaf of a node `?2` asserts, sought by `idx_refs_leaf`; and any identity's module row
-/// ([`REF_KIND_MODULE`]) one of whose candidates is a node `?2` asserts or an alias of one, so the
-/// batch a candidate's file node is created or retired in settles the row (spec 117, A MODULE ROW
-/// REACHES ITS FILE) - in identity order, so of two rows one batch resolves onto one pair, the
+/// ([`REF_KIND_MODULE`]), sought by `idx_refs_kind`, one of whose candidates is a `file` node `?2`
+/// asserts or an alias of one, so the batch a candidate's file node is created or retired in
+/// settles the row (spec 117, A MODULE ROW REACHES ITS FILE) - in identity order, so of two rows one batch resolves onto one pair, the
 /// lesser identity's asserts it ([`settled_target_sql`]).
 fn staged_rows_sql() -> String {
     format!(
@@ -2142,8 +2143,10 @@ fn staged_rows_sql() -> String {
                   SELECT rowid FROM refs WHERE project = ?1 AND leaf IN (
                     SELECT {} FROM node_assertions WHERE project = ?1 AND identity = ?2)
                   UNION
-                  SELECT m.rowid FROM refs m JOIN node_assertions n ON n.project = m.project
+                  SELECT m.rowid FROM refs m INDEXED BY idx_refs_kind
+                    JOIN node_assertions n ON n.project = m.project
                    WHERE m.project = ?1 AND m.ref_kind = '{REF_KIND_MODULE}' AND n.identity = ?2
+                     AND n.kind = '{KIND_FILE}'
                      AND EXISTS (
                        SELECT 1 FROM (SELECT n.node_id AS id
                                       UNION ALL
@@ -2198,41 +2201,43 @@ fn settle_references(tx: &Transaction, by: &Asserter, project: &str) -> Result<(
 
 /// Resolve `row` at the end of `by`'s batch and write what changed (spec 117), in one statement:
 /// a module row's ([`settled_module`]) or a leaf kind's ([`settled_target_sql`]), the edge's
-/// relation the row's kind names ([`staged_rel`]). A row resolving to the target it holds changes
+/// relation the row's kind names ([`staged_rel`]); a row of a kind naming none settles nothing.
+/// A row resolving to the target it holds changes
 /// nothing, its edge and that edge's dates included - the statement answers nothing, so no edge
 /// is asserted, and the release keeps the entry a row still targets. Otherwise the row takes its
 /// new target; its edge onto the old one is released ([`release_reference`]); and its edge onto
 /// the new one is asserted under the row's own identity and generation ([`assert_link`]), valid
 /// from `by`'s event time and recorded at the row's staging position, unless, for a leaf kind's
-/// row, a live `REFERENCES` already holds the pair, which the row then leaves as the pair's one
-/// edge.
+/// row, a live edge of its relation already holds the pair, which the row then leaves as the
+/// pair's one edge.
 fn settle_reference(
     tx: &Transaction,
     by: &Asserter,
     row: &StagedRow,
     project: &str,
 ) -> Result<(), Error> {
-    let (rel, settled): (&str, Settled) = match staged_rel(&row.ref_kind) {
-        Some(REL_CONTAINS) => (REL_CONTAINS, settled_module(tx, row, project)?),
-        _ => (
-            REL_REFERENCES,
-            tx.query_row(
-                &settled_target_sql(&reference_candidate_kinds(&row.ref_kind)),
-                params![
-                    row.leaf,
-                    KIND_CODE_ENTITY,
-                    project,
-                    split_id(&row.from).0,
-                    row.lang,
-                    row.rowid,
-                    REL_REFERENCES,
-                    placeholder_id(&row.from, &row.leaf)
-                ],
-                |r| <_>::try_from(r),
-            )
-            .optional()
-            .map_err(be)?,
-        ),
+    let Some(rel) = staged_rel(&row.ref_kind) else {
+        return Ok(());
+    };
+    let settled: Settled = if row.ref_kind == REF_KIND_MODULE {
+        settled_module(tx, row, project)?
+    } else {
+        tx.query_row(
+            &settled_target_sql(&reference_candidate_kinds(&row.ref_kind)),
+            params![
+                row.leaf,
+                KIND_CODE_ENTITY,
+                project,
+                split_id(&row.from).0,
+                row.lang,
+                row.rowid,
+                rel,
+                placeholder_id(&row.from, &row.leaf)
+            ],
+            |r| <_>::try_from(r),
+        )
+        .optional()
+        .map_err(be)?
     };
     let (resolved, tier, held) = settled.unwrap_or_default();
     let asserter = Asserter {
@@ -2267,7 +2272,7 @@ type Settled = Option<(Option<String>, String, bool)>;
 /// Settle a module row `row` (spec 117, A MODULE ROW REACHES ITS FILE): one statement sets the row
 /// to the first of its candidates - its leaf split on [`MODULE_CANDIDATE_SEPARATOR`], each
 /// alias-resolved ([`resolve_in_tx`]) - holding a `file` node in `project`, else none, only when
-/// that differs from the target it holds, answering as [`settled_target_sql`]'s statement does:
+/// that differs from the target it holds ([`retarget_sql`]), answering as [`settled_target_sql`]'s statement does:
 /// the new target, its tier, [`TIER_EXTRACTED`] - the language's module rule decides it - and
 /// that no live edge holds the pair, a declaration having no twin. A row it leaves unchanged
 /// answers nothing. It writes no node.
@@ -2285,7 +2290,7 @@ fn settled_module(tx: &Transaction, row: &StagedRow, project: &str) -> Result<Se
     }
     let settled: Option<Option<String>> = tx
         .query_row(
-            "UPDATE refs SET target = ?2 WHERE rowid = ?1 AND target IS NOT ?2 RETURNING target",
+            &retarget_sql("?1", "?2", "target"),
             params![row.rowid, target],
             |r| r.get(0),
         )
@@ -2294,18 +2299,18 @@ fn settled_module(tx: &Transaction, row: &StagedRow, project: &str) -> Result<Se
     Ok(settled.map(|target| (target, TIER_EXTRACTED.to_string(), false)))
 }
 
-/// The one statement that settles a `refs` row (spec 117, STAGED REFERENCES): it sets the row
-/// `?6` to the one definition its leaf `?1` resolves to now - the one candidate in the file `?4`
-/// it is read from, else the one in project `?3`, else none, never a guess among several - a
+/// The statement that settles a leaf kind's `refs` row (spec 117, STAGED REFERENCES): it sets the
+/// row `?6` to the one definition its leaf `?1` resolves to now - the one candidate in the file
+/// `?4` it is read from, else the one in project `?3`, else none, never a guess among several - a
 /// candidate being a code entity (`?2`) of one of `kinds` ([`reference_candidate_kinds`]) in the
 /// row's language `?5` ([`leaf_definitions_sql`]), and only when that differs from the target it
-/// holds. It answers the new target, its tier ([`TIER_EXTRACTED`] for the same-file one, else
-/// [`TIER_INFERRED`]) and whether a live `REFERENCES` (`?7`) from the row's node onto it, or onto
-/// the placeholder `?8` of its leaf under that node ([`placeholder_id`]), already holds the pair:
-/// a call's twin, the pair's one writer, which the call arm writes from the file whether it landed
-/// on the file's definition or on the placeholder - so only a file-level row's node meets a
-/// placeholder - or another identity's row on the same pair. A row it leaves unchanged answers
-/// nothing.
+/// holds ([`retarget_sql`]). It answers the new target, its tier ([`TIER_EXTRACTED`] for the
+/// same-file one, else [`TIER_INFERRED`]) and whether a live edge of the row's relation (`?7`, a
+/// `REFERENCES`) from the row's node onto it, or onto the placeholder `?8` of its leaf under that
+/// node ([`placeholder_id`]), already holds the pair: a call's twin, the pair's one writer, which
+/// the call arm writes from the file whether it landed on the file's definition or on the
+/// placeholder - so only a file-level row's node meets a placeholder - or another identity's row
+/// on the same pair. A row it leaves unchanged answers nothing.
 fn settled_target_sql(kinds: &[&str]) -> String {
     let rule = format!(
         "json_extract(attrs, '$.kind') IN ({}) AND json_extract(attrs, '$.lang') = ?5",
@@ -2318,14 +2323,26 @@ fn settled_target_sql(kinds: &[&str]) -> String {
         )
     };
     let (same, any) = (one(true), one(false));
+    retarget_sql(
+        "?6",
+        &format!("COALESCE({same}, {any})"),
+        &format!(
+            "target,
+             CASE WHEN target = {same} THEN '{TIER_EXTRACTED}' ELSE '{TIER_INFERRED}' END,
+             EXISTS (SELECT 1 FROM edges
+                      WHERE project = ?3 AND from_id = refs.from_id AND rel = ?7
+                        AND valid_to IS NULL AND to_id IN (refs.target, ?8))"
+        ),
+    )
+}
+
+/// The one change-only retarget of a `refs` row (spec 117): the row `rowid` takes `target` only
+/// when that differs from the target it holds, answering `returning` of the updated row - so a
+/// row resolving to the target it holds updates nothing and answers nothing.
+fn retarget_sql(rowid: &str, target: &str, returning: &str) -> String {
     format!(
-        "UPDATE refs SET target = COALESCE({same}, {any})
-          WHERE rowid = ?6 AND target IS NOT COALESCE({same}, {any})
-         RETURNING target,
-                   CASE WHEN target = {same} THEN '{TIER_EXTRACTED}' ELSE '{TIER_INFERRED}' END,
-                   EXISTS (SELECT 1 FROM edges
-                            WHERE project = ?3 AND from_id = refs.from_id AND rel = ?7
-                              AND valid_to IS NULL AND to_id IN (refs.target, ?8))"
+        "UPDATE refs SET target = {target} WHERE rowid = {rowid} AND target IS NOT {target}
+         RETURNING {returning}"
     )
 }
 

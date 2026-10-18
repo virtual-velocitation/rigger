@@ -1141,8 +1141,9 @@ pub fn staged_rel(ref_kind: &str) -> Option<&'static str> {
 
 /// Whether a `rel` edge onto a node of kind `target_kind` declares a module (spec 117, A MODULE
 /// ROW REACHES ITS FILE): a [`REL_CONTAINS`] onto a [`KIND_FILE`] node, the edge a `mod x;`
-/// reaches its file by. A declaration is not coupling, so no community, label degree or blast
-/// radius counts it.
+/// reaches its file by. A declaration is not coupling, so no community or label degree counts it,
+/// and the blast radius's reachability walk never crosses it, though the subgraph that walk runs
+/// over may hold the module file.
 pub fn declares_a_module(rel: &str, target_kind: Option<&str>) -> bool {
     rel == REL_CONTAINS && target_kind == Some(KIND_FILE)
 }

@@ -271,7 +271,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-5be18b106f03",
+    "id": "dup-fe96e15d8fa3",
     "classification": "near",
     "sites": [
       {
@@ -293,6 +293,11 @@
         "file": "crates/rigger-domain/src/review.rs",
         "name": "spec_critique_prompt",
         "content_hash": "7963312db697b9f4"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "retarget_sql",
+        "content_hash": "dd84157febaa78c9"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
