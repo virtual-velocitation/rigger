@@ -1885,7 +1885,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "72bfb25275afc79f"
+    "content_hash": "90cce80a4947096f"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1893,7 +1893,7 @@
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"write\" (generic write helper); grouped under `conductor::support`.",
-    "content_hash": "064118bf9d4027ec"
+    "content_hash": "8771893449405d5a"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

@@ -190,7 +190,9 @@ pub const REL_RAISED: &str = "RAISED";
 /// A definition's parent CONTAINS it (spec 29a; spec 119, CONTAINS IS STRUCTURE): the structural
 /// edge from an enum to its variant, a struct, union or variant to its field, an impl or trait
 /// to its associated item, an inline mod or enclosing fn to its item, and from a `file` node to
-/// each `code-entity` node folded from a definition of that file with no parent.
+/// each `code-entity` node folded from a definition of that file with no parent; and from a
+/// `mod x;` node to the file its module row resolves to (spec 117, A MODULE ROW REACHES ITS
+/// FILE), which declares a module and couples nothing ([`declares_a_module`]).
 pub const REL_CONTAINS: &str = "CONTAINS";
 /// A file REFERENCES a code symbol (spec 29a): the structural edge folded from a call reference's
 /// `EdgeInferred` event (one with no `ref_kind`; a tagged one folds none, spec 117), from the
@@ -343,6 +345,16 @@ pub struct Edge {
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+}
+
+impl Graph {
+    /// Each node's kind by its id.
+    pub fn kinds(&self) -> BTreeMap<&str, &str> {
+        self.nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.kind.as_str()))
+            .collect()
+    }
 }
 
 /// The direction of a directed `CALLS` traversal (spec 52). `Down` follows CALLEES - the
@@ -1082,13 +1094,19 @@ pub const REF_KIND_CONST: &str = "const";
 /// The [`EdgeInferred::ref_kind`] of a USE (spec 117): one imported leaf of a Rust `use`.
 pub const REF_KIND_USE: &str = "use";
 /// The [`EdgeInferred::ref_kind`] of a MODULE row (spec 117, A MODULE ROW REACHES ITS FILE): one
-/// Rust `mod x;`, its `name` the candidate files of the declaration joined by `\n`.
+/// Rust `mod x;`, its `name` the candidate files of the declaration joined by
+/// [`MODULE_CANDIDATE_SEPARATOR`].
 pub const REF_KIND_MODULE: &str = "module";
+
+/// What a module row's `name` joins its candidate files by ([`REF_KIND_MODULE`]): a newline. The
+/// log carries it, so its spelling is fixed.
+pub const MODULE_CANDIDATE_SEPARATOR: &str = "\n";
 
 /// The definition kinds a reference of `ref_kind` resolves onto (spec 117, KIND CANDIDATES): a
 /// [`REF_KIND_TYPE`] a type or a trait, a [`REF_KIND_CONST`] a constant or a static, a
 /// [`REF_KIND_USE`] every kind of [`CODE_KIND_PRECEDENCE`] a `use` can import - all but a method
-/// and the [`NON_TARGET_KINDS`] - and any other value none, so it stages no row.
+/// and the [`NON_TARGET_KINDS`] - and any other value none: a [`REF_KIND_MODULE`] row, which
+/// resolves onto a `file` node instead, and every kind that stages no row ([`staged_rel`]).
 pub fn reference_candidate_kinds(ref_kind: &str) -> Vec<&'static str> {
     match ref_kind {
         REF_KIND_TYPE => vec![CODE_KIND_TYPE, CODE_KIND_TRAIT],
@@ -1508,6 +1526,32 @@ mod reference_candidate_kinds_rule {
             [Some(KIND_FILE), Some(KIND_CODE_ENTITY), None].map(|kind| declares_a_module(rel, kind))
         });
         assert_eq!(declared, [[true, false, false], [false, false, false]]);
+    }
+
+    /// The log joins a module row's candidates by a newline, so an event already on the log
+    /// splits as it was joined.
+    #[test]
+    fn a_module_rows_candidates_are_newline_joined_on_the_log() {
+        assert_eq!(MODULE_CANDIDATE_SEPARATOR, "\n");
+    }
+}
+
+#[cfg(test)]
+mod graph_kinds {
+    use super::*;
+    use crate::test_support::{module_graph, DECLARING_FILE, MODULE_FILE, MOD_NODE};
+
+    /// [`Graph::kinds`] maps each node's id to its kind.
+    #[test]
+    fn a_graphs_kinds_map_each_node_id_to_its_kind() {
+        assert_eq!(
+            module_graph().kinds(),
+            BTreeMap::from([
+                (DECLARING_FILE, KIND_FILE),
+                (MOD_NODE, KIND_CODE_ENTITY),
+                (MODULE_FILE, KIND_FILE),
+            ])
+        );
     }
 }
 

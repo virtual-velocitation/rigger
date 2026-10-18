@@ -1,9 +1,10 @@
 //! Deterministic coupling-community detection (spec 53, the CODE lens): the OFFLINE pass that
 //! groups code entities and files by how densely they call and reference one another - the
 //! "subsystem" a maintainer holds in their head - regardless of directory. It reads the live
-//! coupling layer (the `CALLS` / `REFERENCES` / `CONTAINS` edges among code-entity / file nodes)
-//! already folded into the projection, runs modularity-based community detection over it, and
-//! turns the result into `CommunityAssigned` events. The fold (the always-compiled projector arm)
+//! coupling layer (the `CALLS` / `REFERENCES` / `CONTAINS` edges among code-entity / file nodes,
+//! but a module declaration's `CONTAINS` onto its file) already folded into the projection, runs
+//! modularity-based community detection over it, and turns the result into `CommunityAssigned`
+//! events. The fold (the always-compiled projector arm)
 //! turns each event into an `IN_COMMUNITY` membership edge, so the derived grouping is EVENT-SOURCED
 //! (a rebuildable projection over the log), never computed at request time.
 //!
@@ -158,11 +159,7 @@ impl Coupling {
         // construction. Self-loops (a same-file reference onto its own caller, or a bare placeholder
         // that resolved back onto its file-mate) are dropped inside `from_edges`.
         // A module declaration's `CONTAINS` onto its file couples nothing ([`declares_a_module`]).
-        let kind_of: BTreeMap<&str, &str> = g
-            .nodes
-            .iter()
-            .map(|n| (n.id.as_str(), n.kind.as_str()))
-            .collect();
+        let kind_of = g.kinds();
         let edges = g.edges.iter().filter_map(|e| {
             let coupling = e.rel == REL_CALLS || e.rel == REL_REFERENCES || e.rel == REL_CONTAINS;
             let declaration = declares_a_module(&e.rel, kind_of.get(e.to.as_str()).copied());
@@ -642,7 +639,8 @@ mod tests {
         for (node, comm) in &a.members {
             by_comm.entry(comm.clone()).or_default().push(node.clone());
         }
-        // Undirected adjacency over the coupling edges (same filter as detection).
+        // Undirected adjacency over the coupling relations detection reads; no fixture this
+        // checks holds a module declaration's `CONTAINS`, which detection also skips.
         let mut adj: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for e in &g.edges {
             let coupling = e.rel == REL_CALLS || e.rel == REL_REFERENCES || e.rel == REL_CONTAINS;

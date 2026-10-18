@@ -17,12 +17,12 @@ use super::{
     Graph, Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT,
     KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
     KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE,
-    LEAF_REF_KINDS, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE, PLACEHOLDER_SIGIL,
-    REBUILD_OWED, REF_KIND_MODULE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS,
-    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED,
-    REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES,
-    REL_SUPERSEDES, STAGED_RELS, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED,
-    TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
+    LEAF_REF_KINDS, MODULE_CANDIDATE_SEPARATOR, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
+    PLACEHOLDER_SIGIL, REBUILD_OWED, REF_KIND_MODULE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS,
+    REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS,
+    REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
+    REL_SPECIFIES, REL_SUPERSEDES, STAGED_RELS, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
+    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
     TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
     TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
@@ -1981,9 +1981,9 @@ fn record_applied(tx: &Transaction, position: Position) -> Result<bool, Error> {
 /// installs none and leaves the identity's facts as they stood, its `refs` rows included. Any other
 /// batch drops every `refs` row its identity staged - each at an older generation, since an entry
 /// naming the current one is a re-recording - before its first event, and stages each tagged
-/// reference after its event folds ([`stage_reference`]); its end settles every row it staged or
-/// whose leaf it defines ([`settle_references`]) - here alone, never in [`fold_new`] (spec 117,
-/// STAGED REFERENCES). Every community the batch owed a relabel is
+/// reference after its event folds ([`stage_reference`]); its end settles every row it staged,
+/// whose leaf it defines or, a module row, one of whose candidates names a node it asserts
+/// ([`settle_references`]) - here alone, never in [`fold_new`] (spec 117, STAGED REFERENCES). Every community the batch owed a relabel is
 /// labelled before this returns ([`relabel_owed_communities`]), the row edges' debt included.
 /// The `applied` row cannot guard the batch's events, which share the entry's position.
 fn fold_entry(
@@ -2077,10 +2077,10 @@ impl From<StagedColumns> for StagedRow {
 /// it is a tagged reference of a kind whose row is an edge of a relation ([`staged_rel`]; spec
 /// 117, STAGED REFERENCES): a leaf kind's or a module row's. It is read from its caller's node,
 /// else its file's, either alias-resolved ([`resolve_in_tx`]), for its leaf - a module row's its
-/// candidates joined by `\n` - at its log position, unresolved until its batch's end
-/// ([`settle_references`]). The rows are a set: two references of one leaf and kind from one
-/// node are one row, the generation implied, since an identity's rows all stand at the one
-/// generation that staged them.
+/// candidates joined by [`MODULE_CANDIDATE_SEPARATOR`] - at its log position, unresolved until
+/// its batch's end ([`settle_references`]). The rows are a set: two references of one leaf and
+/// kind from one node are one row, the generation implied, since an identity's rows all stand at
+/// the one generation that staged them.
 fn stage_reference(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Result<(), Error> {
     let tagged = (e.type_ == TYPE_EDGE_INFERRED)
         .then(|| serde_json::from_slice::<super::EdgeInferred>(&e.data).ok())
@@ -2148,7 +2148,8 @@ fn staged_rows_sql() -> String {
                        SELECT 1 FROM (SELECT n.node_id AS id
                                       UNION ALL
                                       SELECT alias FROM aliases WHERE canonical_id = n.node_id)
-                        WHERE instr(char(10) || m.leaf || char(10), char(10) || id || char(10))))
+                        WHERE instr('{MODULE_CANDIDATE_SEPARATOR}' || m.leaf || '{MODULE_CANDIDATE_SEPARATOR}',
+                                    '{MODULE_CANDIDATE_SEPARATOR}' || id || '{MODULE_CANDIDATE_SEPARATOR}')))
             AND {}
           ORDER BY r.identity",
         node_leaf_sql(),
@@ -2202,8 +2203,9 @@ fn settle_references(tx: &Transaction, by: &Asserter, project: &str) -> Result<(
 /// is asserted, and the release keeps the entry a row still targets. Otherwise the row takes its
 /// new target; its edge onto the old one is released ([`release_reference`]); and its edge onto
 /// the new one is asserted under the row's own identity and generation ([`assert_link`]), valid
-/// from `by`'s event time and recorded at the row's staging position, unless a live `REFERENCES`
-/// already holds the pair, which the row then leaves as the pair's one edge.
+/// from `by`'s event time and recorded at the row's staging position, unless, for a leaf kind's
+/// row, a live `REFERENCES` already holds the pair, which the row then leaves as the pair's one
+/// edge.
 fn settle_reference(
     tx: &Transaction,
     by: &Asserter,
@@ -2258,22 +2260,22 @@ fn settle_reference(
 }
 
 /// What settling a `refs` row answers ([`settled_module`], [`settled_target_sql`]): nothing when
-/// the row keeps its target, else its new target, the tier of its edge and whether a live edge
-/// already holds the pair.
+/// the row keeps its target, else its new target, the tier of its edge and whether a live
+/// `REFERENCES` already holds the pair, which a module row's never answers.
 type Settled = Option<(Option<String>, String, bool)>;
 
-/// The one statement that settles a module row `row` (spec 117, A MODULE ROW REACHES ITS FILE):
-/// it sets the row to the first of its candidates - its leaf split on `\n`, each alias-resolved
-/// ([`resolve_in_tx`]) - holding a `file` node in `project`, else none, and only when that differs
-/// from the target it holds, answering as [`settled_target_sql`]'s statement does: the new
-/// target, its tier, [`TIER_EXTRACTED`] - the language's module rule decides it - and that no
-/// live edge holds the pair, a declaration having no twin. A row it leaves unchanged answers
-/// nothing. It writes no node.
+/// Settle a module row `row` (spec 117, A MODULE ROW REACHES ITS FILE): one statement sets the row
+/// to the first of its candidates - its leaf split on [`MODULE_CANDIDATE_SEPARATOR`], each
+/// alias-resolved ([`resolve_in_tx`]) - holding a `file` node in `project`, else none, only when
+/// that differs from the target it holds, answering as [`settled_target_sql`]'s statement does:
+/// the new target, its tier, [`TIER_EXTRACTED`] - the language's module rule decides it - and
+/// that no live edge holds the pair, a declaration having no twin. A row it leaves unchanged
+/// answers nothing. It writes no node.
 fn settled_module(tx: &Transaction, row: &StagedRow, project: &str) -> Result<Settled, Error> {
     let mut target = None;
     for id in row
         .leaf
-        .split('\n')
+        .split(MODULE_CANDIDATE_SEPARATOR)
         .map(|candidate| resolve_in_tx(tx, candidate))
     {
         if node_row(tx, &id, project)?.is_some_and(|node| node.kind == KIND_FILE) {
@@ -4912,35 +4914,36 @@ fn add_edge(
     if let Some(id) = live {
         return Ok(id);
     }
-    tx.execute(
-        "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
-         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
-        params![from, to, rel, at, src as i64, project, tier],
-    )
-    .map_err(be)?;
-    let id = tx.last_insert_rowid();
-    // A new structural edge raises both endpoints' degree, which a community label weighs.
-    owe_relabel_of_ends(tx, from, to, rel, project).map(|()| id)
+    let (id, declaration): (i64, bool) = tx
+        .query_row(
+            &format!(
+                "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
+                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)
+                 RETURNING id, {}",
+                edge_declaration_sql()
+            ),
+            params![from, to, rel, at, src as i64, project, tier],
+            |r| <(i64, bool)>::try_from(r),
+        )
+        .map_err(be)?;
+    // A new structural edge raises both endpoints' degree, which a community label weighs, a module
+    // declaration's excepted ([`owe_relabel_of_ends`]).
+    owe_relabel_of_ends(tx, from, to, rel, declaration, project).map(|()| id)
 }
 
 /// Owe a relabel to the communities of both ends of a `rel` edge from `from` to `to` whose
 /// liveness just changed, when it is a structural edge (`CALLS`, `REFERENCES` or `CONTAINS`) and
-/// no module declaration's `CONTAINS` onto its file ([`declaration_sql`], spec 117): its
-/// endpoints' degree, which a community label weighs ([`relabel_owed_communities`]), moved.
+/// no module declaration's `CONTAINS` onto its file - `declaration`, which the statement writing
+/// the edge answers ([`edge_declaration_sql`], spec 117): its endpoints' degree, which a community
+/// label weighs ([`relabel_owed_communities`]), moved.
 fn owe_relabel_of_ends(
     tx: &Transaction,
     from: &str,
     to: &str,
     rel: &str,
+    declaration: bool,
     project: &str,
 ) -> Result<(), Error> {
-    let declaration: bool = tx
-        .query_row(
-            &format!("SELECT {}", declaration_sql("?1", "?2", "?3")),
-            params![rel, to, project],
-            |r| r.get(0),
-        )
-        .map_err(be)?;
     match [REL_CALLS, REL_REFERENCES, REL_CONTAINS].contains(&rel) && !declaration {
         true => [from, to]
             .into_iter()
@@ -4949,11 +4952,11 @@ fn owe_relabel_of_ends(
     }
 }
 
-/// The store form of [`declares_a_module`](super::declares_a_module) over the SQL values `rel`, `to` and `project`: a
-/// `CONTAINS` onto a node of kind `file` in the project, held or retired ([`retire_unheld_nodes`]),
-/// so the edge a retired file's batch stamps is one too - the one spelling the label degree
-/// ([`relabel_owed_communities`]) and the relabel debt ([`owe_relabel_of_ends`]) read, held to the
-/// domain rule by a test.
+/// The store form of [`declares_a_module`](super::declares_a_module) over the SQL values `rel`,
+/// `to` and `project`: a `CONTAINS` onto a node of kind `file` in the project, held or retired
+/// ([`retire_unheld_nodes`]), so the edge a retired file's batch stamps is one too - the one
+/// spelling the label degree ([`relabel_owed_communities`]) and the relabel debt
+/// ([`edge_declaration_sql`]) read, held to the domain rule by a test.
 fn declaration_sql(rel: &str, to: &str, project: &str) -> String {
     format!(
         "({rel} = '{REL_CONTAINS}' AND EXISTS (
@@ -4964,9 +4967,15 @@ fn declaration_sql(rel: &str, to: &str, project: &str) -> String {
     )
 }
 
-/// Settle live asserted edge `edge` - a design link, or a staged reference's edge (spec 117) -
-/// from its LIVE assertions ([`live_edge_assertions`]): an edge no live assertion holds any more
-/// is retired at `at`, owing its endpoints a relabel when it is structural
+/// [`declaration_sql`] of the `edges` row a statement writes, which its `RETURNING` answers: the
+/// one form [`add_edge`] and [`settle_edge`] owe a relabel by ([`owe_relabel_of_ends`]).
+fn edge_declaration_sql() -> String {
+    declaration_sql("edges.rel", "edges.to_id", "edges.project")
+}
+
+/// Settle live asserted edge `edge` - a design link, or a staged row's edge (spec 117) - from its
+/// LIVE assertions ([`live_edge_assertions`]): an edge no live assertion holds any more is retired
+/// at `at`, owing its endpoints a relabel when it is structural and no module declaration
 /// ([`owe_relabel_of_ends`]); one still held takes its dates from them - valid since the earliest
 /// of their runs began, last asserted at the newest of their recordings - so what a superseded
 /// generation said about it is gone with that generation.
@@ -4992,20 +5001,25 @@ fn settle_edge(tx: &Transaction, edge: i64, at: i64, project: &str) -> Result<()
             .map(drop)
             .map_err(be),
         None => {
-            let (from, to, rel): (String, String, String) = tx
+            let (from, to, rel, declaration): (String, String, String, bool) = tx
                 .query_row(
-                    "UPDATE edges SET valid_to = ?2 WHERE id = ?1 RETURNING from_id, to_id, rel",
+                    &format!(
+                        "UPDATE edges SET valid_to = ?2 WHERE id = ?1
+                         RETURNING from_id, to_id, rel, {}",
+                        edge_declaration_sql()
+                    ),
                     params![edge, at],
-                    |r| <(String, String, String)>::try_from(r),
+                    |r| <(String, String, String, bool)>::try_from(r),
                 )
                 .map_err(be)?;
-            owe_relabel_of_ends(tx, &from, &to, &rel, project)
+            owe_relabel_of_ends(tx, &from, &to, &rel, declaration, project)
         }
     }
 }
 
 /// Assert a `tier` link under the generation rule (spec 101): a design link, at
-/// [`TIER_EXTRACTED`], or a staged reference's edge (spec 117, ONE RETIRER). Every asserter
+/// [`TIER_EXTRACTED`], or a staged row's edge - a reference's or a module row's (spec 117, ONE
+/// RETIRER; A MODULE ROW REACHES ITS FILE). Every asserter
 /// records its own assertion of the edge: the valid time its unbroken run of assertions began
 /// (`since`) and its newest recording (`source`), and the edge takes its dates from its live
 /// assertions ([`settle_edge`]). A link the identity's PRIOR generation asserted continues that run - retired
@@ -7280,6 +7294,12 @@ mod tests {
         );
     }
 
+    /// Fold `node`'s assignment to `community` at resolution 1.0 under one fixed hash
+    /// ([`apply_community`]).
+    fn assign_community(p: &Projector, pos: u64, node: &str, community: &str, fresh: bool) {
+        apply_community(p, pos, node, community, 1.0, "h", fresh);
+    }
+
     /// Construct and fold one `CommunityAssigned` event by hand (no detection-pass dependency), so
     /// the fold is proven in BOTH feature lanes exactly like the code-ingest fold tests.
     fn apply_community(
@@ -7844,7 +7864,8 @@ mod tests {
     #[test]
     fn code_extraction_events_fold_into_a_file_container_entities_and_structural_edges() {
         // Criterion 1: a source file's extraction EMITS CodeEntityExtracted (one per path, spec
-        // 119) and EdgeInferred (one per reference); the ALWAYS-compiled fold turns them into a
+        // 119) and EdgeInferred (one per reference, and a module row per out-of-line `mod`
+        // declaration); the ALWAYS-compiled fold turns them into a
         // file container node, code-entity nodes, and structural edges - so code structure lives in
         // the event-sourced projection, not a mutable side index. This test constructs the events
         // by hand (no extraction dependency) so it proves the fold in BOTH feature lanes: the fold
@@ -8558,6 +8579,16 @@ mod tests {
             [from],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get(2)?)),
         )
+    }
+
+    /// The value an SQL `fragment` answers over `params`, selected off the projector's own
+    /// connection ([`raw_rows`]).
+    fn fragment_values<T: rusqlite::types::FromSql>(
+        p: &Projector,
+        fragment: &str,
+        params: impl rusqlite::Params,
+    ) -> Vec<T> {
+        raw_rows(p, &format!("SELECT {fragment}"), params, |r| r.get(0))
     }
 
     /// Every row `sql` selects straight off the projector's own connection, mapped by `row`.
@@ -16468,8 +16499,8 @@ mod tests {
                     10,
                     &[("X", CODE_KIND_TYPE), ("Y", CODE_KIND_TYPE)],
                 );
-                apply_community(&p, 2, "src/b.rs::X", ONE_COMMUNITY, 1.0, "h", true);
-                apply_community(&p, 3, "src/b.rs::Y", ONE_COMMUNITY, 1.0, "h", false);
+                assign_community(&p, 2, "src/b.rs::X", ONE_COMMUNITY, true);
+                assign_community(&p, 3, "src/b.rs::Y", ONE_COMMUNITY, false);
                 assert_eq!(label(&p, ONE_COMMUNITY), Some("X".to_string()));
                 a_reads(
                     &p,
@@ -16752,8 +16783,8 @@ mod tests {
                     tagged(A, "Y", REF_KIND_TYPE, Some("read")),
                 ];
                 a_reads(&p, "a1", 2, 20, batch);
-                apply_community(&p, 3, READ, ONE_COMMUNITY, 1.0, "h", true);
-                apply_community(&p, 4, "src/a.rs::abc", ONE_COMMUNITY, 1.0, "h", false);
+                assign_community(&p, 3, READ, ONE_COMMUNITY, true);
+                assign_community(&p, 4, "src/a.rs::abc", ONE_COMMUNITY, false);
                 assert_eq!(label(&p, ONE_COMMUNITY), Some("read".to_string()));
                 b_defines(&p, "b2", 5, 50, &[("OTHER", CODE_KIND_TYPE)]);
                 assert_eq!(label(&p, ONE_COMMUNITY), Some("abc".to_string()));
@@ -16904,9 +16935,9 @@ mod tests {
                 owed
             }
 
-            /// A structural edge's two ends - a `CALLS`, `REFERENCES` or `CONTAINS` one, as
-            /// `add_edge` writes it or `settle_edge` retires it - owe exactly their own
-            /// communities a relabel, never one of a member nested under an end; any other
+            /// A structural edge's two ends - a `CALLS`, `REFERENCES` or `CONTAINS` one declaring
+            /// no module, as `add_edge` writes it or `settle_edge` retires it - owe exactly their
+            /// own communities a relabel, never one of a member nested under an end; any other
             /// relation owes none.
             #[test]
             fn a_structural_edges_ends_owe_exactly_their_own_communities_a_relabel() {
@@ -16921,12 +16952,12 @@ mod tests {
                 );
                 let nested = vec![event_of(TYPE_CODE_ENTITY_EXTRACTED, inner)];
                 a_reads(&p, "a1", 2, 20, nested);
-                apply_community(&p, 3, READ, "c-read", 1.0, "h", true);
-                apply_community(&p, 4, "src/a.rs::read::inner", "c-inner", 1.0, "h", false);
-                apply_community(&p, 5, CAP, "c-cap", 1.0, "h", false);
+                assign_community(&p, 3, READ, "c-read", true);
+                assign_community(&p, 4, "src/a.rs::read::inner", "c-inner", false);
+                assign_community(&p, 5, CAP, "c-cap", false);
                 for rel in [REL_CALLS, REL_REFERENCES, REL_CONTAINS, REL_ABOUT] {
                     let owed = owed_by(&p, |tx, project| {
-                        owe_relabel_of_ends(tx, READ, CAP, rel, project).unwrap()
+                        owe_relabel_of_ends(tx, READ, CAP, rel, false, project).unwrap()
                     });
                     let structural = rel != REL_ABOUT;
                     assert_eq!(
@@ -16966,10 +16997,7 @@ mod tests {
             fn the_sql_file_half_of_an_id_is_split_ids_non_empty_file_half() {
                 let p = fold_events([]);
                 for id in ["src/a.rs::read", "src/a.rs::T::new", "src/a.rs", "::x", ""] {
-                    let half: Vec<Option<String>> =
-                        raw_rows(&p, &format!("SELECT {}", file_half_sql("?1")), [id], |r| {
-                            r.get(0)
-                        });
+                    let half: Vec<Option<String>> = fragment_values(&p, &file_half_sql("?1"), [id]);
                     let split = match split_id(id) {
                         (file, Some(_)) if !file.is_empty() => Some(file.to_string()),
                         _ => None,
@@ -17039,8 +17067,18 @@ mod tests {
             /// The text a trigger [`refused_by`] plants raises.
             const REFUSED: &str = "refused";
 
-            /// After `setup`, a trigger refusing `refused` (`BEFORE <event> ON <table> [WHEN
-            /// ..]`) fails the batch `failing` answers - its entry and events - whole, with the
+            /// What a trigger refusing every `refs` update fires on ([`refusing`]).
+            const REFS_UPDATE: &str = "BEFORE UPDATE ON refs";
+
+            /// The trigger refusing `refused` (`BEFORE <event> ON <table> [WHEN ..]`) with
+            /// [`REFUSED`]'s text.
+            fn refusing(refused: &str) -> String {
+                format!(
+                    "CREATE TRIGGER refuse {refused} BEGIN SELECT RAISE(ABORT, '{REFUSED}'); END;"
+                )
+            }
+
+            /// After `setup`, a trigger refusing `refused` ([`refusing`]) fails the batch `failing` answers - its entry and events - whole, with the
             /// trigger's text.
             fn refused_by(
                 refused: &str,
@@ -17048,9 +17086,7 @@ mod tests {
                 failing: (Event, Vec<Event>),
             ) {
                 failed_by(
-                    &format!(
-                        "CREATE TRIGGER refuse {refused} BEGIN SELECT RAISE(ABORT, '{REFUSED}'); END;"
-                    ),
+                    &refusing(refused),
                     setup,
                     failing,
                     format!("{REFUSED}{SETUP_PAYS}"),
@@ -17111,7 +17147,7 @@ mod tests {
             /// [`ONE_COMMUNITY`].
             fn read_in_a_community(p: &Projector) {
                 a_reads(p, "a1", 1, 10, vec![read_of("CAP")]);
-                apply_community(p, 2, READ, ONE_COMMUNITY, 1.0, "h", true);
+                assign_community(p, 2, READ, ONE_COMMUNITY, true);
             }
 
             /// `src/b.rs`'s batch at `generation`, its entry at position 3, defining the
@@ -17154,7 +17190,7 @@ mod tests {
                 a_refused_staging_fails_the_batch:
                     refused_by("BEFORE INSERT ON refs", |_| {}, a_batch("a1", 1, &["CAP"]));
                 a_refused_settlement_fails_the_batch:
-                    refused_by("BEFORE UPDATE ON refs", defining_cap, a_batch("a1", 2, &["CAP"]));
+                    refused_by(REFS_UPDATE, defining_cap, a_batch("a1", 2, &["CAP"]));
                 a_refused_batch_end_entry_deletion_fails_the_batch:
                     refused_by(
                         "BEFORE DELETE ON edge_assertions",
@@ -17354,78 +17390,136 @@ mod tests {
             }
 
             /// Spec 117, A MODULE ROW REACHES ITS FILE: a `mod x;`'s module row, its leaf the
-            /// declaration's candidates joined by `\n`, is a `CONTAINS` from the `mod` node onto
-            /// the first candidate holding a `file` node, settled at the end of every batch that
-            /// stages it or asserts a node at one of its candidates.
+            /// declaration's candidates joined by [`MODULE_CANDIDATE_SEPARATOR`], is a `CONTAINS`
+            /// from the `mod` node onto the first candidate holding a `file` node, settled at the
+            /// end of every batch that stages it or asserts a node at one of its candidates.
             mod module_rows {
                 use super::*;
+                use crate::contextgraph::query::path_leaf;
                 use crate::contextgraph::CODE_KIND_MODULE;
                 use crate::test_support::{
                     alias_json, module_edges, DECLARING_FILE, DIR_MODULE_FILE, MODULE_FILE,
                     MOD_NODE,
                 };
 
-                /// The fn `y` [`holds`] defines in [`MODULE_FILE`].
+                /// The fn [`holds`] defines in a module file, here [`MODULE_FILE`]'s.
                 const MODULE_FN: &str = "src/x.rs::y";
-                /// The fn `w` beside [`MOD_NODE`] in [`DECLARING_FILE`].
+                /// A fn beside [`MOD_NODE`] in [`DECLARING_FILE`].
                 const DECLARING_FN: &str = "src/lib.rs::w";
-                /// The canonical file the alias [`MODULE_FILE`] names.
+                /// The canonical file an alias of a candidate names.
                 const MOVED_FILE: &str = "src/moved.rs";
+                /// The community [`MOD_NODE`] is the one member of ([`mod_in_a_community`]).
+                const MOD_COMMUNITY: &str = "c-mod";
+                /// The community [`MODULE_FILE`] is the one member of ([`in_communities`]).
+                const FILE_COMMUNITY: &str = "c-file";
+                /// The community [`MODULE_FN`] is the one member of ([`in_communities`]).
+                const FN_COMMUNITY: &str = "c-y";
 
                 /// The candidates of [`MOD_NODE`]'s declaration, joined as its row's leaf.
                 fn candidates() -> String {
-                    [MODULE_FILE, DIR_MODULE_FILE].join("\n")
+                    [MODULE_FILE, DIR_MODULE_FILE].join(MODULE_CANDIDATE_SEPARATOR)
                 }
 
-                /// The module row [`DECLARING_FILE`] stages at `generation` and `position`,
-                /// resolved to `target`.
-                fn module_row(generation: &str, position: i64, target: Option<&str>) -> Row {
+                /// The module row [`DECLARING_FILE`] stages in its batch at log position `pos`,
+                /// the generation [`fold_at`] names after it, resolved to `target`.
+                fn module_row(pos: u64, target: Option<&str>) -> Row {
                     let leaf = candidates();
                     let key = (MOD_NODE, leaf.as_str(), REF_KIND_MODULE);
-                    row(DECLARING_FILE, generation, key, position, target)
+                    row(DECLARING_FILE, &pos.to_string(), key, pos as i64, target)
+                }
+
+                /// Fold `batch` as the generation of `file` named by its log position `pos`,
+                /// valid from `secs`.
+                fn fold_at(p: &Projector, file: &str, pos: u64, secs: u64, batch: Vec<Event>) {
+                    fold(p, file, &pos.to_string(), pos, secs, batch);
                 }
 
                 /// [`DECLARING_FILE`]'s `mod x;` and its module row, as batch events after
-                /// `before`.
+                /// `before` ([`declaration_naming`] its [`candidates`]).
                 fn declaration(before: Vec<Event>) -> Vec<Event> {
+                    declaration_naming(before, &candidates())
+                }
+
+                /// [`DECLARING_FILE`]'s `mod x;` and a module row naming `named`, as batch events
+                /// after `before`.
+                fn declaration_naming(before: Vec<Event>, named: &str) -> Vec<Event> {
                     let mut batch = before;
                     let fresh = batch.is_empty();
+                    let leaf = path_leaf(MOD_NODE);
                     batch.push(definition_event(
                         DECLARING_FILE,
-                        "x",
+                        leaf,
                         CODE_KIND_MODULE,
                         2,
                         fresh,
                     ));
-                    batch.push(tagged(
-                        DECLARING_FILE,
-                        &candidates(),
-                        REF_KIND_MODULE,
-                        Some("x"),
-                    ));
+                    batch.push(tagged(DECLARING_FILE, named, REF_KIND_MODULE, Some(leaf)));
                     batch
                 }
 
-                /// Fold generation `generation` of [`DECLARING_FILE`] declaring `mod x;`.
-                fn declares(p: &Projector, generation: &str, pos: u64, secs: u64) {
-                    fold(
-                        p,
-                        DECLARING_FILE,
-                        generation,
-                        pos,
-                        secs,
-                        declaration(vec![]),
-                    );
+                /// Fold [`DECLARING_FILE`] declaring `mod x;` at `pos` ([`fold_at`]).
+                fn declares(p: &Projector, pos: u64, secs: u64) {
+                    fold_at(p, DECLARING_FILE, pos, secs, declaration(vec![]));
                 }
 
-                /// Fold generation `generation` of `file` defining the fn `y`.
-                fn holds(p: &Projector, file: &str, generation: &str, pos: u64, secs: u64) {
-                    fold_defining(p, file, generation, pos, secs, &[("y", CODE_KIND_FUNCTION)]);
+                /// Fold `file` defining [`MODULE_FN`]'s leaf at `pos` ([`fold_at`]).
+                fn holds(p: &Projector, file: &str, pos: u64, secs: u64) {
+                    let fn_y = [(path_leaf(MODULE_FN), CODE_KIND_FUNCTION)];
+                    fold_defining(p, file, &pos.to_string(), pos, secs, &fn_y);
+                }
+
+                /// Fold `file`'s no-bytes batch at `pos` ([`fold_at`]), retiring what it held.
+                fn retires(p: &Projector, file: &str, pos: u64, secs: u64) {
+                    fold_at(p, file, pos, secs, no_bytes_batch(file));
                 }
 
                 /// The one live module edge from [`MOD_NODE`] onto `file`, `extracted`.
                 fn declared(file: &str) -> Vec<(String, String, String)> {
                     vec![(MOD_NODE.into(), file.into(), TIER_EXTRACTED.into())]
+                }
+
+                /// [`DECLARING_FILE`]'s ledger entry at `pos` and its batch declaring `mod x;`,
+                /// for a batch a test makes fail.
+                fn declaring_entry(pos: u64) -> (Event, Vec<Event>) {
+                    let entry = entry_at("gc", DECLARING_FILE, &pos.to_string(), pos, pos * 10);
+                    (entry, declaration(vec![]))
+                }
+
+                /// The rows `file`'s batch settles ([`staged_rows_sql`]), as `(identity, from,
+                /// ref_kind)`.
+                fn settled_by(p: &Projector, file: &str) -> Vec<(String, String, String)> {
+                    let by = crate::test_support::gc_identity(file);
+                    raw_rows(p, &staged_rows_sql(), params![p.project, by], |r| {
+                        Ok((r.get(1)?, r.get(3)?, r.get(5)?))
+                    })
+                }
+
+                /// [`MOD_NODE`] the one member of [`MOD_COMMUNITY`], at log position `pos`.
+                fn mod_in_a_community(p: &Projector, pos: u64) {
+                    assign_community(p, pos, MOD_NODE, MOD_COMMUNITY, true);
+                }
+
+                /// [`MOD_NODE`], [`MODULE_FILE`] and [`MODULE_FN`] each the one member of its
+                /// community, at log positions `pos` on.
+                fn in_communities(p: &Projector, pos: u64) {
+                    mod_in_a_community(p, pos);
+                    assign_community(p, pos + 1, MODULE_FILE, FILE_COMMUNITY, false);
+                    assign_community(p, pos + 2, MODULE_FN, FN_COMMUNITY, false);
+                }
+
+                /// The communities a new `rel` edge from [`MOD_NODE`] onto `to` at `tier` owes a
+                /// relabel ([`add_edge`]), and the edge.
+                fn owed_by_an_edge(
+                    p: &Projector,
+                    rel: &str,
+                    to: &str,
+                    tier: &str,
+                ) -> (Vec<String>, i64) {
+                    let mut edge = 0;
+                    let owed = owed_by(p, |tx, project| {
+                        edge = add_edge(tx, MOD_NODE, to, rel, 0, 0, project, tier).unwrap();
+                    });
+                    (owed, edge)
                 }
 
                 /// A target with no file node leaves the row unresolved; the row resolves to the
@@ -17437,26 +17531,27 @@ mod tests {
                 fn a_module_row_resolves_to_its_first_candidate_holding_a_file_node_in_either_fold_order(
                 ) {
                     let declared_first = fold_events([]);
-                    declares(&declared_first, "l1", 1, 10);
+                    declares(&declared_first, 1, 10);
                     assert_eq!(
                         (rows(&declared_first), module_edges(&declared_first)),
-                        (vec![module_row("l1", 1, None)], vec![]),
+                        (vec![module_row(1, None)], vec![]),
                         "a target with no file node leaves the row unresolved"
                     );
-                    holds(&declared_first, DIR_MODULE_FILE, "d1", 2, 20);
+                    holds(&declared_first, DIR_MODULE_FILE, 2, 20);
                     let held_first = fold_events([]);
-                    holds(&held_first, DIR_MODULE_FILE, "d1", 1, 10);
-                    declares(&held_first, "l1", 2, 20);
+                    holds(&held_first, DIR_MODULE_FILE, 1, 10);
+                    declares(&held_first, 2, 20);
                     for (p, staged_at) in [(&declared_first, 1), (&held_first, 2)] {
-                        assert_eq!(
-                            rows(p),
-                            [module_row("l1", staged_at, Some(DIR_MODULE_FILE))]
-                        );
+                        assert_eq!(rows(p), [module_row(staged_at, Some(DIR_MODULE_FILE))]);
                         assert_eq!(module_edges(p), declared(DIR_MODULE_FILE));
                         assert_eq!(
                             edge_rows(p, MOD_NODE, REL_CONTAINS),
-                            [(DIR_MODULE_FILE.to_string(), nanos(20), None, staged_at)],
-                            "source is the staging position, valid-time the resolving batch's"
+                            [(
+                                DIR_MODULE_FILE.to_string(),
+                                nanos(20),
+                                None,
+                                staged_at as i64
+                            )]
                         );
                     }
                 }
@@ -17466,10 +17561,10 @@ mod tests {
                 #[test]
                 fn of_two_candidates_holding_a_file_node_the_first_listed_takes_the_row() {
                     let p = fold_events([]);
-                    declares(&p, "l1", 1, 10);
-                    holds(&p, DIR_MODULE_FILE, "d1", 2, 20);
-                    holds(&p, MODULE_FILE, "f1", 3, 30);
-                    assert_eq!(rows(&p), [module_row("l1", 1, Some(MODULE_FILE))]);
+                    declares(&p, 1, 10);
+                    holds(&p, DIR_MODULE_FILE, 2, 20);
+                    holds(&p, MODULE_FILE, 3, 30);
+                    assert_eq!(rows(&p), [module_row(1, Some(MODULE_FILE))]);
                     assert_eq!(module_edges(&p), declared(MODULE_FILE));
                     assert_eq!(
                         edge_rows(&p, MOD_NODE, REL_CONTAINS),
@@ -17485,15 +17580,15 @@ mod tests {
                 #[test]
                 fn a_target_retired_then_restored_leaves_a_gap() {
                     let p = fold_events([]);
-                    declares(&p, "l1", 1, 10);
-                    holds(&p, MODULE_FILE, "f1", 2, 20);
-                    fold(&p, MODULE_FILE, "f2", 3, 30, no_bytes_batch(MODULE_FILE));
+                    declares(&p, 1, 10);
+                    holds(&p, MODULE_FILE, 2, 20);
+                    retires(&p, MODULE_FILE, 3, 30);
                     assert_eq!(
                         (rows(&p), module_edges(&p)),
-                        (vec![module_row("l1", 1, None)], vec![]),
+                        (vec![module_row(1, None)], vec![]),
                         "the retired target unresolves the row"
                     );
-                    holds(&p, MODULE_FILE, "f3", 4, 40);
+                    holds(&p, MODULE_FILE, 4, 40);
                     assert_eq!(
                         edge_rows(&p, MOD_NODE, REL_CONTAINS),
                         [
@@ -17508,9 +17603,9 @@ mod tests {
                 #[test]
                 fn module_resolution_writes_no_node() {
                     let p = fold_events([]);
-                    declares(&p, "l1", 1, 10);
+                    declares(&p, 1, 10);
                     assert_eq!(node_ids(&p), [DECLARING_FILE, MOD_NODE]);
-                    holds(&p, MODULE_FILE, "f1", 2, 20);
+                    holds(&p, MODULE_FILE, 2, 20);
                     assert_eq!(
                         node_ids(&p),
                         [DECLARING_FILE, MOD_NODE, MODULE_FILE, MODULE_FN]
@@ -17523,15 +17618,15 @@ mod tests {
                 fn an_aliased_candidate_resolves_to_its_canonical_file_in_either_fold_order() {
                     for held_first in [true, false] {
                         let p = fold_events([]);
-                        apply_json(
-                            &p,
-                            1,
-                            TYPE_ALIAS_DEFINED,
-                            alias_json(MODULE_FILE, MOVED_FILE),
-                        );
-                        let (held_at, declared_at) = if held_first { (2, 3) } else { (3, 2) };
-                        holds(&p, MOVED_FILE, "m1", held_at, held_at * 10);
-                        declares(&p, "l1", declared_at, declared_at * 10);
+                        let alias = alias_json(MODULE_FILE, MOVED_FILE);
+                        apply_json(&p, 1, TYPE_ALIAS_DEFINED, alias);
+                        if held_first {
+                            holds(&p, MOVED_FILE, 2, 20);
+                            declares(&p, 3, 30);
+                        } else {
+                            declares(&p, 2, 20);
+                            holds(&p, MOVED_FILE, 3, 30);
+                        }
                         assert_eq!(
                             module_edges(&p),
                             declared(MOVED_FILE),
@@ -17545,123 +17640,279 @@ mod tests {
                 #[test]
                 fn a_dropped_mods_row_edge_and_prior_entry_are_gone_at_the_batch_end() {
                     let p = fold_events([]);
-                    declares(&p, "l1", 1, 10);
-                    holds(&p, MODULE_FILE, "f1", 2, 20);
+                    declares(&p, 1, 10);
+                    holds(&p, MODULE_FILE, 2, 20);
                     assert_eq!(
                         assertions_of(&p, REL_CONTAINS),
                         [(
                             crate::test_support::gc_identity(DECLARING_FILE),
-                            "l1".into(),
+                            1.to_string(),
                             MOD_NODE.into(),
                             MODULE_FILE.into()
                         )]
                     );
-                    let kept = definition_event(DECLARING_FILE, "w", CODE_KIND_FUNCTION, 1, true);
-                    fold(&p, DECLARING_FILE, "l2", 3, 30, vec![kept]);
+                    let leaf = path_leaf(DECLARING_FN);
+                    let kept = definition_event(DECLARING_FILE, leaf, CODE_KIND_FUNCTION, 1, true);
+                    fold_at(&p, DECLARING_FILE, 3, 30, vec![kept]);
                     assert_eq!((rows(&p), module_edges(&p)), (vec![], vec![]));
                     assert_eq!(assertions_of(&p, REL_CONTAINS), []);
                 }
 
-                /// A `mod` node's community label degree counts no module `CONTAINS`: of `w` and
-                /// `x`, one community each holding one `CONTAINS` from their file, the label stays
-                /// `w`, the lesser name, after `x`'s module row resolves and the community pass
-                /// re-runs.
+                /// A `mod` node's community label degree counts no module `CONTAINS`: of
+                /// [`DECLARING_FN`] and [`MOD_NODE`], one community each holding one `CONTAINS`
+                /// from their file, the label stays the lesser name after the `mod` node's module
+                /// row resolves and the community pass re-runs.
                 #[test]
                 fn a_module_contains_counts_in_no_community_label_degree() {
                     let p = fold_events([]);
-                    let w = definition_event(DECLARING_FILE, "w", CODE_KIND_FUNCTION, 1, true);
-                    fold(&p, DECLARING_FILE, "l1", 1, 10, declaration(vec![w]));
-                    let assign = |pos: u64, hash: &str| {
-                        apply_community(&p, pos, MOD_NODE, ONE_COMMUNITY, 1.0, hash, true);
-                        apply_community(&p, pos + 1, DECLARING_FN, ONE_COMMUNITY, 1.0, hash, false);
+                    let leaf = path_leaf(DECLARING_FN);
+                    let w = definition_event(DECLARING_FILE, leaf, CODE_KIND_FUNCTION, 1, true);
+                    fold_at(&p, DECLARING_FILE, 1, 10, declaration(vec![w]));
+                    let assign = |pos: u64| {
+                        assign_community(&p, pos, MOD_NODE, ONE_COMMUNITY, true);
+                        assign_community(&p, pos + 1, DECLARING_FN, ONE_COMMUNITY, false);
                     };
-                    assign(2, "h1");
-                    assert_eq!(label(&p, ONE_COMMUNITY), Some("w".to_string()));
-                    holds(&p, MODULE_FILE, "f1", 4, 40);
-                    assign(5, "h2");
+                    assign(2);
+                    assert_eq!(label(&p, ONE_COMMUNITY), Some(leaf.to_string()));
+                    holds(&p, MODULE_FILE, 4, 40);
+                    assign(5);
                     assert_eq!(module_edges(&p), declared(MODULE_FILE));
-                    assert_eq!(label(&p, ONE_COMMUNITY), Some("w".to_string()));
+                    assert_eq!(label(&p, ONE_COMMUNITY), Some(leaf.to_string()));
                 }
 
-                /// A module `CONTAINS` owes no relabel, onto a live `file` node or a retired one,
-                /// where a `CONTAINS` onto a code entity owes both its ends theirs.
+                /// A module `CONTAINS` [`add_edge`] writes owes no relabel, onto a live `file` node
+                /// or a retired one, where a `CONTAINS` onto a code entity and a `REFERENCES` onto a
+                /// `file` node owe both their ends theirs.
                 #[test]
                 fn a_module_contains_owes_no_relabel_where_one_onto_a_code_entity_does() {
                     let p = fold_events([]);
-                    declares(&p, "l1", 1, 10);
-                    holds(&p, MODULE_FILE, "f1", 2, 20);
-                    apply_community(&p, 3, MOD_NODE, "c-mod", 1.0, "h", true);
-                    apply_community(&p, 4, MODULE_FILE, "c-file", 1.0, "h", false);
-                    apply_community(&p, 5, MODULE_FN, "c-y", 1.0, "h", false);
-                    let owed = |to: &str| {
-                        owed_by(&p, |tx, project| {
-                            owe_relabel_of_ends(tx, MOD_NODE, to, REL_CONTAINS, project).unwrap()
-                        })
-                    };
-                    assert_eq!(owed(MODULE_FILE), Vec::<String>::new());
-                    assert_eq!(owed(MODULE_FN), ["c-mod", "c-y"]);
-                    fold(&p, MODULE_FILE, "f2", 6, 60, no_bytes_batch(MODULE_FILE));
-                    assert_eq!(owed(MODULE_FILE), Vec::<String>::new(), "a retired file");
+                    declares(&p, 1, 10);
+                    holds(&p, MODULE_FILE, 2, 20);
+                    in_communities(&p, 3);
+                    let owed = |to: &str, tier: &str| owed_by_an_edge(&p, REL_CONTAINS, to, tier).0;
+                    assert_eq!(owed(MODULE_FILE, TIER_INFERRED), Vec::<String>::new());
+                    assert_eq!(
+                        owed(MODULE_FN, TIER_INFERRED),
+                        [MOD_COMMUNITY, FN_COMMUNITY]
+                    );
+                    let referenced =
+                        owed_by_an_edge(&p, REL_REFERENCES, MODULE_FILE, TIER_INFERRED);
+                    assert_eq!(
+                        referenced.0,
+                        [FILE_COMMUNITY, MOD_COMMUNITY],
+                        "a REFERENCES onto a file node"
+                    );
+                    retires(&p, MODULE_FILE, 6, 60);
+                    assert_eq!(
+                        owed(MODULE_FILE, TIER_EXTRACTED),
+                        Vec::<String>::new(),
+                        "a retired file"
+                    );
+                }
+
+                /// A module `CONTAINS` [`settle_edge`] stamps owes no relabel, where one onto a code
+                /// entity owes both its ends theirs.
+                #[test]
+                fn a_stamped_module_contains_owes_no_relabel_where_one_onto_a_code_entity_does() {
+                    let p = fold_events([]);
+                    declares(&p, 1, 10);
+                    holds(&p, MODULE_FILE, 2, 20);
+                    in_communities(&p, 3);
+                    for (to, expected) in [
+                        (MODULE_FILE, vec![]),
+                        (MODULE_FN, vec![MOD_COMMUNITY, FN_COMMUNITY]),
+                    ] {
+                        let (_, edge) = owed_by_an_edge(&p, REL_CONTAINS, to, TIER_INFERRED);
+                        let stamped =
+                            owed_by(&p, |tx, project| settle_edge(tx, edge, 0, project).unwrap());
+                        assert_eq!(stamped, expected, "{to}");
+                    }
+                }
+
+                /// The rows a batch settles ([`staged_rows_sql`]) hold another identity's module row
+                /// exactly when the batch's identity asserts a candidate of it or the canonical node
+                /// an alias of one names: never for a reference whose leaf spells such a node's id,
+                /// a node whose id is a candidate's without its first or its last character, or a
+                /// node another identity asserts.
+                #[test]
+                fn a_batch_settles_another_identitys_module_row_by_its_candidates_alone() {
+                    let p = fold_events([]);
+                    apply_json(
+                        &p,
+                        1,
+                        TYPE_ALIAS_DEFINED,
+                        alias_json(DIR_MODULE_FILE, MOVED_FILE),
+                    );
+                    let mut batch = declaration(vec![]);
+                    let leaf = path_leaf(MOD_NODE);
+                    batch.push(tagged(DECLARING_FILE, MODULE_FN, REF_KIND_TYPE, Some(leaf)));
+                    fold_at(&p, DECLARING_FILE, 2, 20, batch);
+                    let (suffix, prefix) =
+                        (&MODULE_FILE[1..], &MODULE_FILE[..MODULE_FILE.len() - 1]);
+                    for (pos, file) in [(3, MODULE_FILE), (4, suffix), (5, prefix), (6, MOVED_FILE)]
+                    {
+                        holds(&p, file, pos, pos * 10);
+                    }
+                    let by = crate::test_support::gc_identity(DECLARING_FILE);
+                    let module = (by, MOD_NODE.to_string(), REF_KIND_MODULE.to_string());
+                    for (file, expected) in [
+                        (MODULE_FILE, vec![module.clone()]),
+                        (suffix, vec![]),
+                        (prefix, vec![]),
+                        (MOVED_FILE, vec![module]),
+                    ] {
+                        assert_eq!(settled_by(&p, file), expected, "{file}");
+                    }
+                }
+
+                /// Another project's node assertions settle none of this project's module rows, nor
+                /// this project's batch another project's.
+                #[test]
+                fn a_batch_settles_no_module_row_of_another_project() {
+                    let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
+                    declares(&theirs, 1, 10);
+                    holds(&theirs, MODULE_FILE, 2, 20);
+                    declares(&ours, 3, 30);
+                    assert_eq!(settled_by(&ours, MODULE_FILE), []);
+                }
+
+                /// A candidate a node of another kind holds is passed over: a row naming
+                /// [`MODULE_FN`] and then [`MODULE_FILE`] resolves onto the file.
+                #[test]
+                fn a_candidate_no_file_node_holds_is_passed_over() {
+                    let p = fold_events([]);
+                    holds(&p, MODULE_FILE, 1, 10);
+                    let named = [MODULE_FN, MODULE_FILE].join(MODULE_CANDIDATE_SEPARATOR);
+                    fold_at(
+                        &p,
+                        DECLARING_FILE,
+                        2,
+                        20,
+                        declaration_naming(vec![], &named),
+                    );
+                    assert_eq!(
+                        edge_rows(&p, MOD_NODE, REL_CONTAINS),
+                        [(MODULE_FILE.to_string(), nanos(20), None, 2)]
+                    );
+                }
+
+                /// A later batch of the target keeping its `file` node leaves the row's edge and its
+                /// dates.
+                #[test]
+                fn a_target_refolded_keeps_the_edge_and_its_dates() {
+                    let p = fold_events([]);
+                    declares(&p, 1, 10);
+                    holds(&p, MODULE_FILE, 2, 20);
+                    holds(&p, MODULE_FILE, 3, 30);
+                    assert_eq!(
+                        edge_rows(&p, MOD_NODE, REL_CONTAINS),
+                        [(MODULE_FILE.to_string(), nanos(20), None, 1)]
+                    );
+                }
+
+                /// A later batch of the target keeping its `file` node updates no row: the row
+                /// resolving to the target it holds writes nothing, so a trigger refusing every
+                /// `refs` update lets the batch fold.
+                #[test]
+                fn a_target_refolded_updates_no_row() {
+                    let p = fold_events([]);
+                    declares(&p, 1, 10);
+                    holds(&p, MODULE_FILE, 2, 20);
+                    let refuse = refusing(REFS_UPDATE);
+                    write_directly(&p, |tx, _| tx.execute_batch(&refuse).unwrap());
+                    holds(&p, MODULE_FILE, 3, 30);
+                    assert_eq!(rows(&p), [module_row(1, Some(MODULE_FILE))]);
+                }
+
+                /// A module row's edge refused fails the batch settling the row onto its file.
+                #[test]
+                fn a_refused_module_edge_fails_the_batch() {
+                    let held = |p: &Projector| holds(p, MODULE_FILE, 1, 10);
+                    let refused =
+                        format!("BEFORE INSERT ON edges WHEN NEW.to_id = '{MODULE_FILE}'");
+                    refused_by(&refused, held, declaring_entry(2));
+                }
+
+                /// A module row's settlement refused fails the batch settling it whole.
+                #[test]
+                fn a_refused_module_settlement_fails_the_batch() {
+                    let held = |p: &Projector| holds(p, MODULE_FILE, 1, 10);
+                    refused_by(REFS_UPDATE, held, declaring_entry(2));
+                }
+
+                /// A candidate's node that cannot be read fails the batch settling the row onto it.
+                #[test]
+                fn an_unreadable_candidate_node_fails_the_batch() {
+                    let held = |p: &Projector| holds(p, MODULE_FILE, 1, 10);
+                    failed_by(
+                        &format!("UPDATE nodes SET attrs = x'00' WHERE id = '{MODULE_FILE}'"),
+                        held,
+                        declaring_entry(2),
+                        format!("Invalid column type Blob at index: 2, name: attrs{SETUP_PAYS}"),
+                    );
+                }
+
+                /// A community node holding no attrs takes the label the pass owes it.
+                #[test]
+                fn a_community_node_without_attrs_takes_its_label() {
+                    let p = fold_events([]);
+                    let leaf = path_leaf(DECLARING_FN);
+                    let w = definition_event(DECLARING_FILE, leaf, CODE_KIND_FUNCTION, 1, true);
+                    fold_at(&p, DECLARING_FILE, 1, 10, vec![w]);
+                    assign_community(&p, 2, DECLARING_FN, ONE_COMMUNITY, true);
+                    write_directly(&p, |tx, project| {
+                        let none = "UPDATE nodes SET attrs = NULL WHERE id = ?1";
+                        tx.execute(none, [ONE_COMMUNITY]).unwrap();
+                        owe_relabel_of(tx, DECLARING_FN, false, project).unwrap();
+                        relabel_owed_communities(tx).unwrap();
+                    });
+                    assert_eq!(label(&p, ONE_COMMUNITY), Some(leaf.to_string()));
                 }
 
                 /// [`declaration_sql`] is the domain's [`declares_a_module`] over the store: of a
-                /// `CONTAINS` and a `REFERENCES` onto a held `file` node, a retired one, a code
-                /// entity and an id no node holds, it answers what the rule answers of the node's
-                /// kind, a retired file's kind its own.
+                /// `CONTAINS` and a `REFERENCES` onto a held `file` node, a retired one, a held
+                /// code entity, a retired one and an id no node holds, it answers what the rule
+                /// answers of the node's kind, a retired node's kind its own.
                 #[test]
                 fn the_declaration_sql_is_the_domain_rule() {
                     use crate::contextgraph::declares_a_module;
                     let p = fold_events([]);
-                    declares(&p, "l1", 1, 10);
-                    holds(&p, MODULE_FILE, "f1", 2, 20);
-                    holds(&p, DIR_MODULE_FILE, "d1", 3, 30);
-                    fold(
-                        &p,
-                        DIR_MODULE_FILE,
-                        "d2",
-                        4,
-                        40,
-                        no_bytes_batch(DIR_MODULE_FILE),
-                    );
+                    declares(&p, 1, 10);
+                    holds(&p, MODULE_FILE, 2, 20);
+                    holds(&p, DIR_MODULE_FILE, 3, 30);
+                    retires(&p, DIR_MODULE_FILE, 4, 40);
+                    let retired_fn = entity_id(DIR_MODULE_FILE, path_leaf(MODULE_FN));
                     let targets = [
                         (MODULE_FILE, Some(KIND_FILE)),
                         (DIR_MODULE_FILE, Some(KIND_FILE)),
                         (MOD_NODE, Some(KIND_CODE_ENTITY)),
+                        (retired_fn.as_str(), Some(KIND_CODE_ENTITY)),
                         (MOVED_FILE, None),
                     ];
-                    let sql = format!("SELECT {}", declaration_sql("?1", "?2", "?3"));
+                    let sql = declaration_sql("?1", "?2", "?3");
                     for rel in [REL_CONTAINS, REL_REFERENCES] {
                         for (to, kind) in targets {
                             let declared: Vec<bool> =
-                                raw_rows(&p, &sql, params![rel, to, p.project], |r| r.get(0));
+                                fragment_values(&p, &sql, params![rel, to, p.project]);
                             assert_eq!(declared, [declares_a_module(rel, kind)], "{rel} onto {to}");
                         }
                     }
                 }
 
                 /// Another project's `file` node, held or retired, makes no `CONTAINS` of this
-                /// project's a declaration: onto either, `ours` owes its `mod` node's community
-                /// a relabel.
+                /// project's a declaration: a new one onto either ([`add_edge`]) owes `ours`'s `mod`
+                /// node's community a relabel.
                 #[test]
                 fn another_projects_file_node_declares_no_module() {
                     let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
-                    holds(&theirs, MODULE_FILE, "f1", 1, 10);
-                    holds(&theirs, DIR_MODULE_FILE, "d1", 2, 10);
-                    fold(
-                        &theirs,
-                        DIR_MODULE_FILE,
-                        "d2",
-                        3,
-                        10,
-                        no_bytes_batch(DIR_MODULE_FILE),
-                    );
-                    declares(&ours, "l1", 4, 20);
-                    apply_community(&ours, 5, MOD_NODE, "c-mod", 1.0, "h", true);
+                    holds(&theirs, MODULE_FILE, 1, 10);
+                    holds(&theirs, DIR_MODULE_FILE, 2, 10);
+                    retires(&theirs, DIR_MODULE_FILE, 3, 10);
+                    declares(&ours, 4, 20);
+                    mod_in_a_community(&ours, 5);
                     for to in [MODULE_FILE, DIR_MODULE_FILE] {
-                        let owed = owed_by(&ours, |tx, project| {
-                            owe_relabel_of_ends(tx, MOD_NODE, to, REL_CONTAINS, project).unwrap()
-                        });
-                        assert_eq!(owed, ["c-mod"], "{to}");
+                        let (owed, _) = owed_by_an_edge(&ours, REL_CONTAINS, to, TIER_INFERRED);
+                        assert_eq!(owed, [MOD_COMMUNITY], "{to}");
                     }
                 }
             }

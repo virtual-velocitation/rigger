@@ -1,17 +1,19 @@
-//! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file
-//! index, building one from Rust sources, a tree whose inline mod declares a `#[cfg(test)]` mod out of line, saving it through the real `store` boundary and reading the bytes back, writing a
-//! hand-authored `index.json` under the current extraction generation and loading a legacy one
-//! through the real `store::load`, building a tree's index and reloading it, projecting a file's definitions, its test-marked
-//! definitions and references and its call references with their callers, checking a language's definition
-//! types against a file's definitions, checking a language's definitions fixture whole and a source's callers whole,
-//! projecting a file's definition extents, checking the variant names a file's kinds persist
-//! under, rendering and checking a file's tagged references, and looking up a registered
-//! language.
-//! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
-//! subset it needs (hence the module-wide `dead_code` allowance, the same convention
-//! `tests/common/mod.rs` keeps). Every lane compiles it; `registered` and `extracted`, with
-//! `assert_definitions_fixture` and `assert_callers` through it, alone reach a grammar and are held by the `symbols`
-//! lane only, as is `extracted_rust_index`, which calls `extracted`.
+//! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file index,
+//! building one from Rust sources, a tree whose inline mod declares a `#[cfg(test)]` mod out of
+//! line, the `mod x;` declaration sources and the one-fn source the module-row tests extract,
+//! saving it through the real `store` boundary and reading the bytes back, writing a hand-authored
+//! `index.json` under the current extraction generation and loading a legacy one through the real
+//! `store::load`, building a tree's index and reloading it, projecting a file's definitions, its
+//! test-marked definitions and references and its call references with their callers, checking a
+//! language's definition types against a file's definitions, checking a language's definitions
+//! fixture whole and a source's callers whole, projecting a file's definition extents, checking the
+//! variant names a file's kinds persist under, rendering and checking a file's tagged references,
+//! and looking up a registered language. Included by each suite, and by the grounder crate for its
+//! unit tests, through `#[path]`; a suite uses the subset it needs (hence the module-wide
+//! `dead_code` allowance, the same convention `tests/common/mod.rs` keeps). Every lane compiles it;
+//! `registered` and `extracted`, with `assert_definitions_fixture` and `assert_callers` through it,
+//! alone reach a grammar and are held by the `symbols` lane only, as is `extracted_rust_index`,
+//! which calls `extracted`.
 
 #![allow(dead_code)]
 

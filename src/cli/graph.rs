@@ -742,9 +742,9 @@ fn record_batch(
 
 /// `rigger graph communities [--resolution <r>]` - the OFFLINE, DETERMINISTIC community-detection
 /// pass (spec 53, the CODE lens). It reads the project's already-folded coupling layer (the live
-/// `CALLS` / `REFERENCES` / `CONTAINS` edges among code-entity / file nodes), runs modularity-based
-/// detection over it at the given `--resolution` grain (default [`community::DEFAULT_RESOLUTION`]),
-/// and RECORDS the result as `CommunityAssigned` events - so the derived grouping is event-sourced
+/// `CALLS` / `REFERENCES` / `CONTAINS` edges among code-entity / file nodes, but a module
+/// declaration's `CONTAINS` onto its file, spec 117), runs modularity-based detection over it at
+/// the given `--resolution` grain (default [`community::DEFAULT_RESOLUTION`]), and RECORDS the result as `CommunityAssigned` events - so the derived grouping is event-sourced
 /// (the `IN_COMMUNITY` membership edges are a rebuildable fold of the log), never computed at request
 /// time. Re-running at a resolution with a NON-empty result supersedes only that grain's prior
 /// assignments (the fold's `fresh` boundary), so distinct grains coexist and the lens reads one live

@@ -1,13 +1,13 @@
 //! Fold fixtures over the graph projector: folding a hand-built JSON event straight onto a
 //! `Projector` (the raw on-log JSON - never an in-crate payload struct - so a test pins the
-//! contract the log actually carries), the on-log payloads the code-ingest, decision and
+//! contract the log actually carries), the on-log payloads the code-ingest, decision, alias and
 //! reference folds read, the canonical spec-53 two-subsystem coupling seed, the spec-119
 //! show-renderer seed with the oracles its `rigger_graph` `show` and `around` objects are checked
 //! by, the live edges and calls a projector serves with the spec-119 enum's `CONTAINS` edges they
-//! are checked against, and the read-backs suites take of a folded
-//! `Graph`. `apply` returns `Err`
-//! on a fold failure, so every helper unwraps it - a successful call is itself evidence the
-//! payload folded - but [`fold_entry_result`], which answers the error text a failing fold meets.
+//! are checked against, the module declarations' `CONTAINS` edges it serves, and the read-backs
+//! suites take of a folded `Graph`. `apply` returns `Err` on a fold failure, so every helper
+//! unwraps it - a successful call is itself evidence the payload folded - but
+//! [`fold_entry_result`], which answers the error text a failing fold meets.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, UNIX_EPOCH};

@@ -13145,6 +13145,9 @@ const BLAST_RADIUS_GRAPH_DEPTH: i64 = 2;
 ///   reference resolving to no known definition), which the blast radius never grounds on
 ///   (addendum 2.4), so it is never crossed.
 ///
+/// Neither view crosses a module declaration's `CONTAINS` onto its file (spec 117,
+/// [`files_reachable`]): a declaration has no radius effect.
+///
 /// It is a REACHABILITY filter, not a flat edge scan: a file is EXTRACTED-tier only when the seed
 /// reaches it across EXTRACTED edges the whole way. A file whose own definitions fold EXTRACTED
 /// `CONTAINS` edges but which the seed reaches ONLY across an INFERRED reference is INFERRED-tier -
@@ -13174,9 +13177,8 @@ fn confidence_tier_radius(g: &Graph, seed: &[String]) -> BlastRadius {
 /// `allowed` - the one edge set, filtered (spec 29c criterion 2). A breadth-first reachability over
 /// the (undirected) edge set: an allowed edge extends the reached set from either endpoint, but a
 /// module declaration's `CONTAINS` onto its file ([`contextgraph::declares_a_module`], spec 117),
-/// which has no radius effect. Every
-/// reached node is then mapped to its file - a [`KIND_FILE`](crate::contextgraph::KIND_FILE) node is
-/// its own path, a member (a named [`KIND_CODE_ENTITY`](crate::contextgraph::KIND_CODE_ENTITY))
+/// which has no radius effect. Every reached node is then mapped to its file - a
+/// [`KIND_FILE`](crate::contextgraph::KIND_FILE) node is its own path, a member (a named [`KIND_CODE_ENTITY`](crate::contextgraph::KIND_CODE_ENTITY))
 /// maps to its file by [`member_files`] when `g` holds that file's node, and any other node (a
 /// placeholder, a bare parent, a decision / finding / doc) maps to no file and is skipped. The walk
 /// crosses `g.edges` alone, so a nested definition reached at the depth bound adds its file but
@@ -13184,11 +13186,7 @@ fn confidence_tier_radius(g: &Graph, seed: &[String]) -> BlastRadius {
 /// its own blast radius even when the graph holds no node for it).
 fn files_reachable(g: &Graph, seed: &[String], allowed: &[&str]) -> BTreeSet<String> {
     let member_file = member_files(g);
-    let kind_of: BTreeMap<&str, &str> = g
-        .nodes
-        .iter()
-        .map(|n| (n.id.as_str(), n.kind.as_str()))
-        .collect();
+    let kind_of = g.kinds();
     // A file node is its own path; a member its file ([`member_files`]); any other node none.
     let file_of = |id: &str| -> Option<String> {
         match kind_of.get(id).copied() {
@@ -13233,11 +13231,7 @@ fn files_reachable(g: &Graph, seed: &[String], allowed: &[&str]) -> BTreeSet<Str
 
 fn write_design_intent(b: &mut String, g: &Graph, seed: &[String]) {
     let seed_set: BTreeSet<&str> = seed.iter().map(String::as_str).collect();
-    let kind_of: BTreeMap<&str, &str> = g
-        .nodes
-        .iter()
-        .map(|n| (n.id.as_str(), n.kind.as_str()))
-        .collect();
+    let kind_of = g.kinds();
 
     // Per design-intent node, the code-binding (relation, seed-file) pairs it holds, plus the max
     // event-log position of those binding edges - the log-order signal the section orders by (the
