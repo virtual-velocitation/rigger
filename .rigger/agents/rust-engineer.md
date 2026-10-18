@@ -199,8 +199,9 @@ and `src/` add to or remove from a filter, guard or predicate, listed from
 changes the rule its function answers. Its old statement is what the function's callers from
 `rigger graph --around <file>::<fn> --depth 1` spell - the notes they print, their Returns
 paragraphs, the docs of the variants the answer maps to and the oracles asserting them - and
-each such consumer phrase is a phrase of the search above, run once, every hit FIXED with the
-new qualifier or CHECKED with the reason it does not reach it.
+each such consumer phrase runs as a pair of the search above, the function's name as the code
+spells it and the old answer's noun, one run per pair, every hit FIXED with the new qualifier
+or CHECKED with the reason it does not reach it.
 
 Every mutable token of your production delta is probed on your committed tree: list the tokens
 from the production hunks of `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src`
