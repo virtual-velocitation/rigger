@@ -13,6 +13,9 @@
 //!   - A PATH OR A FLAT ID (spec 119, A BARE SHOW FINDS A LEAF OR PATH): a path `T::new` and a
 //!     pre-spec flat `<file>::<name>` each list every definition they name, and a flat id a
 //!     decision holds shows the definition its file holds at its leaf, never the bare node.
+//!   - AN AMBIGUOUS AROUND (spec 117, UNRESOLVED REFERENCES ARE A READ): `--around` on a held flat
+//!     id whose show lists several definitions prints the held node's line and no `unresolved`
+//!     line after it.
 //!
 //! RESOLUTION is feature-lane independent (the code-entity fold is always compiled), so the site
 //! header and the ambiguous listing are asserted in BOTH lanes. The BODY is bounded through the
@@ -33,6 +36,7 @@ use common::cli::assert_light_lane_extent_note;
 
 use common::cli::ambiguous_show;
 use common::cli::open_graph;
+use common::cli::run_around;
 use common::cli::run_rigger;
 use common::cli::run_rigger_ok;
 use common::cli::run_stream_identity;
@@ -40,7 +44,7 @@ use common::cli::seed_rigger_dir;
 use common::cli::show_head;
 use common::cli::temp_project;
 use common::fixtures::apply_code_entity;
-use common::fixtures::{fold_path_def_rows, hold, A_RS_NEWS, FLAT_LEAF_ID, T_NEW, U_NEW};
+use common::fixtures::{fold_path_def_rows, hold, PathDef, A_RS_NEWS, FLAT_LEAF_ID, T_NEW, U_NEW};
 
 #[test]
 fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
@@ -195,14 +199,8 @@ fn graph_show_lists_every_definition_a_flat_id_or_a_path_names() {
 /// node.
 #[test]
 fn graph_show_answers_a_flat_id_a_decision_holds_by_its_definition() {
-    let dir = temp_project();
+    let dir = held_flat_id_project(&[T_NEW]);
     let root = dir.path();
-    seed_rigger_dir(root);
-    {
-        let p = open_graph(root);
-        let next = fold_path_def_rows(&p, &[T_NEW]);
-        hold(&p, next, &[FLAT_LEAF_ID]);
-    }
 
     assert_eq!(
         show_head(root, "a.rs::new"),
@@ -212,4 +210,34 @@ fn graph_show_answers_a_flat_id_a_decision_holds_by_its_definition() {
         ],
         "a held flat id shows the definition its file holds at its leaf"
     );
+}
+
+/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN a project graph whose `a.rs` holds the
+/// methods `T::new` and `U::new` and a decision holding the pre-spec flat id `a.rs::new`, WHEN the
+/// operator runs `rigger graph --around a.rs::new --depth 1`, a node whose show lists both
+/// methods, THEN the held node's line prints with no `unresolved` line after it: a query whose
+/// site is ambiguous lists no unresolved leaf.
+#[test]
+fn graph_around_an_ambiguous_flat_id_prints_its_node_and_no_unresolved_line() {
+    let dir = held_flat_id_project(&[T_NEW, U_NEW]);
+    assert_eq!(
+        run_around(dir.path(), FLAT_LEAF_ID, 1).0,
+        "subgraph around \"a.rs::new\" (depth 1):\n\
+         \x20 node a.rs::new                artifact\n\
+         \n\
+         \x20 1 governing decision(s)/finding(s) (newest 1 shown):\n\
+         \x20 node hold@3                   decision\n",
+        "the ambiguous node prints its line and no unresolved line"
+    );
+}
+
+/// A [`temp_project`] whose own graph folds `defs` from position 1 ([`fold_path_def_rows`]) and
+/// then a decision holding the pre-spec flat id [`FLAT_LEAF_ID`] ([`hold`]).
+fn held_flat_id_project(defs: &[PathDef]) -> tempfile::TempDir {
+    let dir = temp_project();
+    seed_rigger_dir(dir.path());
+    let p = open_graph(dir.path());
+    let next = fold_path_def_rows(&p, defs);
+    hold(&p, next, &[FLAT_LEAF_ID]);
+    dir
 }

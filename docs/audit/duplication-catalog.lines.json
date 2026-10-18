@@ -3419,8 +3419,8 @@
       },
       {
         "file": "tests/graph_show_surface.rs",
-        "start_line": 75,
-        "end_line": 75
+        "start_line": 79,
+        "end_line": 79
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
