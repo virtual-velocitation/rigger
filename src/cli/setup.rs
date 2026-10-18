@@ -3815,6 +3815,49 @@ mod tests {
         );
     }
 
+    /// The author block's rule-spelling search runs as the block spells it: a line, joined with
+    /// the one before, its comment marker stripped and lower-cased, is a hit when it holds both
+    /// terms with any words or a code span between them, and a line holding one term alone is
+    /// not.
+    #[test]
+    fn the_author_rule_search_finds_both_terms_on_one_joined_line_and_never_one_alone() {
+        const OPEN: &str = "b='<noun phrase>' xargs awk '";
+        let text = committed_persona("rust-engineer.md");
+        let from = text.find(OPEN).expect("the block spells the rule search") + OPEN.len();
+        let program = &text[from..from + text[from..].find("'`").expect("the awk closes")];
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("fixture.md");
+        std::fs::write(
+            &fixture,
+            "/// bare names resolve where an `--around` seed is an exact id only\n\
+             unrelated\n\
+             an exact id alone on its line\n\
+             unrelated\n\
+             the around flag alone on its line\n\
+             unrelated\n\
+             a seed given to --AROUND\n\
+             is an Exact Id too\n",
+        )
+        .unwrap();
+        let out = std::process::Command::new("awk")
+            .arg(program)
+            .arg(&fixture)
+            .env("a", "around")
+            .env("b", "exact id")
+            .output()
+            .expect("awk runs");
+        let path = fixture.display();
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            format!(
+                "{path}:1: /// bare names resolve where an `--around` seed is an exact id only\n\
+                 {path}:8: is an Exact Id too\n\
+                 2 hits\n"
+            ),
+            "both terms on one joined line are a hit, one term alone is not"
+        );
+    }
+
     /// The `sdet` lens is the enforcement of two built-in rules. Of the shape rule: it re-runs
     /// every search the author's shape record carries on the review tree and compares the hit
     /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
