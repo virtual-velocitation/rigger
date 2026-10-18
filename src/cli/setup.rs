@@ -3737,18 +3737,22 @@ mod tests {
              its `file:line` and followed by its terms and their searches, a single call into the \
              shared home marked so with its callee named; a term the statement spells that the \
              record lacks under it is a record defect the `sdet` lens blocks on.",
-            "Each rule the change rewrites is searched by the distinguishing phrase of its old \
-             statement and of each label its cases carried (a name a doc, test or comment gives \
-             a case the old rule decided), one run per phrase, the phrase its one argument, over every tracked text \
-             file of the project (`.rs`, `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` \
-             and `.html`",
-            "so a phrase in another case, or one a rewrap splits across two lines, is still a \
-             hit",
-            "BEGIN { t = tolower(ENVIRON[\"t\"]) }",
+            "Each rule the change rewrites is searched by two short terms for its old statement \
+             and for each label its cases carried (a name a doc, test or comment gives a case \
+             the old rule decided): the feature's name as the code spells it (`--around`, the \
+             fn, field, variant or table the rule concerns) and the rule's shortest \
+             distinguishing noun phrase (`exact id`, `import`, `collision`), each term at most \
+             three words, one run per pair, over every tracked text file of the project (`.rs`, \
+             `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` and `.html`",
+            "prints the line when the joined text holds both terms, in either order and with any \
+             words, names or code spans between them, so a term in another case, or a sentence a \
+             rewrap splits across two lines, is still a hit",
+            "BEGIN { a = tolower(ENVIRON[\"a\"]); b = tolower(ENVIRON[\"b\"]) }",
             "s = tolower($0)",
-            "`git ls-files | awk '/\\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | t='<phrase>' \
-             xargs awk",
-            "index(s, t) || !index(p, t) && index(p \" \" s, t)",
+            "`git ls-files | awk '/\\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | a='<feature \
+             name>' b='<noun phrase>' xargs awk",
+            "index(s, a) && index(s, b) || index(j, a) && index(j, b) && !(index(p, a) && \
+             index(p, b))",
             "The `<unit>-sentence-walk` record pastes each command as run, its hit count and \
              every hit it printed, each FIXED or CHECKED with its reason, or names the \
              rewritten-rule set empty; the `sdet` lens re-derives the generators' sets and \
@@ -3795,6 +3799,10 @@ mod tests {
                 "the hand-over block must say {wanted:?}"
             );
         }
+        assert!(
+            !block.contains("t='<phrase>'"),
+            "the rule search runs a term pair, never one phrase as its one argument"
+        );
         assert!(
             !block.contains("`rigger graph --around <item>`"),
             "the caller lookup names its depth; a bare `--around` answers the file neighbourhood"
