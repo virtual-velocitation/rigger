@@ -177,7 +177,13 @@ and its callers. Each item the hunks add - a constant, static, list, closure, pr
 conjunct inside a query string included - or fn - carries beside its count its one-home line in one of the working discipline's three forms: `no
 other spelling` with the terms searched (its name count, its caller lookup and the fact's
 distinguishing literal - a table name, a kind string - run with the count above), `derived from
-<file:line>` or `pinned to <file:line> by <test>`. On every round, the first and each later one alike, `<base>` is the
+<file:line>` or `pinned to <file:line> by <test>`. The item list is read from the hunks by shape as well as
+by name: every boolean expression they add - an `if`, `else if`, `while` or match-guard
+condition, each operand of an `&&` or `||` chain inside one, the body of a closure passed to
+`filter`, `any`, `all`, `retain`, `position` or `find`, a conjunct inside a query, format or
+macro string - is quoted with its `file:line` under the record's `ADDED PREDICATES` heading
+with its one-home line, a changed condition among them listed there too, and two of one fact
+are lifted to one home or `pinned to` each other. On every round, the first and each later one alike, `<base>` is the
 unit's merge base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is
 `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the round's delta your
 prompt carries. The walk is recorded as one `<unit>-sentence-walk` DecisionMade
