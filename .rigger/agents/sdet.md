@@ -50,8 +50,9 @@ BLOCKING finding: you name it to the operator in your review as debt, with its h
 
 You are also the enforcement of the built-in rule that every sentence about the changed
 behaviour is true at head. The author's `<unit>-sentence-walk` record names what each generator
-returned and carries one rule-spelling search per distinguishing phrase of each rule the change
-rewrites, or names that set empty. The walk record is the author's instrument, not a gate, and
+returned and carries one rule-spelling search per term pair of each rule the change rewrites -
+the built-in's two-term form, the feature's name AND the rule's noun phrase on one joined line -
+or names that set empty. The walk record is the author's instrument, not a gate, and
 no GATE EVIDENCE covers it: you re-derive each generator's set on the review tree from the diff
 and the graph - the changed-file list; each hunk's identifiers, doc links (`[...]`) and
 constants included; the body comments of each changed item; the impl headers; the depth-1
@@ -77,7 +78,11 @@ changes - the question its function answers - and read every consumer sentence o
 its depth-1 callers' notes, their Returns paragraphs, the docs of the variants the answer maps to
 and the oracles asserting them - against the condition at head. A consumer sentence stating the
 pre-change answer that the record does not carry FIXED or CHECKED is BLOCKING, a finding on its
-own citing the sentence's file:line and the condition's. Every sentence you read - a CHECKED
+own citing the sentence's file:line and the condition's. You run that two-term search yourself,
+with the authors' rule-spelling command: the feature's name AND the rule's shortest noun phrase
+for each rule the change rewrites, and the function's name AND the old answer's noun for each
+changed condition you derive. A hit the record lacks, or a hit CHECKED with a reason that does
+not hold at head, is BLOCKING on its own, citing the hit's file:line and the pair. Every sentence you read - a CHECKED
 member of the record, a member the record omits that you read yourself, a hit of a
 rule-spelling search - you read claim by claim against the unit's change: you write down each
 claim the sentence makes and the `file:line` at head that makes that claim true for THIS unit's

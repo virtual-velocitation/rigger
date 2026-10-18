@@ -156,7 +156,17 @@ and its callers. Each item the hunks add - a constant, static, list, closure, pr
 conjunct inside a query string included - or fn - carries beside its count its one-home line in one of the working discipline's three forms: `no
 other spelling` with the terms searched (its name count, its caller lookup and the fact's
 distinguishing literal - a table name, a kind string - run with the count above), `derived from
-<file:line>` or `pinned to <file:line> by <test>`. On every round, the first and each later one alike, `<base>` is the
+<file:line>` or `pinned to <file:line> by <test>`. The item list is read from the hunks by shape as well as
+by name: every boolean expression they add - an `if`, `else if`, `while` or match-guard
+condition, each operand of an `&&` or `||` chain inside one, the body of a closure passed to
+`filter`, `any`, `all`, `retain`, `position` or `find`, a conjunct inside a query, format or
+macro string - is quoted with its `file:line` under the record's `ADDED PREDICATES` heading
+with its one-home line, a changed condition among them listed there too, and two of one fact
+are lifted to one home or `pinned to` each other. A set of named members - an array of
+constants, an `IN (..)` list, a `matches!` or `match` arm per member, an `||` chain of
+equalities - runs the count above once per member's name, every statement, `match` or macro
+call holding two or more members read as a second spelling of the set, and its line names the
+member sites it read. On every round, the first and each later one alike, `<base>` is the
 unit's merge base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is
 `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the round's delta your
 prompt carries. The walk is recorded as one `<unit>-sentence-walk` DecisionMade
@@ -167,14 +177,18 @@ sentence with a quantifier (every, all, always, any, a plural subject with a pre
 one witness per case the code splits its subject into - each arm, key component, filter
 condition or match branch - the cases named in the record.
 
-Each rule the change rewrites is searched by the distinguishing phrase of its old statement
-and of each label its cases carried (a name a doc, test or comment gives a case the old rule
-decided), one run per phrase, the phrase its one argument, over every tracked text file of the project
-(`.rs`, `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` and `.html`: the code, docs,
-specs, personas, gates, workflows and dashboard pages). It reads each line joined to the one
-before it with their comment markers stripped, both lower-cased, so a phrase in another case,
-or one a rewrap splits across two lines, is still a hit, and ends with the hit count:
-`git ls-files | awk '/\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | t='<phrase>' xargs awk 'BEGIN { t = tolower(ENVIRON["t"]) } FNR == 1 { p = "" } { s = tolower($0); sub(/^[[:space:]]*(\/\/[\/!]?|#+|\*)?[[:space:]]*/, "", s) } index(s, t) || !index(p, t) && index(p " " s, t) { n++; print FILENAME ":" FNR ": " $0 } { p = s } END { print n + 0 " hits" }'`.
+Each rule the change rewrites is searched by two short terms for its old statement and for
+each label its cases carried (a name a doc, test or comment gives a case the old rule
+decided): the feature's name as the code spells it (`--around`, the fn, field, variant or table
+the rule concerns) and the rule's shortest distinguishing noun phrase (`exact id`, `import`,
+`collision`), each term at most three words, one run per pair, over every tracked text file of
+the project (`.rs`, `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` and `.html`: the
+code, docs, specs, personas, gates, workflows and dashboard pages). It reads each line joined
+to the one before it with their comment markers stripped, both lower-cased, and prints the line
+when the joined text holds both terms, in either order and with any words, names or code spans
+between them, so a term in another case, or a sentence a rewrap splits across two lines, is
+still a hit, and ends with the hit count:
+`git ls-files | awk '/\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | a='<feature name>' b='<noun phrase>' xargs awk 'BEGIN { a = tolower(ENVIRON["a"]); b = tolower(ENVIRON["b"]) } FNR == 1 { p = "" } { s = tolower($0); sub(/^[[:space:]]*(\/\/[\/!]?|#+|\*)?[[:space:]]*/, "", s); j = p " " s } index(s, a) && index(s, b) || index(j, a) && index(j, b) && !(index(p, a) && index(p, b)) { n++; print FILENAME ":" FNR ": " $0 } { p = s } END { print n + 0 " hits" }'`.
 The `<unit>-sentence-walk` record pastes each command as run, its hit count and every hit it
 printed, each FIXED or CHECKED with its reason, or names the rewritten-rule set empty; the
 `sdet` lens re-derives the generators' sets and re-runs each search on the review tree.
@@ -185,8 +199,9 @@ and `src/` add to or remove from a filter, guard or predicate, listed from
 changes the rule its function answers. Its old statement is what the function's callers from
 `rigger graph --around <file>::<fn> --depth 1` spell - the notes they print, their Returns
 paragraphs, the docs of the variants the answer maps to and the oracles asserting them - and
-each such consumer phrase is a phrase of the search above, run once, every hit FIXED with the
-new qualifier or CHECKED with the reason it does not reach it.
+each such consumer phrase runs as a pair of the search above, the function's name as the code
+spells it and the old answer's noun, one run per pair, every hit FIXED with the new qualifier
+or CHECKED with the reason it does not reach it.
 
 Every mutable token of your production delta is probed on your committed tree: list the tokens
 from the production hunks of `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src`

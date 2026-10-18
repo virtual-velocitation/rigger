@@ -3593,16 +3593,19 @@ mod tests {
     /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
     /// per item of the walk's hunk list and paired with it in the record, each item the hunks
     /// add - a SQL conjunct inside a query string included - carrying its one-home line in one
-    /// of the working discipline's three forms, each FIXED
-    /// or new line's `file:line`
-    /// witness, one per case the code splits a quantified sentence's subject into with the cases
-    /// named, the rule-spelling search over every tracked text file, one
-    /// run per phrase of a rewritten rule's old statement and of each label its cases carried (a
-    /// phrase in another case or split by a rewrap still a hit) whose command and hits the walk pastes for the `sdet`
-    /// lens to re-run, each boolean term a production hunk adds to or removes from a filter,
-    /// guard or predicate read as a rewritten rule whose consumer phrases - the notes, Returns
-    /// paragraphs, variant docs and oracles of the function's depth-1 callers - that search
-    /// runs, and the record the walk owes, the hand probe of every mutable token of the
+    /// of the working discipline's three forms, the item list read by shape as well as by name
+    /// with every added predicate under `ADDED PREDICATES` and a set of named members searched
+    /// by each member's name, each FIXED or new line's `file:line` witness, one per case the
+    /// code splits a quantified sentence's subject into with the cases named, the rule-spelling
+    /// search over every tracked text file, one run per pair of short terms - the feature's name
+    /// and the rule's noun phrase, both on one joined line with any words between - for a
+    /// rewritten rule's old statement and each label its cases carried (a term in another case
+    /// or a sentence split by a rewrap still a hit) whose command and hits the walk pastes for
+    /// the `sdet` lens to re-run, each boolean term a production hunk adds to or removes from a
+    /// filter, guard or predicate read as a rewritten rule whose consumer phrases - the notes,
+    /// Returns paragraphs, variant docs and oracles of the function's depth-1 callers - that
+    /// search runs as the function's name and the old answer's noun, and the record the walk
+    /// owes, the hand probe of every mutable token of the
     /// production hunks over the unit's whole range, each class read by its spelling - every
     /// argument of every added or changed call, every `?` (swallowed by the spelling the working
     /// discipline lists for its value), `return`, `break` and `continue` - one
@@ -3689,6 +3692,17 @@ mod tests {
              spelling` with the terms searched (its name count, its caller lookup and the \
              fact's distinguishing literal - a table name, a kind string - run with the count \
              above), `derived from <file:line>` or `pinned to <file:line> by <test>`.",
+            "The item list is read from the hunks by shape as well as by name: every boolean \
+             expression they add - an `if`, `else if`, `while` or match-guard condition, each \
+             operand of an `&&` or `||` chain inside one, the body of a closure passed to \
+             `filter`, `any`, `all`, `retain`, `position` or `find`, a conjunct inside a query, \
+             format or macro string - is quoted with its `file:line` under the record's `ADDED \
+             PREDICATES` heading with its one-home line, a changed condition among them listed \
+             there too, and two of one fact are lifted to one home or `pinned to` each other.",
+            "A set of named members - an array of constants, an `IN (..)` list, a `matches!` or \
+             `match` arm per member, an `||` chain of equalities - runs the count above once per \
+             member's name, every statement, `match` or macro call holding two or more members \
+             read as a second spelling of the set, and its line names the member sites it read.",
             "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
             "On every round, the first and each later one alike, `<base>` is the unit's merge \
              base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
@@ -3726,18 +3740,22 @@ mod tests {
              its `file:line` and followed by its terms and their searches, a single call into the \
              shared home marked so with its callee named; a term the statement spells that the \
              record lacks under it is a record defect the `sdet` lens blocks on.",
-            "Each rule the change rewrites is searched by the distinguishing phrase of its old \
-             statement and of each label its cases carried (a name a doc, test or comment gives \
-             a case the old rule decided), one run per phrase, the phrase its one argument, over every tracked text \
-             file of the project (`.rs`, `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` \
-             and `.html`",
-            "so a phrase in another case, or one a rewrap splits across two lines, is still a \
-             hit",
-            "BEGIN { t = tolower(ENVIRON[\"t\"]) }",
+            "Each rule the change rewrites is searched by two short terms for its old statement \
+             and for each label its cases carried (a name a doc, test or comment gives a case \
+             the old rule decided): the feature's name as the code spells it (`--around`, the \
+             fn, field, variant or table the rule concerns) and the rule's shortest \
+             distinguishing noun phrase (`exact id`, `import`, `collision`), each term at most \
+             three words, one run per pair, over every tracked text file of the project (`.rs`, \
+             `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` and `.html`",
+            "prints the line when the joined text holds both terms, in either order and with any \
+             words, names or code spans between them, so a term in another case, or a sentence a \
+             rewrap splits across two lines, is still a hit",
+            "BEGIN { a = tolower(ENVIRON[\"a\"]); b = tolower(ENVIRON[\"b\"]) }",
             "s = tolower($0)",
-            "`git ls-files | awk '/\\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | t='<phrase>' \
-             xargs awk",
-            "index(s, t) || !index(p, t) && index(p \" \" s, t)",
+            "`git ls-files | awk '/\\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | a='<feature \
+             name>' b='<noun phrase>' xargs awk",
+            "index(s, a) && index(s, b) || index(j, a) && index(j, b) && !(index(p, a) && \
+             index(p, b))",
             "The `<unit>-sentence-walk` record pastes each command as run, its hit count and \
              every hit it printed, each FIXED or CHECKED with its reason, or names the \
              rewritten-rule set empty; the `sdet` lens re-derives the generators' sets and \
@@ -3749,7 +3767,8 @@ mod tests {
             "Its old statement is what the function's callers from `rigger graph --around \
              <file>::<fn> --depth 1` spell - the notes they print, their Returns paragraphs, the \
              docs of the variants the answer maps to and the oracles asserting them - and each \
-             such consumer phrase is a phrase of the search above, run once, every hit FIXED \
+             such consumer phrase runs as a pair of the search above, the function's name as \
+             the code spells it and the old answer's noun, one run per pair, every hit FIXED \
              with the new qualifier or CHECKED with the reason it does not reach it.",
             "Every mutable token of your production delta is probed on your committed tree: list \
              the tokens from the production hunks of `git diff $(git merge-base rigger-run \
@@ -3785,6 +3804,10 @@ mod tests {
             );
         }
         assert!(
+            !block.contains("t='<phrase>'"),
+            "the rule search runs a term pair, never one phrase as its one argument"
+        );
+        assert!(
             !block.contains("`rigger graph --around <item>`"),
             "the caller lookup names its depth; a bare `--around` answers the file neighbourhood"
         );
@@ -3793,6 +3816,49 @@ mod tests {
         assert!(
             !block.contains("gsub("),
             "the hand-over block names the token-count script instead of spelling its awk"
+        );
+    }
+
+    /// The author block's rule-spelling search runs as the block spells it: a line, joined with
+    /// the one before, its comment marker stripped and lower-cased, is a hit when it holds both
+    /// terms with any words or a code span between them, and a line holding one term alone is
+    /// not.
+    #[test]
+    fn the_author_rule_search_finds_both_terms_on_one_joined_line_and_never_one_alone() {
+        const OPEN: &str = "b='<noun phrase>' xargs awk '";
+        let text = committed_persona("rust-engineer.md");
+        let from = text.find(OPEN).expect("the block spells the rule search") + OPEN.len();
+        let program = &text[from..from + text[from..].find("'`").expect("the awk closes")];
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("fixture.md");
+        std::fs::write(
+            &fixture,
+            "/// bare names resolve where an `--around` seed is an exact id only\n\
+             unrelated\n\
+             an exact id alone on its line\n\
+             unrelated\n\
+             the around flag alone on its line\n\
+             unrelated\n\
+             a seed given to --AROUND\n\
+             is an Exact Id too\n",
+        )
+        .unwrap();
+        let out = std::process::Command::new("awk")
+            .arg(program)
+            .arg(&fixture)
+            .env("a", "around")
+            .env("b", "exact id")
+            .output()
+            .expect("awk runs");
+        let path = fixture.display();
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            format!(
+                "{path}:1: /// bare names resolve where an `--around` seed is an exact id only\n\
+                 {path}:8: is an Exact Id too\n\
+                 2 hits\n"
+            ),
+            "both terms on one joined line are a hit, one term alone is not"
         );
     }
 
@@ -3819,7 +3885,12 @@ mod tests {
     /// BLOCKING; it derives the changed-condition set itself - each boolean
     /// term the unit's production hunks add to or remove from a filter, guard or predicate -
     /// and reads every consumer sentence of that function against it, and one stating the
-    /// pre-change answer that the record does not carry is BLOCKING; every sentence it reads, a
+    /// pre-change answer that the record does not carry is BLOCKING; it reads the record's
+    /// rule-spelling searches as the built-in's term pairs and runs the feature's name AND the
+    /// rule's noun phrase itself for each rewritten rule, the function's name AND the old
+    /// answer's noun for each changed condition, with the authors' command and carrying no copy
+    /// of its awk, and a hit the record lacks or a CHECKED reason that does not hold at head is
+    /// BLOCKING; every sentence it reads, a
     /// CHECKED member, an omitted member or a search hit, it reads claim by claim against the
     /// unit's change with a `file:line` witness per claim at head, a conditional claim against
     /// whether the diff changes its condition and a cross-surface claim against each surface it
@@ -3887,6 +3958,10 @@ mod tests {
              list, is BLOCKING on its own, citing the statement's `file:line` and the term.",
             "You are also the enforcement of the built-in rule that every sentence about the \
              changed behaviour is true at head.",
+            "The author's `<unit>-sentence-walk` record names what each generator returned and \
+             carries one rule-spelling search per term pair of each rule the change rewrites - \
+             the built-in's two-term form, the feature's name AND the rule's noun phrase on one \
+             joined line - or names that set empty.",
             "you re-derive each generator's set on the review tree from the diff and the graph",
             "each hunk's identifiers, doc links (`[...]`) and constants included",
             "the depth-1 callers (`rigger graph --around <file>::<item> --depth 1`)",
@@ -3918,6 +3993,12 @@ mod tests {
              them - against the condition at head",
             "A consumer sentence stating the pre-change answer that the record does not carry \
              FIXED or CHECKED is BLOCKING",
+            "You run that two-term search yourself, with the authors' rule-spelling command: the \
+             feature's name AND the rule's shortest noun phrase for each rule the change \
+             rewrites, and the function's name AND the old answer's noun for each changed \
+             condition you derive. A hit the record lacks, or a hit CHECKED with a reason that \
+             does not hold at head, is BLOCKING on its own, citing the hit's file:line and the \
+             pair.",
             "Every sentence you read - a CHECKED member of the record, a member the record \
              omits that you read yourself, a hit of a rule-spelling search - you read claim by \
              claim against the unit's change: you write down each claim the sentence makes and \
@@ -4004,27 +4085,51 @@ mod tests {
             !flat.contains(".unwrap_or_default()"),
             "sdet.md refers to the working discipline's `?` swallow list instead of re-spelling it"
         );
+        assert!(
+            !flat.contains("ENVIRON[\"b\"]"),
+            "sdet.md refers to the authors' rule-spelling command instead of re-spelling its awk"
+        );
     }
 
     /// The architecture lens is the enforcement of the built-in rule that every fact the
     /// production delta states has one home: it derives the added items itself from the
-    /// production hunks, a SQL conjunct inside a query string included, reads the walk record's
-    /// one-home line for each, and a missing line or one false at head is BLOCKING.
+    /// production hunks by shape as well as by name, a SQL conjunct inside a query string
+    /// included, reads the walk record's one-home line for each, its `ADDED PREDICATES` list
+    /// included, and a missing line, two lines for two predicates of one fact or one false at
+    /// head is BLOCKING; for every added set of named members it runs the member search itself,
+    /// and a second spelling the line does not name is BLOCKING.
     #[test]
     fn the_architecture_lens_reads_the_one_home_line_of_every_added_item() {
         let flat = rigger::wave::normalize_ws(&committed_persona("architecture-reviewer.md"));
-        let wanted = "you derive the set of constants, statics, lists, closures and \
-                      predicates the unit adds yourself from its production hunks - a boolean \
-                      expression or SQL conjunct inside a query string, format string or macro \
-                      argument included - and read the `<unit>-sentence-walk` record's one-home \
-                      lines for every item of it, and an added item with no line, or a line false \
-                      at head (the fact has another spelling the line does not name, or the \
-                      named derivation or pin does not exist), is BLOCKING (DRY, single \
-                      responsibility), cited with both spellings' `file:line`.";
-        assert!(
-            flat.contains(wanted),
-            "architecture-reviewer.md must say {wanted:?}"
-        );
+        for wanted in [
+            "you derive the set of constants, statics, lists, closures and predicates the unit \
+             adds yourself from its production hunks by shape as well as by name - every \
+             boolean expression of the shapes the built-in rule lists for its `ADDED PREDICATES`, \
+             a boolean expression or SQL conjunct inside a query string, format string or macro \
+             argument included - and read the `<unit>-sentence-walk` record's one-home lines for \
+             every item of it, its `ADDED PREDICATES` list included, and an added item with no \
+             line, two added predicates of one fact with two lines, or a line false at head (the \
+             fact has another spelling the line does not name, or the named derivation or pin \
+             does not exist), is BLOCKING (DRY, single responsibility), cited with both \
+             spellings' `file:line`.",
+            "For every added set of named members, of the forms the built-in rule names, you run \
+             the member search yourself, the count of each member's name, every statement, \
+             `match` or macro call holding two or more of them read as a second spelling of the \
+             set, and a second spelling the one-home line does not name is BLOCKING on its own.",
+        ] {
+            assert!(
+                flat.contains(wanted),
+                "architecture-reviewer.md must say {wanted:?}"
+            );
+        }
+        // The predicate shapes and the set forms are listed once, in the working discipline's
+        // one-home rule; the lens names that list and carries no copy of it.
+        for copied in ["`retain`, `position`", "an `||` chain of equalities"] {
+            assert!(
+                !flat.contains(copied),
+                "architecture-reviewer.md names the built-in's list instead of copying {copied:?}"
+            );
+        }
     }
 
     /// The adjudicator's tools carry no MCP tool, so its persona sends its reasoning record

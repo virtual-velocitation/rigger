@@ -148,12 +148,18 @@ tool that searches them.
   the code decides by, such as what a call lands on or what a tier means - has spellings no
   generator above reaches: prose that states it without naming a changed item. So every
   spelling of each rewritten rule is walked too, and its search is an instrument, not a claim:
-  write down the distinguishing phrases of the rule's OLD statement and of the labels its cases
-  carried - the words a sentence stating it cannot be written without, and each name the docs,
-  test names and comments give a case the old rule decided (a "cross-file caller" for the calls
-  only the old rule sent across files); two phrases when one would miss a spelling - and run
-  one recorded search for each over every tracked text line: code, doc comments, body
-  comments, test names and docs, assertion messages, specs and operator docs. The record
+  write down, for the rule's OLD statement and for each label its cases carried, a pair of short
+  terms: the feature's name as the code spells it (the flag `--around`, the fn, field, variant
+  or table the rule concerns) and the rule's shortest distinguishing noun phrase (`exact id`,
+  `import`, `collision`) - the words a sentence stating it cannot be written without, and each
+  name the docs, test names and comments give a case the old rule decided (a "cross-file
+  caller" for the calls only the old rule sent across files) - and run one recorded search for
+  each pair over every tracked text line: code, doc comments, body comments, test names and
+  docs, assertion messages, specs and operator docs, where a hit is a line, joined with the line
+  before, that holds both terms, in either order and with any words, names or code spans
+  between them. A term is a name or a noun phrase of at most three words: a search whose one
+  term is a sentence fragment of more than three words misses the sentence that puts the
+  feature's name or a qualifier between its words, and is a record you cannot write. The record
   carries each search's command, its hit count and every hit, each FIXED, or CHECKED with the
   named way it is not a spelling of the retired rule (a spec's account of the pre-change
   state, a history note, a different rule sharing the words). A rewritten rule with no search
@@ -164,8 +170,9 @@ tool that searches them.
   notes they print, their Returns paragraphs, the docs of the variants the answer maps to and
   the oracles that assert them, read from the function's callers at depth 1 in the project's
   graph and their callers' output sentences. For each changed condition write down the rule it
-  changes - the question the function answers - and the distinguishing phrases of the old answer
-  as the consumers spell them, and run the rule search for each: every hit is FIXED, carrying the
+  changes - the question the function answers - and, for each phrase of the old answer as the
+  consumers spell it, the pair of the function's name as the code spells it and the old
+  answer's noun, and run the rule search for each pair: every hit is FIXED, carrying the
   new qualifier, or CHECKED with the named reason the qualifier does not reach it (a call that
   passes no path, say). The SDET
   lens re-derives each generator's set on the review tree from the diff and the graph - the
@@ -184,8 +191,12 @@ tool that searches them.
   changes, and reads every consumer sentence of that function - its depth-1 callers' notes,
   Returns paragraphs, variant docs and oracles - against the condition at head: a consumer
   sentence stating the pre-change answer that the record does not carry FIXED or CHECKED is a
-  BLOCKING finding on its own. The lens reads every sentence it re-reads claim by claim against
-  the unit's change, with a witness per claim at head, and a sentence it cannot witness is a
+  BLOCKING finding on its own. The lens runs the two-term search itself - the feature's name
+  AND the rule's noun phrase for each rule the change rewrites, the function's name AND the old
+  answer's noun for each changed condition it derives, both terms on one joined line with any
+  words between them: a hit the record lacks, or a hit CHECKED with a reason that does not hold
+  at head, is a BLOCKING finding on its own. The lens reads every sentence it re-reads claim by
+  claim against the unit's change, with a witness per claim at head, and a sentence it cannot witness is a
   BLOCKING finding on its own. For a quantified claim the lens enumerates the cases itself from
   the code at head and its record lists them beside the claim, each with its witness: a
   quantified claim witnessed at one case, or a case the claim does not hold for, is a BLOCKING
@@ -260,14 +271,36 @@ tool that searches them.
   the tree already spells is `derived from` that spelling, the hunk and the existing sites
   reading one fn, or `pinned to` it, and a fact the tree already spells twice is lifted at all
   three sites - the pre-existing pair is the tree's debt, and the unit's third spelling makes it
-  the unit's. An added item with no line is a record you cannot write. The architecture lens
+  the unit's. The walk's item list is derived from the production hunks by shape as well as by
+  name, since a predicate has no name the count could list: every boolean expression the hunks
+  add - an `if`, `else if`, `while` or match-guard condition, each operand of an `&&` or `||`
+  chain inside one, the body of a closure passed to `filter`, `any`, `all`, `retain`, `position`
+  or `find`, and every conjunct inside a query string, format string or macro argument the
+  production code executes - is an item, quoted with its `file:line` under the record's `ADDED
+  PREDICATES` heading with its one-home line. A predicate that is also a changed condition
+  appears in both lists, its rule search in one and its one-home line in the other, and neither
+  entry stands in for the other. Two added predicates stating one fact - the same condition at
+  two sites, or one condition and its negation - are one fact spelled twice: lifted to one home
+  both sites read (a fn or a value) or `pinned to` each other by a test that holds them equal,
+  never two `no other spelling` lines. An added set of named members - an array or slice of
+  constants, an `IN (..)` list, a `matches!` or a `match` with an arm per member, an `||` chain
+  of equalities - runs its `no other spelling` search as the name count of EACH member, and
+  every site where two or more of the members occur within one statement, one `match` or one
+  macro call is read as a candidate second spelling of the set: one found makes the set
+  `derived from` a single named home both sites read (a const list or a fn), or the hunk's
+  spelling is a DRY defect lifted before hand-over, and the one-home line names the member sites
+  it read. An added item with no line is a record you cannot write. The architecture lens
   derives the set of added constants, statics, lists, closures and predicates itself from the
   production hunks, query strings included, and compares it with the record's one-home lines:
   an added item the record has no line for is a BLOCKING finding on its own. The architecture
   lens reads the walk record's
   one-home lines for every item the unit adds: an added item with no line, or a line false at
   head - the fact has another spelling the line does not name, or the named derivation or pin
-  does not exist - is a BLOCKING finding on its own (DRY, single responsibility).
+  does not exist - is a BLOCKING finding on its own (DRY, single responsibility). The
+  architecture lens derives the added set by the same shapes, the `ADDED PREDICATES` list and
+  every added set of named members included, and runs the member search itself for every added
+  set: an added predicate with no line, two added predicates of one fact with two lines, or a
+  second spelling of a set the line does not name, is a BLOCKING finding on its own.
 - **A probe that edits your tree is over before your turn is.** A reversion probe, or any check
   that edits your worktree, runs to completion and restores the tree before your turn ends,
   never as a detached or background job: the attempt checkpoint commits whatever the worktree
