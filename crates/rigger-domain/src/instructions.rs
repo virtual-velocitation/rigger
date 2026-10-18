@@ -646,6 +646,10 @@ mod tests {
             "A predicate that is also a changed condition appears in both lists, its rule search \
              in one and its one-home line in the other, and neither entry stands in for the \
              other.",
+            "Two added predicates stating one fact - the same condition at two sites, or one \
+             condition and its negation - are one fact spelled twice: lifted to one home both \
+             sites read (a fn or a value) or `pinned to` each other by a test that holds them \
+             equal, never two `no other spelling` lines.",
             "The architecture lens derives the set of added constants, statics, lists, closures \
              and predicates itself from the production hunks, query strings included, and \
              compares it with the record's one-home lines: an added item the record has no line \
