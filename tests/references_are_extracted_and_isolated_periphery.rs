@@ -28,11 +28,9 @@ mod symbol_index;
 use common::fixtures::{REFERENCE_KINDS_DEFINER as DEFINER, REFERENCE_KINDS_USER as USER};
 use rigger::contextgraph::REF_KIND_TYPE;
 use rigger::grounder::symbols::model::{FileSymbols, Lang, SymRef};
-use symbol_index::{defining_f, g_called_in_f, SavedIndex};
-
-/// A Rust file holding one `use` and nothing else: its whole extraction is one tagged reference.
 #[cfg(feature = "symbols")]
-const USE_ONLY_SOURCE: &str = "use crate::store::Ledger;\n";
+use symbol_index::USE_ONLY_SOURCE;
+use symbol_index::{defining_f, g_called_in_f, SavedIndex};
 
 /// The file the use-only rebuild adds, holding [`USE_ONLY_SOURCE`].
 #[cfg(feature = "symbols")]

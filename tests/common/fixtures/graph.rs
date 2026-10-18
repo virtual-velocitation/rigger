@@ -424,6 +424,8 @@ pub const MOD_NODE: &str = "src/lib.rs::x";
 pub const MODULE_FILE: &str = "src/x.rs";
 /// The second candidate file of [`MOD_NODE`]'s declaration, the directory-module form.
 pub const DIR_MODULE_FILE: &str = "src/x/mod.rs";
+/// The fn `y` a module file defines, here [`MODULE_FILE`]'s.
+pub const MODULE_FN: &str = "src/x.rs::y";
 
 /// A module declaration's graph (spec 117): [`DECLARING_FILE`] containing [`MOD_NODE`], whose
 /// module row's `CONTAINS` reaches the `file` node [`MODULE_FILE`].
@@ -439,6 +441,11 @@ pub fn module_graph() -> Graph {
             edge(MOD_NODE, MODULE_FILE, REL_CONTAINS, TIER_EXTRACTED),
         ],
     }
+}
+
+/// The one live module edge from [`MOD_NODE`] onto `file`, `extracted`, as `(from, to, tier)`.
+pub fn declared(file: &str) -> Vec<(String, String, String)> {
+    vec![(MOD_NODE.into(), file.into(), TIER_EXTRACTED.into())]
 }
 
 /// THE MEMBER RULE's graph (spec 119), holding no edge, so no `CONTAINS` reaches any node: the

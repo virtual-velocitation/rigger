@@ -17398,12 +17398,10 @@ mod tests {
                 use crate::contextgraph::query::path_leaf;
                 use crate::contextgraph::CODE_KIND_MODULE;
                 use crate::test_support::{
-                    alias_json, module_edges, DECLARING_FILE, DIR_MODULE_FILE, MODULE_FILE,
-                    MOD_NODE,
+                    alias_json, declared, module_edges, DECLARING_FILE, DIR_MODULE_FILE,
+                    MODULE_FILE, MODULE_FN, MOD_NODE,
                 };
 
-                /// The fn [`holds`] defines in a module file, here [`MODULE_FILE`]'s.
-                const MODULE_FN: &str = "src/x.rs::y";
                 /// A fn beside [`MOD_NODE`] in [`DECLARING_FILE`].
                 const DECLARING_FN: &str = "src/lib.rs::w";
                 /// The canonical file an alias of a candidate names.
@@ -17471,11 +17469,6 @@ mod tests {
                 /// Fold `file`'s no-bytes batch at `pos` ([`fold_at`]), retiring what it held.
                 fn retires(p: &Projector, file: &str, pos: u64, secs: u64) {
                     fold_at(p, file, pos, secs, no_bytes_batch(file));
-                }
-
-                /// The one live module edge from [`MOD_NODE`] onto `file`, `extracted`.
-                fn declared(file: &str) -> Vec<(String, String, String)> {
-                    vec![(MOD_NODE.into(), file.into(), TIER_EXTRACTED.into())]
                 }
 
                 /// [`DECLARING_FILE`]'s ledger entry at `pos` and its batch declaring `mod x;`,

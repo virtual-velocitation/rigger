@@ -1100,7 +1100,7 @@
     ]
   },
   {
-    "id": "dup-8fc8aa485304",
+    "id": "dup-3e8578ba96f5",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1991,6 +1991,11 @@
         "file": "src/main.rs",
         "start_line": 181,
         "end_line": 181
+      },
+      {
+        "file": "tests/a_module_row_reaches_its_file_periphery.rs",
+        "start_line": 115,
+        "end_line": 115
       },
       {
         "file": "tests/architecture_current_surface.rs",

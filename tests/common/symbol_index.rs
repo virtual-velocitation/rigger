@@ -1,6 +1,7 @@
 //! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file index,
 //! building one from Rust sources, a tree whose inline mod declares a `#[cfg(test)]` mod out of
-//! line, the `mod x;` declaration sources and the one-fn source the module-row tests extract,
+//! line, the `mod x;` declaration sources, the one-fn source the module-row tests extract and
+//! the one-`use` source,
 //! saving it through the real `store` boundary and reading the bytes back, writing a hand-authored
 //! `index.json` under the current extraction generation and loading a legacy one through the real
 //! `store::load`, building a tree's index and reloading it, projecting a file's definitions, its
@@ -212,6 +213,8 @@ pub const ABSOLUTE_PATH_MOD_X: &str = "#[path = \"/etc/x.rs\"]\nmod x;\n";
 pub const INLINE_MOD_X: &str = "mod outer {\n    mod x;\n}\n";
 /// A Rust source defining the fn `y`.
 pub const FN_Y: &str = "fn y() {}\n";
+/// A Rust file holding one `use` and nothing else: its whole extraction is one tagged reference.
+pub const USE_ONLY_SOURCE: &str = "use crate::store::Ledger;\n";
 
 /// Every definition of `fs` as `(line, end line, name)`, sorted: the one projection of each
 /// `Def`'s extent the extent tests compare whole.
