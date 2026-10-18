@@ -2202,8 +2202,9 @@ fn settle_references(tx: &Transaction, by: &Asserter, project: &str) -> Result<(
 
 /// Resolve `row` at the end of `by`'s batch and write what changed (spec 117), in one statement:
 /// a module row's ([`settled_module`]) or a leaf kind's ([`settled_target_sql`]), the edge's
-/// relation the row's kind names ([`staged_rel`]); a row of a kind naming none settles nothing.
-/// A row resolving to the target it holds changes
+/// relation the row's kind names ([`staged_rel`]). A row of a kind this binary stages none of,
+/// written into the shared store by another binary, settles nothing: it keeps its target and its
+/// edge. A row resolving to the target it holds changes
 /// nothing, its edge and that edge's dates included - the statement answers nothing, so no edge
 /// is asserted, and the release keeps the entry a row still targets. Otherwise the row takes its
 /// new target; its edge onto the old one is released ([`release_reference`]); and its edge onto
