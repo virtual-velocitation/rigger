@@ -16976,16 +16976,18 @@ mod tests {
                 assert_eq!(added, ["c-cap", "c-read"], "a new edge owes both its ends");
             }
 
-            /// The batch settling rows seeks them by the key's identity prefix and by
-            /// `idx_refs_leaf` for the leaves the batch defines.
+            /// The batch settling rows seeks them by the key's identity prefix, by
+            /// `idx_refs_leaf` for the leaves the batch defines and by `idx_refs_kind` for the
+            /// module rows its file nodes may settle.
             #[test]
-            fn the_rows_a_batch_settles_are_sought_by_identity_and_by_leaf() {
+            fn the_rows_a_batch_settles_are_sought_by_identity_leaf_and_kind() {
                 let p = fold_events([]);
                 let plan =
                     super::super::query_plan(&p, &staged_rows_sql(), ["test", "gc/src/a.rs"]);
                 for step in [
                     "SEARCH refs USING COVERING INDEX sqlite_autoindex_refs_1 (project=? AND identity=?)",
                     "SEARCH refs USING COVERING INDEX idx_refs_leaf (project=? AND leaf=?)",
+                    "SEARCH m USING INDEX idx_refs_kind (project=? AND ref_kind=?)",
                 ] {
                     assert!(plan.iter().any(|d| d == step), "{step}: {plan:?}");
                 }
@@ -17406,6 +17408,8 @@ mod tests {
                 const DECLARING_FN: &str = "src/lib.rs::w";
                 /// The canonical file an alias of a candidate names.
                 const MOVED_FILE: &str = "src/moved.rs";
+                /// A document whose batch asserts a node at a candidate's id.
+                const NAMING_DOC: &str = "docs/x.md";
                 /// The community [`MOD_NODE`] is the one member of ([`mod_in_a_community`]).
                 const MOD_COMMUNITY: &str = "c-mod";
                 /// The community [`MODULE_FILE`] is the one member of ([`in_communities`]).
@@ -17767,6 +17771,29 @@ mod tests {
                     holds(&theirs, MODULE_FILE, 2, 20);
                     declares(&ours, 3, 30);
                     assert_eq!(settled_by(&ours, MODULE_FILE), []);
+                }
+
+                /// The rows a batch settles hold another identity's module row only through a `file`
+                /// node at one of its candidates: a batch asserting a node of another kind at that
+                /// id, an artifact a document names, settles none.
+                #[test]
+                fn a_batch_asserting_a_non_file_node_at_a_candidate_settles_no_module_row() {
+                    let by = crate::test_support::gc_identity(DECLARING_FILE);
+                    let module = (by, MOD_NODE.to_string(), REF_KIND_MODULE.to_string());
+                    for (kind, expected) in [(KIND_ARTIFACT, vec![]), (KIND_FILE, vec![module])] {
+                        let p = fold_events([]);
+                        declares(&p, 1, 10);
+                        let identity = crate::test_support::gc_identity(NAMING_DOC);
+                        write_directly(&p, |tx, project| {
+                            let by = Asserter {
+                                identity: &identity,
+                                generation: &identity,
+                                at: 0,
+                            };
+                            ensure_node(tx, &by, MODULE_FILE, kind, &[], project).unwrap();
+                        });
+                        assert_eq!(settled_by(&p, NAMING_DOC), expected, "{kind}");
+                    }
                 }
 
                 /// A candidate a node of another kind holds is passed over: a row naming
