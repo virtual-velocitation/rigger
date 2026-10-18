@@ -10,7 +10,7 @@ use crate::contextgraph::{
     CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION, CODE_KIND_FIELD, CODE_KIND_FUNCTION,
     CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD, CODE_KIND_MODULE, CODE_KIND_OTHER,
     CODE_KIND_PROPERTY, CODE_KIND_STATIC, CODE_KIND_TRAIT, CODE_KIND_TYPE, CODE_KIND_VARIABLE,
-    CODE_KIND_VARIANT, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+    CODE_KIND_VARIANT, REF_KIND_MODULE, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
 };
 use crate::eventstore::Event;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
@@ -174,7 +174,9 @@ fn lower_file(path: &str, symbols: &FileSymbols, excluded: bool) -> Vec<Event> {
 /// PATH, ONE EVENT), for the definition at that path first by `CODE_KIND_PRECEDENCE`
 /// ([`path_precedence`]), then the lower line, then the order `extract` returns them, carrying
 /// its id path when that differs from its name and its parent's path when it has one, then one
-/// `EdgeInferred` per reference. Each set is emitted in a sorted, deterministic order so identical
+/// `EdgeInferred` per reference, then one module row per out-of-line `mod` declaration naming a
+/// candidate file (spec 117, A MODULE ROW REACHES ITS FILE). Each set is emitted in a
+/// deterministic order - the module rows in the order `extract` returns them - so identical
 /// source yields byte-identical events - the determinism-by-construction spec 29a requires: refs
 /// by name/line, and defs parent before child (spec 119, A PARENT IS EMITTED BEFORE ITS CHILD), by
 /// the length of each one's parent chain ([`chain_length`]), then leaf, then path, a total order
@@ -234,6 +236,7 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
         }
     }
     let mut defs: Vec<&Def> = survivors
+        .clone()
         .filter(|d| std::ptr::eq(emitted[d.path.as_str()], *d))
         .collect();
     // Spec 119 (A PARENT IS EMITTED BEFORE ITS CHILD): two distinct paths never tie, so the
@@ -297,6 +300,32 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
             // Spec 117 (REFERENCES): a tagged reference's kind, absent for a call, so a call's
             // event stays byte-identical to the form recorded before the field existed.
             ref_kind: r.ref_kind.clone(),
+        };
+        events.push(Event::new(
+            TYPE_EDGE_INFERRED,
+            serde_json::to_vec(&payload).expect("edge payload serializes"),
+        ));
+    }
+
+    // Spec 117 (A MODULE ROW REACHES ITS FILE): after the references, one module row per
+    // surviving out-of-line `mod` declaration, in the order `extract` returns them, from the
+    // `mod` node's path and named by the declaration's candidates joined by `\n`, so cfg-twin
+    // declarations with different candidates stay two rows; one naming no candidate lowers none.
+    for d in survivors.filter(|d| d.is_out_of_line_module) {
+        let candidates = module_candidates(file, d);
+        if candidates.is_empty() {
+            continue;
+        }
+        let payload = EdgeInferred {
+            file: file.to_string(),
+            name: candidates.join("\n"),
+            lang: lang.to_string(),
+            fresh: false,
+            caller: Some(d.path.clone()),
+            line: 0,
+            is_test: false,
+            partial: fs.partial,
+            ref_kind: Some(REF_KIND_MODULE.to_string()),
         };
         events.push(Event::new(
             TYPE_EDGE_INFERRED,

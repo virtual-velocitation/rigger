@@ -1106,6 +1106,29 @@ pub fn reference_candidate_kinds(ref_kind: &str) -> Vec<&'static str> {
 /// row's kind is never one of them.
 pub const LEAF_REF_KINDS: [&str; 3] = [REF_KIND_TYPE, REF_KIND_CONST, REF_KIND_USE];
 
+/// The relations a staged `refs` row's edge is of (spec 117): every value [`staged_rel`] answers,
+/// held to its arms by a test.
+pub const STAGED_RELS: [&str; 2] = [REL_REFERENCES, REL_CONTAINS];
+
+/// The relation a staged `refs` row of `ref_kind` is an edge of (spec 117): a [`REL_REFERENCES`]
+/// for a kind a leaf resolves ([`LEAF_REF_KINDS`]), a [`REL_CONTAINS`] for a module row
+/// ([`REF_KIND_MODULE`]), and none for any other value, which stages no row.
+pub fn staged_rel(ref_kind: &str) -> Option<&'static str> {
+    match ref_kind {
+        REF_KIND_MODULE => Some(REL_CONTAINS),
+        kind if LEAF_REF_KINDS.contains(&kind) => Some(REL_REFERENCES),
+        _ => None,
+    }
+}
+
+/// Whether a `rel` edge onto a node of kind `target_kind` declares a module (spec 117, A MODULE
+/// ROW REACHES ITS FILE): a [`REL_CONTAINS`] onto a [`KIND_FILE`] node, the edge a `mod x;`
+/// reaches its file by. A declaration is not coupling, so no community, label degree or blast
+/// radius counts it.
+pub fn declares_a_module(rel: &str, target_kind: Option<&str>) -> bool {
+    rel == REL_CONTAINS && target_kind == Some(KIND_FILE)
+}
+
 /// The `EdgeInferred` payload (spec 29a): one reference the extraction pass emits. Shares the
 /// same one-contract discipline as [`CodeEntityExtracted`]: emitted by the feature-gated pass,
 /// folded by the always-compiled arm.
@@ -1171,11 +1194,13 @@ pub struct EdgeInferred {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
     /// Spec 117 (REFERENCES): the kind of a non-call reference, a Rust type reference, const
-    /// read or imported leaf ([`REF_KIND_TYPE`], [`REF_KIND_CONST`] or [`REF_KIND_USE`]); absent
-    /// for a call, which folds as before the field existed. The event arm runs a tagged event's
-    /// structural head alone (the `fresh` supersede and the file node) and folds nothing else
-    /// from it; a ledger entry's batch stages it as a row, an edge while one definition of its
-    /// [`reference_candidate_kinds`] answers its name (spec 117, STAGED REFERENCES).
+    /// read or imported leaf ([`REF_KIND_TYPE`], [`REF_KIND_CONST`] or [`REF_KIND_USE`]), or a
+    /// module row ([`REF_KIND_MODULE`]); absent for a call, which folds as before the field
+    /// existed. The event arm runs a tagged event's structural head alone (the `fresh` supersede
+    /// and the file node) and folds nothing else from it; a ledger entry's batch stages it as a
+    /// row ([`staged_rel`]), a leaf kind's an edge while one definition of its
+    /// [`reference_candidate_kinds`] answers its name (spec 117, STAGED REFERENCES), a module
+    /// row's while one of its candidates holds a `file` node (A MODULE ROW REACHES ITS FILE).
     /// Serde-defaulted and omitted when absent, so a call's wire form is byte-identical to
     /// before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1447,6 +1472,42 @@ mod reference_candidate_kinds_rule {
                 .collect::<Vec<_>>(),
             LEAF_REF_KINDS
         );
+    }
+
+    /// Each asked kind's row is an edge of its relation: a leaf kind's a `REFERENCES`, a module
+    /// row's a `CONTAINS`, and a call's or the empty value's none.
+    #[test]
+    fn each_staged_kind_names_the_relation_its_row_is_an_edge_of() {
+        assert_eq!(
+            ASKED.map(staged_rel),
+            [
+                Some(REL_REFERENCES),
+                Some(REL_REFERENCES),
+                Some(REL_REFERENCES),
+                Some(REL_CONTAINS),
+                None,
+                None
+            ]
+        );
+    }
+
+    /// [`STAGED_RELS`] is the rule's own set: exactly the relations [`staged_rel`] answers, in
+    /// the order the asked kinds first name them.
+    #[test]
+    fn the_staged_relations_are_the_relations_the_rule_answers() {
+        let mut answered: Vec<&str> = ASKED.into_iter().filter_map(staged_rel).collect();
+        answered.dedup();
+        assert_eq!(answered, STAGED_RELS);
+    }
+
+    /// A module is declared by a `CONTAINS` onto a `file` node alone: never by another relation
+    /// onto one, nor by a `CONTAINS` onto a code entity or an absent node.
+    #[test]
+    fn a_contains_onto_a_file_node_alone_declares_a_module() {
+        let declared = [REL_CONTAINS, REL_REFERENCES].map(|rel| {
+            [Some(KIND_FILE), Some(KIND_CODE_ENTITY), None].map(|kind| declares_a_module(rel, kind))
+        });
+        assert_eq!(declared, [[true, false, false], [false, false, false]]);
     }
 }
 

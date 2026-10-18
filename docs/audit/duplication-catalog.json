@@ -266,7 +266,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-1ef62dd3058b",
+    "id": "dup-5be18b106f03",
     "classification": "near",
     "sites": [
       {
@@ -298,6 +298,11 @@
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "superseded_edges_sql",
         "content_hash": "5d23ae9ae3e76aee"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "declaration_sql",
+        "content_hash": "dd84157febaa78c9"
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
@@ -6738,13 +6743,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-8a76ceef3244",
+    "id": "dup-e4453a5ef300",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
         "name": "extract_events",
-        "content_hash": "3e8525e2003acecf"
+        "content_hash": "a503fff977bf9a9d"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",

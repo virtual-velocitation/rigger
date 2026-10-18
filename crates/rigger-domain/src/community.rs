@@ -46,8 +46,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contextgraph::query::{leaf_of, node_name};
 use crate::contextgraph::{
-    is_call_target, CommunityAssigned, Graph, KIND_CODE_ENTITY, REL_CALLS, REL_CONTAINS,
-    REL_REFERENCES, TIER_AMBIGUOUS, TYPE_COMMUNITY_ASSIGNED,
+    declares_a_module, is_call_target, CommunityAssigned, Graph, KIND_CODE_ENTITY, REL_CALLS,
+    REL_CONTAINS, REL_REFERENCES, TIER_AMBIGUOUS, TYPE_COMMUNITY_ASSIGNED,
 };
 use crate::eventstore::Event;
 
@@ -85,7 +85,8 @@ fn fnv1a_hex(s: &str) -> String {
 /// community detection runs over. Its nodes are exactly the code-entity / file ids that participate
 /// in at least one coupling edge (a node with none is not part of any community and simply keeps its
 /// kind bucket in the lens), stored SORTED so a node's index is its id rank. Edges collapse each
-/// unordered pair of the live `CALLS` / `REFERENCES` / `CONTAINS` edges into ONE undirected edge
+/// unordered pair of the live `CALLS` / `REFERENCES` / `CONTAINS` edges, a module declaration's
+/// `CONTAINS` onto its file excluded ([`declares_a_module`]), into ONE undirected edge
 /// weighted by multiplicity; self-loops and the unresolved [`TIER_AMBIGUOUS`] tier are dropped
 /// (the spec's "resolvable tiers only, weighted by edge multiplicity").
 pub struct Coupling {
@@ -106,7 +107,8 @@ pub struct Coupling {
 impl Coupling {
     /// Build the coupling graph from the WHOLE projection graph (as [`crate::contextgraph::sqlite::Projector::whole`]
     /// returns it - live edges only, project-scoped, sorted). Keeps only the `CALLS` / `REFERENCES`
-    /// / `CONTAINS` structural edges at resolvable tiers (never [`TIER_AMBIGUOUS`]), collapses each
+    /// / `CONTAINS` structural edges at resolvable tiers (never [`TIER_AMBIGUOUS`]), but a module
+    /// declaration's `CONTAINS` onto a `file` node ([`declares_a_module`]), collapses each
     /// unordered node pair to one undirected edge weighted by how many such edges join it, and drops
     /// self-loops. A node with no surviving coupling edge is excluded (it joins no community).
     pub fn from_graph(g: &Graph) -> Self {
@@ -155,9 +157,16 @@ impl Coupling {
         // input layer through ONE assembly, and the canonical hash string is identical by
         // construction. Self-loops (a same-file reference onto its own caller, or a bare placeholder
         // that resolved back onto its file-mate) are dropped inside `from_edges`.
+        // A module declaration's `CONTAINS` onto its file couples nothing ([`declares_a_module`]).
+        let kind_of: BTreeMap<&str, &str> = g
+            .nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.kind.as_str()))
+            .collect();
         let edges = g.edges.iter().filter_map(|e| {
             let coupling = e.rel == REL_CALLS || e.rel == REL_REFERENCES || e.rel == REL_CONTAINS;
-            if !coupling || e.tier == TIER_AMBIGUOUS {
+            let declaration = declares_a_module(&e.rel, kind_of.get(e.to.as_str()).copied());
+            if !coupling || declaration || e.tier == TIER_AMBIGUOUS {
                 return None;
             }
             Some((canon(&e.from), canon(&e.to)))

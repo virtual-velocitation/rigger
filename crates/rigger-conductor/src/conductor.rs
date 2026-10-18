@@ -13172,7 +13172,9 @@ fn confidence_tier_radius(g: &Graph, seed: &[String]) -> BlastRadius {
 
 /// The files reachable from `seed` within `g` crossing ONLY edges whose confidence tier is in
 /// `allowed` - the one edge set, filtered (spec 29c criterion 2). A breadth-first reachability over
-/// the (undirected) edge set: an allowed edge extends the reached set from either endpoint. Every
+/// the (undirected) edge set: an allowed edge extends the reached set from either endpoint, but a
+/// module declaration's `CONTAINS` onto its file ([`contextgraph::declares_a_module`], spec 117),
+/// which has no radius effect. Every
 /// reached node is then mapped to its file - a [`KIND_FILE`](crate::contextgraph::KIND_FILE) node is
 /// its own path, a member (a named [`KIND_CODE_ENTITY`](crate::contextgraph::KIND_CODE_ENTITY))
 /// maps to its file by [`member_files`] when `g` holds that file's node, and any other node (a
@@ -13199,7 +13201,9 @@ fn files_reachable(g: &Graph, seed: &[String], allowed: &[&str]) -> BTreeSet<Str
     let mut frontier: Vec<String> = seed.to_vec();
     while let Some(cur) = frontier.pop() {
         for e in &g.edges {
-            if !allowed.contains(e.tier.as_str()) {
+            let declaration =
+                contextgraph::declares_a_module(&e.rel, kind_of.get(e.to.as_str()).copied());
+            if declaration || !allowed.contains(e.tier.as_str()) {
                 continue;
             }
             let next = if e.from == cur {
