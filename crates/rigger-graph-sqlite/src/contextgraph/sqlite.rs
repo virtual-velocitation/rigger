@@ -1983,9 +1983,10 @@ fn record_applied(tx: &Transaction, position: Position) -> Result<bool, Error> {
 /// batch drops every `refs` row its identity staged - each at an older generation, since an entry
 /// naming the current one is a re-recording - before its first event, and stages each tagged
 /// reference after its event folds ([`stage_reference`]); its end settles every row it staged,
-/// whose leaf it defines or, a module row, one of whose candidates names a node it asserts
-/// ([`settle_references`]) - here alone, never in [`fold_new`] (spec 117, STAGED REFERENCES). Every community the batch owed a relabel is
-/// labelled before this returns ([`relabel_owed_communities`]), the row edges' debt included.
+/// whose leaf it defines or, a module row, one of whose candidates names a `file` node it asserts
+/// ([`settle_references`]) - here alone, never in [`fold_new`] (spec 117, STAGED REFERENCES).
+/// Every community the batch owed a relabel is labelled before this returns
+/// ([`relabel_owed_communities`]), the row edges' debt included.
 /// The `applied` row cannot guard the batch's events, which share the entry's position.
 fn fold_entry(
     tx: &Transaction,
@@ -2162,8 +2163,8 @@ fn staged_rows_sql() -> String {
 
 /// Settle `refs` at the end of `by`'s batch (spec 117, RESOLUTION SETTLES ONCE PER BATCH): each
 /// live row its identity holds, each live row of any identity naming a leaf its prior or new
-/// generation defines (its identity's node assertions) and each live module row naming a node
-/// either generation asserts is resolved against the batch's final definitions and file nodes
+/// generation defines (its identity's node assertions) and each live module row naming a `file`
+/// node either generation asserts is resolved against the batch's final definitions and file nodes
 /// ([`settle_reference`]), in identity order ([`staged_rows_sql`]). Then every entry the
 /// identity's prior generation recorded of a row's edge - a `REFERENCES` or a module row's
 /// `CONTAINS` ([`STAGED_RELS`]), an entry at another generation than `by`'s, the older ones gone
@@ -17412,7 +17413,7 @@ mod tests {
             /// Spec 117, A MODULE ROW REACHES ITS FILE: a `mod x;`'s module row, its leaf the
             /// declaration's candidates joined by [`MODULE_CANDIDATE_SEPARATOR`], is a `CONTAINS`
             /// from the `mod` node onto the first candidate holding a `file` node, settled at the
-            /// end of every batch that stages it or asserts a node at one of its candidates.
+            /// end of every batch that stages it or asserts a `file` node at one of its candidates.
             mod module_rows {
                 use super::*;
                 use crate::contextgraph::query::path_leaf;
@@ -17745,8 +17746,8 @@ mod tests {
                 }
 
                 /// The rows a batch settles ([`staged_rows_sql`]) hold another identity's module row
-                /// exactly when the batch's identity asserts a candidate of it or the canonical node
-                /// an alias of one names: never for a reference whose leaf spells such a node's id,
+                /// exactly when the batch's identity asserts a candidate's `file` node or the
+                /// canonical one an alias of a candidate names: never for a reference whose leaf spells such a node's id,
                 /// a node whose id is a candidate's without its first or its last character, or a
                 /// node another identity asserts.
                 #[test]
