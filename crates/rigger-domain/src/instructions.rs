@@ -300,14 +300,18 @@ mod tests {
     /// a set witnessed once per case the code splits it into, a failing case making it false, a
     /// sentence CHECKED as a
     /// different rule shown to answer that rule's question and one answering a rewritten rule's
-    /// question a spelling of it, each spelling of a rule the change rewrites found by a recorded search per
-    /// distinguishing phrase of its old statement and of each label its cases carried, a
+    /// question a spelling of it, each spelling of a rule the change rewrites found by a
+    /// recorded search per pair of short terms - the feature's name as the code spells it and
+    /// the rule's noun phrase, both on one joined line, a sentence fragment as one term a record
+    /// the author cannot write - for its old statement and each label its cases carried, a
     /// boolean term a production hunk adds to or removes from a filter, guard or predicate
     /// rewriting the rule its function answers, whose old statement its depth-1 callers' notes,
-    /// Returns paragraphs, variant docs and oracles spell and are searched by, the SDET
-    /// lens re-deriving each generator's set over that range, reading every witness, re-running
-    /// each search and re-reading every hit against head, deriving the changed-condition set
-    /// itself and reading every consumer sentence against it, and reading every sentence it
+    /// Returns paragraphs, variant docs and oracles spell and are searched by in the same pair
+    /// form (the function's name and the old answer's noun), the SDET lens re-deriving each
+    /// generator's set over that range, reading every witness, re-running each search and
+    /// re-reading every hit against head, deriving the changed-condition set itself and reading
+    /// every consumer sentence against it, running the two-term search itself for each
+    /// rewritten rule and changed condition, and reading every sentence it
     /// re-reads claim by claim against the unit's change with a witness per claim at head, a
     /// sentence it cannot witness blocking on its own, a quantified claim's cases enumerated by
     /// the lens and listed each with its witness, one witnessed case or a failing case blocking
@@ -329,9 +333,13 @@ mod tests {
     /// green one blocking, every constant, static, list, closure or predicate the delta adds - a
     /// SQL conjunct inside a query string included - naming its one home in the sentence-walk
     /// record - no other spelling, its distinguishing literal searched over the whole tree, derived
-    /// from or pinned to the existing one, a fact spelled twice lifted at all three sites - with
-    /// the architecture lens deriving the added set itself from the production hunks, query strings
-    /// included, and blocking on a missing or false line, and a probe that edits the tree - the
+    /// from or pinned to the existing one, a fact spelled twice lifted at all three sites - every
+    /// boolean expression the hunks add listed by shape under `ADDED PREDICATES` with its line, a
+    /// changed condition among them in both lists, two predicates of one fact lifted to one home
+    /// or pinned to each other, an added set of named members searched by each member's name,
+    /// with the architecture lens deriving the added set itself by the same shapes from the
+    /// production hunks, query strings included, running the member search itself, and blocking
+    /// on a missing or false line, and a probe that edits the tree - the
     /// sharpest case of a turn's end being the session's end - run to completion and restored
     /// before the turn ends; the gates'
     /// check names each gate command run to completion inside the turn. Read by its words, so
@@ -485,12 +493,20 @@ mod tests {
             "has spellings no generator above reaches: prose that states it without naming a \
              changed item",
             "every spelling of each rewritten rule is walked too",
-            "the distinguishing phrases of the rule's OLD statement and of the labels its cases \
-             carried - the words a sentence stating it cannot be written without, and each name \
-             the docs, test names and comments give a case the old rule decided",
-            "two phrases when one would miss a spelling",
-            "run one recorded search for each over every tracked text line: code, doc comments, \
-             body comments, test names and docs, assertion messages, specs and operator docs",
+            "write down, for the rule's OLD statement and for each label its cases carried, a \
+             pair of short terms: the feature's name as the code spells it (the flag \
+             `--around`, the fn, field, variant or table the rule concerns) and the rule's \
+             shortest distinguishing noun phrase (`exact id`, `import`, `collision`)",
+            "the words a sentence stating it cannot be written without, and each name the docs, \
+             test names and comments give a case the old rule decided",
+            "run one recorded search for each pair over every tracked text line: code, doc \
+             comments, body comments, test names and docs, assertion messages, specs and \
+             operator docs",
+            "a hit is a line, joined with the line before, that holds both terms, in either \
+             order and with any words, names or code spans between them",
+            "A term is a name or a noun phrase of at most three words: a search whose one term is \
+             a sentence fragment of more than three words misses the sentence that puts the \
+             feature's name or a qualifier between its words, and is a record you cannot write.",
             "The record carries each search's command, its hit count and every hit",
             "CHECKED with the named way it is not a spelling of the retired rule (a spec's \
              account of the pre-change state, a history note, a different rule sharing the \
@@ -506,8 +522,9 @@ mod tests {
             "read from the function's callers at depth 1 in the project's graph and their \
              callers' output sentences",
             "For each changed condition write down the rule it changes - the question the \
-             function answers - and the distinguishing phrases of the old answer as the \
-             consumers spell them, and run the rule search for each",
+             function answers - and, for each phrase of the old answer as the consumers spell \
+             it, the pair of the function's name as the code spells it and the old answer's \
+             noun, and run the rule search for each pair",
             "every hit is FIXED, carrying the new qualifier, or CHECKED with the named reason \
              the qualifier does not reach it (a call that passes no path, say)",
             "The SDET lens re-derives each generator's set on the review tree from the diff and \
@@ -532,6 +549,11 @@ mod tests {
              oracles - against the condition at head: a consumer sentence stating the \
              pre-change answer that the record does not carry FIXED or CHECKED is a BLOCKING \
              finding on its own.",
+            "The lens runs the two-term search itself - the feature's name AND the rule's noun \
+             phrase for each rule the change rewrites, the function's name AND the old answer's \
+             noun for each changed condition it derives, both terms on one joined line with any \
+             words between them: a hit the record lacks, or a hit CHECKED with a reason that does \
+             not hold at head, is a BLOCKING finding on its own.",
             "The lens reads every sentence it re-reads claim by claim against the unit's \
              change, with a witness per claim at head, and a sentence it cannot witness is a \
              BLOCKING finding on its own.",
@@ -621,6 +643,29 @@ mod tests {
              the hunk and the existing sites reading one fn, or `pinned to` it, and a fact the \
              tree already spells twice is lifted at all three sites - the pre-existing pair is \
              the tree's debt, and the unit's third spelling makes it the unit's.",
+            "The walk's item list is derived from the production hunks by shape as well as by \
+             name, since a predicate has no name the count could list: every boolean expression \
+             the hunks add - an `if`, `else if`, `while` or match-guard condition, each operand \
+             of an `&&` or `||` chain inside one, the body of a closure passed to `filter`, \
+             `any`, `all`, `retain`, `position` or `find`, and every conjunct inside a query \
+             string, format string or macro argument the production code executes - is an item, \
+             quoted with its `file:line` under the record's `ADDED PREDICATES` heading with its \
+             one-home line.",
+            "A predicate that is also a changed condition appears in both lists, its rule search \
+             in one and its one-home line in the other, and neither entry stands in for the \
+             other.",
+            "Two added predicates stating one fact - the same condition at two sites, or one \
+             condition and its negation - are one fact spelled twice: lifted to one home both \
+             sites read (a fn or a value) or `pinned to` each other by a test that holds them \
+             equal, never two `no other spelling` lines.",
+            "An added set of named members - an array or slice of constants, an `IN (..)` list, \
+             a `matches!` or a `match` with an arm per member, an `||` chain of equalities - runs \
+             its `no other spelling` search as the name count of EACH member, and every site \
+             where two or more of the members occur within one statement, one `match` or one \
+             macro call is read as a candidate second spelling of the set: one found makes the \
+             set `derived from` a single named home both sites read (a const list or a fn), or \
+             the hunk's spelling is a DRY defect lifted before hand-over, and the one-home line \
+             names the member sites it read.",
             "The architecture lens derives the set of added constants, statics, lists, closures \
              and predicates itself from the production hunks, query strings included, and \
              compares it with the record's one-home lines: an added item the record has no line \
@@ -629,6 +674,11 @@ mod tests {
              unit adds: an added item with no line, or a line false at head - the fact has \
              another spelling the line does not name, or the named derivation or pin does not \
              exist - is a BLOCKING finding on its own (DRY, single responsibility).",
+            "The architecture lens derives the added set by the same shapes, the `ADDED \
+             PREDICATES` list and every added set of named members included, and runs the member \
+             search itself for every added set: an added predicate with no line, two added \
+             predicates of one fact with two lines, or a second spelling of a set the line does \
+             not name, is a BLOCKING finding on its own.",
             "A probe that edits your tree is over before your turn is.",
             "runs to completion and restores the tree before your turn ends, never as a \
              detached or background job",
@@ -652,6 +702,12 @@ mod tests {
         assert!(
             !words.contains("the token sequence its body cannot be written without"),
             "the shape search's unit is the statement, not the whole body"
+        );
+        // A rule-spelling search conjoins the feature's name with the rule's noun phrase, so
+        // the rule no longer offers a single phrase as the search's one term.
+        assert!(
+            !words.contains("two phrases when one would miss a spelling"),
+            "the rule search runs a term pair, not one phrase or two"
         );
     }
 
