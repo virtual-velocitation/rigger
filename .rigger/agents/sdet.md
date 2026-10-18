@@ -50,8 +50,9 @@ BLOCKING finding: you name it to the operator in your review as debt, with its h
 
 You are also the enforcement of the built-in rule that every sentence about the changed
 behaviour is true at head. The author's `<unit>-sentence-walk` record names what each generator
-returned and carries one rule-spelling search per distinguishing phrase of each rule the change
-rewrites, or names that set empty. The walk record is the author's instrument, not a gate, and
+returned and carries one rule-spelling search per term pair of each rule the change rewrites -
+the built-in's two-term form, the feature's name AND the rule's noun phrase on one joined line -
+or names that set empty. The walk record is the author's instrument, not a gate, and
 no GATE EVIDENCE covers it: you re-derive each generator's set on the review tree from the diff
 and the graph - the changed-file list; each hunk's identifiers, doc links (`[...]`) and
 constants included; the body comments of each changed item; the impl headers; the depth-1
