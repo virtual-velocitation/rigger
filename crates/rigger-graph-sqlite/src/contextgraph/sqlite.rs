@@ -16,16 +16,16 @@ use super::{
     Candidate, Direction, Edge, EntitySite, EntryBatch, EntryFold, Error, FoldAccess, Graph,
     Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
     KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING,
-    KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE, NON_TARGET_KINDS,
-    OWED_LOST_FOLD, OWED_OLDER_RULE, PLACEHOLDER_SIGIL, REBUILD_OWED, REF_KIND_CONST,
-    REF_KIND_TYPE, REF_KIND_USE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS,
-    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED,
-    REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES,
-    REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED,
-    TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
-    TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
-    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE, LEAF_REF_KINDS,
+    NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE, PLACEHOLDER_SIGIL, REBUILD_OWED, REL_ABOUT,
+    REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS,
+    REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS,
+    REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED,
+    TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED,
+    TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE,
+    TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED,
+    TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED,
+    TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Position, Revision};
 use crate::lockfile::HeldLock;
@@ -3723,10 +3723,11 @@ fn one_hop_degree(conn: &Connection, id: &str, project: &str) -> Result<usize, E
 
 /// A file node's unresolved references (spec 117, UNRESOLVED REFERENCES ARE A READ), read at
 /// read time and never stored: the sorted distinct leaves of its live `type`, `const` and `use`
-/// rows in `project` - those read from the file or from an id in its `<file>::` range
-/// ([`id_range_sql`]), staged at their identity's current generation ([`live_ref_sql`]) - of which
-/// no row of the same `from` and leaf resolves, so a module row is never listed. Any other node,
-/// and a file that owes its rebuild opened with no `refs` table ([`column_exists`]), lists none.
+/// rows ([`LEAF_REF_KINDS`], so a module row is never listed) in `project` - those read from the
+/// file or from an id in its `<file>::` range ([`id_range_sql`]), staged at their identity's
+/// current generation ([`live_ref_sql`]) - of which no row of the same `from` and leaf resolves.
+/// Any other node, and a file that owes its rebuild opened with no `refs` table
+/// ([`column_exists`]), lists none.
 fn unresolved_leaves(conn: &Connection, node: &Node, project: &str) -> Result<Vec<String>, Error> {
     if node.kind != KIND_FILE || !column_exists(conn, "refs", "leaf")? {
         return Ok(Vec::new());
@@ -3737,7 +3738,7 @@ fn unresolved_leaves(conn: &Connection, node: &Node, project: &str) -> Result<Ve
           GROUP BY r.from_id, r.leaf
          HAVING COUNT(r.target) = 0",
         id_range_sql("r.from_id", "?1"),
-        kinds_sql(&[REF_KIND_TYPE, REF_KIND_CONST, REF_KIND_USE]),
+        kinds_sql(&LEAF_REF_KINDS),
         live_ref_sql("r")
     );
     let leaves: BTreeSet<String> = conn

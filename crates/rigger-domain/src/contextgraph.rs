@@ -407,8 +407,9 @@ pub struct CallGraph {
 /// show surfaces (`rigger graph --show` and `rigger_graph`'s `show`) - a full `<file>::<path>` node
 /// id, a bare name matched as a definition's leaf, a path by its id suffix or a flat
 /// `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR PATH), where an
-/// `--around` seed is an exact id only - and returns one of three honest outcomes, never a guess
-/// among candidates.
+/// `--around` seed is an exact id or an alias resolved to its canonical id (spec 117), never a bare
+/// name looked up by its leaf - and returns one of three honest outcomes, never a guess among
+/// candidates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Located {
     /// Exactly one entity resolved: its definition site and graph facts, from which the CLI reads
@@ -1096,6 +1097,11 @@ pub fn reference_candidate_kinds(ref_kind: &str) -> Vec<&'static str> {
         _ => Vec::new(),
     }
 }
+
+/// The reference kinds a leaf resolves (spec 117, KIND CANDIDATES): exactly those
+/// [`reference_candidate_kinds`] names a candidate for, held to its arms by a test, so a module
+/// row's kind is never one of them.
+pub const LEAF_REF_KINDS: [&str; 3] = [REF_KIND_TYPE, REF_KIND_CONST, REF_KIND_USE];
 
 /// The `EdgeInferred` payload (spec 29a): one reference the extraction pass emits. Shares the
 /// same one-contract discipline as [`CodeEntityExtracted`]: emitted by the feature-gated pass,

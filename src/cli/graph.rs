@@ -169,8 +169,8 @@ fn print_around_subgraph(g: &contextgraph::Graph, around: &str, unresolved: &[St
 
     if g.nodes.is_empty() {
         println!(
-            "  (nothing found; a seed is an exact id, `<file>::<path>`, and `rigger graph --show \
-             <name>` resolves a bare name; has `rigger run` been run yet?)"
+            "  (nothing found; a seed is an exact id, `<file>::<path>`, or an alias of one, and \
+             `rigger graph --show <name>` resolves a bare name; has `rigger run` been run yet?)"
         );
     }
 }
