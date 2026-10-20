@@ -4098,26 +4098,28 @@ mod tests {
         );
     }
 
-    /// A mutation survivor is always a failure: the engineer closes it with a failing test or
-    /// a rewrite, never by justifying it, and its accounting has no justified status.
+    /// rigger's core is agnostic to the gates a project wires: no persona or helper it ships
+    /// names mutation testing, its mutants, its sweep, its gate or its accounting.
     #[test]
-    fn rust_engineer_closes_every_survivor_and_never_justifies_one() {
-        let text = committed_persona("rust-engineer.md");
-        for banned in ["JUSTIFIED", "missed-justified", "equivalence reason"] {
-            assert!(
-                !text.contains(banned),
-                "rust-engineer.md still offers {banned:?}"
-            );
-        }
-        for wanted in [
-            "(surviving) mutant is always a failure",
-            "never by an\n  `exclude_re` or `mutants::skip`",
-            "caught | missed-caught (naming the catching test) | unviable | timeout",
-        ] {
-            assert!(
-                text.contains(wanted),
-                "rust-engineer.md must say {wanted:?}"
-            );
+    fn no_shipped_persona_or_helper_names_mutation_testing() {
+        let mut texts = every_shipped_persona();
+        texts.extend(
+            hooks::HELPER_AGENTS
+                .iter()
+                .map(|(f, t)| (format!("HELPER_AGENTS {f}"), (*t).to_string())),
+        );
+        for (at, text) in texts {
+            let lower = text.to_lowercase();
+            for term in [
+                "mutant",
+                "mutation sweep",
+                "mutation gate",
+                "mutation testing",
+                "mutation runs",
+                "unviable",
+            ] {
+                assert!(!lower.contains(term), "{at} names {term:?}");
+            }
         }
     }
 
