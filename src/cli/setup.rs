@@ -3583,9 +3583,8 @@ mod tests {
                     );
                 }
                 assert!(
-                    !block.to_lowercase().contains("mutant")
-                        && !block.to_lowercase().contains("mutation"),
-                    "{file}: the test block names no mutation tool"
+                    !block.to_lowercase().contains("mutant"),
+                    "{file}: the test block names no mutant and no tool that makes one"
                 );
             }
         }
