@@ -106,7 +106,7 @@ pub struct RunStarted {
     /// HEAD and would diff nothing (see
     /// `specs/91-mutation-runs-once-at-the-check-in-seam.md`). `#[serde(default)]` so a
     /// legacy RunStarted (predating this field) or a repo-less run decodes empty;
-    /// [`current_run_base_tip`] then reports `None` and the mutation gate's own `test -n
+    /// [`current_run_base_tip`] then reports `None` and a gate script's own `test -n
     /// "$RIGGER_RUN_BASE"` refuses loud rather than sweeping an empty diff.
     #[serde(default)]
     pub base_tip: String,
