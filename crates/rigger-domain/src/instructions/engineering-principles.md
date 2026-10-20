@@ -39,7 +39,6 @@ and no caller uses is removed before review.
 **TDD.** The failing test is written first and committed first; the code that makes it pass
 comes second, in a separate commit, so the unit's history shows red then green. A test
 written after the code to match its output is not TDD and the reviewer treats it as missing.
-Every test must also survive mutation testing (see the working discipline).
 
 **BDD, when relevant.** An operator-facing behavior (a CLI verb, a dashboard view, a plugin
 skill, a hook) is specified and tested as behavior: given a state, when the operator acts,
