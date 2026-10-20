@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Runs a build, the gate battery, a test run or a mutant reproduction and reports exact results. Dispatch ONE instance at a time; builds and mutation runs contend for machine-wide resources.
+description: Runs a build, the gate battery, a test run or a reproduction and reports exact results. Dispatch ONE instance at a time; builds and test runs contend for machine-wide resources.
 model: sonnet
 tools: Read, Grep, Glob, Bash
 ---

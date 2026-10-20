@@ -6569,11 +6569,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "every_reviewer_prompt_leaves_the_gates_and_the_mutation_sweep_to_the_gates",
+    "name": "every_reviewer_prompt_leaves_the_gates_and_their_tools_to_the_gates",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a9613b5c59f2cd8a"
+    "content_hash": "6b5128d5310c9f23"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

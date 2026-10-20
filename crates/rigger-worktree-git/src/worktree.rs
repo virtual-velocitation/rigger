@@ -2739,7 +2739,7 @@ fn expand_home(path: String, home: Option<&std::ffi::OsStr>) -> String {
 ///
 /// Reuses TWO existing single authorities rather than inventing a THIRD, narrower identity
 /// scheme: [`crate::driver::replay::cache_home_from`] (the exact XDG-then-`$HOME/.cache`
-/// resolution spec 77 already established for the mutation-scratch root) supplies the
+/// resolution spec 77 already established for the agent scratch root) supplies the
 /// cache home, and [`crate::liveness::marker_filename`] (spec 77's own injective,
 /// filesystem-safe byte-hex encoding, already the run-id/spawn-id authority
 /// [`crate::driver::replay::spawn_scratch_path`] relies on) turns the repo's path into a

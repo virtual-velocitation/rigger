@@ -24,12 +24,6 @@ fully-specified unit inside your own git worktree, to the project's discipline:
 - Local-first gates. Run the hand-over checks below yourself before you call a
   unit done. Keep rustfmt and clippy clean as you go, not as a final cleanup. The
   gates are confirmation, never discovery.
-- Checkpoint before long work (spec 89). Before a mutation sweep or any full
-  lane suite, commit your current tree as `wip(<unit>): checkpoint before
-  <mutation sweep | lane suite>` - naming whichever applies - then squash that
-  checkpoint into your round's own commit when you report. A halt never
-  discards a tree: if you are interrupted mid-run, only the committed
-  checkpoint survives, so commit it before the long-running step, not after.
 - Process lifecycle is handle-bound. A process is ended ONLY through the
   `std::process::Child` handle that spawned it (`kill()` + `wait()`), or through
   the two sanctioned internal helpers: `reap::send_signal` in production and
@@ -42,23 +36,6 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   it. Why: a computed target that resolves too wide is `kill(-1, SIGKILL)` -
   every process the operator owns - and that has destroyed the operator's
   desktop session repeatedly (spec 78).
-- Checkin-stage survivor closing (spec 91). The `mutation` gate is declared
-  but unwired from the `checkin` stage until issue #32 lands; while it is
-  unwired no sweep runs and this step does not apply. When you are spawned for the
-  `checkin` stage - after every unit from the `implement` fan-out has
-  integrated and its `mutation` gate has already swept the whole spec diff
-  once - read `mutants.out/outcomes.json` (never stdout). A missed
-  (surviving) mutant is always a failure: it is closed by a test that fails on
-  it or by rewriting the site so the mutable token disappears, never by an
-  `exclude_re` or `mutants::skip` (the gate refuses the unit for those), so a
-  miss still standing means the checkin stage is not done. Commit, then record the accounting as one
-  `<unit>-mutation-accounting` DecisionMade (no new event type),
-  deterministically ordered, one entry per mutant with status
-  caught | missed-caught (naming the catching test) | unviable | timeout, plus the diff base and the mutant total. A
-  diff touching no Rust file records a provably-empty accounting - never a
-  skipped step. This runs ONCE, for the whole spec diff, never per implement
-  round: the `mutation` gate itself owns running cargo-mutants - you never
-  invoke it directly.
 
 Read the live event log and context graph before you start - another agent may
 already have decided something that governs your files. Commit when the gates
@@ -203,31 +180,10 @@ each such consumer phrase runs as a pair of the search above, the function's nam
 spells it and the old answer's noun, one run per pair, every hit FIXED with the new qualifier
 or CHECKED with the reason it does not reach it.
 
-Every mutable token of your production delta is probed on your committed tree: list the tokens
-from the production hunks of `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src`
-with the test regions left out (files under a `tests/` directory and hunks inside a
-`#[cfg(test)]` module), each class the working discipline's rule spells read by its spelling -
-every argument of every call you add or change, every `?` (swallowed by the spelling the
-working discipline lists for its value), every `return`, `break` and `continue` among them; after each single mutation run the owning crate's unit tests,
-`cargo test -p <crate> --lib` for a file under `crates/` or `cargo test --lib --bin rigger` for
-one under `src/`, and each root test binary the unit touched by `cargo test --test <name>`, then
-restore the file with `git checkout -- <file>` before the next. The `<unit>-mutant-probes`
-DecisionMade, beside the other two records, pastes each token's `file:line`, the mutation, each
-command as run and the test that went red with its assertion; the `sdet` lens probes every token
-it lacks. The record walks the production lines of
-`git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src` with the test regions left out,
-in file order: each added or changed line names its mutable tokens with their probes - a SQL
-conjunct, a column name, bound or placeholder passed to a query builder and a substr start
-inside a query or format string among them - or is marked as carrying none with its reason (a
-signature, a `use`, a doc line, a brace). After that walk the record carries one tally line per
-spelled class, `<class>: <n> in hunks, <n> probed`, the two counts equal; the `?`, `return`,
-`break` and `continue` counts are the ones `sh .rigger/gates/token-count.sh` prints, run from
-your worktree's root.
+## Every test asserts exactly
 
-## Every test must survive mutation testing
-
-A test that only proves the code runs is not a test. Write every test so that every mutant
-cargo-mutants makes of the code under test is caught:
+A test that only proves the code runs is not a test. Write every test so that a wrong change to
+the code under test turns it red:
 
 - Assert exact values, never existence: the computed number, the exact string, the precise
   variant, the full ordered list. `is_ok()`, `is_some()`, `> 0` and `contains` catch nothing.
@@ -238,12 +194,3 @@ cargo-mutants makes of the code under test is caught:
   the empty, zero, absent or repeated input.
 - For a bounded buffer, a retry count or a timeout, test the exact bound: the element that
   fits and the one that does not; the attempt that is allowed and the one that is refused.
-- A mutant no test can catch is a defect in the code, not a property of mutation testing:
-  the site has a shape where changing an operator changes nothing observable. Rewrite the
-  site so the mutable token disappears (a `max`, a saturating subtraction, a single early
-  return) and pin the new shape with a test. "Equivalent mutant" is not a category that
-  ends the work.
-
-The `<unit>-mutant-probes` record of the hand-over checks above is how you prove this before
-the mutation gate ever runs: each mutable token of the unit's production hunks, mutated by hand,
-turns a test you name red.

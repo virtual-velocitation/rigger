@@ -12,7 +12,7 @@
 //!   1's canonical record of every file the `core` feature compiles unconditionally) instead
 //!   of a second, hand-maintained copy of that list - "the script reruns only when a `core`
 //!   module or the member crate changes" (spec 93 Design, THE BUILD) means this watch must
-//!   stay scoped to exactly that set, never the whole package, so a mutation sweep over an
+//!   stay scoped to exactly that set, never the whole package, so a gate's sweep over an
 //!   unrelated `store`-only file (e.g. `conductor.rs`) never re-triggers the cross-compile.
 //!   A tiny hand-rolled extraction, not a JSON-parsing build-dependency: the file's shape is
 //!   already a committed, test-guarded convention (`tests/core_lane_purity_audit.rs`), a flat

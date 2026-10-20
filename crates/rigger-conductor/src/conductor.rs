@@ -8406,21 +8406,20 @@ impl RunCtx<'_> {
         ))
     }
 
-    /// The run's own `$RIGGER_RUN_BASE` (spec 91, THE GATE ENVIRONMENT): the SINGLE
+    /// The run's own `$RIGGER_RUN_BASE`: the SINGLE
     /// resolution both gate call sites ([`run_gates`](Self::run_gates) and
     /// [`run_deferred_gates`](Self::run_deferred_gates)) layer onto their own `build_env` -
     /// never a second, independently re-derived copy. Reads the run's own `RunStarted` off
     /// the live event stream and folds [`crate::run::current_run_base_tip`] over it: the run
     /// branch's tip commit sha AT THE MOMENT this run started, persisted once at mint
     /// (`RunStarted::base_tip`) and never re-resolved live - so a unit that lands mid-run
-    /// never shifts what a LATER gate diffs against, and the checkin stage's `mutation` gate
-    /// always measures the whole spec diff, never a moving target.
+    /// never shifts what a LATER gate diffs against, and the check-in stage's gates always diff
+    /// the whole spec's work against the recorded base, never a moving target.
     ///
     /// Empty (so [`gate::BuildEnv::with_var`] injects nothing) when this run predates the
-    /// field - a legacy `RunStarted` - or the event stream cannot be read; the mutation gate's
-    /// own `test -n "$RIGGER_RUN_BASE"` guard then refuses loud rather than sweeping an empty
-    /// diff, exactly the behavior `specs/91-mutation-runs-once-at-the-check-in-seam.md`
-    /// documents for a run with nothing to diff against.
+    /// field - a legacy `RunStarted` - or the event stream cannot be read; a gate script's own
+    /// `test -n "$RIGGER_RUN_BASE"` guard then refuses loud rather than diffing an empty range,
+    /// the behavior a run with nothing to diff against needs.
     fn run_base_env(&self) -> String {
         self.read_current_run()
             .ok()
@@ -12518,15 +12517,14 @@ pub fn review_protocol(actor: &str) -> String {
 /// implementer and edits the unit's own worktree leaves exactly the residue that guard
 /// exists to catch, name in a lesson, and restore. THE GATES GRADE, A REVIEW JUDGES THE
 /// RESIDUE: no tier re-runs the battery or a gate its [`gate_evidence_block`] shows green, and a
-/// reproduction builds into the unit's review cache ([`RunCtx::spawn_env`]). A REVIEW NEVER
-/// MUTATES: its last sentence
-/// keeps mutation sweeps out of every review, since the gate that sweeps owns mutation testing
-/// and a reviewer's sweep only repeats it at review cost. Shared by [`review_protocol`] (the lens
-/// and adversary tiers, which also record findings through it) and [`RunCtx::
-/// run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
+/// reproduction builds into the unit's review cache ([`RunCtx::spawn_env`]). A REVIEW RUNS NO
+/// GATE'S TOOL: its last sentence keeps every gate's own tool out of every review, since the
+/// gate owns its run and a reviewer's run only repeats it at review cost. Shared by
+/// [`review_protocol`] (the lens and adversary tiers, which also record findings through it)
+/// and [`RunCtx::run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
 /// wording rather than three hand-copied near-duplicates.
-const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. Never re-run the gate battery, or any gate the gate evidence shows green on the tree under review: the gates are the instrument that grades the work, and a review judges what they cannot see. To reproduce a specific suspicion - one named test, a reversion probe, a single-crate `cargo test -p <crate> <test>` - create your own throwaway scratch worktree and run it there, building into the CARGO_TARGET_DIR your spawn carries: the unit's review cache, never the cache the unit's gates use. Leave the unit's worktree exactly as you found it. Never run a mutation sweep, directly or through a verify helper: mutation testing belongs to the gate that sweeps, never to a review.";
+pub const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. Never re-run the gate battery, or any gate the gate evidence shows green on the tree under review: the gates are the instrument that grades the work, and a review judges what they cannot see. To reproduce a specific suspicion - one named test, a reversion probe, a single-crate `cargo test -p <crate> <test>` - create your own throwaway scratch worktree and run it there, building into the CARGO_TARGET_DIR your spawn carries: the unit's review cache, never the cache the unit's gates use. Leave the unit's worktree exactly as you found it. Never run a gate's own tool, directly or through a verify helper: the gate evidence in your prompt is that gate's verdict, and a reviewer's run only repeats it at review cost.";
 
 /// What an adjudicator's reject names on its verdict line beside the verdict: its REQUIRED
 /// list ([`RequiredItem`]), which the next attempt is handed ([`PriorFailure::block`]) and
@@ -13666,8 +13664,8 @@ fn branch_owner(events: &[Event], unit_id: &str) -> Option<(String, String)> {
 /// Whether `owner` ([`branch_owner`]'s answer for the bare unit id about to reuse a
 /// literal branch name) proves that branch's real content belongs to an UNRELATED
 /// (criterion_id, spec) - extracted as its own pure predicate (spec 88 round 6, closing
-/// a mutation-efficacy gap: the inline `||` this replaces let a mutant flip either single
-/// `!=` to `==` without failing any test, because every periphery fixture that reaches
+/// a test-coverage gap: in the inline `||` this replaces, either single `!=` could have
+/// read `==` without failing any test, because every periphery fixture that reaches
 /// this check happens to differ on BOTH axes at once, never isolating either alone -
 /// mirroring `recorded_adoption`'s own identical round-5 gap and fix, one axis at a
 /// time) so each axis is directly, cheaply unit-testable without a real repo. `None`
@@ -38005,10 +38003,10 @@ mod tests {
     /// The gates grade the work, a review judges the residue: every review tier - lens,
     /// adversary and adjudicator - is told never to re-run the battery or a gate already green on
     /// its tree, to reproduce only a specific suspicion in its own scratch worktree building into
-    /// the unit's review cache, and never to run a mutation sweep, itself or through a verify
-    /// helper, since mutation testing belongs to the gate that sweeps.
+    /// the unit's review cache, and never to run a gate's own tool, itself or through a verify
+    /// helper, since the gate evidence in its prompt is that gate's verdict.
     #[test]
-    fn every_reviewer_prompt_leaves_the_gates_and_the_mutation_sweep_to_the_gates() {
+    fn every_reviewer_prompt_leaves_the_gates_and_their_tools_to_the_gates() {
         let (lens, adversary, adjudicator) = review_tier_prompts();
         for (tier, prompt) in [
             ("lens", lens),
@@ -38017,10 +38015,11 @@ mod tests {
         ] {
             assert!(
                 prompt.contains(
-                    "Never run a mutation sweep, directly or through a verify helper: mutation \
-                     testing belongs to the gate that sweeps, never to a review."
+                    "Never run a gate's own tool, directly or through a verify helper: the gate \
+                     evidence in your prompt is that gate's verdict, and a reviewer's run only \
+                     repeats it at review cost."
                 ),
-                "the {tier} must be told never to run a mutation sweep; prompt was:\n{prompt}"
+                "the {tier} must be told never to run a gate's own tool; prompt was:\n{prompt}"
             );
             assert!(
                 prompt.contains(

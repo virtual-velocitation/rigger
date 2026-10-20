@@ -693,7 +693,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-627b07ce0d38",
+    "id": "dup-2b3843316743",
     "classification": "semantic",
     "sites": [
       {
@@ -810,6 +810,11 @@
         "file": "src/cli/run.rs",
         "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "Command::new",
+        "content_hash": "7bc9b4eef80706b2"
       },
       {
         "file": "src/cli/setup.rs",
@@ -1148,11 +1153,11 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 90 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 91 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-8fc8aa485304",
+    "id": "dup-39249656bd34",
     "classification": "semantic",
     "sites": [
       {
@@ -1982,22 +1987,12 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "name": "\"the `?`, `return`, `break` and `continue` counts are the ones `sh \\\n             .rigger/gates/token-count.sh` prints, run from your worktree's root\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/cli/setup.rs",
         "name": "\"`sh .rigger/gates/lanes.sh <lane>`\"",
         "content_hash": "e24c26c0d9d4cbdb"
       },
       {
         "file": "src/cli/setup.rs",
         "name": "\"You find the sentences with the generators above, the count `git ls-files src \\\n             crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \\\n             { print FILENAME \\\":\\\" FNR }'` run once per name of every item the unit's hunks \\\n             change, and the rule-spelling searches\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "name": "\"You count the classes yourself as well: the `?`, `return`, `break` and `continue` \\\n             of the production hunks with the authors' count, `sh .rigger/gates/token-count.sh` \\\n             run from your own worktree's root, and the arguments of each call those hunks add \\\n             or change, read call by call\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -3684,6 +3679,16 @@
         "file": "tests/principle_gates_wiring.rs",
         "name": "\".rigger/gates\"",
         "content_hash": "2404970484b55ff8"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "ea68bfe8ed1f915f"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\".rigger/gates\"",
+        "content_hash": "5f5c296b5dd577ba"
       },
       {
         "file": "tests/principle_gates_wiring.rs",

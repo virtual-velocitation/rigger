@@ -387,8 +387,8 @@ impl Driver<'_> {
                 // `Some(0)` (elapsed lands exactly on the bound) and `None` (already past
                 // it) both mean "expire without blocking" - `unwrap_or_default` folds them
                 // into the same `Duration::ZERO` a guarded match once spelled out, with no
-                // redundant guard clause a mutation sweep would find equivalent (the
-                // guarded arm's `_` fallback already returned this same zero value).
+                // redundant guard clause no test could tell from its absence (the guarded
+                // arm's `_` fallback already returned this same zero value).
                 bound.checked_sub(elapsed).unwrap_or_default()
             };
 
@@ -847,8 +847,8 @@ impl Driver<'_> {
         // already has. Bounded by
         // `saturating_duration_since` rather than a raw `now() < deadline` comparison: the
         // exact tie between `now()` and a fixed `Instant` a prior addition computed is
-        // unobservable to any test, so a boundary-operator mutant there would be
-        // equivalent; this shape leaves no such operator for one to mutate.
+        // unobservable to any test, so a boundary operator there is one no test observes;
+        // this shape leaves no such operator at all.
         let deadline = std::time::Instant::now() + grace;
         while !deadline
             .saturating_duration_since(std::time::Instant::now())
@@ -1010,7 +1010,7 @@ fn push_bounded_tail(tail: &mut Vec<u8>, chunk: &[u8]) {
     // `tail.len() == STDERR_TAIL_CAP` a guard would skip the trim, but computing `excess`
     // unconditionally already yields 0 there too (`drain(..0)` is a no-op) - the guard's
     // two branches are byte-identical on every input, so this shape leaves no boundary
-    // operator for a mutation sweep to find equivalent.
+    // operator that no test could observe.
     let excess = tail.len().saturating_sub(STDERR_TAIL_CAP);
     tail.drain(..excess);
 }

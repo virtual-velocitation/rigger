@@ -1827,7 +1827,6 @@ mod tests {
             cache_dir: "/tmp/example-cache".to_string(),
             jobs: 0,
             max_concurrent: 4,
-            mutation: String::new(),
         };
         let lines = build_environment_report(Some("sccache"), &build);
         assert_eq!(
@@ -1851,7 +1850,6 @@ mod tests {
             cache_dir: String::new(),
             jobs: 0,
             max_concurrent: 8,
-            mutation: String::new(),
         };
         let lines = build_environment_report(None, &build);
         assert_eq!(
