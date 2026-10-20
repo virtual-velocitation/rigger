@@ -67,10 +67,9 @@ file-extension argument); rustdoc's doc links (`[...]`, `working-discipline.md:1
 (cross-references); the wasm `core` lane sentence (the inner layer compiles without the outer
 layers); the project's package dependency chain (dropped, leaving: package dependencies point one
 way, pinned by a structural test); the English "to match its output" (`engineering-principles.md:41`)
-becomes "to fit its output"; in `REVIEWER_DISCIPLINE`, "a single-crate `cargo test -p <crate>
-<test>`" becomes "a single targeted test run through the project's test command" and "the
-CARGO_TARGET_DIR your spawn carries" becomes "the build cache your spawn carries"; the constant is
-`pub` after PR #117; and rigger's own anchors, both criterion 12's: the helpers
+becomes "to fit its output"; in `REVIEWER_DISCIPLINE`, the third sentence is cut as REVIEWER CONTRACT
+quotes (the targeted test run and the build cache replacing `cargo test -p <crate> <test>` and
+`CARGO_TARGET_DIR`); the constant is `pub` after PR #117; and rigger's own anchors, both criterion 12's: the helpers
 sentence (`working-discipline.md:312-335`, "exist in this repository's `.claude/agents/`") becomes
 "the `lookup` and `verify` helpers rigger scaffolds into `.claude/agents/`"; the adapter list at
 `engineering-principles.md:9-11` (segmented stores, graph projector, headless host) becomes generic
@@ -80,9 +79,10 @@ rules"; the host name at `:9` becomes "the agent host"; `engineering-principles.
 sentence) is dropped; `:21` "the conformance suites" becomes "a port's conformance tests"; `:23`
 "conductor code" becomes "use-case code"; `:15-16` "the dependency order below" goes with the
 chain; `engineering-principles.md:24-25` "the pure `core` lane keeps compiling without them" (and
-the inner layer keeps compiling without them); at each routing sentence (`working-discipline.md:88`,
-:177, :292, :295) "the SDET lens" and "the architecture lens" become "the reviewing lens whose
-persona assigns the duty", and later "the lens" references stay as written, so the routing rule stays in the text; criterion 12 edits no persona.
+the inner layer keeps compiling without them); every sentence in either body that spells "the
+SDET lens" or "the architecture lens" at the launch base (`working-discipline.md:88`, :177, :292,
+:295 and :299-300 at 1185c8c6) is reworded so each becomes "the reviewing lens whose persona
+assigns the duty", and later "the lens" references stay as written, so the routing rule stays in the text; criterion 12 edits no persona.
 This repository's personas already assign them: `.rigger/agents/sdet.md:20-22` (the shape search
 and the sentence walk re-derivation) and `.rigger/agents/architecture-reviewer.md:16` (the one-home
 and member search), read at 1185c8c6; a missing assignment in any project is its operator's edit
@@ -106,7 +106,8 @@ no shared shipped-text helper, criterion 12's test reads `BUILTIN` and the `pub`
 equals a token of the body split on every character that is not a letter, a digit or `_`, so
 `create_dir_all` is one token, so a
 backticked word is a token and `implementation` is no hit. A syntax marker (`#[`, `//!`,
-`cargo.toml`) hits as a substring. The list lives in the test. A word marker also hits when it equals any
+`cargo.toml`) hits as a substring. Two phrase markers, "the sdet lens"
+and "the architecture lens", hit as substrings of the lowercased text. The list lives in the test. A word marker also hits when it equals any
 `_`-separated part of a token, so `cargo_target_dir` hits `cargo`; `create_dir_all` and
 `for_extension` stay whole-token markers. A word marker hit in ordinary English is
 reworded too (BASE lists each), so the rule stays a token rule. `macro`, `closure`, `if`, `while`,
@@ -119,13 +120,25 @@ host language's vocabulary.
 
 
 
-**REVIEWER CONTRACT, decided here.** `REVIEWER_DISCIPLINE` keeps only the sentences that state what
-the harness enforces or provides: the worktree sentence `guard_review_round_tree` enforces (never
-write to the unit's own worktree) and the review-cache sentence (the build cache the spawn carries).
-Its guidance sentences (never re-run the gate battery or a gate the evidence shows green, the
-throwaway scratch worktree for a reproduction, the single targeted test run, never run a gate's own
-tool) move verbatim, as criterion 12 rewords them, into `working-discipline.md` under a `## When
-you review` heading, so criteria 2 and 3 replace or switch them off with the rest of the body.
+**REVIEWER CONTRACT, decided here.** `REVIEWER_DISCIPLINE` has five sentences at the launch
+base. Criterion 12, owning the words, cuts the third ("To reproduce a specific suspicion - one named
+test, a reversion probe, a single-crate `cargo test -p <crate> <test>` - create your own throwaway
+scratch worktree and run it there, building into the CARGO_TARGET_DIR your spawn carries: the
+unit's review cache, never the cache the unit's gates use.") into two sentences: "To reproduce a
+specific suspicion - one named test, a reversion probe, a single targeted test run through the
+project's test command - create your own throwaway scratch worktree and run it there." and "A
+reproduction builds into the build cache your spawn carries: the unit's review cache, never the
+cache the unit's gates use." Criterion 13 then moves three sentences verbatim into
+`working-discipline.md` under a `## When you review` heading, in this order: "Never re-run the gate
+battery, or any gate the gate evidence shows green on the tree under review: the gates are the
+instrument that grades the work, and a review judges what they cannot see.", the reproduction
+sentence criterion 12 wrote, and "Never run a gate's own tool, directly or through a verify helper:
+the gate evidence in your prompt is that gate's verdict, and a reviewer's run only repeats it at
+review cost." The constant keeps, in this order, what the harness enforces or provides: "Never write
+to this unit's own worktree - it is the tree being judged, not yours to edit.", the build-cache
+sentence criterion 12 wrote, and "Leave the unit's worktree exactly as you found it." (both worktree
+sentences are what `guard_review_round_tree` enforces). Criteria 2 and 3 then replace or switch the
+moved sentences off with the rest of the body.
 `review_protocol` and `run_adjudicator` keep appending the constant; the moved sentences reach a
 reviewer through `compose`. Criterion 13 owns the split, the heading and every pin of the moved and
 kept sentences (conductor.rs tests, `tests/unified_traversal_grounding.rs:913-973`); criterion 12
@@ -598,7 +611,7 @@ TEST PLACEMENT (criterion -> test homes; the fixtures each test uses):
 | 10 | `wave.rs` and `canary_store.rs` tests; a periphery test running the built binary's `critique --help` for the adversary-step wording |
 | 11 | the lanes script on the integrated tree |
 | 12 | `src/cli/setup.rs` tests iterating `BUILTIN` and `REVIEWER_DISCIPLINE` under the MARKERS rule (the root crate reaches both; the shipped-text helper PR #117 adds is the one home of the texts); the existing tests BASE names, edited |
-| 13 | `conductor.rs` tests pinning the constant's two sentences; `src/cli/setup.rs` tests pinning the `## When you review` heading and its sentences in the working-discipline body; the existing pins REVIEWER CONTRACT names, edited |
+| 13 | `conductor.rs` tests pinning the constant's three sentences; `src/cli/setup.rs` tests pinning the `## When you review` heading and its sentences in the working-discipline body; the existing pins REVIEWER CONTRACT names, edited |
 
 ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 
@@ -621,7 +634,8 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 
 - Hyphens, never em or en dashes, ASCII only, in every added line.
 - A line citation names the symbol at the tree it was read on (1185c8c6, on `rigger-run`); the
-  symbol name governs, the line being a pointer only.
+  symbol name governs, the line being a pointer only; a `.md` anchor is identified by its quoted
+  phrase, its line a pointer at 1185c8c6 only.
 - No new event type; no new dependency.
 - Every lane `.rigger/gates/lanes.sh` runs green (clippy -D warnings, test), `cargo fmt --check`
   passes on the tree, and the default lane's test suite.
@@ -653,4 +667,4 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves PANEL READERS READ EVERY STEP: `wave::critic` (with `NO_CRITIC_CLAUSE` and the critique help naming an adversary step in `defaults.review`) and the canary (`apply_model_pins`, `run_canary`) read every step as READERS decides. This criterion OWNS those readers' list-form clauses and the critique skill sentence (`docs.rs:553`); `steps()` and its accessors are criteria 6 and 7's, NOT this one's.
 - [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0. This criterion OWNS only the lanes; every behaviour is criteria 1 to 10, 12 and 13's, NOT this one's.
 - [ ] a test proves THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and `REVIEWER_DISCIPLINE` have no hit under the MARKERS rule once reworded as BASE decides. This criterion OWNS the bodies' wording, `REVIEWER_DISCIPLINE`'s toolchain words, every existing test that pins a reworded phrase and `docs/handbook/authoring-agents.md:87-88`; the override mechanism is criteria 2 to 5's and the handbook rule criterion 1's, NOT this one's.
-- [ ] a test proves THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: `REVIEWER_DISCIPLINE` holds the worktree sentence `guard_review_round_tree` enforces and the review-cache sentence, and its guidance sentences stand verbatim in the working-discipline body under `## When you review`, overridable by criteria 2 and 3. This criterion OWNS the constant's split, the heading and their pins; the sentences' wording is criterion 12's, NOT this one's.
+- [ ] a test proves THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: `REVIEWER_DISCIPLINE` holds the two worktree sentences `guard_review_round_tree` enforces and the build-cache sentence, and its guidance sentences stand verbatim in the working-discipline body under `## When you review`, overridable by criteria 2 and 3. This criterion OWNS the constant's split, the heading and their pins; the sentences' wording is criterion 12's, NOT this one's.
