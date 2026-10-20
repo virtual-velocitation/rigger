@@ -11,8 +11,7 @@ review ceremony is one fixed shape: `ReviewPanel` (`crates/rigger-domain/src/con
 one lens list, one `adversary` and one `adjudicator`, and `review_unit`
 (`crates/rigger-conductor/src/conductor.rs:4773`) runs them as three fixed tiers (:4829, :4856,
 :4885), so a consumer cannot add a second adversary, a lens after the adversary, or a second judge.
-A third place, smaller, is the built-in bodies naming Rust vocabulary (`#[allow]`, `fn`, `crate`,
-`impl`, `trait`, `//!`).
+A third place, smaller, is the built-in bodies naming Rust vocabulary (MARKERS lists it).
 This spec makes the built-in layer overridable by name and the review panel an ordered sequence of
 steps of the three official kinds, with the existing map form meaning the canonical sequence.
 
@@ -34,13 +33,29 @@ stages, gates and review steps and rigger runs them, that gate template sets are
 choice at `rigger init`, and the official review vocabulary (lenses, adversary, adjudicator). No
 enumeration of cases or guarantees beyond these is owed. The ceremony section's five-step example is
 `lenses [a, b]`, `adversary x`, `lenses [c]`, `adversary x`, `adjudicator z`, its one adjudicator
-step last.
+step last. The fenced `yaml` block is a `defaults:` fragment (`defaults:` holding `review:` holding
+`steps:` with the five entries). Criterion 1's test splices it under a minimal workflow fixture
+declaring agents a, b, c, x and z and one stage, runs `config_store::parse_workflow` then
+`Config::validate`, and reads `workflow.defaults.review.steps()` as five.
+
 
 **BASE, decided here.** This spec lands on `rigger-run` after PR #117 (the removal of mutation
 testing from the core instruction layer and the personas) is merged to main and merged into
-`rigger-run`. On that tree no BUILTIN body names a gate's procedure; criterion 12 removes the
-language vocabulary that remains (`#[allow]`, `fn`, `crate`, `impl`, `trait`, `//!`). The symbol
-citations stay those read at 1185c8c6.
+`rigger-run`. On that tree no BUILTIN body names a gate's procedure; criterion 12 removes the language vocabulary that
+remains (the MARKERS list). The symbol citations stay those read at 1185c8c6. Criterion 12 owns the
+rewording and the edit of every existing test that pins a reworded phrase (`instructions.rs:380`
+"a test fn, a helper", `:446` "the `//!` module doc", `:453-456` "`<file>::<item>`", and any other
+test a reworded phrase breaks); criteria 2 to 5 own no body text. The bodies also drop rigger's own
+anchors: the wasm lane sentence (the inner layer compiles without the outer layers), the project's
+package dependency chain (package dependencies point one way, pinned by a structural test) and the
+`<file>::<item>` path syntax (the file and the item's name).
+
+**MARKERS, decided here.** Criterion 12's test lowercases each `BUILTIN` body. A word marker (`fn`,
+`crate`, `impl`, `trait`, `cargo`, `clippy`, `rustfmt`, `wasm`) hits when it, or it followed by `s`,
+equals a token of the body split on every character that is not a letter or a digit, so a
+backticked word is a token and `implementation` is no hit. A syntax marker (`.rs`, `#[`, `//!`,
+`::`, `cargo.toml`) hits as a substring. The list lives in the test.
+
 
 
 **BUILT-IN OVERRIDE BY NAME SHADOWING, decided here so no unit has to.** One pure function,
@@ -71,9 +86,9 @@ heading, which is how an operator sees it did not shadow.
   advisories carry). `cmd_validate` (`src/cli/validate.rs:140`) prints
   each to stderr beside its other advisories (:229) and never changes its exit status. It reads the
   operator layer through `config_store::load_instructions`, the one loader.
-- `BUILTIN` SURFACE, decided here: criterion 5 owns the only new assertion that iterates every
-  `BUILTIN` entry (the README names each); the HEAD test
-  `an_empty_persona_still_receives_every_built_in_layer` (`instructions.rs:131-147`) is
+- `BUILTIN` SURFACE, decided here: criterion 5's README assertion and criterion 12's MARKERS assertion
+  are the only two new assertions that iterate every `BUILTIN` entry, each excluding the other; the
+  HEAD test `an_empty_persona_still_receives_every_built_in_layer` (`instructions.rs:131-147`) is
   pre-existing and exempt. Criteria 2 and 3 assert over named entries and read only `compose`'s
   output, and criterion 4 reads only `render`'s, `shadow_advisories`' and
   `instructions_in_force_line`'s output over a fixture of named entries ("each built-in" there means
@@ -94,8 +109,8 @@ heading, which is how an operator sees it did not shadow.
   reads `resolve_layers`: it lists only the built-ins in force, in `BUILTIN` order, a replaced one as
   `<name> (replaced)`, a switched-off one omitted (`none` when no built-in is in force), and counts
   only the unshadowed operator files in its `(+N operator files)` suffix.
-- Unchanged, decided: `BUILTIN`'s text and the tests
-  reading it (`instructions.rs:150`, `src/cli/setup.rs:3484`, `crates/rigger-domain/src/docs.rs:2525`);
+- Unchanged, decided: the tests reading `BUILTIN` that pin no reworded phrase
+  (`src/cli/setup.rs:3484`, `crates/rigger-domain/src/docs.rs:2525`);
   `RIGGER_COMMUNICATION`'s own "(non-negotiable)" (`conductor.rs:12446`), which is rigger's courier
   protocol, not the instruction layer; `load_instructions` (`crates/rigger-config-files/src/config_store.rs:92-123`).
 
@@ -161,7 +176,7 @@ holds on a converged reject too.
 the scope (`defaults.review`, `defaults.review.tiers.light`, `stage "<name>" review`, `stage
 "<name>" review.tiers.light`) and, for an entry, its 0-based index: a panel that sets `steps` and
 any of `lenses`, `adversary`, `adjudicator` (`steps` is set when present, an empty list included;
-the three map keys are set when non-empty); an entry setting zero or two or more keys (an unknown
+the three map keys are set when non-empty; `steps: null` reads as absent (serde `None`)); an entry setting zero or two or more keys (an unknown
 key already fails the YAML parse); a `lenses` entry with no agent; an `adversary` or `adjudicator`
 entry with an empty id; an agent named twice in one `lenses` step (in either form: two spawns of
 one step would mint one spawn id, so no working workflow carries one); a review agent id
@@ -225,7 +240,11 @@ rosters through the one rule; `review_unit` never calls them. Criterion 6 is the
 the wrappers and the loop's roster input, and lands it with a bare-token minter (today's tokens), so
 on the canonical sequence it equals today's `review_roster` and `adjudicator_roster` and criterion
 6's identity claim holds; it owns no token spelling. Criterion 8 supplies `review_step_role` as the
-minter and owns only the tokens it mints, never the roster's shape.
+minter and owns only the tokens it mints, never the roster's shape. A later step reads earlier
+steps' findings through the graph, as at HEAD: every lens and adversary records each finding live
+as a `ReviewFinding` (`review_protocol`, `conductor.rs:12506`) and every later step's grounded
+prompt (`graph_context`) retrieves them; the roster is the thin driver's label
+(`agent.rs:132-142`), never the channel.
 
 **THE ROUND'S VERDICT, decided here.** The one adjudicator step's verdict is the round's, read as
 at HEAD (`split_reject`, `conductor.rs:4996`; a converged reject approves, :5033-5034; the
@@ -308,14 +327,17 @@ and everything reading them - the standalone fan-out review stage (`conductor.rs
 plan-critique gate (:8219-8262), `critique_gate_name` and `has_llm_verifier` (`wave.rs:186`, :305),
 `plan_critique_gate_name` (`crates/rigger-config-files/src/config.rs:50`) - take no sequence and are unchanged.
 The scaffolded workflow (`SCAFFOLD_WORKFLOW`, `src/cli/setup.rs`) and this repository's
-`.rigger/workflow.yml:83-86` keep the map form. The built-in instruction text, `REVIEWER_DISCIPLINE`
+`.rigger/workflow.yml:83-86` keep the map form. `REVIEWER_DISCIPLINE`
 (`conductor.rs:12529`) and the per-unit build-cache naming are not this spec's; the core-names-no-
 toolchain constraint binds the lines this spec adds. The rendered handbook pages (`using-rigger.md`,
 `planning-field-guide.md`) and every shipped skill carry no fixed-tier or unremovable-layer
 wording and are untouched. The pages this spec edits are hand-written: `authoring-loops.md` (its
 opening, the `review:` comment at :54, the lifecycle line at :100, the new sections),
 `agentic-sdlc.md:62-68` (the review section, retitled as a sequence whose default is the three
-steps) and `docs/handbook/README.md:27` (the glossary's review-panel line). `authoring-loops.md`'s
+steps) and `docs/handbook/README.md:27` (the glossary's review-panel line) and `:19` (the "three-tier
+adversarial review" phrase) and `authoring-loops.md:106`, all criterion 1's; and
+`authoring-agents.md:85-96`, split by owner: `:90` and `:94` (the report's replaced and
+switched-off states) are criterion 4's, `:87-88` (the bodies) criterion 12's. `authoring-loops.md`'s
 existing workflow example keeps the map form, so `tests/handbook_grounder_accuracy.rs`'s
 `grounder:` check (:124-152) reads it unchanged; the five-step example sits in a fenced `yaml`
 block under a `### The review ceremony` heading and carries no `grounder:` line. A
@@ -436,7 +458,7 @@ TEST PLACEMENT (criterion -> test homes; the fixtures each test uses):
 | 9 | `metrics.rs` and `dash.rs` tests (a bare-token store folding to the prior `ReviewQuality`); `tests/phase_of_role_mapping_periphery.rs`; `tests/review_tier_roster_periphery.rs` |
 | 10 | `wave.rs`, `canary_store.rs` and `src/cli/validate.rs` tests; a periphery test running the built binary's `validate` over a temp project with a list-form `defaults.review` and a list-form `tiers.light`, asserting the `review <stage>:` and `review <stage> light:` lines, and running `critique --help` for the adversary-step wording |
 | 11 | the lanes script on the integrated tree |
-| 12 | `crates/rigger-domain/src/instructions.rs` tests iterating `BUILTIN` against the marker list |
+| 12 | `crates/rigger-domain/src/instructions.rs` tests iterating `BUILTIN` under the MARKERS rule; the existing tests BASE names, edited |
 
 ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 
@@ -476,10 +498,10 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 
 ## Done when
 
-- [ ] a test proves THE HANDBOOK STATES THE RULE: `docs/handbook/authoring-loops.md` carries S1 and S2 by their words and a `### The review ceremony` section whose five-step `steps:` example parses through `config_store::parse_workflow` to five `steps()`. This criterion OWNS the handbook text only; the README is criterion 5's and the parse criterion 7's, NOT this one's.
+- [ ] a test proves THE HANDBOOK STATES THE RULE: `authoring-loops.md` carries S1 and S2 with a five-step ceremony example that, spliced into a minimal workflow fixture, passes `config_store::parse_workflow` and `Config::validate` to five `defaults.review.steps()`. This criterion OWNS the handbook pages OUT OF SCOPE assigns it; `authoring-agents.md` is criteria 4 and 12's, the instructions README criterion 5's and the parse criterion 7's, NOT this one's.
 - [ ] a test proves A SAME-NAMED OPERATOR FILE REPLACES A BUILT-IN: `instructions::compose` puts the body of an operator file whose name equals a `BUILTIN` name byte for byte into that built-in's `## <name>` section (the composed string's section bytes), prints `HEADING` bare, and appends a near name. This criterion OWNS `resolve_layers`' replace arm and `compose`; switching off is criterion 3's and `render` criterion 4's, NOT this one's.
 - [ ] a test proves AN EMPTY SAME-NAMED OPERATOR FILE SWITCHES A BUILT-IN OFF: `instructions::compose` given an operator file named as a `BUILTIN` entry with an empty or whitespace body injects no section for either, every other section unchanged. This criterion OWNS `resolve_layers`' switched-off arm and its module-doc clause; replacing is criterion 2's, NOT this one's.
-- [ ] a test proves EVERY BUILT-IN'S STATE IS REPORTED: `instructions::render`, `shadow_advisories` (printed by `cmd_validate` with a success exit) and `instructions_in_force_line` name each built-in of a named-entry fixture as in force, replaced or switched off through `resolve_layers`. This criterion OWNS `render`, `shadow_advisories`, `instructions_in_force_line` and their call sites; `compose` is criteria 2 and 3's, NOT this one's.
+- [ ] a test proves EVERY BUILT-IN'S STATE IS REPORTED: `instructions::render`, `shadow_advisories` (printed by `cmd_validate` with a success exit) and `instructions_in_force_line` name each built-in of a named-entry fixture as in force, replaced or switched off through `resolve_layers`. This criterion OWNS the three reporters, their call sites and `authoring-agents.md:90` and `:94`; `compose` is criteria 2 and 3's, NOT this one's.
 - [ ] a test proves THE SCAFFOLDED README DOCUMENTS THE OVERRIDE: `SCAFFOLD_INSTRUCTIONS_README` names every `BUILTIN` entry as `<name>.md` with the replace, switch-off and append rules, and the committed `.rigger/instructions/README.md` equals it (whitespace-normalized text). This criterion OWNS the two README texts and the `BUILTIN`-iterating assertion; the mechanism is criteria 2 and 3's, NOT this one's.
 - [ ] a test proves THE MAP FORM IS THE CANONICAL SEQUENCE: `ReviewPanel::steps` returns lenses, adversary, adjudicator for the map form, and `review_unit` over `steps()` gives each CANONICAL IDENTITY SURFACE fixture its prior list with rosters. This criterion OWNS `ReviewStep`, `steps`, its accessors in today's shape, the one loop and `step_roster`'s shape with its wrappers; `steps:` and the dedup are 7's, token spelling 8's, NOT this one's.
 - [ ] a test proves THE LIST FORM DECLARES ANY SEQUENCE: `Config::validate` accepts `review: { steps: [..] }` with one adjudicator step at most, last, under every scope, refuses each PARSE AND REFUSALS panel naming its scope, and loads the repo's and each scaffold set's workflow unchanged. This criterion OWNS `ReviewStepDecl`, `steps`, every refusal, that load check and the dedup with its readers; running a sequence is 8's, NOT this one's.
@@ -487,4 +509,4 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves TOKEN READERS CLASSIFY EVERY STEP BY ITS KIND: the readers READERS assigns to criterion 9 (`metrics::review_tier`, `actor_tier`, the adversary-only fold, `dash::stage_of_role`, `role_and_agent`, the `workflows/rigger.js` lookups) read an `@k` token as its kind, and bare tokens fold as today. This criterion OWNS those readers; the token grammar is criterion 8's, NOT this one's.
 - [ ] a test proves PANEL READERS READ EVERY STEP: `wave::critic` (with `NO_CRITIC_CLAUSE` and the critique help naming an adversary step in `defaults.review`), the canary (`apply_model_pins`, `run_canary`) and `cmd_validate`'s `review <stage>:` lines read every step as READERS decides. This criterion OWNS those readers' list-form clauses; `steps()` and its accessors are criteria 6 and 7's, NOT this one's.
 - [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0. This criterion OWNS only the lanes; every behaviour is criteria 1 to 10 and 12's, NOT this one's.
-- [ ] a test proves THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body contains none of a fixed marker list held in the test (`cargo`, `clippy`, `rustfmt`, `Cargo.toml`, `.rs`, `#[`, `//!`, and the words `fn`, `crate`, `impl`, `trait`), after the bodies say function, package, implementation, interface and a lint suppression instead. This criterion OWNS the built-in bodies' wording; the override mechanism is criteria 2 to 5's, NOT this one's.
+- [ ] a test proves THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body has no hit under the MARKERS rule after the bodies are reworded as BASE decides. This criterion OWNS the bodies' wording, every existing test that pins a reworded phrase and `docs/handbook/authoring-agents.md:87-88`; the override mechanism is criteria 2 to 5's and the handbook rule criterion 1's, NOT this one's.
