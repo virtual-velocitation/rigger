@@ -2,8 +2,7 @@
 
 **Goal:** rigger provides tools to agents (the context graph, the event store courier, worktrees,
 the blast radius, the dash, hooks, MCP, the verdict and gate contracts) and executes the workflow
-definition; it prescribes nothing about how work is done except by enforcing that definition. Three
-places at HEAD prescribe instead. The built-in instruction layer has no override: `compose`
+definition; it prescribes nothing about how work is done except by enforcing that definition. Four places at HEAD prescribe instead. The built-in instruction layer has no override: `compose`
 (`crates/rigger-domain/src/instructions.rs:50-62`) injects every `BUILTIN` entry (:32-41) under
 `HEADING` with the suffix "(non-negotiable)" (:54), `render` prints "Built-in (every agent rigger
 spawns, not removable)" (:68), and the module doc says "no configuration removes it" (:11). And the
@@ -12,6 +11,8 @@ one lens list, one `adversary` and one `adjudicator`, and `review_unit`
 (`crates/rigger-conductor/src/conductor.rs:4773`) runs them as three fixed tiers (:4829, :4856,
 :4885), so a consumer cannot add a second adversary or a lens after the adversary.
 A third place, smaller, is the built-in bodies naming Rust vocabulary (MARKERS lists it).
+The fourth is `REVIEWER_DISCIPLINE` (`conductor.rs:12529`), the prose every reviewer prompt
+carries, which names a toolchain (`cargo test -p <crate> <test>`, `CARGO_TARGET_DIR`).
 This spec makes the built-in layer overridable by name and the review panel an ordered sequence of
 steps of the three official kinds, with the existing map form meaning the canonical sequence.
 
@@ -36,7 +37,9 @@ enumeration of cases or guarantees beyond these is owed. The ceremony section's 
 step last. The fenced `yaml` block is a `defaults:` fragment (`defaults:` holding `review:` holding
 `steps:` with the five entries). Criterion 1's test splices it under a minimal workflow fixture
 declaring agents a, b, c, x and z and one stage, runs `config_store::parse_workflow` then
-`Config::validate`, and reads `workflow.defaults.review.steps()` as five.
+`Config::validate`, and reads `workflow.defaults.review.steps()` as five. The test builds a
+`Config { agents, workflow, .. }` with an `AgentDef` per id, z's body carrying the verdict-line
+protocol `Config::validate` requires of an adjudicator.
 
 
 **BASE, decided here.** This spec lands on `rigger-run` after PR #117 (the removal of mutation
@@ -61,7 +64,10 @@ file-extension argument); rustdoc's doc links (`[...]`, `working-discipline.md:1
 (cross-references); the wasm `core` lane sentence (the inner layer compiles without the outer
 layers); the project's package dependency chain (dropped, leaving: package dependencies point one
 way, pinned by a structural test); the English "to match its output" (`engineering-principles.md:41`)
-becomes "to fit its output"; and rigger's own anchors, both criterion 12's: the helpers
+becomes "to fit its output"; in `REVIEWER_DISCIPLINE`, "a single-crate `cargo test -p <crate>
+<test>`" becomes "a single targeted test run through the project's test command" and "the
+CARGO_TARGET_DIR your spawn carries" becomes "the build cache your spawn carries"; the constant is
+`pub` after PR #117; and rigger's own anchors, both criterion 12's: the helpers
 sentence (`working-discipline.md:312-335`, "exist in this repository's `.claude/agents/`") becomes
 "the `lookup` and `verify` helpers rigger scaffolds into `.claude/agents/`"; the adapter list at
 `engineering-principles.md:9-11` (segmented stores, graph projector, headless host) becomes generic
@@ -71,15 +77,20 @@ rules"; the host name at `:9` becomes "the agent host"; `engineering-principles.
 sentence) is dropped; `:21` "the conformance suites" becomes "a port's conformance tests"; `:23`
 "conductor code" becomes "use-case code"; `:15-16` "the dependency order below" goes with the
 chain; `working-discipline.md`'s "the SDET lens" and "the architecture lens" become "a reviewing
-lens". The list is what the spec author found; criterion 12's unit walks both bodies for any other
-anchor of this repository (an anchor is a term naming this repository's own code as one consumer
-project (its crates, modules, adapters, paths, personas, helpers, gates, lanes, host); rigger's
-product vocabulary every consumer's agents use is kept (event types such as `DecisionMade` and
-`LessonLearned`, `rigger` verbs and the graph's id syntax, the unit, run, attempt and review kinds)) and generalizes it the same way, listing each in its
-hand-over; a remaining anchor is a finding against criterion 12. `<file>::<item>` stays: it is the graph's node id form
+lens". Each re-derivation the body assigns is owed by the lens whose persona names it; criterion
+12 checks that this repository's `.rigger/agents/sdet.md` and `architecture-reviewer.md` name every
+duty the body assigned to them by name (the shape search, sentence walk and search re-runs to the
+SDET lens; the one-home and member search to the architecture lens) and adds a one-line assignment
+where one is missing. This enumeration is the closed anchor set criterion 12 rewords. Its unit also
+walks both bodies for any other term naming this repository's own code as one consumer project
+(its crates, modules, adapters, paths, personas, helpers, gates, lanes, host) and lists each in its
+hand-over for the operator; that listing raises no finding. Rigger's product vocabulary every
+consumer's agents use is kept (event types such as `DecisionMade` and `LessonLearned`, `rigger`
+verbs and the graph's id syntax, the unit, run, attempt and review kinds). `<file>::<item>` stays: it is the graph's node id form
 (`rigger graph --around <file>::<item>`), rigger's own syntax, so `::` is no marker.
 
-**MARKERS, decided here.** Criterion 12's test lowercases each `BUILTIN` body. A word marker (`fn`,
+**MARKERS, decided here.** Criterion 12's test lowercases each `BUILTIN` body and
+`REVIEWER_DISCIPLINE`. A word marker (`fn`,
 `crate`, `impl`, `trait`, `match`, `matches`, `cargo`, `clippy`, `rustfmt`, `wasm`, `rs`, `rust`, `rustdoc`,
 `create_dir_all`, `for_extension`; the token `rs` covers `.rs` and `("rs")`) hits when it, or it followed by `s`,
 equals a token of the body split on every character that is not a letter, a digit or `_`, so
@@ -168,7 +179,7 @@ reviewers raise no finding on it. The assignments: `authoring-agents.md:85`, `:9
 the switch-off clause appended to the module-doc sentence criterion 2 wrote to 3; `:92` and
 `instructions.rs:10-12` to 2; `:94` to 4; `:87-88` to 12; the instructions README to 5;
 `agentic-sdlc.md:62-68`, `README.md:19` and `:27` and the `authoring-loops.md` lines to 1; `best-practices.md:25` to 1;
-`docs.rs:552-553` to 10; `compose`'s doc (`instructions.rs:47-49`) and `BUILTIN`'s doc (:24) to 3;
+`docs.rs:552-553` to 10; `docs.rs:2514-2518` ("every spawn receives") to 3; `compose`'s doc (`instructions.rs:47-49`) and `BUILTIN`'s doc (:24) to 3;
 `render`'s doc (:64) to 4; the `ReviewPanel` struct doc (`crates/rigger-domain/src/config.rs:347-352`)
 to 7.
 
@@ -393,8 +404,11 @@ criterion 6 adapts its calls into `run_review_agents_concurrently`, `run_adversa
 `run_adjudicator` (`:6981-7010`) to pass the `review_roster` and `adjudicator_roster` wrappers, and
 criterion 8 passes k = 1 there; its behaviour is unchanged.
 The scaffolded workflow (`SCAFFOLD_WORKFLOW`, `src/cli/setup.rs`) and this repository's
-`.rigger/workflow.yml:83-86` keep the map form. `REVIEWER_DISCIPLINE`
-(`conductor.rs:12529`) and the per-unit build-cache naming are not this spec's; the core-names-no-
+`.rigger/workflow.yml:83-86` keep the map form. The per-unit build-cache naming
+(`RunCtx::spawn_env` exports a `CARGO_TARGET_DIR`) is a toolchain coupling in code, out of this
+spec's scope like the grounder's Rust-only symbol extraction; the handbook's `## What rigger
+prescribes` section names both as the tools' current language coverage, which the rule binds and
+the operator carries; the core-names-no-
 toolchain constraint binds the lines this spec adds. Every other page under `docs/handbook/` (`using-rigger.md`,
 `planning-field-guide.md`, `tools-and-context.md`, `best-practices.md` outside `:25`, the rest) and
 every shipped skill carry no fixed-tier or unremovable-layer
@@ -534,7 +548,7 @@ TEST PLACEMENT (criterion -> test homes; the fixtures each test uses):
 | 9 | `metrics.rs` and `dash.rs` tests (a bare-token store folding to the prior `ReviewQuality`); `tests/phase_of_role_mapping_periphery.rs`; `tests/review_tier_roster_periphery.rs` |
 | 10 | `wave.rs` and `canary_store.rs` tests; a periphery test running the built binary's `critique --help` for the adversary-step wording |
 | 11 | the lanes script on the integrated tree |
-| 12 | `crates/rigger-domain/src/instructions.rs` tests iterating `BUILTIN` under the MARKERS rule; the existing tests BASE names, edited |
+| 12 | `src/cli/setup.rs` tests iterating `BUILTIN` and `REVIEWER_DISCIPLINE` under the MARKERS rule (the root crate reaches both; the shipped-text helper PR #117 adds is the one home of the texts); the existing tests BASE names, edited |
 
 ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 
@@ -550,7 +564,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | metrics, dash, `workflows/rigger.js` classification | 9 |
 | `wave::critic` with `NO_CRITIC_CLAUSE` and the `rigger critique` help wording and the canary | 10 |
 | the handbook text | 1 |
-| the BUILTIN bodies' language-neutral wording | 12 |
+| the BUILTIN bodies' language-neutral wording, `REVIEWER_DISCIPLINE`'s toolchain wording, the two personas' duty assignment lines | 12 |
 
 ## Global constraints
 
@@ -586,4 +600,4 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves TOKEN READERS CLASSIFY EVERY STEP BY ITS KIND: the readers READERS assigns to criterion 9 (`metrics::review_tier`, `actor_tier`, the adversary-only fold, `dash::stage_of_role`, `role_and_agent`, the `workflows/rigger.js` lookups) read an `@k` token as its kind, and bare tokens fold as today. This criterion OWNS those readers; the token grammar is criterion 8's, NOT this one's.
 - [ ] a test proves PANEL READERS READ EVERY STEP: `wave::critic` (with `NO_CRITIC_CLAUSE` and the critique help naming an adversary step in `defaults.review`) and the canary (`apply_model_pins`, `run_canary`) read every step as READERS decides. This criterion OWNS those readers' list-form clauses and the critique skill sentence (`docs.rs:553`); `steps()` and its accessors are criteria 6 and 7's, NOT this one's.
 - [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0. This criterion OWNS only the lanes; every behaviour is criteria 1 to 10 and 12's, NOT this one's.
-- [ ] a test proves THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body has no hit under the MARKERS rule after the bodies are reworded as BASE decides. This criterion OWNS the bodies' wording, every existing test that pins a reworded phrase and `docs/handbook/authoring-agents.md:87-88`; the override mechanism is criteria 2 to 5's and the handbook rule criterion 1's, NOT this one's.
+- [ ] a test proves THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and `REVIEWER_DISCIPLINE` have no hit under the MARKERS rule once reworded as BASE decides. This criterion OWNS the bodies' wording, `REVIEWER_DISCIPLINE`'s toolchain words, every existing test that pins a reworded phrase and `docs/handbook/authoring-agents.md:87-88`; the override mechanism is criteria 2 to 5's and the handbook rule criterion 1's, NOT this one's.
