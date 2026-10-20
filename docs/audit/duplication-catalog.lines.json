@@ -1009,13 +1009,13 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 114,
-        "end_line": 114
+        "start_line": 113,
+        "end_line": 113
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 457,
-        "end_line": 457
+        "start_line": 456,
+        "end_line": 456
       },
       {
         "file": "tests/product_binary_authority_periphery.rs",
@@ -3579,8 +3579,13 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 51,
-        "end_line": 51
+        "start_line": 50,
+        "end_line": 50
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "start_line": 64,
+        "end_line": 64
       },
       {
         "file": "tests/principle_gates_wiring.rs",
@@ -3594,13 +3599,13 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 67,
-        "end_line": 67
+        "start_line": 126,
+        "end_line": 126
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 127,
-        "end_line": 127
+        "start_line": 224,
+        "end_line": 224
       },
       {
         "file": "tests/principle_gates_wiring.rs",
@@ -3609,28 +3614,23 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 226,
-        "end_line": 226
+        "start_line": 385,
+        "end_line": 385
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 386,
-        "end_line": 386
+        "start_line": 409,
+        "end_line": 409
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 410,
-        "end_line": 410
+        "start_line": 419,
+        "end_line": 419
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 420,
-        "end_line": 420
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "start_line": 424,
-        "end_line": 424
+        "start_line": 423,
+        "end_line": 423
       },
       {
         "file": "tests/projections_stay_local.rs",
