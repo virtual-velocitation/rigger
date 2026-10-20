@@ -236,8 +236,7 @@ lists it under the operator heading, which is how an operator sees it did not sh
 - Unchanged, decided: the tests reading `BUILTIN` that pin no reworded phrase
   (`src/cli/setup.rs:3484`, `crates/rigger-domain/src/docs.rs:2525`);
   `load_instructions` (`crates/rigger-config-files/src/config_store.rs:92-123`). Criterion 14 removes
-  `RIGGER_COMMUNICATION`'s "(non-negotiable)" heading (`conductor.rs:12446`) with the constant, and
-  no prompt keeps the suffix.
+  `RIGGER_COMMUNICATION`'s "(non-negotiable)" heading (`conductor.rs:12446`) with the constant, and after criterion 2 no prompt keeps the suffix.
 
 
 **THE COMMUNICATION DISCIPLINE IS A BUILT-IN, decided here.** Criterion 14 moves
@@ -250,7 +249,9 @@ later edit of that doc keeps the sentence). Every spawn's prompt carries the dis
 `## communication` section, and `resolve_layers` governs it like the other two once criteria 2 and 3
 land; criterion 2's replace fixture names `communication` as the one replaced built-in. Criterion
 14's test pins membership only: the entry's name and body, the spawn path's, the canary's and the
-critic's prompt equal to `compose`'s output, no "(non-negotiable)" anywhere in it. The JSON shapes stay in the task
+critic's prompt equal to `compose`'s output, and the removed heading "# Rigger communication
+discipline (non-negotiable)" absent from it; `HEADING`'s own suffix stays until criterion 2, which
+owns asserting that no "(non-negotiable)" remains anywhere in the composed prompt. The JSON shapes stay in the task
 instructions (`EMIT_PROTOCOL`, `review_protocol`): they are the tool's contract. The moved body is
 no added line under the Global constraints and has no MARKERS hit, so criterion 12's test stays
 green. Criterion 14 owns every pin of the constant's heading or sentences and, in
@@ -286,7 +287,13 @@ every call from that slice. No composed prompt and no shadow resolution is cache
 memoized resolution kept across spawns is NOT an implementation of this design. The definition pin
 already covers the files (`definition_hash` folds every loaded instruction, `src/cli/mod.rs:1006-1011`),
 so an operator file added, emptied or deleted mid-run halts the next step as a definition drift;
-under `--rebase-definition` the next process composes from the files as they then are.
+under `--rebase-definition` the next process composes from the files as they then are. Criterion 15
+rewrites `.rigger/agents/adversary.md`, which `definition_hash` (`src/cli/mod.rs:975-1010`) folds
+into the run's definition pin (criterion 5's `README.md` rewrite does not: `load_instructions`
+excludes it). So criterion 15 lands in its own batch, after criterion 10 and before criterion 1, and
+at its integration the operator relaunches the driver by adoption with `--rebase-definition`, the
+procedure every mid-run definition change takes; the drift halt the pin raises at that boundary is
+the expected signal, not a defect.
 
 **INTERIM SENTENCES, decided here.** A handbook, README or module-doc sentence OUT OF SCOPE assigns
 to a named criterion is rewritten when that criterion lands. An earlier unit whose behaviour makes
@@ -615,7 +622,8 @@ the boundary gate, a registry of every prompt string the binary ships classed co
 
 ## Notes (non-criteria)
 
-UNIT ORDER (the needs chain): 12, 13, 14, 15, then 2, 3, 4, 5, then 6, 7, 8, 9, 10, then 1, then 11.
+UNIT ORDER (the needs chain): 12, 13, 14, then 2, 3, 4, 5, then 6, 7, 8, 9, 10, then 15, then 1,
+then 11.
 Criteria 2-5 (instructions) and 6-10 (review) are independent chains; 1 needs 12, 13, 14, 15, 3, 7, 8 and 10; 13 needs 12; 14 needs 12; 5 needs 14; 10 needs 7 and 8; 11
 needs all.
 
@@ -627,8 +635,9 @@ LANDING-ORDER SIMULATION (every ordered pair sharing a surface; "no" lines were 
   after 13 so S1 is true on the tree.
 - 14 before 2-5 (surface `BUILTIN` and `compose`'s callers): 14 adds an entry and removes the
   append; 2-5 iterate `BUILTIN` -> yes
-- 15 anywhere before 1 (surface the two critique prompts and the adversary persona): no other
-  criterion touches them -> yes
+- 15 in its own batch before 1 (surface the two critique prompts and the adversary persona): no
+  other criterion touches them; the definition pin moves at its boundary, rebased by the operator
+  -> yes
 
 
 
@@ -774,5 +783,5 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0. This criterion OWNS only the lanes; every behaviour is criteria 1 to 10 and 12 to 15's, NOT this one's.
 - [ ] a test proves THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and `REVIEWER_DISCIPLINE` have no hit under the MARKERS rule once reworded as BASE decides. This criterion OWNS the bodies' wording, `REVIEWER_DISCIPLINE`'s toolchain words, every existing test that pins a reworded phrase and `docs/handbook/authoring-agents.md:87-88`; the override mechanism is criteria 2 to 5's and the handbook rule criterion 1's, NOT this one's.
 - [ ] a test proves THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: `REVIEWER_DISCIPLINE` holds the two worktree sentences `guard_review_round_tree` enforces and the build-cache sentence; the three moved ones sit under `## When you review`. This criterion OWNS the constant's split, the heading, the verify bullet's and the gate-evidence copy's cuts and the pins that move; the sentences' wording is criterion 12's, NOT this one's.
-- [ ] a test proves THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN: `BUILTIN`'s third entry `communication` carries `RIGGER_COMMUNICATION`'s body verbatim, the constant and `build_system_prompt` are gone, and every spawn's system prompt is `compose`'s output, `## communication` once, no "(non-negotiable)". This criterion OWNS the entry, both removals, their pins and the handbook's entry list; the override arms are criteria 2 and 3's, NOT this one's.
+- [ ] a test proves THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN: `BUILTIN`'s third entry `communication` carries `RIGGER_COMMUNICATION`'s body verbatim, the constant and `build_system_prompt` are gone, and every spawn's system prompt is `compose`'s output, `## communication` once, the old heading gone. This criterion OWNS the entry, both removals, their pins and the handbook's entry list; the override arms are criteria 2 and 3's, NOT this one's.
 - [ ] a test proves THE CRITIQUE METHOD IS THE PERSONA'S: `spec_critique_prompt` and the DAG critique prompt carry only the task framing, the voided-duties clause and the output contract, and the method text Design moves stands verbatim in the `adversary` persona and its scaffold template under `## When you critique a spec or a plan`. This criterion OWNS both prompts, the moved text and its pins; the critic's spawn is criterion 10's, NOT this one's.
