@@ -27757,6 +27757,29 @@ fn instructions_prints_an_operator_file_after_the_built_in_law() {
     );
 }
 
+/// Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE, operator-facing: given a fresh project, when
+/// the operator runs `rigger instructions`, then the binary prints the layers exactly as rendered,
+/// and the built-in layer it prints, before the operator layer opens, spells no marker of the
+/// MARKERS rule.
+#[test]
+fn instructions_prints_a_built_in_layer_that_names_no_language() {
+    let proj = temp_project();
+    let out = run_rigger_ok(proj.path(), &["instructions"]);
+    assert_eq!(
+        out,
+        rigger::instructions::render(&[]),
+        "with no operator file the binary prints every layer as rendered"
+    );
+    let (built_in, _) = out
+        .split_once("\nOperator (")
+        .unwrap_or_else(|| panic!("the operator layer must follow the built-in one; got:\n{out}"));
+    assert_eq!(
+        common::fixtures::language_marker_hits(built_in),
+        Vec::<&str>::new(),
+        "the built-in layer the binary prints names no language"
+    );
+}
+
 /// `rigger prime` opens with the instructions in force on the absent-db path, counting the
 /// operator files.
 #[test]

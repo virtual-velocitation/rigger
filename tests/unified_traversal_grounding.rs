@@ -30,7 +30,9 @@ use common::git::temp_git_project_with_commit;
 mod source_audit;
 use source_audit::gate_name_in;
 
-use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
+use rigger::conductor::{
+    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, REVIEWER_DISCIPLINE,
+};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
@@ -47,6 +49,7 @@ use serde_json::{json, Value};
 
 use common::cli::{planted_graph, temp_project};
 use common::fixtures::apply_next_json;
+use common::fixtures::language_marker_hits;
 use common::fixtures::{
     edge, file_half, member_graph, BARE_PARENT, LEAF_PLACEHOLDER, NESTED_METHOD, RANGE_ARTIFACT,
 };
@@ -915,7 +918,9 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
 /// `every_reviewer_prompt_leaves_the_gates_and_their_tools_to_the_gates` pins the assembled
 /// strings; this pins the exact bytes the lens, the adversary AND the adjudicator each receive
 /// through the `AgentDriver` port during a live fan-out `run`, so a review call site that dropped
-/// the discipline, or a core string that named the gate or its tool again, reddens here.
+/// the discipline, or a core string that named the gate or its tool again, reddens here. Spec 120's
+/// THE BUILT-IN LAYER NAMES NO LANGUAGE at the same boundary: each tier receives the discipline
+/// whole, and the discipline as received spells no marker of the MARKERS rule.
 #[test]
 fn every_review_spawn_is_forbidden_a_gates_tool_without_naming_the_gate_or_its_tool() {
     let graph = Projector::open(":memory:", "test").unwrap();
@@ -946,6 +951,20 @@ fn every_review_spawn_is_forbidden_a_gates_tool_without_naming_the_gate_or_its_t
             1,
             "the {role:?} review prompt carries the gate-tool discipline exactly once; prompt \
              was:\n{prompt}"
+        );
+        let discipline = prompt
+            .find(REVIEWER_DISCIPLINE)
+            .map(|at| &prompt[at..at + REVIEWER_DISCIPLINE.len()])
+            .unwrap_or_else(|| {
+                panic!(
+                    "the {role:?} review prompt must carry the reviewer discipline whole; prompt \
+                     was:\n{prompt}"
+                )
+            });
+        assert_eq!(
+            language_marker_hits(discipline),
+            Vec::<&str>::new(),
+            "the reviewer discipline the {role:?} review tier receives names no language"
         );
         for line in prompt.lines() {
             assert_eq!(
