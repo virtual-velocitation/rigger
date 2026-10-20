@@ -72,15 +72,18 @@ sentence) is dropped; `:21` "the conformance suites" becomes "a port's conforman
 "conductor code" becomes "use-case code"; `:15-16` "the dependency order below" goes with the
 chain; `working-discipline.md`'s "the SDET lens" and "the architecture lens" become "a reviewing
 lens". The list is what the spec author found; criterion 12's unit walks both bodies for any other
-anchor of this repository (an anchor is any term naming this repository's own domain, adapters,
-tools, personas, helpers, gates, crates, modules, lanes, paths or host) and generalizes it the same way, listing each in its
+anchor of this repository (an anchor is a term naming this repository's own code as one consumer
+project (its crates, modules, adapters, paths, personas, helpers, gates, lanes, host); rigger's
+product vocabulary every consumer's agents use is kept (event types such as `DecisionMade` and
+`LessonLearned`, `rigger` verbs and the graph's id syntax, the unit, run, attempt and review kinds)) and generalizes it the same way, listing each in its
 hand-over; a remaining anchor is a finding against criterion 12. `<file>::<item>` stays: it is the graph's node id form
 (`rigger graph --around <file>::<item>`), rigger's own syntax, so `::` is no marker.
 
 **MARKERS, decided here.** Criterion 12's test lowercases each `BUILTIN` body. A word marker (`fn`,
-`crate`, `impl`, `trait`, `match`, `matches`, `cargo`, `clippy`, `rustfmt`, `wasm`, `rs`,
+`crate`, `impl`, `trait`, `match`, `matches`, `cargo`, `clippy`, `rustfmt`, `wasm`, `rs`, `rust`, `rustdoc`,
 `create_dir_all`, `for_extension`; the token `rs` covers `.rs` and `("rs")`) hits when it, or it followed by `s`,
-equals a token of the body split on every character that is not a letter or a digit, so a
+equals a token of the body split on every character that is not a letter, a digit or `_`, so
+`create_dir_all` is one token, so a
 backticked word is a token and `implementation` is no hit. A syntax marker (`#[`, `//!`,
 `cargo.toml`) hits as a substring. The list lives in the test. A word marker hit in ordinary English is
 reworded too (BASE lists each), so the rule stays a token rule. `macro`, `closure`, `if`, `while`,
@@ -232,9 +235,11 @@ the three map keys are set when non-empty; `steps: null` reads as absent (serde 
 so `{lenses: []}` is the zero-keys refusal; a present but empty second key is absent, so
 `{lenses: [a], adversary: ""}` is a lens entry) (an unknown
 key already fails the YAML parse); an agent named twice in one `lenses` step (in either form: two spawns of
-one step would mint one spawn id, so no working workflow carries one); an agent id
-containing `@` named in a `ReviewPanel`, in either form and in `tiers.light` (the step-token
-separator below); a stage's own `adversary` and `adjudicator` fields are not checked; a second `Adjudicator` step, or an
+one step would mint one spawn id, so no working workflow carries one); an agent id containing `@` anywhere the workflow declares one: the
+`agents` map and every stage's `agents`, `agent`, `adversary` and `adjudicator` fields, every
+`ReviewPanel` in either form and `tiers.light` (the step-token separator below; the standalone
+fan-out stage mints `lens_role` from `st.agents` too, `conductor.rs:6954`), the message naming the
+agent and the scope; a second `Adjudicator` step, or an
 `Adjudicator` step followed by another step (permanent, criterion 7's). `validate_depth` (`config.rs:446`)
 becomes: a panel with a `tiers` policy, and its `light` panel, each have at least one
 `Adjudicator` step in `steps()`; each of its two messages gains the word "step" after "adjudicator", and the
@@ -383,7 +388,10 @@ finding on it.
 **OUT OF SCOPE, decided here.** A stage's own `adversary` and `adjudicator` fields (`config.rs:634`)
 and everything reading them - the standalone fan-out review stage (`conductor.rs:6980-7070`), the
 plan-critique gate (:8219-8262), `critique_gate_name` and `has_llm_verifier` (`wave.rs:186`, :305),
-`plan_critique_gate_name` (`crates/rigger-config-files/src/config.rs:50`) - take no sequence and are unchanged.
+`plan_critique_gate_name` (`crates/rigger-config-files/src/config.rs:50`) - take no sequence and are unchanged;
+criterion 6 adapts its calls into `run_review_agents_concurrently`, `run_adversary` and
+`run_adjudicator` (`:6981-7010`) to pass the `review_roster` and `adjudicator_roster` wrappers, and
+criterion 8 passes k = 1 there; its behaviour is unchanged.
 The scaffolded workflow (`SCAFFOLD_WORKFLOW`, `src/cli/setup.rs`) and this repository's
 `.rigger/workflow.yml:83-86` keep the map form. `REVIEWER_DISCIPLINE`
 (`conductor.rs:12529`) and the per-unit build-cache naming are not this spec's; the core-names-no-
