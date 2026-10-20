@@ -26,8 +26,8 @@ pub struct Instruction {
 /// BDD where relevant. The second is the working discipline every agent follows: one pass by
 /// excellence, a turn's end being the session's end (every job waited on inside the turn), the
 /// hand-over an author's tree meets before it reports (each outcome with the
-/// check that proves it), fanning mechanical work out to the `lookup` and `verify` helpers, and
-/// the rule that a surviving mutant is always a failure. A harness-wide rule lives here once,
+/// check that proves it), and fanning mechanical work out to the `lookup` and `verify` helpers.
+/// A harness-wide rule lives here once,
 /// never copied into persona files; a persona carries only the project's anchors for it.
 pub const BUILTIN: &[(&str, &str)] = &[
     (
@@ -169,6 +169,18 @@ mod tests {
         );
     }
 
+    /// The built-in layer is agnostic to every gate a project wires: no entry names mutation
+    /// testing, its mutants, its gate or its tool's classifications.
+    #[test]
+    fn no_built_in_entry_names_mutation_testing() {
+        for (name, body) in BUILTIN {
+            let lower = body.to_lowercase();
+            for term in ["mutant", "mutation gate", "mutation testing", "unviable"] {
+                assert!(!lower.contains(term), "{name} names {term:?}");
+            }
+        }
+    }
+
     #[test]
     fn the_built_in_layer_is_the_law_then_the_working_discipline_in_that_order() {
         let names: Vec<&str> = BUILTIN.iter().map(|(name, _)| *name).collect();
@@ -189,12 +201,11 @@ mod tests {
     }
 
     #[test]
-    fn the_working_discipline_carries_one_pass_the_fan_out_helpers_and_the_survivor_rule() {
+    fn the_working_discipline_carries_one_pass_and_the_fan_out_helpers() {
         let body = working_discipline();
         for heading in [
             "## One pass, by excellence",
             "## Fan out the mechanical work",
-            "## A surviving mutant is always a failure",
         ] {
             assert_eq!(
                 body.matches(heading).count(),
@@ -226,6 +237,22 @@ mod tests {
             !words.contains("builds hold the machine-wide build slots"),
             "an agent's build holds no machine-wide build slot"
         );
+        // Narrowing an instrument is named for any gate, and the verify helper for any run,
+        // never one gate's tool.
+        for phrase in [
+            "ONE instance for a build, a test run or a reproduction.",
+            "Narrowing any gate's instrument (an exclusion list, a skip attribute, an `#[allow]`, \
+             a lowered threshold, a filter that hides a case, a deleted or weakened test, a \
+             `--force`)",
+            "deleting the code a finding lives in",
+            "is the same defect as the finding it hides and a failure even when the gate goes \
+             green - the adversary and the adjudicator treat it as one.",
+        ] {
+            assert!(
+                words.contains(phrase),
+                "the working discipline must say {phrase:?}"
+            );
+        }
         // A blocked command is an error naming its alternative, never the end of the turn.
         assert!(
             words.contains(
