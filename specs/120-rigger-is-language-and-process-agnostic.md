@@ -10,7 +10,7 @@ spawns, not removable)" (:68), and the module doc says "no configuration removes
 review ceremony is one fixed shape: `ReviewPanel` (`crates/rigger-domain/src/config.rs:355`) holds
 one lens list, one `adversary` and one `adjudicator`, and `review_unit`
 (`crates/rigger-conductor/src/conductor.rs:4773`) runs them as three fixed tiers (:4829, :4856,
-:4885), so a consumer cannot add a second adversary, a lens after the adversary, or a second judge.
+:4885), so a consumer cannot add a second adversary or a lens after the adversary.
 A third place, smaller, is the built-in bodies naming Rust vocabulary (MARKERS lists it).
 This spec makes the built-in layer overridable by name and the review panel an ordered sequence of
 steps of the three official kinds, with the existing map form meaning the canonical sequence.
@@ -57,13 +57,15 @@ doc); `matches!`, a `match` with an arm per member and the match-guard condition
 case statement with an arm per member, a pattern guard); each branch of a match (each branch of a
 case statement); the match-arm guard (a case-arm guard); the argument-token examples
 `create_dir_all(root.join(` and `for_extension("rs")` (a path built from a root and a name, a
-file-extension argument); the wasm `core` lane sentence (the inner layer compiles without the outer
+file-extension argument); rustdoc's doc links (`[...]`, `working-discipline.md:179`)
+(cross-references); the wasm `core` lane sentence (the inner layer compiles without the outer
 layers); the project's package dependency chain (dropped, leaving: package dependencies point one
 way, pinned by a structural test); and rigger's own anchors, both criterion 12's: the helpers
 sentence (`working-discipline.md:312-335`, "exist in this repository's `.claude/agents/`") becomes
 "the `lookup` and `verify` helpers rigger scaffolds into `.claude/agents/`"; the adapter list at
 `engineering-principles.md:9-11` (segmented stores, graph projector, headless host) becomes generic
-examples (a store, a projector, a host).
+examples (a store, a projector, a host). `<file>::<item>` stays: it is the graph's node id form
+(`rigger graph --around <file>::<item>`), rigger's own syntax, so `::` is no marker.
 
 **MARKERS, decided here.** Criterion 12's test lowercases each `BUILTIN` body. A word marker (`fn`,
 `crate`, `impl`, `trait`, `match`, `matches`, `cargo`, `clippy`, `rustfmt`, `wasm`, `rs`,
@@ -94,7 +96,7 @@ heading, which is how an operator sees it did not shadow.
   under `## <name>`: the built-in body (`BuiltIn`), the operator body (`Replaced`), or nothing at all,
   heading included (`SwitchedOff`); then the unshadowed operator files. `HEADING` is printed even
   when every built-in is switched off and no operator file remains (`rigger prime` and the tests key
-  on it).
+  on it). Criterion 2 lands the replace arm, criterion 3 the `SwitchedOff` arm.
 - `render` prints `HEADING`, then `Built-in:`, then each built-in as `## <name> (built-in)`,
   `## <name> (replaced by .rigger/instructions/<name>.md)` followed by the operator body, or
   `## <name> (switched off by .rigger/instructions/<name>.md)` with no body; then the operator
@@ -152,7 +154,9 @@ reviewers raise no finding on it. The assignments: `authoring-agents.md:85`, `:9
 the switch-off clause appended to the module-doc sentence criterion 2 wrote to 3; `:92` and
 `instructions.rs:10-12` to 2; `:94` to 4; `:87-88` to 12; the instructions README to 5;
 `agentic-sdlc.md:62-68`, `README.md:19` and `:27` and the `authoring-loops.md` lines to 1;
-`docs.rs:552-553` to 10.
+`docs.rs:552-553` to 10; `compose`'s doc (`instructions.rs:47-49`) and `BUILTIN`'s doc (:24) to 3;
+`render`'s doc (:64) to 4.
+
 
 
 **THE REVIEW PANEL IS A SEQUENCE, decided here.** A panel is an ordered list of steps, each exactly
@@ -249,7 +253,8 @@ at HEAD, `@k` reaching `degenerate_reviewer` (:7525) through `role`, which it al
 `steps()` and the step's index: an in-memory counter of steps run so far is NOT an implementation
 of the ordinal, since a resumed process starts it at zero. The plan-critique gate's and the
 critique run's tokens (`review::critique_spawn_id`, `crates/rigger-domain/src/review.rs:392`) are
-unchanged.
+unchanged. `review_step_of` takes `spawn_role`'s output, the `~retry{n}` suffix already trimmed
+(`spawn_role`, `spawn.rs:222-224`); a raw role is never passed to it.
 
 **EXECUTION, decided here.** `review_unit` routes the panel exactly as today (`select_review_panel`,
 `conductor.rs:4396`; `log_review_tier`, :4419), approves an empty panel at once (:4805-4807), then
@@ -292,7 +297,7 @@ at HEAD (`split_reject`, `conductor.rs:4996`; a converged reject approves, :5033
 `reviewed#{attempt}` stamp, :4958, and the speculation winner's `reviewed#{lane}` stamp, :6758-6771,
 carrying the effective panel's adjudicator alias). A sequence with no adjudicator step approves when
 its last step ends, with no `reviewed` stamp, as an adjudicator-less map panel does today
-(:4879-4884).
+(:4879-4884). A second judge is out of scope: the round's verdict is the one adjudicator's.
 
 **READERS, decided here.**
 
@@ -387,7 +392,8 @@ adversarial review" phrase) and `authoring-loops.md:106`, all criterion 1's; and
 `authoring-agents.md:85-96`, split by owner: `:94` (the report's states) is criterion 4's, `:87-88` (the bodies) criterion 12's; `:85` (reaches every agent), `:90` and the switch-off clause appended to
 the module-doc sentence criterion 2 wrote are criterion 3's; `:92` (appended after the built-ins)
 and the `instructions.rs:10-12` sentence (reaches every agent anywhere, no configuration removes it)
-are criterion 2's. `authoring-loops.md`'s
+are criterion 2's. That split (2: `:92`; 3: `:85`, `:90`; 4: `:94`; 12: `:87-88`) is the one
+authority for `authoring-agents.md:85-96`. `authoring-loops.md`'s
 existing workflow example keeps the map form, so `tests/handbook_grounder_accuracy.rs`'s
 `grounder:` check (:124-152) reads it unchanged; the five-step example sits in a fenced `yaml`
 block under a `### The review ceremony` heading and carries no `grounder:` line. A
@@ -505,7 +511,7 @@ TEST PLACEMENT (criterion -> test homes; the fixtures each test uses):
 | 5 | `src/cli/setup.rs` tests iterating `BUILTIN` |
 | 6 | `crates/rigger-domain/src/config.rs` tests for `steps` and the accessors' canonical shape; `review.rs` tests for `step_roster`, the roster shape over any minter (equal to `review_roster` and `adjudicator_roster` on each canonical sequence with the bare-token minter, a first lens step empty, and over the five-step sequence with a test minter the second adversary's roster naming both lens steps and the first adversary, the adjudicator's adding the second); `conductor.rs` tests over a recording driver and the golden fixtures |
 | 7 | `crates/rigger-config-files/src/config_store.rs` tests (every refusal, the one-adjudicator-last refusal and the interim repeated-kind one included; the repo workflow and every scaffold template set's rendering); `crates/rigger-domain/src/config.rs` tests of the dedup and `workflowdef.rs` and `crates/rigger-config-files/src/config.rs` tests of `reviewers_of`, the lint and the wall-clock advisory, each over a map form naming one agent as lens and adjudicator, a list form naming one agent in two steps and a `tiers` panel (named once, full panel first); a periphery test loading a list-form `.rigger/workflow.yml`; a `config.rs` test where a stage with `review: { steps: [] }` resolves to `defaults.review` |
-| 8 | `spawn.rs` tests (bare tokens parse as step 1, a `~retry2` suffix ignored, `@k` for lens and adversary kinds); `conductor.rs` tests over `lenses [a, b]`, `adversary x`, `lenses [c]`, `adversary x`, `adjudicator z` minting `lens:a`, `lens:b`, `adversary`, `lens:c@2`, `adversary@2`, `adjudicator`, the minted tokens appearing in its rosters and the adjudicator read as at HEAD; `replay.rs` tests resuming that sequence mid-round from the log |
+| 8 | `spawn.rs` tests (bare tokens parse as step 1, a `~retry2` respawn id, read through `spawn_role`, parses as its step, `@k` for lens and adversary kinds); `conductor.rs` tests over `lenses [a, b]`, `adversary x`, `lenses [c]`, `adversary x`, `adjudicator z` minting `lens:a`, `lens:b`, `adversary`, `lens:c@2`, `adversary@2`, `adjudicator`, the minted tokens appearing in its rosters and the adjudicator read as at HEAD; `replay.rs` tests resuming that sequence mid-round from the log |
 | 9 | `metrics.rs` and `dash.rs` tests (a bare-token store folding to the prior `ReviewQuality`); `tests/phase_of_role_mapping_periphery.rs`; `tests/review_tier_roster_periphery.rs` |
 | 10 | `wave.rs`, `canary_store.rs` and `src/cli/validate.rs` tests; a periphery test running the built binary's `validate` over a temp project with a list-form `defaults.review` and a list-form `tiers.light`, asserting the `review <stage>:` and `review <stage> light:` lines, and running `critique --help` for the adversary-step wording |
 | 11 | the lanes script on the integrated tree |
@@ -516,7 +522,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | Artifact | Owner |
 | --- | --- |
 | `resolve_layers` and its `Replaced` state, `HEADING` printed bare, the module-doc replace sentence | 2 |
-| the `SwitchedOff` state, the module-doc clause that an empty same-named file switches a built-in off | 3 |
+| the `SwitchedOff` state, the `SwitchedOff` arm inside `compose`, the module-doc clause that an empty same-named file switches a built-in off | 3 |
 | `render`'s labels, `shadow_advisories`, its `cmd_validate` call, `instructions_in_force_line` reading `resolve_layers` | 4 |
 | `SCAFFOLD_INSTRUCTIONS_README`, `.rigger/instructions/README.md` | 5 |
 | `ReviewStep`, `ReviewPanel::steps`, the derived `is_empty`/`agent_ids`/`full_roster`/`gating_agent_ids` in today's shape over the canonical sequence, the one step loop in `review_unit` with the adjudicator read as at HEAD, the speculation stamp through `steps()`, `step_roster`, the `review_roster`/`adjudicator_roster` wrappers and the loop's roster input (`step_roster` per step) | 6 |
@@ -549,7 +555,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 
 ## Done when
 
-- [ ] a test proves THE HANDBOOK STATES THE RULE: `authoring-loops.md` carries S1 and S2 with a five-step ceremony example that, spliced into a minimal workflow fixture, passes `config_store::parse_workflow` and `Config::validate` to five `defaults.review.steps()`. This criterion OWNS the handbook pages OUT OF SCOPE assigns it; `authoring-agents.md` is criteria 4 and 12's, the instructions README criterion 5's and the parse criterion 7's, NOT this one's.
+- [ ] a test proves THE HANDBOOK STATES THE RULE: `authoring-loops.md` carries S1 and S2 with a five-step ceremony example that, spliced into a minimal workflow, passes `config_store::parse_workflow` and `Config::validate` to five `defaults.review.steps()`. This criterion OWNS the handbook pages OUT OF SCOPE assigns it; `authoring-agents.md` is criteria 2, 3, 4 and 12's, the instructions README criterion 5's and the parse criterion 7's, NOT this one's.
 - [ ] a test proves A SAME-NAMED OPERATOR FILE REPLACES A BUILT-IN: `instructions::compose` puts the body of an operator file whose name equals a `BUILTIN` name byte for byte into that built-in's `## <name>` section (its section bytes), prints `HEADING` bare, and appends a near name. This criterion OWNS `resolve_layers`' replace arm, `compose` and `authoring-agents.md:92`; switching off is criterion 3's and `render` criterion 4's, NOT this one's.
 - [ ] a test proves AN EMPTY SAME-NAMED OPERATOR FILE SWITCHES A BUILT-IN OFF: `instructions::compose` given an operator file named as a `BUILTIN` entry with an empty or whitespace body injects no section for either, every other section unchanged. This criterion OWNS `resolve_layers`' switched-off arm, its module-doc clause and `authoring-agents.md:85` and `:90`; replacing is criterion 2's, NOT this one's.
 - [ ] a test proves EVERY BUILT-IN'S STATE IS REPORTED: `instructions::render`, `shadow_advisories` (printed by `cmd_validate` with a success exit) and `instructions_in_force_line` name each built-in of a named-entry fixture as in force, replaced or switched off through `resolve_layers`. This criterion OWNS the three reporters, their call sites and `authoring-agents.md:94`; `compose` is criteria 2 and 3's, NOT this one's.
