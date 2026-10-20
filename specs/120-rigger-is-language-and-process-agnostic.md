@@ -311,9 +311,11 @@ rule: the home of a method is the persona of the role that applies it. This
 repository's `.rigger/agents/*.md` are a consumer's copies of the scaffold, outside the one-home
 rule: the template is the shipped default and the repository's persona is its owner's
 configuration, free to diverge (this repository's already do), so no test holds a repository
-persona's section equal to its template's. If
-`.rigger/agents/adjudicator.md` already carries a plan-critique passage, criterion 15 extends it into
-that section rather than adding a second. The opener "the decomposition rules in your persona" is
+persona's section equal to its template's. At the launch base
+`.rigger/agents/adjudicator.md` has no plan-critique passage: its verdict-channel paragraph (the
+result-line rule that holds for every adjudication, a plan-critique decomposition included) stays
+where it is, word for word, and criterion 15 adds `## When you critique a spec or a plan` as a new
+section after it. The opener "the decomposition rules in your persona" is
 then true for both spawns.
 
 
