@@ -69,7 +69,8 @@ layers); the project's package dependency chain (dropped, leaving: package depen
 way, pinned by a structural test); the English "to match its output" (`engineering-principles.md:41`)
 becomes "to fit its output"; in `REVIEWER_DISCIPLINE`, the third sentence is cut as REVIEWER CONTRACT
 quotes (the targeted test run and the build cache replacing `cargo test -p <crate> <test>` and
-`CARGO_TARGET_DIR`); the constant is `pub` after PR #117; and rigger's own anchors, both criterion 12's: the helpers
+`CARGO_TARGET_DIR`); the constant is `pub` and the shared shipped-text helper exists at the launch base, both from
+PR #117, and criterion 12 reads both texts through that helper; and rigger's own anchors, both criterion 12's: the helpers
 sentence (`working-discipline.md:312-335`, "exist in this repository's `.claude/agents/`") becomes
 "the `lookup` and `verify` helpers rigger scaffolds into `.claude/agents/`"; the adapter list at
 `engineering-principles.md:9-11` (segmented stores, graph projector, headless host) becomes generic
@@ -94,10 +95,7 @@ consumer's agents use is kept (event types such as `DecisionMade` and `LessonLea
 verbs and the graph's id syntax, the unit, run, attempt and review kinds). `<file>::<item>` stays: it is the graph's node id form
 (`rigger graph --around <file>::<item>`), rigger's own syntax, so `::` is no marker. Any marker hit at the launch base
 outside this list is reworded by the same token rule, its replacement the generic noun its line
-already pairs with it, and listed in the hand-over; criterion 12 owns
-making `REVIEWER_DISCIPLINE` visible to its test if the base does not already; if the launch base has
-no shared shipped-text helper, criterion 12's test reads `BUILTIN` and the `pub`
-`REVIEWER_DISCIPLINE` directly from `src/cli/setup.rs` tests.
+already pairs with it, and listed in the hand-over.
 
 **MARKERS, decided here.** Criterion 12's test lowercases each `BUILTIN` body and
 `REVIEWER_DISCIPLINE`. A word marker (`fn`,
@@ -137,12 +135,17 @@ the gate evidence in your prompt is that gate's verdict, and a reviewer's run on
 review cost." The constant keeps, in this order, what the harness enforces or provides: "Never write
 to this unit's own worktree - it is the tree being judged, not yours to edit.", the build-cache
 sentence criterion 12 wrote, and "Leave the unit's worktree exactly as you found it." (both worktree
-sentences are what `guard_review_round_tree` enforces). Criteria 2 and 3 then replace or switch the
-moved sentences off with the rest of the body.
+sentences are what `guard_review_round_tree` enforces). Criterion 13's tests pin only where the sentences sit: the
+three under `## When you review` in the working-discipline body and the constant's three kept
+sentences. Their overridability is criterion 3's: its two-file switch-off fixture shows the `## When
+you review` sentences gone once working-discipline is off, and criterion 2's replace fixture is the
+other route.
 `review_protocol` and `run_adjudicator` keep appending the constant; the moved sentences reach a
-reviewer through `compose`. Criterion 13 owns the split, the heading and every pin of the moved and
-kept sentences (conductor.rs tests, `tests/unified_traversal_grounding.rs:913-973`); criterion 12
-owns the words.
+reviewer through `compose`. Criterion 12 edits, in place, every pin whose expected text it
+rewords, each sentence staying where it sits in the constant (conductor.rs tests,
+`tests/unified_traversal_grounding.rs:913-973` where they quote the third sentence); criterion 13
+owns the split, the heading, every pin that moves because a sentence changes place from the constant
+to the body, and the new pins of the kept trio; criterion 12 owns the words.
 
 **BUILT-IN OVERRIDE BY NAME SHADOWING, decided here so no unit has to.** One pure function,
 `instructions::resolve_layers(operator: &[Instruction])`, decides every built-in's state and the
@@ -319,7 +322,8 @@ kind in `steps()` (1-based, counted among steps of that kind only): the kind's e
 neither `/`, `#` nor `~`, so `spawn_role` (`spawn.rs:222`) and `unit_of` stay correct. The ONE
 parser `spawn::review_step_of(role) -> Option<(ReviewKind, u32)>` reads a token back (a bare token
 is step 1; the suffix is `@` followed by an ASCII decimal number with no leading
-zero and no sign, at least 2; any other suffix is no review token; `@k` exists for the lens
+zero and no sign, at least 2; any other suffix is no review token; a suffix
+above `u32::MAX` is no review token in both readers; `@k` exists for the lens
 and adversary kinds only, since one adjudicator step means `adjudicator@k` is never minted;
 `review_step_of` returns `None` for any `adjudicator@k`); criterion 8 migrates
 `SpawnResult::is_adjudicator` (`spawn.rs:653`) to it, and the other production classifiers are
@@ -607,11 +611,11 @@ TEST PLACEMENT (criterion -> test homes; the fixtures each test uses):
 | 6 | `crates/rigger-domain/src/config.rs` tests for `steps` and the accessors' canonical shape; `review.rs` tests for `step_roster`, the roster shape over any minter (equal to `review_roster` and `adjudicator_roster` on each canonical sequence with the bare-token minter, a lens step at index 0 empty, and over the five-step sequence with a test minter the second adversary's roster naming both lens steps and the first adversary, the adjudicator's adding the second); `conductor.rs` tests over a recording driver and the golden fixtures |
 | 7 | `crates/rigger-config-files/src/config_store.rs` tests (every refusal, the one-adjudicator-last refusal and the interim repeated-kind one included; the repo workflow and every scaffold template set's rendering); `crates/rigger-domain/src/config.rs` tests of the dedup and `workflowdef.rs` and `crates/rigger-config-files/src/config.rs` tests of `reviewers_of`, each over a map form naming one agent as lens and adjudicator, a list form naming one agent in two steps and a `tiers` panel (named once within each of `reviewers_of`'s two lists; once, full panel first, in the accessors); a periphery test loading a list-form `.rigger/workflow.yml`; a `config.rs` test where a stage with `review: { steps: [] }` resolves to `defaults.review` |
 | 8 | `spawn.rs` tests (bare tokens parse as step 1, a `~retry2` respawn id, read through `spawn_role`, parses as its step, `@k` for lens and adversary kinds); `conductor.rs` tests over `lenses [a, b]`, `adversary x`, `lenses [c]`, `adversary x`, `adjudicator z` minting `lens:a`, `lens:b`, `adversary`, `lens:c@2`, `adversary@2`, `adjudicator`, the minted tokens appearing in its rosters and the adjudicator read as at HEAD; `replay.rs` tests resuming that sequence mid-round from the log |
-| 9 | `metrics.rs` and `dash.rs` tests (a bare-token store folding to the prior `ReviewQuality`); `tests/phase_of_role_mapping_periphery.rs`; `tests/review_tier_roster_periphery.rs`; `tests/phase_of_role_mapping_periphery.rs` holds the one token table (bare, `@2`, `@1`, `@01`, `@x`, `adjudicator@2`) and asserts `rigger_domain::spawn::review_step_of` and the JS `roleOf`/`phaseOf` agree on every row |
+| 9 | `metrics.rs` and `dash.rs` tests (a bare-token store folding to the prior `ReviewQuality`); `tests/phase_of_role_mapping_periphery.rs`; `tests/review_tier_roster_periphery.rs`; `tests/phase_of_role_mapping_periphery.rs` holds the one token table (bare, `@2`, `@1`, `@01`, `@4294967296`, `@x`, `adjudicator@2`) and asserts `rigger_domain::spawn::review_step_of` and the JS `roleOf`/`phaseOf` agree on every row |
 | 10 | `wave.rs` and `canary_store.rs` tests; a periphery test running the built binary's `critique --help` for the adversary-step wording |
 | 11 | the lanes script on the integrated tree |
 | 12 | `src/cli/setup.rs` tests iterating `BUILTIN` and `REVIEWER_DISCIPLINE` under the MARKERS rule (the root crate reaches both; the shipped-text helper PR #117 adds is the one home of the texts); the existing tests BASE names, edited |
-| 13 | `conductor.rs` tests pinning the constant's three sentences; `src/cli/setup.rs` tests pinning the `## When you review` heading and its sentences in the working-discipline body; the existing pins REVIEWER CONTRACT names, edited |
+| 13 | `conductor.rs` tests pinning the constant's three sentences; `src/cli/setup.rs` tests pinning the `## When you review` heading and its sentences in the working-discipline body; the pins that move, edited |
 
 ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 
@@ -667,4 +671,4 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves PANEL READERS READ EVERY STEP: `wave::critic` (with `NO_CRITIC_CLAUSE` and the critique help naming an adversary step in `defaults.review`) and the canary (`apply_model_pins`, `run_canary`) read every step as READERS decides. This criterion OWNS those readers' list-form clauses and the critique skill sentence (`docs.rs:553`); `steps()` and its accessors are criteria 6 and 7's, NOT this one's.
 - [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0. This criterion OWNS only the lanes; every behaviour is criteria 1 to 10, 12 and 13's, NOT this one's.
 - [ ] a test proves THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and `REVIEWER_DISCIPLINE` have no hit under the MARKERS rule once reworded as BASE decides. This criterion OWNS the bodies' wording, `REVIEWER_DISCIPLINE`'s toolchain words, every existing test that pins a reworded phrase and `docs/handbook/authoring-agents.md:87-88`; the override mechanism is criteria 2 to 5's and the handbook rule criterion 1's, NOT this one's.
-- [ ] a test proves THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: `REVIEWER_DISCIPLINE` holds the two worktree sentences `guard_review_round_tree` enforces and the build-cache sentence, and its guidance sentences stand verbatim in the working-discipline body under `## When you review`, overridable by criteria 2 and 3. This criterion OWNS the constant's split, the heading and their pins; the sentences' wording is criterion 12's, NOT this one's.
+- [ ] a test proves THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: `REVIEWER_DISCIPLINE` holds the two worktree sentences `guard_review_round_tree` enforces and the build-cache sentence; the three moved ones sit under `## When you review` (criteria 2 and 3 later make them overridable with the rest of the body). This criterion OWNS the constant's split, the heading and the pins that move; the sentences' wording is criterion 12's, NOT this one's.
