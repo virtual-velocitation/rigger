@@ -35,7 +35,13 @@ examples, and every shipped skill is rewritten on drift, so no consumer can repl
 names `agent: rust-engineer` (`src/cli/setup.rs:1590`, :1605) and seeds the Rust persona whichever
 gate set matched. And nothing stops a new prescription entering a prompt: no test enumerates the
 prompt surface. This spec moves each prescription to its owner's surface and lands a boundary gate
-that fails on any agent-addressed prompt string not registered as contract or framing.
+that fails on any string literal of 40 or more characters with a space in a prompt-bearing file that
+is neither registered as contract or framing nor allow-listed as an operator message. At 3cee73df the
+production text (outside `tests/`, cut at each file's test module) of `crates/` and `src/` holds 1062
+such literals in 59 files; the prompt-bearing subset (files spelling `SpawnOpts`, `SpawnHost` or
+`prompt_surface`) holds 124 in 8 files (`conductor.rs` 95, the headless host driver module of `rigger-driver` 10, `critique.rs` 6,
+`canary_store.rs` 5, `gate.rs` 3, `driver/cli.rs` 2, `driver/mod.rs` 2, `agent.rs` 1), a set that grows
+by every renderer file criterion 16 moves onto `prompt_surface`.
 
 ## Design
 
@@ -53,7 +59,9 @@ adjudicator's judges "a unit over the cap the prompt states"; the DAG critique p
 `unit_size_cap()`'s text verbatim as its cap framing, `unit_size_cap` and `MAX_UNIT_ADDED_LINES`
 unedited; the MARKERS rule exists in its criterion 12's test. PR #117's shipped-text helper `every_shipped_agent_text()` (a test helper in
 `src/cli/setup.rs`, at PR #117's head cdb6de67, :3439) exists. The launch record confirms each of
-these before a unit spawns; a mismatch stops the launch for a Design amendment.
+these before a unit spawns, and that the HIT ENUMERATION below is complete (no phrase-list or
+MARKERS hit in a registry surface or script prompt at the launch base outside it); a mismatch stops
+the launch for a Design amendment.
 
 **WHAT MOVES AND WHAT STAYS, decided here.** Each moved sentence lands verbatim in its new home in
 the same commit that cuts the binary copy. A sentence carrying a slot lands with the slot replaced by
@@ -62,6 +70,42 @@ wording named here lands and the other homes' wordings are cut as its duplicates
 every CONTRACT and FRAMING part: tool names and arguments, event shapes, the verdict and finding
 grammar, the `required` list, the self-report, heartbeat and scratch protocols, the unit, its
 criterion, paths, gate evidence, the REQUIRED list, the delta and the grounding sections.
+
+HIT ENUMERATION, decided here: every phrase-list hit (criterion 17's list) and every MARKERS hit
+(spec 120's rule) in a registry surface or a script prompt at 3cee73df, with its disposition, by one
+rule: a hit inside a prescription moves with that prescription to its named home (or is cut as the
+duplicate of a home that already states it), never reworded; a hit inside a framing or contract
+sentence is reworded with the replacement named here, since the sentence prescribes nothing.
+
+| Site | Hit | Disposition |
+| --- | --- | --- |
+| `conductor.rs:1402` `PriorFailure::block` PATTERN | "audit the whole tree" | prescription, moves to `working-discipline` (criterion 9) |
+| `conductor.rs:12573` `ReviewRound::block` PATTERN | "audit the whole tree" | prescription, moves (criterion 9) |
+| `conductor.rs:12424` `EMIT_PROTOCOL` | "the moment" | prescription, cut as the `communication` built-in's duplicate (criterion 4) |
+| `conductor.rs:12508` `review_protocol` | "the moment" | prescription, cut as duplicate (criterion 4) |
+| `conductor.rs:12664` `DECISIONS_HEADER` | "do not contradict", "supersede explicitly" | prescription, cut as duplicate (criterion 4) |
+| `conductor.rs:12435` `PLAN_PROTOCOL` | "the moment", "do not write code", "scope creep" | prescriptions, move to the planner persona and seed (criterion 8) |
+| `conductor.rs:12435` `PLAN_PROTOCOL` | MARKERS `matches` (twice) | framing sentences, reworded "pairs your unit with its baseline" and "is none of the ids below" (criterion 8) |
+| `conductor.rs:13424` `write_lookup_pointer` | "not by grepping" | prescription, moves to `working-discipline` (criterion 1) |
+| `conductor.rs:13842` `DOC_ONLY_ROUND` | "never a new test" | prescription, moves to the sdet-author persona (criterion 6) |
+| `driver/cli.rs:148` `framed` | "keep it flowing" | prescription, cut as duplicate of the moved progress bullet (criterion 5) |
+| `mcpserver.rs:761` `rigger_progress` | "never batch" | prescription, cut as duplicate (criterion 5) |
+| `mcpserver.rs:762` `rigger_scratch` | "the moment"; MARKERS `cargo` (`CARGO_TARGET_DIR`) | contract sentences, reworded "Reaped once your result records." and "build cache" (criterion 12) |
+| `rigger.js:650-652` `progressNote` | "do not batch", "keep it flowing" | prescription, moves to the `communication` built-in (criterion 5) |
+| `rigger.js:624` `workdir` | MARKERS `cargo` | framing, reworded "your build tool's runs" (criterion 11) |
+| `rigger.js:659-660` BUILD LOCATION | MARKERS `cargo`, `clippy` (and "mutants"), `CARGO_TARGET_DIR` | framing, reworded "every command your build tool runs ... (anything that builds or tests)" and `${req.build_cache_env}` (criterion 11) |
+| `rigger.js:673` SCRATCH POLICY | "the moment"; MARKERS `cargo` (twice) | the disk-layout parenthetical is a prescription, dropped (the reaper is its contract); the reaper sentence is contract, reworded "It is reaped once your result records"; the export sentence is framing, reworded with `${req.build_cache_env}` (criterion 11) |
+| `rigger.js:892-894` step courier | MARKERS `cargo`, `CARGO_TARGET_DIR` | framing; the prefix and its sentence dropped (dead), "running their gates inline" (criterion 11) |
+| `rigger.js:55` phase detail | MARKERS `cargo` | not a prompt (the `/workflows` phase label): an operator region (criterion 18), stays as written |
+| `shim.mjs:149-150` `renderPeers` | "do not contradict", "supersede explicitly", "between your own actions" | prescription, cut as duplicate (criterion 4) |
+| `shim.mjs:253-256` `progressNote` | "do not batch", "keep it flowing" | prescription, cut as duplicate (criterion 5) |
+
+Spec 120 disposes of the rest before the launch base: `gate_evidence_block` (`conductor.rs:592`,
+MARKERS, its criterion 13), `REVIEWER_DISCIPLINE` (:12529, its criterion 12), `RIGGER_COMMUNICATION`
+(:12446, its criterion 14, a built-in, never a registry entry), the DAG prompt's "Reject ONLY"
+(:7927) and `CRITIQUE_STANCE`'s "default to skepticism" (`review.rs:295`, its criterion 15). No other
+registry surface (`GREP_GUARD_MESSAGE`, the canary's texts, `guard.rs`'s deny reason, the other MCP
+descriptions) carries a hit.
 
 **THE LOOKUP METHOD, decided here (criterion 1).** `write_lookup_pointer` becomes one framing
 paragraph: "The knowledge graph answers lookups through three verbs:" followed by the three verbs
@@ -86,7 +130,8 @@ consumer's surface (criterion 14).
 PreToolUse entry as at HEAD, and every headless spawn's `--settings` carries it. Absent or false:
 `install_lookup_hook` removes rigger's own entry (matcher `GREP_GUARD_MATCHER` and command
 `GREP_GUARD_COMMAND` exactly) from `.claude/settings.json`, every other hook kept, writing only when
-the merge changes the file; and `hooks::install_session_settings` takes the flag and merges only the
+the merge changes the file (`cmd_setup` parses `.rigger/workflow.yml` after `init_project` to read the
+key and fails loudly on a parse error, as `get_referenced_agent_ids`, `setup.rs:189`, already does); and `hooks::install_session_settings` takes the flag and merges only the
 prime hook and the status line. Corners: an absent `settings.json` with the key off writes nothing and
 reports `AlreadyCurrent`; a removal that changes the file reports `Refreshed`;
 `hooks::carries_session_settings` takes the same flag, which its caller (`src/cli/validate.rs:824`)
@@ -99,7 +144,7 @@ freshly scaffolded project behaves as at HEAD (SCAFFOLD DEFAULTS).
 
 **SPAWN HOST RESOLUTION, decided here (criteria 2 and 3).** The two host values a headless spawn
 needs, the guard flag and the helper root, are resolved once, in one function beside `SpawnOpts`
-(`crates/rigger-domain/src/agent.rs:62`): `agent::SpawnHost::resolve(cfg: &Config, repo_root: &str) ->
+(`crates/rigger-domain/src/agent.rs:64`): `agent::SpawnHost::resolve(cfg: &Config, repo_root: &str) ->
 SpawnHost`, a struct of `grep_guard: bool` (from `cfg.workflow.defaults.grep_guard`) and `helper_root:
 String` (`repo_root`). `SpawnOpts` gains one field, `host: SpawnHost`, and every construction sets it
 only from that function's result, never a field by hand: the five conductor sites (`conductor.rs:4519`,
@@ -107,9 +152,16 @@ only from that function's result, never a field by hand: the five conductor site
 &self.deps.repo)`), `rigger critique`'s (`src/cli/critique.rs:183`, with `self.cfg` and `self.root`)
 and the canary's (`canary_opts`, `canary_store.rs:571-577`, `run_canary` gaining the repository root,
 which `src/cli/eval.rs:228` passes as the directory it loaded the config from). These are every
-`SpawnOpts { .. }` construction in production code at 3cee73df. Criterion 2 owns `SpawnHost`,
-`resolve`, the field and the flag's reading; criterion 3 owns the root's reading; each criterion's
-test proves the critic's and the canary's spawns carry the resolved value.
+`SpawnOpts { .. }` construction in production code at 3cee73df. `SpawnHost` derives no `Default`
+and its fields are `pub`; `SpawnOpts` loses its `Default` derive (`agent.rs:63`) and gains
+`SpawnOpts::new(host: SpawnHost) -> SpawnOpts`, filling every other field with its former default, so
+every construction spreads `..SpawnOpts::new(host)` and the compiler enumerates every site, tests
+included (a test builds its host as a struct literal). A test asserts that no production line outside
+`SpawnHost::resolve` spells `SpawnHost {`. Criterion 2 owns `SpawnHost` with its `grep_guard` field,
+`resolve`, `SpawnOpts.host`, `SpawnOpts::new`, the edit of every construction and that assertion;
+criterion 3 adds `helper_root` to `SpawnHost` with its reading in `resolve` and its reader in
+`spawn_config_args`, so 3 needs 2. Each criterion's test proves the critic's and the canary's spawns
+carry the resolved value.
 
 **THE OPERATOR'S HELPER COPY IS THE DEFINITION, decided here (criterion 3).** One function,
 `hooks::resolved_helpers(root: &Path) -> Result<Vec<(String, String)>, Error>`, returns each
@@ -176,7 +228,8 @@ render it, the DAG critique prompt (its cap framing, spec 120's) and `PLAN_PROTO
 when the key is declared; absent, neither prompt carries a cap sentence. The function's second
 sentence, "The cap measures review scope - how much one review round must read - never code shape."
 (`conductor.rs:12420`), leaves the binary and lands verbatim in this repository's
-`.rigger/agents/planner.md` and the scaffold's planner seed, its one home. The adversary persona's
+`.rigger/agents/planner.md` and the scaffold's planner seed, its one home, directly after criterion
+8's moved split sentence in both homes (so 7 needs 8). The adversary persona's
 numberless size rule and the adjudicator persona's "the cap the prompt states" clause (spec 120's)
 are untouched, persona and template alike. The DAG prompt's cause-contract example "a unit over the
 size cap" is rendered only when the key is declared. The binary keeps the `decomposition-conflict`
@@ -317,9 +370,11 @@ from the frontmatter. `scaffold/rust/set.yml` carries HEAD's `rust-engineer` see
 it. `SCAFFOLD_AGENTS`' `rust-engineer.md` entry is replaced by `implementer.md` (id `implementer`),
 the HEAD seed's text with "in idiomatic Rust" cut, the language-neutral default. `SCAFFOLD_WORKFLOW`'s
 two `agent: rust-engineer` lines become `agent: @IMPLEMENTER@`, which `scaffold_workflow` fills with the
-matched set's implementer id or `implementer`. `init_project` scaffolds the set's persona as
-`<id>.md` beside the referenced seeds (its `write_if_absent` rule unchanged), and `implementer.md`
-only when no set matched. `parse_template_set` refuses, naming the set, an implementer persona that does
+matched set's implementer id or `implementer`. `init_project` adds the set's persona, as
+`<id>.md`, to the seed candidates and writes every candidate, the `implementer` seed included, under
+the same referenced-ids filter as the other seeds (`setup.rs:196-211`, `write_if_absent` unchanged): a
+matched set's workflow references the set's id, so `implementer.md` is written only when no set
+matched. `parse_template_set` refuses, naming the set, an implementer persona that does
 not parse and one whose frontmatter `id` equals any `SCAFFOLD_AGENTS` id. The unwired `mutation.sh` and its `set.yml` comment stay: a project gate form. The
 `SCAFFOLD_AGENTS` doc ("The ids match this project's own canonical personas (planner, rust-engineer,
 ...)", "implementer ... deliberately do NOT appear") and `authoring-loops.md`'s checklist step 3 ("your
@@ -352,9 +407,8 @@ critique prompt's kept framing and `CRITIQUE_OUTPUT_CONTRACT`, the canary's `rev
 surfaces (moved out of the `json!` literals in `tool_list`, `mcpserver.rs:750-776`) and
 `GREP_GUARD_MESSAGE` and the `rigger guard-write` deny reason (`guard_write_deny_outside_first_root`,
 `src/cli/guard.rs:405-410`, CONTRACT: the reason the write guard reports). Every crate that renders one
-already depends on `rigger-domain`. Criterion 16 owns rewording any MARKERS or phrase-list hit in a
-text it relocates, by spec 120's token rule (the replacement the generic noun the line pairs with it),
-and lists each rewording in its hand-over; criterion 17 only asserts. A moved
+already depends on `rigger-domain`. Criterion 16 applies the HIT ENUMERATION's dispositions that
+no earlier criterion applied and adds no rewording of its own; criterion 17 only asserts. A moved
 constant keeps no copy and no re-export in its old crate: criterion 16 re-paths every reader, among
 them PR #117's helper and spec 120's criterion 12 and 13 tests, which read
 `conductor::REVIEWER_DISCIPLINE` and then read `prompt_surface::REVIEWER_DISCIPLINE`. The two
@@ -370,7 +424,7 @@ groups that branch renders, so every group is rendered by some fixture. PR #117'
 group, labelled `REGISTRY <surface>/<name>`, rather than a second enumeration.
 
 **THE PHRASE AND MARKERS TESTS, decided here (criterion 17).** One test iterates the registry groups
-and the script regions (criterion 18) through `every_shipped_agent_text()` and fails on any phrase of
+and the scripts' contract and framing regions (criterion 18, which 17 needs) through `every_shipped_agent_text()` and fails on any phrase of
 a list kept in the test, matched as a lowercase substring: "the moment", "never batch", "do not
 batch", "keep it flowing", "between your actions", "between your own actions", "do not contradict",
 "supersede explicitly", "default to skepticism", "reject only", "not by grepping", "never a new test",
@@ -381,29 +435,31 @@ a script literal's `${...}` interpolations removed first. A negative fixture hol
 `BUILTIN`, the personas or the skills: prescription lives there by design.
 
 **THE SOURCE SWEEP, decided here (criterion 18).** A test walks every `.rs` file under `crates/` and
-`src/`, excluding every `tests/` directory (the repository root's and each `crates/*/tests/`), cuts
-each file at its first `#[cfg(test)]` line directly followed by a `mod` line (the file's test module,
-the same cut PR #117's production-line pin uses); every other `#[cfg(test)]`-gated item and every
-`#[cfg(any(test, ...))]` item before that cut is scanned as production, so an agent-addressed literal
-in one must sit in the allow-list. It tokenizes the string literals (escaped and raw, line
-continuations joined) and selects every AGENT-ADDRESSED literal: one that contains a second-person
-token (`you `, `You `, `your `, `Your `, `yours`) anywhere, or one with a line (the literal's start, or
-any position after a `\n`) opening with an imperative from this case-sensitive list: `Never `, `NEVER `,
-`never `, `Record `, `Report `, `Reject `, `Do not `, `do not `, `Always `, `Keep `, `Run `, `Use `,
-`Cite `, `Emit `, `Propose `, `Split `. A prescription addresses the agent or commands it, so every
-prescription is agent-addressed, while a framing header that is neither is harmless under the rule.
-Each selected literal outside
-`prompt_surface.rs` must appear in an allow-list kept in the test, keyed by file, each entry an
-operator-facing message (an error, a status line, a help text) or a consumer-owned seed
-(`SCAFFOLD_AGENTS`, `SCAFFOLD_WORKFLOW`, `SCAFFOLD_INSTRUCTIONS_README`, the skill bodies and
-`OPERATOR_BINARY_PROHIBITION` in `docs.rs`, the handbook bodies `render_handbook_discipline` and
-`PLANNING_FIELD_GUIDE_BODY`); a new agent-addressed prompt literal fails until it is
-registered. For the two embedded scripts (`RIGGER_WORKFLOW`, `SHIM_MJS`), the script itself stays the
-text's one home: each prompt-bearing literal sits inside a region opened by a `// prompt-surface:
-contract` or `// prompt-surface: framing` comment line and closed by `// prompt-surface: end`, and the
-test fails on any agent-addressed template or string literal (the same selection) of 40 or more
-characters outside a region. Each region's literals, interpolations written `{}`, join `every_shipped_agent_text()`
-labelled `SCRIPT <file>:<line>`.
+`src/`, excluding every `tests/` directory (the repository root's and each `crates/*/tests/`) and every
+file declared through `#[cfg(test)] mod <name>;`. It cuts each file only at a `#[cfg(test)]` line
+directly followed by a `mod <name> {` line (the file's test module, the same cut PR #117's
+production-line pin uses); every other `#[cfg(test)]`-gated item and every `#[cfg(any(test, ...))]`
+item before that cut is scanned as production. The PROMPT-BEARING files are derived by token, never
+listed by hand: every such file whose production text spells `SpawnOpts`, `SpawnHost` or
+`prompt_surface`, so a new file touching the spawn surface or the registry is swept automatically. The
+test tokenizes their string literals (escaped and raw, line continuations joined) and selects every
+literal of 40 or more characters containing a space, by shape alone. Each selected literal outside
+`prompt_surface.rs` is in a registry group (its exact text, or contained in a registered group) or in
+an allow-list kept in the test, keyed by file, of operator-facing messages (an error, a status line, a
+help text, a log line) and consumer seeds; the scaffold seeds in `setup.rs` (`SCAFFOLD_AGENTS`,
+`SCAFFOLD_WORKFLOW`, `SCAFFOLD_INSTRUCTIONS_README`) and the skill and handbook bodies in `docs.rs`
+are allow-listed as a class by their constant names, not literal by literal. A literal of 40 or more
+characters with a space in a prompt-bearing file that is neither registered as contract or framing
+nor allow-listed as an operator message therefore fails the test. The residue, stated and accepted: a
+literal in a file spelling none of the three tokens that reaches a prompt through a function call is
+outside the sweep; criterion 16's concatenation test closes it for every surface that test covers.
+For the two embedded scripts (`RIGGER_WORKFLOW`, `SHIM_MJS`), the script itself stays the text's one
+home: each literal of 40 or more characters with a space (interpolations removed) sits inside a region
+opened by a `// prompt-surface: contract`, `// prompt-surface: framing` or `// prompt-surface:
+operator` comment line and closed by `// prompt-surface: end`, and the test fails on such a literal
+outside a region. An operator region holds text no agent reads (log lines, phase labels, error
+strings) and is excluded from criterion 17's assertions. Each contract and framing region's literals, interpolations written `{}`, join
+`every_shipped_agent_text()` labelled `SCRIPT <file>:<line>`.
 
 **OPERATOR HAND-OFF, decided here.** No unit edits `.rigger/workflow.yml`: the run's driver is the
 installed binary, whose `Defaults` refuses an unknown key (`deny_unknown_fields`, `config.rs:522`),
@@ -468,10 +524,10 @@ body (each becomes shadowable by criterion 14); `HELPER_AGENTS`' text; the perso
 the `mutation.sh` template; the audit's borderline items, kept FRAMING; everything spec 120 owns
 (its OUT OF SCOPE names the split).
 
-UNIT ORDER (the needs chain): 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, then 16, then 17,
-then 18, then 19. Criteria 1 to 15 are independent of one another (shared files serialize through
-the blast radius); 16 needs 1 to 12 (the texts it relocates are final); 17 needs 16; 18 needs 16;
-19 needs all.
+UNIT ORDER (the needs chain): 1, 2, 3, 4, 5, 6, 8, 7, 9, 10, 11, 12, 13, 14, 15, then 16, then 18,
+then 17, then 19. The moves 1 to 15 are independent except two named needs: 3 needs 2, and 7 needs 8
+(shared files otherwise serialize through the blast radius). 16 needs 1 to 15; 18 needs 16; 17 needs
+18; 19 needs all.
 
 LANDING-ORDER SIMULATION (every ordered pair sharing a surface):
 
@@ -479,13 +535,12 @@ LANDING-ORDER SIMULATION (every ordered pair sharing a surface):
   either order.
 - 4 and 5 (`shim.mjs`): 4 edits `renderPeers`, 5 the progress note -> yes either order.
 - 4 and 8 (`PLAN_PROTOCOL`): the planner's cadence clause is 8's alone -> yes.
-- 7 and 8 (`PLAN_PROTOCOL`, the planner personas): 7 owns the cap slot and the cap prose, 8 the other
-  three sentences and the two MARKERS rewordings; each edits only its own pins -> yes either order.
-- 2 and 3 (`spawn_config_args`, `SpawnOpts`, `SpawnHost`): 2 lands `SpawnHost` with the flag and the
-  root field, which it fills from `resolve` but reads nowhere; 3 then reads the root. 3 first, on a
-  tree without 2: 3's own text needs the root on every spawn, so 3 lands `SpawnHost` with the root
-  only and 2 adds the flag to it -> yes either order; whichever lands first owns creating the struct,
-  the second only adds its field and reader.
+- 8 then 7 (`PLAN_PROTOCOL`, the planner personas): 8 moves its sentences and rewords the two MARKERS
+  hits; 7 then renders the cap slot and places its moved sentence directly after 8's split sentence
+  -> yes. 7 first: the split sentence it follows does not exist -> fixed by order (7 needs 8).
+- 2 then 3 (`SpawnHost`, `SpawnOpts`, `spawn_config_args`): 2 lands `SpawnHost` with `grep_guard`,
+  `resolve`, `SpawnOpts::new` and every construction; 3 adds `helper_root` and its readers -> yes. 3
+  first: no `SpawnHost` to extend -> fixed by order (3 needs 2).
 - 6 and 10 (`spawn_sdet_author`): 6 first: its test spawns by the convention; 10 then adds
   `test_author` to that fixture, which it owns -> yes. 10 first: 6's test declares the key -> yes.
 - 5 and 11 (`rigger.js`): 5 the progress note, 11 the other worker and courier texts -> yes.
@@ -494,8 +549,9 @@ LANDING-ORDER SIMULATION (every ordered pair sharing a surface):
 - 2, 7, 15 (`SCAFFOLD_WORKFLOW`): each adds its own key line or placeholder -> yes.
 - 16 after 1 to 12: 16 relocates final texts; before them it would relocate texts later criteria
   edit -> fixed by order.
-- 17 before 1 to 12: fails on the cadence phrases -> fixed by order (17 needs 16, which needs them).
-- 18 without 16: every prompt literal would be unregistered -> fixed by order.
+- 18 without 16: every selected literal would be unregistered -> fixed by order (18 needs 16).
+- 17 without 18: no script regions to iterate -> fixed by order (17 needs 18, which needs 16, which
+  needs the moves, so no phrase hit remains).
 
 TEST PLACEMENT:
 
@@ -526,9 +582,9 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | Artifact | Owner |
 | --- | --- |
 | the pointer's framing paragraph, the Fan out section's two sentences and the cut of its "same rule" sentence | 1 |
-| `Defaults.grep_guard`, `SpawnHost.grep_guard` and its reading in `resolve`, `carries_session_settings`' flag, the guard arms of `install_session_settings` and `install_lookup_hook`, the scaffold's `grep_guard` line | 2 |
-| `hooks::resolved_helpers`, `SpawnHost.helper_root` and its reading, the validate check of the copies | 3 |
-| `SpawnHost`, `SpawnHost::resolve`, `SpawnOpts.host` and every construction site's use of it | 2 or 3, whichever lands first (LANDING-ORDER SIMULATION) |
+| `Defaults.grep_guard`, the flag's reading in `resolve`, `carries_session_settings`' flag, the `cmd_setup` workflow parse, the guard arms of `install_session_settings` and `install_lookup_hook`, the scaffold's `grep_guard` line | 2 |
+| `hooks::resolved_helpers`, `SpawnHost.helper_root`, its reading in `resolve` and its reader in `spawn_config_args`, the validate check of the copies | 3 |
+| `SpawnHost` with `grep_guard`, `SpawnHost::resolve`, `SpawnOpts.host`, `SpawnOpts::new`, every construction site's edit, the no-`SpawnHost {` assertion | 2 |
 | the cut cadence clauses of `EMIT_PROTOCOL`, `review_protocol`, `DECISIONS_HEADER`, `renderPeers` | 4 |
 | the four hosts' progress texts, the `communication` built-in's progress bullet, the extended spec-120 criterion 14 body pin | 5 |
 | `DOC_ONLY_ROUND`'s fact text, the sdet-author persona's section | 6 |
@@ -543,7 +599,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | `SetSpec.implementer`, `scaffold/rust/set.yml`'s persona, the `implementer` seed, `@IMPLEMENTER@`, the edited seed-set test | 15 |
 | `prompt_surface` (`Class`, `Group`, `REGISTRY`, the text constants, `fill`), every renderer's move onto it, the re-pathed readers of moved constants, the helper's registry entries | 16 |
 | the phrase list, the MARKERS call over the registry, the negative fixture | 17 |
-| the sweep, its allow-list, the script regions and their helper entries | 18 |
+| the sweep, the prompt-bearing derivation, its allow-list, the script regions (operator regions included) and their helper entries | 18 |
 | the lanes | 19 |
 
 ## Global constraints
@@ -566,8 +622,8 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 ## Done when
 
 - [ ] a test proves THE LOOKUP POINTER NAMES ONLY THE TOOLS: `write_lookup_pointer` names the three graph verbs and their jobs, and its "not by grepping" and `grep-fallback:` record sentences stand verbatim in the `working-discipline` built-in's Fan out section. This criterion OWNS the pointer's text, that section's added sentences and their pins; the guard hook is criterion 2's, NOT this one's.
-- [ ] a test proves THE GREP GUARD IS DECLARED: `hooks::install_session_settings` merges the PreToolUse grep-guard only when `defaults.grep_guard` is true, as resolved by `SpawnHost::resolve` for every spawn, the critic's and the canary's included, and `install_lookup_hook` removes only rigger's own entry when absent. This criterion OWNS the key, the flag's resolution and both installers' guard arm; the helper root is criterion 3's, NOT this one's.
-- [ ] a test proves THE OPERATOR'S HELPER COPY IS THE DEFINITION: `spawn_config_args` builds `--agents` and its tool pre-approval from `<root>/.claude/agents/lookup.md` and `verify.md` when present, else the embedded `HELPER_AGENTS`, the root from `SpawnHost::resolve` for every spawn, critic and canary included. This criterion OWNS `hooks::resolved_helpers` and the root's resolution; the guard flag is criterion 2's, NOT this one's.
+- [ ] a test proves THE GREP GUARD IS DECLARED: `hooks::install_session_settings` merges the PreToolUse grep-guard only when `defaults.grep_guard` is true, as `SpawnHost::resolve` gives it to every spawn `SpawnOpts::new` builds, critic and canary included, and `install_lookup_hook` removes only rigger's own entry when absent. This criterion OWNS the key, `SpawnHost` and both installers' guard arm; the helper root is criterion 3's, NOT this one's.
+- [ ] a test proves THE OPERATOR'S HELPER COPY IS THE DEFINITION: `spawn_config_args` builds `--agents` and its tool pre-approval from `<root>/.claude/agents/lookup.md` and `verify.md` when present, else the embedded `HELPER_AGENTS`, the root being `SpawnHost.helper_root` for every spawn, critic and canary included. This criterion OWNS `hooks::resolved_helpers` and `helper_root` with its readers; `SpawnHost` itself is criterion 2's, NOT this one's.
 - [ ] a test proves THE TASK PROMPTS CARRY NO COMMUNICATION CADENCE: `EMIT_PROTOCOL`, `review_protocol`, `DECISIONS_HEADER` and the shim's `renderPeers` keep their shapes and nouns with every cadence clause Design names cut, the `communication` built-in stating it. This criterion OWNS those four texts and their pins; the progress cadence is criterion 5's, the planner's clause criterion 8's, NOT this one's.
 - [ ] a test proves THE PROGRESS CADENCE HAS ONE HOME: the cli host's `framed`, the workflow script's and the shim's progress notes and the `rigger_progress` description name the verb and its arguments only, and the cadence wording Design names stands in the `communication` built-in. This criterion OWNS the four host texts, the built-in's bullet and their pins; other cadence is criterion 4's, NOT this one's.
 - [ ] a test proves A DOC-ONLY ROUND STATES ONLY THE FACT: the sdet-author prompt on a round `is_documentation_only` classifies carries "This round changed documentation only." and no rule, and the rule's sentence stands verbatim in `.rigger/agents/sdet-author.md`. This criterion OWNS `DOC_ONLY_ROUND`, its doc, the persona's section and their pins; the test-author key is criterion 10's, NOT this one's.
@@ -582,5 +638,5 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves THE IMPLEMENTER COMES WITH THE GATE SET: `init_project` with the Rust set writes its `implementer` persona and names that id in `SCAFFOLD_WORKFLOW`'s implement and checkin stages, and with no set writes and names a language-neutral `implementer`. This criterion OWNS `SetSpec.implementer`, the seed, the placeholder and their pins; the scaffold's keys are criteria 2 and 7's, NOT this one's.
 - [ ] a test proves THE REGISTRY HOLDS EVERY PROMPT TEXT: `prompt_surface::REGISTRY` holds every prompt constant and every builder's fixed text classed `Contract` or `Framing`, each renderer formats from it, and each surface's groups concatenate to its render over the placeholder fixture. This criterion OWNS the registry, the moves onto it and the concatenation tests; the phrase test is 17's, the sweep 18's, NOT this one's.
 - [ ] a test proves NO REGISTERED TEXT PRESCRIBES: every registry group and script region literal, read through the shipped-text helper, carries no phrase of the test's cadence and method list and no hit under spec 120's MARKERS rule, and a held pre-move `EMIT_PROTOCOL` fails it. This criterion OWNS the phrase list and both assertions; the registry is criterion 16's, the sweep 18's, NOT this one's.
-- [ ] a test proves THE SOURCE SWEEP CLOSES THE REGISTRY: every agent-addressed production string literal under `crates/` and `src/` (outside `tests/`, cut at the test module) sits in a registry group or the per-file allow-list, and each such literal in the two embedded scripts sits in a classed region. This criterion OWNS the sweep, its selection rule, the allow-list and the region markers; the registry is criterion 16's, NOT this one's.
+- [ ] a test proves THE SOURCE SWEEP CLOSES THE REGISTRY: every production literal of 40 or more characters with a space in a prompt-bearing file (one spelling `SpawnOpts`, `SpawnHost` or `prompt_surface`) is registered or allow-listed, and each such literal of the two embedded scripts sits in a classed region. This criterion OWNS the sweep, the file derivation, the allow-list and the regions; the registry is criterion 16's, NOT this one's.
 - [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0, with `cargo fmt --check` passing. This criterion OWNS only the lanes; every behaviour is criteria 1 to 18's, NOT this one's.
