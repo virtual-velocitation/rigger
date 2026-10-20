@@ -39,12 +39,20 @@ by their words (whitespace-normalized):
   a consumer may replace or switch off, never a procedure standing in for a gate and never specific
   to a language."
 
+S1 and S2 state the rule the binary is HELD TO, not a description of the tree at any commit.
+
 Around them `docs/handbook/authoring-loops.md` gains a `## What rigger prescribes` section (after
 the page's opening paragraph): the tools the binary provides, that a consumer may add any number of
 stages, gates and review steps and rigger runs them, that gate template sets are the consumer's
 choice at `rigger init`, and the official review vocabulary (lenses, adversary, adjudicator), and the tools' current
 language coverage (the review cache's `CARGO_TARGET_DIR`, the grounder's Rust-only symbol
-extraction). No
+extraction), and the prescriptions spec 121 still owns as the rule's open exceptions, each named by
+its constant or surface (the cadence clauses in `EMIT_PROTOCOL` and `review_protocol`,
+`DOC_ONLY_ROUND`'s rule sentence, `PLAN_PROTOCOL`'s guidance, `MAX_UNIT_ADDED_LINES` and
+`unit_size_cap`'s second sentence, the progress cadence in the four host homes, the REQUIRED PATTERN
+audit sentences, the lookup pointer's method sentences, the toolchain words in the workflow script
+and the scratch tool); spec 121 strikes each exception from the list as it lands it, and criterion 1
+owns the list. No
 enumeration of cases or guarantees beyond these is owed. The ceremony section's five-step example is
 `lenses [a, b]`, `adversary x`, `lenses [c]`, `adversary x`, `adjudicator z`, its one adjudicator
 step last. The fenced `yaml` block is a `defaults:` fragment (`defaults:` holding `review:` holding
@@ -65,7 +73,8 @@ consumer replaces or switches off through criteria 2 and 3; S2's clause names a 
 re-creates a declared gate's function, which PR #117 removed; the probe rule and its tokens are gone at the launch base. The tree is named by the run's launch
 record (the merge of PR #117 into `rigger-run`), the citations staying those read at 1185c8c6, and the launch
 record confirms, before the run starts, that `REVIEWER_DISCIPLINE` at the launch base holds the five
-sentences REVIEWER CONTRACT quotes verbatim (the fifth in its launch-base wording), is `pub`, and that the shipped-text helper exists.
+sentences REVIEWER CONTRACT quotes verbatim (the fifth in its launch-base wording), is `pub`, and that the shipped-text helper exists, and that neither built-in body
+spells `mutants::skip` or names a probe-rule swallow; a hit stops the launch like any other mismatch.
 Criterion 12 removes the language vocabulary that remains (the MARKERS list). Criterion 12 owns the
 rewording and the edit of every existing test that pins a reworded phrase (`instructions.rs:380`
 "a test fn, a helper", `:446` "the `//!` module doc", and any other
@@ -289,7 +298,9 @@ your persona's critique rules a unit reads as a criterion, and a reject as a BLO
 replacing `CRITIQUE_STANCE`'s "In the rules below ..." sentence, with its trailing "The rules:"
 header dropped), the voided-duties clause in `spec_critique_prompt` only (the DAG prompt never had
 one and gains none) and `CRITIQUE_OUTPUT_CONTRACT` (the finding-line grammar and the verdict line the
-binary parses: the tool's contract). The DAG prompt keeps its own verdict and cause paragraph
+binary parses: the tool's contract). The replacement sentence ("In your persona's critique rules a
+unit reads as a criterion ...") sits in `spec_critique_prompt` only; the DAG prompt's framing is its
+opener, the cap framing and the unit and overlap list. The DAG prompt keeps its own verdict and cause paragraph
 (`conductor.rs:7926-7941`, minus the moved "Reject ONLY for" sentence) as its output contract, and
 its prior-reject block and unit and overlap list as its task framing; it gains neither
 `CRITIQUE_OUTPUT_CONTRACT` nor a voided-duties clause, both of which stay in `spec_critique_prompt`
@@ -299,7 +310,8 @@ criteria, written before any run builds them." is task framing, and "Read the sp
 repository; the finding lines and the verdict line of your final message are the only output." is
 part of the voided-duties clause. The moved constants are deleted; pins of their sentences move
 to the template's section through the shipped-text helper; the critic's spawn path and
-`NO_CRITIC_CLAUSE` stay criterion 10's. A persona without the section still critiques: the binary's
+`NO_CRITIC_CLAUSE` stay criterion 10's. Criterion 15's test reads the scaffold templates only,
+through the shipped-text helper; the repository personas' sections are the unit's edit with no test. A persona without the section still critiques: the binary's
 prompt stands alone, and the output contract decides the verdict. The DAG critique prompt reaches
 two spawns, the adversary (`conductor.rs:8235`) and the gate's adjudicator (:8257), whose verdict
 gates the fan-out. Criterion 15 therefore lands the method in both personas and both scaffold
@@ -692,7 +704,7 @@ LANDING-ORDER SIMULATION (every ordered pair sharing a surface; "no" lines were 
 - 12 before everything (surface the built-in bodies): text and one test, no code -> yes; 1 after 12
   so S2 is true on the tree.
 - 13 after 12 (surface the reviewer sentences): 12 rewords them in the constant, 13 moves them; 1
-  after 13 so S1 is true on the tree.
+  after 13 so the exceptions list names only what spec 121 owns.
 - 14 before 2-5 (surface `BUILTIN` and `compose`'s callers): 14 adds an entry and removes the
   append; 2-5 iterate `BUILTIN` -> yes
 - 15 in its own batch before 1 (surface the two critique prompts and the adversary persona): no
@@ -783,7 +795,7 @@ TEST PLACEMENT (criterion -> test homes; the fixtures each test uses):
 | 11 | the lanes script on the integrated tree |
 | 12 | `src/cli/setup.rs` tests iterating `BUILTIN` and `REVIEWER_DISCIPLINE` under the MARKERS rule (the root crate reaches both; the shipped-text helper PR #117 adds is the one home of the texts); the existing tests BASE names, edited |
 | 13 | `conductor.rs` tests pinning the constant's three sentences; `src/cli/setup.rs` tests pinning the `## When you review` heading and its sentences in the working-discipline body; the pins that move, edited |
-| 14 | `instructions.rs` tests (the third entry's name and body); `conductor.rs` tests (the spawn path's prompt equals `compose`'s output, the `## communication` section once, no "(non-negotiable)"); `canary_store.rs`'s prompt test; the existing pins of the constant, edited |
+| 14 | `instructions.rs` tests (the third entry's name and body); `conductor.rs` tests (the spawn path's prompt equals `compose`'s output, the `## communication` section once, no "(non-negotiable)"); `canary_store.rs`'s prompt test; `src/cli/critique.rs` tests (the critic's `SpawnOpts.system_prompt` equal to `compose`'s output); the existing pins of the constant, edited |
 | 15 | `review.rs` tests for `spec_critique_prompt`'s sections; `conductor.rs` tests for the DAG critique prompt; `src/cli/setup.rs` tests through the shipped-text helper for the template's section; the existing pins of the moved sentences, edited |
 
 ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
