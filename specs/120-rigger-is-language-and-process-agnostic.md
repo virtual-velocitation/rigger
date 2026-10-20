@@ -64,7 +64,14 @@ way, pinned by a structural test); and rigger's own anchors, both criterion 12's
 sentence (`working-discipline.md:312-335`, "exist in this repository's `.claude/agents/`") becomes
 "the `lookup` and `verify` helpers rigger scaffolds into `.claude/agents/`"; the adapter list at
 `engineering-principles.md:9-11` (segmented stores, graph projector, headless host) becomes generic
-examples (a store, a projector, a host). `<file>::<item>` stays: it is the graph's node id form
+examples (a store, a projector, a host); `engineering-principles.md:30` (the simplification audit
+sentence) is dropped; `:21` "the conformance suites" becomes "a port's conformance tests"; `:23`
+"conductor code" becomes "use-case code"; `:15-16` "the dependency order below" goes with the
+chain; `working-discipline.md`'s "the SDET lens" and "the architecture lens" become "a reviewing
+lens". The list is what the spec author found; criterion 12's unit walks both bodies for any other
+anchor of this repository (a persona or helper name, a gate name, a crate, module or lane of this
+repository, a path of this repository) and generalizes it the same way, listing each in its
+hand-over; a remaining anchor is a finding against criterion 12. `<file>::<item>` stays: it is the graph's node id form
 (`rigger graph --around <file>::<item>`), rigger's own syntax, so `::` is no marker.
 
 **MARKERS, decided here.** Criterion 12's test lowercases each `BUILTIN` body. A word marker (`fn`,
@@ -155,7 +162,9 @@ the switch-off clause appended to the module-doc sentence criterion 2 wrote to 3
 `instructions.rs:10-12` to 2; `:94` to 4; `:87-88` to 12; the instructions README to 5;
 `agentic-sdlc.md:62-68`, `README.md:19` and `:27` and the `authoring-loops.md` lines to 1;
 `docs.rs:552-553` to 10; `compose`'s doc (`instructions.rs:47-49`) and `BUILTIN`'s doc (:24) to 3;
-`render`'s doc (:64) to 4.
+`render`'s doc (:64) to 4; the `ReviewPanel` struct doc (`crates/rigger-domain/src/config.rs:347-352`)
+to 7.
+
 
 
 
@@ -185,14 +194,11 @@ CANONICAL SEQUENCE of the map form - `Lenses(lenses)` when `lenses` is non-empty
 `steps()` (criterion 6's, today's shape over the canonical sequence). Criterion 7 makes the last
 three return each agent id once, in first-step order, however many steps name it (a map form naming
 one agent as lens and adjudicator included); under `tiers`, `agent_ids` and `gating_agent_ids` list
-the full panel's ids first, then the light panel's ids not already listed, each once. So the
-workflow-definition grounder (`reviewers_of`,
-`crates/rigger-grounder/src/grounder/workflowdef.rs:144`), the verdict-line lint (`lint_gating_verdict_lines`) and the wall-clock advisory
-(`unbounded_wall_clock_advisory`, `crates/rigger-config-files/src/config.rs:107`), both reading the
-`gating_agent_ids` set (:21), read the adjudicator step with no change of their own, each naming an agent once. The advisory
-sums nothing: it names the adjudicator step's agent when it carries no per-agent bound under an
-unbounded default, as today. Criterion 7 owns the dedup and these
-three readers' naming-once behaviour through the accessors, with its tests; none of it is criterion
+the full panel's ids first, then the light panel's ids not already listed, each once. So the workflow-definition grounder (`reviewers_of`,
+`crates/rigger-grounder/src/grounder/workflowdef.rs:144`) reads the adjudicator step with no change
+of its own, naming an agent once. `lint_gating_verdict_lines` and `unbounded_wall_clock_advisory` read the
+config-level `gating_agent_ids(cfg)` (`crates/rigger-config-files/src/config.rs:21`), a `BTreeSet`,
+so each already names an agent once and is unchanged. The advisory sums nothing: it names the adjudicator step's agent when it carries no per-agent bound under an unbounded default, as today. Criterion 7 owns the dedup and `reviewers_of`'s naming-once behaviour through the accessors, with its tests; none of it is criterion
 6's or 10's. `steps: []` is an empty panel, exactly as `review: {}` is: no review, and on a stage it
 inherits `defaults.review` through `effective_review_panel` (`config.rs:958`) as an empty map does.
 
@@ -220,12 +226,13 @@ the three map keys are set when non-empty; `steps: null` reads as absent (serde 
 so `{lenses: []}` is the zero-keys refusal) (an unknown
 key already fails the YAML parse); a `lenses` entry with no agent; an `adversary` or `adjudicator`
 entry with an empty id; an agent named twice in one `lenses` step (in either form: two spawns of
-one step would mint one spawn id, so no working workflow carries one); a review agent id
-containing `@` (in either form: the step-token separator below); a second `Adjudicator` step, or an
+one step would mint one spawn id, so no working workflow carries one); an agent id
+containing `@` named in a `ReviewPanel`, in either form and in `tiers.light` (the step-token
+separator below); a stage's own `adversary` and `adjudicator` fields are not checked; a second `Adjudicator` step, or an
 `Adjudicator` step followed by another step (permanent, criterion 7's). `validate_depth` (`config.rs:446`)
 becomes: a panel with a `tiers` policy, and its `light` panel, each have at least one
-`Adjudicator` step in `steps()`; its two messages keep their wording with "name an adjudicator"
-reading as "name an adjudicator step". `tiers.light` takes either form. Until criterion 8 lands,
+`Adjudicator` step in `steps()`; each of its two messages gains the word "step" after "adjudicator", and the
+`config_store.rs` tiers tests asserting the old text are criterion 7's to update. `tiers.light` takes either form. Until criterion 8 lands,
 criterion 7 also refuses a list naming two steps of one kind (on that tree both would mint one
 spawn id); criterion 8 lifts that refusal with the step tokens and turns criterion 7's
 interim-refusal fixture into an acceptance assertion; that edit is 8's. A list with an adversary before the
@@ -242,7 +249,8 @@ kind in `steps()` (1-based, counted among steps of that kind only): the kind's e
 :95, :97), and that token followed by `@<k>` when `k >= 2` (`lens:c@2`, `adversary@2`). `@` is
 neither `/`, `#` nor `~`, so `spawn_role` (`spawn.rs:222`) and `unit_of` stay correct. The ONE
 parser `spawn::review_step_of(role) -> Option<(ReviewKind, u32)>` reads a token back (a bare token
-is step 1; a suffix other than `@` and an integer >= 2 is no review token; `@k` exists for the lens
+is step 1; the suffix is `@` followed by an ASCII decimal number with no leading
+zero and no sign, at least 2; any other suffix is no review token; `@k` exists for the lens
 and adversary kinds only, since one adjudicator step means `adjudicator@k` is never minted); criterion 8 migrates
 `SpawnResult::is_adjudicator` (`spawn.rs:653`) to it, and the other production classifiers are
 criterion 9's and 10's by name (READERS lists every site). The token is the step's label
@@ -342,7 +350,7 @@ finding on it.
   `Adversary` step; `NO_CRITIC_CLAUSE` (`wave.rs:198`) and the `rigger critique` help
   (`src/main.rs:341`) say "an adversary step in `defaults.review`" in place of
   `defaults.review.adversary`, so the advice holds in both forms; the rendered skill text
-  (`docs.rs:553`) keeps its wording.
+  (`docs.rs:552-553`) is reworded as OUT OF SCOPE decides.
 - The canary: `canary_store::apply_model_pins` (`crates/rigger-conductor/src/canary_store.rs:168`)
   pins every agent of every step of the pinned kind; `run_canary` (:245) refuses a panel with no
   adjudicator step, runs the steps in order under their step tokens, scores the lens tier over
@@ -461,7 +469,8 @@ LANDING-ORDER SIMULATION (every ordered pair sharing a surface; "no" lines were 
 - 10 without 7: 10 parses list-form fixtures -> 10 after 7.
 - 1 without 7: the five-step example must parse -> 1 after 7; 1 without 2/3 would state S2 about an
   override that does not exist -> 1 after 3.
-- 6 and 7 both name `config.rs`'s `ReviewPanel`; 6 lands the type change, 7 the field. A shared
+- 6 and 7 both name `config.rs`'s `ReviewPanel`; 6 adds `ReviewStep` and `ReviewPanel::steps()`; 7 adds the
+  `steps` field. A shared
   blast radius serializes them; ownership is split by the OWNS sentences.
 
 PER-CRITERION CORNERS (beyond the CONSTRAINTS WALK table, which covers 2, 3, 6, 7 and 8; rosters are 6's):
@@ -510,7 +519,7 @@ TEST PLACEMENT (criterion -> test homes; the fixtures each test uses):
 | 4 | `instructions.rs` tests for `render` and `shadow_advisories`; `src/cli/setup.rs` tests for `instructions_in_force_line`; a periphery test running the built binary's `instructions`, `validate` and `prime` over a temp project with one replacing and one empty file |
 | 5 | `src/cli/setup.rs` tests iterating `BUILTIN` |
 | 6 | `crates/rigger-domain/src/config.rs` tests for `steps` and the accessors' canonical shape; `review.rs` tests for `step_roster`, the roster shape over any minter (equal to `review_roster` and `adjudicator_roster` on each canonical sequence with the bare-token minter, a first lens step empty, and over the five-step sequence with a test minter the second adversary's roster naming both lens steps and the first adversary, the adjudicator's adding the second); `conductor.rs` tests over a recording driver and the golden fixtures |
-| 7 | `crates/rigger-config-files/src/config_store.rs` tests (every refusal, the one-adjudicator-last refusal and the interim repeated-kind one included; the repo workflow and every scaffold template set's rendering); `crates/rigger-domain/src/config.rs` tests of the dedup and `workflowdef.rs` and `crates/rigger-config-files/src/config.rs` tests of `reviewers_of`, the lint and the wall-clock advisory, each over a map form naming one agent as lens and adjudicator, a list form naming one agent in two steps and a `tiers` panel (named once, full panel first); a periphery test loading a list-form `.rigger/workflow.yml`; a `config.rs` test where a stage with `review: { steps: [] }` resolves to `defaults.review` |
+| 7 | `crates/rigger-config-files/src/config_store.rs` tests (every refusal, the one-adjudicator-last refusal and the interim repeated-kind one included; the repo workflow and every scaffold template set's rendering); `crates/rigger-domain/src/config.rs` tests of the dedup and `workflowdef.rs` and `crates/rigger-config-files/src/config.rs` tests of `reviewers_of`, each over a map form naming one agent as lens and adjudicator, a list form naming one agent in two steps and a `tiers` panel (named once, full panel first); a periphery test loading a list-form `.rigger/workflow.yml`; a `config.rs` test where a stage with `review: { steps: [] }` resolves to `defaults.review` |
 | 8 | `spawn.rs` tests (bare tokens parse as step 1, a `~retry2` respawn id, read through `spawn_role`, parses as its step, `@k` for lens and adversary kinds); `conductor.rs` tests over `lenses [a, b]`, `adversary x`, `lenses [c]`, `adversary x`, `adjudicator z` minting `lens:a`, `lens:b`, `adversary`, `lens:c@2`, `adversary@2`, `adjudicator`, the minted tokens appearing in its rosters and the adjudicator read as at HEAD; `replay.rs` tests resuming that sequence mid-round from the log |
 | 9 | `metrics.rs` and `dash.rs` tests (a bare-token store folding to the prior `ReviewQuality`); `tests/phase_of_role_mapping_periphery.rs`; `tests/review_tier_roster_periphery.rs` |
 | 10 | `wave.rs`, `canary_store.rs` and `src/cli/validate.rs` tests; a periphery test running the built binary's `validate` over a temp project with a list-form `defaults.review` and a list-form `tiers.light`, asserting the `review <stage>:` and `review <stage> light:` lines, and running `critique --help` for the adversary-step wording |
@@ -526,7 +535,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | `render`'s labels, `shadow_advisories`, its `cmd_validate` call, `instructions_in_force_line` reading `resolve_layers` | 4 |
 | `SCAFFOLD_INSTRUCTIONS_README`, `.rigger/instructions/README.md` | 5 |
 | `ReviewStep`, `ReviewPanel::steps`, the derived `is_empty`/`agent_ids`/`full_roster`/`gating_agent_ids` in today's shape over the canonical sequence, the one step loop in `review_unit` with the adjudicator read as at HEAD, the speculation stamp through `steps()`, `step_roster`, the `review_roster`/`adjudicator_roster` wrappers and the loop's roster input (`step_roster` per step) | 6 |
-| `ReviewStepDecl`, `ReviewPanel.steps`, the `Some` arm of `steps`, every refusal (the one-adjudicator-last refusal permanent, the repeated-kind refusal interim), the new `validate_depth` rule, the load-unchanged check over the repo's workflow and every scaffold template set, the dedup of `agent_ids`/`full_roster`/`gating_agent_ids` (first-step order, full panel then light) and the naming-once behaviour of `reviewers_of`, `lint_gating_verdict_lines` and `unbounded_wall_clock_advisory` through them | 7 |
+| `ReviewStepDecl`, `ReviewPanel.steps`, the `Some` arm of `steps`, every refusal (the one-adjudicator-last refusal permanent, the repeated-kind refusal interim), the new `validate_depth` rule, the load-unchanged check over the repo's workflow and every scaffold template set, the dedup of `agent_ids`/`full_roster`/`gating_agent_ids` (first-step order, full panel then light) and the naming-once behaviour of `reviewers_of` through them | 7 |
 | `review_step_role`, `review_step_of`, `is_adjudicator` through them, minting the tokens into criterion 6's loop and `step_roster` (the tokens only, not the roster's shape), lifting criterion 7's repeated-kind refusal | 8 |
 | metrics, dash, `workflows/rigger.js` classification | 9 |
 | `wave::critic` with `NO_CRITIC_CLAUSE` and the `rigger critique` help wording, the canary, `cmd_validate`'s `review` lines | 10 |
