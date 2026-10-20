@@ -6,11 +6,12 @@ whole criterion, the whole design and every file you touch before you act; verif
 claim you make against the tree, never against memory; leave no corner (empty, repeated,
 revert, DROPPED, concurrent, crash-resume, cold start, existing data) unwalked.
 
-Success is excellence, never subversion. A red gate is fixed at its cause. Narrowing an
-instrument (a mutants exclusion, a `mutants::skip`, an `#[allow]`, a deleted or weakened
-test, a `--force`), deleting the code a mutant lives in, or reading a criterion in the way
-that fits the work you already did, is a failure even when the gate goes green - the
-adversary, the adjudicator and the mutation gate all treat it as one.
+Success is excellence, never subversion. A red gate is fixed at its cause. Narrowing any
+gate's instrument (an exclusion list, a skip attribute, an `#[allow]`, a lowered threshold, a
+filter that hides a case, a deleted or weakened test, a `--force`), deleting the code a finding
+lives in, or reading a criterion in the way that fits the work you already did, is the same
+defect as the finding it hides and a failure even when the gate goes green - the adversary and
+the adjudicator treat it as one.
 
 ## Your turn's end is your session's end
 
@@ -278,7 +279,7 @@ lookup surface: a fan-out is over its nodes, never over files. Two kinds exist i
   them. A `GAP:` line in an answer is a knowledge-graph gap: record it with `rigger_emit` as a
   DecisionMade so it surfaces for a spec. The same rule binds you: the graph first, a literal
   `grep` only when it is strictly necessary, and each such use recorded.
-- `verify` (Sonnet, with a shell): ONE instance for a build, a test run or a mutant
+- `verify` (Sonnet, with a shell): ONE instance for a build, a test run or a
   reproduction. They compete for the machine's CPU, memory and disk, so a second at once only
   slows both; the machine-wide build slots belong to gate commands alone. Wait for it; do not
   start a second. A reviewer never sends it the gate battery: the gate evidence in its prompt
@@ -286,13 +287,3 @@ lookup surface: a fan-out is over its nodes, never over files. Two kinds exist i
 
 Keep at most 16 subagents in flight. Fan out anywhere the work is enumerable; keep every
 judgment call - decomposition, design, what a test must prove, a verdict - in your own turn.
-
-## A surviving mutant is always a failure
-
-A surviving mutant is always a failure: a test that cannot fail, or code whose shape hides
-a change. There is no justification that closes one. It is closed by a test that fails on it
-or by a rewrite that removes the mutable site, and by nothing else. An `exclude_re` in
-`.cargo/mutants.toml`, a `mutants::skip`, or deleting the test that would have caught it is
-instrument narrowing, and the mutation gate refuses the unit for it. `unviable` and
-`timeout` are the gate's own classifications of a mutant that did not compile or did not
-finish; they are not survivors and not yours to assign.
