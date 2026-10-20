@@ -218,18 +218,22 @@ fn the_scaffolded_red_before_green_command_passes_a_test_commit_before_the_sourc
     assert!(passed, "{out}");
 }
 
-/// [`LIB`] grown by a production `?`, a `return` spelled only inside a string literal and a
-/// `continue` inside its `#[cfg(test)]` module.
-const LIB_WITH_TOKENS: &str = "pub fn f() -> Option<u8> {\n    let word = \"return\";\n    let x = word.len().checked_sub(5)?;\n    Some(x as u8)\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn f_is_one() {\n        for _ in 0..1 {\n            continue;\n        }\n        assert_eq!(super::f(), Some(1));\n    }\n}\n";
-
-/// The hand-over's token count, run from a unit branch's root, counts the production hunks'
-/// `?`, `return`, `break` and `continue`, leaving out string literals and the test module.
+/// Every script under `.rigger/gates/` is one `.rigger/workflow.yml` names: the gates are the
+/// project's own, wired in its workflow, and rigger keeps no instrument beside them.
 #[test]
-fn the_token_count_counts_production_tokens_and_leaves_out_literals_and_test_regions() {
-    let (dir, _) = unit_branch_repo(LIB, &[("src/lib.rs", LIB_WITH_TOKENS, "grow")]);
-    let (passed, out) = run_gate_script(dir.path(), "token-count.sh", &[]);
-    assert!(passed, "{out}");
-    assert_eq!(out.trim(), "?: 1, return: 0, break: 0, continue: 0");
+fn every_script_under_the_gates_directory_is_named_by_the_workflow() {
+    let workflow = std::fs::read_to_string(repo_root().join(".rigger/workflow.yml")).unwrap();
+    let mut unnamed: Vec<String> = std::fs::read_dir(repo_root().join(".rigger/gates"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !workflow.contains(name.as_str()))
+        .collect();
+    unnamed.sort();
+    assert_eq!(
+        unnamed,
+        Vec::<String>::new(),
+        "scripts the workflow never names"
+    );
 }
 
 rigger::test_cases! {
