@@ -59,7 +59,9 @@ adjudicator's judges "a unit over the cap the prompt states"; the DAG critique p
 `unit_size_cap()`'s text verbatim as its cap framing, `unit_size_cap` and `MAX_UNIT_ADDED_LINES`
 unedited; the MARKERS rule exists in its criterion 12's test. PR #117's shipped-text helper `every_shipped_agent_text()` (a test helper in
 `src/cli/setup.rs`, at PR #117's head cdb6de67, :3439) exists. The launch record confirms each of
-these before a unit spawns, and that the HIT ENUMERATION below is complete (no phrase-list or
+these before a unit spawns, that the open-exceptions list in `authoring-loops.md`'s `## What rigger
+prescribes` section (spec 120's criterion 1) names exactly the prescriptions EXCEPTIONS LIST assigns
+to this spec's criteria, and that the HIT ENUMERATION below is complete (no phrase-list or
 MARKERS hit in a registry surface or script prompt at the launch base outside it); a mismatch stops
 the launch for a Design amendment.
 
@@ -70,6 +72,15 @@ wording named here lands and the other homes' wordings are cut as its duplicates
 every CONTRACT and FRAMING part: tool names and arguments, event shapes, the verdict and finding
 grammar, the `required` list, the self-report, heartbeat and scratch protocols, the unit, its
 criterion, paths, gate evidence, the REQUIRED list, the delta and the grounding sections.
+
+EXCEPTIONS LIST, decided here: spec 120 lands in `authoring-loops.md`'s `## What rigger prescribes`
+a list of the prescriptions this spec still owns, the rule's open exceptions. Each item is struck by
+the criterion that lands it, in the same commit: the lookup pointer's method sentences by 1; the
+cadence clauses in `EMIT_PROTOCOL` and `review_protocol` by 4; the progress cadence in the four host
+homes by 5; `DOC_ONLY_ROUND`'s rule sentence by 6; `MAX_UNIT_ADDED_LINES` and `unit_size_cap`'s
+second sentence by 7; `PLAN_PROTOCOL`'s guidance by 8; the REQUIRED PATTERN audit sentences by 9; the
+toolchain words in the workflow script by 11; the scratch tool by 12. Criterion 12, the last of these
+in UNIT ORDER, also removes the emptied list with its lead-in sentence.
 
 HIT ENUMERATION, decided here: every phrase-list hit (criterion 17's list) and every MARKERS hit
 (spec 120's rule) in a registry surface or a script prompt at 3cee73df, with its disposition, by one
@@ -128,14 +139,18 @@ consumer's surface (criterion 14).
 **THE GREP GUARD IS DECLARED, decided here (criterion 2).** `Defaults` (`config.rs:523`) gains
 `grep_guard: bool`, default false. Declared true: `rigger setup`'s `install_lookup_hook` installs the
 PreToolUse entry as at HEAD, and every headless spawn's `--settings` carries it. Absent or false:
-`install_lookup_hook` removes rigger's own entry (matcher `GREP_GUARD_MATCHER` and command
-`GREP_GUARD_COMMAND` exactly) from `.claude/settings.json`, every other hook kept, writing only when
-the merge changes the file (`cmd_setup` parses `.rigger/workflow.yml` after `init_project` to read the
+`install_lookup_hook` removes rigger's own entry from `.claude/settings.json`: every inner hook
+under `PreToolUse` whose command equals `GREP_GUARD_COMMAND`, whatever its matcher, a block dropped
+only when its inner array becomes empty, every other hook kept, writing only when the merge changes
+the file. Install keys on the same rule: the guard is present when any inner `PreToolUse` hook has
+that command (`cmd_setup` parses `.rigger/workflow.yml` after `init_project` to read the
 key and fails loudly on a parse error, as `get_referenced_agent_ids`, `setup.rs:189`, already does); and `hooks::install_session_settings` takes the flag and merges only the
 prime hook and the status line. Corners: an absent `settings.json` with the key off writes nothing and
 reports `AlreadyCurrent`; a removal that changes the file reports `Refreshed`;
 `hooks::carries_session_settings` takes the same flag, which its caller (`src/cli/validate.rs:824`)
-reads from the loaded config. A spawn's flag comes from SPAWN HOST RESOLUTION, never set by hand;
+reads from the loaded config; `session_hooks_advisory` (`src/cli/validate.rs:822-834`) names the
+grep-guard among the missing hooks only when `defaults.grep_guard` is declared. A spawn's flag comes
+from SPAWN HOST RESOLUTION, never set by hand;
 `spawn_config_args` passes it through. `cmd_grep_guard` reads no key: a `settings.json` written while
 the key was true keeps denying after the key flips false until the next `rigger setup`, the operator's
 standing step after any workflow key change; accepted. The hook mechanism, `rigger grep-guard` and
@@ -157,7 +172,8 @@ and its fields are `pub`; `SpawnOpts` loses its `Default` derive (`agent.rs:63`)
 `SpawnOpts::new(host: SpawnHost) -> SpawnOpts`, filling every other field with its former default, so
 every construction spreads `..SpawnOpts::new(host)` and the compiler enumerates every site, tests
 included (a test builds its host as a struct literal). A test asserts that no production line outside
-`SpawnHost::resolve` spells `SpawnHost {`. Criterion 2 owns `SpawnHost` with its `grep_guard` field,
+`SpawnHost::resolve` constructs a `SpawnHost` literal: it matches a `SpawnHost {` not preceded by
+`struct ` or `impl `, so the struct declaration and its impl headers are exempt by name. Criterion 2 owns `SpawnHost` with its `grep_guard` field,
 `resolve`, `SpawnOpts.host`, `SpawnOpts::new`, the edit of every construction and that assertion;
 criterion 3 adds `helper_root` to `SpawnHost` with its reading in `resolve` and its reader in
 `spawn_config_args`, so 3 needs 2. Each criterion's test proves the critic's and the canary's spawns
@@ -195,9 +211,9 @@ workflow script's (`rigger.js:650-652`), the superset of the other three, as one
 ("The exact JSON shapes for these emits are given in your task instructions; ..."), the pin's
 expected text being the bullet's text: "- After each significant step - a search, a file read, a build, a
 commit, a decision - report ONE short line of what you just did through the progress verb your task
-names. This is how an observer sees you working between the milestones you record, so a long silent
+or your tool list names. This is how an observer sees you working between the milestones you record, so a long silent
 stretch is never mistaken for a stall. Keep it flowing WHILE you work; do not batch it at the end."
-(the slot "from ${REPO}, using Bash" replaced by "through the progress verb your task names"). Each
+(the slot "from ${REPO}, using Bash" replaced by "through the progress verb your task or your tool list names"). Each
 host keeps the verb and its arguments: `framed` (`driver/cli.rs:146-151`) appends "LIVE PROGRESS:
 record a progress line by running (Bash): rigger progress '<id>' '<one line: what you just did>'.";
 the script's `progressNote` reads "LIVE PROGRESS: record a progress line, from ${REPO}, using Bash:"
@@ -300,10 +316,11 @@ no `workflow.yml` change") is rewritten to the key. `SCAFFOLD_WORKFLOW` declares
 DEFAULTS); this repository's workflow declares `test_author: sdet-author` (OPERATOR HAND-OFF).
 
 **THE WORKFLOW SCRIPT NAMES NO TOOLCHAIN, decided here (criterion 11).** `WaveItem` (`spawn.rs:682`)
-gains `build_cache_env: Option<String>`, always on the wire beside `cargo_target_dir` (null exactly
-when `cargo_target_dir` is null), its value the one constant `spawn::BUILD_CACHE_ENV` that
-`RunCtx::spawn_env` (`conductor.rs:8461-8464`) also reads; the script's STEP schema (`rigger.js:194`,
-:202) lists it as required, `['string', 'null']`. The constant's value is the toolchain coupling spec
+gains `build_cache_env: String`, always on the wire and non-null on every wave item (it is the
+constant, decoupled from `cargo_target_dir`), its value the one constant `spawn::BUILD_CACHE_ENV`
+that `RunCtx::spawn_env` (`conductor.rs:8461-8464`) and the gate runner (`ExecRunner::run`,
+`crates/rigger-gates-shell/src/gate.rs:655-656`) also read, the variable's name having one home; the
+script's STEP schema (`rigger.js:194`, :202) lists it as required, `'string'`. The constant's value is the toolchain coupling spec
 120 leaves out of scope; the script's text names none. The rewordings: `workdir` (:624) "Do all your
 file edits, your build tool's runs, and any git commit inside your isolated worktree ..."; BUILD
 LOCATION (:659-661) "every command your build tool runs inside your worktree (anything that builds or
@@ -314,7 +331,7 @@ and the reaper sentence, drops the parenthetical "(those are on the operator's s
 a single cargo target or `rigger setup` shim install there fills the disk)", and its next sentence
 reads "For any build you run outside your assigned worktree, export your build cache variable
 (`${req.build_cache_env}`) to a subdir of that same printed path first - never the shared build
-cache.", rendered only when `req.build_cache_env` is non-null and otherwise omitted; its reaper
+cache.", rendered for every spawn as at HEAD; its reaper
 sentence becomes "It is reaped once your result records - do not store anything durable there." (the
 rest of the sentence verbatim; criterion 11 owns the rewording, since "the moment" is a phrase-list
 entry). The step courier (:892-894) runs `cd ${REPO} && rigger step --spec ...` with no cache prefix,
@@ -389,14 +406,23 @@ where HEAD gave every project one: `grep_guard: true` (HEAD guarded every projec
 defined `sdet-author`, which the scaffold never seeds). Each key carries a one-line comment in
 `SCAFFOLD_WORKFLOW` naming what it switches.
 
-**THE REGISTRY, decided here (criterion 16).** A new module, `crates/rigger-domain/src/prompt_surface.rs`
-(`core` lane, no I/O), is the one home of every prompt text the Rust code ships. `pub enum Class {
-Contract, Framing }` (no `Prescription` variant); `pub struct Group { surface: &'static str, name:
-&'static str, class: Class, text: &'static str }`; `pub const REGISTRY: &[Group]`, ordered by surface
-then by position in the surface. A group is one sentence group of one class; its text may carry
-`{slot}` placeholders. Each text is a `pub const` of the module that `REGISTRY` references, and every
-renderer formats from those constants through one helper, `prompt_surface::fill(text, &[(slot,
-value)])`, so no prompt literal stays in the renderer. The surfaces: `EMIT_PROTOCOL`, `PLAN_PROTOCOL`,
+**THE REGISTRY, decided here (criterion 16).** The domain crate owns the registry TYPES:
+`rigger_domain::prompt_surface` (`core` lane, no I/O) defines `pub enum Class { Contract, Framing }`
+(no `Prescription` variant), `pub struct Group { surface: &'static str, name: &'static str, class:
+Class, text: &'static str }` and `fill`. A group is one sentence group of one class; its text may carry
+`{slot}` placeholders. `fill(text, &[(slot, value)])` scans the template once, left to right, and
+replaces only the named `{slot}` tokens it is passed; an inserted value is never rescanned, and every
+other brace is literal (the JSON shapes in `EMIT_PROTOCOL`, `REQUIRED_PROTOCOL` and `PLAN_PROTOCOL`
+included). Each crate keeps its own groups in a `prompt_surface` module of its own, their one home,
+exposing `pub fn prompt_groups() -> &'static [Group]` ordered by surface then by position: the domain
+crate only the texts it renders itself (the critique prompt's framing and `CRITIQUE_OUTPUT_CONTRACT`,
+`review.rs`); `rigger-conductor` the conductor's and the canary's texts; `rigger-driver` the cli
+host's; `rigger-dash` the MCP tool descriptions and their `inputSchema` property descriptions
+(`mcpserver.rs:757-773`); the binary crate (`src/`) the critic spawn's framing (`src/cli/critique.rs`),
+`GREP_GUARD_MESSAGE` and the write-guard deny reason. No adapter text moves inward across a crate
+boundary: the dependency rule holds for data as for code, and the domain never spells a host's
+vocabulary. Each text is a `pub const` of its crate's module, and every renderer formats from those
+constants through `fill`, so no prompt literal stays in the renderer. The surfaces: `EMIT_PROTOCOL`, `PLAN_PROTOCOL`,
 `unit_size_cap`, `REQUIRED_PROTOCOL`, `REVIEWER_DISCIPLINE`, `review_protocol`, `DECISIONS_HEADER`,
 `CODE_NEIGHBORHOOD_HEADER`, `DESIGN_INTENT_HEADER`, the lessons and findings headers, the elision notes
 and `graph_around_recovery`, `task_block`, `PriorFailure::block`, `ReviewRound::block`,
@@ -404,14 +430,15 @@ and `graph_around_recovery`, `task_block`, `PriorFailure::block`, `ReviewRound::
 `write_peers_pointer`, `write_lookup_pointer`, the DAG critique prompt and `re_plan`'s framing, the
 critique prompt's kept framing and `CRITIQUE_OUTPUT_CONTRACT`, the canary's `review_header` and
 `adjudicator_prompt` (`canary_store.rs:646-679`), `framed`, the MCP tool descriptions of all three
-surfaces (moved out of the `json!` literals in `tool_list`, `mcpserver.rs:750-776`) and
+surfaces and their `inputSchema` property descriptions (moved out of the `json!` literals in
+`tool_list`, `mcpserver.rs:750-776`) and
 `GREP_GUARD_MESSAGE` and the `rigger guard-write` deny reason (`guard_write_deny_outside_first_root`,
 `src/cli/guard.rs:405-410`, CONTRACT: the reason the write guard reports). Every crate that renders one
-already depends on `rigger-domain`. Criterion 16 applies the HIT ENUMERATION's dispositions that
-no earlier criterion applied and adds no rewording of its own; criterion 17 only asserts. A moved
-constant keeps no copy and no re-export in its old crate: criterion 16 re-paths every reader, among
-them PR #117's helper and spec 120's criterion 12 and 13 tests, which read
-`conductor::REVIEWER_DISCIPLINE` and then read `prompt_surface::REVIEWER_DISCIPLINE`. The two
+already depends on `rigger-domain`. Each HIT ENUMERATION row names its owner; criterion 16 adds no
+rewording; criterion 17 only asserts. A text moves only within its crate, into that crate's
+`prompt_surface` module, which is its one home; the renderer reads the group. Criterion 16 re-paths
+every reader, among them PR #117's helper and spec 120's criterion 12 and 13 tests, which read
+`conductor::REVIEWER_DISCIPLINE` and then read `rigger_conductor::prompt_surface::REVIEWER_DISCIPLINE`. The two
 continuation imperatives ("Finish and report; do not start over.", "Fix exactly these - do not start
 over:"), `CRITIQUE_OUTPUT_CONTRACT`'s remedy field and the fan-out section's tier names and cap stay
 FRAMING (the audit's borderline kept). `HELPER_AGENTS`, the scaffold seeds, the skills and the
@@ -420,11 +447,14 @@ surface, the renderer run over a fixture whose every slot value is the literal `
 where the renderer loops) equals the surface's groups for that fixture concatenated in registry order
 (whitespace-normalized); a surface with mutually exclusive branches (a PASS or a FAIL row, an empty
 or a joined list, a stage with or without a criterion) gets one fixture per branch, each naming the
-groups that branch renders, so every group is rendered by some fixture. PR #117's `every_shipped_agent_text()` gains every registry
-group, labelled `REGISTRY <surface>/<name>`, rather than a second enumeration.
+groups that branch renders, so every group is rendered by some fixture. PR #117's
+`every_shipped_agent_text()` in the binary crate gains every crate's groups, collected through each
+crate's `prompt_groups()` and labelled `REGISTRY <crate>::<group>`, rather than a second enumeration;
+the concatenation, phrase and MARKERS, and sweep tests collect them the same way.
 
 **THE PHRASE AND MARKERS TESTS, decided here (criterion 17).** One test iterates the registry groups
-and the scripts' contract and framing regions (criterion 18, which 17 needs) through `every_shipped_agent_text()` and fails on any phrase of
+and the scripts' contract and framing regions (criterion 18, which 17 needs) through
+`every_shipped_agent_text()`, selecting only its entries labelled `REGISTRY ` or `SCRIPT `, and fails on any phrase of
 a list kept in the test, matched as a lowercase substring: "the moment", "never batch", "do not
 batch", "keep it flowing", "between your actions", "between your own actions", "do not contradict",
 "supersede explicitly", "default to skepticism", "reject only", "not by grepping", "never a new test",
@@ -441,14 +471,14 @@ directly followed by a `mod <name> {` line (the file's test module, the same cut
 production-line pin uses); every other `#[cfg(test)]`-gated item and every `#[cfg(any(test, ...))]`
 item before that cut is scanned as production. The PROMPT-BEARING files are derived by token, never
 listed by hand: every such file whose production text spells `SpawnOpts`, `SpawnHost` or
-`prompt_surface`, so a new file touching the spawn surface or the registry is swept automatically. The
+`prompt_surface`, so a new file touching the spawn surface or the registry is swept automatically. The token marks every renderer, since each crate's module carries the name `prompt_surface`. The
 test tokenizes their string literals (escaped and raw, line continuations joined) and selects every
-literal of 40 or more characters containing a space, by shape alone. Each selected literal outside
-`prompt_surface.rs` is in a registry group (its exact text, or contained in a registered group) or in
-an allow-list kept in the test, keyed by file, of operator-facing messages (an error, a status line, a
-help text, a log line) and consumer seeds; the scaffold seeds in `setup.rs` (`SCAFFOLD_AGENTS`,
-`SCAFFOLD_WORKFLOW`, `SCAFFOLD_INSTRUCTIONS_README`) and the skill and handbook bodies in `docs.rs`
-are allow-listed as a class by their constant names, not literal by literal. A literal of 40 or more
+literal of 40 or more characters containing a space, by shape alone. Each selected literal outside a
+crate's `prompt_surface` module is in a registry group (its exact text, or contained in a registered
+group) or in an allow-list kept in the test, keyed by file, of operator-facing messages (an error, a
+status line, a help text, a log line). `setup.rs` and `docs.rs` spell none of the three tokens and no
+criterion makes them do so, so the scaffold seeds and the skill and handbook bodies are outside the
+sweep and need no allow-list entry. A literal of 40 or more
 characters with a space in a prompt-bearing file that is neither registered as contract or framing
 nor allow-listed as an operator message therefore fails the test. The residue, stated and accepted: a
 literal in a file spelling none of the three tokens that reaches a prompt through a function call is
@@ -481,7 +511,7 @@ with `--rebase-definition`, as for spec 120's criterion 15.
 | new workflow keys | concurrent, crash-resume, cold start | read from the one loaded `Config` per process, never cached across processes |
 | `test_author` | repeated | one key, one agent; the role token stays `sdet-author`, so a renamed agent resumes the token's recorded session, as a renamed adjudicator does at HEAD; accepted |
 | `test_author` | existing store | recorded ids unchanged; a store whose run spawned the conventional agent replays by id |
-| `grep_guard` | existing data | a settings.json carrying the guard and a foreign PreToolUse hook: setup removes only the exact rigger entry |
+| `grep_guard` | existing data | a settings.json carrying the guard and a foreign PreToolUse hook, in one block or two: setup removes only inner hooks whose command is `GREP_GUARD_COMMAND`, any matcher, dropping a block only once its inner array is empty |
 | `grep_guard` | repeated | setup twice with the key declared writes once; absent twice removes once |
 | `grep_guard` | empty | no `settings.json` and the key off: nothing written, `AlreadyCurrent` |
 | `grep_guard` | reverted | the key flipped false after a setup: the installed hook denies until the next `rigger setup`; accepted |
@@ -495,6 +525,7 @@ with `--rebase-definition`, as for spec 120's criterion 15.
 | skill shadow | DROPPED | a project copy deleted: the next setup installs the shipped render |
 | overlay field | empty | absent or empty list: the generic step only |
 | scaffold implementer | existing data | an existing project's workflow and personas are write-once and stay; only a fresh `rigger init` gets the new ids |
+| `build_cache_env` | empty | never null: a wave item with no per-unit cache still carries the name, so SCRATCH POLICY's export sentence renders for every spawn, as at HEAD |
 | registry | empty surface | a renderer whose optional parts are all absent renders a subset of its groups; the concatenation fixture covers every branch present |
 | sweep | a new literal | fails until registered or allow-listed |
 | moved sentences | switched off | a consumer switching `working-discipline` or `communication` off removes the moved sentences with the rest: intended |
@@ -515,9 +546,12 @@ field doc to 9; `spawn_sdet_author`'s doc to 10; the `buildLocation` comment (`r
 11; the `SCAFFOLD_AGENTS` and `SCAFFOLD_WORKFLOW` docs and `authoring-loops.md:144` to 15; the
 handbook's upgrade note for the three keys (a new paragraph after `authoring-loops.md`'s "Upgrading an
 older workflow" paragraph, one sentence per key) to 2, 7 and 10 in that order, each adding its own
-sentence.
+sentence; each item of the open-exceptions list in `authoring-loops.md`'s `## What rigger prescribes`
+to the criterion EXCEPTIONS LIST names (1, 4, 5, 6, 7, 8, 9, 11, 12), and the emptied list with its
+lead-in sentence to 12.
 
-OUT OF SCOPE: the per-unit build-cache variable in code (`RunCtx::spawn_env`, the gate runner) and the
+OUT OF SCOPE: the build-cache variable's value (`spawn::BUILD_CACHE_ENV`, read by `RunCtx::spawn_env`
+and the gate runner) and the
 grounder's Rust-only extraction, as spec 120 decides; the SessionStart `rigger prime` hook (FRAMING);
 the liveness heartbeat, the self-report and the courier relay contracts; every other shipped skill's
 body (each becomes shadowable by criterion 14); `HELPER_AGENTS`' text; the personas' other content;
@@ -572,7 +606,7 @@ TEST PLACEMENT:
 | 13 | `docs.rs` tests (the generic step); `src/cli/mod.rs` tests (`install_skills` with an overlay list) |
 | 14 | `src/cli/mod.rs` tests over a temp root (a shadow, a near name, a deleted shadow); a periphery test running the built binary's `setup` |
 | 15 | `src/cli/setup.rs` tests (`init_project` with and without `Cargo.toml`) |
-| 16 | `prompt_surface.rs` tests (no duplicate (surface, name)); a concatenation test beside each renderer (`conductor.rs`, `review.rs`, `canary_store.rs`, `driver/cli.rs`, `mcpserver.rs`, `src/cli/mod.rs`) |
+| 16 | each crate's `prompt_surface` tests (no duplicate (surface, name)); a concatenation test beside each renderer (`conductor.rs`, `review.rs`, `canary_store.rs`, `driver/cli.rs`, `mcpserver.rs`, `src/cli/mod.rs`) |
 | 17 | `src/cli/setup.rs` tests through the shipped-text helper |
 | 18 | a test in `tests/prompt_surface_sweep.rs` over the source tree; `src/cli/mod.rs` tests over the two scripts' regions |
 | 19 | the lanes script on the integrated tree |
@@ -582,7 +616,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | Artifact | Owner |
 | --- | --- |
 | the pointer's framing paragraph, the Fan out section's two sentences and the cut of its "same rule" sentence | 1 |
-| `Defaults.grep_guard`, the flag's reading in `resolve`, `carries_session_settings`' flag, the `cmd_setup` workflow parse, the guard arms of `install_session_settings` and `install_lookup_hook`, the scaffold's `grep_guard` line | 2 |
+| `Defaults.grep_guard`, the flag's reading in `resolve`, `carries_session_settings`' flag, the `cmd_setup` workflow parse, `session_hooks_advisory`'s guard clause, the guard arms of `install_session_settings` and `install_lookup_hook`, the scaffold's `grep_guard` line | 2 |
 | `hooks::resolved_helpers`, `SpawnHost.helper_root`, its reading in `resolve` and its reader in `spawn_config_args`, the validate check of the copies | 3 |
 | `SpawnHost` with `grep_guard`, `SpawnHost::resolve`, `SpawnOpts.host`, `SpawnOpts::new`, every construction site's edit, the no-`SpawnHost {` assertion | 2 |
 | the cut cadence clauses of `EMIT_PROTOCOL`, `review_protocol`, `DECISIONS_HEADER`, `renderPeers` | 4 |
@@ -593,11 +627,12 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | both PATTERN lines, the hand-over section's bullet | 9 |
 | `Defaults.test_author`, its refusal, the spawn's lookup, the edited sdet fixtures | 10 |
 | `WaveItem::build_cache_env`, `spawn::BUILD_CACHE_ENV`, the script's reworded texts, the courier command | 11 |
-| the `rigger_scratch` description | 12 |
+| the `rigger_scratch` description, the removal of the emptied open-exceptions list and its lead-in | 12 |
+| each open-exceptions item's strike | the criterion EXCEPTIONS LIST names |
 | `DocsOverlay.global_constraints`, the `DocsContext` field, `planning-a-spec` as `Rendered`, `.rigger/docs-overlay.yml`, the re-rendered `skills/planning-a-spec/SKILL.md`, the edited static-body tests | 13 |
 | the shadow rule in `install_skills` and its report lines | 14 |
 | `SetSpec.implementer`, `scaffold/rust/set.yml`'s persona, the `implementer` seed, `@IMPLEMENTER@`, the edited seed-set test | 15 |
-| `prompt_surface` (`Class`, `Group`, `REGISTRY`, the text constants, `fill`), every renderer's move onto it, the re-pathed readers of moved constants, the helper's registry entries | 16 |
+| `rigger_domain::prompt_surface` (`Class`, `Group`, `fill`), each crate's `prompt_surface` module with its texts and `prompt_groups()`, every renderer's move onto it, the re-pathed readers, the helper's registry entries | 16 |
 | the phrase list, the MARKERS call over the registry, the negative fixture | 17 |
 | the sweep, the prompt-bearing derivation, its allow-list, the script regions (operator regions included) and their helper entries | 18 |
 | the lanes | 19 |
@@ -636,7 +671,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves THE PLANNING SKILL CARRIES THE PROJECT'S CONSTRAINTS: `planning-a-spec` step 6 reads "Carry the project's own Global constraints" with neutral path examples, and the `global_constraints` list of `DocsOverlay` renders under it in the installed copy. This criterion OWNS the body's wording, the overlay field and this repository's overlay file; skill shadowing is criterion 14's, NOT this one's.
 - [ ] a test proves A PROJECT SKILL SHADOWS THE SHIPPED ONE: `install_skills` installs `.rigger/skills/<name>/SKILL.md` verbatim in place of the shipped skill of that exact name, a near name shadowing nothing, while `rigger docs` and the drift gate stay on the shipped text. This criterion OWNS the shadow rule and its setup report lines; the skill bodies are criterion 13's, NOT this one's.
 - [ ] a test proves THE IMPLEMENTER COMES WITH THE GATE SET: `init_project` with the Rust set writes its `implementer` persona and names that id in `SCAFFOLD_WORKFLOW`'s implement and checkin stages, and with no set writes and names a language-neutral `implementer`. This criterion OWNS `SetSpec.implementer`, the seed, the placeholder and their pins; the scaffold's keys are criteria 2 and 7's, NOT this one's.
-- [ ] a test proves THE REGISTRY HOLDS EVERY PROMPT TEXT: `prompt_surface::REGISTRY` holds every prompt constant and every builder's fixed text classed `Contract` or `Framing`, each renderer formats from it, and each surface's groups concatenate to its render over the placeholder fixture. This criterion OWNS the registry, the moves onto it and the concatenation tests; the phrase test is 17's, the sweep 18's, NOT this one's.
+- [ ] a test proves THE REGISTRY HOLDS EVERY PROMPT TEXT: each crate's `prompt_surface` module holds its crate's prompt constants and builders' fixed text as `Group`s classed `Contract` or `Framing`, every renderer formats through `fill`, and each surface's groups concatenate to its render over the placeholder fixture. This criterion OWNS the types, every crate's module and the concatenation tests; the phrase test is 17's, the sweep 18's, NOT this one's.
 - [ ] a test proves NO REGISTERED TEXT PRESCRIBES: every registry group and script region literal, read through the shipped-text helper, carries no phrase of the test's cadence and method list and no hit under spec 120's MARKERS rule, and a held pre-move `EMIT_PROTOCOL` fails it. This criterion OWNS the phrase list and both assertions; the registry is criterion 16's, the sweep 18's, NOT this one's.
 - [ ] a test proves THE SOURCE SWEEP CLOSES THE REGISTRY: every production literal of 40 or more characters with a space in a prompt-bearing file (one spelling `SpawnOpts`, `SpawnHost` or `prompt_surface`) is registered or allow-listed, and each such literal of the two embedded scripts sits in a classed region. This criterion OWNS the sweep, the file derivation, the allow-list and the regions; the registry is criterion 16's, NOT this one's.
 - [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0, with `cargo fmt --check` passing. This criterion OWNS only the lanes; every behaviour is criteria 1 to 18's, NOT this one's.
