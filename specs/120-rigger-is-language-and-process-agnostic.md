@@ -108,15 +108,18 @@ is the ONE authority every reader goes through: the declared list when `steps` i
 CANONICAL SEQUENCE of the map form - `Lenses(lenses)` when `lenses` is non-empty, then
 `Adversary(adversary)` when set, then `Adjudicator(adjudicator)` when set. `is_empty`,
 `agent_ids`, `full_roster` and `gating_agent_ids` (`config.rs:381`, :396, :407, :419) derive from
-`steps()`, and the last three return each agent id once, in first-step order, however many steps
-name it. So the workflow-definition grounder (`reviewers_of`,
+`steps()` (criterion 6's, today's shape over the canonical sequence). Criterion 7 makes the last
+three return each agent id once, in first-step order, however many steps name it (a map form naming
+one agent as lens and adjudicator included); under `tiers`, `agent_ids` and `gating_agent_ids` list
+the full panel's ids first, then the light panel's ids not already listed, each once. So the
+workflow-definition grounder (`reviewers_of`,
 `crates/rigger-grounder/src/grounder/workflowdef.rs:144`), the verdict-line lint (`lint_gating_verdict_lines`) and the wall-clock advisory
 (`unbounded_wall_clock_advisory`, `crates/rigger-config-files/src/config.rs:107`), both reading the
 `gating_agent_ids` set (:21), read every adjudicator step with no change of their own, each naming an agent once. The advisory
 sums nothing: it names each adjudicator step's agent that carries no per-agent bound under an
-unbounded default, as it names the one adjudicator today. Criterion 6 owns these three readers'
-behaviour through the accessors, and criterion 7 owns the list-form test over them (the list form
-is the first input that exercises them); none of it is criterion 12's. `steps: []` is an empty panel, exactly as `review: {}` is: no review, and on a stage it
+unbounded default, as it names the one adjudicator today. Criterion 7 owns the dedup and these
+three readers' naming-once behaviour through the accessors, with its tests; none of it is criterion
+6's or 12's. `steps: []` is an empty panel, exactly as `review: {}` is: no review, and on a stage it
 inherits `defaults.review` through `effective_review_panel` (`config.rs:958`) as an empty map does.
 
 **CANONICAL IDENTITY SURFACE, decided here.** Criterion 6's identity claim compares, for each
@@ -141,7 +144,8 @@ becomes: a panel with a `tiers` policy, and its `light` panel, each have at leas
 `Adjudicator` step in `steps()`; its two messages keep their wording with "name an adjudicator"
 reading as "name an adjudicator step". `tiers.light` takes either form. Until criterion 8 lands,
 criterion 7 also refuses a list naming two steps of one kind (on that tree both would mint one
-spawn id); criterion 8 lifts that refusal with the step tokens. The same agent may appear in
+spawn id) and a list whose `Adjudicator` step is not last (on that tree no step after it has an
+early-stop rule); criterion 8 lifts both refusals with the step tokens and the early stop. The same agent may appear in
 several steps (two adversary steps naming one agent are two steps).
 
 **STEP ROLE TOKENS, decided here.** A spawn id is `{unit}/{role}#{attempt}` and unique per role
@@ -170,7 +174,10 @@ runs `steps()` in order, one step at a time: a `Lenses` step through
 `Adjudicator` step through `run_adjudicator` (:7739), each under its step role token. On a later round, a step whose role token has no recorded spawn
 for the unit in the round that sent it back (it never ran, because an earlier adjudicator step
 rejected) runs as on a first round: the whole-unit prompt with no round block and a fresh session;
-every other step gets the round's block (`round_delta`, :4818-4825) as today. A step that runs as
+every other step gets the round's block (`round_delta`, :4818-4825) as today. The round that sent the unit back is the attempt whose `STATUS_REVIEW_ROUND_START` mark
+`round_delta_base` (:13791) read; `round_delta` (:4680) returns that attempt beside `base`, and a
+step's "recorded spawn" is a spawn id `{unit}/{token}#{that attempt}` in the log, at any infra-retry
+ordinal. When `round_delta` is `None`, every step runs as on a first round. A step that runs as
 on a first round is passed `round = None` everywhere: its prompt, `continue_prior_session`, the
 degenerate-verdict check (`ReviewerOutput::Verdict`, never `RoundVerdict`) and, for an adjudicator,
 `split_reject`. An `Adjudicator` step whose verdict is a reject ends the round: no later step
@@ -197,7 +204,9 @@ continues. An approving step's output is recorded by its spawn and carried nowhe
 last step has run and no adjudicator rejected, the round approves; its reason (the last adjudicator
 step's post-split reason), compensation target (`verdict_compensates`, :4910) and resolved model are
 the LAST adjudicator step's, and the one `reviewed#{attempt}` stamp (:4958) carries that step's model
-alias. A sequence with no adjudicator step approves when its last step ends, with no `reviewed`
+alias. A rejected round's reason and compensation target are the rejecting step's, post-split; a
+compensation target named by an approving step that is not the last adjudicator step is dropped by
+design. A sequence with no adjudicator step approves when its last step ends, with no `reviewed`
 stamp, as an adjudicator-less map panel does today (:4879-4884). The speculation winner's deferred
 `reviewed#{lane}` stamp (:6758-6759) keys on "the panel has an adjudicator step" and the last
 adjudicator step's alias. On a later round every adjudicator step that ran in the prior round ends its
@@ -293,6 +302,7 @@ block under a `### The review ceremony` heading and carries no `grounder:` line.
 | sequence | one-agent lens step | a concurrent run of one; token `lens:a` or `lens:a@k` |
 | sequence | repeated | one agent in two adversary steps: tokens `adversary`, `adversary@2`, two sessions; one agent twice in one lens step: refused |
 | sequence | repeated round after a mid-sequence reject | a step with no recorded spawn in the prior round reviews the whole unit with no round block; a step that ran gets the delta |
+| sequence | a gate-failed or infra-rerun attempt between two rounds | the round that sent the unit back is the attempt `round_delta_base` read, never `attempt - 1`; a step's prior spawn is looked up at that attempt |
 | sequence | two adjudicators | first rejecting ends the round; both approving: the last stamps `reviewed` |
 | sequence | concurrent | lens agents within a step only; never two steps at once |
 | sequence | crash-resume | tokens recomputed from `steps()`; every recorded step answers from the log |
@@ -318,9 +328,9 @@ LANDING-ORDER SIMULATION (every ordered pair sharing a surface; "no" lines were 
 - 6 after 2 (surface the spawns' prompts): 2 removes the `HEADING` suffix from every system prompt
   before 6 lands, so an identity over system prompts would fail 6's own text -> fixed by the
   CANONICAL IDENTITY SURFACE block: 6 compares task prompts against the tree before it, never HEAD.
-- 7 without 8 (surface `config::load`): 7 asserts parse and refusal only, never a run, and refuses a
-  list naming two steps of one kind, which would mint one spawn id on that tree -> yes. 8 lifts that
-  refusal.
+- 7 without 8 (surface `config::load`): 7 asserts parse, refusal and the accessors' dedup only,
+  never a run, and refuses a list naming two steps of one kind (one spawn id on that tree) or an
+  `Adjudicator` step that is not last (no early stop on that tree) -> yes. 8 lifts both refusals.
 - 8 without 9 (surface the recording driver's spawn list): 8 asserts ids and order, never rosters
   -> yes. 9 without 8 cannot run a list form -> 9 after 8.
 - 8 without 10 (surface the round): 8 owns the early stop on a rejecting adjudicator, reading the
@@ -378,8 +388,8 @@ TEST PLACEMENT (criterion -> test homes; the fixtures each test uses):
 | 3 | `instructions.rs` tests: one built-in off; both off leaving `HEADING` and the operator layer alone |
 | 4 | `instructions.rs` tests for `render` and `shadow_advisories`; `src/cli/setup.rs` tests for `instructions_in_force_line`; a periphery test running the built binary's `instructions`, `validate` and `prime` over a temp project with one replacing and one empty file |
 | 5 | `src/cli/setup.rs` tests iterating `BUILTIN` |
-| 6 | `crates/rigger-domain/src/config.rs` tests for `steps`; `conductor.rs` tests over a recording driver and the golden fixtures |
-| 7 | `crates/rigger-config-files/src/config_store.rs` tests (every refusal, the interim repeated-kind one included; the repo workflow and every scaffold template set's rendering); `workflowdef.rs` and `crates/rigger-config-files/src/config.rs` tests of `reviewers_of`, the lint and the wall-clock advisory over a list form naming one agent in two steps (named once); a periphery test loading a list-form `.rigger/workflow.yml` |
+| 6 | `crates/rigger-domain/src/config.rs` tests for `steps` and the accessors' canonical shape; `conductor.rs` tests over a recording driver and the golden fixtures |
+| 7 | `crates/rigger-config-files/src/config_store.rs` tests (every refusal, the interim repeated-kind and adjudicator-not-last ones included; the repo workflow and every scaffold template set's rendering); `crates/rigger-domain/src/config.rs` tests of the dedup and `workflowdef.rs` and `crates/rigger-config-files/src/config.rs` tests of `reviewers_of`, the lint and the wall-clock advisory, each over a map form naming one agent as lens and adjudicator, a list form naming one agent in two steps and a `tiers` panel (named once, full panel first); a periphery test loading a list-form `.rigger/workflow.yml` |
 | 8 | `spawn.rs` tests (bare tokens parse as step 1, a `~retry2` suffix ignored); `conductor.rs` tests over `lenses [a, b]`, `adversary x`, `lenses [c]`, `adversary x`, `adjudicator z` and over `adjudicator a`, `lenses [l]`, `adjudicator b` with `a` rejecting in round 1; `replay.rs` tests resuming mid-round from the log |
 | 9 | `review.rs` tests for `step_roster` (criterion 8's sequence: the second adversary's roster `lens:a`, `lens:b`, `adversary`, `lens:c@2`, the adjudicator's adding `adversary@2`); `conductor.rs` tests over a recording driver |
 | 10 | `conductor.rs` tests over `adjudicator a`, `lenses [l]`, `adjudicator b` under each verdict pair and over `lenses [l]`, `adversary x`; the speculation path's tests for `reviewed#{lane}` |
@@ -395,9 +405,9 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | the `SwitchedOff` state | 3 |
 | `render`'s labels, `shadow_advisories`, its `cmd_validate` call, `instructions_in_force_line` reading `resolve_layers` | 4 |
 | `SCAFFOLD_INSTRUCTIONS_README`, `.rigger/instructions/README.md` | 5 |
-| `ReviewStep`, `ReviewPanel::steps`, the derived `is_empty`/`agent_ids`/`full_roster`/`gating_agent_ids` (deduped, first-step order) and the behaviour of the readers through them (`reviewers_of`, the lint, the wall-clock advisory), the one step loop in `review_unit` | 6 |
-| `ReviewStepDecl`, `ReviewPanel.steps`, every refusal, the interim repeated-kind refusal, the new `validate_depth` rule, the load-unchanged check over the repo's workflow and every scaffold template set, the list-form test over `reviewers_of`, `lint_gating_verdict_lines` and `unbounded_wall_clock_advisory` | 7 |
-| `review_step_role`, `review_step_of`, `is_adjudicator` through it; per-step token minting, the early stop on a rejecting adjudicator and the fresh-step rule inside the one loop criterion 6 owns; lifting the interim repeated-kind refusal | 8 |
+| `ReviewStep`, `ReviewPanel::steps`, the derived `is_empty`/`agent_ids`/`full_roster`/`gating_agent_ids` in today's shape over the canonical sequence, the one step loop in `review_unit` | 6 |
+| `ReviewStepDecl`, `ReviewPanel.steps`, every refusal, the interim repeated-kind and adjudicator-not-last refusals, the new `validate_depth` rule, the load-unchanged check over the repo's workflow and every scaffold template set, the dedup of `agent_ids`/`full_roster`/`gating_agent_ids` (first-step order, full panel then light) and the naming-once behaviour of `reviewers_of`, `lint_gating_verdict_lines` and `unbounded_wall_clock_advisory` through them | 7 |
+| `review_step_role`, `review_step_of`, `is_adjudicator` through it; per-step token minting, the early stop on a rejecting adjudicator and the fresh-step rule inside the one loop criterion 6 owns; lifting both interim refusals (repeated kind, adjudicator not last) | 8 |
 | `step_roster` and the wrappers | 9 |
 | the verdict read after `split_reject` (a converged reject continues), the REQUIRED list, the round's reason and compensation choice, the `reviewed` stamps | 10 |
 | metrics, dash, `workflows/rigger.js` classification | 11 |
@@ -426,8 +436,8 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves AN EMPTY SAME-NAMED OPERATOR FILE SWITCHES A BUILT-IN OFF: `instructions::compose` given an operator file named as a `BUILTIN` entry with an empty or whitespace body injects no section for either, every other section unchanged. This criterion OWNS `resolve_layers`' switched-off arm; replacing is criterion 2's, NOT this one's.
 - [ ] a test proves EVERY BUILT-IN'S STATE IS REPORTED: `instructions::render`, `shadow_advisories` (printed by `cmd_validate` with a success exit) and `instructions_in_force_line` name each built-in as in force, replaced or switched off through `resolve_layers`. This criterion OWNS `render`, `shadow_advisories`, `instructions_in_force_line` and their call sites; `compose` is criteria 2 and 3's, NOT this one's.
 - [ ] a test proves THE SCAFFOLDED README DOCUMENTS THE OVERRIDE: `SCAFFOLD_INSTRUCTIONS_README` names every `BUILTIN` entry as `<name>.md` with the replace, switch-off and append rules, and the committed `.rigger/instructions/README.md` equals it (whitespace-normalized text). This criterion OWNS the two README texts and the `BUILTIN`-iterating assertion; the mechanism is criteria 2 and 3's, NOT this one's.
-- [ ] a test proves THE MAP FORM IS THE CANONICAL SEQUENCE: `ReviewPanel::steps` returns lenses, adversary, adjudicator for the map form, and `review_unit` over `steps()` gives each CANONICAL IDENTITY SURFACE fixture the list the tree before it gave. This criterion OWNS `ReviewStep`, `ReviewPanel::steps`, its deduped accessors and the one step loop; `steps:` is criterion 7's and `@k` tokens criterion 8's, NOT this one's.
-- [ ] a test proves THE LIST FORM DECLARES ANY SEQUENCE: `Config::validate` accepts `review: { steps: [..] }` under every scope, refuses each PARSE AND REFUSALS panel naming its scope, and loads the repo's and every scaffold template set's workflow unchanged. This criterion OWNS `ReviewStepDecl`, the `steps` field, every refusal, that load check and the list-form reader test; running a sequence is criterion 8's, NOT this one's.
+- [ ] a test proves THE MAP FORM IS THE CANONICAL SEQUENCE: `ReviewPanel::steps` returns lenses, adversary, adjudicator for the map form, and `review_unit` over `steps()` gives each CANONICAL IDENTITY SURFACE fixture the list the tree before it gave. This criterion OWNS `ReviewStep`, `ReviewPanel::steps`, its accessors in today's shape and the one step loop; `steps:` and the dedup are criterion 7's, `@k` tokens 8's, NOT this one's.
+- [ ] a test proves THE LIST FORM DECLARES ANY SEQUENCE: `Config::validate` accepts `review: { steps: [..] }` under every scope, refuses each PARSE AND REFUSALS panel naming its scope, and loads the repo's and every scaffold template set's workflow unchanged. This criterion OWNS `ReviewStepDecl`, `steps`, every refusal, that load check and the accessors' dedup (each id once) with its readers; running a sequence is criterion 8's, NOT this one's.
 - [ ] a test proves A SEQUENCE RUNS IN ORDER UNDER STEP ROLE TOKENS: each step spawns under `spawn::review_step_role`'s token, parsed back by `review_step_of`, a rejecting adjudicator stops later steps, and a step absent from the prior round gets `round = None`. This criterion OWNS the token functions, `is_adjudicator` and those rules inside criterion 6's loop; rosters are criterion 9's, `split_reject` and stamps criterion 10's, NOT this one's.
 - [ ] a test proves EACH STEP REVIEWS EVERY EARLIER STEP: every spawn of a step carries in `SpawnOpts.reviews` the role tokens of every earlier step's spawns in step order, a first lens step none. This criterion OWNS `review::step_roster` and the `review_roster`/`adjudicator_roster` wrappers; the step loop is criterion 8's, NOT this one's.
 - [ ] a test proves THE FIRST REJECTING ADJUDICATOR STEP DECIDES THE ROUND: `review_unit` reads each adjudicator step's verdict after `split_reject`, a converged reject continuing, and returns the kept REQUIRED list or approves with one `reviewed` stamp from the last adjudicator step, or none without one. This criterion OWNS that reading, the reason and the stamps; the early stop is criterion 8's and rosters criterion 9's, NOT this one's.
