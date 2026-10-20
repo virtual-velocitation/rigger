@@ -225,9 +225,9 @@ mod tests {
         // never one gate's tool.
         for phrase in [
             "ONE instance for a build, a test run or a reproduction.",
-            "Narrowing any gate's instrument (an exclusion list, a skip attribute, an `#[allow]`, \
-             a lowered threshold, a filter that hides a case, a deleted or weakened test, a \
-             `--force`)",
+            "Narrowing any gate's instrument (an exclusion list, a skip attribute, a lint \
+             suppression, a lowered threshold, a filter that hides a case, a deleted or weakened \
+             test, a `--force`)",
             "deleting the code a finding lives in",
             "is the same defect as the finding it hides and a failure even when the gate goes \
              green - the adversary and the adjudicator treat it as one.",
@@ -303,7 +303,8 @@ mod tests {
     /// literal alone and in full, however short, and each outside call with its first argument,
     /// never the body's name nor an expression wrapping a literal, the record organised by
     /// statement, each added or edited statement quoted with its `file:line` above its terms -
-    /// whose command and hits the record carries and the SDET lens re-runs and re-derives from
+    /// whose command and hits the record carries and the reviewing lens whose persona assigns the
+    /// duty re-runs and re-derives from
     /// the test hunks over the same statements, comparing the record statement by statement, a
     /// missing term or an unlisted statement blocking, one search per literal alone, a literal of an
     /// untouched statement named to the operator as debt and never blocking, every
@@ -322,7 +323,8 @@ mod tests {
     /// boolean term a production hunk adds to or removes from a filter, guard or predicate
     /// rewriting the rule its function answers, whose old statement its depth-1 callers' notes,
     /// Returns paragraphs, variant docs and oracles spell and are searched by in the same pair
-    /// form (the function's name and the old answer's noun), the SDET lens re-deriving each
+    /// form (the function's name and the old answer's noun), the reviewing lens whose persona
+    /// assigns the duty re-deriving each
     /// generator's set over that range, reading every witness, re-running each search and
     /// re-reading every hit against head, deriving the changed-condition set itself and reading
     /// every consumer sentence against it, running the two-term search itself for each
@@ -340,7 +342,8 @@ mod tests {
     /// boolean expression the hunks add listed by shape under `ADDED PREDICATES` with its line, a
     /// changed condition among them in both lists, two predicates of one fact lifted to one home
     /// or pinned to each other, an added set of named members searched by each member's name,
-    /// with the architecture lens deriving the added set itself by the same shapes from the
+    /// with the reviewing lens whose persona assigns the duty deriving the added set itself by
+    /// the same shapes from the
     /// production hunks, query strings included, running the member search itself, and blocking
     /// on a missing or false line, and a probe that edits the tree - the
     /// sharpest case of a turn's end being the session's end - run to completion and restored
@@ -380,7 +383,7 @@ mod tests {
              file you edit included",
             "The search is an instrument, not a claim:",
             "its unit is the statement, never the body's name",
-            "Walk every test-side body you add or edit - a test fn, a helper, a fixture \
+            "Walk every test-side body you add or edit - a test function, a helper, a fixture \
              builder, a table row's closure - statement by statement",
             "each statement that is not a single call into the shared test home is a shape of \
              its own",
@@ -413,9 +416,9 @@ mod tests {
             "run one search for each over every test home",
             "a hit in another home - an existing helper's body or another test's inline \
              statement - is a twin, lifted to the shared home and called from both",
-            "A record whose expressions are names only - a fn name, the callee a helper wraps - \
-             for a body that spells a literal or an outside call is a record you cannot write \
-             either.",
+            "A record whose expressions are names only - a function name, the callee a helper \
+             wraps - for a body that spells a literal or an outside call is a record you cannot \
+             write either.",
             "A statement listed with a literal or call it spells absent from its terms is a \
              record you cannot write.",
             "The record is organised by statement: each statement of a body you add and each \
@@ -439,17 +442,17 @@ mod tests {
             "CHECKED when kept apart, with the reason: the named way its shape differs",
             "A CHECKED hit whose shape does not differ is a twin.",
             "A search you did not run is a record you cannot write.",
-            "The SDET lens re-runs each recorded search on the review tree: a hit the record \
-             does not carry, or a CHECKED hit whose reason does not hold, is a BLOCKING finding \
-             on its own.",
+            "The reviewing lens whose persona assigns the duty re-runs each recorded search on the \
+             review tree: a hit the record does not carry, or a CHECKED hit whose reason does not \
+             hold, is a BLOCKING finding on its own.",
             "module docs, test names, test docs, assertion messages and operator docs say what \
              the code at head does",
             "enumerate the walked set, each member from what generates it",
-            "the `//!` module doc of every file the change touches (the changed-file list)",
+            "the module doc of every file the change touches (the changed-file list)",
             "the doc comment and every comment in the body of each item the change touches \
              (the hunks)",
-            "the doc of the trait item a changed fn or any caller of one implements and of the \
-             trait a changed impl is for (the impl headers)",
+            "the doc of the interface item a changed function or any caller of one implements \
+             and of the interface a changed implementation is for (the implementation headers)",
             "the doc of every item a changed hunk names, callee, constant or type returned (the \
              hunk's identifiers)",
             "the doc of every caller of a changed item, read from the project's graph at depth \
@@ -479,10 +482,10 @@ mod tests {
             "the arm, the guard, the call, the constant; two witnesses when one would not make \
              the whole sentence true",
             "a sentence with no witness is a claim, not a record",
-            "a claim that quantifies over a set - every, all, always, any, a plural subject with \
-             a predicate - is witnessed once per case the code splits that set into (each arm \
-             that assigns the value, each component of a key or comparator, each condition of a \
-             filter or guard, each branch of a match), the record naming the cases and a witness \
+            "a claim that quantifies over a set - every, all, always, any, a plural subject with a \
+             predicate - is witnessed once per case the code splits that set into (each arm that \
+             assigns the value, each component of a key or comparator, each condition of a filter \
+             or guard, each branch of a case statement), the record naming the cases and a witness \
              per case",
             "a case the claim does not hold for makes the sentence false, to be narrowed or \
              FIXED, never witnessed at the case it does hold for",
@@ -497,7 +500,7 @@ mod tests {
             "every spelling of each rewritten rule is walked too",
             "write down, for the rule's OLD statement and for each label its cases carried, a \
              pair of short terms: the feature's name as the code spells it (the flag \
-             `--around`, the fn, field, variant or table the rule concerns) and the rule's \
+             `--around`, the function, field, variant or table the rule concerns) and the rule's \
              shortest distinguishing noun phrase (`exact id`, `import`, `collision`)",
             "the words a sentence stating it cannot be written without, and each name the docs, \
              test names and comments give a case the old rule decided",
@@ -516,7 +519,7 @@ mod tests {
             "A rewritten rule with no search is a record you cannot write; a change that \
              rewrites no rule names the set empty.",
             "A rule is rewritten whenever a condition of it changes - a boolean term your \
-             production hunks add to or remove from a filter, guard, match-arm guard or \
+             production hunks add to or remove from a filter, guard, case-arm guard or \
              predicate a function applies - even when no sentence of yours moves",
             "its old statement is what the function's consumers spell: the notes they print, \
              their Returns paragraphs, the docs of the variants the answer maps to and the \
@@ -529,9 +532,9 @@ mod tests {
              noun, and run the rule search for each pair",
             "every hit is FIXED, carrying the new qualifier, or CHECKED with the named reason \
              the qualifier does not reach it (a call that passes no path, say)",
-            "The SDET lens re-derives each generator's set on the review tree from the diff and \
-             the graph",
-            "each hunk's identifiers, doc links (`[...]`) and constants included",
+            "The reviewing lens whose persona assigns the duty re-derives each generator's set on \
+             the review tree from the diff and the graph",
+            "each hunk's identifiers, cross-references and constants included",
             "the body comments of each changed item",
             "the depth-1 callers",
             "the tracked lines spelling a changed item's name",
@@ -586,44 +589,46 @@ mod tests {
              table name, a kind string); `derived from <file:line>`, the hunk reading the \
              existing spelling; or `pinned to <file:line> by <test>`, where a derivation is \
              impossible and a test holds the two spellings equal.",
-            "The `no other spelling` search runs the fragment's distinguishing literal (the \
-             column with its operator, the subquery's table) over the whole tree, pre-existing \
-             spellings included; a fact the tree already spells is `derived from` that spelling, \
-             the hunk and the existing sites reading one fn, or `pinned to` it, and a fact the \
-             tree already spells twice is lifted at all three sites - the pre-existing pair is \
-             the tree's debt, and the unit's third spelling makes it the unit's.",
+            "The `no other spelling` search runs the fragment's distinguishing literal (the column \
+             with its operator, the subquery's table) over the whole tree, pre-existing spellings \
+             included; a fact the tree already spells is `derived from` that spelling, the hunk \
+             and the existing sites reading one function, or `pinned to` it, and a fact the tree \
+             already spells twice is lifted at all three sites - the pre-existing pair is the \
+             tree's debt, and the unit's third spelling makes it the unit's.",
             "The walk's item list is derived from the production hunks by shape as well as by \
              name, since a predicate has no name the count could list: every boolean expression \
-             the hunks add - an `if`, `else if`, `while` or match-guard condition, each operand \
-             of an `&&` or `||` chain inside one, the body of a closure passed to `filter`, \
-             `any`, `all`, `retain`, `position` or `find`, and every conjunct inside a query \
-             string, format string or macro argument the production code executes - is an item, \
-             quoted with its `file:line` under the record's `ADDED PREDICATES` heading with its \
-             one-home line.",
+             the hunks add - an `if`, `else if` or `while` condition or a pattern guard, each \
+             operand of an `&&` or `||` chain inside one, the body of a closure passed to \
+             `filter`, `any`, `all`, `retain`, `position` or `find`, and every conjunct inside a \
+             query string, format string or macro argument the production code executes - is an \
+             item, quoted with its `file:line` under the record's `ADDED PREDICATES` heading with \
+             its one-home line.",
             "A predicate that is also a changed condition appears in both lists, its rule search \
              in one and its one-home line in the other, and neither entry stands in for the \
              other.",
             "Two added predicates stating one fact - the same condition at two sites, or one \
              condition and its negation - are one fact spelled twice: lifted to one home both \
-             sites read (a fn or a value) or `pinned to` each other by a test that holds them \
-             equal, never two `no other spelling` lines.",
-            "An added set of named members - an array or slice of constants, an `IN (..)` list, \
-             a `matches!` or a `match` with an arm per member, an `||` chain of equalities - runs \
-             its `no other spelling` search as the name count of EACH member, and every site \
-             where two or more of the members occur within one statement, one `match` or one \
-             macro call is read as a candidate second spelling of the set: one found makes the \
-             set `derived from` a single named home both sites read (a const list or a fn), or \
-             the hunk's spelling is a DRY defect lifted before hand-over, and the one-home line \
-             names the member sites it read.",
-            "The architecture lens derives the set of added constants, statics, lists, closures \
-             and predicates itself from the production hunks, query strings included, and \
-             compares it with the record's one-home lines: an added item the record has no line \
-             for is a BLOCKING finding on its own.",
-            "The architecture lens reads the walk record's one-home lines for every item the \
-             unit adds: an added item with no line, or a line false at head - the fact has \
-             another spelling the line does not name, or the named derivation or pin does not \
-             exist - is a BLOCKING finding on its own (DRY, single responsibility).",
-            "The architecture lens derives the added set by the same shapes, the `ADDED \
+             sites read (a function or a value) or `pinned to` each other by a test that holds \
+             them equal, never two `no other spelling` lines.",
+            "An added set of named members - an array or slice of constants, an `IN (..)` list, a \
+             pattern test or a case statement with an arm per member, an `||` chain of equalities \
+             - runs its `no other spelling` search as the name count of EACH member, and every \
+             site where two or more of the members occur within one statement, one case statement \
+             or one macro call is read as a candidate second spelling of the set: one found makes \
+             the set `derived from` a single named home both sites read (a const list or a \
+             function), or the hunk's spelling is a DRY defect lifted before hand-over, and the \
+             one-home line names the member sites it read.",
+            "The reviewing lens whose persona assigns the duty derives the set of added constants, \
+             statics, lists, closures and predicates itself from the production hunks, query \
+             strings included, and compares it with the record's one-home lines: an added item the \
+             record has no line for is a BLOCKING finding on its own.",
+            "The reviewing lens whose persona assigns the duty reads the walk record's one-home \
+             lines for every item the unit adds: an added item with no line, or a line false at \
+             head - the fact has another spelling the line does not name, or the named derivation \
+             or pin does not exist - is a BLOCKING finding on its own (DRY, single \
+             responsibility).",
+            "The reviewing lens whose persona assigns the duty derives the added set by the same \
+             shapes, the `ADDED \
              PREDICATES` list and every added set of named members included, and runs the member \
              search itself for every added set: an added predicate with no line, two added \
              predicates of one fact with two lines, or a second spelling of a set the line does \

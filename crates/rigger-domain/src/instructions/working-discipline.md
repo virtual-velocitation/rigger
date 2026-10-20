@@ -7,7 +7,7 @@ claim you make against the tree, never against memory; leave no corner (empty, r
 revert, DROPPED, concurrent, crash-resume, cold start, existing data) unwalked.
 
 Success is excellence, never subversion. A red gate is fixed at its cause. Narrowing any
-gate's instrument (an exclusion list, a skip attribute, an `#[allow]`, a lowered threshold, a
+gate's instrument (an exclusion list, a skip attribute, a lint suppression, a lowered threshold, a
 filter that hides a case, a deleted or weakened test, a `--force`), deleting the code a finding
 lives in, or reading a criterion in the way that fits the work you already did, is the same
 defect as the finding it hides and a failure even when the gate goes green - the adversary and
@@ -50,12 +50,12 @@ tool that searches them.
   test helpers live before you write it; when a second home needs one the first already
   spells, move it to the shared home and have both call it, changing no assertion or expected
   value. The search is an instrument, not a claim: its unit is the statement, never the
-  body's name. Walk every test-side body you add or edit - a test fn, a helper, a fixture
+  body's name. Walk every test-side body you add or edit - a test function, a helper, a fixture
   builder, a table row's closure - statement by statement; each statement that is not a single
   call into the shared test home is a shape of its own, and its distinguishing expressions are
   mechanical: every string literal it spells, in full (an assertion, expect or panic message, a
   fixture path, a query text), and every call it makes outside the shared home with its first
-  argument token (`create_dir_all(root.join(`, `for_extension("rs")`). A body you add is walked
+  argument token (a path built from a root and a name, a file-extension argument). A body you add is walked
   whole, every statement; a body you edit is walked in its edited statements, the hunks of the
   unit's whole range inside it - the merge base with the run branch to head, the range the
   sentence walk uses - since a statement you did not touch carries no
@@ -80,14 +80,14 @@ tool that searches them.
   it and no assertion or expected value changed, CHECKED when kept apart, with the reason: the
   named way its shape differs. A CHECKED hit whose shape does not differ is a twin. A search
   you did not run is a record you cannot write. A record whose expressions are names only - a
-  fn name, the callee a helper wraps - for a body that spells a literal or an outside call is a
+  function name, the callee a helper wraps - for a body that spells a literal or an outside call is a
   record you cannot write either. The record is organised by statement: each statement of a
   body you add and each edited statement of a body you edit is quoted with its `file:line`,
   followed by its terms - every string literal it spells, alone, and every call it makes outside
   the shared home with its first argument token - each term with its search, or the statement is
   marked as a single call into the shared home with the callee named. A statement listed with a
-  literal or call it spells absent from its terms is a record you cannot write. The SDET lens
-  re-runs each recorded search on the review tree: a hit the record does not carry, or a CHECKED hit whose reason does not hold, is a
+  literal or call it spells absent from its terms is a record you cannot write. The reviewing lens whose persona
+  assigns the duty re-runs each recorded search on the review tree: a hit the record does not carry, or a CHECKED hit whose reason does not hold, is a
   BLOCKING finding on its own. The lens derives the expression set itself from the unit's test
   hunks at head - every string literal and every outside call with its first argument in every
   statement of each test-side body the unit adds and in the edited statements of each body it
@@ -106,10 +106,10 @@ tool that searches them.
 - **Every sentence about the changed behaviour is true at head.** The doc comments of each item
   you changed and of its callers, module docs, test names, test docs, assertion messages and
   operator docs say what the code at head does. Check: enumerate the walked set, each member
-  from what generates it - the `//!` module doc of every file the change touches (the
+  from what generates it - the module doc of every file the change touches (the
   changed-file list); the doc comment and every comment in the body of each item the change
-  touches (the hunks); the doc of the trait item a changed fn or any caller of one implements
-  and of the trait a changed impl is for (the impl headers); the doc of every item a changed
+  touches (the hunks); the doc of the interface item a changed function or any caller of one
+  implements and of the interface a changed implementation is for (the implementation headers); the doc of every item a changed
   hunk names, callee, constant or type returned (the hunk's identifiers); the doc of every
   caller of a changed item, read from the project's graph at depth 1 (`rigger graph --around
   <file>::<item> --depth 1`, the lines naming callers; the default depth returns the item's
@@ -121,7 +121,7 @@ tool that searches them.
   docs, test comments and assertion messages are sentences too), or your hand-over names each
   remaining occurrence as a deliberate mention with its reason. The record is owed on every
   change: one whole-tree DecisionMade naming the set walked by its generators (files, items,
-  trait items, callers, lines counted) and every sentence FIXED with its location, each
+  interface items, callers, lines counted) and every sentence FIXED with its location, each
   sentence the change writes marked new with its location; a member whose generator returned
   nothing is named as empty. The name count and the depth-1 caller read run once per item the
   hunks touch, new or pre-existing, its body or its doc changed, and the record pairs each item
@@ -137,7 +137,7 @@ tool that searches them.
   with no witness is a claim, not a record; a claim that quantifies over a set - every, all,
   always, any, a plural subject with a predicate - is witnessed once per case the code splits
   that set into (each arm that assigns the value, each component of a key or comparator, each
-  condition of a filter or guard, each branch of a match), the record naming the cases and a
+  condition of a filter or guard, each branch of a case statement), the record naming the cases and a
   witness per case, and a case the claim does not hold for makes the sentence false, to be
   narrowed or FIXED, never witnessed at the case it does hold for; a CHECKED sentence whose
   truth rests on code names
@@ -150,7 +150,7 @@ tool that searches them.
   generator above reaches: prose that states it without naming a changed item. So every
   spelling of each rewritten rule is walked too, and its search is an instrument, not a claim:
   write down, for the rule's OLD statement and for each label its cases carried, a pair of short
-  terms: the feature's name as the code spells it (the flag `--around`, the fn, field, variant
+  terms: the feature's name as the code spells it (the flag `--around`, the function, field, variant
   or table the rule concerns) and the rule's shortest distinguishing noun phrase (`exact id`,
   `import`, `collision`) - the words a sentence stating it cannot be written without, and each
   name the docs, test names and comments give a case the old rule decided (a "cross-file
@@ -166,7 +166,7 @@ tool that searches them.
   state, a history note, a different rule sharing the words). A rewritten rule with no search
   is a record you cannot write; a change that rewrites no rule names the set empty. A rule is
   rewritten whenever a condition of it changes - a boolean term your production hunks add to or
-  remove from a filter, guard, match-arm guard or predicate a function applies - even when no
+  remove from a filter, guard, case-arm guard or predicate a function applies - even when no
   sentence of yours moves, and its old statement is what the function's consumers spell: the
   notes they print, their Returns paragraphs, the docs of the variants the answer maps to and
   the oracles that assert them, read from the function's callers at depth 1 in the project's
@@ -175,10 +175,10 @@ tool that searches them.
   consumers spell it, the pair of the function's name as the code spells it and the old
   answer's noun, and run the rule search for each pair: every hit is FIXED, carrying the
   new qualifier, or CHECKED with the named reason the qualifier does not reach it (a call that
-  passes no path, say). The SDET
-  lens re-derives each generator's set on the review tree from the diff and the graph - the
-  changed-file list; each hunk's identifiers, doc links (`[...]`) and constants included; the
-  body comments of each changed item; the impl headers; the depth-1 callers; the tracked lines
+  passes no path, say). The reviewing lens whose persona assigns
+  the duty re-derives each generator's set on the review tree from the diff and the graph - the
+  changed-file list; each hunk's identifiers, cross-references and constants included; the
+  body comments of each changed item; the implementation headers; the depth-1 callers; the tracked lines
   spelling a changed item's name - compares it with the walk record, and re-runs each recorded
   rule-spelling search and re-reads every hit, CHECKED ones included, against the code at head:
   a member the record omits, a hit the record does not carry, or a CHECKED hit whose reason does
@@ -205,7 +205,7 @@ tool that searches them.
   members included, each with its claims and a witness per claim; a grouped verdict over any of
   them is a record the lens cannot write.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
-  code reads after your change, on any feature lane, is removed. Check: name its reader.
+  code reads after your change, under any build configuration, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
   rewriting its body. Check: diff the test between its red commit and head.
 - **Every fact your production delta states has one home.** A constant, static, list, closure
@@ -223,11 +223,11 @@ tool that searches them.
   other spelling` search runs the fragment's distinguishing literal (the column with its
   operator, the subquery's table) over the whole tree, pre-existing spellings included; a fact
   the tree already spells is `derived from` that spelling, the hunk and the existing sites
-  reading one fn, or `pinned to` it, and a fact the tree already spells twice is lifted at all
+  reading one function, or `pinned to` it, and a fact the tree already spells twice is lifted at all
   three sites - the pre-existing pair is the tree's debt, and the unit's third spelling makes it
   the unit's. The walk's item list is derived from the production hunks by shape as well as by
   name, since a predicate has no name the count could list: every boolean expression the hunks
-  add - an `if`, `else if`, `while` or match-guard condition, each operand of an `&&` or `||`
+  add - an `if`, `else if` or `while` condition or a pattern guard, each operand of an `&&` or `||`
   chain inside one, the body of a closure passed to `filter`, `any`, `all`, `retain`, `position`
   or `find`, and every conjunct inside a query string, format string or macro argument the
   production code executes - is an item, quoted with its `file:line` under the record's `ADDED
@@ -235,23 +235,23 @@ tool that searches them.
   appears in both lists, its rule search in one and its one-home line in the other, and neither
   entry stands in for the other. Two added predicates stating one fact - the same condition at
   two sites, or one condition and its negation - are one fact spelled twice: lifted to one home
-  both sites read (a fn or a value) or `pinned to` each other by a test that holds them equal,
+  both sites read (a function or a value) or `pinned to` each other by a test that holds them equal,
   never two `no other spelling` lines. An added set of named members - an array or slice of
-  constants, an `IN (..)` list, a `matches!` or a `match` with an arm per member, an `||` chain
+  constants, an `IN (..)` list, a pattern test or a case statement with an arm per member, an `||` chain
   of equalities - runs its `no other spelling` search as the name count of EACH member, and
-  every site where two or more of the members occur within one statement, one `match` or one
+  every site where two or more of the members occur within one statement, one case statement or one
   macro call is read as a candidate second spelling of the set: one found makes the set
-  `derived from` a single named home both sites read (a const list or a fn), or the hunk's
+  `derived from` a single named home both sites read (a const list or a function), or the hunk's
   spelling is a DRY defect lifted before hand-over, and the one-home line names the member sites
-  it read. An added item with no line is a record you cannot write. The architecture lens
-  derives the set of added constants, statics, lists, closures and predicates itself from the
+  it read. An added item with no line is a record you cannot write. The reviewing lens whose
+  persona assigns the duty derives the set of added constants, statics, lists, closures and predicates itself from the
   production hunks, query strings included, and compares it with the record's one-home lines:
-  an added item the record has no line for is a BLOCKING finding on its own. The architecture
-  lens reads the walk record's
+  an added item the record has no line for is a BLOCKING finding on its own. The reviewing lens
+  whose persona assigns the duty reads the walk record's
   one-home lines for every item the unit adds: an added item with no line, or a line false at
   head - the fact has another spelling the line does not name, or the named derivation or pin
   does not exist - is a BLOCKING finding on its own (DRY, single responsibility). The
-  architecture lens derives the added set by the same shapes, the `ADDED PREDICATES` list and
+  reviewing lens whose persona assigns the duty derives the added set by the same shapes, the `ADDED PREDICATES` list and
   every added set of named members included, and runs the member search itself for every added
   set: an added predicate with no line, two added predicates of one fact with two lines, or a
   second spelling of a set the line does not name, is a BLOCKING finding on its own.
@@ -266,8 +266,8 @@ tool that searches them.
 ## Fan out the mechanical work
 
 You reason; subagents look things up in the knowledge graph and check things. The graph is the
-lookup surface: a fan-out is over its nodes, never over files. Two kinds exist in this repository's
-`.claude/agents/`:
+lookup surface: a fan-out is over its nodes, never over files. Two kinds exist, the `lookup` and `verify`
+helpers rigger scaffolds into `.claude/agents/`:
 
 - `lookup` (Haiku, graph-only): ONE instance PER GRAPH NODE, dispatched in parallel. Any
   question of the form "for every entity / decision / criterion / finding, what ...": which

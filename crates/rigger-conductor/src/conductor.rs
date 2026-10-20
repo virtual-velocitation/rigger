@@ -12518,13 +12518,14 @@ pub fn review_protocol(actor: &str) -> String {
 /// exists to catch, name in a lesson, and restore. THE GATES GRADE, A REVIEW JUDGES THE
 /// RESIDUE: no tier re-runs the battery or a gate its [`gate_evidence_block`] shows green, and a
 /// reproduction builds into the unit's review cache ([`RunCtx::spawn_env`]). A REVIEW RUNS NO
-/// GATE'S TOOL: its last sentence keeps every gate's own tool out of every review, since the
-/// gate owns its run and a reviewer's run only repeats it at review cost. Shared by
+/// GATE'S TOOL: its last sentence keeps every gate's command, as the gate runs it, out of every
+/// review, since the gate owns its run and a reviewer's run only repeats it at review cost; the
+/// one targeted reproduction its third sentence names is not a gate run. Shared by
 /// [`review_protocol`] (the lens and adversary tiers, which also record findings through it)
 /// and [`RunCtx::run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
 /// wording rather than three hand-copied near-duplicates.
-pub const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. Never re-run the gate battery, or any gate the gate evidence shows green on the tree under review: the gates are the instrument that grades the work, and a review judges what they cannot see. To reproduce a specific suspicion - one named test, a reversion probe, a single-crate `cargo test -p <crate> <test>` - create your own throwaway scratch worktree and run it there, building into the CARGO_TARGET_DIR your spawn carries: the unit's review cache, never the cache the unit's gates use. Leave the unit's worktree exactly as you found it. Never run a gate's own tool, directly or through a verify helper: the gate evidence in your prompt is that gate's verdict, and a reviewer's run only repeats it at review cost.";
+pub const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. Never re-run the gate battery, or any gate the gate evidence shows green on the tree under review: the gates are the instrument that grades the work, and a review judges what they cannot see. To reproduce a specific suspicion - one named test, a reversion probe, a single targeted test run through the project's test command - create your own throwaway scratch worktree and run it there. A reproduction builds into the build cache your spawn carries: the unit's review cache, never the cache the unit's gates use. Leave the unit's worktree exactly as you found it. Never run a gate's command as the gate runs it, directly or through a verify helper: the gate evidence in your prompt is that gate's verdict, and a reviewer's run only repeats it at review cost; the one targeted reproduction above is not a gate run.";
 
 /// What an adjudicator's reject names on its verdict line beside the verdict: its REQUIRED
 /// list ([`RequiredItem`]), which the next attempt is handed ([`PriorFailure::block`]) and
@@ -38002,8 +38003,8 @@ mod tests {
     /// The gates grade the work, a review judges the residue: every review tier - lens,
     /// adversary and adjudicator - is told never to re-run the battery or a gate already green on
     /// its tree, to reproduce only a specific suspicion in its own scratch worktree building into
-    /// the unit's review cache, and never to run a gate's own tool, itself or through a verify
-    /// helper, since the gate evidence in its prompt is that gate's verdict.
+    /// the unit's review cache, and never to run a gate's command as the gate runs it, itself or
+    /// through a verify helper, since the gate evidence in its prompt is that gate's verdict.
     #[test]
     fn every_reviewer_prompt_leaves_the_gates_and_their_tools_to_the_gates() {
         let (lens, adversary, adjudicator) = review_tier_prompts();
@@ -38014,21 +38015,24 @@ mod tests {
         ] {
             assert!(
                 prompt.contains(
-                    "Never run a gate's own tool, directly or through a verify helper: the gate \
-                     evidence in your prompt is that gate's verdict, and a reviewer's run only \
-                     repeats it at review cost."
+                    "Never run a gate's command as the gate runs it, directly or through a verify \
+                     helper: the gate evidence in your prompt is that gate's verdict, and a \
+                     reviewer's run only repeats it at review cost; the one targeted reproduction \
+                     above is not a gate run."
                 ),
-                "the {tier} must be told never to run a gate's own tool; prompt was:\n{prompt}"
+                "the {tier} must be told never to run a gate's command as the gate runs it; prompt \
+                 was:\n{prompt}"
             );
             assert!(
                 prompt.contains(
                     "Never re-run the gate battery, or any gate the gate evidence shows green on \
                      the tree under review: the gates are the instrument that grades the work, \
                      and a review judges what they cannot see. To reproduce a specific \
-                     suspicion - one named test, a reversion probe, a single-crate `cargo test \
-                     -p <crate> <test>` - create your own throwaway scratch worktree and run it \
-                     there, building into the CARGO_TARGET_DIR your spawn carries: the unit's \
-                     review cache, never the cache the unit's gates use."
+                     suspicion - one named test, a reversion probe, a single targeted test run \
+                     through the project's test command - create your own throwaway scratch \
+                     worktree and run it there. A reproduction builds into the build cache your \
+                     spawn carries: the unit's review cache, never the cache the unit's gates \
+                     use."
                 ),
                 "the {tier} must leave the battery to the gates; prompt was:\n{prompt}"
             );

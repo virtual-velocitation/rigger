@@ -910,8 +910,8 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
 }
 
 /// Spec 113 (THE CORE NAMES NO GATE), at the review boundary end to end: the reviewer discipline
-/// every review tier receives forbids running a gate's own tool by naming the generic mechanism,
-/// never the one gate the core once knew or its tool. The conductor's in-process
+/// every review tier receives forbids running a gate's command as the gate runs it by naming the
+/// generic mechanism, never the one gate the core once knew or its tool. The conductor's in-process
 /// `every_reviewer_prompt_leaves_the_gates_and_their_tools_to_the_gates` pins the assembled
 /// strings; this pins the exact bytes the lens, the adversary AND the adjudicator each receive
 /// through the `AgentDriver` port during a live fan-out `run`, so a review call site that dropped
@@ -937,9 +937,10 @@ fn every_review_spawn_is_forbidden_a_gates_tool_without_naming_the_gate_or_its_t
         assert_eq!(
             prompt
                 .matches(
-                    "Never run a gate's own tool, directly or through a verify helper: the gate \
-                     evidence in your prompt is that gate's verdict, and a reviewer's run only \
-                     repeats it at review cost."
+                    "Never run a gate's command as the gate runs it, directly or through a verify \
+                     helper: the gate evidence in your prompt is that gate's verdict, and a \
+                     reviewer's run only repeats it at review cost; the one targeted reproduction \
+                     above is not a gate run."
                 )
                 .count(),
             1,
