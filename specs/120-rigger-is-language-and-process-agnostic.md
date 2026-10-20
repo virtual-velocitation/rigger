@@ -90,7 +90,9 @@ consumer's agents use is kept (event types such as `DecisionMade` and `LessonLea
 verbs and the graph's id syntax, the unit, run, attempt and review kinds). `<file>::<item>` stays: it is the graph's node id form
 (`rigger graph --around <file>::<item>`), rigger's own syntax, so `::` is no marker. Any marker hit at the launch base
 outside this list is reworded by the same token rule and listed in the hand-over; criterion 12 owns
-making `REVIEWER_DISCIPLINE` visible to its test if the base does not already.
+making `REVIEWER_DISCIPLINE` visible to its test if the base does not already; if the launch base has
+no shared shipped-text helper, criterion 12's test reads `BUILTIN` and the `pub`
+`REVIEWER_DISCIPLINE` directly from `src/cli/setup.rs` tests.
 
 **MARKERS, decided here.** Criterion 12's test lowercases each `BUILTIN` body and
 `REVIEWER_DISCIPLINE`. A word marker (`fn`,
@@ -99,7 +101,9 @@ making `REVIEWER_DISCIPLINE` visible to its test if the base does not already.
 equals a token of the body split on every character that is not a letter, a digit or `_`, so
 `create_dir_all` is one token, so a
 backticked word is a token and `implementation` is no hit. A syntax marker (`#[`, `//!`,
-`cargo.toml`) hits as a substring. The list lives in the test. A word marker hit in ordinary English is
+`cargo.toml`) hits as a substring. The list lives in the test. A word marker also hits when it equals any
+`_`-separated part of a token, so `cargo_target_dir` hits `cargo`; `create_dir_all` and
+`for_extension` stay whole-token markers. A word marker hit in ordinary English is
 reworded too (BASE lists each), so the rule stays a token rule. `macro`, `closure`, `if`, `while`,
 `&&`, `||` and the iterator verbs (`filter`, `any`, `all`, `retain`, `position`, `find`) stay: they
 are constructs shared across languages, and the rule bans a language's own vocabulary, not programming vocabulary. SQL, a query
@@ -184,7 +188,8 @@ the switch-off clause appended to the module-doc sentence criterion 2 wrote to 3
 `agentic-sdlc.md:62-68`, `README.md:19` and `:27` and the `authoring-loops.md` lines to 1; `best-practices.md:25` to 1;
 `docs.rs:552-553` to 10; `docs.rs:2514-2518` ("every spawn receives") to 3; `compose`'s doc (`instructions.rs:47-49`) and `BUILTIN`'s doc (:24) to 3;
 `render`'s doc (:64) to 4; the `ReviewPanel` struct doc (`crates/rigger-domain/src/config.rs:347-352`)
-to 7.
+to 7; the `spawn.rs` docs of `spawn_id`, `ROLE_ADVERSARY`, `ROLE_ADJUDICATOR` and `lens_role` (one
+fixed token per kind, the tier numbers) to 8.
 
 
 
@@ -263,7 +268,9 @@ becomes: a panel with a `tiers` policy, and its `light` panel, each have at leas
 `config_store.rs` tiers tests asserting the old text are criterion 7's to update. `tiers.light` takes either form. Until criterion 8 lands,
 criterion 7 also refuses a list naming two steps of one kind (on that tree both would mint one
 spawn id); criterion 8 lifts that refusal with the step tokens and turns criterion 7's
-interim-refusal fixture into an acceptance assertion; that edit is 8's. A list with an adversary before the
+interim-refusal fixture into an acceptance assertion; that edit is 8's. Criterion 7's "any
+sequence" therefore means any sequence of distinct kinds until criterion 8 lifts the repeated-kind
+refusal. A list with an adversary before the
 lenses is accepted from criterion 7 on: that adversary's roster is empty (ROSTERS). The same agent may appear in
 several steps (two adversary steps naming one agent are two steps). A consumer workflow whose agent
 id contains `@` is refused at load by design, the message naming the agent and telling the operator
@@ -328,7 +335,10 @@ minter and owns only the tokens it mints, never the roster's shape. A later step
 steps' findings through the graph, as at HEAD: every lens and adversary records each finding live
 as a `ReviewFinding` (`review_protocol`, `conductor.rs:12506`) and every later step's grounded
 prompt (`graph_context`) retrieves them; the roster is the thin driver's label
-(`agent.rs:132-142`), never the channel.
+(`agent.rs:132-142`), never the channel. `review_protocol`'s sentence that the adversary, the
+adjudicator and the fellow reviewers see each finding (`conductor.rs:12511`) stays as written: it is
+true of the canonical sequence, it is guidance, and the map form's prompts stay byte-identical; a
+list-form ceremony reads it as its own later steps.
 
 **THE ROUND'S VERDICT, decided here.** The one adjudicator step's verdict is the round's, read as
 at HEAD (`split_reject`, `conductor.rs:4996`; a converged reject approves, :5033-5034; the
@@ -412,7 +422,10 @@ criterion 6 adapts its calls into `run_review_agents_concurrently`, `run_adversa
 `run_adjudicator` (`:6981-7010`) to pass the `review_roster` and `adjudicator_roster` wrappers, and
 criterion 8 passes k = 1 there; its behaviour is unchanged.
 The scaffolded workflow (`SCAFFOLD_WORKFLOW`, `src/cli/setup.rs`) and this repository's
-`.rigger/workflow.yml:83-86` keep the map form. The per-unit build-cache naming
+`.rigger/workflow.yml:83-86` keep the map form. The workflow comment at `.rigger/workflow.yml:74-82`
+stays as written: it describes this repository's own three-step panel, and editing the file would
+change the definition hash. `review_unit`'s tier comments (`conductor.rs:4829`, :4856, :4885) are
+criterion 6's to reword as steps. The per-unit build-cache naming
 (`RunCtx::spawn_env` exports a `CARGO_TARGET_DIR`) is a toolchain coupling in code, out of this
 spec's scope like the grounder's Rust-only symbol extraction; the handbook's `## What rigger
 prescribes` section names both as the tools' current language coverage, which the rule binds and
