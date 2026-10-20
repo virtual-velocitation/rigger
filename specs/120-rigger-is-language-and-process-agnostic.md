@@ -52,7 +52,9 @@ procedures they keep (the sentence walk, the one-home rule, the test-side shape 
 lens's re-derivation) are guidance to authors and reviewers that no declared gate performs, which a
 consumer replaces or switches off through criteria 2 and 3; S2's clause names a hand procedure that
 re-creates a declared gate's function, which PR #117 removed; the probe rule and its tokens are gone at the launch base. The tree is named by the run's launch
-record (the merge of PR #117 into `rigger-run`), the citations staying those read at 1185c8c6.
+record (the merge of PR #117 into `rigger-run`), the citations staying those read at 1185c8c6, and the launch
+record confirms, before the run starts, that `REVIEWER_DISCIPLINE` at the launch base holds the five
+sentences REVIEWER CONTRACT quotes verbatim, is `pub`, and that the shipped-text helper exists.
 Criterion 12 removes the language vocabulary that remains (the MARKERS list). Criterion 12 owns the
 rewording and the edit of every existing test that pins a reworded phrase (`instructions.rs:380`
 "a test fn, a helper", `:446` "the `//!` module doc", and any other
@@ -68,7 +70,7 @@ file-extension argument); rustdoc's doc links (`[...]`, `working-discipline.md:1
 layers); "on any feature lane" (`working-discipline.md:208`) becomes "under any build
 configuration"; the project's package dependency chain (dropped, leaving: package dependencies point one
 way, pinned by a structural test); the English "to match its output" (`engineering-principles.md:41`)
-becomes "to fit its output"; in `REVIEWER_DISCIPLINE`, the third sentence is cut as REVIEWER CONTRACT
+becomes "to fit its output"; in `REVIEWER_DISCIPLINE`, the third sentence is cut and the fifth reworded as REVIEWER CONTRACT
 quotes (the targeted test run and the build cache replacing `cargo test -p <crate> <test>` and
 `CARGO_TARGET_DIR`); the constant is `pub` and the shared shipped-text helper exists at the launch base, both from
 PR #117, and criterion 12 reads both texts through that helper; and rigger's own anchors, both criterion 12's: the helpers
@@ -127,14 +129,17 @@ unit's review cache, never the cache the unit's gates use.") into two sentences:
 specific suspicion - one named test, a reversion probe, a single targeted test run through the
 project's test command - create your own throwaway scratch worktree and run it there." and "A
 reproduction builds into the build cache your spawn carries: the unit's review cache, never the
-cache the unit's gates use." Criterion 13 then moves three sentences verbatim into
+cache the unit's gates use." Criterion 12 also rewords the fifth sentence to "Never run a gate's
+command as the gate runs it, directly or through a verify helper: the gate evidence in your prompt is
+that gate's verdict, and a reviewer's run only repeats it at review cost; the one targeted
+reproduction above is not a gate run." A gate's own tool means its command as the gate runs it (its
+whole battery or sweep); the one targeted reproduction through the project's test command is the
+stated exception, so the two moved sentences agree. Criterion 13 then moves three sentences verbatim into
 `working-discipline.md` under a `## When you review` heading, the section sitting after `## Hand
 over a tree the gates only confirm` and before `## Fan out the mechanical work`, in this order: "Never re-run the gate
 battery, or any gate the gate evidence shows green on the tree under review: the gates are the
 instrument that grades the work, and a review judges what they cannot see.", the reproduction
-sentence criterion 12 wrote, and "Never run a gate's own tool, directly or through a verify helper:
-the gate evidence in your prompt is that gate's verdict, and a reviewer's run only repeats it at
-review cost." The constant keeps, in this order, what the harness enforces or provides: "Never write
+sentence criterion 12 wrote, and the fifth sentence criterion 12 reworded. The constant keeps, in this order, what the harness enforces or provides: "Never write
 to this unit's own worktree - it is the tree being judged, not yours to edit.", the build-cache
 sentence criterion 12 wrote, and "Leave the unit's worktree exactly as you found it." (both worktree sentences are what `guard_review_round_tree` enforces). The build-cache sentence
 stands alone: it names the cache the harness provides and holds whether or not the body is in
@@ -158,8 +163,9 @@ as written.
 `instructions::resolve_layers(operator: &[Instruction])`, decides every built-in's state and the
 remaining operator files; `compose`, `render` and `shadow_advisories` all read it, none re-derives
 it. For each `BUILTIN` entry in order: an operator `Instruction` whose `name` equals the built-in's
-name byte for byte (case-sensitive, never trimmed) with a body that is not empty after trimming
-whitespace REPLACES it (state `Replaced`); one with an empty or whitespace-only body SWITCHES IT OFF
+name byte for byte (case-sensitive, never trimmed) with a body that is not empty after trimming a
+leading U+FEFF and Unicode White_Space REPLACES it (state `Replaced`); one whose body is empty after
+that trim SWITCHES IT OFF
 (state `SwitchedOff`); otherwise it stays `BuiltIn`. A shadowing file never also appears in the
 operator layer. Every other operator file appends after the built-ins in filename order, as today.
 A near name (`engineering-principles .md`, whose stem carries a trailing space, or
@@ -525,7 +531,7 @@ unit, before rebasing a panel; this spec adds no rebase rule.
 | sequence | rebased map to list | the identical canonical spelling mints the same ids and replays |
 | sequence | a changed sequence on rebase | as at HEAD, by token (out of scope) |
 | sequence | risk routing moves a unit between the full and light panels across attempts | as at HEAD: `continue_prior_session` resumes by whole token, so a token naming a different agent in the other panel resumes that token's session (HEAD's bare `adversary` already does); accepted |
-| sequence | existing store | old ids carry bare tokens, which parse as step 1 of their kind; metrics fold them as today |
+| sequence | existing store | old ids carry bare tokens, which parse as step 1 of their kind; metrics fold them as today; an old id whose agent name held `@<n>` reads as a step suffix, accepted as the mislabel of a store older than the load-time refusal, as for the criterion 8 to 9 window |
 | sequence | `tiers.light` in list form | routed exactly as today; must have one adjudicator step, last |
 | sequence | a second adjudicator, or one not last | refused at load, naming the scope (criterion 7) |
 
