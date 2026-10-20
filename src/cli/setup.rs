@@ -4124,8 +4124,11 @@ mod tests {
     /// persona, helper or review-tier discipline it ships, and no production line of its own
     /// source, names mutation testing, its mutants, its sweep, its gate or its tool's
     /// classifications. A production line is one of a tracked `.rs` file under `crates/` or
-    /// `src/` outside a `tests/` directory, above the file's first `#[cfg(test)]`. The bare word
-    /// for a state change is no term: the core uses it for write authority.
+    /// `src/` outside a `tests/` directory, above the file's test module: the first
+    /// `#[cfg(test)]` line whose next line that is neither blank nor another attribute declares
+    /// a module (`mod`, `pub mod` or `pub(crate) mod`). A `#[cfg(test)]` on a `use`, `impl` or
+    /// `fn` ends nothing, so the few test-only lines it gates are read too. The bare word for a
+    /// state change is no term: the core uses it for write authority.
     #[test]
     fn no_built_in_entry_persona_helper_or_production_line_names_mutation_testing() {
         let mut texts = every_shipped_agent_text();
@@ -4140,11 +4143,28 @@ mod tests {
                 continue;
             }
             let text = std::fs::read_to_string(repo().join(file)).unwrap();
-            let production = text
-                .lines()
-                .take_while(|line| line.trim() != "#[cfg(test)]")
-                .enumerate();
-            texts.extend(production.map(|(at, line)| (format!("{file}:{}", at + 1), line.into())));
+            let lines: Vec<&str> = text.lines().collect();
+            let opens_test_module = |at: usize| {
+                lines[at].trim_start().starts_with("#[cfg(test)]")
+                    && lines[at + 1..]
+                        .iter()
+                        .map(|line| line.trim_start())
+                        .find(|line| !line.is_empty() && !line.starts_with("#["))
+                        .is_some_and(|item| {
+                            ["mod ", "pub mod ", "pub(crate) mod "]
+                                .iter()
+                                .any(|head| item.starts_with(head))
+                        })
+            };
+            let end = (0..lines.len())
+                .find(|&at| opens_test_module(at))
+                .unwrap_or(lines.len());
+            texts.extend(
+                lines[..end]
+                    .iter()
+                    .enumerate()
+                    .map(|(at, line)| (format!("{file}:{}", at + 1), (*line).to_string())),
+            );
         }
         for (at, text) in texts {
             let lower = text.to_lowercase();
