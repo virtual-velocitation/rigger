@@ -183,7 +183,8 @@ it. For each `BUILTIN` entry in order: an operator `Instruction` whose `name` eq
 name byte for byte (case-sensitive, never trimmed) with a body that is not empty after trimming a
 leading U+FEFF and Unicode White_Space REPLACES it (state `Replaced`); one whose body is empty after
 that trim SWITCHES IT OFF
-(state `SwitchedOff`); otherwise it stays `BuiltIn`. A shadowing file never also appears in the
+(state `SwitchedOff`); otherwise it stays `BuiltIn`. A `Replaced` body is printed by `compose`
+and `render` with its leading U+FEFF stripped. A shadowing file never also appears in the
 operator layer. Every other operator file appends after the built-ins in filename order, as today.
 A loaded near name (a `.md` file whose stem differs: `engineering-principles .md`, whose stem
 carries a trailing space, or `Engineering-Principles.md`) shadows nothing and appends; `render`
@@ -273,19 +274,24 @@ section in `.rigger/agents/adversary.md` (after brief 93's two hunts, which stay
 scaffold's adversary persona template in `src/cli/setup.rs`, the consumer's overridable default; the
 persona is the workflow definition. The DAG critique's method residue moves with it: the unit-size
 bullet (`conductor.rs:7876-7882`): its rule moves as persona prose without a number ("a unit over
-the cap your prompt states is a BLOCKING finding"), and the DAG prompt keeps the cap in force as one
-FRAMING sentence rendered from `unit_size_cap()` ("the unit size cap in force is N added lines"), so
-the number has one home, the scope sentence beginning "Reject
+the cap your prompt states is a BLOCKING finding"), and the DAG prompt keeps `unit_size_cap()`'s
+text verbatim as its cap framing (no edit to the function or `MAX_UNIT_ADDED_LINES`, both spec
+121's, which also moves the function's second sentence out of the binary), so the number has one
+home, the scope sentence beginning "Reject
 ONLY for" (:7927-7931) and the overlap parenthetical "judge ownership/coherence, not the overlap"
 (:7913-7914); the opener's citation of `docs/handbook/authoring-loops.md` rules 7-8 becomes "the
 decomposition rules in your persona", since a consumer repository has no such page.
 `PLAN_PROTOCOL`'s copy of the cap and `MAX_UNIT_ADDED_LINES` are spec 121's. The binary keeps, in both prompts, the task framing (what is
-under critique: the spec path and text verbatim, or the proposed DAG; the sentence "In
+under critique: the spec path and text verbatim, or the proposed DAG and the cap framing `unit_size_cap()` renders; the sentence "In
 your persona's critique rules a unit reads as a criterion, and a reject as a BLOCKING finding"
 replacing `CRITIQUE_STANCE`'s "In the rules below ..." sentence, with its trailing "The rules:"
 header dropped), the voided-duties clause in `spec_critique_prompt` only (the DAG prompt never had
 one and gains none) and `CRITIQUE_OUTPUT_CONTRACT` (the finding-line grammar and the verdict line the
-binary parses: the tool's contract). The moved constants are deleted; pins of their sentences move
+binary parses: the tool's contract). The DAG prompt keeps its own verdict and cause paragraph
+(`conductor.rs:7926-7941`, minus the moved "Reject ONLY for" sentence) as its output contract, and
+its prior-reject block and unit and overlap list as its task framing; it gains neither
+`CRITIQUE_OUTPUT_CONTRACT` nor a voided-duties clause, both of which stay in `spec_critique_prompt`
+only. The moved constants are deleted; pins of their sentences move
 to the template's section through the shipped-text helper; the critic's spawn path and
 `NO_CRITIC_CLAUSE` stay criterion 10's. A persona without the section still critiques: the binary's
 prompt stands alone, and the output contract decides the verdict. The DAG critique prompt reaches
@@ -293,13 +299,19 @@ two spawns, the adversary (`conductor.rs:8235`) and the gate's adjudicator (:825
 gates the fan-out. Criterion 15 therefore lands the method in both personas and both scaffold
 templates, each in its role's voice under `## When you critique a spec or a plan`: the adversary's
 section carries the stance, the hunts, Rules 7 and 8, the blast-radius note, the ownership defects
-and the ban (how to find); the adjudicator's section carries the judging rule (a finding stands
+and the ban (how to find); the section names which parts apply to a spec only (the two hunts, the
+ownership defects and the ban) and which to both a spec and a DAG (the stance, Rules 7 and 8, the
+blast-radius note), so the plan gate's scope is unchanged; the adjudicator's section carries the judging rule (a finding stands
 when it names a Rule 7 ownership defect, a Rule 8 open disposition, a bundled or twin criterion, a
 unit over the cap the prompt states, or a defect in a criterion's own text that no decomposition can
 remove; mechanical file overlap alone never does), its fix being the kept cause rule's: a re-plan for
 `decomposition-conflict`, the run stopping for `spec-ambiguity`; the ban on criterion edits stays in
 the adversary's section only, where it belongs to the spec critique. Two role-voiced sections are not a duplicate under the one-home
-rule: the home of a method is the persona of the role that applies it. If
+rule: the home of a method is the persona of the role that applies it. This
+repository's `.rigger/agents/*.md` are a consumer's copies of the scaffold, outside the one-home
+rule: the template is the shipped default and the repository's persona is its owner's
+configuration, free to diverge (this repository's already do), so no test holds a repository
+persona's section equal to its template's. If
 `.rigger/agents/adjudicator.md` already carries a plan-critique passage, criterion 15 extends it into
 that section rather than adding a second. The opener "the decomposition rules in your persona" is
 then true for both spawns.
@@ -313,7 +325,8 @@ memoized resolution kept across spawns is NOT an implementation of this design. 
 already covers the files (`definition_hash` folds every loaded instruction, `src/cli/mod.rs:1006-1011`),
 so an operator file added, emptied or deleted mid-run halts the next step as a definition drift;
 under `--rebase-definition` the next process composes from the files as they then are. Criterion 15
-rewrites `.rigger/agents/adversary.md`, which `definition_hash` (`src/cli/mod.rs:975-1010`) folds
+rewrites `.rigger/agents/adversary.md` and `.rigger/agents/adjudicator.md`, both of which
+`definition_hash` (`src/cli/mod.rs:975-1010`) folds
 into the run's definition pin (criterion 5's `README.md` rewrite does not: `load_instructions`
 excludes it). So criterion 15 lands in its own batch, after criterion 10 and before criterion 1, and
 at its integration the operator relaunches the driver by adoption with `--rebase-definition`, the
