@@ -54,7 +54,7 @@ consumer replaces or switches off through criteria 2 and 3; S2's clause names a 
 re-creates a declared gate's function, which PR #117 removed; the probe rule and its tokens are gone at the launch base. The tree is named by the run's launch
 record (the merge of PR #117 into `rigger-run`), the citations staying those read at 1185c8c6, and the launch
 record confirms, before the run starts, that `REVIEWER_DISCIPLINE` at the launch base holds the five
-sentences REVIEWER CONTRACT quotes verbatim, is `pub`, and that the shipped-text helper exists.
+sentences REVIEWER CONTRACT quotes verbatim (the fifth in its launch-base wording), is `pub`, and that the shipped-text helper exists.
 Criterion 12 removes the language vocabulary that remains (the MARKERS list). Criterion 12 owns the
 rewording and the edit of every existing test that pins a reworded phrase (`instructions.rs:380`
 "a test fn, a helper", `:446` "the `//!` module doc", and any other
@@ -70,8 +70,8 @@ file-extension argument); rustdoc's doc links (`[...]`, `working-discipline.md:1
 layers); "on any feature lane" (`working-discipline.md:208`) becomes "under any build
 configuration"; the project's package dependency chain (dropped, leaving: package dependencies point one
 way, pinned by a structural test); the English "to match its output" (`engineering-principles.md:41`)
-becomes "to fit its output"; in `REVIEWER_DISCIPLINE`, the third sentence is cut and the fifth reworded as REVIEWER CONTRACT
-quotes (the targeted test run and the build cache replacing `cargo test -p <crate> <test>` and
+becomes "to fit its output"; in `REVIEWER_DISCIPLINE`, the third sentence is split into the two sentences
+REVIEWER CONTRACT quotes and the fifth reworded as it quotes (the targeted test run and the build cache replacing `cargo test -p <crate> <test>` and
 `CARGO_TARGET_DIR`); the constant is `pub` and the shared shipped-text helper exists at the launch base, both from
 PR #117, and criterion 12 reads both texts through that helper; and rigger's own anchors, both criterion 12's: the helpers
 sentence (`working-discipline.md:312-335`, "exist in this repository's `.claude/agents/`") becomes
@@ -129,12 +129,17 @@ unit's review cache, never the cache the unit's gates use.") into two sentences:
 specific suspicion - one named test, a reversion probe, a single targeted test run through the
 project's test command - create your own throwaway scratch worktree and run it there." and "A
 reproduction builds into the build cache your spawn carries: the unit's review cache, never the
-cache the unit's gates use." Criterion 12 also rewords the fifth sentence to "Never run a gate's
+cache the unit's gates use." Criterion 12 also rewords the fifth sentence, at the launch base
+"Never run a gate's own tool, directly or through a verify helper: the gate evidence in your prompt
+is that gate's verdict, and a reviewer's run only repeats it at review cost.", to "Never run a gate's
 command as the gate runs it, directly or through a verify helper: the gate evidence in your prompt is
 that gate's verdict, and a reviewer's run only repeats it at review cost; the one targeted
 reproduction above is not a gate run." A gate's own tool means its command as the gate runs it (its
 whole battery or sweep); the one targeted reproduction through the project's test command is the
-stated exception, so the two moved sentences agree. Criterion 13 then moves three sentences verbatim into
+stated exception, so the two moved sentences agree. If `REVIEWER_DISCIPLINE` at the launch base
+holds no fifth sentence, criterion 12 appends the reworded fifth sentence after "Leave the unit's
+worktree exactly as you found it."; any other mismatch with the quoted text stops the launch for a
+Design amendment before a unit spawns. Criterion 13 then moves three sentences verbatim into
 `working-discipline.md` under a `## When you review` heading, the section sitting after `## Hand
 over a tree the gates only confirm` and before `## Fan out the mechanical work`, in this order: "Never re-run the gate
 battery, or any gate the gate evidence shows green on the tree under review: the gates are the
@@ -168,11 +173,14 @@ leading U+FEFF and Unicode White_Space REPLACES it (state `Replaced`); one whose
 that trim SWITCHES IT OFF
 (state `SwitchedOff`); otherwise it stays `BuiltIn`. A shadowing file never also appears in the
 operator layer. Every other operator file appends after the built-ins in filename order, as today.
-A near name (`engineering-principles .md`, whose stem carries a trailing space, or
-`Engineering-Principles.md`) shadows nothing and appends; `render` lists it under the operator
-heading, which is how an operator sees it did not shadow.
+A loaded near name (a `.md` file whose stem differs: `engineering-principles .md`, whose stem
+carries a trailing space, or `Engineering-Principles.md`) shadows nothing and appends; `render`
+lists it under the operator heading, which is how an operator sees it did not shadow; a file under
+`.rigger/instructions/` without the `.md` extension is ignored as at HEAD and named in no report.
 
-- `compose` prints `HEADING` bare (the " (non-negotiable)" suffix goes), then each built-in section
+- `compose` prints `HEADING` bare (the " (non-negotiable)" suffix goes; criterion 2 owns the
+  edit of every existing test that pins `HEADING` followed by " (non-negotiable)";
+  `RIGGER_COMMUNICATION`'s own suffix pins stay), then each built-in section
   under `## <name>`: the built-in body (`BuiltIn`), the operator body (`Replaced`), or nothing at all,
   heading included (`SwitchedOff`); then the unshadowed operator files. `HEADING` is printed even
   when every built-in is switched off and no operator file remains (`rigger prime` and the tests key
@@ -425,7 +433,8 @@ finding on it.
 
 - `metrics::review_tier` and `actor_tier` (`crates/rigger-domain/src/metrics.rs:239`, :256) key cost
   and precision on the kind (`lens`, `adversary`, `adjudicator`); the adversary-only fold (:1060)
-  counts a finding by any adversary-kind actor about files no lens-kind actor flagged;
+  counts a finding by any adversary-kind actor about files no lens-kind actor flagged, lens steps
+  after the adversary included, since the metric reads the whole round;
   `finding_survival` stays keyed by the full token, so `adversary@2` is its own row.
 - `dash::stage_of_role` and `role_and_agent` (`crates/rigger-dash/src/dash.rs:2534`, :2553) put every
   review-kind token in `Review` and group it under its kind, the agent label gaining ` step <k>`
@@ -446,7 +455,9 @@ finding on it.
   (`docs.rs:552-553`) is reworded as OUT OF SCOPE decides.
 - The canary: `canary_store::apply_model_pins` (`crates/rigger-conductor/src/canary_store.rs:168`)
   pins every agent of every step of the pinned kind; `run_canary` (:245) refuses a panel with no
-  adjudicator step, runs the steps in order under their step tokens, scores the lens tier over
+  adjudicator step, runs the steps in order under their step tokens, each canary spawn carrying
+  `step_roster(steps, index, review_step_role)`, the adjudicator's reversed run reversing the whole
+  ordered finding list across steps as at HEAD, scores the lens tier over
   every lens step and the adversary tier over every adversary step, and judges the one adjudicator
   step as today (`adjudicate`, :541). `--model <tier>=<id>` keeps its three tier names (`src/cli/eval.rs:94`).
 - Every direct reader of the panel's `lenses`, `adversary` and `adjudicator` FIELDS at 1185c8c6, and
@@ -503,7 +514,8 @@ are criterion 2's. That split (2: `:92`; 3: `:85`, `:90`; 4: `:94`; 12: `:87-88`
 authority for `authoring-agents.md:85-96`. `authoring-loops.md`'s
 existing workflow example keeps the map form, so `tests/handbook_grounder_accuracy.rs`'s
 `grounder:` check (:124-152) reads it unchanged; the five-step example sits in a fenced `yaml`
-block under a `### The review ceremony` heading and carries no `grounder:` line. A
+block under a `### The review ceremony` heading, the last subsection of `## What rigger
+prescribes`, and carries no `grounder:` line. A
 `--rebase-definition` that changes a unit's review panel mid-unit behaves as at HEAD, steps resuming
 by role token, so a token whose agent or position changed under the rebase may resume another step's
 recorded spawn or session, exactly as the bare adjudicator token does today when `adjudicator: z`
