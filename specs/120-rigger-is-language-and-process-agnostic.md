@@ -41,19 +41,29 @@ declaring agents a, b, c, x and z and one stage, runs `config_store::parse_workf
 
 **BASE, decided here.** This spec lands on `rigger-run` after PR #117 (the removal of mutation
 testing from the core instruction layer and the personas) is merged to main and merged into
-`rigger-run`. On that tree no BUILTIN body names a gate's procedure; criterion 12 removes the language vocabulary that
-remains (the MARKERS list). The symbol citations stay those read at 1185c8c6. Criterion 12 owns the
+`rigger-run`. On that tree the bodies name no gate's procedure: the review
+procedures they keep (the sentence walk, the one-home rule, the test-side shape search and each
+lens's re-derivation) are guidance to authors and reviewers that no declared gate performs, which a
+consumer replaces or switches off through criteria 2 and 3; S2's clause names a hand procedure that
+re-creates a declared gate's function, which PR #117 removed. The tree is named by the run's launch
+record (the merge of PR #117 into `rigger-run`), the citations staying those read at 1185c8c6.
+Criterion 12 removes the language vocabulary that remains (the MARKERS list). Criterion 12 owns the
 rewording and the edit of every existing test that pins a reworded phrase (`instructions.rs:380`
 "a test fn, a helper", `:446` "the `//!` module doc", and any other
 test a reworded phrase breaks); criteria 2 to 5 own no body text. The bodies drop every language construct
 they name, each with its replacement: `#[allow]` (a lint suppression); `fn` (function); `crate` and
 `crates` (package); `impl` (implementation); `trait` (interface); the `//!` module doc (the module
 doc); `matches!`, a `match` with an arm per member and the match-guard condition (a pattern test, a
-case statement with an arm per member, a pattern guard); the argument-token examples
+case statement with an arm per member, a pattern guard); each branch of a match (each branch of a
+case statement); the match-arm guard (a case-arm guard); the argument-token examples
 `create_dir_all(root.join(` and `for_extension("rs")` (a path built from a root and a name, a
 file-extension argument); the wasm `core` lane sentence (the inner layer compiles without the outer
 layers); the project's package dependency chain (dropped, leaving: package dependencies point one
-way, pinned by a structural test).
+way, pinned by a structural test); and rigger's own anchors, both criterion 12's: the helpers
+sentence (`working-discipline.md:312-335`, "exist in this repository's `.claude/agents/`") becomes
+"the `lookup` and `verify` helpers rigger scaffolds into `.claude/agents/`"; the adapter list at
+`engineering-principles.md:9-11` (segmented stores, graph projector, headless host) becomes generic
+examples (a store, a projector, a host).
 
 **MARKERS, decided here.** Criterion 12's test lowercases each `BUILTIN` body. A word marker (`fn`,
 `crate`, `impl`, `trait`, `match`, `matches`, `cargo`, `clippy`, `rustfmt`, `wasm`, `rs`,
@@ -62,8 +72,9 @@ equals a token of the body split on every character that is not a letter or a di
 backticked word is a token and `implementation` is no hit. A syntax marker (`#[`, `//!`,
 `cargo.toml`) hits as a substring. The list lives in the test. `macro`, `closure`, `if`, `while`,
 `&&`, `||` and the iterator verbs (`filter`, `any`, `all`, `retain`, `position`, `find`) stay: they
-are constructs shared across languages, and the rule bans a language's own vocabulary, not
-programming vocabulary.
+are constructs shared across languages, and the rule bans a language's own vocabulary, not programming vocabulary. SQL, a query
+string, a conjunct and `IN (..)` stay too: a query language used from any host language is not the
+host language's vocabulary.
 
 
 
@@ -107,9 +118,10 @@ heading, which is how an operator sees it did not shadow.
   operator file, as at HEAD.
 - Until criterion 4 lands, `render` and `instructions_in_force_line` print as at HEAD, a shadowing
   file listed as an operator file.
-- The module doc's sentence "no configuration removes it" (:11) becomes the replace rule in one
-  sentence (criterion 2's), and criterion 3 adds the clause that an empty same-named file switches a
-  built-in off.
+- The module-doc sentence at `instructions.rs:10-12` ("no configuration removes it", :11) has one
+  owner: criterion 2 rewrites it into the replace rule, keeping "reaches every agent rigger spawns";
+  criterion 3 appends the switch-off clause to the sentence criterion 2 wrote and qualifies "reaches
+  every agent" with "unless switched off".
 - `SCAFFOLD_INSTRUCTIONS_README` (`src/cli/setup.rs:1499`) documents the mechanism and names every
   built-in by file name; this repository's own `.rigger/instructions/README.md`, today byte-equal
   to the scaffold text, is rewritten to the new text. Another project's README stays as written
@@ -137,7 +149,8 @@ under `--rebase-definition` the next process composes from the files as they the
 to a named criterion is rewritten when that criterion lands. An earlier unit whose behaviour makes
 it false leaves it as it is: its hand-over lists the sentence as assigned to that criterion, and its
 reviewers raise no finding on it. The assignments: `authoring-agents.md:85`, `:90` and
-`instructions.rs:10-12` to 3; `:92` to 2; `:94` to 4; `:87-88` to 12; the instructions README to 5;
+the switch-off clause appended to the module-doc sentence criterion 2 wrote to 3; `:92` and
+`instructions.rs:10-12` to 2; `:94` to 4; `:87-88` to 12; the instructions README to 5;
 `agentic-sdlc.md:62-68`, `README.md:19` and `:27` and the `authoring-loops.md` lines to 1;
 `docs.rs:552-553` to 10.
 
@@ -213,7 +226,9 @@ criterion 7 also refuses a list naming two steps of one kind (on that tree both 
 spawn id); criterion 8 lifts that refusal with the step tokens and turns criterion 7's
 interim-refusal fixture into an acceptance assertion; that edit is 8's. A list with an adversary before the
 lenses is accepted from criterion 7 on: that adversary's roster is empty (ROSTERS). The same agent may appear in
-several steps (two adversary steps naming one agent are two steps).
+several steps (two adversary steps naming one agent are two steps). A consumer workflow whose agent
+id contains `@` is refused at load by design, the message naming the agent and telling the operator
+to rename it; a run live on such an id halts at its next step with that refusal.
 
 **STEP ROLE TOKENS, decided here.** A spawn id is `{unit}/{role}#{attempt}` and unique per role
 (`crates/rigger-domain/src/spawn.rs:140`), so every step needs its own role token, and a map-form
@@ -298,6 +313,11 @@ Every production site at 1185c8c6 that mints, compares or classifies `ROLE_ADVER
 | `conductor.rs:8228`, :8235, :8250 (plan-critique gate), `review.rs:393` `critique_spawn_id` | mints | unchanged: out of scope |
 | `src/cli/eval.rs:94` | parses `--model` tier names | unchanged |
 
+Between criterion 8 and criterion 9 an `@k` token falls to each criterion-9 reader's non-review arm
+(metrics, dash and `rigger.js` misclassify it); accepted, and criterion 8's reviewers raise no
+finding on it.
+
+
 
 - `metrics::review_tier` and `actor_tier` (`crates/rigger-domain/src/metrics.rs:239`, :256) key cost
   and precision on the kind (`lens`, `adversary`, `adjudicator`); the adversary-only fold (:1060)
@@ -364,8 +384,10 @@ opening, the `review:` comment at :54, the lifecycle line at :100, the new secti
 `agentic-sdlc.md:62-68` (the review section, retitled as a sequence whose default is the three
 steps) and `docs/handbook/README.md:27` (the glossary's review-panel line) and `:19` (the "three-tier
 adversarial review" phrase) and `authoring-loops.md:106`, all criterion 1's; and
-`authoring-agents.md:85-96`, split by owner: `:94` (the report's states) is criterion 4's, `:87-88` (the bodies) criterion 12's; `:85` (reaches every agent), `:90` and the `instructions.rs:10-12` clause (reaches every agent anywhere, no configuration removes it) are
-criterion 3's; `:92` (appended after the built-ins) is criterion 2's. `authoring-loops.md`'s
+`authoring-agents.md:85-96`, split by owner: `:94` (the report's states) is criterion 4's, `:87-88` (the bodies) criterion 12's; `:85` (reaches every agent), `:90` and the switch-off clause appended to
+the module-doc sentence criterion 2 wrote are criterion 3's; `:92` (appended after the built-ins)
+and the `instructions.rs:10-12` sentence (reaches every agent anywhere, no configuration removes it)
+are criterion 2's. `authoring-loops.md`'s
 existing workflow example keeps the map form, so `tests/handbook_grounder_accuracy.rs`'s
 `grounder:` check (:124-152) reads it unchanged; the five-step example sits in a fenced `yaml`
 block under a `### The review ceremony` heading and carries no `grounder:` line. A
