@@ -42,9 +42,10 @@ production text (outside `tests/`, cut at each file's test module) of `crates/` 
 such literals in 59 files; the prompt-bearing subset (files spelling `SpawnOpts`, `SpawnHost` or
 `prompt_surface`) holds 124 in 8 files (`conductor.rs` 95, the headless host driver module of `rigger-driver` 10, `critique.rs` 6,
 `canary_store.rs` 5, `gate.rs` 3, `driver/cli.rs` 2, `driver/mod.rs` 2, `agent.rs` 1), a set that grows
-by every renderer file criterion 16 moves onto `prompt_surface`: after it, 12 files holding 278 such
+by every renderer file criterion 16 moves onto `prompt_surface`: after it, 13 files holding 280 such
 literals at 3cee73df's count (the 8 above plus `src/cli/mod.rs` 91, `mcpserver.rs` 38, `src/cli/guard.rs`
-14 and `review.rs` 11), and each crate's new `prompt_surface` module, whose literals are the registry
+14, `review.rs` 11 and `src/cli/prime.rs` 2, the prime renderer's literals criterion 16 moves out of
+`src/cli/setup.rs`), and each crate's new `prompt_surface` module, whose literals are the registry
 itself. Tool results, errors and CLI output an agent reads back are data, not instruction, and are
 outside this claim (THE SOURCE SWEEP's tool-output category).
 
@@ -159,9 +160,13 @@ only when its inner array becomes empty, an emptied `PreToolUse` array and an em
 removed in turn, so a settings file rigger alone populated returns to its pre-rigger shape (the
 byte-equal check reads that result), every other hook kept, writing only when the merge changes
 the file. Install keys on the same rule: the guard is present when any inner `PreToolUse` hook has
-that command (`cmd_setup` parses `.rigger/workflow.yml` after `init_project` to read the
+that command, and an install with the key true replaces every inner hook carrying
+`GREP_GUARD_COMMAND` whose matcher differs from `GREP_GUARD_MATCHER` (`hooks.rs:25`), so exactly one
+entry with the current matcher remains (`cmd_setup` parses `.rigger/workflow.yml` after `init_project` to read the
 key and fails loudly on a parse error, as `get_referenced_agent_ids`, `setup.rs:189`, already does); and `hooks::install_session_settings` takes the flag and merges only the
-prime hook and the status line. Corners: an absent `settings.json` with the key off writes nothing and
+prime hook and the status line. Corners: with the key off the removal reads `settings.json` only if it exists and
+creates no `.claude/` directory (it never reaches the settings installer's directory creation,
+`setup.rs:1164`), so an absent `settings.json` with the key off writes nothing and
 reports `AlreadyCurrent`; a removal that changes the file reports `Refreshed`;
 `hooks::carries_session_settings` takes the same flag, which its caller (`src/cli/validate.rs:824`)
 reads from the loaded config; `session_hooks_advisory` (`src/cli/validate.rs:822-834`) names the
@@ -390,22 +395,25 @@ variable, which only the courier's prefix fills (`${REPO}/.rigger/tmp/cargo-targ
 scratch root, whose default is the cache home). The binary owns that fallback, and never onto the shared
 cache, which spec 77 criterion 5's round-3 fix withheld from an unguarded build on purpose
 (`gate.rs:634-654`: a concurrent `rigger reset --build-cache` could reap it mid-build). Criterion 11's
-degraded branch sets `spawn::BUILD_CACHE_ENV` to a per-build directory of its own,
-`gate-build-<gate id>-<pid>`, under the registered scratch root the gate runs beneath: the
+degraded branch sets `spawn::BUILD_CACHE_ENV` to a per-build directory of its own, created
+exclusively by each degraded run (create-new semantics; named by the gate id plus a mkdtemp-style
+random suffix, a collision retrying with a new suffix), under the registered scratch root the gate
+runs beneath: the
 `gate_scratch` root when the runner is handed one, else the scratch root `build_cache_dir` sits
 directly under (`shared_build_cache_paths` derives both from one `scratch_root_from_env`); never the
 shared cache and never the ambient environment. The same per-build fallback applies when
 `build_cache_dir` is empty and `target_dir` is too, so no branch reads the ambient variable; with no
 root to place it under (no production caller: every conductor call hands `build_cache_dir` whenever
-`target_dir` is empty) the runner fails the gate naming the missing root. The runner reaps its own
-per-build directory when the gate's process exits, success or failure (the cache is cold and nothing
+`target_dir` is empty) the runner fails the gate naming the missing root. The runner deletes only the
+directory it created, when the gate's process exits, success or failure (the cache is cold and nothing
 reuses it); the scratch root's teardown is the backstop for a runner that dies mid-gate (a unit's
 gate scratch root by `worktree::reclaim_gate_scratch_sibling` at its landing, `conductor.rs:9988`;
 the run's scratch root by the run-teardown sweep), and a concurrent `rigger reset --build-cache` reclaims
 a scratch root only when its holder is dead, leaving a held root alone. So the courier passes no
 cache prefix. Criterion 11 owns the branch edit, the reap and its test: a forced guard-probe failure builds
 under the scratch root, never into the gated tree and never into the shared cache, and its per-build
-directory is gone once the gate returns. The script's comment lines are not prompt
+directory is gone once the gate returns; two degraded runs of one gate id in one process build in
+two directories and each removes only its own. The script's comment lines are not prompt
 text and stay. Criterion 11 edits the pins at `src/cli/mod.rs:5437-5450` that quote the old text.
 
 **THE SCRATCH TOOL NAMES NO TOOLCHAIN, decided here (criterion 12).** The `rigger_scratch`
@@ -486,8 +494,11 @@ exposing `pub fn prompt_groups() -> &'static [Group]` ordered by surface then by
 crate only the texts it renders itself (the critique prompt's framing and `CRITIQUE_OUTPUT_CONTRACT`,
 `review.rs`); `rigger-conductor` the conductor's and the canary's texts; `rigger-driver` the cli
 host's; `rigger-dash` the MCP tool descriptions and their `inputSchema` property descriptions
-(`mcpserver.rs:757-773`); the binary crate (`src/`) the critic spawn's framing (`src/cli/critique.rs`),
-`GREP_GUARD_MESSAGE` and the write-guard deny reason. No adapter text moves inward across a crate
+(`mcpserver.rs:757-773`); the binary crate (`src/`) the critic
+spawn's framing (`src/cli/critique.rs`), `GREP_GUARD_MESSAGE`, the write-guard deny reason and the
+SessionStart `rigger prime` output's fixed texts (its headers and labels, never the store data they
+frame), whose renderer (`cmd_prime` and `instructions_in_force_line`, `src/cli/setup.rs:1410-1478`)
+criterion 16 moves into a new `src/cli/prime.rs`, so `setup.rs` stays outside the sweep. No adapter text moves inward across a crate
 boundary: the dependency rule holds for data as for code, and the domain never spells a host's
 vocabulary. Each distinct text is one `pub const` of its crate's module, and every renderer formats
 from those constants through `fill`, so no prompt literal stays in the renderer. A text shared by
@@ -501,7 +512,7 @@ and `graph_around_recovery`, `task_block`, `PriorFailure::block`, `ReviewRound::
 `gate_evidence_block`, `conflict_resolution_prompt`, `later_attempt_block`, `DOC_ONLY_ROUND`,
 `write_peers_pointer`, `write_lookup_pointer`, the DAG critique prompt and `re_plan`'s framing, the
 critique prompt's kept framing and `CRITIQUE_OUTPUT_CONTRACT`, the canary's `review_header` and
-`adjudicator_prompt` (`canary_store.rs:646-679`), `framed`, the MCP tool descriptions of all three
+`adjudicator_prompt` (`canary_store.rs:646-679`), `framed`, `rigger prime`'s output, the MCP tool descriptions of all three
 surfaces and their `inputSchema` property descriptions (moved out of the `json!` literals in
 `tool_list`, `mcpserver.rs:750-776`) and
 `GREP_GUARD_MESSAGE` and the `rigger guard-write` deny reason (`guard_write_deny_outside_first_root`,
@@ -523,7 +534,9 @@ rendering, then concatenated; a surface with mutually exclusive branches (a PASS
 or a joined list, a stage with or without a criterion) gets one fixture per branch, each naming the
 groups that branch renders, so every group is rendered by some fixture. For `tool_list` the test
 collects every `description` string of the advertised JSON in document order and compares that
-list's concatenation with the dash crate's groups. The binary crate's `prompt_surface` module lives in its LIB target (`src/lib.rs` gains `pub mod
+list's concatenation with the dash crate's groups. For `rigger prime`'s output the test collects the
+fixed texts in render order over a fixture store, the store data (decision ids and summaries, the
+operator file count) replaced by `{slot}` values. The binary crate's `prompt_surface` module lives in its LIB target (`src/lib.rs` gains `pub mod
 prompt_surface`), which `src/cli` reads; it also exposes `pub fn all_groups() -> Vec<&'static Group>`,
 collecting every crate's `prompt_groups()` plus its own, the one enumeration. PR #117's
 `every_shipped_agent_text()` (a bin-test helper) reads `all_groups()`, labelling each group `REGISTRY
@@ -568,6 +581,7 @@ doc comment opens with; a surface with two classes has one row per class.
 | dash | the MCP tool descriptions and `inputSchema` property descriptions | each tool and argument | CONTRACT |
 | binary | the critic spawn's framing (`src/cli/critique.rs`) | the spec and its critique facts | FRAMING |
 | binary | `GREP_GUARD_MESSAGE`, the `rigger guard-write` deny reason | each denial | CONTRACT |
+| binary | `rigger prime`'s output (`src/cli/prime.rs`) | the instructions-in-force line, the decisions header, the no-store and none-yet lines | FRAMING |
 
 **THE PHRASE AND MARKERS TESTS, decided here (criterion 17).** One test, in `src/cli/setup.rs`'s
 tests beside spec 120's MARKERS function (a test-module function the `tests/` directory cannot reach),
@@ -642,7 +656,8 @@ with `--rebase-definition`, as for spec 120's criterion 15.
 | `test_author` | existing store | recorded ids unchanged; a store whose run spawned the conventional agent replays by id |
 | `grep_guard` | existing data | a settings.json carrying the guard and a foreign PreToolUse hook, in one block or two: setup removes only inner hooks whose command is `GREP_GUARD_COMMAND`, any matcher, dropping a block only once its inner array is empty |
 | `grep_guard` | repeated | setup twice with the key declared writes once; absent twice removes once |
-| `grep_guard` | empty | no `settings.json` and the key off: nothing written, `AlreadyCurrent` |
+| `grep_guard` | empty | no `settings.json` and the key off: nothing read or written, no `.claude/` directory created, `AlreadyCurrent` |
+| `grep_guard` | drifted matcher | an installed guard hook whose matcher differs from `GREP_GUARD_MATCHER`: an install with the key true replaces it, so exactly one entry with the current matcher remains |
 | `grep_guard` | reverted | the key flipped false after a setup: the installed hook denies until the next `rigger setup`; accepted |
 | spawn host | concurrent, crash-resume, cold start | `SpawnHost::resolve` is pure over the loaded `Config` and the root; every process resolves again |
 | helper copy | empty | no `.claude/agents/` file: the embedded text |
@@ -656,6 +671,7 @@ with `--rebase-definition`, as for spec 120's criterion 15.
 | overlay field | empty | absent or empty list: the generic step only |
 | scaffold implementer | existing data | an existing project's workflow and personas are write-once and stay; only a fresh `rigger init` gets the new ids |
 | gate cache | degraded guard | a per-build directory under the held scratch root; a concurrent reset leaves a held root alone |
+| gate cache | concurrent | two degraded runs of one gate id, in one process or two, each create their own directory exclusively (the gate id plus a random suffix, create-new, a collision retried), and each deletes only the directory it created |
 | gate cache | repeated, crash | the runner reaps its per-build directory when the gate's process exits, success or failure, so a second degraded run leaves no first directory behind; a runner that dies mid-gate leaves it to the scratch root's teardown |
 | `build_cache_env` | empty | never null: a wave item with no per-unit cache still carries the name, so SCRATCH POLICY's export sentence renders for every spawn, as at HEAD |
 | scope sentence | DROPPED | `unit_size_cap`'s second sentence leaves the DAG prompt and lands in the three critique and planning personas and their scaffold templates in the same commit |
@@ -688,7 +704,9 @@ lead-in sentence to 17.
 
 OUT OF SCOPE: the build-cache variable's value (`spawn::BUILD_CACHE_ENV`, read by `RunCtx::spawn_env`
 and the gate runner) and the
-grounder's Rust-only extraction, as spec 120 decides; the SessionStart `rigger prime` hook (FRAMING);
+grounder's Rust-only extraction, as spec 120 decides; the SessionStart hook mechanism (its `rigger prime` output's fixed texts are criterion 16's registry
+surfaces); the status line (`console::statusline`, `rigger status --line`), the editor's display,
+read by the operator and never by a spawn's model, so outside the Goal's claim;
 the liveness heartbeat, the self-report and the courier relay contracts; every other shipped skill's
 body (each becomes shadowable by criterion 14); `HELPER_AGENTS`' text; the personas' other content;
 the `mutation.sh` template; the audit's borderline items, kept FRAMING; everything spec 120 owns
@@ -732,7 +750,7 @@ TEST PLACEMENT:
 | Criterion | Test homes |
 | --- | --- |
 | 1 | `conductor.rs` tests (the pointer's text); `src/cli/setup.rs` tests through the shipped-text helper (the built-in's section) |
-| 2 | `crates/rigger-driver/src/hooks.rs` tests (merge with and without the flag); `src/cli/setup.rs` tests (`install_lookup_hook` install, remove, foreign hook kept); `crates/rigger-config-files/src/config_store.rs` (the key parses) |
+| 2 | `crates/rigger-driver/src/hooks.rs` tests (merge with and without the flag); `src/cli/setup.rs` tests (`install_lookup_hook` install, remove, foreign hook kept, a drifted matcher replaced, no `.claude/` created with the key off); `crates/rigger-config-files/src/config_store.rs` (the key parses) |
 | 3 | `hooks.rs` tests over a temp root with and without an operator copy, a malformed copy; `driver/mod.rs` tests (`--agents` and the pre-approval from one copy); `src/cli/mod.rs` tests (`definition_hash` changes with an operator copy) |
 | 4 | `conductor.rs` tests (`EMIT_PROTOCOL`, `review_protocol`, `DECISIONS_HEADER`); `src/cli/mod.rs` tests over `SHIM_MJS` |
 | 5 | `driver/cli.rs`, `mcpserver.rs` tests; `src/cli/mod.rs` tests over `RIGGER_WORKFLOW` and `SHIM_MJS`; `instructions.rs` tests (the built-in's bullet) |
@@ -741,7 +759,7 @@ TEST PLACEMENT:
 | 8 | `conductor.rs` tests (`PLAN_PROTOCOL`); `src/cli/setup.rs` tests (persona and seed) |
 | 9 | `conductor.rs` tests (both PATTERN lines); `src/cli/setup.rs` tests (the built-in's bullet) |
 | 10 | `conductor.rs` tests (declared, absent with `sdet-author` defined, an undefined id refused); `config_store.rs` tests (the refusal) |
-| 11 | `spawn.rs` tests (the wire field); `src/cli/mod.rs` tests over `RIGGER_WORKFLOW`; `gate.rs` tests (a forced guard-probe failure builds under the scratch root, never into the gated tree or the shared cache, and its per-build directory is gone once the gate returns) |
+| 11 | `spawn.rs` tests (the wire field); `src/cli/mod.rs` tests over `RIGGER_WORKFLOW`; `gate.rs` tests (a forced guard-probe failure builds under the scratch root, never into the gated tree or the shared cache, and its per-build directory is gone once the gate returns; two degraded runs of one gate id in one process build in two directories, each removing only its own) |
 | 12 | `mcpserver.rs` tests |
 | 13 | `docs.rs` tests (the generic step); `src/cli/mod.rs` tests (`install_skills` with an overlay list) |
 | 14 | `src/cli/mod.rs` tests over a temp root (a shadow, a near name, a deleted shadow); a periphery test running the built binary's `setup` |
@@ -760,7 +778,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | Artifact | Owner |
 | --- | --- |
 | the pointer's framing paragraph, the Fan out section's two sentences and the cut of its "same rule" sentence | 1 |
-| `Defaults.grep_guard`, the flag's reading in `resolve`, `carries_session_settings`' flag, the `cmd_setup` workflow parse, `session_hooks_advisory`'s guard clause, the guard arms of `install_session_settings` and `install_lookup_hook`, the scaffold's `grep_guard` line | 2 |
+| `Defaults.grep_guard`, the flag's reading in `resolve`, `carries_session_settings`' flag, the `cmd_setup` workflow parse, `session_hooks_advisory`'s guard clause, the guard arms of `install_session_settings` and `install_lookup_hook` (the drifted-matcher replacement and the off-path's no-create read included), the scaffold's `grep_guard` line | 2 |
 | `hooks::resolved_helpers`, `SpawnHost.helper_root`, the `repo_root` parameter and every argument passing it (the `RunCtx` accessor, `critique.rs`, `run_canary` and its `eval.rs:228` caller, the test literals), its readers `spawn_config_args` and `allowed_tools_args` with both `build_args` callers, the `definition_hash` fold, the validate check of the copies | 3 |
 | `SpawnHost` with `grep_guard`, `SpawnHost::resolve(cfg)`, `SpawnOpts.host`, `SpawnOpts::new`, every construction site's edit, the no-`SpawnHost {` assertion | 2 |
 | the cut cadence clauses of `EMIT_PROTOCOL`, `review_protocol`, `DECISIONS_HEADER`, `renderPeers` | 4 |
@@ -776,7 +794,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | `DocsOverlay.global_constraints`, the `DocsContext` field, `planning-a-spec` as `Rendered`, `.rigger/docs-overlay.yml`, the re-rendered `skills/planning-a-spec/SKILL.md`, the edited static-body tests | 13 |
 | the shadow rule in `install_skills` and its report lines | 14 |
 | `SetSpec.implementer`, `scaffold/rust/set.yml`'s persona, the `implementer` seed, `@IMPLEMENTER@`, the edited seed-set test | 15 |
-| `rigger_domain::prompt_surface` (`Group`, `fill`), THE CLASS TABLE's doc-comment class words, each crate's `prompt_surface` module with its texts and `prompt_groups()`, the lib's `pub mod prompt_surface` and `all_groups()`, every renderer's move onto it, the re-pathed readers, the helper's registry entries | 16 |
+| `rigger_domain::prompt_surface` (`Group`, `fill`), the prime renderer's move into `src/cli/prime.rs` and its groups, THE CLASS TABLE's doc-comment class words, each crate's `prompt_surface` module with its texts and `prompt_groups()`, the lib's `pub mod prompt_surface` and `all_groups()`, every renderer's move onto it, the re-pathed readers, the helper's registry entries | 16 |
 | the phrase list, the MARKERS call over the registry, the negative fixture, the removal of the emptied open-exceptions list and its lead-in | 17 |
 | the sweep, the prompt-bearing derivation, its allow-list, the script regions (operator regions included), the region reader and their helper entries | 18 |
 | the lanes | 19 |
