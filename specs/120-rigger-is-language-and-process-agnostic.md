@@ -261,8 +261,9 @@ instructions (`EMIT_PROTOCOL`, `review_protocol`): they are the tool's contract.
 no added line under the Global constraints and has no MARKERS hit, so criterion 12's test stays
 green. Criterion 14 owns every pin of the constant's heading or sentences and, in
 `authoring-agents.md:85`, the words "It has two entries" (becoming "three") with a third numbered
-item after :88 naming `communication` and its subject; criteria 3 and 12 keep their other sentences
-on those lines, landing after 14.
+item after :88 naming `communication` and its subject; criterion 3 keeps its sentences on those lines, landing after 14;
+criterion 12's :87-88 wording lands before 14, and 14 adds its third item without rewording 12's
+lines.
 
 **THE CRITIQUE METHOD IS THE PERSONA'S, decided here.** Criterion 15 moves the method text verbatim
 out of the binary into the `adversary` persona: `CRITIQUE_STANCE`'s skepticism and citation
@@ -293,9 +294,11 @@ gates the fan-out. Criterion 15 therefore lands the method in both personas and 
 templates, each in its role's voice under `## When you critique a spec or a plan`: the adversary's
 section carries the stance, the hunts, Rules 7 and 8, the blast-radius note, the ownership defects
 and the ban (how to find); the adjudicator's section carries the judging rule (a finding stands
-when it names a Rule 7 ownership defect, a Rule 8 open disposition, a bundled or twin criterion, or
-a unit over the cap the prompt states; mechanical file overlap alone never does; a fix is a Design
-change, never a criterion edit). Two role-voiced sections are not a duplicate under the one-home
+when it names a Rule 7 ownership defect, a Rule 8 open disposition, a bundled or twin criterion, a
+unit over the cap the prompt states, or a defect in a criterion's own text that no decomposition can
+remove; mechanical file overlap alone never does), its fix being the kept cause rule's: a re-plan for
+`decomposition-conflict`, the run stopping for `spec-ambiguity`; the ban on criterion edits stays in
+the adversary's section only, where it belongs to the spec critique. Two role-voiced sections are not a duplicate under the one-home
 rule: the home of a method is the persona of the role that applies it. If
 `.rigger/agents/adjudicator.md` already carries a plan-critique passage, criterion 15 extends it into
 that section rather than adding a second. The opener "the decomposition rules in your persona" is
