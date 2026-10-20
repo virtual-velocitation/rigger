@@ -859,16 +859,6 @@ pub struct BuildConfig {
     /// every build is admitted immediately and no slot directory is ever touched.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: u32,
-    /// RETIRED (spec 91): the implementer's diff-scoped per-round mutation-efficacy switch
-    /// spec 73 introduced. [`Config::validate`] now REJECTS any explicit value naming spec
-    /// 91, because nothing reads it; the executables a gate needs on PATH are the ones that
-    /// gate declares under its own `requires` ([`Gate::requires`]), which the load's
-    /// requirement check resolves, never this field. Kept as a `String` field
-    /// (never removed from the struct) purely so a workflow still authored against the
-    /// retired switch parses far enough for `validate` to name it in its rejection, rather
-    /// than failing with an opaque serde "unknown field" error.
-    #[serde(default)]
-    pub mutation: String,
 }
 
 /// The `Workflow.build` field's serde default (spec 65): called only when the WHOLE
@@ -899,7 +889,7 @@ fn default_max_concurrent() -> u32 {
 pub struct Workflow {
     /// RETIRED: the top-level workflow `name` key. Nothing ever read it. Kept as a `String`
     /// field purely so a workflow.yml still carrying the line parses far enough for `validate`
-    /// to name it in its rejection - the same convention as the retired `build.mutation`.
+    /// to name the line to delete, rather than failing with a bare unknown-key error.
     #[serde(default)]
     pub name: String,
     #[serde(default)]
