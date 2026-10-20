@@ -60,10 +60,15 @@ heading, which is how an operator sees it did not shadow.
   advisories carry). `cmd_validate` (`src/cli/validate.rs:140`) prints
   each to stderr beside its other advisories (:229) and never changes its exit status. It reads the
   operator layer through `config_store::load_instructions`, the one loader.
-- `BUILTIN` SURFACE, decided here: criterion 5 owns the only assertion that iterates every `BUILTIN`
-  entry (the README names each); criteria 2 and 3 assert over one named entry and read only
-  `compose`'s output, and criterion 4 reads only `render`'s, `shadow_advisories`' and
-  `instructions_in_force_line`'s output.
+- `BUILTIN` SURFACE, decided here: criterion 5 owns the only new assertion that iterates every
+  `BUILTIN` entry (the README names each); the HEAD test
+  `an_empty_persona_still_receives_every_built_in_layer` (`instructions.rs:131-147`) is
+  pre-existing and exempt. Criteria 2 and 3 assert over named entries and read only `compose`'s
+  output, and criterion 4 reads only `render`'s, `shadow_advisories`' and
+  `instructions_in_force_line`'s output over a fixture of named entries ("each built-in" there means
+  each entry of that fixture).
+- Before criterion 3 lands, an empty same-named file leaves the built-in `BuiltIn` and appends as an
+  operator file, as at HEAD.
 - The module doc's sentence "no configuration removes it" (:11) becomes the override rule in one
   sentence.
 - `SCAFFOLD_INSTRUCTIONS_README` (`src/cli/setup.rs:1499`) documents the mechanism and names every
@@ -119,7 +124,7 @@ workflow-definition grounder (`reviewers_of`,
 sums nothing: it names each adjudicator step's agent that carries no per-agent bound under an
 unbounded default, as it names the one adjudicator today. Criterion 7 owns the dedup and these
 three readers' naming-once behaviour through the accessors, with its tests; none of it is criterion
-6's or 12's. `steps: []` is an empty panel, exactly as `review: {}` is: no review, and on a stage it
+6's or 10's. `steps: []` is an empty panel, exactly as `review: {}` is: no review, and on a stage it
 inherits `defaults.review` through `effective_review_panel` (`config.rs:958`) as an empty map does.
 
 **CANONICAL IDENTITY SURFACE, decided here.** Criterion 6's identity claim compares, for each
@@ -130,7 +135,9 @@ golden fixture in the test. The task prompt is `build_review_prompt`'s (`conduct
 not this surface. The fixtures: this repository's `.rigger/workflow.yml` panel, a lenses-only panel,
 a lenses-plus-adjudicator panel (the DROPPED case: the adversary is absent, so the adjudicator's
 roster names no `adversary`), and a `tiers` panel routed both light and full. The existing roster
-pins (`conductor.rs:32877-32885`) and the replay tests stay green unchanged.
+pins (`conductor.rs:32877-32885`) and the replay tests stay green unchanged. Criterion 6's loop
+applies `split_reject` to every `Adjudicator` step's verdict exactly as at HEAD (:4911-4915,
+:5033-5034), so the identity holds on a converged reject too.
 
 **PARSE AND REFUSALS, decided here.** `Config::validate` (`config_store.rs:286`) refuses, naming
 the scope (`defaults.review`, `defaults.review.tiers.light`, `stage "<name>" review`, `stage
@@ -158,7 +165,7 @@ neither `/`, `#` nor `~`, so `spawn_role` (`spawn.rs:222`) and `unit_of` stay co
 parser `spawn::review_step_of(role) -> Option<(ReviewKind, u32)>` reads a token back (a bare token
 is step 1; a suffix other than `@` and an integer >= 2 is no review token); criterion 8 migrates
 `SpawnResult::is_adjudicator` (`spawn.rs:653`) to it, and the other production classifiers are
-criterion 11's and 12's by name (READERS lists every site). The token is the step's label
+criterion 9's and 10's by name (READERS lists every site). The token is the step's label
 everywhere: the spawn id, the `tier` argument `run_reviewer` (`conductor.rs:7321`) names in its
 errors, the finding's `by` field (`review_protocol(actor)`), the session a later round resumes
 (`continue_prior_session`, `conductor.rs:4569`, keyed by role). The tokens are a pure function of
@@ -181,8 +188,8 @@ ordinal. When `round_delta` is `None`, every step runs as on a first round. A st
 on a first round is passed `round = None` everywhere: its prompt, `continue_prior_session`, the
 degenerate-verdict check (`ReviewerOutput::Verdict`, never `RoundVerdict`) and, for an adjudicator,
 `split_reject`. An `Adjudicator` step whose verdict is a reject ends the round: no later step
-spawns (this early stop is criterion 8's; what the round then returns is THE ROUND'S VERDICT's,
-criterion 10's). Until criterion 10 lands the verdict read is the step's own verdict line. The tree
+spawns; the verdict this early stop reads is the post-split one criterion 6's loop computes (THE
+ROUND'S VERDICT). The tree
 guard runs as today: `guard_review_round_tree` after the last step that ran, and
 `guard_review_round_tree_on_tier_err` when any step's spawn errors.
 
@@ -198,7 +205,7 @@ rosters through the one rule.
 
 **THE ROUND'S VERDICT, decided here.** Each `Adjudicator` step's verdict is read after its output
 goes through `split_reject` (`conductor.rs:4996`): a reject the split keeps ends the round (the
-early stop is EXECUTION's, criterion 8's) with the kept REQUIRED list the next round holds, and a
+early stop is EXECUTION's) with the kept REQUIRED list the next round holds, and a
 converged reject (`(true, CONVERGED, [])`, :5033-5034) counts as an approve, so the round
 continues. An approving step's output is recorded by its spawn and carried nowhere else. When the
 last step has run and no adjudicator rejected, the round approves; its reason (the last adjudicator
@@ -206,7 +213,8 @@ step's post-split reason), compensation target (`verdict_compensates`, :4910) an
 the LAST adjudicator step's, and the one `reviewed#{attempt}` stamp (:4958) carries that step's model
 alias. A rejected round's reason and compensation target are the rejecting step's, post-split; a
 compensation target named by an approving step that is not the last adjudicator step is dropped by
-design. A sequence with no adjudicator step approves when its last step ends, with no `reviewed`
+design. `verdict_compensates` reads each adjudicator step's raw output before `split_reject`, as at
+HEAD (:4910); only the reason is post-split. A sequence with no adjudicator step approves when its last step ends, with no `reviewed`
 stamp, as an adjudicator-less map panel does today (:4879-4884). The speculation winner's deferred
 `reviewed#{lane}` stamp (:6758-6759) keys on "the panel has an adjudicator step" and the last
 adjudicator step's alias. On a later round every adjudicator step that ran in the prior round ends its
@@ -222,11 +230,11 @@ Every production site at 1185c8c6 that mints, compares or classifies `ROLE_ADVER
 | --- | --- | --- |
 | `spawn.rs:654` `is_adjudicator` (read by `adjudication`, :663, the review-quality and finding-expiry folds, and the console, `console/mod.rs:262`) | classifies | 8 |
 | `conductor.rs:7258`, :7265, :7696, :7703, :7774 (`run_lens`, `run_adversary`, `run_adjudicator`) | mints | 8, through `review_step_role` |
-| `review.rs:258`, :268 (`review_roster`, `adjudicator_roster`) | mints the roster | 9 |
-| `metrics.rs:240-245` `review_tier`, :257 `actor_tier`, :1060 and :1065 the adversary-only fold | classifies | 11 |
-| `dash.rs:2537-2539` `stage_of_role` (called at :2357), :2554-2559 `role_and_agent` | classifies | 11 |
-| `workflows/rigger.js:325-343` `roleOf`/`phaseOf`, :365 `PERSONA_VERB`, :384 `ROSTER_VERB` | classifies | 11 |
-| `canary_store.rs:175`, :443, :460, :479, :490, :549, :551 | mints and keys tiers | 12 |
+| `review.rs:258`, :268 (`review_roster`, `adjudicator_roster`) | mints the roster | 8 |
+| `metrics.rs:240-245` `review_tier`, :257 `actor_tier`, :1060 and :1065 the adversary-only fold | classifies | 9 |
+| `dash.rs:2537-2539` `stage_of_role` (called at :2357), :2554-2559 `role_and_agent` | classifies | 9 |
+| `workflows/rigger.js:325-343` `roleOf`/`phaseOf`, :365 `PERSONA_VERB`, :384 `ROSTER_VERB` | classifies | 9 |
+| `canary_store.rs:175`, :443, :460, :479, :490, :549, :551 | mints and keys tiers | 10 |
 | `conductor.rs:13777` `recorded_session` | compares a whole token for equality | unchanged: one session per step token is the design |
 | `metrics.rs:1024` spawn timing, :1289 tier seeds | keys by whole token; seeds kind names | unchanged: `adversary@2` is its own timing row |
 | `conductor.rs:8228`, :8235, :8250 (plan-critique gate), `review.rs:393` `critique_spawn_id` | mints | unchanged: out of scope |
@@ -248,9 +256,10 @@ Every production site at 1185c8c6 that mints, compares or classifies `ROLE_ADVER
   (`crates/rigger-console/src/console/mod.rs:262`), so it marks every adjudicator step's verdict
   with no change of its own.
 - `wave::critic` (`crates/rigger-domain/src/wave.rs:204`) takes `defaults.review`'s first
-  `Adversary` step; `NO_CRITIC_CLAUSE`, the `rigger critique` help (`src/main.rs:341`) and the
-  rendered skill text (`docs.rs:553`) keep the `defaults.review.adversary` wording, which names the
-  map form.
+  `Adversary` step; `NO_CRITIC_CLAUSE` (`wave.rs:198`) and the `rigger critique` help
+  (`src/main.rs:341`) say "an adversary step in `defaults.review`" in place of
+  `defaults.review.adversary`, so the advice holds in both forms; the rendered skill text
+  (`docs.rs:553`) keeps its wording.
 - The canary: `canary_store::apply_model_pins` (`crates/rigger-conductor/src/canary_store.rs:168`)
   pins every agent of every step of the pinned kind; `run_canary` (:245) refuses a panel with no
   adjudicator step, runs the steps in order under their step tokens, scores the lens tier over
@@ -262,7 +271,9 @@ Every production site at 1185c8c6 that mints, compares or classifies `ROLE_ADVER
   `reviews_through_panel` (`wave.rs:174`) holds for and whose own `adversary` and `adjudicator`
   fields are empty (the fallback rule `reviewers_of` reads), in stage-name order, plus a
   `review <stage> light: <steps>` line under `tiers`. `<steps>` joins `lenses(a, b)`,
-  `adversary(x)`, `adjudicator(z)` with ` -> `; an empty panel prints `none`.
+  `adversary(x)`, `adjudicator(z)` with ` -> `, rendering `effective_review_panel(stage).steps()` and
+  its `tiers.light`, so a stage with `review: {}` or `steps: []` prints the defaults' steps and
+  `none` prints only when the effective panel is empty.
 - The replay driver (`crates/rigger-driver/src/driver/replay.rs`) re-runs `review_unit` and answers
   each spawn from the log by id; it reads no role of its own, so the deterministic step tokens are
   what make it correct.
@@ -313,8 +324,8 @@ block under a `### The review ceremony` heading and carries no `grounder:` line.
 
 ## Notes (non-criteria)
 
-UNIT ORDER (the needs chain): 2, 3, 4, 5, then 6, 7, 8, 9, 10, 11, 12, then 1, then 13.
-Criteria 2-5 (instructions) and 6-12 (review) are independent chains; 1 needs 3, 7 and 10; 13
+UNIT ORDER (the needs chain): 2, 3, 4, 5, then 6, 7, 8, 9, 10, then 1, then 11.
+Criteria 2-5 (instructions) and 6-10 (review) are independent chains; 1 needs 3, 7 and 8; 11
 needs all.
 
 LANDING-ORDER SIMULATION (every ordered pair sharing a surface; "no" lines were fixed in the text):
@@ -331,21 +342,17 @@ LANDING-ORDER SIMULATION (every ordered pair sharing a surface; "no" lines were 
 - 7 without 8 (surface `config::load`): 7 asserts parse, refusal and the accessors' dedup only,
   never a run, and refuses a list naming two steps of one kind (one spawn id on that tree) or an
   `Adjudicator` step that is not last (no early stop on that tree) -> yes. 8 lifts both refusals.
-- 8 without 9 (surface the recording driver's spawn list): 8 asserts ids and order, never rosters
-  -> yes. 9 without 8 cannot run a list form -> 9 after 8.
-- 8 without 10 (surface the round): 8 owns the early stop on a rejecting adjudicator, reading the
-  step's own verdict line, so its fresh-step fixture (`adjudicator a` rejecting in round 1) holds on
-  that tree -> yes. 10 adds `split_reject`'s reading (a converged reject continues), the REQUIRED
-  list, the reason and the stamps -> 10 after 8.
-- 11 without 8 (surface the token grammar): 11's fixtures carry `@k` tokens 8 mints and parses ->
-  11 after 8; 8 owns `is_adjudicator`, so the console needs no clause in 11.
-- 12 without 7: 12 parses list-form fixtures -> 12 after 7.
+- 8 after 7 (surface the round): 8 lifts both refusals, and its fixtures run under its own tokens,
+  rosters and verdict rule in one landing, so no interim tree lies between them -> yes.
+- 9 without 8 (surface the token grammar): 9's fixtures carry `@k` tokens 8 mints and parses ->
+  9 after 8; 8 owns `is_adjudicator`, so the console needs no clause in 9.
+- 10 without 7: 10 parses list-form fixtures -> 10 after 7.
 - 1 without 7: the five-step example must parse -> 1 after 7; 1 without 2/3 would state S2 about an
   override that does not exist -> 1 after 3.
 - 6 and 7 both name `config.rs`'s `ReviewPanel`; 6 lands the type change, 7 the field. A shared
   blast radius serializes them; ownership is split by the OWNS sentences.
 
-PER-CRITERION CORNERS (beyond the CONSTRAINTS WALK table, which covers 2, 3, 6, 7, 8 and 10):
+PER-CRITERION CORNERS (beyond the CONSTRAINTS WALK table, which covers 2, 3, 6, 7 and 8):
 
 - 1: the example block DROPPED from the page fails the parse clause; a rewrap never moves S1 or S2
   (read by words). Concurrent, crash-resume, cold start: out of scope - static text.
@@ -353,13 +360,13 @@ PER-CRITERION CORNERS (beyond the CONSTRAINTS WALK table, which covers 2, 3, 6, 
   shadow prints no advisory; repeated `validate` prints the same lines.
 - 5: a new `BUILTIN` entry fails the test until the README names it; an older project README is
   existing data, left as written.
-- 9: a sequence of one step: an empty roster; a lens agent in two lens steps appears twice, once per
+- 8 (rosters): a sequence of one step: an empty roster; a lens agent in two lens steps appears twice, once per
   token; a DROPPED adversary (lenses plus adjudicator) leaves `adversary` out of the roster, as today.
-- 11: a token with `@1` or `@x` is no review token (falls to the reader's non-review arm); a store
+- 9: a token with `@1` or `@x` is no review token (falls to the reader's non-review arm); a store
   mixing bare and `@k` tokens folds each by its kind.
-- 12: a panel with no adversary step has no critic (as today); a stage reviewed through no panel
+- 10: a panel with no adversary step has no critic (as today); a stage reviewed through no panel
   prints no `review` line; `tiers` absent prints no `light` line.
-- 13: out of scope for every corner - it runs the lanes once on the finished tree.
+- 11: out of scope for every corner - it runs the lanes once on the finished tree.
 
 THREE RISKIEST CONTRADICTIONS, and how the text resolves them:
 
@@ -385,17 +392,15 @@ TEST PLACEMENT (criterion -> test homes; the fixtures each test uses):
 | --- | --- |
 | 1 | `tests/handbook_grounder_accuracy.rs` over the committed pages: S1 and S2 by words; the fenced `yaml` block under `### The review ceremony` parsed; `docs/handbook/agentic-sdlc.md`'s review section naming the sequence and the three kinds |
 | 2 | `crates/rigger-domain/src/instructions.rs` tests through `resolve_layers`: one named built-in replaced; a trailing-space and a changed-case name appended |
-| 3 | `instructions.rs` tests: one built-in off; both off leaving `HEADING` and the operator layer alone |
+| 3 | `instructions.rs` tests: one named built-in off, with a second named built-in off as a fixed two-file fixture (never iterating `BUILTIN`), leaving `HEADING` and the operator layer alone |
 | 4 | `instructions.rs` tests for `render` and `shadow_advisories`; `src/cli/setup.rs` tests for `instructions_in_force_line`; a periphery test running the built binary's `instructions`, `validate` and `prime` over a temp project with one replacing and one empty file |
 | 5 | `src/cli/setup.rs` tests iterating `BUILTIN` |
 | 6 | `crates/rigger-domain/src/config.rs` tests for `steps` and the accessors' canonical shape; `conductor.rs` tests over a recording driver and the golden fixtures |
 | 7 | `crates/rigger-config-files/src/config_store.rs` tests (every refusal, the interim repeated-kind and adjudicator-not-last ones included; the repo workflow and every scaffold template set's rendering); `crates/rigger-domain/src/config.rs` tests of the dedup and `workflowdef.rs` and `crates/rigger-config-files/src/config.rs` tests of `reviewers_of`, the lint and the wall-clock advisory, each over a map form naming one agent as lens and adjudicator, a list form naming one agent in two steps and a `tiers` panel (named once, full panel first); a periphery test loading a list-form `.rigger/workflow.yml` |
-| 8 | `spawn.rs` tests (bare tokens parse as step 1, a `~retry2` suffix ignored); `conductor.rs` tests over `lenses [a, b]`, `adversary x`, `lenses [c]`, `adversary x`, `adjudicator z` and over `adjudicator a`, `lenses [l]`, `adjudicator b` with `a` rejecting in round 1; `replay.rs` tests resuming mid-round from the log |
-| 9 | `review.rs` tests for `step_roster` (criterion 8's sequence: the second adversary's roster `lens:a`, `lens:b`, `adversary`, `lens:c@2`, the adjudicator's adding `adversary@2`); `conductor.rs` tests over a recording driver |
-| 10 | `conductor.rs` tests over `adjudicator a`, `lenses [l]`, `adjudicator b` under each verdict pair and over `lenses [l]`, `adversary x`; the speculation path's tests for `reviewed#{lane}` |
-| 11 | `metrics.rs` and `dash.rs` tests (a bare-token store folding to the prior `ReviewQuality`); `tests/phase_of_role_mapping_periphery.rs`; `tests/review_tier_roster_periphery.rs` |
-| 12 | `wave.rs`, `canary_store.rs` and `src/cli/validate.rs` tests |
-| 13 | the lanes script on the integrated tree |
+| 8 | `spawn.rs` tests (bare tokens parse as step 1, a `~retry2` suffix ignored); `conductor.rs` tests over `lenses [a, b]`, `adversary x`, `lenses [c]`, `adversary x`, `adjudicator z` and over `adjudicator a`, `lenses [l]`, `adjudicator b` with `a` rejecting in round 1; `replay.rs` tests resuming mid-round from the log; `review.rs` tests for `step_roster` (the five-step sequence: the second adversary's roster `lens:a`, `lens:b`, `adversary`, `lens:c@2`, the adjudicator's adding `adversary@2`); `conductor.rs` tests over a recording driver; `conductor.rs` tests over `adjudicator a`, `lenses [l]`, `adjudicator b` under each verdict pair and over `lenses [l]`, `adversary x`; the speculation path's tests for `reviewed#{lane}` |
+| 9 | `metrics.rs` and `dash.rs` tests (a bare-token store folding to the prior `ReviewQuality`); `tests/phase_of_role_mapping_periphery.rs`; `tests/review_tier_roster_periphery.rs` |
+| 10 | `wave.rs`, `canary_store.rs` and `src/cli/validate.rs` tests |
+| 11 | the lanes script on the integrated tree |
 
 ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 
@@ -407,11 +412,9 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | `SCAFFOLD_INSTRUCTIONS_README`, `.rigger/instructions/README.md` | 5 |
 | `ReviewStep`, `ReviewPanel::steps`, the derived `is_empty`/`agent_ids`/`full_roster`/`gating_agent_ids` in today's shape over the canonical sequence, the one step loop in `review_unit` | 6 |
 | `ReviewStepDecl`, `ReviewPanel.steps`, every refusal, the interim repeated-kind and adjudicator-not-last refusals, the new `validate_depth` rule, the load-unchanged check over the repo's workflow and every scaffold template set, the dedup of `agent_ids`/`full_roster`/`gating_agent_ids` (first-step order, full panel then light) and the naming-once behaviour of `reviewers_of`, `lint_gating_verdict_lines` and `unbounded_wall_clock_advisory` through them | 7 |
-| `review_step_role`, `review_step_of`, `is_adjudicator` through it; per-step token minting, the early stop on a rejecting adjudicator and the fresh-step rule inside the one loop criterion 6 owns; lifting both interim refusals (repeated kind, adjudicator not last) | 8 |
-| `step_roster` and the wrappers | 9 |
-| the verdict read after `split_reject` (a converged reject continues), the REQUIRED list, the round's reason and compensation choice, the `reviewed` stamps | 10 |
-| metrics, dash, `workflows/rigger.js` classification | 11 |
-| `wave::critic`, the canary, `cmd_validate`'s `review` lines | 12 |
+| `review_step_role`, `review_step_of`, `is_adjudicator` through them; per-step token minting, the early stop on a rejecting adjudicator and the fresh-step rule (`round = None`, the attempt `round_delta_base` read) inside the one loop criterion 6 owns; `step_roster` and the `review_roster`/`adjudicator_roster` wrappers; the verdict read after `split_reject` (a converged reject continues), the REQUIRED list, the round's reason and compensation choice and the `reviewed` stamps across several adjudicator steps; lifting criterion 7's two interim refusals | 8 |
+| metrics, dash, `workflows/rigger.js` classification | 9 |
+| `wave::critic` with `NO_CRITIC_CLAUSE` and the `rigger critique` help wording, the canary, `cmd_validate`'s `review` lines | 10 |
 | the handbook text | 1 |
 
 ## Global constraints
@@ -434,13 +437,11 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves THE HANDBOOK STATES THE RULE: `docs/handbook/authoring-loops.md` carries S1 and S2 by their words and a `### The review ceremony` section whose five-step `steps:` example parses through `config_store::parse_workflow` to five `steps()`. This criterion OWNS the handbook text only; the README is criterion 5's and the parse criterion 7's, NOT this one's.
 - [ ] a test proves A SAME-NAMED OPERATOR FILE REPLACES A BUILT-IN: `instructions::compose` puts the body of an operator file whose name equals a `BUILTIN` name byte for byte into that built-in's `## <name>` section (the composed string's section bytes), prints `HEADING` bare, and appends a near name. This criterion OWNS `resolve_layers`' replace arm and `compose`; switching off is criterion 3's and `render` criterion 4's, NOT this one's.
 - [ ] a test proves AN EMPTY SAME-NAMED OPERATOR FILE SWITCHES A BUILT-IN OFF: `instructions::compose` given an operator file named as a `BUILTIN` entry with an empty or whitespace body injects no section for either, every other section unchanged. This criterion OWNS `resolve_layers`' switched-off arm; replacing is criterion 2's, NOT this one's.
-- [ ] a test proves EVERY BUILT-IN'S STATE IS REPORTED: `instructions::render`, `shadow_advisories` (printed by `cmd_validate` with a success exit) and `instructions_in_force_line` name each built-in as in force, replaced or switched off through `resolve_layers`. This criterion OWNS `render`, `shadow_advisories`, `instructions_in_force_line` and their call sites; `compose` is criteria 2 and 3's, NOT this one's.
+- [ ] a test proves EVERY BUILT-IN'S STATE IS REPORTED: `instructions::render`, `shadow_advisories` (printed by `cmd_validate` with a success exit) and `instructions_in_force_line` name each built-in of a named-entry fixture as in force, replaced or switched off through `resolve_layers`. This criterion OWNS `render`, `shadow_advisories`, `instructions_in_force_line` and their call sites; `compose` is criteria 2 and 3's, NOT this one's.
 - [ ] a test proves THE SCAFFOLDED README DOCUMENTS THE OVERRIDE: `SCAFFOLD_INSTRUCTIONS_README` names every `BUILTIN` entry as `<name>.md` with the replace, switch-off and append rules, and the committed `.rigger/instructions/README.md` equals it (whitespace-normalized text). This criterion OWNS the two README texts and the `BUILTIN`-iterating assertion; the mechanism is criteria 2 and 3's, NOT this one's.
 - [ ] a test proves THE MAP FORM IS THE CANONICAL SEQUENCE: `ReviewPanel::steps` returns lenses, adversary, adjudicator for the map form, and `review_unit` over `steps()` gives each CANONICAL IDENTITY SURFACE fixture the list the tree before it gave. This criterion OWNS `ReviewStep`, `ReviewPanel::steps`, its accessors in today's shape and the one step loop; `steps:` and the dedup are criterion 7's, `@k` tokens 8's, NOT this one's.
 - [ ] a test proves THE LIST FORM DECLARES ANY SEQUENCE: `Config::validate` accepts `review: { steps: [..] }` under every scope, refuses each PARSE AND REFUSALS panel naming its scope, and loads the repo's and every scaffold template set's workflow unchanged. This criterion OWNS `ReviewStepDecl`, `steps`, every refusal, that load check and the accessors' dedup (each id once) with its readers; running a sequence is criterion 8's, NOT this one's.
-- [ ] a test proves A SEQUENCE RUNS IN ORDER UNDER STEP ROLE TOKENS: each step spawns under `spawn::review_step_role`'s token, parsed back by `review_step_of`, a rejecting adjudicator stops later steps, and a step absent from the prior round gets `round = None`. This criterion OWNS the token functions, `is_adjudicator` and those rules inside criterion 6's loop; rosters are criterion 9's, `split_reject` and stamps criterion 10's, NOT this one's.
-- [ ] a test proves EACH STEP REVIEWS EVERY EARLIER STEP: every spawn of a step carries in `SpawnOpts.reviews` the role tokens of every earlier step's spawns in step order, a first lens step none. This criterion OWNS `review::step_roster` and the `review_roster`/`adjudicator_roster` wrappers; the step loop is criterion 8's, NOT this one's.
-- [ ] a test proves THE FIRST REJECTING ADJUDICATOR STEP DECIDES THE ROUND: `review_unit` reads each adjudicator step's verdict after `split_reject`, a converged reject continuing, and returns the kept REQUIRED list or approves with one `reviewed` stamp from the last adjudicator step, or none without one. This criterion OWNS that reading, the reason and the stamps; the early stop is criterion 8's and rosters criterion 9's, NOT this one's.
-- [ ] a test proves TOKEN READERS CLASSIFY EVERY STEP BY ITS KIND: the readers READERS assigns to criterion 11 (`metrics::review_tier`, `actor_tier`, the adversary-only fold, `dash::stage_of_role`, `role_and_agent`, the `workflows/rigger.js` lookups) read an `@k` token as its kind, and bare tokens fold as today. This criterion OWNS those readers; the token grammar is criterion 8's, NOT this one's.
-- [ ] a test proves PANEL READERS READ EVERY STEP: `wave::critic`, the canary (`apply_model_pins`, `run_canary`) and `cmd_validate`'s `review <stage>:` lines read every step as READERS decides. This criterion OWNS those three readers' list-form clauses; `steps()` and the readers through its accessors are criterion 6's and their list-form test criterion 7's, NOT this one's.
-- [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0. This criterion OWNS only the lanes; every behaviour is criteria 1 to 12's, NOT this one's.
+- [ ] a test proves A LIST-FORM SEQUENCE RUNS: each step spawns under its `review_step_role` token, parsed back by `review_step_of`, carrying in `SpawnOpts.reviews` every earlier step's tokens; a step absent from the prior round gets `round = None`; each adjudicator verdict is read after `split_reject`, a kept reject ending the round with its REQUIRED list, else one `reviewed` stamp from the last adjudicator. This criterion OWNS the token, roster, early-stop and verdict rules inside criterion 6's loop and lifts criterion 7's interim refusals; readers are criteria 9 and 10's, NOT this one's.
+- [ ] a test proves TOKEN READERS CLASSIFY EVERY STEP BY ITS KIND: the readers READERS assigns to criterion 9 (`metrics::review_tier`, `actor_tier`, the adversary-only fold, `dash::stage_of_role`, `role_and_agent`, the `workflows/rigger.js` lookups) read an `@k` token as its kind, and bare tokens fold as today. This criterion OWNS those readers; the token grammar is criterion 8's, NOT this one's.
+- [ ] a test proves PANEL READERS READ EVERY STEP: `wave::critic` (with `NO_CRITIC_CLAUSE` and the critique help naming an adversary step in `defaults.review`), the canary (`apply_model_pins`, `run_canary`) and `cmd_validate`'s `review <stage>:` lines read every step as READERS decides. This criterion OWNS those readers' list-form clauses; `steps()` and its accessors are criteria 6 and 7's, NOT this one's.
+- [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0. This criterion OWNS only the lanes; every behaviour is criteria 1 to 10's, NOT this one's.
