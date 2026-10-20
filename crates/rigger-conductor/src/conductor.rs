@@ -8406,21 +8406,20 @@ impl RunCtx<'_> {
         ))
     }
 
-    /// The run's own `$RIGGER_RUN_BASE` (spec 91, THE GATE ENVIRONMENT): the SINGLE
+    /// The run's own `$RIGGER_RUN_BASE`: the SINGLE
     /// resolution both gate call sites ([`run_gates`](Self::run_gates) and
     /// [`run_deferred_gates`](Self::run_deferred_gates)) layer onto their own `build_env` -
     /// never a second, independently re-derived copy. Reads the run's own `RunStarted` off
     /// the live event stream and folds [`crate::run::current_run_base_tip`] over it: the run
     /// branch's tip commit sha AT THE MOMENT this run started, persisted once at mint
     /// (`RunStarted::base_tip`) and never re-resolved live - so a unit that lands mid-run
-    /// never shifts what a LATER gate diffs against, and the checkin stage's `mutation` gate
-    /// always measures the whole spec diff, never a moving target.
+    /// never shifts what a LATER gate diffs against, and the check-in stage's gates always diff
+    /// the whole spec's work against the recorded base, never a moving target.
     ///
     /// Empty (so [`gate::BuildEnv::with_var`] injects nothing) when this run predates the
-    /// field - a legacy `RunStarted` - or the event stream cannot be read; the mutation gate's
-    /// own `test -n "$RIGGER_RUN_BASE"` guard then refuses loud rather than sweeping an empty
-    /// diff, exactly the behavior `specs/91-mutation-runs-once-at-the-check-in-seam.md`
-    /// documents for a run with nothing to diff against.
+    /// field - a legacy `RunStarted` - or the event stream cannot be read; a gate script's own
+    /// `test -n "$RIGGER_RUN_BASE"` guard then refuses loud rather than diffing an empty range,
+    /// the behavior a run with nothing to diff against needs.
     fn run_base_env(&self) -> String {
         self.read_current_run()
             .ok()
