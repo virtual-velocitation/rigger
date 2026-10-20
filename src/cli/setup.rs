@@ -3434,9 +3434,14 @@ mod tests {
     }
 
     /// Every agent text rigger ships, labelled: the committed personas and scaffold seeds, the
-    /// fan-out helpers and the built-in instruction entries.
+    /// fan-out helpers, the built-in instruction entries and the discipline every review-tier
+    /// prompt carries.
     fn every_shipped_agent_text() -> Vec<(String, String)> {
         let mut all = every_shipped_persona();
+        all.push((
+            "REVIEWER_DISCIPLINE".to_string(),
+            conductor::REVIEWER_DISCIPLINE.to_string(),
+        ));
         all.extend(
             hooks::HELPER_AGENTS
                 .iter()
@@ -4116,8 +4121,8 @@ mod tests {
     }
 
     /// rigger's core is agnostic to the gates a project wires: no built-in instruction entry,
-    /// persona or helper it ships names mutation testing, its mutants, its sweep, its gate or its
-    /// tool's classifications.
+    /// persona, helper or review-tier discipline it ships names mutation testing, its mutants,
+    /// its sweep, its gate or its tool's classifications.
     #[test]
     fn no_built_in_entry_persona_or_helper_names_mutation_testing() {
         for (at, text) in every_shipped_agent_text() {
