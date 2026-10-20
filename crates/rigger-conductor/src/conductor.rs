@@ -13664,8 +13664,8 @@ fn branch_owner(events: &[Event], unit_id: &str) -> Option<(String, String)> {
 /// Whether `owner` ([`branch_owner`]'s answer for the bare unit id about to reuse a
 /// literal branch name) proves that branch's real content belongs to an UNRELATED
 /// (criterion_id, spec) - extracted as its own pure predicate (spec 88 round 6, closing
-/// a mutation-efficacy gap: the inline `||` this replaces let a mutant flip either single
-/// `!=` to `==` without failing any test, because every periphery fixture that reaches
+/// a test-coverage gap: in the inline `||` this replaces, either single `!=` could have
+/// read `==` without failing any test, because every periphery fixture that reaches
 /// this check happens to differ on BOTH axes at once, never isolating either alone -
 /// mirroring `recorded_adoption`'s own identical round-5 gap and fix, one axis at a
 /// time) so each axis is directly, cheaply unit-testable without a real repo. `None`
