@@ -2,7 +2,7 @@
 
 **Goal:** rigger provides tools to agents (the context graph, the event store courier, worktrees,
 the blast radius, the dash, hooks, MCP, the verdict and gate contracts) and executes the workflow
-definition; it prescribes nothing about how work is done except by enforcing that definition. Four places at HEAD prescribe instead. The built-in instruction layer has no override: `compose`
+definition; it prescribes nothing about how work is done except by enforcing that definition. Six places at HEAD prescribe instead. The built-in instruction layer has no override: `compose`
 (`crates/rigger-domain/src/instructions.rs:50-62`) injects every `BUILTIN` entry (:32-41) under
 `HEADING` with the suffix "(non-negotiable)" (:54), `render` prints "Built-in (every agent rigger
 spawns, not removable)" (:68), and the module doc says "no configuration removes it" (:11). And the
@@ -13,7 +13,13 @@ one lens list, one `adversary` and one `adjudicator`, and `review_unit`
 A third place, smaller, is the built-in bodies naming Rust vocabulary (MARKERS lists it).
 The fourth is `REVIEWER_DISCIPLINE` (`conductor.rs:12529`), the prose every reviewer prompt
 carries, which names a toolchain (`cargo test -p <crate> <test>`, `CARGO_TARGET_DIR`) and guides reviewers
-with no override.
+with no override. The fifth is `RIGGER_COMMUNICATION` (`conductor.rs:12446-12464`), the courier
+discipline `build_system_prompt` (:12476-12481) appends to every spawn with no override: a work
+cadence (record at once, check peers between actions, supersede explicitly) that no gate or
+definition enforces. The sixth is the critic's method: `spec_critique_prompt`
+(`crates/rigger-domain/src/review.rs:277-335`) and the DAG critique's prompt bake the stance, Rules 7
+and 8, the ownership defects, the two hunts and the ban into the binary, so a consumer's adversary
+persona cannot change how a spec or plan is critiqued.
 This spec makes the built-in layer overridable by name and the review panel an ordered sequence of
 steps of the three official kinds, with the existing map form meaning the canonical sequence.
 
@@ -41,8 +47,9 @@ step last. The fenced `yaml` block is a `defaults:` fragment (`defaults:` holdin
 `steps:` with the five entries). Criterion 1's test splices it under a minimal workflow fixture
 declaring agents a, b, c, x and z and one stage, runs `config_store::parse_workflow` then
 `Config::validate`, and reads `workflow.defaults.review.steps()` as five. The test builds a
-`Config { agents, workflow, .. }` with an `AgentDef` per id, z's body carrying the verdict-line
-protocol `Config::validate` requires of an adjudicator.
+`Config { agents, workflow, .. }` with an `AgentDef` per id, z's body carrying the verdict line
+`lint_gating_verdict_lines` (`crates/rigger-config-files/src/config.rs:73-76`) checks; the test runs
+`parse_workflow` and `Config::validate`, not the lint.
 
 
 **BASE, decided here.** This spec lands on `rigger-run` after PR #117 (the removal of mutation
@@ -136,10 +143,8 @@ command as the gate runs it, directly or through a verify helper: the gate evide
 that gate's verdict, and a reviewer's run only repeats it at review cost; the one targeted
 reproduction above is not a gate run." A gate's own tool means its command as the gate runs it (its
 whole battery or sweep); the one targeted reproduction through the project's test command is the
-stated exception, so the two moved sentences agree. If `REVIEWER_DISCIPLINE` at the launch base
-holds no fifth sentence, criterion 12 appends the reworded fifth sentence after "Leave the unit's
-worktree exactly as you found it."; any other mismatch with the quoted text stops the launch for a
-Design amendment before a unit spawns. Criterion 13 then moves three sentences verbatim into
+stated exception, so the two moved sentences agree. Any mismatch with the quoted text stops the launch for a Design amendment
+before a unit spawns. Criterion 13 then moves three sentences verbatim into
 `working-discipline.md` under a `## When you review` heading, the section sitting after `## Hand
 over a tree the gates only confirm` and before `## Fan out the mechanical work`, in this order: "Never re-run the gate
 battery, or any gate the gate evidence shows green on the tree under review: the gates are the
@@ -180,7 +185,7 @@ lists it under the operator heading, which is how an operator sees it did not sh
 
 - `compose` prints `HEADING` bare (the " (non-negotiable)" suffix goes; criterion 2 owns the
   edit of every existing test that pins `HEADING` followed by " (non-negotiable)";
-  `RIGGER_COMMUNICATION`'s own suffix pins stay), then each built-in section
+  `RIGGER_COMMUNICATION`'s heading and its pins are criterion 14's), then each built-in section
   under `## <name>`: the built-in body (`BuiltIn`), the operator body (`Replaced`), or nothing at all,
   heading included (`SwitchedOff`); then the unshadowed operator files. `HEADING` is printed even
   when every built-in is switched off and no operator file remains (`rigger prime` and the tests key
@@ -223,8 +228,44 @@ lists it under the operator heading, which is how an operator sees it did not sh
   only the unshadowed operator files in its `(+N operator files)` suffix.
 - Unchanged, decided: the tests reading `BUILTIN` that pin no reworded phrase
   (`src/cli/setup.rs:3484`, `crates/rigger-domain/src/docs.rs:2525`);
-  `RIGGER_COMMUNICATION`'s own "(non-negotiable)" (`conductor.rs:12446`), which is rigger's courier
-  protocol, not the instruction layer; `load_instructions` (`crates/rigger-config-files/src/config_store.rs:92-123`).
+  `load_instructions` (`crates/rigger-config-files/src/config_store.rs:92-123`). Criterion 14 removes
+  `RIGGER_COMMUNICATION`'s "(non-negotiable)" heading (`conductor.rs:12446`) with the constant, and
+  no prompt keeps the suffix.
+
+
+**THE COMMUNICATION DISCIPLINE IS A BUILT-IN, decided here.** Criterion 14 moves
+`RIGGER_COMMUNICATION`'s body (every line after its heading line, verbatim) into a third `BUILTIN`
+entry named `communication`, after `working-discipline`; deletes the constant with its heading (the
+"(non-negotiable)" wording goes: the discipline is guidance); and deletes `build_system_prompt`, both
+callers (the spawn path and the canary runner) calling `instructions::compose` directly, `compose`'s
+doc gaining one sentence naming it the one authority for every spawn's system prompt (criterion 3's
+later edit of that doc keeps the sentence). Every spawn's prompt carries the discipline once, as the
+`## communication` section, and `resolve_layers` governs it like the other two once criteria 2 and 3
+land; criterion 2's replace fixture names `communication` as the one replaced built-in. Criterion
+14's test pins membership only: the entry's name and body, the spawn path's and the canary's prompt
+equal to `compose`'s output, no "(non-negotiable)" anywhere in it. The JSON shapes stay in the task
+instructions (`EMIT_PROTOCOL`, `review_protocol`): they are the tool's contract. The moved body is
+no added line under the Global constraints and has no MARKERS hit, so criterion 12's test stays
+green. Criterion 14 owns every pin of the constant's heading or sentences and, in
+`authoring-agents.md:85`, the words "It has two entries" (becoming "three") with a third numbered
+item after :88 naming `communication` and its subject; criteria 3 and 12 keep their other sentences
+on those lines, landing after 14.
+
+**THE CRITIQUE METHOD IS THE PERSONA'S, decided here.** Criterion 15 moves the method text verbatim
+out of the binary into the `adversary` persona: `CRITIQUE_STANCE`'s skepticism and citation
+sentences, `PLAN_CRITIQUE_RULES` (Rule 7, Rule 8, the blast-radius note), `CRITIQUE_OWNERSHIP`,
+`CRITIQUE_HUNTS` and `CRITIQUE_BAN` become the body of the `## When you critique a spec or a plan`
+section in `.rigger/agents/adversary.md` (after brief 93's two hunts, which stay) and in the
+scaffold's adversary persona template in `src/cli/setup.rs`, the consumer's overridable default; the
+persona is the workflow definition. The binary keeps, in both prompts, the task framing (what is
+under critique: the spec path and text verbatim, or the proposed DAG; that a unit reads as a
+criterion and a reject as a BLOCKING finding), the voided-duties clause (the task's own contract
+with the persona) and `CRITIQUE_OUTPUT_CONTRACT` (the finding-line grammar and the verdict line the
+binary parses: the tool's contract). The moved constants are deleted; pins of their sentences move
+to the template's section through the shipped-text helper; the critic's spawn path and
+`NO_CRITIC_CLAUSE` stay criterion 10's. A persona without the section still critiques: the binary's
+prompt stands alone, and the output contract decides the verdict.
+
 
 **INSTRUCTION STATE PLACEMENT, decided here.** The authoritative state is the files under
 `.rigger/instructions/` on disk. `config_store::load_with_gate_requirements` reads them once per
@@ -247,7 +288,11 @@ the switch-off clause appended to the module-doc sentence criterion 2 wrote to 3
 to 7; the `spawn.rs` docs of `spawn_id`, `ROLE_ADVERSARY`, `ROLE_ADJUDICATOR` and `lens_role` (one
 fixed token per kind, the tier numbers) to 8; `REVIEWER_DISCIPLINE`'s doc
 (`conductor.rs:12515-12528`) to 13; `run_adversary`'s and `run_adjudicator`'s roster docs
-(`conductor.rs:7673-7676`, :7727-7730) to 6.
+(`conductor.rs:7673-7676`, :7727-7730) to 6; `build_system_prompt`'s and
+`RIGGER_COMMUNICATION`'s docs are criterion 14's, deleted with them; `review_protocol`'s doc
+(`conductor.rs:12483-12505`) is criterion 8's; `review_roster`'s and `adjudicator_roster`'s docs
+(`review.rs:250-265`) are criterion 6's; the docs of the deleted method constants (`review.rs:273-276`,
+:293, :306, :311, :322) are criterion 15's, deleted with them.
 
 
 
@@ -381,9 +426,10 @@ errors.
 renders today; no prompt text changes. `review::step_roster(steps, index, mint)` takes the
 token-minting function as its single seam and returns the tokens `mint` gives every spawn of every
 step before `index`, in step order and, within a lens step, in declared
-order. A `Lenses` step at index 0 has an empty roster, as `run_lens`'s is today
-(`conductor.rs:7244`); every other step, a lens step after an adversary included, carries
-`step_roster`'s tokens. `review_roster` and `adjudicator_roster`
+order. A `Lenses` step at any index has an empty roster, as `run_lens`'s is today
+(`conductor.rs:7244`), since no reader renders a lens's roster (`workerLabel` ignores it,
+`ROSTER_VERB` names no lens): `step_roster` returns the empty roster for a `Lenses` step; every
+adversary and adjudicator step carries `step_roster`'s tokens. `review_roster` and `adjudicator_roster`
 (`review.rs:257`, :265) become wrappers over `step_roster` on the canonical sequence, so the
 standalone review stage and the plan-critique gate (`conductor.rs:6991-7008`, :8262) keep their
 rosters through the one rule; `review_unit` never calls them. Criterion 6 is the one owner of `step_roster`, the roster's shape,
@@ -443,8 +489,8 @@ finding on it.
   the token with a trailing `@` followed by a decimal of at least 2 and at most 4294967295 (`u32::MAX`) with no
   leading zero, a larger suffix being no review token, never on
   an `adjudicator` token, stripped, the grammar `review_step_of` reads; the persona label
-  keeps the full token. A lens step after another step now carries a roster; `workerLabel` (:463)
-  renders a lens's base phrase and ignores its roster, as `ROSTER_VERB` names no lens.
+  keeps the full token. A lens step's roster stays empty; `workerLabel` (:463) renders a lens's base phrase as at
+  HEAD.
 - The console reads verdict marks through `SpawnResult::is_adjudicator`
   (`crates/rigger-console/src/console/mod.rs:262`), so it marks the adjudicator step's verdict with
   no change of its own.
@@ -549,8 +595,8 @@ unit, before rebasing a panel; this spec adds no rebase rule.
 
 ## Notes (non-criteria)
 
-UNIT ORDER (the needs chain): 12, 13, then 2, 3, 4, 5, then 6, 7, 8, 9, 10, then 1, then 11.
-Criteria 2-5 (instructions) and 6-10 (review) are independent chains; 1 needs 12, 13, 3, 7, 8 and 10; 13 needs 12; 10 needs 7 and 8; 11
+UNIT ORDER (the needs chain): 12, 13, 14, 15, then 2, 3, 4, 5, then 6, 7, 8, 9, 10, then 1, then 11.
+Criteria 2-5 (instructions) and 6-10 (review) are independent chains; 1 needs 12, 13, 14, 15, 3, 7, 8 and 10; 13 needs 12; 14 needs 12; 5 needs 14; 10 needs 7 and 8; 11
 needs all.
 
 LANDING-ORDER SIMULATION (every ordered pair sharing a surface; "no" lines were fixed in the text):
@@ -559,6 +605,12 @@ LANDING-ORDER SIMULATION (every ordered pair sharing a surface; "no" lines were 
   so S2 is true on the tree.
 - 13 after 12 (surface the reviewer sentences): 12 rewords them in the constant, 13 moves them; 1
   after 13 so S1 is true on the tree.
+- 14 before 2-5 (surface `BUILTIN` and `compose`'s callers): 14 adds an entry and removes the
+  append; 2-5 iterate `BUILTIN` -> yes
+- 15 anywhere before 1 (surface the two critique prompts and the adversary persona): no other
+  criterion touches them -> yes
+
+
 
 
 
@@ -634,7 +686,7 @@ TEST PLACEMENT (criterion -> test homes; the fixtures each test uses):
 | 3 | `instructions.rs` tests: one named built-in off, with a second named built-in off as a fixed two-file fixture (never iterating `BUILTIN`), leaving `HEADING` and the operator layer alone |
 | 4 | `instructions.rs` tests for `render` and `shadow_advisories`; `src/cli/setup.rs` tests for `instructions_in_force_line`; a periphery test running the built binary's `instructions`, `validate` and `prime` over a temp project with one replacing and one empty file |
 | 5 | `src/cli/setup.rs` tests iterating `BUILTIN` |
-| 6 | `crates/rigger-domain/src/config.rs` tests for `steps` and the accessors' canonical shape; `review.rs` tests for `step_roster`, the roster shape over any minter (equal to `review_roster` and `adjudicator_roster` on each canonical sequence with the bare-token minter, a lens step at index 0 empty, and over the five-step sequence with a test minter the second adversary's roster naming both lens steps and the first adversary, the adjudicator's adding the second); `conductor.rs` tests over a recording driver and the golden fixtures |
+| 6 | `crates/rigger-domain/src/config.rs` tests for `steps` and the accessors' canonical shape; `review.rs` tests for `step_roster`, the roster shape over any minter (equal to `review_roster` and `adjudicator_roster` on each canonical sequence with the bare-token minter, a lens step at any index empty, and over the five-step sequence with a test minter the second adversary's roster naming both lens steps and the first adversary, the adjudicator's adding the second); `conductor.rs` tests over a recording driver and the golden fixtures |
 | 7 | `crates/rigger-config-files/src/config_store.rs` tests (every refusal, the one-adjudicator-last refusal and the interim repeated-kind one included; the repo workflow and every scaffold template set's rendering); `crates/rigger-domain/src/config.rs` tests of the dedup and `workflowdef.rs` and `crates/rigger-config-files/src/config.rs` tests of `reviewers_of`, each over a map form naming one agent as lens and adjudicator, a list form naming one agent in two steps and a `tiers` panel (named once within each of `reviewers_of`'s two lists; once, full panel first, in the accessors); a periphery test loading a list-form `.rigger/workflow.yml`; a `config.rs` test where a stage with `review: { steps: [] }` resolves to `defaults.review` |
 | 8 | `spawn.rs` tests (bare tokens parse as step 1, a `~retry2` respawn id, read through `spawn_role`, parses as its step, `@k` for lens and adversary kinds); `conductor.rs` tests over `lenses [a, b]`, `adversary x`, `lenses [c]`, `adversary x`, `adjudicator z` minting `lens:a`, `lens:b`, `adversary`, `lens:c@2`, `adversary@2`, `adjudicator`, the minted tokens appearing in its rosters and the adjudicator read as at HEAD; `replay.rs` tests resuming that sequence mid-round from the log |
 | 9 | `metrics.rs` and `dash.rs` tests (a bare-token store folding to the prior `ReviewQuality`); `tests/phase_of_role_mapping_periphery.rs`; `tests/review_tier_roster_periphery.rs`; `tests/phase_of_role_mapping_periphery.rs` holds the one token table (bare, `@2`, `@1`, `@01`, `@4294967296`, `@x`, `adjudicator@2`) and asserts `rigger_domain::spawn::review_step_of` and the JS `roleOf`/`phaseOf` agree on every row |
@@ -642,6 +694,8 @@ TEST PLACEMENT (criterion -> test homes; the fixtures each test uses):
 | 11 | the lanes script on the integrated tree |
 | 12 | `src/cli/setup.rs` tests iterating `BUILTIN` and `REVIEWER_DISCIPLINE` under the MARKERS rule (the root crate reaches both; the shipped-text helper PR #117 adds is the one home of the texts); the existing tests BASE names, edited |
 | 13 | `conductor.rs` tests pinning the constant's three sentences; `src/cli/setup.rs` tests pinning the `## When you review` heading and its sentences in the working-discipline body; the pins that move, edited |
+| 14 | `instructions.rs` tests (the third entry's name and body); `conductor.rs` tests (the spawn path's prompt equals `compose`'s output, the `## communication` section once, no "(non-negotiable)"); `canary_store.rs`'s prompt test; the existing pins of the constant, edited |
+| 15 | `review.rs` tests for `spec_critique_prompt`'s sections; `conductor.rs` tests for the DAG critique prompt; `src/cli/setup.rs` tests through the shipped-text helper for the template's section; the existing pins of the moved sentences, edited |
 
 ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 
@@ -659,6 +713,8 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | the handbook text | 1 |
 | the BUILTIN bodies' language-neutral wording, `REVIEWER_DISCIPLINE`'s toolchain wording | 12 |
 | `REVIEWER_DISCIPLINE`'s split, the `## When you review` section, their pins | 13 |
+| `BUILTIN`'s `communication` entry, the removal of `RIGGER_COMMUNICATION` and `build_system_prompt`, the handbook's entry list | 14 |
+| the two critique prompts' framing, the deletion of the method constants, the `## When you critique a spec or a plan` section in the persona and the template | 15 |
 
 ## Global constraints
 
@@ -686,7 +742,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 ## Done when
 
 - [ ] a test proves THE HANDBOOK STATES THE RULE: `authoring-loops.md` carries S1 and S2 with a five-step ceremony example that, spliced into a minimal workflow, passes `config_store::parse_workflow` and `Config::validate` to five `defaults.review.steps()`. This criterion OWNS the handbook pages OUT OF SCOPE assigns it; `authoring-agents.md` is criteria 2, 3, 4 and 12's, the instructions README criterion 5's and the parse criterion 7's, NOT this one's.
-- [ ] a test proves A SAME-NAMED OPERATOR FILE REPLACES A BUILT-IN: `instructions::compose` puts the body of an operator file whose name equals a `BUILTIN` name byte for byte into that built-in's `## <name>` section (its section bytes), prints `HEADING` bare, and appends a near name. This criterion OWNS `resolve_layers`' replace arm, `compose` and `authoring-agents.md:92`; switching off is criterion 3's and `render` criterion 4's, NOT this one's.
+- [ ] a test proves A SAME-NAMED OPERATOR FILE REPLACES A BUILT-IN: `instructions::compose` puts the body of a file named as a `BUILTIN` entry byte for byte into that built-in's `## <name>` section, prints `HEADING` bare, and appends a near name. This criterion OWNS `resolve_layers`' replace arm, `compose`'s replace arm with bare `HEADING`, and `authoring-agents.md:92`; switching off is criterion 3's and `render` criterion 4's, NOT this one's.
 - [ ] a test proves AN EMPTY SAME-NAMED OPERATOR FILE SWITCHES A BUILT-IN OFF: `instructions::compose` given an operator file named as a `BUILTIN` entry with an empty or whitespace body injects no section for either, every other section unchanged. This criterion OWNS `resolve_layers`' switched-off arm, its module-doc clause and `authoring-agents.md:85` and `:90`; replacing is criterion 2's, NOT this one's.
 - [ ] a test proves EVERY BUILT-IN'S STATE IS REPORTED: `instructions::render`, `shadow_advisories` (printed by `cmd_validate` with a success exit) and `instructions_in_force_line` name each built-in of a named-entry fixture as in force, replaced or switched off through `resolve_layers`. This criterion OWNS the three reporters, their call sites and `authoring-agents.md:94`; `compose` is criteria 2 and 3's, NOT this one's.
 - [ ] a test proves THE SCAFFOLDED README DOCUMENTS THE OVERRIDE: `SCAFFOLD_INSTRUCTIONS_README` names every `BUILTIN` entry as `<name>.md` with the replace, switch-off and append rules, and the committed `.rigger/instructions/README.md` equals it (whitespace-normalized text). This criterion OWNS the two README texts and the `BUILTIN`-iterating assertion; the mechanism is criteria 2 and 3's, NOT this one's.
@@ -695,6 +751,8 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves A LIST-FORM SEQUENCE RUNS: each step spawns under its `review_step_role` token, parsed back by `review_step_of` and minted into `step_roster`, the one adjudicator step last reading its verdict as at HEAD. This criterion OWNS the token functions, `is_adjudicator` through them, the minting into the loop and lifting the repeated-kind refusal; roster shape is criterion 6's, refusals 7's, readers 9 and 10's, NOT this one's.
 - [ ] a test proves TOKEN READERS CLASSIFY EVERY STEP BY ITS KIND: the readers READERS assigns to criterion 9 (`metrics::review_tier`, `actor_tier`, the adversary-only fold, `dash::stage_of_role`, `role_and_agent`, the `workflows/rigger.js` lookups) read an `@k` token as its kind, and bare tokens fold as today. This criterion OWNS those readers; the token grammar is criterion 8's, NOT this one's.
 - [ ] a test proves PANEL READERS READ EVERY STEP: `wave::critic` (with `NO_CRITIC_CLAUSE` and the critique help naming an adversary step in `defaults.review`) and the canary (`apply_model_pins`, `run_canary`) read every step as READERS decides. This criterion OWNS those readers' list-form clauses and the critique skill sentence (`docs.rs:553`); `steps()` and its accessors are criteria 6 and 7's, NOT this one's.
-- [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0. This criterion OWNS only the lanes; every behaviour is criteria 1 to 10, 12 and 13's, NOT this one's.
+- [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0. This criterion OWNS only the lanes; every behaviour is criteria 1 to 10 and 12 to 15's, NOT this one's.
 - [ ] a test proves THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and `REVIEWER_DISCIPLINE` have no hit under the MARKERS rule once reworded as BASE decides. This criterion OWNS the bodies' wording, `REVIEWER_DISCIPLINE`'s toolchain words, every existing test that pins a reworded phrase and `docs/handbook/authoring-agents.md:87-88`; the override mechanism is criteria 2 to 5's and the handbook rule criterion 1's, NOT this one's.
 - [ ] a test proves THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: `REVIEWER_DISCIPLINE` holds the two worktree sentences `guard_review_round_tree` enforces and the build-cache sentence; the three moved ones sit under `## When you review` (criteria 2 and 3 later make them overridable). This criterion OWNS the constant's split, the heading, the verify bullet's cut and the pins that move; the sentences' wording is criterion 12's, NOT this one's.
+- [ ] a test proves THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN: `BUILTIN`'s third entry `communication` carries `RIGGER_COMMUNICATION`'s body verbatim, the constant and `build_system_prompt` are gone, and every spawn's system prompt is `compose`'s output, `## communication` once, no "(non-negotiable)". This criterion OWNS the entry, both removals, their pins and the handbook's entry list; the override arms are criteria 2 and 3's, NOT this one's.
+- [ ] a test proves THE CRITIQUE METHOD IS THE PERSONA'S: `spec_critique_prompt` and the DAG critique prompt carry only the task framing, the voided-duties clause and the output contract, and the method text Design moves stands verbatim in the `adversary` persona and its scaffold template under `## When you critique a spec or a plan`. This criterion OWNS both prompts, the moved text and its pins; the critic's spawn is criterion 10's, NOT this one's.
