@@ -38005,10 +38005,10 @@ mod tests {
     /// The gates grade the work, a review judges the residue: every review tier - lens,
     /// adversary and adjudicator - is told never to re-run the battery or a gate already green on
     /// its tree, to reproduce only a specific suspicion in its own scratch worktree building into
-    /// the unit's review cache, and never to run a mutation sweep, itself or through a verify
-    /// helper, since mutation testing belongs to the gate that sweeps.
+    /// the unit's review cache, and never to run a gate's own tool, itself or through a verify
+    /// helper, since the gate evidence in its prompt is that gate's verdict.
     #[test]
-    fn every_reviewer_prompt_leaves_the_gates_and_the_mutation_sweep_to_the_gates() {
+    fn every_reviewer_prompt_leaves_the_gates_and_their_tools_to_the_gates() {
         let (lens, adversary, adjudicator) = review_tier_prompts();
         for (tier, prompt) in [
             ("lens", lens),
@@ -38017,10 +38017,11 @@ mod tests {
         ] {
             assert!(
                 prompt.contains(
-                    "Never run a mutation sweep, directly or through a verify helper: mutation \
-                     testing belongs to the gate that sweeps, never to a review."
+                    "Never run a gate's own tool, directly or through a verify helper: the gate \
+                     evidence in your prompt is that gate's verdict, and a reviewer's run only \
+                     repeats it at review cost."
                 ),
-                "the {tier} must be told never to run a mutation sweep; prompt was:\n{prompt}"
+                "the {tier} must be told never to run a gate's own tool; prompt was:\n{prompt}"
             );
             assert!(
                 prompt.contains(
