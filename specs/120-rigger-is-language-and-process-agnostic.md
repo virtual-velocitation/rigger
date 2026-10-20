@@ -51,7 +51,7 @@ testing from the core instruction layer and the personas) is merged to main and 
 procedures they keep (the sentence walk, the one-home rule, the test-side shape search and each
 lens's re-derivation) are guidance to authors and reviewers that no declared gate performs, which a
 consumer replaces or switches off through criteria 2 and 3; S2's clause names a hand procedure that
-re-creates a declared gate's function, which PR #117 removed. The tree is named by the run's launch
+re-creates a declared gate's function, which PR #117 removed; the probe rule and its tokens are gone at the launch base. The tree is named by the run's launch
 record (the merge of PR #117 into `rigger-run`), the citations staying those read at 1185c8c6.
 Criterion 12 removes the language vocabulary that remains (the MARKERS list). Criterion 12 owns the
 rewording and the edit of every existing test that pins a reworded phrase (`instructions.rs:380`
@@ -65,7 +65,8 @@ case statement); the match-arm guard (a case-arm guard); the argument-token exam
 `create_dir_all(root.join(` and `for_extension("rs")` (a path built from a root and a name, a
 file-extension argument); rustdoc's doc links (`[...]`, `working-discipline.md:179`)
 (cross-references); the wasm `core` lane sentence (the inner layer compiles without the outer
-layers); the project's package dependency chain (dropped, leaving: package dependencies point one
+layers); "on any feature lane" (`working-discipline.md:208`) becomes "under any build
+configuration"; the project's package dependency chain (dropped, leaving: package dependencies point one
 way, pinned by a structural test); the English "to match its output" (`engineering-principles.md:41`)
 becomes "to fit its output"; in `REVIEWER_DISCIPLINE`, the third sentence is cut as REVIEWER CONTRACT
 quotes (the targeted test run and the build cache replacing `cargo test -p <crate> <test>` and
@@ -104,11 +105,11 @@ already pairs with it, and listed in the hand-over.
 equals a token of the body split on every character that is not a letter, a digit or `_`, so
 `create_dir_all` is one token, so a
 backticked word is a token and `implementation` is no hit. A syntax marker (`#[`, `//!`,
-`cargo.toml`) hits as a substring. Two phrase markers, "the sdet lens"
-and "the architecture lens", hit as substrings of the lowercased text. The list lives in the test. A word marker also hits when it equals any
+`cargo.toml`) hits as a substring. Three phrase markers, "the sdet lens",
+"the architecture lens" and "feature lane", hit as substrings of the lowercased text. The list lives in the test. A word marker also hits when it equals any
 `_`-separated part of a token, so `cargo_target_dir` hits `cargo`; `create_dir_all` and
 `for_extension` stay whole-token markers. A word marker hit in ordinary English is
-reworded too (BASE lists each), so the rule stays a token rule. `macro`, `closure`, `if`, `while`,
+reworded too (BASE lists each), so the rule stays a token rule. `macro`, `closure`, `static`, `if`, `while`,
 `&&`, `||` and the iterator verbs (`filter`, `any`, `all`, `retain`, `position`, `find`) stay: they
 are constructs shared across languages, and the rule bans a language's own vocabulary, not programming vocabulary. SQL, a query
 string, a conjunct and `IN (..)` stay too: a query language used from any host language is not the
@@ -127,15 +128,17 @@ specific suspicion - one named test, a reversion probe, a single targeted test r
 project's test command - create your own throwaway scratch worktree and run it there." and "A
 reproduction builds into the build cache your spawn carries: the unit's review cache, never the
 cache the unit's gates use." Criterion 13 then moves three sentences verbatim into
-`working-discipline.md` under a `## When you review` heading, in this order: "Never re-run the gate
+`working-discipline.md` under a `## When you review` heading, the section sitting after `## Hand
+over a tree the gates only confirm` and before `## Fan out the mechanical work`, in this order: "Never re-run the gate
 battery, or any gate the gate evidence shows green on the tree under review: the gates are the
 instrument that grades the work, and a review judges what they cannot see.", the reproduction
 sentence criterion 12 wrote, and "Never run a gate's own tool, directly or through a verify helper:
 the gate evidence in your prompt is that gate's verdict, and a reviewer's run only repeats it at
 review cost." The constant keeps, in this order, what the harness enforces or provides: "Never write
 to this unit's own worktree - it is the tree being judged, not yours to edit.", the build-cache
-sentence criterion 12 wrote, and "Leave the unit's worktree exactly as you found it." (both worktree
-sentences are what `guard_review_round_tree` enforces). Criterion 13's tests pin only where the sentences sit: the
+sentence criterion 12 wrote, and "Leave the unit's worktree exactly as you found it." (both worktree sentences are what `guard_review_round_tree` enforces). The build-cache sentence
+stands alone: it names the cache the harness provides and holds whether or not the body is in
+force. Criterion 13's tests pin only where the sentences sit: the
 three under `## When you review` in the working-discipline body and the constant's three kept
 sentences. Their overridability is criterion 3's: its two-file switch-off fixture shows the `## When
 you review` sentences gone once working-discipline is off, and criterion 2's replace fixture is the
@@ -145,7 +148,11 @@ reviewer through `compose`. Criterion 12 edits, in place, every pin whose expect
 rewords, each sentence staying where it sits in the constant (conductor.rs tests,
 `tests/unified_traversal_grounding.rs:913-973` where they quote the third sentence); criterion 13
 owns the split, the heading, every pin that moves because a sentence changes place from the constant
-to the body, and the new pins of the kept trio; criterion 12 owns the words.
+to the body, and the new pins of the kept trio; criterion 12 owns the words. The `verify` bullet's sentence under
+`## Fan out the mechanical work`, "A reviewer never sends it the gate battery: the gate evidence in
+its prompt already proves what the gates ran.", is cut by criterion 13 in the same commit as the
+move, its fact then stated once under `## When you review`; no test pins it; criterion 12 leaves it
+as written.
 
 **BUILT-IN OVERRIDE BY NAME SHADOWING, decided here so no unit has to.** One pure function,
 `instructions::resolve_layers(operator: &[Instruction])`, decides every built-in's state and the
@@ -418,7 +425,8 @@ finding on it.
   review-kind token in `Review` and group it under its kind, the agent label gaining ` step <k>`
   for `k >= 2`.
 - `workflows/rigger.js`: `phaseOf` (:340), `PERSONA_VERB` (:365) and `ROSTER_VERB` (:384) look up
-  the token with a trailing `@` followed by a decimal of at least 2 with no leading zero, never on
+  the token with a trailing `@` followed by a decimal of at least 2 and at most 4294967295 (`u32::MAX`) with no
+  leading zero, a larger suffix being no review token, never on
   an `adjudicator` token, stripped, the grammar `review_step_of` reads; the persona label
   keeps the full token. A lens step after another step now carries a roster; `workerLabel` (:463)
   renders a lens's base phrase and ignores its roster, as `ROSTER_VERB` names no lens.
@@ -671,4 +679,4 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves PANEL READERS READ EVERY STEP: `wave::critic` (with `NO_CRITIC_CLAUSE` and the critique help naming an adversary step in `defaults.review`) and the canary (`apply_model_pins`, `run_canary`) read every step as READERS decides. This criterion OWNS those readers' list-form clauses and the critique skill sentence (`docs.rs:553`); `steps()` and its accessors are criteria 6 and 7's, NOT this one's.
 - [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0. This criterion OWNS only the lanes; every behaviour is criteria 1 to 10, 12 and 13's, NOT this one's.
 - [ ] a test proves THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and `REVIEWER_DISCIPLINE` have no hit under the MARKERS rule once reworded as BASE decides. This criterion OWNS the bodies' wording, `REVIEWER_DISCIPLINE`'s toolchain words, every existing test that pins a reworded phrase and `docs/handbook/authoring-agents.md:87-88`; the override mechanism is criteria 2 to 5's and the handbook rule criterion 1's, NOT this one's.
-- [ ] a test proves THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: `REVIEWER_DISCIPLINE` holds the two worktree sentences `guard_review_round_tree` enforces and the build-cache sentence; the three moved ones sit under `## When you review` (criteria 2 and 3 later make them overridable with the rest of the body). This criterion OWNS the constant's split, the heading and the pins that move; the sentences' wording is criterion 12's, NOT this one's.
+- [ ] a test proves THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: `REVIEWER_DISCIPLINE` holds the two worktree sentences `guard_review_round_tree` enforces and the build-cache sentence; the three moved ones sit under `## When you review` (criteria 2 and 3 later make them overridable). This criterion OWNS the constant's split, the heading, the verify bullet's cut and the pins that move; the sentences' wording is criterion 12's, NOT this one's.
