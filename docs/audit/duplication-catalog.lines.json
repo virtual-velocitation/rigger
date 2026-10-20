@@ -744,8 +744,8 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3822,
-        "end_line": 3822
+        "start_line": 3839,
+        "end_line": 3839
       },
       {
         "file": "src/cli/validate.rs",
@@ -1869,33 +1869,8 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3452,
-        "end_line": 3452
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 3654,
-        "end_line": 3654
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 3656,
-        "end_line": 3656
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 3657,
-        "end_line": 3657
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 3658,
-        "end_line": 3658
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 3668,
-        "end_line": 3668
+        "start_line": 3469,
+        "end_line": 3469
       },
       {
         "file": "src/cli/setup.rs",
@@ -1904,18 +1879,43 @@
       },
       {
         "file": "src/cli/setup.rs",
+        "start_line": 3673,
+        "end_line": 3673
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3674,
+        "end_line": 3674
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3675,
+        "end_line": 3675
+      },
+      {
+        "file": "src/cli/setup.rs",
         "start_line": 3685,
         "end_line": 3685
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3775,
-        "end_line": 3775
+        "start_line": 3688,
+        "end_line": 3688
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3984,
-        "end_line": 3984
+        "start_line": 3702,
+        "end_line": 3702
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3792,
+        "end_line": 3792
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 4001,
+        "end_line": 4001
       },
       {
         "file": "src/cli/validate.rs",

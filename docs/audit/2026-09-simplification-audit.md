@@ -1951,7 +1951,7 @@ mandatory sweep: Command::new call sites - 90 site(s), collected mechanically re
 - `src/cli/run.rs:3287-3287` `Command::new`
 - `src/cli/run.rs:3331-3331` `Command::new`
 - `src/cli/run.rs:3400-3400` `Command::new`
-- `src/cli/setup.rs:3822-3822` `Command::new`
+- `src/cli/setup.rs:3839-3839` `Command::new`
 - `src/cli/validate.rs:1452-1452` `Command::new`
 - `src/cli/validate.rs:1731-1731` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2403,21 +2403,21 @@ __END__
 - `src/cli/setup.rs:3105-3105` `".rigger/agents/newcomer.md"`
 - `src/cli/setup.rs:3183-3183` `".rigger/workflow.yml"`
 - `src/cli/setup.rs:3413-3413` `".rigger"`
-- `src/cli/setup.rs:3452-3452` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:3654-3654` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:3656-3656` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:3657-3657` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:3658-3658` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:3668-3668` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:3671-3671` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:3685-3685` `"The count and the caller lookup run once per item of the walk's hunk list - every \
+- `src/cli/setup.rs:3469-3469` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:3671-3671` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:3673-3673` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:3674-3674` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:3675-3675` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:3685-3685` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:3688-3688` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:3702-3702` `"The count and the caller lookup run once per item of the walk's hunk list - every \
              item the hunks touch, new or pre-existing, its body or its doc changed - each \
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers."`
-- `src/cli/setup.rs:3775-3775` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:3984-3984` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:3792-3792` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:4001-4001` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
