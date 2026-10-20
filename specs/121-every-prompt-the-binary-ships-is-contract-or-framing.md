@@ -66,7 +66,7 @@ unedited; the MARKERS rule exists in its criterion 12's test. PR #117's shipped-
 `src/cli/setup.rs`, at PR #117's head cdb6de67, :3439) exists. The launch record confirms each of
 these before a unit spawns, that the open-exceptions list in `authoring-loops.md`'s `## What rigger
 prescribes` section (spec 120's criterion 1) names exactly the prescriptions EXCEPTIONS LIST assigns
-to this spec's criteria, and that the HIT ENUMERATION below is complete (no phrase-list or
+to this spec's criteria, in the wording spec 120 landed (no amendment to spec 120), and that the HIT ENUMERATION below is complete (no phrase-list or
 MARKERS hit in a registry surface or script prompt at the launch base outside it); a mismatch stops
 the launch for a Design amendment.
 
@@ -84,7 +84,10 @@ the criterion that lands it, in the same commit: the lookup pointer's method sen
 cadence clauses in `EMIT_PROTOCOL` and `review_protocol` by 4; the progress cadence in the four host
 homes by 5; `DOC_ONLY_ROUND`'s rule sentence by 6; `MAX_UNIT_ADDED_LINES` and `unit_size_cap`'s
 second sentence by 7; `PLAN_PROTOCOL`'s guidance by 8; the REQUIRED PATTERN audit sentences by 9; the
-toolchain words in the workflow script by 11; the scratch tool by 12. Criterion 17, which lands after every striking
+shared item "the toolchain words in the workflow script and the scratch tool" by 11 and 12 together:
+a list item shared by two criteria is NARROWED by the first of them to land, to the remaining concern
+("the toolchain words in the scratch tool" when 11 lands first, "the toolchain words in the workflow
+script" when 12 does), and STRUCK by the second. Criterion 17, which lands after every striking
 criterion (1 to 15, then 16 and 18), removes the emptied list with its lead-in sentence; each striking
 criterion keeps only its own strike.
 
@@ -135,8 +138,10 @@ owns its pins):
 "Look things up in the knowledge graph, not by grepping the project's sources." and "If the graph
 cannot answer and you fall back to grep over the project's sources, record it with `rigger progress
 <id> 'grep-fallback: <what the graph did not answer>'` - one line before moving on - so the gap is
-visible in the log; filtering your own build or gate output is not a fallback." with `<id>` replaced
-by "your spawn id" ("`rigger progress <your spawn id> ...`"). The `grep-fallback:` prefix stays a
+visible in the log; filtering your own build or gate output is not a fallback." with its Bash-form
+slot "`rigger progress <id> 'grep-fallback: <what the graph did not answer>'`" replaced by "a progress
+line `grep-fallback: <what the graph did not answer>` through the progress verb your task or your tool
+list names", so it agrees with criterion 5's progress bullet. The `grep-fallback:` prefix stays a
 CONTRACT shape (`progress::GREP_FALLBACK_PREFIX`, `crates/rigger-domain/src/progress.rs:84`, which
 `metrics.rs:1147` and the dash count); nothing in the binary demands it. The existing pin
 (`conductor.rs:19406-19410`, "the pointer must carry the grep-fallback reporting instruction") moves
@@ -148,7 +153,9 @@ consumer's surface (criterion 14).
 PreToolUse entry as at HEAD, and every headless spawn's `--settings` carries it. Absent or false:
 `install_lookup_hook` removes rigger's own entry from `.claude/settings.json`: every inner hook
 under `PreToolUse` whose command equals `GREP_GUARD_COMMAND`, whatever its matcher, a block dropped
-only when its inner array becomes empty, every other hook kept, writing only when the merge changes
+only when its inner array becomes empty, an emptied `PreToolUse` array and an emptied `hooks` object
+removed in turn, so a settings file rigger alone populated returns to its pre-rigger shape (the
+byte-equal check reads that result), every other hook kept, writing only when the merge changes
 the file. Install keys on the same rule: the guard is present when any inner `PreToolUse` hook has
 that command (`cmd_setup` parses `.rigger/workflow.yml` after `init_project` to read the
 key and fails loudly on a parse error, as `get_referenced_agent_ids`, `setup.rs:189`, already does); and `hooks::install_session_settings` takes the flag and merges only the
@@ -179,8 +186,10 @@ and its fields are `pub`; `SpawnOpts` loses its `Default` derive (`agent.rs:63`)
 `SpawnOpts::new(host: SpawnHost) -> SpawnOpts`, filling every other field with its former default, so
 every construction spreads `..SpawnOpts::new(host)` and the compiler enumerates every site, tests
 included (a test builds its host as a struct literal). A test asserts that no production line outside
-`SpawnHost::resolve` constructs a `SpawnHost` literal: it matches a `SpawnHost {` not preceded by
-`struct ` or `impl `, so the struct declaration and its impl headers are exempt by name. Criterion 2 owns `SpawnHost` with its `grep_guard` field,
+`SpawnHost::resolve` constructs a `SpawnHost` literal: it matches `SpawnHost {` followed, after optional whitespace or a
+newline, by a field name or `..`, and never preceded on its line by `->`, `struct ` or `impl `, so
+the declaration, the impl headers and the `-> SpawnHost {` signatures of `resolve` and the `RunCtx`
+accessor are exempt by that rule. Criterion 2 owns `SpawnHost` with its `grep_guard` field,
 `resolve`, `SpawnOpts.host`, `SpawnOpts::new`, the edit of every construction and that assertion;
 criterion 3 adds `helper_root` to `SpawnHost` with its reading in `resolve` and its reader in
 `spawn_config_args`, so 3 needs 2. Each criterion's test proves the critic's and the canary's spawns
@@ -197,8 +206,8 @@ every spawn reads, and a helper copy committed into a unit worktree is ignored (
 tracks `.claude/agents/`, `.gitignore:50`, and `hooks.rs:43` embeds the tracked file, so a worktree
 copy is only ever the operator's own text at an older commit); an empty root reads the embedded
 text. A present
-file that does not parse as a helper definition fails the spawn with an error naming the file, as a
-malformed `settings_json` does today; `rigger validate` reports the same error. `HELPER_AGENTS`
+file that cannot be read or does not parse as a helper definition fails the spawn with an error
+naming the file, an infrastructure fault that charges no remediation attempt; `rigger validate` reports the same error. `HELPER_AGENTS`
 stays as the scaffold's write-once seed (`setup.rs:243-244`) and the default.
 
 **THE COMMUNICATION CADENCE HAS ONE HOME, decided here (criterion 4).** The cadence clauses are
@@ -392,10 +401,12 @@ tree's binary. Criterion 13 owns every existing test reading `PLANNING_A_SPEC_BO
 each registry entry, `<root>/.rigger/skills/<name>/SKILL.md`, `<name>` equal to the entry's name byte
 for byte (case-sensitive, never trimmed). Present: that file's bytes are installed verbatim at
 `.claude/skills/<name>/SKILL.md` (no overlay, no stamped prohibition: the project's copy is the
-definition), written only when the installed file differs, and the outcome is reported as
-`(<name>, project copy)`. Absent: the shipped render installs as at HEAD. A directory under
+definition), written only when the installed file differs, and the outcome is `ProjectCopy` on every
+setup while the shadow is in place (a state, not a write). `install_skills` returns `SkillInstall {
+outcomes: Vec<(&'static str, InstallOutcome)>, strays: Vec<String> }`, `InstallOutcome` gaining the
+`ProjectCopy` variant and `strays` carrying each project skill directory that shadows no shipped skill. Absent: the shipped render installs as at HEAD. A directory under
 `.rigger/skills/` naming no registry entry (a near name included) shadows nothing, installs nothing,
-and is named in `rigger setup`'s report as shadowing no shipped skill. `rigger docs`, the docs-drift
+and is named in `rigger setup`'s report, from `strays`, as shadowing no shipped skill. `rigger docs`, the docs-drift
 gate and the pre-commit block read only the committed `skills/` sources and the shipped render, never
 `.rigger/skills/`, so a shadow is never drift. An installed skill an operator edited by hand with no
 project copy is rewritten as at HEAD; keeping an edit means copying it under `.rigger/skills/` first.
@@ -440,8 +451,12 @@ host's; `rigger-dash` the MCP tool descriptions and their `inputSchema` property
 (`mcpserver.rs:757-773`); the binary crate (`src/`) the critic spawn's framing (`src/cli/critique.rs`),
 `GREP_GUARD_MESSAGE` and the write-guard deny reason. No adapter text moves inward across a crate
 boundary: the dependency rule holds for data as for code, and the domain never spells a host's
-vocabulary. Each text is a `pub const` of its crate's module, and every renderer formats from those
-constants through `fill`, so no prompt literal stays in the renderer. The surfaces: `EMIT_PROTOCOL`, `PLAN_PROTOCOL`,
+vocabulary. Each distinct text is one `pub const` of its crate's module, and every renderer formats
+from those constants through `fill`, so no prompt literal stays in the renderer. A text shared by
+several surfaces (`REVIEWER_DISCIPLINE`, read by `review_protocol` and the adjudicator's prompt, among
+them) is one const that each surface's group references: the duplicate check keys on (surface, name),
+and the one-home rule holds on the const, so a text spelled twice as two literals is the defect and
+two groups referencing one const is not. The surfaces: `EMIT_PROTOCOL`, `PLAN_PROTOCOL`,
 `unit_size_cap`, `REQUIRED_PROTOCOL`, `REVIEWER_DISCIPLINE`, `review_protocol`, `DECISIONS_HEADER`,
 `CODE_NEIGHBORHOOD_HEADER`, `DESIGN_INTENT_HEADER`, the lessons and findings headers, the elision notes
 and `graph_around_recovery`, `task_block`, `PriorFailure::block`, `ReviewRound::block`,
@@ -468,14 +483,17 @@ order (whitespace-normalized); a slot that is not a string (a number, a count) t
 value named in the test, and the expected text is the groups filled through `fill` with that value's
 rendering, then concatenated; a surface with mutually exclusive branches (a PASS or a FAIL row, an empty
 or a joined list, a stage with or without a criterion) gets one fixture per branch, each naming the
-groups that branch renders, so every group is rendered by some fixture. PR #117's
-`every_shipped_agent_text()` in the binary crate gains every crate's groups, collected through each
-crate's `prompt_groups()` and labelled `REGISTRY <crate>::<group>`, rather than a second enumeration;
-the concatenation, phrase and MARKERS, and sweep tests collect them the same way.
+groups that branch renders, so every group is rendered by some fixture. The binary crate's `prompt_surface` module lives in its LIB target (`src/lib.rs` gains `pub mod
+prompt_surface`), which `src/cli` reads; it also exposes `pub fn all_groups() -> Vec<&'static Group>`,
+collecting every crate's `prompt_groups()` plus its own, the one enumeration. PR #117's
+`every_shipped_agent_text()` (a bin-test helper) reads `all_groups()`, labelling each group `REGISTRY
+<crate>::<group>`; the sweep (`tests/prompt_surface_sweep.rs`) and criterion 17's tests read
+`all_groups()` directly, never the bin helper.
 
-**THE PHRASE AND MARKERS TESTS, decided here (criterion 17).** One test iterates the registry groups
-and the scripts' contract and framing regions (criterion 18, which 17 needs) through
-`every_shipped_agent_text()`, selecting only its entries labelled `REGISTRY ` or `SCRIPT `, and fails on any phrase of
+**THE PHRASE AND MARKERS TESTS, decided here (criterion 17).** One test, in `src/cli/setup.rs`'s
+tests beside spec 120's MARKERS function (a test-module function the `tests/` directory cannot reach),
+iterates `rigger::prompt_surface::all_groups()` directly and the scripts' contract and framing region
+entries (criterion 18, which 17 needs), read through the same region reader the sweep uses, and fails on any phrase of
 a list kept in the test, matched as a lowercase substring: "the moment", "never batch", "do not
 batch", "keep it flowing", "between your actions", "between your own actions", "do not contradict",
 "supersede explicitly", "default to skepticism", "reject only", "not by grepping", "never a new test",
@@ -513,7 +531,8 @@ home: each literal of 40 or more characters with a space (interpolations removed
 opened by a `// prompt-surface: contract`, `// prompt-surface: framing` or `// prompt-surface:
 operator` comment line and closed by `// prompt-surface: end`, and the test fails on such a literal
 outside a region. An operator region holds text no agent reads (log lines, phase labels, error
-strings) and is excluded from criterion 17's assertions. Each contract and framing region becomes ONE entry of `every_shipped_agent_text()`: all of its
+strings) and is excluded from criterion 17's assertions. Each contract and framing region becomes ONE entry, built by a region reader in the lib's
+`prompt_surface` module from the script text, and also added to `every_shipped_agent_text()`: all of its
 literals, of any length, joined in source order with a single space, interpolations written `{}`,
 labelled `SCRIPT <file>:<line>` by the region's opening line; criterion 17's two assertions run over
 that joined entry.
@@ -634,9 +653,9 @@ TEST PLACEMENT:
 | 13 | `docs.rs` tests (the generic step); `src/cli/mod.rs` tests (`install_skills` with an overlay list) |
 | 14 | `src/cli/mod.rs` tests over a temp root (a shadow, a near name, a deleted shadow); a periphery test running the built binary's `setup` |
 | 15 | `src/cli/setup.rs` tests (`init_project` with and without `Cargo.toml`) |
-| 16 | each crate's `prompt_surface` tests (no duplicate (surface, name)); a concatenation test beside each renderer (`conductor.rs`, `review.rs`, `canary_store.rs`, `driver/cli.rs`, `mcpserver.rs`, `src/cli/mod.rs`) |
-| 17 | `src/cli/setup.rs` tests through the shipped-text helper |
-| 18 | a test in `tests/prompt_surface_sweep.rs` over the source tree; `src/cli/mod.rs` tests over the two scripts' regions |
+| 16 | each crate's `prompt_surface` tests (no duplicate (surface, name)); a lib test that `all_groups()` holds every crate's `prompt_groups()`; a concatenation test beside each renderer (`conductor.rs`, `review.rs`, `canary_store.rs`, `driver/cli.rs`, `mcpserver.rs`, `src/cli/mod.rs`) |
+| 17 | `src/cli/setup.rs` tests reading `rigger::prompt_surface::all_groups()` and the region entries directly, beside spec 120's MARKERS function |
+| 18 | `tests/prompt_surface_sweep.rs` over the source tree and the two script files, reading `rigger::prompt_surface::all_groups()` |
 | 19 | the lanes script on the integrated tree |
 
 ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
@@ -660,9 +679,9 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | `DocsOverlay.global_constraints`, the `DocsContext` field, `planning-a-spec` as `Rendered`, `.rigger/docs-overlay.yml`, the re-rendered `skills/planning-a-spec/SKILL.md`, the edited static-body tests | 13 |
 | the shadow rule in `install_skills` and its report lines | 14 |
 | `SetSpec.implementer`, `scaffold/rust/set.yml`'s persona, the `implementer` seed, `@IMPLEMENTER@`, the edited seed-set test | 15 |
-| `rigger_domain::prompt_surface` (`Class`, `Group`, `fill`), each crate's `prompt_surface` module with its texts and `prompt_groups()`, every renderer's move onto it, the re-pathed readers, the helper's registry entries | 16 |
+| `rigger_domain::prompt_surface` (`Class`, `Group`, `fill`), each crate's `prompt_surface` module with its texts and `prompt_groups()`, the lib's `pub mod prompt_surface` and `all_groups()`, every renderer's move onto it, the re-pathed readers, the helper's registry entries | 16 |
 | the phrase list, the MARKERS call over the registry, the negative fixture, the removal of the emptied open-exceptions list and its lead-in | 17 |
-| the sweep, the prompt-bearing derivation, its allow-list, the script regions (operator regions included) and their helper entries | 18 |
+| the sweep, the prompt-bearing derivation, its allow-list, the script regions (operator regions included), the region reader and their helper entries | 18 |
 | the lanes | 19 |
 
 ## Global constraints
@@ -700,6 +719,6 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves A PROJECT SKILL SHADOWS THE SHIPPED ONE: `install_skills` installs `.rigger/skills/<name>/SKILL.md` verbatim in place of the shipped skill of that exact name, a near name shadowing nothing, while `rigger docs` and the drift gate stay on the shipped text. This criterion OWNS the shadow rule and its setup report lines; the skill bodies are criterion 13's, NOT this one's.
 - [ ] a test proves THE IMPLEMENTER COMES WITH THE GATE SET: `init_project` with the Rust set writes its `implementer` persona and names that id in `SCAFFOLD_WORKFLOW`'s implement and checkin stages, and with no set writes and names a language-neutral `implementer`. This criterion OWNS `SetSpec.implementer`, the seed, the placeholder and their pins; the scaffold's keys are criteria 2 and 7's, NOT this one's.
 - [ ] a test proves THE REGISTRY HOLDS EVERY PROMPT TEXT: each crate's `prompt_surface` module holds its crate's prompt constants and builders' fixed text as `Group`s classed `Contract` or `Framing`, every renderer formats through `fill`, and each surface's groups concatenate to its render over the placeholder fixture. This criterion OWNS the types, every crate's module and the concatenation tests; the phrase test is 17's, the sweep 18's, NOT this one's.
-- [ ] a test proves NO REGISTERED TEXT PRESCRIBES: every registry group and joined script region entry of the shipped-text helper carries no phrase of the test's cadence and method list and no hit under spec 120's MARKERS rule, and a held pre-move `EMIT_PROTOCOL` fails it. This criterion OWNS the phrase list, both assertions and removing the emptied exceptions list; the registry is criterion 16's, NOT this one's.
+- [ ] a test proves NO REGISTERED TEXT PRESCRIBES: every group `prompt_surface::all_groups()` returns and every joined script region entry carries no phrase of the test's cadence and method list and no hit under spec 120's MARKERS rule, and a held pre-move `EMIT_PROTOCOL` fails it. This criterion OWNS the phrase list, both assertions and removing the emptied exceptions list; the registry is criterion 16's, NOT this one's.
 - [ ] a test proves THE SOURCE SWEEP CLOSES THE REGISTRY: every production literal of 40 or more characters with a space in a prompt-bearing file (one spelling `SpawnOpts`, `SpawnHost` or `prompt_surface`) is registered or allow-listed, and each such literal of the two embedded scripts sits in a classed region. This criterion OWNS the sweep, the file derivation, the allow-list and the regions; the registry is criterion 16's, NOT this one's.
 - [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0, with `cargo fmt --check` passing. This criterion OWNS only the lanes; every behaviour is criteria 1 to 18's, NOT this one's.
