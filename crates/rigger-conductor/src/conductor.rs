@@ -12518,15 +12518,14 @@ pub fn review_protocol(actor: &str) -> String {
 /// implementer and edits the unit's own worktree leaves exactly the residue that guard
 /// exists to catch, name in a lesson, and restore. THE GATES GRADE, A REVIEW JUDGES THE
 /// RESIDUE: no tier re-runs the battery or a gate its [`gate_evidence_block`] shows green, and a
-/// reproduction builds into the unit's review cache ([`RunCtx::spawn_env`]). A REVIEW NEVER
-/// MUTATES: its last sentence
-/// keeps mutation sweeps out of every review, since the gate that sweeps owns mutation testing
-/// and a reviewer's sweep only repeats it at review cost. Shared by [`review_protocol`] (the lens
-/// and adversary tiers, which also record findings through it) and [`RunCtx::
-/// run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
+/// reproduction builds into the unit's review cache ([`RunCtx::spawn_env`]). A REVIEW RUNS NO
+/// GATE'S TOOL: its last sentence keeps every gate's own tool out of every review, since the
+/// gate owns its run and a reviewer's run only repeats it at review cost. Shared by
+/// [`review_protocol`] (the lens and adversary tiers, which also record findings through it)
+/// and [`RunCtx::run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
 /// wording rather than three hand-copied near-duplicates.
-pub const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. Never re-run the gate battery, or any gate the gate evidence shows green on the tree under review: the gates are the instrument that grades the work, and a review judges what they cannot see. To reproduce a specific suspicion - one named test, a reversion probe, a single-crate `cargo test -p <crate> <test>` - create your own throwaway scratch worktree and run it there, building into the CARGO_TARGET_DIR your spawn carries: the unit's review cache, never the cache the unit's gates use. Leave the unit's worktree exactly as you found it. Never run a mutation sweep, directly or through a verify helper: mutation testing belongs to the gate that sweeps, never to a review.";
+pub const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. Never re-run the gate battery, or any gate the gate evidence shows green on the tree under review: the gates are the instrument that grades the work, and a review judges what they cannot see. To reproduce a specific suspicion - one named test, a reversion probe, a single-crate `cargo test -p <crate> <test>` - create your own throwaway scratch worktree and run it there, building into the CARGO_TARGET_DIR your spawn carries: the unit's review cache, never the cache the unit's gates use. Leave the unit's worktree exactly as you found it. Never run a gate's own tool, directly or through a verify helper: the gate evidence in your prompt is that gate's verdict, and a reviewer's run only repeats it at review cost.";
 
 /// What an adjudicator's reject names on its verdict line beside the verdict: its REQUIRED
 /// list ([`RequiredItem`]), which the next attempt is handed ([`PriorFailure::block`]) and
