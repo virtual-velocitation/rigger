@@ -1,6 +1,7 @@
 # 121 - Every prompt the binary ships is contract or framing
 
-**Goal:** every string the binary puts in front of an agent is CONTRACT (a shape the binary parses,
+**Goal:** every prompt text and tool description the binary puts in front of an agent as
+instruction is CONTRACT (a shape the binary parses,
 a tool name or argument) or FRAMING (a fact of the task only the binary knows); a PRESCRIPTION
 (method, cadence, discipline, review or test-authoring procedure, planning policy, a language or
 toolchain word) lives in a surface the consumer owns: the overridable built-in layer (spec 120), the
@@ -41,7 +42,11 @@ production text (outside `tests/`, cut at each file's test module) of `crates/` 
 such literals in 59 files; the prompt-bearing subset (files spelling `SpawnOpts`, `SpawnHost` or
 `prompt_surface`) holds 124 in 8 files (`conductor.rs` 95, the headless host driver module of `rigger-driver` 10, `critique.rs` 6,
 `canary_store.rs` 5, `gate.rs` 3, `driver/cli.rs` 2, `driver/mod.rs` 2, `agent.rs` 1), a set that grows
-by every renderer file criterion 16 moves onto `prompt_surface`.
+by every renderer file criterion 16 moves onto `prompt_surface`: after it, 12 files holding 278 such
+literals at 3cee73df's count (the 8 above plus `src/cli/mod.rs` 91, `mcpserver.rs` 38, `src/cli/guard.rs`
+14 and `review.rs` 11), and each crate's new `prompt_surface` module, whose literals are the registry
+itself. Tool results, errors and CLI output an agent reads back are data, not instruction, and are
+outside this claim (THE SOURCE SWEEP's tool-output category).
 
 ## Design
 
@@ -79,8 +84,9 @@ the criterion that lands it, in the same commit: the lookup pointer's method sen
 cadence clauses in `EMIT_PROTOCOL` and `review_protocol` by 4; the progress cadence in the four host
 homes by 5; `DOC_ONLY_ROUND`'s rule sentence by 6; `MAX_UNIT_ADDED_LINES` and `unit_size_cap`'s
 second sentence by 7; `PLAN_PROTOCOL`'s guidance by 8; the REQUIRED PATTERN audit sentences by 9; the
-toolchain words in the workflow script by 11; the scratch tool by 12. Criterion 12, the last of these
-in UNIT ORDER, also removes the emptied list with its lead-in sentence.
+toolchain words in the workflow script by 11; the scratch tool by 12. Criterion 17, which lands after every striking
+criterion (1 to 15, then 16 and 18), removes the emptied list with its lead-in sentence; each striking
+criterion keeps only its own strike.
 
 HIT ENUMERATION, decided here: every phrase-list hit (criterion 17's list) and every MARKERS hit
 (spec 120's rule) in a registry surface or a script prompt at 3cee73df, with its disposition, by one
@@ -105,6 +111,7 @@ sentence is reworded with the replacement named here, since the sentence prescri
 | `rigger.js:650-652` `progressNote` | "do not batch", "keep it flowing" | prescription, moves to the `communication` built-in (criterion 5) |
 | `rigger.js:624` `workdir` | MARKERS `cargo` | framing, reworded "your build tool's runs" (criterion 11) |
 | `rigger.js:659-660` BUILD LOCATION | MARKERS `cargo`, `clippy` (and "mutants"), `CARGO_TARGET_DIR` | framing, reworded "every command your build tool runs ... (anything that builds or tests)" and `${req.build_cache_env}` (criterion 11) |
+| `rigger.js:661` BUILD LOCATION | `target/` (the toolchain's default build directory) | framing, reworded "A build cache inside the worktree itself is a defect that fills the disk - never create one." (criterion 11) |
 | `rigger.js:673` SCRATCH POLICY | "the moment"; MARKERS `cargo` (twice) | the disk-layout parenthetical is a prescription, dropped (the reaper is its contract); the reaper sentence is contract, reworded "It is reaped once your result records"; the export sentence is framing, reworded with `${req.build_cache_env}` (criterion 11) |
 | `rigger.js:892-894` step courier | MARKERS `cargo`, `CARGO_TARGET_DIR` | framing; the prefix and its sentence dropped (dead), "running their gates inline" (criterion 11) |
 | `rigger.js:55` phase detail | MARKERS `cargo` | not a prompt (the `/workflows` phase label): an operator region (criterion 18), stays as written |
@@ -185,8 +192,11 @@ carry the resolved value.
 otherwise. `helper_agents_json` and `helper_mcp_tools` (`hooks.rs:74`, :110) both read it, so the
 `--agents` JSON and the tool pre-approval derive from the same copy. `root` is
 `SpawnOpts.host.helper_root` (SPAWN HOST RESOLUTION; for the conductor `Deps::repo`,
-`conductor.rs:1844`, the repository root the run drives, never a unit worktree, which carries no
-`.claude/`); an empty root reads the embedded text. A present
+`conductor.rs:1844`, the repository root the run drives): the operator's checkout is the one root
+every spawn reads, and a helper copy committed into a unit worktree is ignored (this repository
+tracks `.claude/agents/`, `.gitignore:50`, and `hooks.rs:43` embeds the tracked file, so a worktree
+copy is only ever the operator's own text at an older commit); an empty root reads the embedded
+text. A present
 file that does not parse as a helper definition fails the spawn with an error naming the file, as a
 malformed `settings_json` does today; `rigger validate` reports the same error. `HELPER_AGENTS`
 stays as the scaffold's write-once seed (`setup.rs:243-244`) and the default.
@@ -217,7 +227,9 @@ stretch is never mistaken for a stall. Keep it flowing WHILE you work; do not ba
 host keeps the verb and its arguments: `framed` (`driver/cli.rs:146-151`) appends "LIVE PROGRESS:
 record a progress line by running (Bash): rigger progress '<id>' '<one line: what you just did>'.";
 the script's `progressNote` reads "LIVE PROGRESS: record a progress line, from ${REPO}, using Bash:"
-then the command line; the shim's `progressNote` reads the same with its own id; the `rigger_progress`
+then the command line; the shim's `progressNote` (which has no `REPO` binding) reads "LIVE PROGRESS: record a progress line
+by running (Bash):" followed by the `rigger progress '${next.id}' '<one line: what you just did>'`
+line, as `framed` does; the `rigger_progress`
 description reads "Record one live progress line for the spawn this server is bound to, so an observer
 sees you working between milestones." ("Report one short line after each significant step; never
 batch them up." cut). Criterion 5 owns extending spec 120's criterion 14 pin of the `communication`
@@ -245,9 +257,13 @@ when the key is declared; absent, neither prompt carries a cap sentence. The fun
 sentence, "The cap measures review scope - how much one review round must read - never code shape."
 (`conductor.rs:12420`), leaves the binary and lands verbatim in this repository's
 `.rigger/agents/planner.md` and the scaffold's planner seed, its one home, directly after criterion
-8's moved split sentence in both homes (so 7 needs 8). The adversary persona's
-numberless size rule and the adjudicator persona's "the cap the prompt states" clause (spec 120's)
-are untouched, persona and template alike. The DAG prompt's cause-contract example "a unit over the
+8's moved split sentence in both homes (so 7 needs 8). Because the sentence reaches the plan
+critique today through the DAG prompt's cap framing, criterion 7 also lands it verbatim in the
+adversary's and the adjudicator's `## When you critique a spec or a plan` sections, persona and
+scaffold template alike, directly after each section's cap clause (the adversary's numberless size
+rule, the adjudicator's "the cap the prompt states" clause, both spec 120's and otherwise
+untouched), so the consumer loses nothing. Three role-voiced homes are not a duplicate under spec
+120's one-home ruling: the home of a method is the persona of the role that applies it. The DAG prompt's cause-contract example "a unit over the
 size cap" is rendered only when the key is declared. The binary keeps the `decomposition-conflict`
 cause contract. Criterion 7 owns every pin of `unit_size_cap`'s text and of `MAX_UNIT_ADDED_LINES`
 (`conductor.rs:46084-46103` among them). `SCAFFOLD_WORKFLOW`
@@ -263,7 +279,7 @@ KEPT (FRAMING), each as at HEAD unless reworded here: "You are the planner. The 
 created one baseline implement unit per acceptance criterion below - the spec is decomposed by
 construction."; "Your job is to REFINE that baseline, not to re-decompose it:"; the split bullet's
 contract, reworded as its own sentence after the `{unit_size_cap}` slot: "Each part of a split echoes
-that criterion's id and ends its `criterion` text with an OWNS sentence naming its part (the conductor
+the split criterion's id and ends its `criterion` text with an OWNS sentence naming its part (the conductor
 keeps that sentence after the criterion's exact text as that unit's contract)."; "Each criterion below
 is shown with a STABLE id in [brackets]."; "When your unit serves a criterion, your unit SUPERSEDES
 (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you
@@ -275,7 +291,8 @@ unit on top of the baseline (duplicated work)."; "Still copy the criterion text 
 baseline."; "Propose each refinement by calling the rigger_emit tool with type \"UnitProposed\" and
 data:" with its JSON shape (the cadence clause "the moment you decide it" cut); "A unit whose
 `criterion_id` matches none of the ids below still runs, but as a genuinely-new sub-unit that the
-conductor flags as unmatched - so only omit the id when you truly intend a new sub-unit." (FRAMING of
+conductor flags as unmatched." (its clause "- so only omit the id when you truly intend a new
+sub-unit" cut and moved; FRAMING of
 `conductor.rs:12155`; MARKERS: "matches none of the ids below" becomes "is none of the ids below");
 "Every unit you propose - a refinement, a split, or a new sub-unit - automatically runs the fan-out
 template's own gates; you never need to name them."; and the closing "The acceptance criteria to
@@ -287,7 +304,8 @@ large into ordered units (each `needs` the one before it), each owning a named p
 discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it."; "NEVER
 propose a unit that maps to no acceptance criterion - that is scope creep."; "Propose each refinement
 the moment you decide it."; "Do not write code." (the seed already carries it, so only this
-repository's persona gains it). The first is the split bullet's policy clause cut at "each owning a
+repository's persona gains it); "Only omit the id when you truly intend a new sub-unit." (the clause
+cut from the unmatched-id sentence, capitalized). The first is the split bullet's policy clause cut at "each owning a
 named part"; the fourth is the cadence clause cut from the `UnitProposed` sentence, with its verb
 phrase as subject.
 
@@ -326,7 +344,8 @@ file edits, your build tool's runs, and any git commit inside your isolated work
 LOCATION (:659-661) "every command your build tool runs inside your worktree (anything that builds or
 tests) MUST run with" then "  export ${req.build_cache_env}='${req.cargo_target_dir}'" then "set
 first, in the same shell. That directory is the build cache the conductor chose for this spawn - ..."
-(the rest as at HEAD); SCRATCH POLICY (:673) keeps "NEVER under /tmp or your own session scratchpad"
+(the rest as at HEAD, except its last sentence, which becomes "A build cache inside the worktree itself
+is a defect that fills the disk - never create one."); SCRATCH POLICY (:673) keeps "NEVER under /tmp or your own session scratchpad"
 and the reaper sentence, drops the parenthetical "(those are on the operator's small OS partition, and
 a single cargo target or `rigger setup` shim install there fills the disk)", and its next sentence
 reads "For any build you run outside your assigned worktree, export your build cache variable
@@ -408,8 +427,8 @@ defined `sdet-author`, which the scaffold never seeds). Each key carries a one-l
 
 **THE REGISTRY, decided here (criterion 16).** The domain crate owns the registry TYPES:
 `rigger_domain::prompt_surface` (`core` lane, no I/O) defines `pub enum Class { Contract, Framing }`
-(no `Prescription` variant), `pub struct Group { surface: &'static str, name: &'static str, class:
-Class, text: &'static str }` and `fill`. A group is one sentence group of one class; its text may carry
+(no `Prescription` variant), `pub struct Group { pub surface: &'static str, pub name: &'static str, pub
+class: Class, pub text: &'static str }` (every field `pub`, as `SpawnHost`'s are) and `fill`. A group is one sentence group of one class; its text may carry
 `{slot}` placeholders. `fill(text, &[(slot, value)])` scans the template once, left to right, and
 replaces only the named `{slot}` tokens it is passed; an inserted value is never rescanned, and every
 other brace is literal (the JSON shapes in `EMIT_PROTOCOL`, `REQUIRED_PROTOCOL` and `PLAN_PROTOCOL`
@@ -443,9 +462,11 @@ continuation imperatives ("Finish and report; do not start over.", "Fix exactly 
 over:"), `CRITIQUE_OUTPUT_CONTRACT`'s remedy field and the fan-out section's tier names and cap stay
 FRAMING (the audit's borderline kept). `HELPER_AGENTS`, the scaffold seeds, the skills and the
 built-ins are the consumer's surfaces, never registry entries. The concatenation test: for each
-surface, the renderer run over a fixture whose every slot value is the literal `{slot}` (one row
-where the renderer loops) equals the surface's groups for that fixture concatenated in registry order
-(whitespace-normalized); a surface with mutually exclusive branches (a PASS or a FAIL row, an empty
+surface, the renderer run over a fixture whose every string slot value is the literal `{slot}` (one
+row where the renderer loops) equals the surface's groups for that fixture concatenated in registry
+order (whitespace-normalized); a slot that is not a string (a number, a count) takes a fixed fixture
+value named in the test, and the expected text is the groups filled through `fill` with that value's
+rendering, then concatenated; a surface with mutually exclusive branches (a PASS or a FAIL row, an empty
 or a joined list, a stage with or without a criterion) gets one fixture per branch, each naming the
 groups that branch renders, so every group is rendered by some fixture. PR #117's
 `every_shipped_agent_text()` in the binary crate gains every crate's groups, collected through each
@@ -475,8 +496,12 @@ listed by hand: every such file whose production text spells `SpawnOpts`, `Spawn
 test tokenizes their string literals (escaped and raw, line continuations joined) and selects every
 literal of 40 or more characters containing a space, by shape alone. Each selected literal outside a
 crate's `prompt_surface` module is in a registry group (its exact text, or contained in a registered
-group) or in an allow-list kept in the test, keyed by file, of operator-facing messages (an error, a
-status line, a help text, a log line). `setup.rs` and `docs.rs` spell none of the three tokens and no
+group) or in an allow-list kept in the test, keyed by file, with two named categories: "operator
+message" (an error, a status line, a help text, a log line the operator reads) and "tool output" (a
+tool result or error an agent reads back, such as the MCP tool results and errors in `mcpserver.rs`),
+one prefix entry per literal. Tool results and errors are OUTPUT, data an agent reads back, not text
+placed before it as instruction, so they are outside the prompt surface and the registry; criterion
+18 owns every entry of both categories. `setup.rs` and `docs.rs` spell none of the three tokens and no
 criterion makes them do so, so the scaffold seeds and the skill and handbook bodies are outside the
 sweep and need no allow-list entry. A literal of 40 or more
 characters with a space in a prompt-bearing file that is neither registered as contract or framing
@@ -488,8 +513,10 @@ home: each literal of 40 or more characters with a space (interpolations removed
 opened by a `// prompt-surface: contract`, `// prompt-surface: framing` or `// prompt-surface:
 operator` comment line and closed by `// prompt-surface: end`, and the test fails on such a literal
 outside a region. An operator region holds text no agent reads (log lines, phase labels, error
-strings) and is excluded from criterion 17's assertions. Each contract and framing region's literals, interpolations written `{}`, join
-`every_shipped_agent_text()` labelled `SCRIPT <file>:<line>`.
+strings) and is excluded from criterion 17's assertions. Each contract and framing region becomes ONE entry of `every_shipped_agent_text()`: all of its
+literals, of any length, joined in source order with a single space, interpolations written `{}`,
+labelled `SCRIPT <file>:<line>` by the region's opening line; criterion 17's two assertions run over
+that joined entry.
 
 **OPERATOR HAND-OFF, decided here.** No unit edits `.rigger/workflow.yml`: the run's driver is the
 installed binary, whose `Defaults` refuses an unknown key (`deny_unknown_fields`, `config.rs:522`),
@@ -517,7 +544,7 @@ with `--rebase-definition`, as for spec 120's criterion 15.
 | `grep_guard` | reverted | the key flipped false after a setup: the installed hook denies until the next `rigger setup`; accepted |
 | spawn host | concurrent, crash-resume, cold start | `SpawnHost::resolve` is pure over the loaded `Config` and the root; every process resolves again |
 | helper copy | empty | no `.claude/agents/` file: the embedded text |
-| helper copy | DROPPED | an operator copy deleted between spawns: the next spawn reads the embedded text; the helpers are not definition files, so no drift halt |
+| helper copy | DROPPED | an operator copy deleted from the operator's checkout between spawns: the next spawn reads the embedded text, whatever a unit worktree still carries; the helpers are not definition files, so no drift halt |
 | helper copy | existing data | an operator copy written by an older `rigger init` and never edited equals the embedded text at that version; a newer binary keeps passing the old copy; accepted (the copy is the definition) |
 | helper copy | malformed | the spawn fails naming the file; `rigger validate` names it first |
 | skill shadow | existing data | a hand-edited installed skill with no project copy is rewritten as at HEAD |
@@ -526,6 +553,7 @@ with `--rebase-definition`, as for spec 120's criterion 15.
 | overlay field | empty | absent or empty list: the generic step only |
 | scaffold implementer | existing data | an existing project's workflow and personas are write-once and stay; only a fresh `rigger init` gets the new ids |
 | `build_cache_env` | empty | never null: a wave item with no per-unit cache still carries the name, so SCRATCH POLICY's export sentence renders for every spawn, as at HEAD |
+| scope sentence | DROPPED | `unit_size_cap`'s second sentence leaves the DAG prompt and lands in the three critique and planning personas in the same commit, so no spawn that read it loses it |
 | registry | empty surface | a renderer whose optional parts are all absent renders a subset of its groups; the concatenation fixture covers every branch present |
 | sweep | a new literal | fails until registered or allow-listed |
 | moved sentences | switched off | a consumer switching `working-discipline` or `communication` off removes the moved sentences with the rest: intended |
@@ -548,7 +576,7 @@ handbook's upgrade note for the three keys (a new paragraph after `authoring-loo
 older workflow" paragraph, one sentence per key) to 2, 7 and 10 in that order, each adding its own
 sentence; each item of the open-exceptions list in `authoring-loops.md`'s `## What rigger prescribes`
 to the criterion EXCEPTIONS LIST names (1, 4, 5, 6, 7, 8, 9, 11, 12), and the emptied list with its
-lead-in sentence to 12.
+lead-in sentence to 17.
 
 OUT OF SCOPE: the build-cache variable's value (`spawn::BUILD_CACHE_ENV`, read by `RunCtx::spawn_env`
 and the gate runner) and the
@@ -622,18 +650,18 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | the cut cadence clauses of `EMIT_PROTOCOL`, `review_protocol`, `DECISIONS_HEADER`, `renderPeers` | 4 |
 | the four hosts' progress texts, the `communication` built-in's progress bullet, the extended spec-120 criterion 14 body pin | 5 |
 | `DOC_ONLY_ROUND`'s fact text, the sdet-author persona's section | 6 |
-| `Defaults.max_unit_added_lines`, `unit_size_cap(cap)`, both prompts' cap sentence, the moved second sentence in the planner persona and seed, the scaffold's cap line, the pins of `unit_size_cap` and `MAX_UNIT_ADDED_LINES` | 7 |
+| `Defaults.max_unit_added_lines`, `unit_size_cap(cap)`, both prompts' cap sentence, the moved second sentence in the planner, adversary and adjudicator personas and their scaffold templates, the scaffold's cap line, the pins of `unit_size_cap` and `MAX_UNIT_ADDED_LINES` | 7 |
 | `PLAN_PROTOCOL`'s guidance cut and MARKERS rewordings, the planner persona's and seed's moved sentences | 8 |
 | both PATTERN lines, the hand-over section's bullet | 9 |
 | `Defaults.test_author`, its refusal, the spawn's lookup, the edited sdet fixtures | 10 |
 | `WaveItem::build_cache_env`, `spawn::BUILD_CACHE_ENV`, the script's reworded texts, the courier command | 11 |
-| the `rigger_scratch` description, the removal of the emptied open-exceptions list and its lead-in | 12 |
+| the `rigger_scratch` description | 12 |
 | each open-exceptions item's strike | the criterion EXCEPTIONS LIST names |
 | `DocsOverlay.global_constraints`, the `DocsContext` field, `planning-a-spec` as `Rendered`, `.rigger/docs-overlay.yml`, the re-rendered `skills/planning-a-spec/SKILL.md`, the edited static-body tests | 13 |
 | the shadow rule in `install_skills` and its report lines | 14 |
 | `SetSpec.implementer`, `scaffold/rust/set.yml`'s persona, the `implementer` seed, `@IMPLEMENTER@`, the edited seed-set test | 15 |
 | `rigger_domain::prompt_surface` (`Class`, `Group`, `fill`), each crate's `prompt_surface` module with its texts and `prompt_groups()`, every renderer's move onto it, the re-pathed readers, the helper's registry entries | 16 |
-| the phrase list, the MARKERS call over the registry, the negative fixture | 17 |
+| the phrase list, the MARKERS call over the registry, the negative fixture, the removal of the emptied open-exceptions list and its lead-in | 17 |
 | the sweep, the prompt-bearing derivation, its allow-list, the script regions (operator regions included) and their helper entries | 18 |
 | the lanes | 19 |
 
@@ -662,8 +690,8 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves THE TASK PROMPTS CARRY NO COMMUNICATION CADENCE: `EMIT_PROTOCOL`, `review_protocol`, `DECISIONS_HEADER` and the shim's `renderPeers` keep their shapes and nouns with every cadence clause Design names cut, the `communication` built-in stating it. This criterion OWNS those four texts and their pins; the progress cadence is criterion 5's, the planner's clause criterion 8's, NOT this one's.
 - [ ] a test proves THE PROGRESS CADENCE HAS ONE HOME: the cli host's `framed`, the workflow script's and the shim's progress notes and the `rigger_progress` description name the verb and its arguments only, and the cadence wording Design names stands in the `communication` built-in. This criterion OWNS the four host texts, the built-in's bullet and their pins; other cadence is criterion 4's, NOT this one's.
 - [ ] a test proves A DOC-ONLY ROUND STATES ONLY THE FACT: the sdet-author prompt on a round `is_documentation_only` classifies carries "This round changed documentation only." and no rule, and the rule's sentence stands verbatim in `.rigger/agents/sdet-author.md`. This criterion OWNS `DOC_ONLY_ROUND`, its doc, the persona's section and their pins; the test-author key is criterion 10's, NOT this one's.
-- [ ] a test proves THE UNIT SIZE CAP IS DECLARED: `unit_size_cap` renders its first sentence from `defaults.max_unit_added_lines` in both the DAG critique prompt and `PLAN_PROTOCOL` only when declared, neither prompt carrying a cap sentence when absent, `MAX_UNIT_ADDED_LINES` gone and the second sentence in the planner persona. This criterion OWNS the key, the cap text and its pins; other planner guidance is criterion 8's, NOT this one's.
-- [ ] a test proves THE PLANNER PROTOCOL CARRIES NO PLANNING POLICY: `PLAN_PROTOCOL` holds exactly the sentences Design keeps as framing, and every sentence Design moves (the split, discovery, scope-creep, cadence and no-code sentences) stands verbatim in this repository's planner persona and the scaffold's planner seed. This criterion OWNS both lists and their pins; the cap sentence is criterion 7's, NOT this one's.
+- [ ] a test proves THE UNIT SIZE CAP IS DECLARED: `unit_size_cap` renders its first sentence from `defaults.max_unit_added_lines` in the DAG critique prompt and `PLAN_PROTOCOL` only when declared, neither carrying a cap sentence when absent, `MAX_UNIT_ADDED_LINES` gone and the second sentence in the planner and both critique personas. This criterion OWNS the key, the cap text and its pins; other planner guidance is criterion 8's, NOT this one's.
+- [ ] a test proves THE PLANNER PROTOCOL CARRIES NO PLANNING POLICY: `PLAN_PROTOCOL` holds exactly the sentences Design keeps as framing, and every sentence Design moves (the split, discovery, scope-creep, cadence, no-code and omit-the-id sentences) stands verbatim in this repository's planner persona and the scaffold's planner seed. This criterion OWNS both lists and their pins; the cap sentence is criterion 7's, NOT this one's.
 - [ ] a test proves THE REQUIRED PATTERN NAMES ONLY ITS RECORD: `PriorFailure::block` and `ReviewRound::block` give each REQUIRED pattern item its shape and its `audit_id` record id, and the audit and check sentences stand in the `working-discipline` built-in's hand-over section. This criterion OWNS both PATTERN lines, that bullet and their pins; the lookup sentences in that body are criterion 1's, NOT this one's.
 - [ ] a test proves THE TEST AUTHOR IS DECLARED: `spawn_sdet_author` spawns the agent `defaults.test_author` names, under the `sdet-author` role token, and spawns nothing when the key is absent, whatever `.rigger/agents` defines; an undefined id is refused at load. This criterion OWNS the key, its refusal, the spawn's lookup and the edited fixtures; the doc-only rule is criterion 6's, NOT this one's.
 - [ ] a test proves THE WORKFLOW SCRIPT NAMES NO TOOLCHAIN: `RIGGER_WORKFLOW`'s worker preamble and step courier name the build tool and its cache only through `WaveItem::build_cache_env` and the wave's cache path, with the disk-layout sentence, the courier's hard-coded cache prefix and the reaper's "the moment" gone. This criterion OWNS those script texts, the wave field and their pins; `rigger_scratch` is criterion 12's, NOT this one's.
@@ -672,6 +700,6 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves A PROJECT SKILL SHADOWS THE SHIPPED ONE: `install_skills` installs `.rigger/skills/<name>/SKILL.md` verbatim in place of the shipped skill of that exact name, a near name shadowing nothing, while `rigger docs` and the drift gate stay on the shipped text. This criterion OWNS the shadow rule and its setup report lines; the skill bodies are criterion 13's, NOT this one's.
 - [ ] a test proves THE IMPLEMENTER COMES WITH THE GATE SET: `init_project` with the Rust set writes its `implementer` persona and names that id in `SCAFFOLD_WORKFLOW`'s implement and checkin stages, and with no set writes and names a language-neutral `implementer`. This criterion OWNS `SetSpec.implementer`, the seed, the placeholder and their pins; the scaffold's keys are criteria 2 and 7's, NOT this one's.
 - [ ] a test proves THE REGISTRY HOLDS EVERY PROMPT TEXT: each crate's `prompt_surface` module holds its crate's prompt constants and builders' fixed text as `Group`s classed `Contract` or `Framing`, every renderer formats through `fill`, and each surface's groups concatenate to its render over the placeholder fixture. This criterion OWNS the types, every crate's module and the concatenation tests; the phrase test is 17's, the sweep 18's, NOT this one's.
-- [ ] a test proves NO REGISTERED TEXT PRESCRIBES: every registry group and script region literal, read through the shipped-text helper, carries no phrase of the test's cadence and method list and no hit under spec 120's MARKERS rule, and a held pre-move `EMIT_PROTOCOL` fails it. This criterion OWNS the phrase list and both assertions; the registry is criterion 16's, the sweep 18's, NOT this one's.
+- [ ] a test proves NO REGISTERED TEXT PRESCRIBES: every registry group and joined script region entry of the shipped-text helper carries no phrase of the test's cadence and method list and no hit under spec 120's MARKERS rule, and a held pre-move `EMIT_PROTOCOL` fails it. This criterion OWNS the phrase list, both assertions and removing the emptied exceptions list; the registry is criterion 16's, NOT this one's.
 - [ ] a test proves THE SOURCE SWEEP CLOSES THE REGISTRY: every production literal of 40 or more characters with a space in a prompt-bearing file (one spelling `SpawnOpts`, `SpawnHost` or `prompt_surface`) is registered or allow-listed, and each such literal of the two embedded scripts sits in a classed region. This criterion OWNS the sweep, the file derivation, the allow-list and the regions; the registry is criterion 16's, NOT this one's.
 - [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0, with `cargo fmt --check` passing. This criterion OWNS only the lanes; every behaviour is criteria 1 to 18's, NOT this one's.
