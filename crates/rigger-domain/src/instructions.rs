@@ -163,6 +163,10 @@ mod tests {
                 "the built-in law must name {phrase:?}"
             );
         }
+        assert!(
+            !body.contains("mutation testing"),
+            "the built-in law names no testing tool a project may wire as a gate"
+        );
     }
 
     #[test]
@@ -318,19 +322,7 @@ mod tests {
     /// on its own, its record listing every sentence it
     /// reads, the CHECKED members included, never a grouped verdict, with a renamed name's old
     /// spelling counted to zero, nothing added that nothing reads, the red test's body untouched
-    /// by the green commit, every mutable token of the production delta, each class named by its
-    /// source spelling - an operator, an offset, an operand, every argument of every added or
-    /// changed call, an arm's statement, a match arm, every `?` (swallowed by the spelling that
-    /// compiles for its value, `unviable` only when every swallow of the list fails to compile with
-    /// each error quoted, never when its type has a default), `return`, `break` and `continue` -
-    /// mutated by hand one at a time with the red test recorded in a record organised by production
-    /// line - each line naming its tokens, a token inside a query, format or macro string included,
-    /// or marked as carrying none - and closed by one tally line per spelled class, its hunk and
-    /// probe counts equal, a green probe pinned or reshaped away, the hand enumeration standing
-    /// beside the mutation gate and the SDET lens probing every token the record lacks, comparing
-    /// its token set with the record line by line and counting each class itself against the tally
-    /// and re-applying the fitting swallow to every `?` the record calls unviable, a compiling
-    /// green one blocking, every constant, static, list, closure or predicate the delta adds - a
+    /// by the green commit, every constant, static, list, closure or predicate the delta adds - a
     /// SQL conjunct inside a query string included - naming its one home in the sentence-walk
     /// record - no other spelling, its distinguishing literal searched over the whole tree, derived
     /// from or pinned to the existing one, a fact spelled twice lifted at all three sites - every
@@ -383,8 +375,7 @@ mod tests {
              its own",
             "A body you add is walked whole, every statement; a body you edit is walked in its \
              edited statements, the hunks of the unit's whole range inside it - the merge base \
-             with the run branch to head, the range the sentence walk and the mutant probes use \
-             - since a statement you did not touch carries no shape you added.",
+             with the run branch to head, the range the sentence walk uses - since a statement you did not touch carries no shape you added.",
             "A twin the search surfaces only among statements you did not touch, spelling no \
              literal or call of yours, is the tree's duplication debt: your hand-over names it to \
              the operator, and you do not lift it.",
@@ -573,63 +564,10 @@ mod tests {
              reason",
             "Nothing is added that nothing reads.",
             "makes the red test pass without rewriting its body",
-            "Every mutable token of your production delta is pinned.",
-            "the list names each class by the spelling you read in the source, and it is open: \
-             a comparison operator (flip its bound), an arithmetic offset (drop the +1 or -1), a \
-             boolean operand (negate or remove it), every argument of every call you add or \
-             change (degenerate it to the value that drops its arm - `None`, zero, the empty \
-             value, a sibling's value, a bound moved by one), a statement in one arm of a branch \
-             (delete it), a match arm (swap it with a sibling), every `?` operator (replace it by \
-             the swallow that compiles for its value, so the error arm yields a value instead of \
-             returning), and every `return`, `break` and `continue` (remove it)",
-            "The `?` swallows are `let _ = <expr>;` or `.ok()` where the value is unused, \
-             `.unwrap_or_default()` where the value is used and its type has a default, and \
-             `.unwrap_or(<the type's empty value>)` otherwise; a `?` is `unviable` only when \
-             every swallow of this list fails to compile, each tried at its site with its \
-             compiler error quoted in the record, and a `?` whose value's type has a default is \
-             never unviable.",
-            "enumerate the tokens from your production hunks over the unit's whole range, the \
-             merge base with the run branch to head",
-            "apply each mutation in your worktree one at a time, run the crate's tests and the \
-             touched test binaries, read the red, and restore the tree",
-            "one whole-tree `<unit>-mutant-probes` DecisionMade carrying, for each token, its \
-             `file:line`, the mutation applied, and the test that went red with its assertion",
-            "The record is organised by production line: every production line the range adds \
-             or changes, in file order, either names its mutable tokens, each with its probe, or \
-             is marked as carrying none with the named reason (a signature, a `use`, a doc line, \
-             a brace); a line with no disposition is a record you cannot write.",
-            "After its per-line walk the record carries one tally line per spelled class - \
-             `<class>: <n> in hunks, <n> probed` - the count of that class's tokens in the \
-             production hunks and the count of its probes, the two equal; a short tally is a \
-             record you cannot write.",
-            "A token inside a query string, a format string or a macro argument the production \
-             code executes is a token of its line: a SQL conjunct is a boolean operand, a column \
-             name, bound or placeholder passed to a query builder is a call argument, and a \
-             substr start is an index.",
-            "The lens compares its token set with the record line by line: a production line \
-             the record does not disposition is a BLOCKING finding on its own.",
-            "A token whose probe leaves every test green is pinned by a new test before you \
-             report, or the code is reshaped so the token disappears",
-            "and the reshaped form probed",
-            "A token with no recorded probe is a record you cannot write.",
-            "the mutation gate's tool mutates no call argument and deletes no single statement of an \
-             arm",
-            "The SDET lens derives the token set itself from the production hunks over the \
-             unit's whole range and probes every token the record lacks: a probe that leaves \
-             every test green, or a token with no recorded probe, is a BLOCKING finding on its \
-             own.",
-            "The lens counts the `?`, `return`, `break` and `continue` of the production hunks \
-             itself, string literals and test regions left out, reads each added or changed \
-             call's arguments, and compares each class's count with the record's tally line: a \
-             short tally, or a token with no probe, is a BLOCKING finding on its own.",
-            "For every `?` the record disposes as `unviable` the lens applies, in its scratch \
-             worktree, the swallow of this list that fits the value's type: one that compiles \
-             and leaves every test green is a BLOCKING finding on its own, naming the site, the \
-             swallow and the green run.",
             "Every fact your production delta states has one home.",
             "A predicate is a boolean expression or a SQL conjunct, one inside a query string, a \
              format string or a macro argument the production code executes included, read as \
-             the probe rule above reads the tokens of those strings.",
+             the code's own expression, each operator and literal of it.",
             "The `<unit>-sentence-walk` record carries, beside the count of each constant, \
              static, list, closure or predicate your production hunks add, its one-home line in \
              one of three forms: `no other spelling` with the terms searched - the name count and \
@@ -691,6 +629,12 @@ mod tests {
                 "the hand-over section must say {phrase:?}"
             );
         }
+        // The hand-over owes no record of hand-applied mutations; rigger's core is agnostic to
+        // the mutation testing a project may wire as a gate of its own.
+        assert!(
+            !words.contains("Every mutable token") && !words.contains("<unit>-mutant-probes"),
+            "the hand-over section carries no hand mutation rule"
+        );
         // The item's callers come from the graph at depth 1; a bare `--around` answers the
         // item's whole file neighbourhood, so the generator never names the graph undepthed.
         assert!(
