@@ -93,18 +93,18 @@ pub struct RunStarted {
     /// base into [`Self::to_event`] at mint and is left empty (`#[serde(skip)]`) on decode.
     #[serde(skip)]
     pub base: String,
-    /// The run branch's tip commit sha AT THE MOMENT this run started (spec 91): stamped
+    /// The run branch's tip commit sha AT THE MOMENT this run started: stamped
     /// once, at mint, from the same anchored run branch `base` was resolved against - never
     /// re-derived later. Persisted in the BODY (unlike `base`, which is metadata-only so it
     /// never enters the criteria/definition resume fingerprint): this field never affects run
     /// identity either (a resume compares only `criteria`), so body persistence is simply the
     /// plain decode convenience `spec` below already established, read back via
     /// [`current_run_base_tip`] and exported to every gate command as `$RIGGER_RUN_BASE`. The
-    /// checkin stage's `mutation` gate diffs the whole spec against THIS commit, never a `git
-    /// merge-base` with the run branch: that stage's own worktree branches off the run branch
-    /// AFTER every implement unit has already integrated, so a merge-base there is already
-    /// HEAD and would diff nothing (see
-    /// `specs/91-mutation-runs-once-at-the-check-in-seam.md`). `#[serde(default)]` so a
+    /// check-in stage's gates diff the whole spec's work against THIS commit (a whole-spec
+    /// diff gate is the example), never a `git merge-base` with the run branch: that stage's
+    /// own worktree branches off the run branch AFTER every implement unit has already
+    /// integrated, so a merge-base there is already HEAD and would diff nothing.
+    /// `#[serde(default)]` so a
     /// legacy RunStarted (predating this field) or a repo-less run decodes empty;
     /// [`current_run_base_tip`] then reports `None` and a gate script's own `test -n
     /// "$RIGGER_RUN_BASE"` refuses loud rather than sweeping an empty diff.
@@ -236,17 +236,17 @@ pub fn current_run_base(events: &[Event]) -> Option<String> {
 }
 
 /// The run branch's tip commit sha the current (latest) run started AT, read from
-/// [`RunStarted::base_tip`] in the BODY of its [`TYPE_RUN_STARTED`] event (spec 91). `None`
+/// [`RunStarted::base_tip`] in the BODY of its [`TYPE_RUN_STARTED`] event. `None`
 /// when no run has started, or when the latest run predates this field (a legacy start
 /// decodes an empty `base_tip`) or ran without a real repo (an empty tip is never stamped).
 ///
-/// This is the SINGLE authority this value is exported to the checkin stage's `mutation` gate
-/// command through, as `$RIGGER_RUN_BASE` (spec 91, THE GATE ENVIRONMENT - see
-/// [`crate::conductor`]'s gate-env assembly): the run branch's tip AT THE MOMENT the run
-/// started, never a live re-resolution and never a `git merge-base` with the run branch
-/// (which has already moved past this point by the time the checkin stage's own worktree
-/// exists). `None` here is exactly the "this run has nothing to diff the whole spec against"
-/// case the gate's own `test -n "$RIGGER_RUN_BASE"` guard refuses loud on.
+/// This is the SINGLE authority this value is exported to the check-in stage's gate commands
+/// through, as `$RIGGER_RUN_BASE` (see [`crate::conductor`]'s gate-env assembly): the run
+/// branch's tip AT THE MOMENT the run started, never a live re-resolution and never a `git
+/// merge-base` with the run branch (which has already moved past this point by the time the
+/// checkin stage's own worktree exists). `None` here is exactly the "this run has nothing to
+/// diff the whole spec against" case a gate script's own `test -n "$RIGGER_RUN_BASE"` guard
+/// refuses loud on.
 pub fn current_run_base_tip(events: &[Event]) -> Option<String> {
     latest(events).map(|r| r.base_tip).filter(|b| !b.is_empty())
 }

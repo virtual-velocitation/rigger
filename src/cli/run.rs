@@ -151,9 +151,9 @@ fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistrat
 /// log rather than re-resolving without the run's `--base` flag. On an ADOPTED (resumed) run
 /// it is ignored - the base its original start stamped stands.
 ///
-/// `base_tip` is the run branch's tip commit sha this run anchored at (spec 91), persisted on
-/// a freshly-minted RunStarted alongside `base` so the checkin stage's `mutation` gate can
-/// later diff the whole spec against it via `$RIGGER_RUN_BASE`, never a `git merge-base` with
+/// `base_tip` is the run branch's tip commit sha this run anchored at, persisted on a
+/// freshly-minted RunStarted alongside `base` so the check-in stage's gates can later diff
+/// the whole spec's work against it via `$RIGGER_RUN_BASE`, never a `git merge-base` with
 /// the run branch. Mint-only, exactly like `base`.
 ///
 /// `spec_path` is the spec file this run was launched with (spec 82, criterion 1), persisted
