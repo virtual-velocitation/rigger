@@ -754,9 +754,9 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
                         // `spawn_store::record_result_if_absent`, never through `cmd_result`, so
                         // that courier's own reclaim never runs for it; this call site is the
                         // liveness-fault call site of the one-authority shape
-                        // [`reclaim_spawn_registered_scratch`]'s doc comment describes (review
-                        // u77c2b round 2/3 reject: a hung spawn's mutation-scratch used to
-                        // leak until its unit reached a terminal state).
+                        // [`reclaim_spawn_registered_scratch`]'s doc comment describes (without
+                        // it, a hung spawn's scratch build directory leaks until its unit
+                        // reaches a terminal state).
                         for s in &stale {
                             reclaim_spawn_registered_scratch(root, &run_id, &s.id);
                         }

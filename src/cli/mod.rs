@@ -3987,8 +3987,8 @@ const FOOTPRINT_RECLAIM_HINT_UNIT_CACHES: &str =
 /// which `cmd_result` calls unconditionally for the spawn id it is given, regardless of
 /// outcome (spec 34 criterion 1, spec 77 criterion 3). Naming that real path rather than
 /// `rigger step` keeps the advisory accurate for the orphan case this category exists to
-/// surface (a hung, never-retried spawn: `adv-u77c2r8-mutation-scratch-orphan-on-never-
-/// reported-spawn`) - nothing reclaims it until an explicit `rigger result` names it.
+/// surface (a hung, never-retried spawn whose result is never reported, its scratch left
+/// behind) - nothing reclaims it until an explicit `rigger result` names it.
 const FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED: &str =
     "`rigger reset --build-cache` reclaims it now (recording `rigger result` for the owning spawn also does)";
 
