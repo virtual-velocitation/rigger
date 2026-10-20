@@ -3461,22 +3461,9 @@ mod tests {
     /// unless it is a whole-token marker, equals any `_`-separated part of one; a syntax or
     /// phrase marker hits as a substring.
     fn language_marker_hits(text: &str) -> Vec<&'static str> {
-        const WORDS: &[&str] = &[
-            "fn",
-            "crate",
-            "impl",
-            "trait",
-            "match",
-            "matches",
-            "cargo",
-            "clippy",
-            "rustfmt",
-            "wasm",
-            "rs",
-            "rust",
-            "rustdoc",
-            "create_dir_all",
-            "for_extension",
+        const PART_WORDS: &[&str] = &[
+            "fn", "crate", "impl", "trait", "match", "matches", "cargo", "clippy", "rustfmt",
+            "wasm", "rs", "rust", "rustdoc",
         ];
         const WHOLE_TOKEN_WORDS: &[&str] = &["create_dir_all", "for_extension"];
         const SUBSTRINGS: &[&str] = &[
@@ -3492,18 +3479,23 @@ mod tests {
             .split(|c: char| !(c.is_alphanumeric() || c == '_'))
             .filter(|t| !t.is_empty())
             .collect();
-        let word_hits = |marker: &str| {
+        let word_hits = |marker: &str, by_part: bool| {
             tokens.iter().any(|token| {
                 *token == marker
                     || token.strip_suffix('s') == Some(marker)
-                    || (!WHOLE_TOKEN_WORDS.contains(&marker)
-                        && token.split('_').any(|part| part == marker))
+                    || (by_part && token.split('_').any(|part| part == marker))
             })
         };
-        WORDS
+        PART_WORDS
             .iter()
             .copied()
-            .filter(|marker| word_hits(marker))
+            .filter(|marker| word_hits(marker, true))
+            .chain(
+                WHOLE_TOKEN_WORDS
+                    .iter()
+                    .copied()
+                    .filter(|marker| word_hits(marker, false)),
+            )
             .chain(
                 SUBSTRINGS
                     .iter()
