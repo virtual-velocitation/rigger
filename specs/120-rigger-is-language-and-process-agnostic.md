@@ -270,7 +270,9 @@ lines.
 out of the binary into the `adversary` persona: `CRITIQUE_STANCE`'s skepticism and citation
 sentences, `PLAN_CRITIQUE_RULES` (Rule 7, Rule 8, the blast-radius note), `CRITIQUE_OWNERSHIP`,
 `CRITIQUE_HUNTS` and `CRITIQUE_BAN` become the body of the `## When you critique a spec or a plan`
-section in `.rigger/agents/adversary.md` (after brief 93's two hunts, which stay) and in the
+section in `.rigger/agents/adversary.md` (after brief 93's COVERAGE hunt and before its
+Exhaustion item, both of which stay; criterion 15 rewords the moved "Run two hunts" to "Run these
+hunts", the one allowed edit to the verbatim move) and in the
 scaffold's adversary persona template in `src/cli/setup.rs`, the consumer's overridable default; the
 persona is the workflow definition. The DAG critique's method residue moves with it: the unit-size
 bullet (`conductor.rs:7876-7882`): its rule moves as persona prose without a number ("a unit over
@@ -291,7 +293,11 @@ binary parses: the tool's contract). The DAG prompt keeps its own verdict and ca
 (`conductor.rs:7926-7941`, minus the moved "Reject ONLY for" sentence) as its output contract, and
 its prior-reject block and unit and overlap list as its task framing; it gains neither
 `CRITIQUE_OUTPUT_CONTRACT` nor a voided-duties clause, both of which stay in `spec_critique_prompt`
-only. The moved constants are deleted; pins of their sentences move
+only. Two `CRITIQUE_STANCE` sentences (`review.rs:295-304`) stay in `spec_critique_prompt` and
+neither moves: "This is a critique of a SPEC, not code: the text below is a design and its Done-when
+criteria, written before any run builds them." is task framing, and "Read the spec and the
+repository; the finding lines and the verdict line of your final message are the only output." is
+part of the voided-duties clause. The moved constants are deleted; pins of their sentences move
 to the template's section through the shipped-text helper; the critic's spawn path and
 `NO_CRITIC_CLAUSE` stay criterion 10's. A persona without the section still critiques: the binary's
 prompt stands alone, and the output contract decides the verdict. The DAG critique prompt reaches
@@ -340,7 +346,7 @@ to a named criterion is rewritten when that criterion lands. An earlier unit who
 it false leaves it as it is: its hand-over lists the sentence as assigned to that criterion, and its
 reviewers raise no finding on it. The assignments: `authoring-agents.md:85`, `:90` and
 the switch-off clause appended to the module-doc sentence criterion 2 wrote to 3; `:92` and
-`instructions.rs:10-12` to 2; `:94` to 4; `:87-88` to 12; the instructions README to 5;
+`instructions.rs:10-12` to 2; `:94`'s report states to 4 and its entry count to 14; `src/main.rs:359-362` to 4; `:87-88` to 12; the instructions README to 5;
 `agentic-sdlc.md:62-68`, `README.md:19` and `:27` and the `authoring-loops.md` lines to 1; `best-practices.md:25` to 1;
 `docs.rs:552-553` to 10; `docs.rs:2514-2518` ("every spawn receives") to 3; `compose`'s doc (`instructions.rs:47-49`) and `BUILTIN`'s doc (:24) to 3;
 `render`'s doc (:64) to 4; the `ReviewPanel` struct doc (`crates/rigger-domain/src/config.rs:347-352`)
@@ -622,9 +628,13 @@ may extend), all criterion 1's; and
 the module-doc sentence criterion 2 wrote are criterion 3's; `:92` (appended after the built-ins)
 and the `instructions.rs:10-12` sentence (reaches every agent anywhere, no configuration removes it)
 are criterion 2's. That split (2: `:92`; 3: `:85`'s "reaches every agent"
-wording, `:90`; 4: `:94`; 12: `:87-88`; 14: the entry count on `:85`, the third item after `:88`,
+wording, `:90`; 4: `:94`'s report states, not its count phrase; 12: `:87-88`; 14: the entry count on `:85`, the
+entry count on `:94` ("the two built-in entries first" becoming "the built-in entries first"), the third item after `:88`,
 and the layer diagram at `:82`) is the one authority over those named phrases of
-`authoring-agents.md:82-96`, not over whole lines. `authoring-loops.md`'s
+`authoring-agents.md:82-96`, not over whole lines. The `rigger instructions` help text (`src/main.rs:359-362`, "the built-in law
+and working discipline, then each operator file") is criterion 4's, reworded to "each built-in with
+its state (in force, replaced, switched off), then each unshadowed operator file"; criteria 2, 3
+and 14 leave it as written. `authoring-loops.md`'s
 existing workflow example keeps the map form, so `tests/handbook_grounder_accuracy.rs`'s
 `grounder:` check (:124-152) reads it unchanged; the five-step example sits in a fenced `yaml`
 block under a `### The review ceremony` heading, the last subsection of `## What rigger
@@ -667,13 +677,15 @@ the boundary gate, a registry of every prompt string the binary ships classed co
 | sequence | existing store | old ids carry bare tokens, which parse as step 1 of their kind; metrics fold them as today; an old id whose agent name held `@<n>` reads as a step suffix, accepted as the mislabel of a store older than the load-time refusal, as for the criterion 8 to 9 window |
 | sequence | `tiers.light` in list form | routed exactly as today; must have one adjudicator step, last |
 | sequence | a second adjudicator, or one not last | refused at load, naming the scope (criterion 7) |
+| critique method | existing consumer personas | ACCEPTED: a consumer's scaffolded adversary and adjudicator personas are its owner's configuration and are never rewritten by the binary; a persona without the section still critiques under the binary's output contract; the operator adopts the method by copying the template's `## When you critique a spec or a plan` section into the persona |
 
 ## Notes (non-criteria)
 
 UNIT ORDER (the needs chain): 12, 13, 14, then 2, 3, 4, 5, then 6, 7, 8, 9, 10, then 15, then 1,
 then 11.
-Criteria 2-5 (instructions) and 6-10 (review) are independent chains; 1 needs 12, 13, 14, 15, 3, 7, 8 and 10; 13 needs 12; 14 needs 12; 5 needs 14; 10 needs 7 and 8; 11
-needs all.
+Criteria 2-5 (instructions) and 6-10 (review) are independent chains; 1 needs 12, 13, 14, 15, 3, 7, 8 and 10; 2 needs 14; 3 needs 2; 4 needs 3;
+5 needs 3 and 14; 6 needs 12 and 13; 7 needs 6; 8 needs 7; 9 needs 8; 10 needs 7 and 8; 13 needs
+12; 14 needs 12; 15 needs 10; 11 needs all.
 
 LANDING-ORDER SIMULATION (every ordered pair sharing a surface; "no" lines were fixed in the text):
 
