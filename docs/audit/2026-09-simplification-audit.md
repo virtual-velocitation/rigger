@@ -1690,7 +1690,7 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 - **Command::new call sites**: 90 site(s) - `dup-627b07ce0d38`
 - **/proc-path string literals**: 55 site(s) - `dup-99a8136efbc4`
 - **sqlite Connection::open call sites**: 59 site(s) - `dup-3cd6f7f2cb9b`
-- **.rigger-path string literals**: 608 site(s) - `dup-8fc8aa485304`
+- **.rigger-path string literals**: 608 site(s) - `dup-39249656bd34`
 - **error-shaping helper functions**: 13 site(s) - `dup-2b8f802a2dc3`
 
 ### Clusters (52 exact, 132 near, 27 semantic)
@@ -1951,7 +1951,7 @@ mandatory sweep: Command::new call sites - 90 site(s), collected mechanically re
 - `src/cli/run.rs:3287-3287` `Command::new`
 - `src/cli/run.rs:3331-3331` `Command::new`
 - `src/cli/run.rs:3400-3400` `Command::new`
-- `src/cli/setup.rs:3846-3846` `Command::new`
+- `src/cli/setup.rs:3823-3823` `Command::new`
 - `src/cli/validate.rs:1452-1452` `Command::new`
 - `src/cli/validate.rs:1731-1731` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2005,7 +2005,7 @@ mandatory sweep: Command::new call sites - 90 site(s), collected mechanically re
 - `tests/no_os_kill_test_helper_periphery.rs:47-47` `Command::new`
 - `tests/phase_of_role_mapping_periphery.rs:59-59` `Command::new`
 - `tests/principle_gates_wiring.rs:114-114` `Command::new`
-- `tests/principle_gates_wiring.rs:453-453` `Command::new`
+- `tests/principle_gates_wiring.rs:457-457` `Command::new`
 - `tests/product_binary_authority_periphery.rs:155-155` `Command::new`
 - `tests/reset_build_cache_periphery.rs:242-242` `Command::new`
 - `tests/reset_build_cache_periphery.rs:254-254` `Command::new`
@@ -2019,7 +2019,7 @@ mandatory sweep: Command::new call sites - 90 site(s), collected mechanically re
 - `tests/turbovec_retired_cargo_boundary.rs:50-50` `Command::new`
 - `tests/validate_behind_the_tree_periphery.rs:128-128` `Command::new`
 
-#### `dup-8fc8aa485304` (semantic, 608 sites)
+#### `dup-39249656bd34` (semantic, 608 sites)
 
 Proposed home: `one .rigger-relative path-composition helper`
 
@@ -2403,30 +2403,24 @@ __END__
 - `src/cli/setup.rs:3105-3105` `".rigger/agents/newcomer.md"`
 - `src/cli/setup.rs:3183-3183` `".rigger/workflow.yml"`
 - `src/cli/setup.rs:3413-3413` `".rigger"`
-- `src/cli/setup.rs:3441-3441` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:3652-3652` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:3654-3654` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:3655-3655` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:3656-3656` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:3666-3666` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:3669-3669` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:3683-3683` `"The count and the caller lookup run once per item of the walk's hunk list - every \
+- `src/cli/setup.rs:3452-3452` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:3655-3655` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:3657-3657` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:3658-3658` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:3659-3659` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:3669-3669` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:3672-3672` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:3686-3686` `"The count and the caller lookup run once per item of the walk's hunk list - every \
              item the hunks touch, new or pre-existing, its body or its doc changed - each \
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers."`
-- `src/cli/setup.rs:3795-3795` `"the `?`, `return`, `break` and `continue` counts are the ones `sh \
-             .rigger/gates/token-count.sh` prints, run from your worktree's root"`
-- `src/cli/setup.rs:3797-3797` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:4019-4019` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:3776-3776` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:3985-3985` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
-- `src/cli/setup.rs:4041-4041` `"You count the classes yourself as well: the `?`, `return`, `break` and `continue` \
-             of the production hunks with the authors' count, `sh .rigger/gates/token-count.sh` \
-             run from your own worktree's root, and the arguments of each call those hunks add \
-             or change, read call by call"`
 - `src/cli/validate.rs:850-850` `"warning: tracked .rigger/ files have uncommitted modifications:"`
 - `src/cli/validate.rs:1292-1292` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\
@@ -3000,10 +2994,12 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/principle_gates_wiring.rs:66-66` `".rigger/gates/mutation.sh"`
 - `tests/principle_gates_wiring.rs:67-67` `".rigger/gates/container-env.sh"`
 - `tests/principle_gates_wiring.rs:127-127` `".rigger/gates"`
-- `tests/principle_gates_wiring.rs:382-382` `".rigger/agents/sdet-author.md"`
-- `tests/principle_gates_wiring.rs:406-406` `".rigger/agents"`
-- `tests/principle_gates_wiring.rs:416-416` `".rigger/agents: {missing:#?}"`
-- `tests/principle_gates_wiring.rs:420-420` `".rigger/gates/container-env.sh"`
+- `tests/principle_gates_wiring.rs:225-225` `".rigger/workflow.yml"`
+- `tests/principle_gates_wiring.rs:226-226` `".rigger/gates"`
+- `tests/principle_gates_wiring.rs:386-386` `".rigger/agents/sdet-author.md"`
+- `tests/principle_gates_wiring.rs:410-410` `".rigger/agents"`
+- `tests/principle_gates_wiring.rs:420-420` `".rigger/agents: {missing:#?}"`
+- `tests/principle_gates_wiring.rs:424-424` `".rigger/gates/container-env.sh"`
 - `tests/projections_stay_local.rs:91-91` `"the graph projection must be opened by the LOCAL sqlite Projector at the resolved \
          store's .rigger/graph.db (`Projector::open(&self.file(\"graph.db\") ...)`); the \
          canonical local construction is gone"`
@@ -5276,7 +5272,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9445 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9446 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4996-5037` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15077-15099` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5550,10 +5546,10 @@ Each entry below applies section 1's own proposed module tree to a god file's pr
 
 Each entry is one of section 2's five named mandatory sweeps - collected mechanically regardless of the Jaccard pass, per spec 85's own Design.
 
-#### 9. Consolidate the 608 `.rigger`-path string-literal sites (`dup-8fc8aa485304`) - the single largest cluster in the entire catalog by site count
+#### 9. Consolidate the 608 `.rigger`-path string-literal sites (`dup-39249656bd34`) - the single largest cluster in the entire catalog by site count
 
 - Scope: one `.rigger`-relative path-composition helper (the cluster's own `proposed_home`) every one of the 608 sites routes through instead of building its own literal.
-- Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, `crates/rigger-dash/src/dash.rs`, `crates/rigger-domain/src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list is in the committed `docs/audit/duplication-catalog.json` under `dup-8fc8aa485304` for the follow-up spec to consume directly, not re-enumerated here.
+- Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, `crates/rigger-dash/src/dash.rs`, `crates/rigger-domain/src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list is in the committed `docs/audit/duplication-catalog.json` under `dup-39249656bd34` for the follow-up spec to consume directly, not re-enumerated here.
 - Expected line delta: negative - 608 literal compositions collapse toward one helper's call sites; the helper itself is small.
 - Risk: medium - the largest surface-area sweep in this plan by site count, even though each individual site is trivial; needs a mechanical rewrite pass plus a full-suite green run, not hand-editing 608 sites.
 - Unblocks: the biggest single site-count reduction available anywhere in the duplication catalog.
@@ -5633,7 +5629,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 18. Sweep the remaining 142 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 211 clusters, 62 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-627b07ce0d38`, `dup-8fc8aa485304`, `dup-3cd6f7f2cb9b`, `dup-99a8136efbc4`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-2b8f802a2dc3`); the remaining 142 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-f876dbc68da1`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 211 clusters, 62 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-627b07ce0d38`, `dup-39249656bd34`, `dup-3cd6f7f2cb9b`, `dup-99a8136efbc4`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-2b8f802a2dc3`); the remaining 142 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-f876dbc68da1`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.
