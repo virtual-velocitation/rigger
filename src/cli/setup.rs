@@ -4121,21 +4121,47 @@ mod tests {
     }
 
     /// rigger's core is agnostic to the gates a project wires: no built-in instruction entry,
-    /// persona, helper or review-tier discipline it ships names mutation testing, its mutants,
-    /// its sweep, its gate or its tool's classifications.
+    /// persona, helper or review-tier discipline it ships, and no production line of its own
+    /// source, names mutation testing, its mutants, its sweep, its gate or its tool's
+    /// classifications. A production line is one of a tracked `.rs` file under `crates/` or
+    /// `src/` outside a `tests/` directory, above the file's first `#[cfg(test)]`. The bare word
+    /// for a state change is no term: the core uses it for write authority.
     #[test]
-    fn no_built_in_entry_persona_or_helper_names_mutation_testing() {
-        for (at, text) in every_shipped_agent_text() {
+    fn no_built_in_entry_persona_helper_or_production_line_names_mutation_testing() {
+        let mut texts = every_shipped_agent_text();
+        let tracked = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo())
+            .args(["ls-files", "--", "crates", "src"])
+            .output()
+            .expect("git ls-files runs");
+        for file in String::from_utf8(tracked.stdout).unwrap().lines() {
+            if !file.ends_with(".rs") || file.split('/').any(|part| part == "tests") {
+                continue;
+            }
+            let text = std::fs::read_to_string(repo().join(file)).unwrap();
+            let production = text
+                .lines()
+                .take_while(|line| line.trim() != "#[cfg(test)]")
+                .enumerate();
+            texts.extend(production.map(|(at, line)| (format!("{file}:{}", at + 1), line.into())));
+        }
+        for (at, text) in texts {
             let lower = text.to_lowercase();
             for term in [
                 "mutant",
+                "mutation test",
+                "mutation-test",
                 "mutation sweep",
                 "mutation gate",
-                "mutation testing",
+                "`mutation` gate",
+                "mutation-efficacy",
+                "mutation-scratch",
+                "mutation tool",
                 "mutation runs",
                 "unviable",
             ] {
-                assert!(!lower.contains(term), "{at} names {term:?}");
+                assert!(!lower.contains(term), "{at} names {term:?}: {text}");
             }
         }
     }
