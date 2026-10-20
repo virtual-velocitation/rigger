@@ -59,13 +59,13 @@
 //! [`processes_rooted_under`] both resolve `base_dir` via [`resolve_lexically`] rather than
 //! requiring it to exist. A `base_dir` that resolves strictly under `authorized_root` but no
 //! longer exists is ALREADY RECLAIMED - authorized exactly like a live one, never a logged
-//! refusal (before this, a spawn's own never-created mutation-scratch dir failed
-//! `base_dir.canonicalize()` and logged a false "not strictly under" refusal on every single
+//! refusal (a spawn's own scratch dir that was never created would otherwise fail
+//! `base_dir.canonicalize()` and log a false "not strictly under" refusal on every single
 //! `rigger result`). And a process can hold a now-DELETED dir as its cwd - the kernel
 //! appends the literal `" (deleted)"` to its `/proc/<pid>/cwd` readlink - so [`is_inside`]
-//! strips that suffix before matching, closing the exact gap that let a spec-80 mutant test
-//! binary loop for eight days after the mutation tool removed its tree out from under it: the
-//! cwd-rooted reaper never matched the deleted path, so it never even tried to signal it. A
+//! strips that suffix before matching: a test binary that loops after the tool that built
+//! its scratch tree removed that tree out from under it holds exactly such a cwd, and a
+//! cwd-rooted reaper that never matched the deleted path would never even try to signal it. A
 //! genuinely OUTSIDE `base_dir` is still refused, whether or not it exists.
 //!
 //! SIGNAL API (spec 78): every signal rigger issues to a process it does not hold a
@@ -120,9 +120,9 @@ const GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 /// reaped. The scanning process itself is excluded (rigger never reaps its own pid).
 pub fn processes_rooted_under(base_dir: &Path) -> Vec<(u32, String)> {
     // Resolve the base LEXICALLY (spec 89 criterion 3), not by requiring it to exist: a
-    // process can hold a now-DELETED dir as its cwd (spec 80's 8-day-hang incident - a
-    // mutant binary looped after the mutation tool removed its tree out from under it), and
-    // such a process is exactly what this scan must still find. `resolve_lexically` follows
+    // process can hold a now-DELETED dir as its cwd (a test binary still looping after the
+    // tool that built its scratch tree removed that tree out from under it), and such a
+    // process is exactly what this scan must still find. `resolve_lexically` follows
     // symlinks in whatever portion of `base_dir` still exists (so the kernel-resolved cwd of
     // a LIVE process still matches a symlinked component), then lexically resolves any
     // missing suffix - it fails only in the practically-unreachable case where no ancestor
@@ -530,11 +530,11 @@ pub fn end_child(child: &mut std::process::Child, descendants: DescendantSnapsho
 /// `authorized_root`, `base_dir` equal to it, or a `base_dir` that resolves outside it
 /// (including via a symlink in whatever portion of it exists). A `base_dir` that resolves
 /// STRICTLY UNDER the root but no longer exists is ALREADY RECLAIMED - authorized (`Some`)
-/// exactly like a live one, never a logged refusal: a spawn's own never-created
-/// mutation-scratch dir used to fail `base_dir.canonicalize()` and log a false "not strictly
-/// under" refusal on EVERY `rigger result` (`adj-u91c4-reclaim-refusal-corroborates-orphan-
-/// finding`), and a base already removed out from under a still-running process (spec 80's
-/// 8-day hang) must stay authorized so [`processes_rooted_under`]'s deleted-cwd match can
+/// exactly like a live one, never a logged refusal: a spawn's own scratch dir that was never
+/// created would otherwise fail `base_dir.canonicalize()` and log a false "not strictly
+/// under" refusal on EVERY `rigger result`, and a base already removed out from under a
+/// still-running process (a looping test binary whose scratch tree is gone) must stay
+/// authorized so [`processes_rooted_under`]'s deleted-cwd match can
 /// still find and reap it. Never widens the boundary itself, never falls back on a genuine
 /// escape - the caller must no-op on `None`.
 fn is_reapable_base(base_dir: &Path, authorized_root: &Path) -> Option<PathBuf> {
@@ -694,8 +694,8 @@ pub fn reap_authorized(base: PathBuf) {
 /// `readlink("/proc/<pid>/cwd")` appends that literal text once, to the end of the whole
 /// resolved path, when the directory a live process still holds as its cwd has been removed;
 /// left unstripped, that text becomes an unmatched extra path component and a runaway whose
-/// scratch WAS removed out from under it silently survives every future scan (spec 80: a
-/// mutant test binary looped for eight days for exactly this reason). Stripping the literal
+/// scratch WAS removed out from under it silently survives every future scan, a looping test
+/// binary among them, for as long as it runs. Stripping the literal
 /// suffix text, never touching the filesystem since the path is already gone, mirrors
 /// [`resolve_lexically`]'s own "compare paths, not existence" rule for `base`.
 fn is_inside(cwd: &Path, base: &Path) -> bool {

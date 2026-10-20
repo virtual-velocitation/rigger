@@ -11496,15 +11496,15 @@ rigger::test_cases! {
             None,
             &["definitely-not-a-real-wrapper-rigger-cli-test", "build.wrapper"],
         );
-    /// The retired `build.mutation` switch (spec 73) is now a schema-rejection naming spec 91,
-    /// end to end through the real CLI: an explicit `build.mutation: on` fails `rigger validate`
-    /// at run start with a message naming both the retired key and this spec, regardless of
-    /// whether `cargo-mutants` is even resolvable - the config.rs unit tests
-    /// (`validate_rejects_any_explicit_build_mutation_value_naming_spec_91`) already prove the
-    /// full on/off/nonsense matrix against the pure `Config`; this is the one black-box proof
-    /// that the real compiled binary's `config::load` path enforces it too.
-    validate_rejects_an_explicit_build_mutation_value_naming_spec_91_end_to_end:
-        assert_validate_fails_naming("build:\n  mutation: on\n", None, &["build.mutation", "91"]);
+    /// A key the `build:` section does not declare fails `rigger validate` at run start
+    /// through the real `config::load` path, named by the one unknown-key rule every config
+    /// struct shares, a stale key a workflow still carries included.
+    validate_rejects_an_undeclared_build_key_as_unknown_end_to_end:
+        assert_validate_fails_naming(
+            "build:\n  mutation: on\n",
+            None,
+            &["build.mutation: unknown key"],
+        );
 }
 
 /// `rigger validate` over an initialized project with `build_block(root)` appended to its

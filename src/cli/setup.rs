@@ -3433,6 +3433,39 @@ mod tests {
             .unwrap_or_else(|| panic!("{file} must be a committed persona"))
     }
 
+    /// Every agent text rigger ships, labelled: the committed personas and scaffold seeds, the
+    /// fan-out helpers, the built-in instruction entries and the discipline every review-tier
+    /// prompt carries.
+    fn every_shipped_agent_text() -> Vec<(String, String)> {
+        let mut all = every_shipped_persona();
+        all.push((
+            "REVIEWER_DISCIPLINE".to_string(),
+            conductor::REVIEWER_DISCIPLINE.to_string(),
+        ));
+        all.extend(
+            hooks::HELPER_AGENTS
+                .iter()
+                .map(|(f, t)| (format!("HELPER_AGENTS {f}"), (*t).to_string())),
+        );
+        all.extend(
+            instructions::BUILTIN
+                .iter()
+                .map(|(name, body)| (format!("BUILTIN {name}"), (*body).to_string())),
+        );
+        all
+    }
+
+    /// The section of a persona `text` that opens at `heading`, up to the next `## ` heading or
+    /// the end of the file.
+    fn persona_section<'a>(text: &'a str, heading: &str) -> &'a str {
+        let from = text.find(heading).expect("the persona carries the heading");
+        let rest = &text[from + heading.len()..];
+        let to = rest
+            .find("\n## ")
+            .map_or(text.len(), |at| from + heading.len() + at);
+        &text[from..to]
+    }
+
     /// Every agent text rigger ships: the committed personas and the scaffold seeds, each
     /// labelled with where it lives.
     fn every_shipped_persona() -> Vec<(String, String)> {
@@ -3542,12 +3575,12 @@ mod tests {
         }
     }
 
-    /// The roles that write or judge tests carry the mutation-proof test block exactly once;
-    /// no other role does. The two author roles' blocks name the hand probe record as the proof
-    /// they give before the mutation gate ever runs.
+    /// The roles that write or judge tests carry the exact-assertion test block exactly once;
+    /// no other role does. The block holds the four assertion standards and names no mutation
+    /// tool, rigger's core being agnostic to the gate a project may wire for one.
     #[test]
-    fn the_test_roles_carry_the_mutation_test_block_exactly_once() {
-        const HEADING: &str = "## Every test must survive mutation testing";
+    fn the_test_roles_carry_the_exact_assertion_block_exactly_once() {
+        const HEADING: &str = "## Every test asserts exactly";
         for (file, text) in committed_personas() {
             let want = usize::from(matches!(
                 file.as_str(),
@@ -3558,16 +3591,22 @@ mod tests {
                 want,
                 "{file}: the test block appears {want} time(s)"
             );
-            if matches!(file.as_str(), "rust-engineer.md" | "sdet-author.md") {
-                let block = rigger::wave::normalize_ws(&text[text.find(HEADING).unwrap()..]);
+            if want == 1 {
+                let block = rigger::wave::normalize_ws(persona_section(&text, HEADING));
+                for wanted in [
+                    "- Assert exact values, never existence:",
+                    "- Pin every boundary from both sides:",
+                    "- Exercise both arms of every condition and every early return,",
+                    "- For a bounded buffer, a retry count or a timeout, test the exact bound:",
+                ] {
+                    assert!(
+                        block.contains(wanted),
+                        "{file}: the test block says {wanted:?}"
+                    );
+                }
                 assert!(
-                    block.contains(
-                        "The `<unit>-mutant-probes` record of the hand-over checks above is how \
-                         you prove this before the mutation gate ever runs: each mutable token \
-                         of the unit's production hunks, mutated by hand, turns a test you name \
-                         red."
-                    ),
-                    "{file}: the test block names the hand probe record as its proof"
+                    !block.to_lowercase().contains("mutant"),
+                    "{file}: the test block names no mutant and no tool that makes one"
                 );
             }
         }
@@ -3604,17 +3643,7 @@ mod tests {
     /// the `sdet` lens to re-run, each boolean term a production hunk adds to or removes from a
     /// filter, guard or predicate read as a rewritten rule whose consumer phrases - the notes,
     /// Returns paragraphs, variant docs and oracles of the function's depth-1 callers - that
-    /// search runs as the function's name and the old answer's noun, and the record the walk
-    /// owes, the hand probe of every mutable token of the
-    /// production hunks over the unit's whole range, each class read by its spelling - every
-    /// argument of every added or changed call, every `?` (swallowed by the spelling the working
-    /// discipline lists for its value), `return`, `break` and `continue` - one
-    /// mutation at a time, the owning crate's unit tests and the touched root test binaries run,
-    /// the file restored - with the `<unit>-mutant-probes` record the `sdet` lens completes,
-    /// organised by production line - each added or changed line naming its tokens, a query or
-    /// format string's included, or marked as carrying none - and closed by one tally line per
-    /// spelled class, the `?`, `return`, `break` and `continue` counts the ones
-    /// `.rigger/gates/token-count.sh` prints, and the foreground wait for
+    /// search runs as the function's name and the old answer's noun, and the foreground wait for
     /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
     /// line when the host backgrounds one.
     #[test]
@@ -3629,12 +3658,7 @@ mod tests {
                 "{file}: the hand-over block belongs to the author roles alone"
             );
             if author {
-                let from = text.find(HEADING).expect("counted above");
-                let rest = &text[from + HEADING.len()..];
-                let to = rest
-                    .find("\n## ")
-                    .map_or(text.len(), |at| from + HEADING.len() + at);
-                blocks.push(text[from..to].to_string());
+                blocks.push(persona_section(&text, HEADING).to_string());
             }
         }
         assert_eq!(blocks.len(), 2, "both author roles carry the block");
@@ -3770,30 +3794,6 @@ mod tests {
              such consumer phrase runs as a pair of the search above, the function's name as \
              the code spells it and the old answer's noun, one run per pair, every hit FIXED \
              with the new qualifier or CHECKED with the reason it does not reach it.",
-            "Every mutable token of your production delta is probed on your committed tree: list \
-             the tokens from the production hunks of `git diff $(git merge-base rigger-run \
-             HEAD)..HEAD -- crates src` with the test regions left out",
-            "after each single mutation run the owning crate's unit tests, `cargo test -p \
-             <crate> --lib` for a file under `crates/` or `cargo test --lib --bin rigger` for one \
-             under `src/`, and each root test binary the unit touched by `cargo test --test \
-             <name>`, then restore the file with `git checkout -- <file>` before the next",
-            "The `<unit>-mutant-probes` DecisionMade, beside the other two records, pastes each \
-             token's `file:line`, the mutation, each command as run and the test that went red \
-             with its assertion; the `sdet` lens probes every token it lacks.",
-            "The record walks the production lines of `git diff $(git merge-base rigger-run \
-             HEAD)..HEAD -- crates src` with the test regions left out, in file order: each \
-             added or changed line names its mutable tokens with their probes - a SQL conjunct, \
-             a column name, bound or placeholder passed to a query builder and a substr start \
-             inside a query or format string among them - or is marked as carrying none with \
-             its reason (a signature, a `use`, a doc line, a brace).",
-            "each class the working discipline's rule spells read by its spelling - every \
-             argument of every call you add or change, every `?` (swallowed by the spelling the \
-             working discipline lists for its value), every `return`, `break` and `continue` \
-             among them",
-            "After that walk the record carries one tally line per spelled class, `<class>: <n> \
-             in hunks, <n> probed`, the two counts equal",
-            "the `?`, `return`, `break` and `continue` counts are the ones `sh \
-             .rigger/gates/token-count.sh` prints, run from your worktree's root",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
@@ -3811,11 +3811,9 @@ mod tests {
             !block.contains("`rigger graph --around <item>`"),
             "the caller lookup names its depth; a bare `--around` answers the file neighbourhood"
         );
-        // The token count has one home, `.rigger/gates/token-count.sh`; the block names it and
-        // carries no copy of its awk.
         assert!(
-            !block.contains("gsub("),
-            "the hand-over block names the token-count script instead of spelling its awk"
+            !block.contains("mutant-probes"),
+            "the hand-over block owes no record of hand-applied mutations"
         );
     }
 
@@ -3898,18 +3896,7 @@ mod tests {
     /// case with its `file:line` and listed beside the claim in its record, a claim with no
     /// witness, a quantified claim with one witness or a failing case BLOCKING and a grouped
     /// verdict with no per-sentence witness, over the author's CHECKED members as over any other
-    /// sentence it reads, a record it cannot write. Of the mutable-token rule: it derives the token set from the production
-    /// hunks over the unit's whole range, probes every token the author's `<unit>-mutant-probes`
-    /// record lacks in a scratch worktree it restores and removes in-turn, and a green probe or
-    /// an unrecorded token is BLOCKING; it compares its token set with the record line by line,
-    /// a query or format string's tokens counted on their line, and a production line the
-    /// record does not disposition is BLOCKING; it reads the token classes from the working
-    /// discipline's list, carrying no copy of it, counts the `?`, `return`, `break` and
-    /// `continue` with `.rigger/gates/token-count.sh` and reads each call's arguments, and a tally short of its
-    /// count is BLOCKING; for every `?` the record calls unviable it applies, in the same
-    /// scratch worktree, the swallow of the working discipline's list that fits the value's
-    /// type, carrying no copy of that list, and one that compiles and leaves every test green is
-    /// BLOCKING. The records are the author's instruments, never
+    /// sentence it reads, a record it cannot write. The records are the author's instruments, never
     /// a gate, so the lens's rule against re-running a green gate does not reach them.
     #[test]
     fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
@@ -4031,37 +4018,6 @@ mod tests {
              verdict (\"none false\", \"each a field reference\", \"the \
              CHECKED hits hold\") over sentences with no per-sentence witness is a record you \
              cannot write.",
-            "You are also the enforcement of the built-in rule that every mutable token of the \
-             production delta is pinned.",
-            "You derive the token set yourself from the production hunks of `git diff \
-             $(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out",
-            "compare it with the author's `<unit>-mutant-probes` record",
-            "every token of a class the working discipline's rule lists that the unit adds or \
-             changes",
-            "You count the classes yourself as well: the `?`, `return`, `break` and `continue` \
-             of the production hunks with the authors' count, `sh .rigger/gates/token-count.sh` \
-             run from your own worktree's root, and the arguments of each call those hunks add \
-             or change, read call by call",
-            "you compare each class's count with the record's tally line for it, and a tally \
-             short of your count, or a token with no probe, is BLOCKING on its own, citing the \
-             class, both counts and the unprobed tokens.",
-            "You compare the two line by line: a token inside a query string, a format string \
-             or a macro argument the code executes is a token of its line (a SQL conjunct a \
-             boolean operand; a column name, bound or placeholder passed to a query builder a \
-             call argument; a substr start an index), and a production line those hunks add or \
-             change that the record does not disposition - naming its tokens with their probes, \
-             or marked as carrying none with its reason - is BLOCKING on its own, citing the \
-             line.",
-            "Every token the record lacks you probe yourself in a scratch worktree (`git \
-             worktree add <scratch> HEAD`), one mutation at a time",
-            "restoring each file with `git checkout -- <file>` and removing the scratch worktree \
-             with `git worktree remove <scratch>` before your turn ends",
-            "A probe that leaves every test green is BLOCKING, and so is a token the record \
-             carries no probe for",
-            "For every `?` the author's record disposes as `unviable` you apply, in the same \
-             scratch worktree, the swallow of the working discipline's `?` list that fits the \
-             value's type, and run the same tests: one that compiles and leaves every test green \
-             is BLOCKING on its own, citing the site, the swallow and the green run.",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
@@ -4071,19 +4027,9 @@ mod tests {
             !flat.contains("beyond the author's record"),
             "the lens's per-sentence list covers the author's CHECKED members too"
         );
-        // The token classes are spelled once, in the working discipline; the lens refers to
-        // that list and carries no copy of it.
         assert!(
-            !flat.contains("call argument that is a range, index or bound"),
-            "sdet.md refers to the working discipline's token list instead of re-spelling it"
-        );
-        assert!(
-            !flat.contains("gsub("),
-            "sdet.md names the token-count script instead of spelling its awk"
-        );
-        assert!(
-            !flat.contains(".unwrap_or_default()"),
-            "sdet.md refers to the working discipline's `?` swallow list instead of re-spelling it"
+            !flat.contains("mutant-probes"),
+            "the sdet lens applies no hand mutations and reads no record of them"
         );
         assert!(
             !flat.contains("ENVIRON[\"b\"]"),
@@ -4174,26 +4120,69 @@ mod tests {
         );
     }
 
-    /// A mutation survivor is always a failure: the engineer closes it with a failing test or
-    /// a rewrite, never by justifying it, and its accounting has no justified status.
+    /// rigger's core is agnostic to the gates a project wires: no built-in instruction entry,
+    /// persona, helper or review-tier discipline it ships, and no production line of its own
+    /// source, names mutation testing, its mutants, its sweep, its gate or its tool's
+    /// classifications. A production line is one of a tracked `.rs` file under `crates/` or
+    /// `src/` outside a `tests/` directory, above the file's test module: the first
+    /// `#[cfg(test)]` line whose next line that is neither blank nor another attribute declares
+    /// a module (`mod`, `pub mod` or `pub(crate) mod`). A `#[cfg(test)]` on a `use`, `impl` or
+    /// `fn` ends nothing, so the few test-only lines it gates are read too. The bare word for a
+    /// state change is no term: the core uses it for write authority.
     #[test]
-    fn rust_engineer_closes_every_survivor_and_never_justifies_one() {
-        let text = committed_persona("rust-engineer.md");
-        for banned in ["JUSTIFIED", "missed-justified", "equivalence reason"] {
-            assert!(
-                !text.contains(banned),
-                "rust-engineer.md still offers {banned:?}"
+    fn no_built_in_entry_persona_helper_or_production_line_names_mutation_testing() {
+        let mut texts = every_shipped_agent_text();
+        let tracked = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo())
+            .args(["ls-files", "--", "crates", "src"])
+            .output()
+            .expect("git ls-files runs");
+        for file in String::from_utf8(tracked.stdout).unwrap().lines() {
+            if !file.ends_with(".rs") || file.split('/').any(|part| part == "tests") {
+                continue;
+            }
+            let text = std::fs::read_to_string(repo().join(file)).unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+            let opens_test_module = |at: usize| {
+                lines[at].trim_start().starts_with("#[cfg(test)]")
+                    && lines[at + 1..]
+                        .iter()
+                        .map(|line| line.trim_start())
+                        .find(|line| !line.is_empty() && !line.starts_with("#["))
+                        .is_some_and(|item| {
+                            ["mod ", "pub mod ", "pub(crate) mod "]
+                                .iter()
+                                .any(|head| item.starts_with(head))
+                        })
+            };
+            let end = (0..lines.len())
+                .find(|&at| opens_test_module(at))
+                .unwrap_or(lines.len());
+            texts.extend(
+                lines[..end]
+                    .iter()
+                    .enumerate()
+                    .map(|(at, line)| (format!("{file}:{}", at + 1), (*line).to_string())),
             );
         }
-        for wanted in [
-            "(surviving) mutant is always a failure",
-            "never by an\n  `exclude_re` or `mutants::skip`",
-            "caught | missed-caught (naming the catching test) | unviable | timeout",
-        ] {
-            assert!(
-                text.contains(wanted),
-                "rust-engineer.md must say {wanted:?}"
-            );
+        for (at, text) in texts {
+            let lower = text.to_lowercase();
+            for term in [
+                "mutant",
+                "mutation test",
+                "mutation-test",
+                "mutation sweep",
+                "mutation gate",
+                "`mutation` gate",
+                "mutation-efficacy",
+                "mutation-scratch",
+                "mutation tool",
+                "mutation runs",
+                "unviable",
+            ] {
+                assert!(!lower.contains(term), "{at} names {term:?}: {text}");
+            }
         }
     }
 
@@ -4270,26 +4259,12 @@ mod tests {
             r"too_many_lines|cognitive_complexity|over \d[\d,]* lines|\d[\d,]* lines (fails|caps|limit)",
         )
         .unwrap();
-        let mut texts = every_shipped_persona();
-        for dir in ["crates/rigger-domain/src/instructions", ".claude/agents"] {
-            for entry in std::fs::read_dir(repo().join(dir)).into_iter().flatten() {
-                let path = entry.unwrap().path();
-                if path.extension().is_some_and(|x| x == "md") {
-                    texts.push((
-                        path.display().to_string(),
-                        std::fs::read_to_string(&path).unwrap(),
-                    ));
-                }
-            }
-        }
+        let mut texts = every_shipped_agent_text();
         let handbook = repo().join("docs/handbook/authoring-agents.md");
         texts.push((
             handbook.display().to_string(),
             std::fs::read_to_string(&handbook).unwrap(),
         ));
-        for (name, body) in instructions::BUILTIN {
-            texts.push((format!("BUILTIN {name}"), (*body).to_string()));
-        }
         let hits: Vec<String> = texts
             .iter()
             .flat_map(|(at, text)| {

@@ -100,13 +100,13 @@ pub fn ensure_started(store: &dyn EventStore, criteria: &[String]) -> Result<Str
 /// status/dash later name the run's actual base. It is used ONLY on the mint path - an ADOPTED
 /// run keeps the base its original start stamped, so a resume never re-stamps or overwrites it.
 ///
-/// `base_tip` is the run branch's tip commit sha AT THE MOMENT this run started (spec 91): it
+/// `base_tip` is the run branch's tip commit sha AT THE MOMENT this run started: it
 /// flows through to [`start_fresh`] and is persisted in the RunStarted BODY as
 /// `RunStarted::base_tip`, read back by `current_run_base_tip` and exported as
 /// `$RIGGER_RUN_BASE` to every gate command. Unlike `base` (an operator-chosen REF such as
 /// `origin/main`, meaningful only at anchor time), this is the resolved commit the run branch
-/// actually anchored the run branch's tip at - what the checkin stage's `mutation` gate diffs
-/// the whole spec against, never a `git merge-base` with the run branch (already HEAD there,
+/// actually anchored the run branch's tip at - what the check-in stage's gates diff the whole
+/// spec's work against, never a `git merge-base` with the run branch (already HEAD there,
 /// once the checkin stage's own worktree branches off it after every implement unit has
 /// integrated). Mint-only, exactly like `base`: an ADOPTED run keeps its original stamp.
 ///
@@ -183,12 +183,12 @@ pub fn ensure_started_pinned(
 /// adopt-or-mint); an empty base is simply not stamped and the reader falls back to live
 /// resolution.
 ///
-/// `base_tip` is the run branch's tip commit sha AT THE MOMENT this run started (spec 91),
+/// `base_tip` is the run branch's tip commit sha AT THE MOMENT this run started,
 /// persisted in the new RunStarted's BODY as `RunStarted::base_tip` - read back by
 /// `current_run_base_tip` and exported to every gate command as `$RIGGER_RUN_BASE`, the
-/// coordinate the checkin stage's `mutation` gate diffs the whole spec against. Pass `""` from
+/// coordinate the check-in stage's gates diff the whole spec's work against. Pass `""` from
 /// a path with no real run branch (an offline replay, the conductor's unpinned adopt-or-mint);
-/// an empty tip decodes back as `None` and that gate's own `test -n "$RIGGER_RUN_BASE"` guard
+/// an empty tip decodes back as `None` and a gate script's own `test -n "$RIGGER_RUN_BASE"` guard
 /// refuses loud rather than sweeping nothing.
 ///
 /// `spec_path` is the spec file path to persist in the new RunStarted's body (spec 82,

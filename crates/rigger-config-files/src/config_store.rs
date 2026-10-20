@@ -301,16 +301,6 @@ impl Config {
         // still sets it fails loudly at the exact line to delete rather than carrying a setting
         // the operator believes does something.
         reject_retired_key(&wf.name, "name", "the `name:` line", "nothing reads it")?;
-        // `build.mutation` schema retirement (spec 91): the per-round mutation-efficacy
-        // switch spec 73 introduced. ANY explicit value - `on`, `off`, anything - is a
-        // run-start config error naming this spec. Absent (the common case, and every
-        // workflow committed before either switch existed) is unaffected.
-        reject_retired_key(
-            &wf.build.mutation,
-            "build.mutation",
-            "the `mutation:` line under `build:`",
-            "spec 91 retired it: nothing reads it",
-        )?;
         // The default review panel (applied to every unit) must reference real agents,
         // including its light-tier roster, and its depth policy must be structurally
         // sound (a configured light tier names an adjudicator).
@@ -1502,25 +1492,6 @@ mod tests {
                 "an EXPLICIT 0 must parse as 0 (unlimited), distinct from the omitted default",
             );
         };
-        /// Spec 91: `build.mutation` is RETIRED - an omitted `build:` section (the common case,
-        /// and every workflow committed before either the retired spec-73 key or this key
-        /// existed) still resolves the field empty, so `Config::validate` never rejects a
-        /// pre-existing project that never touched this key.
-        build_config_parses_mutation_and_defaults_to_empty_when_omitted: {
-            assert_parsed(
-                "{}",
-                |w| w.build.mutation.clone(),
-                String::new(),
-                "an omitted build: section defaults mutation empty",
-            );
-            assert_parsed(
-                "build:\n  mutation: on\n",
-                |w| w.build.mutation.clone(),
-                "on".to_string(),
-                "the field still parses (so validate can name it in its rejection), it is just \
-                 no longer an accepted value",
-            );
-        };
     }
 
     #[test]
@@ -2284,27 +2255,6 @@ class: product\n";
         }
     }
 
-    /// Spec 91 (SCHEMA RETIREMENT): ANY explicit `build.mutation` value - not just the
-    /// retired switch's old `on` - is a run-start config error naming this spec, since the
-    /// key no longer does anything at all. Absent (empty) is unaffected - proven separately
-    /// by `validate_accepts_an_absent_build_mutation`.
-    #[test]
-    fn validate_rejects_any_explicit_build_mutation_value_naming_spec_91() {
-        for mutation in ["on", "off", "ON", "  off  ", "nonsense"] {
-            let mut cfg = Config::default();
-            cfg.workflow.build.mutation = mutation.into();
-            let err = cfg.validate().expect_err(&format!(
-                "build.mutation: {mutation:?} must fail validation"
-            ));
-            assert_eq!(
-                err.to_string(),
-                "config: the workflow key `build.mutation` is retired (spec 91 retired it: \
-                 nothing reads it): delete the `mutation:` line under `build:` from your workflow.yml (config \
-                 key: build.mutation)"
-            );
-        }
-    }
-
     /// The top-level workflow `name` key is RETIRED: nothing ever read it. A workflow.yml that
     /// still carries a `name:` line parses, and validation refuses it naming the key and the
     /// line to delete - never a bare unknown-key error that leaves the operator guessing.
@@ -2325,18 +2275,6 @@ class: product\n";
         assert!(
             msg.contains("`name` is retired") && msg.contains("delete the `name:` line"),
             "the error must name the retired key and the line to delete: {msg:?}"
-        );
-    }
-
-    /// The un-set default (every pre-existing workflow.yml) must never fail validation over
-    /// a key it never touched.
-    #[test]
-    fn validate_accepts_an_absent_build_mutation() {
-        let cfg = Config::default();
-        assert_eq!(cfg.workflow.build.mutation, "");
-        assert!(
-            cfg.validate().is_ok(),
-            "an absent build.mutation must never fail validation"
         );
     }
 

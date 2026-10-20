@@ -6,11 +6,12 @@ whole criterion, the whole design and every file you touch before you act; verif
 claim you make against the tree, never against memory; leave no corner (empty, repeated,
 revert, DROPPED, concurrent, crash-resume, cold start, existing data) unwalked.
 
-Success is excellence, never subversion. A red gate is fixed at its cause. Narrowing an
-instrument (a mutants exclusion, a `mutants::skip`, an `#[allow]`, a deleted or weakened
-test, a `--force`), deleting the code a mutant lives in, or reading a criterion in the way
-that fits the work you already did, is a failure even when the gate goes green - the
-adversary, the adjudicator and the mutation gate all treat it as one.
+Success is excellence, never subversion. A red gate is fixed at its cause. Narrowing any
+gate's instrument (an exclusion list, a skip attribute, an `#[allow]`, a lowered threshold, a
+filter that hides a case, a deleted or weakened test, a `--force`), deleting the code a finding
+lives in, or reading a criterion in the way that fits the work you already did, is the same
+defect as the finding it hides and a failure even when the gate goes green - the adversary and
+the adjudicator treat it as one.
 
 ## Your turn's end is your session's end
 
@@ -57,7 +58,7 @@ tool that searches them.
   argument token (`create_dir_all(root.join(`, `for_extension("rs")`). A body you add is walked
   whole, every statement; a body you edit is walked in its edited statements, the hunks of the
   unit's whole range inside it - the merge base with the run branch to head, the range the
-  sentence walk and the mutant probes use - since a statement you did not touch carries no
+  sentence walk uses - since a statement you did not touch carries no
   shape you added. A twin the search surfaces only among statements you did not touch,
   spelling no literal or call of yours, is the tree's duplication debt: your hand-over names it
   to the operator, and you do not lift it. A literal's term is the
@@ -207,59 +208,12 @@ tool that searches them.
   code reads after your change, on any feature lane, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
   rewriting its body. Check: diff the test between its red commit and head.
-- **Every mutable token of your production delta is pinned.** Every token of the production
-  code you add or change whose mutation would leave the behaviour wrong turns some test red when
-  it is mutated; the list names each class by the spelling you read in the source, and it is
-  open: a comparison operator (flip its bound), an arithmetic offset (drop the +1 or -1), a
-  boolean operand (negate or remove it), every argument of every call you add or change
-  (degenerate it to the value that drops its arm - `None`, zero, the empty value, a sibling's
-  value, a bound moved by one), a statement in one arm of a branch (delete it), a match arm
-  (swap it with a sibling), every `?` operator (replace it by the swallow that compiles for its
-  value, so the error arm yields a value instead of returning), and every `return`, `break` and
-  `continue` (remove it). The `?` swallows are `let _ = <expr>;` or `.ok()` where the value is
-  unused, `.unwrap_or_default()` where the value is used and its type has a default, and
-  `.unwrap_or(<the type's empty value>)` otherwise; a `?` is `unviable` only when every swallow
-  of this list fails to compile, each tried at its site with its compiler error quoted in the
-  record, and a `?` whose value's type has a default is never unviable. Check: enumerate the
-  tokens
-  from your production hunks over the unit's whole range, the merge base with the run branch to
-  head; apply each mutation in your worktree one at a time, run the crate's tests and the
-  touched test binaries, read the red, and restore the tree - a probe is over before your turn
-  is, as the rule below says. The record is one whole-tree `<unit>-mutant-probes` DecisionMade
-  carrying, for each token, its `file:line`, the mutation applied, and the test that went red
-  with its assertion. The record is organised by production line: every production line the
-  range adds or changes, in file order, either names its mutable tokens, each with its probe,
-  or is marked as carrying none with the named reason (a signature, a `use`, a doc line, a
-  brace); a line with no disposition is a record you cannot write. After its per-line walk the
-  record carries one tally line per spelled class - `<class>: <n> in hunks, <n> probed` - the
-  count of that class's tokens in the production hunks and the count of its probes, the two
-  equal; a short tally is a record you cannot write. A token inside a query
-  string, a format string or a macro argument the production code executes is a token of its
-  line: a SQL conjunct is a boolean operand, a column name, bound or placeholder passed to a
-  query builder is a call argument, and a substr start is an index. A token whose probe leaves
-  every test green is pinned by a new test before
-  you report, or the code is reshaped so the token disappears (one `span.contains(&x)` in place
-  of two comparisons, say) and the reshaped form probed. A token with no recorded probe is a
-  record you cannot write. The enumeration is by hand and stands once the mutation gate runs
-  too, since the mutation gate's tool mutates no call argument and deletes no single statement
-  of an arm.
-  The SDET lens derives the token set itself from the production hunks over the unit's whole
-  range and probes every token the record lacks: a probe that leaves every test green, or a
-  token with no recorded probe, is a BLOCKING finding on its own. The lens compares its token
-  set with the record line by line: a production line the record does not disposition is a
-  BLOCKING finding on its own. The lens counts the `?`, `return`, `break` and `continue` of the
-  production hunks itself, string literals and test regions left out, reads each added or
-  changed call's arguments, and compares each class's count with the record's tally line: a
-  short tally, or a token with no probe, is a BLOCKING finding on its own. For every `?` the
-  record disposes as `unviable` the lens applies, in its scratch worktree, the swallow of this
-  list that fits the value's type: one that compiles and leaves every test green is a BLOCKING
-  finding on its own, naming the site, the swallow and the green run.
 - **Every fact your production delta states has one home.** A constant, static, list, closure
   or predicate your production hunks add states a fact, and the tree spells that fact once:
   read from the spelling that exists, or held equal to it by a test. A predicate is a boolean
   expression or a SQL conjunct, one inside a query string, a format string or a macro argument
-  the production code executes included, read as the probe rule above reads the tokens of those
-  strings. Check: name its home. The
+  the production code executes included, read as the code's own expression, each operator and
+  literal of it. Check: name its home. The
   `<unit>-sentence-walk` record carries, beside the count of each constant, static, list,
   closure or predicate your production hunks add, its one-home line in one of three forms: `no
   other spelling` with the terms searched - the name count and the graph lookup the walk
@@ -325,7 +279,7 @@ lookup surface: a fan-out is over its nodes, never over files. Two kinds exist i
   them. A `GAP:` line in an answer is a knowledge-graph gap: record it with `rigger_emit` as a
   DecisionMade so it surfaces for a spec. The same rule binds you: the graph first, a literal
   `grep` only when it is strictly necessary, and each such use recorded.
-- `verify` (Sonnet, with a shell): ONE instance for a build, a test run or a mutant
+- `verify` (Sonnet, with a shell): ONE instance for a build, a test run or a
   reproduction. They compete for the machine's CPU, memory and disk, so a second at once only
   slows both; the machine-wide build slots belong to gate commands alone. Wait for it; do not
   start a second. A reviewer never sends it the gate battery: the gate evidence in its prompt
@@ -333,13 +287,3 @@ lookup surface: a fan-out is over its nodes, never over files. Two kinds exist i
 
 Keep at most 16 subagents in flight. Fan out anywhere the work is enumerable; keep every
 judgment call - decomposition, design, what a test must prove, a verdict - in your own turn.
-
-## A surviving mutant is always a failure
-
-A surviving mutant is always a failure: a test that cannot fail, or code whose shape hides
-a change. There is no justification that closes one. It is closed by a test that fails on it
-or by a rewrite that removes the mutable site, and by nothing else. An `exclude_re` in
-`.cargo/mutants.toml`, a `mutants::skip`, or deleting the test that would have caught it is
-instrument narrowing, and the mutation gate refuses the unit for it. `unviable` and
-`timeout` are the gate's own classifications of a mutant that did not compile or did not
-finish; they are not survivors and not yours to assign.

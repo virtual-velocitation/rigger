@@ -1951,7 +1951,7 @@ fn token_tree_facts(tt: tree_sitter::Node, source: &[u8]) -> (bool, bool) {
 /// EXCLUSIVELY from `test`/`not`/`all`/`any`, naming no other cfg atom (a feature flag,
 /// `target_os`, a bare `debug_assertions`, ...) anywhere in it. Computed TOGETHER in one minimal
 /// recursive descent over the cfg predicate grammar `ident | not(P) | all(P, ...) | any(P, ...)`,
-/// never as two separate walks over the identical shape (a round-6 mutation testing finding /
+/// never as two separate walks over the identical shape (a round-6 review finding /
 /// `docs/audit`'s own duplication scan: an earlier version of this fix shipped "names test" and
 /// "is pure" as two near-identical functions, exactly the duplicate-implementation shape this
 /// repo's own audit exists to catch) - `not(P)`'s "names test" answer can only be obtained by
@@ -1973,8 +1973,8 @@ fn token_tree_facts(tt: tree_sitter::Node, source: &[u8]) -> (bool, bool) {
 ///   pure - is never inverted: `feature = "x"`'s own truth is independent of `test` altogether
 ///   (it can be on or off regardless of `test`), so inverting its unrelated answer would tell you
 ///   nothing sound about test-exclusivity; the item it guards compiles whenever `feature` is off,
-///   in EITHER a test or a non-test build, so it is definitively NOT test-only (a round-6 `cargo
-///   mutants` finding: reading an earlier, un-guarded `!inner_names_test` as a general "P is not
+///   in EITHER a test or a non-test build, so it is definitively NOT test-only (a round-6 review
+///   finding: reading an earlier, un-guarded `!inner_names_test` as a general "P is not
 ///   itself test, so not(P) IS test" leap - sound only for a pure `test` subtree - wrongly marked
 ///   `#[cfg(not(feature = "x"))] fn real_client() {}`, an ordinary product function, as test code
 ///   and excluded it from the graph).

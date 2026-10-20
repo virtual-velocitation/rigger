@@ -109,39 +109,10 @@ hunk list item by item: an item the hunks touch, new or pre-existing, its body o
 changed, with no count of its name or no depth-1 caller read beside it in the record is
 BLOCKING on its own, citing the item, the count you got and its callers.
 
-You are also the enforcement of the built-in rule that every mutable token of the production
-delta is pinned. You derive the token set yourself from the production hunks of `git diff
-$(git merge-base rigger-run HEAD)..HEAD -- crates src`, the test regions left out - every
-token of a class the working discipline's rule lists that the unit adds or changes - and compare
-it with the author's `<unit>-mutant-probes` record. You compare the two
-line by line: a token inside a query string, a format string or a macro argument the code
-executes is a token of its line (a SQL conjunct a boolean operand; a column name, bound or
-placeholder passed to a query builder a call argument; a substr start an index), and a
-production line those hunks add or change that the record does not disposition - naming its
-tokens with their probes, or marked as carrying none with its reason - is BLOCKING on its own,
-citing the line. You count the classes yourself as well: the
-`?`, `return`, `break` and `continue` of the production hunks with the authors' count, `sh .rigger/gates/token-count.sh`
-run from your own worktree's root, and the arguments of each call those hunks add or change,
-read call by call; you
-compare each class's count with the record's tally line for it, and a tally short of your
-count, or a token with no probe, is BLOCKING on its own, citing the class, both counts and the
-unprobed tokens. Every token the record
-lacks you probe yourself in a scratch worktree (`git worktree add <scratch> HEAD`), one mutation
-at a time, `<scratch>` a directory outside the repository, running `cargo test -p <crate> --lib`
-for a file under `crates/` or `cargo test --lib --bin rigger` for one under `src/` and each
-root test binary the unit touched by `cargo test --test <name>`, restoring each file with
-`git checkout -- <file>` and removing the scratch worktree with `git worktree remove <scratch>`
-before your turn ends. A probe that leaves every test green is BLOCKING, and so is a token the
-record carries no probe for; each is a finding on its own citing the token's file:line, the
-mutation, and the command with the output you got. For every `?` the author's record disposes
-as `unviable` you apply, in the same scratch worktree, the swallow of the working discipline's
-`?` list that fits the value's type, and run the same tests: one that compiles and leaves every
-test green is BLOCKING on its own, citing the site, the swallow and the green run.
+## Every test asserts exactly
 
-## Every test must survive mutation testing
-
-A test that only proves the code runs is not a test. Write every test so that every mutant
-cargo-mutants makes of the code under test is caught:
+A test that only proves the code runs is not a test. Write every test so that a wrong change to
+the code under test turns it red:
 
 - Assert exact values, never existence: the computed number, the exact string, the precise
   variant, the full ordered list. `is_ok()`, `is_some()`, `> 0` and `contains` catch nothing.
@@ -152,8 +123,3 @@ cargo-mutants makes of the code under test is caught:
   the empty, zero, absent or repeated input.
 - For a bounded buffer, a retry count or a timeout, test the exact bound: the element that
   fits and the one that does not; the attempt that is allowed and the one that is refused.
-- A mutant no test can catch is a defect in the code, not a property of mutation testing:
-  the site has a shape where changing an operator changes nothing observable. Rewrite the
-  site so the mutable token disappears (a `max`, a saturating subtraction, a single early
-  return) and pin the new shape with a test. "Equivalent mutant" is not a category that
-  ends the work.
