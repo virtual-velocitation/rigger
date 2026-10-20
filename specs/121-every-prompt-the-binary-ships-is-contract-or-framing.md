@@ -158,7 +158,8 @@ PreToolUse entry as at HEAD, and every headless spawn's `--settings` carries it.
 under `PreToolUse` whose command equals `GREP_GUARD_COMMAND`, whatever its matcher, a block dropped
 only when its inner array becomes empty, an emptied `PreToolUse` array and an emptied `hooks` object
 removed in turn, so a settings file rigger alone populated returns to its pre-rigger shape (the
-byte-equal check reads that result), every other hook kept, writing only when the merge changes
+byte-equal oracle: a settings file holding the guard plus foreign hooks equals, after removal, the
+file `rigger setup` writes from the same input with the key off), every other hook kept, writing only when the merge changes
 the file. Install keys on the same rule: the guard is present when any inner `PreToolUse` hook has
 that command, and an install with the key true replaces every inner hook carrying
 `GREP_GUARD_COMMAND` whose matcher differs from `GREP_GUARD_MATCHER` (`hooks.rs:25`), so exactly one
@@ -229,7 +230,9 @@ naming the file, an infrastructure fault that charges no remediation attempt; `r
 operator copy that is PRESENT folds into `definition_hash` (`src/cli/mod.rs:974`) after the agent
 definitions; an absent copy folds nothing, so the hash of a project without copies is unchanged and
 it sees no drift. A mid-run edit of an operator copy is a definition drift that halts the step and resumes with
-`--rebase-definition`, as a persona edit does; criterion 3 owns the fold and its test. `HELPER_AGENTS`
+`--rebase-definition`, as a persona edit does; criterion 3 owns the fold and its test. The step resolves the helpers once, at its drift check,
+and passes those texts to every spawn it parks or runs, so the hash and the spawns read one
+resolution; criterion 3 owns it. `HELPER_AGENTS`
 stays as the scaffold's write-once seed (`setup.rs:243-244`) and the default.
 
 **THE COMMUNICATION CADENCE HAS ONE HOME, decided here (criterion 4).** The cadence clauses are
@@ -377,7 +380,10 @@ binary reader (`WaveItem::from`, `spawn.rs:764-767`; the request's construction,
 the parked-request read, `conductor.rs:16111`). The renamed field's doc comment, on the wave item and
 the request alike, states the distinction from the gate runner's parameter of the same name in one
 sentence: "the cache path this spawn builds into; the gate runner's `build_cache_dir` parameter is the
-shared gate cache"; no other rename. Criterion 11 owns the rename, that comment and their pins
+shared gate cache"; no other rename. The request field carries `#[serde(alias = "cargo_target_dir")]`,
+so every recorded `SpawnRequested` replays unchanged, its cache path intact. The rename rides with
+criterion 11 because the courier schema and the script's readers are criterion 11's edit and the field
+has no other owner. Criterion 11 owns the rename, that comment and their pins
 (`spawn.rs:1696-1727`, `agent.rs:440`, `src/cli/mod.rs:5434-5465` among them). The constant's value is the toolchain coupling spec
 120 leaves out of scope; the script's text names none. The rewordings: `workdir` (:624) "Do all your
 file edits, your build tool's runs, and any git commit inside your isolated worktree ..."; BUILD
@@ -403,31 +409,17 @@ the shared cache it resolves from config (`shared_build_cache_paths`, `conductor
 holds or was never requested, while its degraded branch (a guard requested whose probe failed,
 `crates/rigger-gates-shell/src/gate.rs:651-656`) today withholds it and falls back to the ambient
 variable, which only the courier's prefix fills (`${REPO}/.rigger/tmp/cargo-target`, outside the
-scratch root, whose default is the cache home). The binary owns that fallback, and never onto the shared
-cache, which spec 77 criterion 5's round-3 fix withheld from an unguarded build on purpose
-(`gate.rs:634-654`: a concurrent `rigger reset --build-cache` could reap it mid-build). Criterion 11's
-degraded branch sets `spawn::BUILD_CACHE_ENV` to a per-build directory of its own, created
-exclusively by each degraded run (create-new semantics; named by the gate id plus a mkdtemp-style
-random suffix built from `std` alone, the pid, the clock's nanoseconds and a process-wide atomic
-counter, a collision retrying with a new suffix; no dependency moves or is added), under the registered scratch root the gate
-runs beneath: the
-`gate_scratch` root when the runner is handed one, else the scratch root `build_cache_dir` sits
-directly under (`shared_build_cache_paths` derives both from one `scratch_root_from_env`); never the
-shared cache and never the ambient environment. A degraded
-run with no root to place it under (no `gate_scratch` and an empty `build_cache_dir`) fails the gate
-naming the missing root; the fail-loud branch is confined to that degraded case. A gate run that
-requests no guard and names no directory inherits the ambient environment; no production caller does
-this (every conductor call hands `build_cache_dir` whenever `target_dir` is empty): the accepted
-residue, its behaviour unchanged, and criterion 11 owns no existing test for that case. The runner deletes only the
-directory it created, when the gate's process exits, success or failure (the cache is cold and nothing
-reuses it); the scratch root's teardown is the backstop for a runner that dies mid-gate (a unit's
-gate scratch root by `worktree::reclaim_gate_scratch_sibling` at its landing, `conductor.rs:9988`;
-the run's scratch root by the run-teardown sweep), and a concurrent `rigger reset --build-cache` reclaims
-a scratch root only when its holder is dead, leaving a held root alone. So the courier passes no
-cache prefix. Criterion 11 owns the branch edit, the reap and its test: a forced guard-probe failure builds
-under the scratch root, never into the gated tree and never into the shared cache, and its per-build
-directory is gone once the gate returns; two degraded runs of one gate id in one process build in
-two directories and each removes only its own. The script's comment lines are not prompt
+scratch root, whose default is the cache home). The binary owns that branch, and never by building
+elsewhere: criterion 11's degraded branch of `ExecRunner::run` (a guard requested whose probe failed)
+FAILS THE GATE, its output naming the probe's error (the guard path and the OS error), and builds
+nothing anywhere: not into the gated tree, the shared cache (which spec 77 criterion 5's round-3 fix
+withheld from an unguarded build on purpose, `gate.rs:634-654`) or the ambient directory. A failed
+probe is an environment fault the operator must see, never a build hidden in a cold cache. A gate run
+that requests no guard and names no directory inherits the ambient environment; no production caller
+does this (every conductor call hands `build_cache_dir` whenever `target_dir` is empty): the accepted
+residue, its behaviour unchanged, and criterion 11 owns no existing test for that case. So the courier
+passes no cache prefix. Criterion 11 owns the branch edit and its test: a forced guard-probe failure
+fails the gate with the probe error in its output and leaves no build directory behind. The script's comment lines are not prompt
 text and stay. Criterion 11 edits the pins at `src/cli/mod.rs:5437-5450` that quote the old text.
 
 **THE SCRATCH TOOL NAMES NO TOOLCHAIN, decided here (criterion 12).** The `rigger_scratch`
@@ -687,10 +679,9 @@ relaunches once with `--rebase-definition` after the refresh.
 | skill shadow | DROPPED | a project copy deleted: the next setup installs the shipped render |
 | overlay field | empty | absent or empty list: the generic step only |
 | scaffold implementer | existing data | an existing project's workflow and personas are write-once and stay; only a fresh `rigger init` gets the new ids |
-| gate cache | degraded guard | a per-build directory under the held scratch root; a concurrent reset leaves a held root alone |
+| gate cache | degraded guard | the gate fails naming the probe error; nothing builds into the gated tree, the shared cache or the ambient directory |
 | gate cache | no guard, no directory | a gate run that requests no guard and names no directory inherits the ambient environment; no production caller does this; accepted residue |
-| gate cache | concurrent | two degraded runs of one gate id, in one process or two, each create their own directory exclusively (the gate id plus a suffix from the pid, the clock's nanoseconds and a process-wide atomic counter, create-new, a collision retried), and each deletes only the directory it created |
-| gate cache | repeated, crash | the runner reaps its per-build directory when the gate's process exits, success or failure, so a second degraded run leaves no first directory behind; a runner that dies mid-gate leaves it to the scratch root's teardown |
+| renamed request field | existing store | a `SpawnRequested` recorded under `cargo_target_dir` deserializes through the serde alias with its cache path intact; replay unchanged |
 | `build_cache_env` | empty | never null: a wave item with no per-unit cache still carries the name, so SCRATCH POLICY's export sentence renders for every spawn, as at HEAD |
 | scope sentence | DROPPED | `unit_size_cap`'s second sentence leaves the DAG prompt and lands in the three critique and planning personas and their scaffold templates in the same commit |
 | scope sentence | `max_unit_added_lines` absent | the moved scope sentence stays in the three personas and is inert: it qualifies a cap only when the prompt states one; accepted |
@@ -778,7 +769,7 @@ TEST PLACEMENT:
 | 8 | `conductor.rs` tests (`PLAN_PROTOCOL`); `src/cli/setup.rs` tests (persona and seed) |
 | 9 | `conductor.rs` tests (both PATTERN lines); `src/cli/setup.rs` tests (the built-in's bullet) |
 | 10 | `conductor.rs` tests (declared, absent with `sdet-author` defined, an undefined id refused); `config_store.rs` tests (the refusal) |
-| 11 | `spawn.rs` tests (the wire fields, the renamed `build_cache_dir`); `src/cli/mod.rs` tests over `RIGGER_WORKFLOW`; `gate.rs` tests (a forced guard-probe failure builds under the scratch root, never into the gated tree or the shared cache, and its per-build directory is gone once the gate returns; two degraded runs of one gate id in one process build in two directories, each removing only its own) |
+| 11 | `spawn.rs` tests (the wire fields, the renamed `build_cache_dir`); `src/cli/mod.rs` tests over `RIGGER_WORKFLOW`; `gate.rs` tests (a forced guard-probe failure fails the gate with the probe error in its output and leaves no build directory behind); `spawn.rs` tests (a request recorded under `cargo_target_dir` deserializes with its cache path intact) |
 | 12 | `mcpserver.rs` tests |
 | 13 | `docs.rs` tests (the generic step); `src/cli/mod.rs` tests (`install_skills` with an overlay list) |
 | 14 | `src/cli/mod.rs` tests over a temp root (a shadow, a near name, a deleted shadow); a periphery test running the built binary's `setup` |
@@ -807,7 +798,8 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | `PLAN_PROTOCOL`'s guidance cut and MARKERS rewordings, the planner persona's and seed's moved sentences | 8 |
 | both PATTERN lines, the hand-over section's bullet | 9 |
 | `Defaults.test_author`, its refusal, the spawn's lookup, the edited sdet fixtures | 10 |
-| `WaveItem::build_cache_env`, `spawn::BUILD_CACHE_ENV`, the `cargo_target_dir` to `build_cache_dir` rename of the wire and request fields, their readers and the fields' doc comment, the script's reworded texts, the courier command, the degraded branch of `ExecRunner::run`, its per-build directory's reap and its test | 11 |
+| `WaveItem::build_cache_env`, `spawn::BUILD_CACHE_ENV`, the script's reworded texts, the courier command, the failing degraded branch of `ExecRunner::run` and its test | 11 |
+| the `cargo_target_dir` to `build_cache_dir` rename of the wire and request fields, the serde alias, their readers, the fields' doc comment and their pins (criteria 12 and 18 do not touch it) | 11 |
 | the `rigger_scratch` description | 12 |
 | each open-exceptions item's strike | the criterion EXCEPTIONS LIST names |
 | `DocsOverlay.global_constraints`, the `DocsContext` field, `planning-a-spec` as `Rendered`, `.rigger/docs-overlay.yml`, the re-rendered `skills/planning-a-spec/SKILL.md`, the edited static-body tests | 13 |
@@ -847,7 +839,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves THE PLANNER PROTOCOL CARRIES NO PLANNING POLICY: `PLAN_PROTOCOL` holds exactly the sentences Design keeps as framing, and every sentence Design moves (the split, discovery, scope-creep, cadence, no-code and omit-the-id sentences) stands verbatim in this repository's planner persona and the scaffold's planner seed. This criterion OWNS both lists and their pins; the cap sentence is criterion 7's, NOT this one's.
 - [ ] a test proves THE REQUIRED PATTERN NAMES ONLY ITS RECORD: `PriorFailure::block` and `ReviewRound::block` give each REQUIRED pattern item its shape and its `audit_id` record id, and the audit and check sentences stand in the `working-discipline` built-in's hand-over section. This criterion OWNS both PATTERN lines, that bullet and their pins; the lookup sentences in that body are criterion 1's, NOT this one's.
 - [ ] a test proves THE TEST AUTHOR IS DECLARED: `spawn_sdet_author` spawns the agent `defaults.test_author` names, under the `sdet-author` role token, and spawns nothing when the key is absent, whatever `.rigger/agents` defines; an undefined id is refused at load. This criterion OWNS the key, its refusal, the spawn's lookup and the edited fixtures; the doc-only rule is criterion 6's, NOT this one's.
-- [ ] a test proves THE WORKFLOW SCRIPT NAMES NO TOOLCHAIN: `RIGGER_WORKFLOW`'s worker and courier texts name the cache only through `WaveItem::build_cache_env` and the wave's path, with no disk-layout sentence, courier prefix or "the moment", and a gate whose guard probe fails builds in its scratch root, not the shared cache. This criterion OWNS those texts, the wave field, the degraded branch and their pins; `rigger_scratch` is criterion 12's, NOT this one's.
+- [ ] a test proves THE WORKFLOW SCRIPT NAMES NO TOOLCHAIN: `RIGGER_WORKFLOW`'s worker and courier texts name the cache only through `WaveItem::build_cache_env` and the wave's path, with no disk-layout sentence, courier prefix or "the moment", and a failed guard probe fails the gate naming its error, building nothing. This criterion OWNS those texts, the wave field, the degraded branch and their pins; `rigger_scratch` is criterion 12's, NOT this one's.
 - [ ] a test proves THE SCRATCH TOOL NAMES NO TOOLCHAIN: the `rigger_scratch` description that `mcpserver.rs`'s `tool_list` advertises says "build cache" where it named the toolchain's cache variable and "Reaped once your result records.", keeping the reaped container's contract word for word otherwise. This criterion OWNS that description and its pins; the workflow script's texts are criterion 11's, NOT this one's.
 - [ ] a test proves THE PLANNING SKILL CARRIES THE PROJECT'S CONSTRAINTS: `planning-a-spec` step 6 reads "Carry the project's own Global constraints" with neutral path examples, and the `global_constraints` list of `DocsOverlay` renders under it in the installed copy. This criterion OWNS the body's wording, the overlay field and this repository's overlay file; skill shadowing is criterion 14's, NOT this one's.
 - [ ] a test proves A PROJECT SKILL SHADOWS THE SHIPPED ONE: `install_skills` installs `.rigger/skills/<name>/SKILL.md` verbatim in place of the shipped skill of that exact name, a near name shadowing nothing, while `rigger docs` and the drift gate stay on the shipped text. This criterion OWNS the shadow rule and its setup report lines; the skill bodies are criterion 13's, NOT this one's.
