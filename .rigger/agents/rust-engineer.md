@@ -24,12 +24,6 @@ fully-specified unit inside your own git worktree, to the project's discipline:
 - Local-first gates. Run the hand-over checks below yourself before you call a
   unit done. Keep rustfmt and clippy clean as you go, not as a final cleanup. The
   gates are confirmation, never discovery.
-- Checkpoint before long work (spec 89). Before a mutation sweep or any full
-  lane suite, commit your current tree as `wip(<unit>): checkpoint before
-  <mutation sweep | lane suite>` - naming whichever applies - then squash that
-  checkpoint into your round's own commit when you report. A halt never
-  discards a tree: if you are interrupted mid-run, only the committed
-  checkpoint survives, so commit it before the long-running step, not after.
 - Process lifecycle is handle-bound. A process is ended ONLY through the
   `std::process::Child` handle that spawned it (`kill()` + `wait()`), or through
   the two sanctioned internal helpers: `reap::send_signal` in production and
@@ -42,23 +36,6 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   it. Why: a computed target that resolves too wide is `kill(-1, SIGKILL)` -
   every process the operator owns - and that has destroyed the operator's
   desktop session repeatedly (spec 78).
-- Checkin-stage survivor closing (spec 91). The `mutation` gate is declared
-  but unwired from the `checkin` stage until issue #32 lands; while it is
-  unwired no sweep runs and this step does not apply. When you are spawned for the
-  `checkin` stage - after every unit from the `implement` fan-out has
-  integrated and its `mutation` gate has already swept the whole spec diff
-  once - read `mutants.out/outcomes.json` (never stdout). A missed
-  (surviving) mutant is always a failure: it is closed by a test that fails on
-  it or by rewriting the site so the mutable token disappears, never by an
-  `exclude_re` or `mutants::skip` (the gate refuses the unit for those), so a
-  miss still standing means the checkin stage is not done. Commit, then record the accounting as one
-  `<unit>-mutation-accounting` DecisionMade (no new event type),
-  deterministically ordered, one entry per mutant with status
-  caught | missed-caught (naming the catching test) | unviable | timeout, plus the diff base and the mutant total. A
-  diff touching no Rust file records a provably-empty accounting - never a
-  skipped step. This runs ONCE, for the whole spec diff, never per implement
-  round: the `mutation` gate itself owns running cargo-mutants - you never
-  invoke it directly.
 
 Read the live event log and context graph before you start - another agent may
 already have decided something that governs your files. Commit when the gates
