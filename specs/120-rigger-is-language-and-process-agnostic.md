@@ -2,7 +2,11 @@
 
 **Goal:** rigger provides tools to agents (the context graph, the event store courier, worktrees,
 the blast radius, the dash, hooks, MCP, the verdict and gate contracts) and executes the workflow
-definition; it prescribes nothing about how work is done except by enforcing that definition. Six places at HEAD prescribe instead. The built-in instruction layer has no override: `compose`
+definition; it prescribes nothing about how work is done except by enforcing that definition. The
+prompt-surface audit of 2026-10-20 (`~/.cache/rigger/drafts/op/prompt-surface-audit.md`)
+inventories every string the binary puts in front of an agent; this spec takes the six places below,
+and spec 121 takes the audit's remaining prescriptions and the boundary gate (OUT OF SCOPE names
+them). The built-in instruction layer has no override: `compose`
 (`crates/rigger-domain/src/instructions.rs:50-62`) injects every `BUILTIN` entry (:32-41) under
 `HEADING` with the suffix "(non-negotiable)" (:54), `render` prints "Built-in (every agent rigger
 spawns, not removable)" (:68), and the module doc says "no configuration removes it" (:11). And the
@@ -167,7 +171,10 @@ to the body, and the new pins of the kept trio; criterion 12 owns the words. The
 `## Fan out the mechanical work`, "A reviewer never sends it the gate battery: the gate evidence in
 its prompt already proves what the gates ran.", is cut by criterion 13 in the same commit as the
 move, its fact then stated once under `## When you review`; no test pins it; criterion 12 leaves it
-as written.
+as written. `gate_evidence_block` (`conductor.rs:594-597`) repeats the second and third sentences in
+every review prompt, toolchain words included; criterion 13 cuts that copy in the same commit as the
+move, keeping the evidence rows and their framing sentence ("every gate below already ran on exactly
+this commit"), and owns its pins; after the cut no toolchain word remains in it.
 
 **BUILT-IN OVERRIDE BY NAME SHADOWING, decided here so no unit has to.** One pure function,
 `instructions::resolve_layers(operator: &[Instruction])`, decides every built-in's state and the
@@ -236,14 +243,14 @@ lists it under the operator heading, which is how an operator sees it did not sh
 **THE COMMUNICATION DISCIPLINE IS A BUILT-IN, decided here.** Criterion 14 moves
 `RIGGER_COMMUNICATION`'s body (every line after its heading line, verbatim) into a third `BUILTIN`
 entry named `communication`, after `working-discipline`; deletes the constant with its heading (the
-"(non-negotiable)" wording goes: the discipline is guidance); and deletes `build_system_prompt`, both
-callers (the spawn path and the canary runner) calling `instructions::compose` directly, `compose`'s
+"(non-negotiable)" wording goes: the discipline is guidance); and deletes `build_system_prompt`, its three
+callers (the spawn path, the canary runner and the spec critic at `src/cli/critique.rs:188`) calling `instructions::compose` directly, `compose`'s
 doc gaining one sentence naming it the one authority for every spawn's system prompt (criterion 3's
 later edit of that doc keeps the sentence). Every spawn's prompt carries the discipline once, as the
 `## communication` section, and `resolve_layers` governs it like the other two once criteria 2 and 3
 land; criterion 2's replace fixture names `communication` as the one replaced built-in. Criterion
-14's test pins membership only: the entry's name and body, the spawn path's and the canary's prompt
-equal to `compose`'s output, no "(non-negotiable)" anywhere in it. The JSON shapes stay in the task
+14's test pins membership only: the entry's name and body, the spawn path's, the canary's and the
+critic's prompt equal to `compose`'s output, no "(non-negotiable)" anywhere in it. The JSON shapes stay in the task
 instructions (`EMIT_PROTOCOL`, `review_protocol`): they are the tool's contract. The moved body is
 no added line under the Global constraints and has no MARKERS hit, so criterion 12's test stays
 green. Criterion 14 owns every pin of the constant's heading or sentences and, in
@@ -257,7 +264,12 @@ sentences, `PLAN_CRITIQUE_RULES` (Rule 7, Rule 8, the blast-radius note), `CRITI
 `CRITIQUE_HUNTS` and `CRITIQUE_BAN` become the body of the `## When you critique a spec or a plan`
 section in `.rigger/agents/adversary.md` (after brief 93's two hunts, which stay) and in the
 scaffold's adversary persona template in `src/cli/setup.rs`, the consumer's overridable default; the
-persona is the workflow definition. The binary keeps, in both prompts, the task framing (what is
+persona is the workflow definition. The DAG critique's method residue moves with it: the unit-size
+bullet (`conductor.rs:7876-7882`, its number as persona prose), the scope sentence beginning "Reject
+ONLY for" (:7927-7931) and the overlap parenthetical "judge ownership/coherence, not the overlap"
+(:7913-7914); the opener's citation of `docs/handbook/authoring-loops.md` rules 7-8 becomes "the
+decomposition rules in your persona", since a consumer repository has no such page.
+`PLAN_PROTOCOL`'s copy of the cap and `MAX_UNIT_ADDED_LINES` are spec 121's. The binary keeps, in both prompts, the task framing (what is
 under critique: the spec path and text verbatim, or the proposed DAG; that a unit reads as a
 criterion and a reject as a BLOCKING finding), the voided-duties clause (the task's own contract
 with the persona) and `CRITIQUE_OUTPUT_CONTRACT` (the finding-line grammar and the verdict line the
@@ -566,7 +578,15 @@ prescribes`, and carries no `grounder:` line. A
 by role token, so a token whose agent or position changed under the rebase may resume another step's
 recorded spawn or session, exactly as the bare adjudicator token does today when `adjudicator: z`
 becomes `adjudicator: w`; the operator's remedy is to let the unit's open round finish, or reset the
-unit, before rebasing a panel; this spec adds no rebase rule.
+unit, before rebasing a panel; this spec adds no rebase rule. Spec 121 owns the audit's remaining prescriptions: the graph-first lookup method and
+the grep-guard hook (`write_lookup_pointer`, `hooks.rs:25-27`, the `lookup` helper); the helpers'
+two homes (`HELPER_AGENTS` passed inline by `spawn_config_args`); the cadence clauses in
+`EMIT_PROTOCOL`, `review_protocol`, `DECISIONS_HEADER` and the shim; the progress cadence in the four
+host homes; `DOC_ONLY_ROUND`; the unit size cap in `PLAN_PROTOCOL` and `MAX_UNIT_ADDED_LINES`;
+`PLAN_PROTOCOL`'s guidance sentences; the REQUIRED PATTERN audit sentences; `ROLE_SDET_AUTHOR`'s
+undeclared spawn; the toolchain words in `workflows/rigger.js` and the `rigger_scratch` description;
+the skills' house constraints and skill shadowing; the scaffold's language-bound implementer; and
+the boundary gate, a registry of every prompt string the binary ships classed contract or framing.
 
 **CONSTRAINTS WALK, decided here.**
 
@@ -753,6 +773,6 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves PANEL READERS READ EVERY STEP: `wave::critic` (with `NO_CRITIC_CLAUSE` and the critique help naming an adversary step in `defaults.review`) and the canary (`apply_model_pins`, `run_canary`) read every step as READERS decides. This criterion OWNS those readers' list-form clauses and the critique skill sentence (`docs.rs:553`); `steps()` and its accessors are criteria 6 and 7's, NOT this one's.
 - [ ] `.rigger/gates/lanes.sh` runs green for both feature lanes on the finished tree, verified by `sh .rigger/gates/lanes.sh no-default` and `sh .rigger/gates/lanes.sh core` each exiting 0. This criterion OWNS only the lanes; every behaviour is criteria 1 to 10 and 12 to 15's, NOT this one's.
 - [ ] a test proves THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and `REVIEWER_DISCIPLINE` have no hit under the MARKERS rule once reworded as BASE decides. This criterion OWNS the bodies' wording, `REVIEWER_DISCIPLINE`'s toolchain words, every existing test that pins a reworded phrase and `docs/handbook/authoring-agents.md:87-88`; the override mechanism is criteria 2 to 5's and the handbook rule criterion 1's, NOT this one's.
-- [ ] a test proves THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: `REVIEWER_DISCIPLINE` holds the two worktree sentences `guard_review_round_tree` enforces and the build-cache sentence; the three moved ones sit under `## When you review` (criteria 2 and 3 later make them overridable). This criterion OWNS the constant's split, the heading, the verify bullet's cut and the pins that move; the sentences' wording is criterion 12's, NOT this one's.
+- [ ] a test proves THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: `REVIEWER_DISCIPLINE` holds the two worktree sentences `guard_review_round_tree` enforces and the build-cache sentence; the three moved ones sit under `## When you review`. This criterion OWNS the constant's split, the heading, the verify bullet's and the gate-evidence copy's cuts and the pins that move; the sentences' wording is criterion 12's, NOT this one's.
 - [ ] a test proves THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN: `BUILTIN`'s third entry `communication` carries `RIGGER_COMMUNICATION`'s body verbatim, the constant and `build_system_prompt` are gone, and every spawn's system prompt is `compose`'s output, `## communication` once, no "(non-negotiable)". This criterion OWNS the entry, both removals, their pins and the handbook's entry list; the override arms are criteria 2 and 3's, NOT this one's.
 - [ ] a test proves THE CRITIQUE METHOD IS THE PERSONA'S: `spec_critique_prompt` and the DAG critique prompt carry only the task framing, the voided-duties clause and the output contract, and the method text Design moves stands verbatim in the `adversary` persona and its scaffold template under `## When you critique a spec or a plan`. This criterion OWNS both prompts, the moved text and its pins; the critic's spawn is criterion 10's, NOT this one's.
