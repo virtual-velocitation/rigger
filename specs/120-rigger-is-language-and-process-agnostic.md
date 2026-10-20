@@ -160,7 +160,7 @@ it false leaves it as it is: its hand-over lists the sentence as assigned to tha
 reviewers raise no finding on it. The assignments: `authoring-agents.md:85`, `:90` and
 the switch-off clause appended to the module-doc sentence criterion 2 wrote to 3; `:92` and
 `instructions.rs:10-12` to 2; `:94` to 4; `:87-88` to 12; the instructions README to 5;
-`agentic-sdlc.md:62-68`, `README.md:19` and `:27` and the `authoring-loops.md` lines to 1;
+`agentic-sdlc.md:62-68`, `README.md:19` and `:27` and the `authoring-loops.md` lines to 1; `best-practices.md:25` to 1;
 `docs.rs:552-553` to 10; `compose`'s doc (`instructions.rs:47-49`) and `BUILTIN`'s doc (:24) to 3;
 `render`'s doc (:64) to 4; the `ReviewPanel` struct doc (`crates/rigger-domain/src/config.rs:347-352`)
 to 7.
@@ -388,15 +388,18 @@ plan-critique gate (:8219-8262), `critique_gate_name` and `has_llm_verifier` (`w
 The scaffolded workflow (`SCAFFOLD_WORKFLOW`, `src/cli/setup.rs`) and this repository's
 `.rigger/workflow.yml:83-86` keep the map form. `REVIEWER_DISCIPLINE`
 (`conductor.rs:12529`) and the per-unit build-cache naming are not this spec's; the core-names-no-
-toolchain constraint binds the lines this spec adds. The rendered handbook pages (`using-rigger.md`,
-`planning-field-guide.md`) and every shipped skill carry no fixed-tier or unremovable-layer
+toolchain constraint binds the lines this spec adds. Every other page under `docs/handbook/` (`using-rigger.md`,
+`planning-field-guide.md`, `tools-and-context.md`, `best-practices.md` outside `:25`, the rest) and
+every shipped skill carry no fixed-tier or unremovable-layer
 wording and are untouched, except the critique skill's sentence at `docs.rs:552-553` ("the
 plan-critique gate's adversary, else `defaults.review.adversary`"), which criterion 10 rewords to
 "else an adversary step in `defaults.review`" and re-renders with the tree's binary. The pages this spec edits are hand-written: `authoring-loops.md` (its
 opening, the `review:` comment at :54, the lifecycle line at :100, the new sections),
 `agentic-sdlc.md:62-68` (the review section, retitled as a sequence whose default is the three
 steps) and `docs/handbook/README.md:27` (the glossary's review-panel line) and `:19` (the "three-tier
-adversarial review" phrase) and `authoring-loops.md:106`, all criterion 1's; and
+adversarial review" phrase), `authoring-loops.md:106` and `docs/handbook/best-practices.md:25`
+(the "three-tier shape" sentence, reworded to call the three steps the default sequence a consumer
+may extend), all criterion 1's; and
 `authoring-agents.md:85-96`, split by owner: `:94` (the report's states) is criterion 4's, `:87-88` (the bodies) criterion 12's; `:85` (reaches every agent), `:90` and the switch-off clause appended to
 the module-doc sentence criterion 2 wrote are criterion 3's; `:92` (appended after the built-ins)
 and the `instructions.rs:10-12` sentence (reaches every agent anywhere, no configuration removes it)
@@ -438,7 +441,7 @@ unit, before rebasing a panel; this spec adds no rebase rule.
 ## Notes (non-criteria)
 
 UNIT ORDER (the needs chain): 12, then 2, 3, 4, 5, then 6, 7, 8, 9, 10, then 1, then 11.
-Criteria 2-5 (instructions) and 6-10 (review) are independent chains; 1 needs 12, 3, 7 and 8; 10 needs 7 and 8; 11
+Criteria 2-5 (instructions) and 6-10 (review) are independent chains; 1 needs 12, 3, 7, 8 and 10; 10 needs 7 and 8; 11
 needs all.
 
 LANDING-ORDER SIMULATION (every ordered pair sharing a surface; "no" lines were fixed in the text):
