@@ -3433,6 +3433,23 @@ mod tests {
             .unwrap_or_else(|| panic!("{file} must be a committed persona"))
     }
 
+    /// Every agent text rigger ships, labelled: the committed personas and scaffold seeds, the
+    /// fan-out helpers and the built-in instruction entries.
+    fn every_shipped_agent_text() -> Vec<(String, String)> {
+        let mut all = every_shipped_persona();
+        all.extend(
+            hooks::HELPER_AGENTS
+                .iter()
+                .map(|(f, t)| (format!("HELPER_AGENTS {f}"), (*t).to_string())),
+        );
+        all.extend(
+            instructions::BUILTIN
+                .iter()
+                .map(|(name, body)| (format!("BUILTIN {name}"), (*body).to_string())),
+        );
+        all
+    }
+
     /// The section of a persona `text` that opens at `heading`, up to the next `## ` heading or
     /// the end of the file.
     fn persona_section<'a>(text: &'a str, heading: &str) -> &'a str {
@@ -4098,17 +4115,12 @@ mod tests {
         );
     }
 
-    /// rigger's core is agnostic to the gates a project wires: no persona or helper it ships
-    /// names mutation testing, its mutants, its sweep, its gate or its accounting.
+    /// rigger's core is agnostic to the gates a project wires: no built-in instruction entry,
+    /// persona or helper it ships names mutation testing, its mutants, its sweep, its gate or its
+    /// tool's classifications.
     #[test]
-    fn no_shipped_persona_or_helper_names_mutation_testing() {
-        let mut texts = every_shipped_persona();
-        texts.extend(
-            hooks::HELPER_AGENTS
-                .iter()
-                .map(|(f, t)| (format!("HELPER_AGENTS {f}"), (*t).to_string())),
-        );
-        for (at, text) in texts {
+    fn no_built_in_entry_persona_or_helper_names_mutation_testing() {
+        for (at, text) in every_shipped_agent_text() {
             let lower = text.to_lowercase();
             for term in [
                 "mutant",
@@ -4196,26 +4208,12 @@ mod tests {
             r"too_many_lines|cognitive_complexity|over \d[\d,]* lines|\d[\d,]* lines (fails|caps|limit)",
         )
         .unwrap();
-        let mut texts = every_shipped_persona();
-        for dir in ["crates/rigger-domain/src/instructions", ".claude/agents"] {
-            for entry in std::fs::read_dir(repo().join(dir)).into_iter().flatten() {
-                let path = entry.unwrap().path();
-                if path.extension().is_some_and(|x| x == "md") {
-                    texts.push((
-                        path.display().to_string(),
-                        std::fs::read_to_string(&path).unwrap(),
-                    ));
-                }
-            }
-        }
+        let mut texts = every_shipped_agent_text();
         let handbook = repo().join("docs/handbook/authoring-agents.md");
         texts.push((
             handbook.display().to_string(),
             std::fs::read_to_string(&handbook).unwrap(),
         ));
-        for (name, body) in instructions::BUILTIN {
-            texts.push((format!("BUILTIN {name}"), (*body).to_string()));
-        }
         let hits: Vec<String> = texts
             .iter()
             .flat_map(|(at, text)| {

@@ -163,22 +163,6 @@ mod tests {
                 "the built-in law must name {phrase:?}"
             );
         }
-        assert!(
-            !body.contains("mutation testing"),
-            "the built-in law names no testing tool a project may wire as a gate"
-        );
-    }
-
-    /// The built-in layer is agnostic to every gate a project wires: no entry names mutation
-    /// testing, its mutants, its gate or its tool's classifications.
-    #[test]
-    fn no_built_in_entry_names_mutation_testing() {
-        for (name, body) in BUILTIN {
-            let lower = body.to_lowercase();
-            for term in ["mutant", "mutation gate", "mutation testing", "unviable"] {
-                assert!(!lower.contains(term), "{name} names {term:?}");
-            }
-        }
     }
 
     #[test]
