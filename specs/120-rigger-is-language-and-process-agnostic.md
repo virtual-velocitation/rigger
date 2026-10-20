@@ -337,7 +337,12 @@ fixed token per kind, the tier numbers) to 8; `REVIEWER_DISCIPLINE`'s doc
 `RunCtx::build_system_prompt`'s doc is criterion 14's, rewritten; `review_protocol`'s doc
 (`conductor.rs:12483-12505`) is criterion 8's; `review_roster`'s and `adjudicator_roster`'s docs
 (`review.rs:250-265`) are criterion 6's; the docs of the deleted method constants (`review.rs:273-276`,
-:293, :306, :311, :322) are criterion 15's, deleted with them.
+:293, :306, :311, :322) are criterion 15's, deleted with them; `authoring-agents.md:85`'s entry
+count and the third item after `:88` are criterion 14's; `:85`'s "reaches every agent" wording stays
+criterion 3's; the layer diagram at `authoring-agents.md:82` is criterion 14's, rewritten "persona +
+built-in instructions (communication among them) + operator instructions"; the module-doc diagram
+at `instructions.rs:5-8` is criterion 14's: it drops the parenthetical "(+ the communication
+discipline, appended by the conductor)" and names the communication discipline as a built-in entry.
 
 
 
@@ -601,8 +606,10 @@ may extend), all criterion 1's; and
 `authoring-agents.md:85-96`, split by owner: `:94` (the report's states) is criterion 4's, `:87-88` (the bodies) criterion 12's; `:85` (reaches every agent), `:90` and the switch-off clause appended to
 the module-doc sentence criterion 2 wrote are criterion 3's; `:92` (appended after the built-ins)
 and the `instructions.rs:10-12` sentence (reaches every agent anywhere, no configuration removes it)
-are criterion 2's. That split (2: `:92`; 3: `:85`, `:90`; 4: `:94`; 12: `:87-88`) is the one
-authority for `authoring-agents.md:85-96`. `authoring-loops.md`'s
+are criterion 2's. That split (2: `:92`; 3: `:85`'s "reaches every agent"
+wording, `:90`; 4: `:94`; 12: `:87-88`; 14: the entry count on `:85`, the third item after `:88`,
+and the layer diagram at `:82`) is the one authority over those named phrases of
+`authoring-agents.md:82-96`, not over whole lines. `authoring-loops.md`'s
 existing workflow example keeps the map form, so `tests/handbook_grounder_accuracy.rs`'s
 `grounder:` check (:124-152) reads it unchanged; the five-step example sits in a fenced `yaml`
 block under a `### The review ceremony` heading, the last subsection of `## What rigger
@@ -796,7 +803,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 
 ## Done when
 
-- [ ] a test proves THE HANDBOOK STATES THE RULE: `authoring-loops.md` carries S1 and S2 with a five-step ceremony example that, spliced into a minimal workflow, passes `config_store::parse_workflow` and `Config::validate` to five `defaults.review.steps()`. This criterion OWNS the handbook pages OUT OF SCOPE assigns it; `authoring-agents.md` is criteria 2, 3, 4 and 12's, the instructions README criterion 5's and the parse criterion 7's, NOT this one's.
+- [ ] a test proves THE HANDBOOK STATES THE RULE: `authoring-loops.md` carries S1 and S2 with a five-step ceremony example that, spliced into a workflow, passes `config_store::parse_workflow` and `Config::validate` to five `defaults.review.steps()`. This criterion OWNS the handbook pages OUT OF SCOPE assigns it; `authoring-agents.md` is criteria 2, 3, 4, 12 and 14's, the instructions README criterion 5's and the parse criterion 7's, NOT this one's.
 - [ ] a test proves A SAME-NAMED OPERATOR FILE REPLACES A BUILT-IN: `instructions::compose` puts the body of a file named as a `BUILTIN` entry byte for byte into that built-in's `## <name>` section, prints `HEADING` bare, and appends a near name. This criterion OWNS `resolve_layers`' replace arm, `compose`'s replace arm with bare `HEADING`, and `authoring-agents.md:92`; switching off is criterion 3's and `render` criterion 4's, NOT this one's.
 - [ ] a test proves AN EMPTY SAME-NAMED OPERATOR FILE SWITCHES A BUILT-IN OFF: `instructions::compose` given an operator file named as a `BUILTIN` entry with an empty or whitespace body injects no section for either, every other section unchanged. This criterion OWNS `resolve_layers`' switched-off arm, its module-doc clause and `authoring-agents.md:85` and `:90`; replacing is criterion 2's, NOT this one's.
 - [ ] a test proves EVERY BUILT-IN'S STATE IS REPORTED: `instructions::render`, `shadow_advisories` (printed by `cmd_validate` with a success exit) and `instructions_in_force_line` name each built-in of a named-entry fixture as in force, replaced or switched off through `resolve_layers`. This criterion OWNS the three reporters, their call sites and `authoring-agents.md:94`; `compose` is criteria 2 and 3's, NOT this one's.
