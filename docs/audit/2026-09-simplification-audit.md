@@ -1683,11 +1683,11 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 
 ## 2. Duplication Catalog
 
-211 clusters (1446 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+211 clusters (1447 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
-- **Command::new call sites**: 90 site(s) - `dup-627b07ce0d38`
+- **Command::new call sites**: 91 site(s) - `dup-2b3843316743`
 - **/proc-path string literals**: 55 site(s) - `dup-99a8136efbc4`
 - **sqlite Connection::open call sites**: 59 site(s) - `dup-3cd6f7f2cb9b`
 - **.rigger-path string literals**: 608 site(s) - `dup-39249656bd34`
@@ -1922,11 +1922,11 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:16032-16038` `spawned`
 - `crates/rigger-domain/src/eventstore.rs:496-498` `covers`
 
-#### `dup-627b07ce0d38` (semantic, 90 sites)
+#### `dup-2b3843316743` (semantic, 91 sites)
 
 Proposed home: `a single injected process-spawn port every Command::new site routes through instead of constructing its own Command`
 
-mandatory sweep: Command::new call sites - 90 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+mandatory sweep: Command::new call sites - 91 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-conductor/src/conductor.rs:16171-16171` `Command::new`
 - `crates/rigger-conductor/src/conductor.rs:16176-16176` `Command::new`
@@ -1952,6 +1952,7 @@ mandatory sweep: Command::new call sites - 90 site(s), collected mechanically re
 - `src/cli/run.rs:3331-3331` `Command::new`
 - `src/cli/run.rs:3400-3400` `Command::new`
 - `src/cli/setup.rs:3844-3844` `Command::new`
+- `src/cli/setup.rs:4132-4132` `Command::new`
 - `src/cli/validate.rs:1452-1452` `Command::new`
 - `src/cli/validate.rs:1731-1731` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2028,22 +2029,22 @@ mandatory sweep: .rigger-path string literals - 608 site(s), collected mechanica
 - `crates/rigger-conductor/src/conductor.rs:18940-18940` `"the repo's own .rigger config must load"`
 - `crates/rigger-conductor/src/conductor.rs:40105-40105` `"{root}/.rigger/project.id"`
 - `crates/rigger-conductor/src/conductor.rs:40107-40107` `"{root}/.rigger/graph.db"`
-- `crates/rigger-config-files/src/config_store.rs:377-377` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:378-378` `"create .rigger/instructions"`
-- `crates/rigger-config-files/src/config_store.rs:431-431` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:432-432` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:456-456` `"../../examples/demo/.rigger"`
-- `crates/rigger-config-files/src/config_store.rs:457-457` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:1535-1535` `".rigger/agents/sdet-author.md"`
-- `crates/rigger-config-files/src/config_store.rs:1536-1536` `"the shipped .rigger/agents/sdet-author.md must exist"`
-- `crates/rigger-config-files/src/config_store.rs:1563-1563` `".rigger/agents/sdet.md"`
-- `crates/rigger-config-files/src/config_store.rs:1564-1564` `"the shipped .rigger/agents/sdet.md must exist"`
-- `crates/rigger-config-files/src/config_store.rs:2015-2015` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:2016-2016` `"create .rigger dir"`
-- `crates/rigger-config-files/src/config_store.rs:2048-2048` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:2049-2049` `"create .rigger dir"`
-- `crates/rigger-config-files/src/config_store.rs:2070-2070` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:2071-2071` `"create .rigger dir"`
+- `crates/rigger-config-files/src/config_store.rs:367-367` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:368-368` `"create .rigger/instructions"`
+- `crates/rigger-config-files/src/config_store.rs:421-421` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:422-422` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:446-446` `"../../examples/demo/.rigger"`
+- `crates/rigger-config-files/src/config_store.rs:447-447` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:1506-1506` `".rigger/agents/sdet-author.md"`
+- `crates/rigger-config-files/src/config_store.rs:1507-1507` `"the shipped .rigger/agents/sdet-author.md must exist"`
+- `crates/rigger-config-files/src/config_store.rs:1534-1534` `".rigger/agents/sdet.md"`
+- `crates/rigger-config-files/src/config_store.rs:1535-1535` `"the shipped .rigger/agents/sdet.md must exist"`
+- `crates/rigger-config-files/src/config_store.rs:1986-1986` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:1987-1987` `"create .rigger dir"`
+- `crates/rigger-config-files/src/config_store.rs:2019-2019` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:2020-2020` `"create .rigger dir"`
+- `crates/rigger-config-files/src/config_store.rs:2041-2041` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:2042-2042` `"create .rigger dir"`
 - `crates/rigger-dash/src/dash.rs:3932-3932` `"{root}/.rigger/events.db"`
 - `crates/rigger-dash/src/dash.rs:3983-3983` `"/.rigger/events.db"`
 - `crates/rigger-domain/src/config.rs:20-20` `".rigger"`
@@ -2432,8 +2433,8 @@ __END__
 - `src/cli/validate.rs:1303-1303` `".rigger/agents/sdet.md"`
 - `src/cli/validate.rs:1304-1304` `".rigger/agents/new.md"`
 - `src/cli/validate.rs:1305-1305` `".rigger/agents/gone.md"`
-- `src/cli/validate.rs:2197-2197` `".rigger"`
-- `src/cli/validate.rs:2251-2251` `".rigger"`
+- `src/cli/validate.rs:2195-2195` `".rigger"`
+- `src/cli/validate.rs:2249-2249` `".rigger"`
 - `src/main.rs:181-181` `"rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
 usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
@@ -3258,7 +3259,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-config-fi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-config-files/src/config_store.rs:754-787` `literal_is_emit_payload_binds_only_an_abutting_payload_or_emit_word`
+- `crates/rigger-config-files/src/config_store.rs:744-777` `literal_is_emit_payload_binds_only_an_abutting_payload_or_emit_word`
 - `src/cli/mod.rs:6392-6398` `is_uuid8_accepts_exactly_eight_hex_digits`
 - `tests/simplification_audit.rs:8530-8538` `looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring`
 
@@ -3268,8 +3269,8 @@ Proposed home: `config_store::support (consolidate these 2 sites into one functi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-config-files/src/config_store.rs:949-956` `parses_agent_frontmatter_and_body`
-- `crates/rigger-config-files/src/config_store.rs:1304-1313` `model_ladder_parses_from_frontmatter`
+- `crates/rigger-config-files/src/config_store.rs:939-946` `parses_agent_frontmatter_and_body`
+- `crates/rigger-config-files/src/config_store.rs:1294-1303` `model_ladder_parses_from_frontmatter`
 
 #### `dup-360e8b87398d` (exact, 4 sites)
 
@@ -3277,7 +3278,7 @@ Proposed home: `a new shared module (sites span 4 files: crates/rigger-config-fi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-config-files/src/config_store.rs:959-961` `rejects_missing_frontmatter`
+- `crates/rigger-config-files/src/config_store.rs:949-951` `rejects_missing_frontmatter`
 - `crates/rigger-domain/src/contextgraph/query.rs:2061-2063` `graph_load_rejects_malformed_json_without_panicking`
 - `crates/rigger-domain/src/spec.rs:1275-1277` `empty_when_no_criteria`
 - `src/cli/validate.rs:1313-1315` `dirty_tracked_paths_on_a_clean_tree_is_empty`
@@ -3702,7 +3703,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/config.rs:1471-1473` `is_word_byte`
+- `crates/rigger-domain/src/config.rs:1461-1463` `is_word_byte`
 - `tests/common/source_audit.rs:198-200` `is_ident_char`
 - `tests/no_os_kill_audit.rs:59-61` `is_word_char`
 
@@ -4509,7 +4510,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/guard.rs, src/c
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/guard.rs:1279-1281` `parse_guard_write_roots_requires_at_least_one`
-- `src/cli/validate.rs:1977-1979` `order_signature_advisories_is_empty_when_no_signatures_are_given`
+- `src/cli/validate.rs:1975-1977` `order_signature_advisories_is_empty_when_no_signatures_are_given`
 
 #### `dup-ffc17308c029` (near, 5 sites)
 
@@ -5272,7 +5273,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9444 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9442 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4996-5037` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15076-15098` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5554,10 +5555,10 @@ Each entry is one of section 2's five named mandatory sweeps - collected mechani
 - Risk: medium - the largest surface-area sweep in this plan by site count, even though each individual site is trivial; needs a mechanical rewrite pass plus a full-suite green run, not hand-editing 608 sites.
 - Unblocks: the biggest single site-count reduction available anywhere in the duplication catalog.
 
-#### 10. The 90 `Command::new` call sites (`dup-627b07ce0d38`) - production spawns already route through one process-spawn port
+#### 10. The 91 `Command::new` call sites (`dup-2b3843316743`) - production spawns already route through one process-spawn port
 
-- Scope: every production spawn routes through `crates/rigger-process/src/subprocess.rs` (the cluster's own `proposed_home`), and the audit's `the_process_spawn_port_is_the_only_production_command_new_caller` gate refuses a new direct construction anywhere else in production code. The 1 site(s) in `crates/rigger-process/src/subprocess.rs` are the port itself; the other 89 are test code spawning git, shells and the product binary.
-- Files: `crates/rigger-process/src/subprocess.rs` plus test code in `src/` and `tests/` - full site list in `docs/audit/duplication-catalog.json` under `dup-627b07ce0d38`.
+- Scope: every production spawn routes through `crates/rigger-process/src/subprocess.rs` (the cluster's own `proposed_home`), and the audit's `the_process_spawn_port_is_the_only_production_command_new_caller` gate refuses a new direct construction anywhere else in production code. The 1 site(s) in `crates/rigger-process/src/subprocess.rs` are the port itself; the other 90 are test code spawning git, shells and the product binary.
+- Files: `crates/rigger-process/src/subprocess.rs` plus test code in `src/` and `tests/` - full site list in `docs/audit/duplication-catalog.json` under `dup-2b3843316743`.
 - Expected line delta: none left in production; a test site that repeats a shared fixture's spawn routes through that fixture instead.
 - Risk: low - no production spawn is left to move, and the gate keeps it that way.
 - Unblocks: the next process-spawning concern added anywhere in the crate reuses the port instead of constructing its own `Command`.
@@ -5629,7 +5630,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 18. Sweep the remaining 142 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 211 clusters, 62 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-627b07ce0d38`, `dup-39249656bd34`, `dup-3cd6f7f2cb9b`, `dup-99a8136efbc4`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-2b8f802a2dc3`); the remaining 142 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-f876dbc68da1`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 211 clusters, 62 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-2b3843316743`, `dup-39249656bd34`, `dup-3cd6f7f2cb9b`, `dup-99a8136efbc4`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-2b8f802a2dc3`); the remaining 142 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-f876dbc68da1`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.
