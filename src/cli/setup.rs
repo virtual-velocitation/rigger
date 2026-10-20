@@ -3455,6 +3455,130 @@ mod tests {
         all
     }
 
+    /// Every language marker `text` spells under spec 120's MARKERS rule, the word markers first
+    /// and then the substring markers, each in list order. The text is lower-cased; a word marker
+    /// hits when it, or it followed by `s`, equals a token (a run of letters, digits and `_`), or,
+    /// unless it is a whole-token marker, equals any `_`-separated part of one; a syntax or
+    /// phrase marker hits as a substring.
+    fn language_marker_hits(text: &str) -> Vec<&'static str> {
+        const WORDS: &[&str] = &[
+            "fn",
+            "crate",
+            "impl",
+            "trait",
+            "match",
+            "matches",
+            "cargo",
+            "clippy",
+            "rustfmt",
+            "wasm",
+            "rs",
+            "rust",
+            "rustdoc",
+            "create_dir_all",
+            "for_extension",
+        ];
+        const WHOLE_TOKEN_WORDS: &[&str] = &["create_dir_all", "for_extension"];
+        const SUBSTRINGS: &[&str] = &[
+            "#[",
+            "//!",
+            "cargo.toml",
+            "the sdet lens",
+            "the architecture lens",
+            "feature lane",
+        ];
+        let text = text.to_lowercase();
+        let tokens: Vec<&str> = text
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .filter(|t| !t.is_empty())
+            .collect();
+        let word_hits = |marker: &str| {
+            tokens.iter().any(|token| {
+                *token == marker
+                    || token.strip_suffix('s') == Some(marker)
+                    || (!WHOLE_TOKEN_WORDS.contains(&marker)
+                        && token.split('_').any(|part| part == marker))
+            })
+        };
+        WORDS
+            .iter()
+            .copied()
+            .filter(|marker| word_hits(marker))
+            .chain(
+                SUBSTRINGS
+                    .iter()
+                    .copied()
+                    .filter(|marker| text.contains(marker)),
+            )
+            .collect()
+    }
+
+    /// The MARKERS rule itself: a word marker hits as a token, as its plural or as a part of a
+    /// `_`-joined token, never inside a longer word, a whole-token marker never as a part, and a
+    /// syntax or phrase marker as a substring of the lower-cased text.
+    #[test]
+    fn a_language_marker_hits_as_a_token_its_plural_or_a_part_and_never_inside_a_word() {
+        assert_eq!(
+            language_marker_hits(
+                "an implementation, a portrait, a matched crater, fnss, a create_dir_all_x, a \
+                 for_extension_y and a feature-lane"
+            ),
+            Vec::<&str>::new(),
+            "a marker inside a longer word, a doubled plural, a whole-token marker as a part and \
+             a hyphenated phrase are no hits"
+        );
+        assert_eq!(
+            language_marker_hits("Fn fns, `trait`, crates"),
+            ["fn", "crate", "trait"],
+            "a word marker hits as a token or its plural, case-folded"
+        );
+        assert_eq!(
+            language_marker_hits("CARGO_TARGET_DIR, file.rs and for_extension(\"rs\")"),
+            ["cargo", "rs", "for_extension"],
+            "a word marker hits as a part of a `_`-joined token, and a whole-token marker whole"
+        );
+        assert_eq!(
+            language_marker_hits(
+                "#[test] //! Cargo.toml the SDET lens, the Architecture lens, any feature lane"
+            ),
+            [
+                "cargo",
+                "#[",
+                "//!",
+                "cargo.toml",
+                "the sdet lens",
+                "the architecture lens",
+                "feature lane"
+            ],
+            "a syntax or phrase marker hits as a substring of the lower-cased text"
+        );
+    }
+
+    /// Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and the reviewer
+    /// discipline, read through the shipped-text helper, spell no marker of the MARKERS rule.
+    #[test]
+    fn the_built_in_layer_and_the_reviewer_discipline_name_no_language() {
+        let texts: Vec<(String, String)> = every_shipped_agent_text()
+            .into_iter()
+            .filter(|(at, _)| at.starts_with("BUILTIN ") || at == "REVIEWER_DISCIPLINE")
+            .collect();
+        assert_eq!(
+            texts.len(),
+            instructions::BUILTIN.len() + 1,
+            "every built-in body and the reviewer discipline are read"
+        );
+        let hits: Vec<(&str, Vec<&str>)> = texts
+            .iter()
+            .map(|(at, text)| (at.as_str(), language_marker_hits(text)))
+            .filter(|(_, markers)| !markers.is_empty())
+            .collect();
+        assert_eq!(
+            hits,
+            Vec::<(&str, Vec<&str>)>::new(),
+            "the built-in layer and the reviewer discipline name no language"
+        );
+    }
+
     /// The section of a persona `text` that opens at `heading`, up to the next `## ` heading or
     /// the end of the file.
     fn persona_section<'a>(text: &'a str, heading: &str) -> &'a str {
