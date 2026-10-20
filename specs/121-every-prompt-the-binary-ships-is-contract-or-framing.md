@@ -171,7 +171,9 @@ creates no `.claude/` directory (it never reaches the settings installer's direc
 reports `AlreadyCurrent`; a removal that changes the file reports `Refreshed`;
 `hooks::carries_session_settings` takes the same flag, which its caller (`src/cli/validate.rs:824`)
 reads from the loaded config; `session_hooks_advisory` (`src/cli/validate.rs:822-834`) names the
-grep-guard among the missing hooks only when `defaults.grep_guard` is declared. A spawn's flag comes
+grep-guard among the missing hooks only when `defaults.grep_guard` is declared, and names a present
+`GREP_GUARD_COMMAND` hook as stale when the key is false, telling the operator to run `rigger
+setup`; criterion 2 owns both. A spawn's flag comes
 from SPAWN HOST RESOLUTION, never set by hand;
 `spawn_config_args` passes it through. `cmd_grep_guard` reads no key: a `settings.json` written while
 the key was true keeps denying after the key flips false until the next `rigger setup`, the operator's
@@ -179,61 +181,70 @@ standing step after any workflow key change; accepted. The hook mechanism, `rigg
 `GREP_GUARD_MESSAGE` stay. `SCAFFOLD_WORKFLOW` declares `grep_guard: true` under `defaults`, so a
 freshly scaffolded project behaves as at HEAD (SCAFFOLD DEFAULTS).
 
-**SPAWN HOST RESOLUTION, decided here (criteria 2 and 3).** The two host values a headless spawn
-needs, the guard flag and the helper root, are resolved once, in one function beside `SpawnOpts`
-(`crates/rigger-domain/src/agent.rs:64`): `agent::SpawnHost::resolve`, returning a struct of
-`grep_guard: bool` (from `cfg.workflow.defaults.grep_guard`) and `helper_root: String` (the repository
-root). Criterion 2 lands `SpawnHost::resolve(cfg: &Config) -> SpawnHost` with the `grep_guard` field
-only, so no unit lands a parameter nothing reads; criterion 3 adds the `repo_root: &str` parameter
-and the `helper_root` field it fills. `SpawnOpts` gains one field, `host: SpawnHost`, and every
-construction sets it only from that function's result, never a field by hand: the five conductor
-sites (`conductor.rs:4519`, :5758, :6384, :8011, :10760, through one `RunCtx` accessor returning
-`SpawnHost::resolve(&self.cfg)`, to which criterion 3 adds `&self.deps.repo`), `rigger critique`'s
-(`src/cli/critique.rs:183`, with `self.cfg`; criterion 3 adds `self.root`) and the canary's
-(`canary_opts`, `canary_store.rs:571-577`; criterion 2 leaves `run_canary` unchanged, and criterion 3
-gives it the repository root parameter, which its caller `src/cli/eval.rs:228` passes as the directory
-it loaded the config from). These are every
-`SpawnOpts { .. }` construction in production code at 3cee73df. `SpawnHost` derives no `Default`
-and its fields are `pub`; `SpawnOpts` loses its `Default` derive (`agent.rs:63`) and gains
-`SpawnOpts::new(host: SpawnHost) -> SpawnOpts`, filling every other field with its former default, so
-every construction spreads `..SpawnOpts::new(host)` and the compiler enumerates every site, tests
-included (a test builds its host as a struct literal; criterion 3 adds `helper_root` to every such
-literal). A test asserts that no production line outside the body of `SpawnHost::resolve` (the lines
-from `fn resolve` to its closing brace at the same indent, exempt) constructs a `SpawnHost` literal (a production reader accesses the fields, `host.grep_guard` and
-`host.helper_root`, and never destructures a `SpawnHost`, so every match is a construction): it matches `SpawnHost {` followed, after optional whitespace or a
+**SPAWN HOST RESOLUTION, decided here (criteria 2 and 3).** The host values a headless spawn
+needs, the guard flag and the helper texts, are resolved by one function,
+`rigger_driver::hooks::resolve_spawn_host`, into one value, `agent::SpawnHost`, a struct beside
+`SpawnOpts` (`crates/rigger-domain/src/agent.rs:64`) of `grep_guard: bool` (from
+`defaults.grep_guard`) and `helpers: Vec<(String, String)>` (name, text). The resolver lives in
+`rigger-driver` beside `hooks::resolved_helpers` because the domain crate reaches neither the loaded
+`Config` (`rigger-config-files`) nor the filesystem; it takes `&Defaults`
+(`crates/rigger-domain/src/config.rs:523`), which every caller holds as `cfg.workflow.defaults`.
+Criterion 2 lands `resolve_spawn_host(defaults: &Defaults) -> SpawnHost` with the `grep_guard` field
+only, so no unit lands a parameter nothing reads; criterion 3 adds the `repo_root: &Path` parameter,
+consumed inside the resolver (the root is no field), and the `helpers` field it fills once through
+`hooks::resolved_helpers(repo_root)`, the same value `definition_hash` folds, the return becoming
+`Result<SpawnHost, Error>`: a copy that cannot be read or parsed fails the resolver, the
+infrastructure fault THE OPERATOR'S HELPER COPY decides. `SpawnOpts` gains one field, `host:
+SpawnHost`, and every construction sets it only from a resolved value, never a field by hand: the
+five conductor sites (`conductor.rs:4519`, :5758, :6384, :8011, :10760) through one `RunCtx` accessor
+returning the value the step resolved once, at its drift check, so every spawn the step parks or runs
+carries that one value (criterion 3 adds the root, `&self.deps.repo`); `rigger critique`'s
+(`src/cli/critique.rs:183`) and the canary's (`canary_opts`, `canary_store.rs:571-577`), which each
+resolve once at their start (criterion 2 from the loaded defaults; criterion 3 adds `self.root` for
+the critic and gives `run_canary` the repository root parameter, which its caller `src/cli/eval.rs:228`
+passes as the directory it loaded the config from). These are every `SpawnOpts { .. }` construction in
+production code at 3cee73df. `SpawnHost` derives no `Default` and its fields are `pub`; `SpawnOpts`
+loses its `Default` derive (`agent.rs:63`) and gains `SpawnOpts::new(host: SpawnHost) -> SpawnOpts`,
+filling every other field with its former default, so every construction spreads
+`..SpawnOpts::new(host)` and the compiler enumerates every site, tests included (a test builds its
+host as a struct literal; criterion 3 adds `helpers` to every such literal). A test asserts that no
+production line outside the body of `resolve_spawn_host` (the lines from `fn resolve_spawn_host` to
+its closing brace at the same indent, exempt) constructs a `SpawnHost` literal (a production reader
+accesses the fields, `host.grep_guard` and `host.helpers`, and never destructures a `SpawnHost`, so
+every match is a construction): it matches `SpawnHost {` followed, after optional whitespace or a
 newline, by a field name or `..`, and never preceded on its line by `->`, `struct ` or `impl `, so
-the declaration, the impl headers and the `-> SpawnHost {` signatures of `resolve` and the `RunCtx`
-accessor are exempt by that rule. Criterion 2 owns `SpawnHost` with its `grep_guard` field,
-`resolve`, `SpawnOpts.host`, `SpawnOpts::new`, the edit of every construction and that assertion;
-criterion 3 adds `helper_root` to `SpawnHost`, the `repo_root` parameter with every argument passing
-it, and its two readers, `spawn_config_args` (the `--agents` JSON) and `allowed_tools_args`
-(`crates/rigger-driver/src/driver/mod.rs:45-55`, the tool pre-approval), so 3 needs 2. Each criterion's test proves the critic's and the canary's spawns
-carry the resolved value.
+the declaration, the impl headers and the resolver's and the `RunCtx` accessor's signatures are
+exempt by that rule. Criterion 2 owns `SpawnHost` with its `grep_guard` field, `resolve_spawn_host`,
+`SpawnOpts.host`, `SpawnOpts::new`, the edit of every construction and that assertion; criterion 3
+owns `helpers`, its filling (the root parameter with every argument passing it, the step's one
+resolution at the drift check) and both readers, `spawn_config_args` (the `--agents` JSON from
+`host.helpers`) and `allowed_tools_args` (`crates/rigger-driver/src/driver/mod.rs:45-55`, the tool
+pre-approval from the same value), so 3 needs 2. Each criterion's test proves the critic's and the
+canary's spawns carry the resolved value.
 
 **THE OPERATOR'S HELPER COPY IS THE DEFINITION, decided here (criterion 3).** One function,
 `hooks::resolved_helpers(root: &Path) -> Result<Vec<(String, String)>, Error>`, returns each
 `HELPER_AGENTS` entry's text: `<root>/.claude/agents/<file>` when that file exists, the embedded text
-otherwise. `helper_agents_json` and `helper_mcp_tools` (`hooks.rs:74`, :110) both take the root and
-read it: `spawn_config_args` builds `--agents` from `helper_agents_json(root)`, and `allowed_tools_args`,
-the second reader of `SpawnOpts.host.helper_root`, takes the root and builds the pre-approval from
-`helper_mcp_tools(root)`; both `build_args` callers, the headless host driver module of `rigger-driver`
-and the cli host (`driver/cli.rs:273`, :288), pass the spawn's root, so the `--agents` JSON and the
-tool pre-approval derive from the same copy. `root` is
-`SpawnOpts.host.helper_root` (SPAWN HOST RESOLUTION; for the conductor `Deps::repo`,
-`conductor.rs:1844`, the repository root the run drives): the operator's checkout is the one root
-every spawn reads, and a helper copy committed into a unit worktree is ignored (this repository
-tracks `.claude/agents/`, `.gitignore:50`, and `hooks.rs:43` embeds the tracked file, so a worktree
-copy is only ever the operator's own text at an older commit); an empty root reads the embedded
-text. A present
-file that cannot be read or does not parse as a helper definition fails the spawn with an error
-naming the file, an infrastructure fault that charges no remediation attempt; `rigger validate` reports the same error. Each
-operator copy that is PRESENT folds into `definition_hash` (`src/cli/mod.rs:974`) after the agent
-definitions; an absent copy folds nothing, so the hash of a project without copies is unchanged and
-it sees no drift. A mid-run edit of an operator copy is a definition drift that halts the step and resumes with
-`--rebase-definition`, as a persona edit does; criterion 3 owns the fold and its test. The step resolves the helpers once, at its drift check,
-and passes those texts to every spawn it parks or runs, so the hash and the spawns read one
-resolution; criterion 3 owns it. `HELPER_AGENTS`
-stays as the scaffold's write-once seed (`setup.rs:243-244`) and the default.
+otherwise; `resolve_spawn_host` calls it once and carries its value as `SpawnHost.helpers`, the one
+carrier. `helper_agents_json` and `helper_mcp_tools` (`hooks.rs:74`, :110) take that value:
+`spawn_config_args` builds `--agents` from `host.helpers`, and `allowed_tools_args` builds the
+pre-approval from the same value; both `build_args` callers, the headless host driver module of
+`rigger-driver` and the cli host (`driver/cli.rs:273`, :288), pass the spawn's `SpawnOpts.host`, so
+the `--agents` JSON and the tool pre-approval derive from one resolution. The root is the repository
+root the run drives (for the conductor `Deps::repo`, `conductor.rs:1844`): the operator's checkout is
+the one root every spawn reads, and a helper copy committed into a unit worktree is ignored (this
+repository tracks `.claude/agents/`, `.gitignore:50`, and `hooks.rs:43` embeds the tracked file, so a
+worktree copy is only ever the operator's own text at an older commit); an empty root reads the
+embedded text. A present file that cannot be read or does not parse as a helper definition fails
+`resolve_spawn_host` with an error naming the file, an infrastructure fault that charges no
+remediation attempt; `rigger validate` reports the same error. Each operator copy that is PRESENT
+folds into `definition_hash` (`src/cli/mod.rs:974`) after the agent definitions, from the same
+resolution; an absent copy folds nothing, so the hash of a project without copies is unchanged and it
+sees no drift. A mid-run edit of an operator copy is a definition drift that halts the step and
+resumes with `--rebase-definition`, as a persona edit does. The step resolves once, at its drift
+check, and that one value is both the hash's input and every spawn's `host.helpers`; criterion 3
+owns the fold, the one resolution and their tests. `HELPER_AGENTS` stays as the scaffold's
+write-once seed (`setup.rs:243-244`) and the default.
 
 **THE COMMUNICATION CADENCE HAS ONE HOME, decided here (criterion 4).** The cadence clauses are
 cut, the shapes and nouns kept: `EMIT_PROTOCOL` reads "Record each decision you make by calling the
@@ -311,7 +322,7 @@ to plan moves.
 
 KEPT (FRAMING), each as at HEAD unless reworded here: "You are the planner. The conductor has ALREADY
 created one baseline implement unit per acceptance criterion below - the spec is decomposed by
-construction."; "Your job is to REFINE that baseline, not to re-decompose it:"; the split bullet's
+construction."; "Your job is to REFINE that baseline, not to re-decompose it."; the split bullet's
 contract, reworded as its own sentence after the `{unit_size_cap}` slot: "Each part of a split echoes
 the split criterion's id and ends its `criterion` text with an OWNS sentence naming its part (the conductor
 keeps that sentence after the criterion's exact text as that unit's contract)."; "Each criterion below
@@ -369,9 +380,10 @@ DEFAULTS); this repository's workflow declares `test_author: sdet-author` (OPERA
 
 **THE WORKFLOW SCRIPT NAMES NO TOOLCHAIN, decided here (criterion 11).** `WaveItem` (`spawn.rs:682`)
 gains `build_cache_env: String`, always on the wire and non-null on every wave item (it is the
-constant, decoupled from the cache path), its value the one constant `spawn::BUILD_CACHE_ENV`
-that `RunCtx::spawn_env` (`conductor.rs:8461-8464`) and the gate runner (`ExecRunner::run`,
-`crates/rigger-gates-shell/src/gate.rs:655-656`) also read, the variable's name having one home; the
+constant, decoupled from the cache path), its value the one constant `spawn::BUILD_CACHE_ENV`, which
+criterion 11 adds (it does not exist at HEAD) and makes `RunCtx::spawn_env` (`conductor.rs:8464`)
+and both gate-runner sites (`ExecRunner::run`, `crates/rigger-gates-shell/src/gate.rs:608`, :656)
+read, value unchanged, the variable's name having one home; the
 script's STEP schema (`rigger.js:194`, :202) lists it as required, `'string'`. The wire field
 `WaveItem::cargo_target_dir` (`spawn.rs:728`) is renamed `build_cache_dir`, and with it its source
 `SpawnRequest::cargo_target_dir` (`spawn.rs:479`), so `cargo_target_dir` is retired everywhere: the
@@ -409,17 +421,25 @@ the shared cache it resolves from config (`shared_build_cache_paths`, `conductor
 holds or was never requested, while its degraded branch (a guard requested whose probe failed,
 `crates/rigger-gates-shell/src/gate.rs:651-656`) today withholds it and falls back to the ambient
 variable, which only the courier's prefix fills (`${REPO}/.rigger/tmp/cargo-target`, outside the
-scratch root, whose default is the cache home). The binary owns that branch, and never by building
-elsewhere: criterion 11's degraded branch of `ExecRunner::run` (a guard requested whose probe failed)
-FAILS THE GATE, its output naming the probe's error (the guard path and the OS error), and builds
-nothing anywhere: not into the gated tree, the shared cache (which spec 77 criterion 5's round-3 fix
-withheld from an unguarded build on purpose, `gate.rs:634-654`) or the ambient directory. A failed
-probe is an environment fault the operator must see, never a build hidden in a cold cache. A gate run
-that requests no guard and names no directory inherits the ambient environment; no production caller
-does this (every conductor call hands `build_cache_dir` whenever `target_dir` is empty): the accepted
-residue, its behaviour unchanged, and criterion 11 owns no existing test for that case. So the courier
-passes no cache prefix. Criterion 11 owns the branch edit and its test: a forced guard-probe failure
-fails the gate with the probe error in its output and leaves no build directory behind. The script's comment lines are not prompt
+scratch root, whose default is the cache home). The failure policy rides with criterion 11 because dropping the courier prefix leaves the degraded
+branch no ambient fallback, so the unit that drops the prefix must decide that branch. A failed guard
+probe (a guard requested whose probe failed) is an INFRASTRUCTURE FAULT, not a gate failure:
+`ExecRunner::run` returns it as a distinct outcome, `GateResult` (`crates/rigger-domain/src/gate.rs:121`)
+gaining `infra_fault: Option<String>` carrying the probe error (the guard path and the OS error), and
+runs and builds nothing anywhere: not into the gated tree, the shared cache (which spec 77 criterion
+5's round-3 fix withheld from an unguarded build on purpose, `gate.rs:634-654`) or the ambient
+directory. The step then halts through the existing halt channel: `RunCtx::halt_reason`
+(`conductor.rs:3960`), which the printed `Step.halted` carries to the driver and the operator, gains
+that fault as an in-process halt reason set the way the budget breaker sets `budget_halted`
+(`conductor.rs:3925`, the precedent, as hung liveness is for `Step.halted` in `src/cli/run.rs:879-882`);
+no remediation attempt is charged, no `UnitFailed` and no `PriorFailure` evidence is written, and no
+gate verdict is recorded. A gate run that requests no guard and names no directory inherits the
+ambient environment; no production caller does this (every conductor call hands `build_cache_dir`
+whenever `target_dir` is empty): the accepted residue, its behaviour unchanged, and criterion 11 owns
+no existing test for that case. So the courier passes no cache prefix. Criterion 11 owns the branch,
+the `infra_fault` outcome, the halt reason and their test: a forced guard-probe failure returns the
+distinct outcome with the probe error, records no gate verdict, halts the step naming the error and
+leaves no build directory behind. The script's comment lines are not prompt
 text and stay. Criterion 11 edits the pins at `src/cli/mod.rs:5437-5450` that quote the old text.
 
 **THE SCRATCH TOOL NAMES NO TOOLCHAIN, decided here (criterion 12).** The `rigger_scratch`
@@ -571,11 +591,13 @@ doc comment opens with; a surface with two classes has one row per class.
 | conductor | `task_block` | the unit's criterion | FRAMING |
 | conductor | `PriorFailure::block` | the failure facts | FRAMING |
 | conductor | `PriorFailure::block` | the PATTERN line's record id | CONTRACT |
-| conductor | `ReviewRound::block` | the round facts and the PATTERN line naming the audit record | FRAMING |
+| conductor | `ReviewRound::block` | the round facts | FRAMING |
+| conductor | `ReviewRound::block` | the PATTERN line's record id | CONTRACT |
 | conductor | `gate_evidence_block` | its rows and framing sentence | FRAMING |
 | conductor | `conflict_resolution_prompt`, `later_attempt_block` | the conflict and delta facts, the two continuation imperatives | FRAMING |
 | conductor | `DOC_ONLY_ROUND` | the fact | FRAMING |
 | conductor | `write_peers_pointer` | the retrieval facts | FRAMING |
+| conductor | `write_lookup_pointer` | the lead-in "The knowledge graph answers lookups through three verbs:" | FRAMING |
 | conductor | `write_lookup_pointer` | the three verbs and their jobs | CONTRACT |
 | conductor | the DAG critique prompt, `re_plan` | the DAG, the cap framing, the critique's findings | FRAMING |
 | conductor | the DAG critique prompt | the verdict and cause contracts | CONTRACT |
@@ -645,7 +667,11 @@ refreshes the binary, then adds `grep_guard: true`, `max_unit_added_lines: 3000`
 sdet-author` under this repository's `defaults`, then runs `rigger setup` (which with the key
 declared keeps the guard). `.rigger/docs-overlay.yml` (criterion 13) binds the same way: a pre-121
 binary's `DocsOverlay` refuses the unknown `global_constraints` field (`deny_unknown_fields`), so no
-`rigger setup` runs with a pre-121 binary after the merge; the refresh comes first. Persona edits (criteria 6, 7, 8) change files `definition_hash` folds
+`rigger setup` runs with a pre-121 binary from criterion 13's integration on `rigger-run` until the
+merge and the refresh; the refresh comes first. The refresh's `rigger setup` reinstalls the embedded
+workflow script before any relaunch, so a run resumed after the refresh runs under the refreshed
+script and no pre-rename reader of the wire field remains; `cargo_target_dir` is not kept on the wire
+(the serde alias reads recorded requests only). Persona edits (criteria 6, 7, 8) change files `definition_hash` folds
 (`src/cli/mod.rs:974`); each such unit's integration is a definition drift the operator resumes
 with `--rebase-definition`, as for spec 120's criterion 15. This repository tracks its helper copies
 (`.claude/agents/lookup.md`, `verify.md`), so their fold changes its definition hash: its paused run
@@ -667,7 +693,7 @@ relaunches once with `--rebase-definition` after the refresh.
 | `grep_guard` | empty | no `settings.json` and the key off: nothing read or written, no `.claude/` directory created, `AlreadyCurrent` |
 | `grep_guard` | drifted matcher | an installed guard hook whose matcher differs from `GREP_GUARD_MATCHER`: an install with the key true replaces it, so exactly one entry with the current matcher remains |
 | `grep_guard` | reverted | the key flipped false after a setup: the installed hook denies until the next `rigger setup`; accepted |
-| spawn host | concurrent, crash-resume, cold start | `SpawnHost::resolve` is pure over the loaded `Config` and the root; every process resolves again |
+| spawn host | concurrent, crash-resume, cold start | `resolve_spawn_host` reads the loaded defaults and the root once per step, critic run or canary run; every process resolves again |
 | helper copy | empty | no `.claude/agents/` file: the embedded text |
 | helper copy | DROPPED | an operator copy deleted from the operator's checkout mid-run: the copy present at the pin folded into `definition_hash` and is gone, so the next step halts on drift; resumed with `--rebase-definition`, the next spawn reads the embedded text, whatever a unit worktree still carries |
 | helper copy | existing pinned run | a run pinned before the refresh in a project with a copy present resumes once with `--rebase-definition`; without a copy it resumes unchanged |
@@ -679,7 +705,7 @@ relaunches once with `--rebase-definition` after the refresh.
 | skill shadow | DROPPED | a project copy deleted: the next setup installs the shipped render |
 | overlay field | empty | absent or empty list: the generic step only |
 | scaffold implementer | existing data | an existing project's workflow and personas are write-once and stay; only a fresh `rigger init` gets the new ids |
-| gate cache | degraded guard | the gate fails naming the probe error; nothing builds into the gated tree, the shared cache or the ambient directory |
+| gate cache | degraded guard | an infrastructure fault: the step halts naming the probe error, no attempt charged, no gate verdict or `PriorFailure` written; nothing builds into the gated tree, the shared cache or the ambient directory |
 | gate cache | no guard, no directory | a gate run that requests no guard and names no directory inherits the ambient environment; no production caller does this; accepted residue |
 | renamed request field | existing store | a `SpawnRequested` recorded under `cargo_target_dir` deserializes through the serde alias with its cache path intact; replay unchanged |
 | `build_cache_env` | empty | never null: a wave item with no per-unit cache still carries the name, so SCRATCH POLICY's export sentence renders for every spawn, as at HEAD |
@@ -712,8 +738,7 @@ that sentence's persona home, since an existing project's write-once personas ne
 to the criterion EXCEPTIONS LIST names (1, 4, 5, 6, 7, 8, 9, 11, 12), and the emptied list with its
 lead-in sentence to 17.
 
-OUT OF SCOPE: the build-cache variable's value (`spawn::BUILD_CACHE_ENV`, read by `RunCtx::spawn_env`
-and the gate runner) and the
+OUT OF SCOPE: the build-cache variable's value (the constant itself is criterion 11's) and the
 grounder's Rust-only extraction, as spec 120 decides; the SessionStart hook mechanism (its `rigger prime` output's fixed texts are criterion 16's registry
 surfaces); the status line (`console::statusline`, `rigger status --line`), the editor's display,
 read by the operator and never by a spawn's model, so outside the Goal's claim;
@@ -741,7 +766,7 @@ LANDING-ORDER SIMULATION (every ordered pair sharing a surface):
   hits; 7 then renders the cap slot and places its moved sentence directly after 8's split sentence
   -> yes. 7 first: the split sentence it follows does not exist -> fixed by order (7 needs 8).
 - 2 then 3 (`SpawnHost`, `SpawnOpts`, `spawn_config_args`): 2 lands `SpawnHost` with `grep_guard`,
-  `resolve`, `SpawnOpts::new` and every construction; 3 adds `helper_root` and its readers -> yes. 3
+  `resolve_spawn_host`, `SpawnOpts::new` and every construction; 3 adds `helpers` and its readers -> yes. 3
   first: no `SpawnHost` to extend -> fixed by order (3 needs 2).
 - 6 and 10 (`spawn_sdet_author`): 6 first: its test spawns by the convention; 10 then adds
   `test_author` to that fixture, which it owns -> yes. 10 first: 6's test declares the key -> yes.
@@ -761,7 +786,7 @@ TEST PLACEMENT:
 | --- | --- |
 | 1 | `conductor.rs` tests (the pointer's text); `src/cli/setup.rs` tests through the shipped-text helper (the built-in's section) |
 | 2 | `crates/rigger-driver/src/hooks.rs` tests (merge with and without the flag); `src/cli/setup.rs` tests (`install_lookup_hook` install, remove, foreign hook kept, a drifted matcher replaced, no `.claude/` created with the key off); `crates/rigger-config-files/src/config_store.rs` (the key parses) |
-| 3 | `hooks.rs` tests over a temp root with and without an operator copy, a malformed copy; `driver/mod.rs` tests (`--agents` and the pre-approval from one copy); `src/cli/mod.rs` tests (`definition_hash` changes with an operator copy) |
+| 3 | `hooks.rs` tests over a temp root with and without an operator copy, a malformed copy failing `resolve_spawn_host`; `driver/mod.rs` tests (`--agents` and the pre-approval from one copy); `src/cli/mod.rs` tests (`definition_hash` changes with an operator copy) |
 | 4 | `conductor.rs` tests (`EMIT_PROTOCOL`, `review_protocol`, `DECISIONS_HEADER`); `src/cli/mod.rs` tests over `SHIM_MJS` |
 | 5 | `driver/cli.rs`, `mcpserver.rs` tests; `src/cli/mod.rs` tests over `RIGGER_WORKFLOW` and `SHIM_MJS`; `instructions.rs` tests (the built-in's bullet) |
 | 6 | `conductor.rs` tests (the doc-only sdet prompt); `src/cli/setup.rs` tests over the committed persona |
@@ -769,7 +794,7 @@ TEST PLACEMENT:
 | 8 | `conductor.rs` tests (`PLAN_PROTOCOL`); `src/cli/setup.rs` tests (persona and seed) |
 | 9 | `conductor.rs` tests (both PATTERN lines); `src/cli/setup.rs` tests (the built-in's bullet) |
 | 10 | `conductor.rs` tests (declared, absent with `sdet-author` defined, an undefined id refused); `config_store.rs` tests (the refusal) |
-| 11 | `spawn.rs` tests (the wire fields, the renamed `build_cache_dir`); `src/cli/mod.rs` tests over `RIGGER_WORKFLOW`; `gate.rs` tests (a forced guard-probe failure fails the gate with the probe error in its output and leaves no build directory behind); `spawn.rs` tests (a request recorded under `cargo_target_dir` deserializes with its cache path intact) |
+| 11 | `spawn.rs` tests (the wire fields, the renamed `build_cache_dir`); `src/cli/mod.rs` tests over `RIGGER_WORKFLOW`; `gate.rs` tests (a forced guard-probe failure returns the distinct `infra_fault` outcome with the probe error and leaves no build directory behind); `conductor.rs` tests (that outcome halts the step naming the error, with no gate verdict, no charged attempt and no `PriorFailure`); `spawn.rs` tests (a request recorded under `cargo_target_dir` deserializes with its cache path intact) |
 | 12 | `mcpserver.rs` tests |
 | 13 | `docs.rs` tests (the generic step); `src/cli/mod.rs` tests (`install_skills` with an overlay list) |
 | 14 | `src/cli/mod.rs` tests over a temp root (a shadow, a near name, a deleted shadow); a periphery test running the built binary's `setup` |
@@ -788,9 +813,9 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | Artifact | Owner |
 | --- | --- |
 | the pointer's framing paragraph, the Fan out section's two sentences and the cut of its "same rule" sentence | 1 |
-| `Defaults.grep_guard`, the flag's reading in `resolve`, `carries_session_settings`' flag, the `cmd_setup` workflow parse, `session_hooks_advisory`'s guard clause, the guard arms of `install_session_settings` and `install_lookup_hook` (the drifted-matcher replacement and the off-path's no-create read included), the scaffold's `grep_guard` line | 2 |
-| `hooks::resolved_helpers`, `SpawnHost.helper_root`, the `repo_root` parameter and every argument passing it (the `RunCtx` accessor, `critique.rs`, `run_canary` and its `eval.rs:228` caller, the test literals), its readers `spawn_config_args` and `allowed_tools_args` with both `build_args` callers, the `definition_hash` fold of each present copy, the validate check of the copies | 3 |
-| `SpawnHost` with `grep_guard`, `SpawnHost::resolve(cfg)`, `SpawnOpts.host`, `SpawnOpts::new`, every construction site's edit, the no-`SpawnHost {` assertion | 2 |
+| `Defaults.grep_guard`, the flag's reading in `resolve_spawn_host`, `carries_session_settings`' flag, the `cmd_setup` workflow parse, `session_hooks_advisory`'s guard clause and its stale-hook advice, the guard arms of `install_session_settings` and `install_lookup_hook` (the drifted-matcher replacement and the off-path's no-create read included), the scaffold's `grep_guard` line | 2 |
+| `hooks::resolved_helpers`, `SpawnHost.helpers` and its filling (the `repo_root` parameter and every argument passing it: the step's one resolution at the drift check, `critique.rs`, `run_canary` and its `eval.rs:228` caller, the test literals), its readers `spawn_config_args` and `allowed_tools_args` with both `build_args` callers, the `definition_hash` fold of each present copy, the validate check of the copies | 3 |
+| `SpawnHost` with `grep_guard`, `hooks::resolve_spawn_host(defaults)`, `SpawnOpts.host`, `SpawnOpts::new`, every construction site's edit, the no-`SpawnHost {` assertion | 2 |
 | the cut cadence clauses of `EMIT_PROTOCOL`, `review_protocol`, `DECISIONS_HEADER`, `renderPeers` | 4 |
 | the four hosts' progress texts, the `communication` built-in's progress bullet, the extended spec-120 criterion 14 body pin | 5 |
 | `DOC_ONLY_ROUND`'s fact text, the sdet-author persona's section | 6 |
@@ -798,7 +823,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | `PLAN_PROTOCOL`'s guidance cut and MARKERS rewordings, the planner persona's and seed's moved sentences | 8 |
 | both PATTERN lines, the hand-over section's bullet | 9 |
 | `Defaults.test_author`, its refusal, the spawn's lookup, the edited sdet fixtures | 10 |
-| `WaveItem::build_cache_env`, `spawn::BUILD_CACHE_ENV`, the script's reworded texts, the courier command, the failing degraded branch of `ExecRunner::run` and its test | 11 |
+| `WaveItem::build_cache_env`, `spawn::BUILD_CACHE_ENV` and its three rewired readers (`RunCtx::spawn_env`, `gate.rs:608` and :656), the script's reworded texts, the courier command, the probe's `infra_fault` outcome, its halt reason and their tests | 11 |
 | the `cargo_target_dir` to `build_cache_dir` rename of the wire and request fields, the serde alias, their readers, the fields' doc comment and their pins (criteria 12 and 18 do not touch it) | 11 |
 | the `rigger_scratch` description | 12 |
 | each open-exceptions item's strike | the criterion EXCEPTIONS LIST names |
@@ -830,8 +855,8 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 ## Done when
 
 - [ ] a test proves THE LOOKUP POINTER NAMES ONLY THE TOOLS: `write_lookup_pointer` names the three graph verbs and their jobs, and its "not by grepping" and `grep-fallback:` record sentences stand verbatim in the `working-discipline` built-in's Fan out section. This criterion OWNS the pointer's text, that section's added sentences and their pins; the guard hook is criterion 2's, NOT this one's.
-- [ ] a test proves THE GREP GUARD IS DECLARED: `hooks::install_session_settings` merges the PreToolUse grep-guard only when `defaults.grep_guard` is true, as `SpawnHost::resolve` gives it to every spawn `SpawnOpts::new` builds, critic and canary included, and `install_lookup_hook` removes only rigger's own entry when absent. This criterion OWNS the key, `SpawnHost` and both installers' guard arm; the helper root is criterion 3's, NOT this one's.
-- [ ] a test proves THE OPERATOR'S HELPER COPY IS THE DEFINITION: `spawn_config_args` builds `--agents` and `allowed_tools_args` the pre-approval from `<root>/.claude/agents/lookup.md` and `verify.md` if present, else the embedded `HELPER_AGENTS`, the root being `SpawnHost.helper_root` for every spawn, critic and canary included. This criterion OWNS `hooks::resolved_helpers` and `helper_root` with its readers; `SpawnHost` itself is criterion 2's, NOT this one's.
+- [ ] a test proves THE GREP GUARD IS DECLARED: `hooks::install_session_settings` merges the PreToolUse grep-guard only when `defaults.grep_guard` is true, as `hooks::resolve_spawn_host` gives it to every spawn `SpawnOpts::new` builds, critic and canary included, and `install_lookup_hook` removes only rigger's own entry when absent. This criterion OWNS the key, `SpawnHost` and both installers' guard arm; the helpers are criterion 3's, NOT this one's.
+- [ ] a test proves THE OPERATOR'S HELPER COPY IS THE DEFINITION: `SpawnHost.helpers` holds `<root>/.claude/agents/lookup.md` and `verify.md` if present, else the embedded `HELPER_AGENTS`, resolved once per step, critic or canary run; `spawn_config_args` builds `--agents` and `allowed_tools_args` the pre-approval from it. This criterion OWNS `resolved_helpers`, `helpers`, its filling and both readers; `SpawnHost` itself is criterion 2's, NOT this one's.
 - [ ] a test proves THE TASK PROMPTS CARRY NO COMMUNICATION CADENCE: `EMIT_PROTOCOL`, `review_protocol`, `DECISIONS_HEADER` and the shim's `renderPeers` keep their shapes and nouns with every cadence clause Design names cut, the `communication` built-in stating it. This criterion OWNS those four texts and their pins; the progress cadence is criterion 5's, the planner's clause criterion 8's, NOT this one's.
 - [ ] a test proves THE PROGRESS CADENCE HAS ONE HOME: the cli host's `framed`, the workflow script's and the shim's progress notes and the `rigger_progress` description name the verb and its arguments only, and the cadence wording Design names stands in the `communication` built-in. This criterion OWNS the four host texts, the built-in's bullet and their pins; other cadence is criterion 4's, NOT this one's.
 - [ ] a test proves A DOC-ONLY ROUND STATES ONLY THE FACT: the sdet-author prompt on a round `is_documentation_only` classifies carries "This round changed documentation only." and no rule, and the rule's sentence stands verbatim in `.rigger/agents/sdet-author.md`. This criterion OWNS `DOC_ONLY_ROUND`, its doc, the persona's section and their pins; the test-author key is criterion 10's, NOT this one's.
@@ -839,7 +864,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 - [ ] a test proves THE PLANNER PROTOCOL CARRIES NO PLANNING POLICY: `PLAN_PROTOCOL` holds exactly the sentences Design keeps as framing, and every sentence Design moves (the split, discovery, scope-creep, cadence, no-code and omit-the-id sentences) stands verbatim in this repository's planner persona and the scaffold's planner seed. This criterion OWNS both lists and their pins; the cap sentence is criterion 7's, NOT this one's.
 - [ ] a test proves THE REQUIRED PATTERN NAMES ONLY ITS RECORD: `PriorFailure::block` and `ReviewRound::block` give each REQUIRED pattern item its shape and its `audit_id` record id, and the audit and check sentences stand in the `working-discipline` built-in's hand-over section. This criterion OWNS both PATTERN lines, that bullet and their pins; the lookup sentences in that body are criterion 1's, NOT this one's.
 - [ ] a test proves THE TEST AUTHOR IS DECLARED: `spawn_sdet_author` spawns the agent `defaults.test_author` names, under the `sdet-author` role token, and spawns nothing when the key is absent, whatever `.rigger/agents` defines; an undefined id is refused at load. This criterion OWNS the key, its refusal, the spawn's lookup and the edited fixtures; the doc-only rule is criterion 6's, NOT this one's.
-- [ ] a test proves THE WORKFLOW SCRIPT NAMES NO TOOLCHAIN: `RIGGER_WORKFLOW`'s worker and courier texts name the cache only through `WaveItem::build_cache_env` and the wave's path, with no disk-layout sentence, courier prefix or "the moment", and a failed guard probe fails the gate naming its error, building nothing. This criterion OWNS those texts, the wave field, the degraded branch and their pins; `rigger_scratch` is criterion 12's, NOT this one's.
+- [ ] a test proves THE WORKFLOW SCRIPT NAMES NO TOOLCHAIN: `RIGGER_WORKFLOW`'s worker and courier texts name the cache only through `WaveItem::build_cache_env` and the wave's path, without the disk-layout sentence, courier prefix or "the moment", and a failed guard probe halts the step as an infrastructure fault naming its error. This criterion OWNS those texts, the wave field, the probe fault and their pins; `rigger_scratch` is criterion 12's, NOT this one's.
 - [ ] a test proves THE SCRATCH TOOL NAMES NO TOOLCHAIN: the `rigger_scratch` description that `mcpserver.rs`'s `tool_list` advertises says "build cache" where it named the toolchain's cache variable and "Reaped once your result records.", keeping the reaped container's contract word for word otherwise. This criterion OWNS that description and its pins; the workflow script's texts are criterion 11's, NOT this one's.
 - [ ] a test proves THE PLANNING SKILL CARRIES THE PROJECT'S CONSTRAINTS: `planning-a-spec` step 6 reads "Carry the project's own Global constraints" with neutral path examples, and the `global_constraints` list of `DocsOverlay` renders under it in the installed copy. This criterion OWNS the body's wording, the overlay field and this repository's overlay file; skill shadowing is criterion 14's, NOT this one's.
 - [ ] a test proves A PROJECT SKILL SHADOWS THE SHIPPED ONE: `install_skills` installs `.rigger/skills/<name>/SKILL.md` verbatim in place of the shipped skill of that exact name, a near name shadowing nothing, while `rigger docs` and the drift gate stay on the shipped text. This criterion OWNS the shadow rule and its setup report lines; the skill bodies are criterion 13's, NOT this one's.
