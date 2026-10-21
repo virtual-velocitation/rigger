@@ -7,7 +7,8 @@
 //! `rigger::...`, which resolves in all three (the library aliases itself with
 //! `extern crate self as rigger`). A submodule that builds `store`-gated types carries the same
 //! gate as those types, so every feature lane compiles exactly the fixtures it can use.
-//! Everything is re-exported flat, so a caller never spells the submodule path.
+//! Every fixture is reachable at this module's root - re-exported flat, or defined here when it
+//! reads through two submodules' fixtures - so a caller never spells the submodule path.
 
 #![allow(dead_code, unused_imports)]
 
@@ -88,3 +89,11 @@ pub use plan_critique::*;
 pub use sqlite::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use store::*;
+
+/// The text of the README in `root`'s operator instruction directory. It lives here, beside the
+/// re-exports, because it reads through two areas' fixtures ([`read_text`] and
+/// [`instructions_dir`]) that other crates mount one at a time.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub fn instructions_readme_text(root: &std::path::Path) -> String {
+    read_text(&instructions_dir(root).join(rigger::config_store::INSTRUCTIONS_README))
+}

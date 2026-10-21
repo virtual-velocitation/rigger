@@ -1192,7 +1192,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3c505da5ae1a",
+    "id": "dup-00e6b2db0e6e",
     "classification": "semantic",
     "sites": [
       {
@@ -3162,11 +3162,6 @@
       },
       {
         "file": "tests/cli.rs",
-        "name": "\".rigger/instructions/README.md\"",
-        "content_hash": "3fb4b4655dac6074"
-      },
-      {
-        "file": "tests/cli.rs",
         "name": "\"gw/.rigger/workflow.yml\"",
         "content_hash": "89bcb25e03467378"
       },
@@ -4217,7 +4212,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 604 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 603 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -8034,7 +8029,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c72ffc4edd8c",
+    "id": "dup-3cfa6389efb7",
     "classification": "near",
     "sites": [
       {
@@ -8056,14 +8051,9 @@
         "file": "tests/cli.rs",
         "name": "workflow_with_no_spec_path_never_mentions_the_spec_lint",
         "content_hash": "222759f2ade2d565"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "init_scaffolds_the_instructions_readme_and_names_it",
-        "content_hash": "ac6ce8509142b691"
       }
     ],
-    "proposed_home": "cli::support (consolidate these 5 sites into one function in this file)",
+    "proposed_home": "cli::support (consolidate these 4 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

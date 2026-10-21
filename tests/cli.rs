@@ -28017,8 +28017,9 @@ fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path
     );
 }
 
-/// `rigger init` scaffolds the operator instruction directory with its README and names it
-/// in the first-run summary.
+/// `rigger init` scaffolds the operator instruction directory with its README, the text of
+/// this repository's own committed `.rigger/instructions/README.md` (whitespace normalized),
+/// and names it in the first-run summary.
 #[test]
 fn init_scaffolds_the_instructions_readme_and_names_it() {
     let proj = temp_project();
@@ -28029,9 +28030,12 @@ fn init_scaffolds_the_instructions_readme_and_names_it() {
         out.contains("scaffolded .rigger/instructions/README.md"),
         "the first init names the instructions README; got:\n{out}"
     );
-    assert!(
-        root.join(".rigger/instructions/README.md").is_file(),
-        "the README exists after init"
+    assert_eq!(
+        rigger::wave::normalize_ws(&common::fixtures::instructions_readme_text(root)),
+        rigger::wave::normalize_ws(&common::fixtures::instructions_readme_text(
+            &common::repo::repo_root()
+        )),
+        "init writes the committed instructions README's text"
     );
     // The README documents the layer; it is not itself an operator instruction.
     let (out, err, ok) = run_rigger(root, &["instructions"]);

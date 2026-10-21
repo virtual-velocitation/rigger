@@ -4404,9 +4404,7 @@ mod tests {
         ] {
             assert!(readme.contains(rule), "the README must state {rule:?}");
         }
-        let committed = read_text(
-            &crate::test_support::instructions_dir(&repo()).join(config_store::INSTRUCTIONS_README),
-        );
+        let committed = crate::test_support::instructions_readme_text(&repo());
         assert_eq!(
             rigger::wave::normalize_ws(&committed),
             readme,
