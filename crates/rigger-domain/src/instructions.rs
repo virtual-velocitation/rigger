@@ -160,7 +160,7 @@ fn push_section(out: &mut String, name: &str, body: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::builtin_body;
+    use crate::test_support::{builtin_body, builtin_section};
 
     fn op(name: &str, body: &str) -> Instruction {
         Instruction {
@@ -305,11 +305,8 @@ mod tests {
         assert_eq!(
             sys,
             expected_prompt(&[
-                (
-                    "engineering-principles",
-                    builtin_body("engineering-principles")
-                ),
-                ("working-discipline", working_discipline()),
+                builtin_section("engineering-principles"),
+                builtin_section("working-discipline"),
                 ("communication", body),
             ]),
             "the replacing body sits byte for byte in the communication section, in the \
@@ -331,12 +328,9 @@ mod tests {
         assert_eq!(
             sys,
             expected_prompt(&[
-                (
-                    "engineering-principles",
-                    builtin_body("engineering-principles")
-                ),
+                builtin_section("engineering-principles"),
                 ("working-discipline", "House discipline."),
-                ("communication", builtin_body("communication")),
+                builtin_section("communication"),
             ]),
             "the replacing body loses its leading byte-order mark and nothing else"
         );
@@ -356,12 +350,9 @@ mod tests {
         assert_eq!(
             sys,
             expected_prompt(&[
-                (
-                    "engineering-principles",
-                    builtin_body("engineering-principles")
-                ),
-                ("working-discipline", working_discipline()),
-                ("communication", builtin_body("communication")),
+                builtin_section("engineering-principles"),
+                builtin_section("working-discipline"),
+                builtin_section("communication"),
                 ("Communication", "Case rule."),
                 ("communication ", "Space rule."),
             ]),
@@ -379,12 +370,9 @@ mod tests {
             assert_eq!(
                 sys,
                 expected_prompt(&[
-                    (
-                        "engineering-principles",
-                        builtin_body("engineering-principles")
-                    ),
-                    ("working-discipline", working_discipline()),
-                    ("communication", builtin_body("communication")),
+                    builtin_section("engineering-principles"),
+                    builtin_section("working-discipline"),
+                    builtin_section("communication"),
                     ("engineering-principles", blank),
                 ]),
                 "the blank body {blank:?} leaves the built-in in force and appends"

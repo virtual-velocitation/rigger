@@ -12,7 +12,7 @@ pub fn created_dir(dir: PathBuf) -> PathBuf {
 
 /// `root`'s operator instruction directory, `.rigger/instructions`, created.
 pub fn instructions_dir(root: &Path) -> PathBuf {
-    created_dir(root.join(".rigger").join("instructions"))
+    created_dir(root.join(rigger::config::RIGGER_DIR).join("instructions"))
 }
 
 /// An agent definition carrying only its `id`.

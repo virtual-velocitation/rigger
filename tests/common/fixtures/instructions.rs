@@ -101,6 +101,11 @@ pub fn persona(agent_file: &str) -> String {
         .prompt
 }
 
+/// The built-in entry `name` as a `(name, body)` section of [`expected_composed_prompt`].
+pub fn builtin_section(name: &'static str) -> (&'static str, &'static str) {
+    (name, builtin_body(name))
+}
+
 /// The system prompt a spawn of the agent defined by `agent_file` receives with no operator
 /// layer: `compose`'s output over the persona the definition parses to.
 pub fn composed_system_prompt(agent_file: &str) -> String {

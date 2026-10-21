@@ -27911,7 +27911,7 @@ fn run_spawns_the_worker_with_the_composed_system_prompt_and_nothing_appended() 
 #[test]
 fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_in() {
     use common::cli::run_capturing_system_prompt;
-    use common::fixtures::{builtin_body, expected_composed_prompt, instructions_dir, persona};
+    use common::fixtures::{builtin_section, expected_composed_prompt, instructions_dir, persona};
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &LIVENESS_WORKFLOW);
@@ -27926,11 +27926,8 @@ fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_i
         expected_composed_prompt(
             &persona(UNISOLATED_WORKER),
             &[
-                (
-                    "engineering-principles",
-                    builtin_body("engineering-principles")
-                ),
-                ("working-discipline", builtin_body("working-discipline")),
+                builtin_section("engineering-principles"),
+                builtin_section("working-discipline"),
                 ("communication", house),
                 ("communication ", near),
             ]

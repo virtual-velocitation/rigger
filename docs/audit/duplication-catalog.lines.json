@@ -1120,7 +1120,7 @@
     ]
   },
   {
-    "id": "dup-382208ce2346",
+    "id": "dup-3c505da5ae1a",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3084,33 +3084,33 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27996,
-        "end_line": 27996
+        "start_line": 27993,
+        "end_line": 27993
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28000,
-        "end_line": 28000
+        "start_line": 27997,
+        "end_line": 27997
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28070,
-        "end_line": 28070
+        "start_line": 28067,
+        "end_line": 28067
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28108,
-        "end_line": 28108
+        "start_line": 28105,
+        "end_line": 28105
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28568,
-        "end_line": 28568
+        "start_line": 28565,
+        "end_line": 28565
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28586,
-        "end_line": 28586
+        "start_line": 28583,
+        "end_line": 28583
       },
       {
         "file": "tests/common/cli.rs",
@@ -3161,11 +3161,6 @@
         "file": "tests/common/cli.rs",
         "start_line": 1383,
         "end_line": 1383
-      },
-      {
-        "file": "tests/common/fixtures/config.rs",
-        "start_line": 15,
-        "end_line": 15
       },
       {
         "file": "tests/common/fixtures/config.rs",
@@ -7419,8 +7414,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27990,
-        "end_line": 28010
+        "start_line": 27987,
+        "end_line": 28007
       }
     ]
   },
