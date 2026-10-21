@@ -1429,7 +1429,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "47ff5d0ddc32bcf0"
+    "content_hash": "56910a8262e2f941"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1750,14 +1750,6 @@
     "proposed_module": "conductor::run",
     "reason": "name contains \"unit\" (unit run loop); grouped under `conductor::run`.",
     "content_hash": "f233f4e4acdd9152"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "build_system_prompt",
-    "is_test": false,
-    "proposed_module": "conductor::support",
-    "reason": "name contains \"build\" (generic construction helper); grouped under `conductor::support`.",
-    "content_hash": "a92dc985fa54e71c"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

@@ -26,8 +26,7 @@ use crate::canary::{
 #[cfg(test)]
 use crate::canary::{is_batch_marker, latest_run};
 use crate::conductor::{
-    build_system_prompt, review_protocol, verdict_approves, AgentDriver, AgentResult, Error,
-    SpawnOpts,
+    review_protocol, verdict_approves, AgentDriver, AgentResult, Error, SpawnOpts,
 };
 use crate::config::{split_frontmatter, AgentDef, Config, ReviewPanel};
 use crate::contextgraph::TYPE_REVIEW_FINDING;
@@ -579,7 +578,7 @@ fn canary_opts(
         unit: format!("canary:{}", item.id),
         stage: "canary".to_string(),
         attempt: 0,
-        system_prompt: build_system_prompt(&agent.prompt, instructions),
+        system_prompt: crate::instructions::compose(&agent.prompt, instructions),
         dir: String::new(),
         isolation: false,
         parallel: false,

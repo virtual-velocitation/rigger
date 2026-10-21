@@ -3,8 +3,8 @@
 //! [`compose`] as
 //!
 //! ```text
-//! persona  +  BUILT-IN instructions  +  OPERATOR instructions  (+ the communication discipline,
-//!                                                                appended by the conductor)
+//! persona  +  BUILT-IN instructions  +  OPERATOR instructions
+//!             (the communication discipline among them)
 //! ```
 //!
 //! The BUILT-IN layer ships inside the binary ([`BUILTIN`]) and reaches every agent rigger
@@ -38,6 +38,10 @@ pub const BUILTIN: &[(&str, &str)] = &[
         "working-discipline",
         include_str!("instructions/working-discipline.md"),
     ),
+    (
+        "communication",
+        include_str!("instructions/communication.md"),
+    ),
 ];
 
 /// The heading that opens the injected layers in a system prompt; tests and `rigger prime`
@@ -46,7 +50,9 @@ pub const HEADING: &str = "# Rigger instructions";
 
 /// Compose `persona` followed by the built-in layer and then `operator`, each section under
 /// its own `## <name>` heading beneath [`HEADING`]. An empty persona still receives every
-/// layer; an empty operator layer adds nothing after the built-ins.
+/// layer; an empty operator layer adds nothing after the built-ins. It is the one authority for
+/// every spawn's system prompt: the conductor, the canary runner and the spec critic all
+/// thread its output, appending nothing after it.
 pub fn compose(persona: &str, operator: &[Instruction]) -> String {
     let mut out = String::from(persona);
     out.push_str("\n\n");

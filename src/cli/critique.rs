@@ -185,7 +185,7 @@ impl CriticHost<'_> {
             unit: unit.clone(),
             stage: CRITIQUE_STAGE.to_string(),
             attempt,
-            system_prompt: conductor::build_system_prompt(&critic.prompt, &self.cfg.instructions),
+            system_prompt: rigger::instructions::compose(&critic.prompt, &self.cfg.instructions),
             dir: self.root.to_string_lossy().into_owned(),
             run_id: unit,
             title: spec.to_string(),
