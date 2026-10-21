@@ -175,6 +175,13 @@ pub const INSTRUCTION_REPORTERS: [Reporter; 2] = [
     assert_prime_names_the_shadowing_layer_states,
 ];
 
+/// Run each of [`INSTRUCTION_REPORTERS`] in `cwd` with `envs` set.
+pub fn assert_reporters_in(cwd: &Path, envs: &[(&str, &str)]) {
+    for report in INSTRUCTION_REPORTERS {
+        report(cwd, envs);
+    }
+}
+
 /// Run the placement assertion `placed` - a reporter run from one place in the project - for each
 /// of [`INSTRUCTION_REPORTERS`], in a committed git project with a store and in one before any
 /// store exists.

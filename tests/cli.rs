@@ -28115,7 +28115,7 @@ rigger::test_cases! {
 /// discovery stopped at the directory's parent, then each reports that layer, read at the cwd.
 #[test]
 fn prime_and_instructions_outside_git_with_no_store_read_the_layer_at_the_cwd() {
-    use common::cli::{write_operator_layer, INSTRUCTION_REPORTERS};
+    use common::cli::{assert_reporters_in, write_operator_layer};
     use common::fixtures::shadowing_operator_layer;
     let proj = tempfile::tempdir().expect("a directory outside any git repository");
     let root = proj.path();
@@ -28124,9 +28124,7 @@ fn prime_and_instructions_outside_git_with_no_store_read_the_layer_at_the_cwd() 
         "GIT_CEILING_DIRECTORIES",
         root.parent().unwrap().to_str().unwrap(),
     )];
-    for report in INSTRUCTION_REPORTERS {
-        report(root, &ceiling);
-    }
+    assert_reporters_in(root, &ceiling);
 }
 
 /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, beside a store below the project root: given a
@@ -28135,15 +28133,13 @@ fn prime_and_instructions_outside_git_with_no_store_read_the_layer_at_the_cwd() 
 /// subdirectory, then each reports the project's layer, never the layer beside the store it finds.
 #[test]
 fn prime_and_instructions_beside_a_store_in_a_subdirectory_report_the_project_s_layer() {
-    use common::cli::{seed_store, write_operator_layer, INSTRUCTION_REPORTERS};
+    use common::cli::{assert_reporters_in, seed_store, write_operator_layer};
     use common::fixtures::{shadowing_operator_layer, subdirectory_of};
     let proj = temp_project();
     let sub = subdirectory_of(proj.path());
     seed_store(&sub);
     write_operator_layer(proj.path(), &shadowing_operator_layer());
-    for report in INSTRUCTION_REPORTERS {
-        report(&sub, &[]);
-    }
+    assert_reporters_in(&sub, &[]);
 }
 
 /// `rigger init` scaffolds the operator instruction directory with its README and names it
