@@ -561,8 +561,10 @@ fn unit_gate_runs<'a>(
 /// THE GATES GRADE, THE REVIEWERS JUDGE THE RESIDUE: the block every review tier's prompt
 /// carries naming what the deterministic gates already proved on the exact commit it judges -
 /// `commit`, the [`digest_address`] of each gate's [`META_INPUT_DIGEST`], the same
-/// [`worktree::head_sha_of`] `run_gates_at` addresses its gates by - so no reviewer spends its
-/// round re-running an instrument the log shows green on that commit. One line per gate, in the
+/// [`worktree::head_sha_of`] `run_gates_at` addresses its gates by - so a reviewer reads what the
+/// log shows green on that commit instead of re-running it. The block states the evidence only:
+/// the rule against re-running a gate is the working-discipline body's `## When you review`
+/// section, never a second copy here. One line per gate, in the
 /// order the gates ran, carrying its verdict, its input digest and its recorded evidence lines;
 /// a gate recorded more than once on this commit (an infra rerun, a cache hit) shows its latest
 /// verdict. Empty - and so claiming nothing - when there is no commit (a worktree-less review)
@@ -591,10 +593,7 @@ fn gate_evidence_block(events: &[Event], unit: &str, commit: &str) -> String {
     let mut b = format!(
         "\n\nGATE EVIDENCE for the commit under review (commit {commit}, which `git rev-parse \
          HEAD` prints in the unit's worktree): every gate below already ran on exactly this \
-         commit. Never re-run a gate shown PASS here, by hand or through a verify helper: the \
-         gate is the instrument that proves it, and your judgment covers what no gate sees. \
-         Reproduce only a specific suspicion - one named test, a reversion probe, a single-crate \
-         `cargo test -p <crate> <test>` - in your own scratch worktree, never the whole battery.\n"
+         commit.\n"
     );
     for (gate, pass, digest, evidence) in rows {
         let verdict = if pass { "PASS" } else { "FAIL" };
@@ -12511,20 +12510,23 @@ pub fn review_protocol(actor: &str) -> String {
     )
 }
 
-/// The discipline every review-tier prompt carries. A REVIEW ROUND LEAVES THE TREE IT
-/// REVIEWED (spec 103, criterion 6): its first sentences spell out in prose what [`RunCtx::
-/// guard_review_round_tree`] enforces at runtime - a reviewer that behaves like an
-/// implementer and edits the unit's own worktree leaves exactly the residue that guard
-/// exists to catch, name in a lesson, and restore. THE GATES GRADE, A REVIEW JUDGES THE
-/// RESIDUE: no tier re-runs the battery or a gate its [`gate_evidence_block`] shows green, and a
-/// reproduction builds into the unit's review cache ([`RunCtx::spawn_env`]). A REVIEW RUNS NO
-/// GATE'S TOOL: its last sentence keeps every gate's own tool out of every review, since the
-/// gate owns its run and a reviewer's run only repeats it at review cost. Shared by
+/// The contract every review-tier prompt carries: only what the harness enforces or provides,
+/// never a method of review. A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6):
+/// its first and last sentences spell out in prose what [`RunCtx::guard_review_round_tree`]
+/// enforces at runtime - a reviewer that behaves like an implementer and edits the unit's own
+/// worktree leaves exactly the residue that guard exists to catch, name in a lesson, and restore.
+/// Its middle sentence names the cache the harness provides, a reproduction building into the
+/// unit's review cache ([`RunCtx::spawn_env`]), and holds whether or not any instruction body is
+/// in force. The review method - never re-running the battery or a gate its
+/// [`gate_evidence_block`] shows green, the one targeted reproduction in a scratch worktree, and
+/// never running a gate's command as the gate runs it - is guidance, so it sits under the
+/// working-discipline body's `## When you review` section, which reaches a reviewer through
+/// [`crate::instructions::compose`] and which an operator replaces or switches off. Shared by
 /// [`review_protocol`] (the lens and adversary tiers, which also record findings through it)
 /// and [`RunCtx::run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
 /// wording rather than three hand-copied near-duplicates.
-pub const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. Never re-run the gate battery, or any gate the gate evidence shows green on the tree under review: the gates are the instrument that grades the work, and a review judges what they cannot see. To reproduce a specific suspicion - one named test, a reversion probe, a single targeted test run through the project's test command - create your own throwaway scratch worktree and run it there. A reproduction builds into the build cache your spawn carries: the unit's review cache, never the cache the unit's gates use. Leave the unit's worktree exactly as you found it. Never run a gate's command as the gate runs it, directly or through a verify helper: the gate evidence in your prompt is that gate's verdict, and a reviewer's run only repeats it at review cost; the one targeted reproduction above is not a gate run.";
+pub const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. A reproduction builds into the build cache your spawn carries: the unit's review cache, never the cache the unit's gates use. Leave the unit's worktree exactly as you found it.";
 
 /// What an adjudicator's reject names on its verdict line beside the verdict: its REQUIRED
 /// list ([`RequiredItem`]), which the next attempt is handed ([`PriorFailure::block`]) and

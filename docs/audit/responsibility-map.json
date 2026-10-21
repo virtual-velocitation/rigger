@@ -125,7 +125,7 @@
     "is_test": false,
     "proposed_module": "conductor::gate",
     "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "4e4e6bd487e2ac17"
+    "content_hash": "8e85b7e629a290c6"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
