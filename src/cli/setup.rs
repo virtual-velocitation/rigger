@@ -1793,6 +1793,7 @@ mod tests {
     use super::*;
     use crate::test_support::git_init_quiet;
     use crate::test_support::language_marker_hits;
+    use crate::test_support::read_text;
     use crate::test_support::tool_available;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{
@@ -4345,9 +4346,7 @@ mod tests {
             ("lookup.md", "model: haiku"),
             ("verify.md", "model: sonnet"),
         ] {
-            let committed = repo().join(".claude").join("agents").join(file);
-            let committed = std::fs::read_to_string(&committed)
-                .unwrap_or_else(|e| panic!("{} must be committed: {e}", committed.display()));
+            let committed = read_text(&repo().join(".claude").join("agents").join(file));
             let scaffolded = dir.path().join(".claude").join("agents").join(file);
             let scaffolded = std::fs::read_to_string(&scaffolded)
                 .unwrap_or_else(|e| panic!("init must write {}: {e}", scaffolded.display()));

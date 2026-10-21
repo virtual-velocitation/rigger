@@ -10,8 +10,7 @@ pub fn repo_root() -> PathBuf {
 
 /// The text of the checked-in file at `rel` (relative to [`repo_root`]).
 pub fn repo_text(rel: &str) -> String {
-    let path = repo_root().join(rel);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    super::fixtures::read_text(&repo_root().join(rel))
 }
 
 /// A PATH that finds `tool` in a directory under `work`, as the checked-in `tests/fixtures`
@@ -285,8 +284,7 @@ pub fn for_each_rs_file(dir: &Path, visit: &mut dyn FnMut(&Path, &str)) {
         if path.is_dir() {
             for_each_rs_file(&path, visit);
         } else if path.extension().is_some_and(|x| x == "rs") {
-            let text = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            let text = super::fixtures::read_text(&path);
             visit(&path, &text);
         }
     }

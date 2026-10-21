@@ -14,6 +14,11 @@ pub fn tool_available(program: &str, version_arg: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The text of the file at `path`, a panic naming it when it cannot be read.
+pub fn read_text(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+}
+
 /// Write `bytes` to `path`, creating its parent directories first.
 pub fn write_file(path: &Path, bytes: &[u8]) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
