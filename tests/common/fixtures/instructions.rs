@@ -2,8 +2,8 @@
 //! prompt tests, the binary's shipped-text tests and the integration suites: the working-discipline
 //! body's section headings and the review method its `## When you review` section holds; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
-//! and their checked-in sources, each entry's body by name, the layers `rigger instructions` prints, and the system prompt a
-//! spawn with no operator layer is composed to.
+//! and their checked-in sources, each entry's body by name, the layers `rigger instructions`
+//! prints, and the system prompt a spawn with no operator layer is composed to.
 
 /// The working-discipline body's hand-over section heading.
 pub const HAND_OVER_HEADING: &str = "## Hand over a tree the gates only confirm";
