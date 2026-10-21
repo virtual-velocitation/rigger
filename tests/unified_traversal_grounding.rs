@@ -45,10 +45,12 @@ use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::grounder::{Grounder, Ref};
 use rigger::spawn::ROLE_SDET_AUTHOR;
+use rigger::wave::normalize_ws;
 use serde_json::{json, Value};
 
 use common::cli::{planted_graph, temp_project};
 use common::fixtures::apply_next_json;
+use common::fixtures::assert_system_prompt_carries_the_review_method_once;
 use common::fixtures::assert_task_prompt_carries_only_the_reviewer_contract;
 use common::fixtures::language_marker_hits;
 use common::fixtures::{
@@ -143,6 +145,8 @@ struct ReviewDriver {
     finding: Value,
     /// `(agent id, prompt)` for every spawn, in spawn order.
     prompts: Mutex<Vec<(String, String)>>,
+    /// `(agent id, system prompt)` for every spawn, in spawn order.
+    system_prompts: Mutex<Vec<(String, String)>>,
 }
 
 impl AgentDriver for ReviewDriver {
@@ -150,13 +154,17 @@ impl AgentDriver for ReviewDriver {
         &self,
         agent: &AgentDef,
         prompt: &str,
-        _opts: &SpawnOpts,
+        opts: &SpawnOpts,
         emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
         self.prompts
             .lock()
             .unwrap()
             .push((agent.id.clone(), prompt.to_string()));
+        self.system_prompts
+            .lock()
+            .unwrap()
+            .push((agent.id.clone(), opts.system_prompt.clone()));
         // The lens raises its finding to the graph (the review_protocol channel), so the adversary
         // and the adjudicator - which ground AFTER it - retrieve it through `graph_context`, never a
         // hand-threaded stdout block. This is the exact cross-tier path the implement-only trim must
@@ -702,6 +710,15 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
 /// the SAME full slice the producer keeps and the implement slice drops, so a regression that hands
 /// review the implement slice surfaces HERE, at the review call site.
 fn run_and_capture_review_prompts(graph: &Projector, finding: Value) -> Vec<(String, String)> {
+    run_and_capture_review_spawns(graph, finding).0
+}
+
+/// The `(agent id, prompt)` and the `(agent id, system prompt)` of every review spawn
+/// [`run_and_capture_review_prompts`] describes, each in spawn order.
+fn run_and_capture_review_spawns(
+    graph: &Projector,
+    finding: Value,
+) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let grounder = SeedGrounder {
         file: "core.rs".into(),
     };
@@ -736,6 +753,7 @@ fn run_and_capture_review_prompts(graph: &Projector, finding: Value) -> Vec<(Str
         adjudicator: "adj".into(),
         finding,
         prompts: Mutex::new(Vec::new()),
+        system_prompts: Mutex::new(Vec::new()),
     };
     let deps = Deps {
         store: &store,
@@ -756,7 +774,8 @@ fn run_and_capture_review_prompts(graph: &Projector, finding: Value) -> Vec<(Str
     // to what this periphery layer observes.
     let _ = run(&cfg, &deps);
     let all = driver.prompts.lock().unwrap().clone();
-    all
+    let system = driver.system_prompts.lock().unwrap().clone();
+    (all, system)
 }
 
 /// Criterion 3 (this unit OWNS the review-path-preservation guardrail): the spec-36 trim is
@@ -919,10 +938,11 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
 /// REVIEWER PROMPT CARRIES ONLY THE CONTRACT at the same boundary: each tier's task prompt carries
 /// the reviewer discipline whole and once, and none of the review method `## When you review`
 /// holds, so a review call site that dropped the discipline, or a core string that restated the
-/// method, reddens here; the conductor's in-process
-/// `every_reviewer_prompt_carries_only_the_contract_and_its_system_prompt_the_method` pins the
-/// method in the system prompt. Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE: the discipline as
-/// received spells no marker of the MARKERS rule.
+/// method, reddens here; and each tier's system prompt, received through the same port, carries
+/// each review sentence `## When you review` holds exactly once, so the method the task prompt no
+/// longer carries still reaches every tier, through the working-discipline body. Spec 120's THE
+/// BUILT-IN LAYER NAMES NO LANGUAGE: the discipline as received spells no marker of the MARKERS
+/// rule.
 #[test]
 fn every_review_spawn_carries_the_reviewer_contract_without_naming_the_gate_or_its_tool() {
     let graph = Projector::open(":memory:", "test").unwrap();
@@ -933,19 +953,17 @@ fn every_review_spawn_carries_the_reviewer_contract_without_naming_the_gate_or_i
         "summary": "a lens finding about the seed file",
         "about": ["core.rs"],
     });
-    let prompts = run_and_capture_review_prompts(&graph, finding);
+    let (prompts, system_prompts) = run_and_capture_review_spawns(&graph, finding);
     let roles: Vec<&str> = prompts.iter().map(|(id, _)| id.as_str()).collect();
     assert_eq!(
         roles,
         vec!["lens", "adversary", "adj"],
         "the three review tiers spawn once each, in order"
     );
-    for (role, prompt) in &prompts {
-        assert_task_prompt_carries_only_the_reviewer_contract(
-            &format!("{role:?} review"),
-            prompt,
-            REVIEWER_DISCIPLINE,
-        );
+    for ((role, prompt), (_, system)) in prompts.iter().zip(&system_prompts) {
+        let tier = format!("{role:?} review");
+        assert_task_prompt_carries_only_the_reviewer_contract(&tier, prompt, REVIEWER_DISCIPLINE);
+        assert_system_prompt_carries_the_review_method_once(&tier, &normalize_ws(system));
         let discipline = prompt
             .find(REVIEWER_DISCIPLINE)
             .map(|at| &prompt[at..at + REVIEWER_DISCIPLINE.len()])

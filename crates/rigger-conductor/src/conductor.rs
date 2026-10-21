@@ -38029,15 +38029,10 @@ mod tests {
                 &prompt,
                 REVIEWER_DISCIPLINE,
             );
-            let system = normalize_ws(&system);
-            for sentence in crate::test_support::WHEN_YOU_REVIEW {
-                assert_eq!(
-                    system.matches(sentence).count(),
-                    1,
-                    "the {tier} system prompt carries {sentence:?} once; system prompt \
-                     was:\n{system}"
-                );
-            }
+            crate::test_support::assert_system_prompt_carries_the_review_method_once(
+                tier,
+                &normalize_ws(&system),
+            );
         }
     }
 

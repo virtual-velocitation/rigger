@@ -6565,7 +6565,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9ca28251e65b4093"
+    "content_hash": "3dac20253a817cda"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

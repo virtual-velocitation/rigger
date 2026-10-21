@@ -46,3 +46,16 @@ pub fn assert_task_prompt_carries_only_the_reviewer_contract(
         );
     }
 }
+
+/// The review `tier`'s whitespace-normalized `system` prompt carries each review sentence
+/// `## When you review` holds exactly once.
+pub fn assert_system_prompt_carries_the_review_method_once(tier: &str, system: &str) {
+    for sentence in WHEN_YOU_REVIEW {
+        assert_eq!(
+            system.matches(sentence).count(),
+            1,
+            "the {tier} system prompt carries {sentence:?} once; system prompt \
+             was:\n{system}"
+        );
+    }
+}
