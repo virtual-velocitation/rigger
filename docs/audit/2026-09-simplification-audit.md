@@ -2876,12 +2876,12 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:26828-26828` `".rigger"`
 - `tests/cli.rs:26861-26861` `".rigger"`
 - `tests/cli.rs:27523-27523` `".rigger"`
-- `tests/cli.rs:28140-28140` `"scaffolded .rigger/instructions/README.md"`
-- `tests/cli.rs:28144-28144` `".rigger/instructions/README.md"`
-- `tests/cli.rs:28214-28214` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28252-28252` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28712-28712` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28730-28730` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28138-28138` `"scaffolded .rigger/instructions/README.md"`
+- `tests/cli.rs:28142-28142` `".rigger/instructions/README.md"`
+- `tests/cli.rs:28212-28212` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28250-28250` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28710-28710` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28728-28728` `"gw/.rigger/workflow.yml"`
 - `tests/common/cli.rs:377-377` `".rigger"`
 - `tests/common/cli.rs:388-388` `".rigger"`
 - `tests/common/cli.rs:409-409` `".rigger"`
@@ -4792,7 +4792,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:16608-16619` `status_prints_no_dashboard_line_when_none_was_ever_recorded`
 - `tests/cli.rs:24232-24242` `prime_with_no_spec_path_never_mentions_the_spec_lint`
 - `tests/cli.rs:24653-24662` `workflow_with_no_spec_path_never_mentions_the_spec_lint`
-- `tests/cli.rs:28134-28154` `init_scaffolds_the_instructions_readme_and_names_it`
+- `tests/cli.rs:28132-28152` `init_scaffolds_the_instructions_readme_and_names_it`
 
 #### `dup-84fea880d212` (near, 2 sites)
 

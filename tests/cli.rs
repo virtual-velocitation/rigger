@@ -27978,12 +27978,10 @@ fn run_spawns_the_worker_with_no_section_for_a_built_in_an_empty_same_named_file
 #[test]
 fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
     let proj = temp_project();
-    let (out, err, ok) = run_rigger(proj.path(), &["prime"]);
-    assert!(ok, "`rigger prime` must succeed; stderr:\n{err}");
     assert_eq!(
-        out.lines().next(),
+        common::cli::prime_first_line(proj.path()).as_deref(),
         Some(common::fixtures::BUILT_INS_ONLY_IN_FORCE_LINE),
-        "with no operator files the parenthetical is omitted; got:\n{out}"
+        "with no operator files the parenthetical is omitted"
     );
 }
 
