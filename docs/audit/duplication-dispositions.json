@@ -1053,10 +1053,5 @@
     "id": "dup-aa4a3a0dfc34",
     "disposition": "not-a-duplicate",
     "reason": "`alias_json` and `ref_json` build two different on-log payloads, an `AliasDefined` alias and canonical against an `EdgeInferred` file, name and lang, sharing only the one-line `json!` literal shape."
-  },
-  {
-    "id": "dup-7df9b1a39032",
-    "disposition": "not-a-duplicate",
-    "reason": "`unit_diff` reads the `unit.diff` file the gate wrote into a String, while `subdirectory_of` creates the `sub` directory a command runs from through the shared `created_dir`; the two share only one `root.join` call and the signature shape."
   }
 ]

@@ -141,9 +141,7 @@ pub fn assert_validate_names_the_shadowed_built_ins(root: &Path, advisories: &[&
 /// success exit with the same lines on the repeat, and `rigger prime` opens with the built-ins in
 /// force and the unshadowed file count.
 pub fn assert_reporters_name_the_shadowing_layer_states(root: &Path) {
-    use super::fixtures::{
-        rendered_shadowing_layer, SHADOWING_LAYER_ADVISORIES, SHADOWING_LAYER_IN_FORCE_LINE,
-    };
+    use super::fixtures::{rendered_shadowing_layer, SHADOWING_LAYER_ADVISORIES};
     assert_eq!(
         run_rigger_ok(root, &["instructions"]),
         rendered_shadowing_layer(),
@@ -152,9 +150,15 @@ pub fn assert_reporters_name_the_shadowing_layer_states(root: &Path) {
     for _ in 0..2 {
         assert_validate_names_the_shadowed_built_ins(root, &SHADOWING_LAYER_ADVISORIES);
     }
+    assert_prime_names_the_shadowing_layer_states(root);
+}
+
+/// `rigger prime` run in `cwd` opens with the in-force line of the named-entry fixture
+/// (`shadowing_operator_layer`) its project holds.
+pub fn assert_prime_names_the_shadowing_layer_states(cwd: &Path) {
     assert_eq!(
-        run_rigger_ok(root, &["prime"]).lines().next(),
-        Some(SHADOWING_LAYER_IN_FORCE_LINE),
+        run_rigger_ok(cwd, &["prime"]).lines().next(),
+        Some(super::fixtures::SHADOWING_LAYER_IN_FORCE_LINE),
         "`rigger prime` opens with the built-ins in force and the unshadowed file count"
     );
 }

@@ -7777,25 +7777,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7df9b1a39032",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/checkin_mutation_diff_base_periphery.rs",
-        "name": "unit_diff",
-        "content_hash": "25086d968b6a3f4a"
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "name": "subdirectory_of",
-        "content_hash": "934e356dd284bb09"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/checkin_mutation_diff_base_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-5e768c7156e7",
     "classification": "near",
     "sites": [

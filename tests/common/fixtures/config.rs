@@ -10,6 +10,11 @@ pub fn created_dir(dir: PathBuf) -> PathBuf {
     dir
 }
 
+/// `root`'s subdirectory `sub`, created, for a command run from below the store's owning root.
+pub fn subdirectory_of(root: &Path) -> PathBuf {
+    created_dir(root.join("sub"))
+}
+
 /// `root`'s operator instruction directory, `.rigger/instructions`, created.
 pub fn instructions_dir(root: &Path) -> PathBuf {
     created_dir(root.join(rigger::config::RIGGER_DIR).join("instructions"))

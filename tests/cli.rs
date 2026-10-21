@@ -28072,6 +28072,22 @@ fn validate_warns_of_no_built_in_for_a_near_named_or_other_operator_file() {
     assert_validate_names_the_shadowed_built_ins(root, &[]);
 }
 
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from below the project root: given a project
+/// with a store whose `.rigger/instructions/` holds the named-entry fixture - a file replacing the
+/// communication built-in, an empty one switching the working-discipline built-in off and one
+/// shadowing no built-in - when the operator runs `rigger prime` at the root and in a subdirectory,
+/// then both open with the same in-force line, read from the project's instruction layer.
+#[test]
+fn prime_from_a_subdirectory_names_the_project_s_built_in_states() {
+    use common::cli::{assert_prime_names_the_shadowing_layer_states, write_operator_layer};
+    use common::fixtures::{shadowing_operator_layer, subdirectory_of};
+    let proj = temp_store_project();
+    let root = proj.path();
+    write_operator_layer(root, &shadowing_operator_layer());
+    assert_prime_names_the_shadowing_layer_states(root);
+    assert_prime_names_the_shadowing_layer_states(&subdirectory_of(root));
+}
+
 /// `rigger init` scaffolds the operator instruction directory with its README and names it
 /// in the first-run summary.
 #[test]
