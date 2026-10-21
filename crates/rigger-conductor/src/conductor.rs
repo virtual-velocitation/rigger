@@ -28978,6 +28978,9 @@ mod tests {
         );
     }
 
+    /// The heading line the communication built-in opens in a composed system prompt.
+    const COMMUNICATION_SECTION: &str = "\n## communication\n";
+
     #[test]
     fn the_conductor_threads_each_agents_persona_to_the_driver() {
         // The agent's PERSONA (its role - the markdown body of its definition) must be
@@ -29031,10 +29034,10 @@ mod tests {
         let deps = stub_deps(&st, &driver, Vec::new());
         run_isolated(&cfg, &deps).unwrap();
 
-        // Every agent the conductor spawned received a system prompt that contains
-        // BOTH its OWN persona AND the rigger-authored communication discipline - the
-        // implementer and all three review tiers. The system prompt is persona +
-        // RIGGER_COMMUNICATION, built once for both driver paths.
+        // Every agent the conductor spawned received a system prompt that contains its
+        // OWN persona - the implementer and all three review tiers - and is exactly
+        // `instructions::compose`'s output over that persona, built once for both driver
+        // paths.
         for (id, persona) in [
             ("worker", "You are the rust engineer. Implement findings."),
             ("lensA", "You are the architecture lens."),
@@ -29052,22 +29055,21 @@ mod tests {
                 sys.contains(persona),
                 "agent {id:?} must be spawned with its own persona in the system prompt; got: {sys:?}"
             );
-            // The exact composition: persona, then the rigger discipline.
+            // The exact composition: `compose`'s output, nothing appended after it.
             assert_eq!(
                 sys,
-                build_system_prompt(persona, &[]),
-                "agent {id:?}'s system prompt must be exactly persona + instructions + RIGGER_COMMUNICATION"
+                crate::instructions::compose(persona, &[]),
+                "agent {id:?}'s system prompt must be exactly compose's persona + instruction layers"
             );
         }
     }
 
     #[test]
-    fn the_system_prompt_carries_the_rigger_communication_discipline() {
-        // The conductor threads persona + RIGGER_COMMUNICATION as the system prompt:
-        // every spawned agent receives BOTH its persona AND the rigger-authored
-        // communication discipline (emit decisions/findings live, check peers, never
-        // silently contradict a peer). Assert the discipline's key phrases reach the
-        // agent's system prompt alongside its persona.
+    fn the_system_prompt_carries_the_communication_built_in_once() {
+        // The communication discipline (emit decisions/findings live, check peers, never
+        // silently contradict a peer) is a built-in instruction entry: a spawned agent's
+        // system prompt carries it once, as the `## communication` section `compose`
+        // prints, and the conductor appends no second copy under the retired heading.
         let mut cfg = Config::default();
         cfg.agents.insert(
             "a".into(),
@@ -29095,19 +29097,15 @@ mod tests {
             sys.contains("You are the implementer persona."),
             "the system prompt must carry the persona; got: {sys:?}"
         );
-        // The rigger communication discipline's key phrases are present.
-        for phrase in [
-            "Rigger communication discipline",
-            "DecisionMade",
-            "ReviewFinding",
-            "rigger_peers",
-            "SUPERSEDE it explicitly",
-        ] {
-            assert!(
-                sys.contains(phrase),
-                "the system prompt must carry the discipline phrase {phrase:?}; got: {sys:?}"
-            );
-        }
+        assert_eq!(
+            sys.matches(COMMUNICATION_SECTION).count(),
+            1,
+            "the system prompt carries the communication section exactly once; got: {sys:?}"
+        );
+        assert!(
+            !sys.contains("# Rigger communication discipline (non-negotiable)"),
+            "the retired communication heading is gone from the system prompt; got: {sys:?}"
+        );
     }
 
     #[test]
@@ -29130,17 +29128,17 @@ mod tests {
         let driver = Stub::new();
         let deps = stub_deps(&st, &driver, Vec::new());
         run_isolated(&cfg, &deps).unwrap();
-        // An agent with no persona body still receives the rigger communication
-        // discipline (every agent gets it), but no fabricated persona text - the
-        // system prompt is exactly the empty persona + RIGGER_COMMUNICATION.
+        // An agent with no persona body still receives every built-in instruction entry,
+        // the communication discipline among them, but no fabricated persona text - the
+        // system prompt is exactly `compose`'s output over the empty persona.
         let sys = driver.system_prompt_for("a").expect("agent a was spawned");
         assert_eq!(
             sys,
-            build_system_prompt("", &[]),
-            "an agent with no body threads (empty persona) + instructions + RIGGER_COMMUNICATION, nothing fabricated"
+            crate::instructions::compose("", &[]),
+            "an agent with no body threads compose's (empty persona) + instruction layers, nothing fabricated"
         );
         assert!(
-            sys.contains("Rigger communication discipline"),
+            sys.contains(COMMUNICATION_SECTION),
             "even a persona-less agent receives the communication discipline"
         );
         assert!(
@@ -29150,11 +29148,12 @@ mod tests {
     }
 
     #[test]
-    fn operator_instructions_reach_every_spawned_agent_between_persona_and_discipline() {
+    fn operator_instructions_reach_every_spawned_agent_after_every_built_in() {
         // The operator layer on `cfg.instructions` is composed into EVERY spawned agent's
         // system prompt - the implementer and all three review tiers - after the persona and
-        // the built-in law, and before the communication discipline. An agent with no
-        // persona still carries the built-in engineering principles.
+        // every built-in entry: the law, the working discipline and the communication
+        // discipline. An agent with no persona still carries the built-in engineering
+        // principles.
         let mut cfg = Config {
             instructions: vec![Instruction {
                 name: "10-house".into(),
@@ -29211,15 +29210,15 @@ mod tests {
             let operator_at = sys
                 .find("House rule: every public fn carries a doc comment.")
                 .unwrap_or_else(|| panic!("agent {id:?} lacks the operator layer; got: {sys:?}"));
-            let discipline_at = sys
-                .find("Rigger communication discipline")
-                .expect("discipline present");
+            let communication_at = sys.find(COMMUNICATION_SECTION).unwrap_or_else(|| {
+                panic!("agent {id:?} lacks the communication discipline; got: {sys:?}")
+            });
             assert!(
                 persona_at < builtin_at
                     && builtin_at < working_at
-                    && working_at < operator_at
-                    && operator_at < discipline_at,
-                "agent {id:?}: persona, built-in, operator, discipline must appear in order; got: {sys:?}"
+                    && working_at < communication_at
+                    && communication_at < operator_at,
+                "agent {id:?}: persona, law, working discipline, communication, operator must appear in order; got: {sys:?}"
             );
         }
     }

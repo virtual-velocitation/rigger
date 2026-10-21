@@ -166,12 +166,50 @@ mod tests {
     }
 
     #[test]
-    fn the_built_in_layer_is_the_law_then_the_working_discipline_in_that_order() {
+    fn the_built_in_layer_is_the_law_then_the_working_discipline_then_communication() {
         let names: Vec<&str> = BUILTIN.iter().map(|(name, _)| *name).collect();
         assert_eq!(
             names,
-            ["engineering-principles", "working-discipline"],
-            "the built-in layer is exactly the law followed by the working discipline"
+            [
+                "engineering-principles",
+                "working-discipline",
+                "communication"
+            ],
+            "the built-in layer is exactly the law, the working discipline and the communication \
+             discipline, in that order"
+        );
+    }
+
+    /// Spec 120, criterion 14: the third built-in entry, which the layer-order test above names
+    /// `communication`, carries the communication discipline's body: the old conductor
+    /// constant's every line after its heading line, verbatim.
+    #[test]
+    fn the_third_built_in_is_the_communication_discipline_verbatim() {
+        assert_eq!(
+            BUILTIN.get(2).map(|(_, body)| *body),
+            Some(
+                "You are one of several agents working concurrently against a shared event log. \
+                 Other agents act on what you record, live - so your communication is part of the \
+                 work, not an afterthought.\n\
+                 - Record EVERY decision the MOMENT you make it by calling the `rigger_emit` tool \
+                 with type `DecisionMade`. Emit immediately, one decision at a time - never batch \
+                 them up to the end of your turn, because a concurrent agent must see your \
+                 decision while it is still acting.\n\
+                 - If you are a reviewer, record EVERY finding the moment you find it by calling \
+                 `rigger_emit` with type `ReviewFinding`. Do not hold findings back to a final \
+                 summary.\n\
+                 - Between your actions, CHECK the `rigger_peers` tool (scoped to the files you \
+                 are touching) to stay aware of what concurrent agents have already decided. Do \
+                 this before you commit to a direction, not after.\n\
+                 - NEVER silently contradict a peer's decision. If you must change a direction a \
+                 peer already set, SUPERSEDE it explicitly: emit a new `DecisionMade` whose \
+                 `supersedes` field cites the prior decision's id, and state why. Diverging \
+                 silently splits the work; superseding explicitly keeps every agent on one \
+                 story.\n\
+                 The exact JSON shapes for these emits are given in your task instructions; this \
+                 section governs the DISCIPLINE and cadence - follow it on every turn.\n"
+            ),
+            "the third built-in carries the communication discipline's body verbatim"
         );
     }
 

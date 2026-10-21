@@ -718,7 +718,10 @@ mod tests {
         assert_eq!(opts.unit, "canary:item-1");
         assert_eq!(opts.stage, "canary");
         assert_eq!(opts.attempt, 0);
-        assert_eq!(opts.system_prompt, build_system_prompt(&a.prompt, &[]));
+        assert_eq!(
+            opts.system_prompt,
+            crate::instructions::compose(&a.prompt, &[])
+        );
         let house = [Instruction {
             name: "10-house".to_string(),
             body: "House rule for canaries.".to_string(),

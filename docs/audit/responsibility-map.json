@@ -4901,15 +4901,15 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cc828682e0d1ba81"
+    "content_hash": "207c696702052938"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "the_system_prompt_carries_the_rigger_communication_discipline",
+    "name": "the_system_prompt_carries_the_communication_built_in_once",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4d659cdd10bfff51"
+    "content_hash": "96901a2b4a51e19d"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -4917,15 +4917,15 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a1ac5fe7874e8639"
+    "content_hash": "4a3da26adfd28636"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "operator_instructions_reach_every_spawned_agent_between_persona_and_discipline",
+    "name": "operator_instructions_reach_every_spawned_agent_after_every_built_in",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "943d5528e730abea"
+    "content_hash": "9ee76437ba8de20f"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

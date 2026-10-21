@@ -27790,8 +27790,8 @@ fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
     assert_eq!(
         out.lines().next(),
         Some(
-            "# Rigger instructions in force: engineering-principles, working-discipline - see \
-             rigger instructions"
+            "# Rigger instructions in force: engineering-principles, working-discipline, \
+             communication - see rigger instructions"
         ),
         "with no operator files the parenthetical is omitted; got:\n{out}"
     );
@@ -27813,8 +27813,8 @@ fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path
     assert_eq!(
         lines.next(),
         Some(
-            "# Rigger instructions in force: engineering-principles, working-discipline (+2 \
-             operator files) - see rigger instructions"
+            "# Rigger instructions in force: engineering-principles, working-discipline, \
+             communication (+2 operator files) - see rigger instructions"
         ),
         "got:\n{out}"
     );

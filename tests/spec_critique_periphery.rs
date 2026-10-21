@@ -239,9 +239,15 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
         system.starts_with("You are the CRITIC-PERSONA adversary."),
         "the critic's system prompt opens with the persona the workflow names:\n{system}"
     );
-    assert!(
-        system.contains("# Rigger communication discipline"),
-        "the system prompt carries the discipline every spawn gets:\n{system}"
+    assert_eq!(
+        system,
+        rigger::instructions::compose(
+            &rigger::config::parse_agent(CRITIC.as_bytes())
+                .unwrap()
+                .prompt,
+            &[]
+        ),
+        "the critic's system prompt is compose's output over its persona, as every spawn's is"
     );
 
     // ... the request and the result are on the critique's own stream, keyed on the hash.
