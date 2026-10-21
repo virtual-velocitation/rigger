@@ -66,7 +66,9 @@ size rule with no number ("a unit over the cap your prompt states is a BLOCKING 
 adjudicator's judges "a unit over the cap the prompt states"; the DAG critique prompt renders
 `unit_size_cap()`'s text verbatim as its cap framing, `unit_size_cap` and `MAX_UNIT_ADDED_LINES`
 unedited; the MARKERS rule exists in its criterion 12's test. PR #117's shipped-text helper `every_shipped_agent_text()` (a test helper in
-`src/cli/setup.rs`, at PR #117's head cdb6de67, :3439) exists. The `working-discipline` body's `lookup`
+`src/cli/setup.rs`, at PR #117's head cdb6de67, :3439) exists. Spec 120's MARKERS function (`language_marker_hits`) has a known home, which the launch record
+names (on the launch base it may live in `tests/common/fixtures/language_markers.rs`, imported by
+`src/cli/setup.rs`), with the import criterion 17 calls it through. The `working-discipline` body's `lookup`
 bullet carries, verbatim, "The same rule binds you: the graph first, a literal `grep` only when it is
 strictly necessary, and each such use recorded." (criterion 1 cuts it). The launch record confirms each of
 these before a unit spawns, that the open-exceptions list in `authoring-loops.md`'s `## What rigger
@@ -244,15 +246,19 @@ repository tracks `.claude/agents/`, `.gitignore:50`, and `hooks.rs:43` embeds t
 worktree copy is only ever the operator's own text at an older commit); an empty root reads the
 embedded text. A present file that cannot be read or does not parse as a helper definition fails
 `resolve_spawn_host` with an error naming the file, an infrastructure fault that charges no
-remediation attempt; `rigger validate` reports the same error. Each operator copy that is PRESENT
-folds into `definition_hash` (`src/cli/mod.rs:974`) after the agent definitions, from that one
-resolution's `helpers`; an absent copy folds nothing, so the hash of a project without copies is unchanged and it
+remediation attempt; `rigger validate` reports the same error. The helper copies are part of
+`definition_hash` (`src/cli/mod.rs:974`) itself: it calls `hooks::resolved_helpers(root)` and folds
+each PRESENT copy after the agent definitions, so every caller sees the same fingerprint through one
+function: the step's pin (`cmd_step`, `src/cli/run.rs:558`), the fresh run's fingerprint
+(`fresh_run_if_requested`, `src/cli/run.rs:1567`) and the replay at `<rev>`
+(`materialize_config_at_rev`, `src/cli/mod.rs:2816`, which resolves at its checkout root); an absent
+copy folds nothing, so the hash of a project without copies is unchanged and it
 sees no drift. A mid-run edit of an operator copy is a definition drift that halts the step and
-resumes with `--rebase-definition`, as a persona edit does. The copies are read once per step, in
-`src/cli`: `rigger step` folds `definition_hash` from the `helpers` of the value `resolve_spawn_host`
-returned before `enforce_definition_pin`, and hands that same value to the conductor in
-`Deps::spawn_host`, so the hash and every spawn read one resolution and no second crate reads the
-copies; criterion 3 owns the fold from that value and its tests. `HELPER_AGENTS` stays as the scaffold's
+resumes with `--rebase-definition`, as a persona edit does. One function reads the copies; the step and the hash call it at the same point: `cmd_step`
+resolves its `SpawnHost` before `enforce_definition_pin` and asserts that its `helpers` equal the read
+`definition_hash` made (one function, two callers, one read per caller), then hands that value to the
+conductor in `Deps::spawn_host`. Criterion 3 owns the fold, all three `definition_hash` callers'
+coverage and their tests. `HELPER_AGENTS` stays as the scaffold's
 write-once seed (`setup.rs:243-244`) and the default.
 
 **THE COMMUNICATION CADENCE HAS ONE HOME, decided here (criterion 4).** The cadence clauses are
@@ -615,8 +621,8 @@ doc comment opens with; a surface with two classes has one row per class.
 | binary | `GREP_GUARD_MESSAGE`, the `rigger guard-write` deny reason | each denial | CONTRACT |
 | binary | `rigger prime`'s output (`src/cli/prime.rs`) | the instructions-in-force line, the decisions header, the no-store and none-yet lines | FRAMING |
 
-**THE PHRASE AND MARKERS TESTS, decided here (criterion 17).** One test, in `src/cli/setup.rs`'s
-tests beside spec 120's MARKERS function (a test-module function the `tests/` directory cannot reach),
+**THE PHRASE AND MARKERS TESTS, decided here (criterion 17).** One test, placed wherever spec 120
+landed the MARKERS function and calling it through its import (BASE's launch record names the place),
 iterates `rigger::prompt_surface::all_groups()` directly and the scripts' contract and framing region
 entries (criterion 18, which 17 needs), read through the same region reader the sweep uses, and fails on any phrase of
 a list kept in the test, matched as a lowercase substring: "the moment", "never batch", "do not
@@ -700,6 +706,7 @@ relaunches once with `--rebase-definition` after the refresh.
 | helper copy | empty | no `.claude/agents/` file: the embedded text |
 | helper copy | DROPPED | an operator copy deleted from the operator's checkout mid-run: the copy present at the pin folded into `definition_hash` and is gone, so the next step halts on drift; resumed with `--rebase-definition`, the next spawn reads the embedded text, whatever a unit worktree still carries |
 | helper copy | existing pinned run | a run pinned before the refresh in a project with a copy present resumes once with `--rebase-definition`; without a copy it resumes unchanged |
+| helper copy | run start, replay | the fresh-run fingerprint and the replay checkout fold the same present copies through `definition_hash`; no caller reads them another way |
 | helper copy | edited mid-run | a definition drift, halted and resumed with `--rebase-definition`, as a persona edit is |
 | helper copy | existing data | an operator copy written by an older `rigger init` and never edited equals the embedded text at that version; a newer binary keeps passing the old copy; accepted (the copy is the definition) |
 | helper copy | malformed | the spawn fails naming the file; `rigger validate` names it first |
@@ -804,7 +811,7 @@ TEST PLACEMENT:
 | 14 | `src/cli/mod.rs` tests over a temp root (a shadow, a near name, a deleted shadow); a periphery test running the built binary's `setup` |
 | 15 | `src/cli/setup.rs` tests (`init_project` with and without `Cargo.toml`) |
 | 16 | each crate's `prompt_surface` tests (no duplicate (surface, name)); a lib test that `all_groups()` holds every crate's `prompt_groups()`; a concatenation test beside each renderer (`conductor.rs`, `review.rs`, `canary_store.rs`, `driver/cli.rs`, `mcpserver.rs`, `src/cli/mod.rs`, `src/cli/prime.rs`, `src/cli/critique.rs`, `src/cli/guard.rs`) |
-| 17 | `src/cli/setup.rs` tests reading `rigger::prompt_surface::all_groups()` and the region entries directly, beside spec 120's MARKERS function |
+| 17 | wherever spec 120 landed the MARKERS function, called through its import, reading `rigger::prompt_surface::all_groups()` and the region entries directly |
 | 18 | `tests/prompt_surface_sweep.rs` over the source tree and the two script files, reading `rigger::prompt_surface::all_groups()` |
 | 19 | the lanes script on the integrated tree |
 
@@ -818,7 +825,7 @@ ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 | --- | --- |
 | the pointer's framing paragraph, the Fan out section's two sentences and the cut of its "same rule" sentence | 1 |
 | `Defaults.grep_guard`, the flag's reading in `resolve_spawn_host`, `carries_session_settings`' flag, the `cmd_setup` workflow parse, `session_hooks_advisory`'s guard clause and its stale-hook advice, the guard arms of `install_session_settings` and `install_lookup_hook` (the drifted-matcher replacement and the off-path's no-create read included), the scaffold's `grep_guard` line | 2 |
-| `hooks::resolved_helpers`, the `repo_root` argument at the three resolution points, `SpawnHost.helpers` (the test literals included), its fold into `definition_hash` (each present copy), its readers `spawn_config_args` and `allowed_tools_args` with both `build_args` callers, the validate check of the copies | 3 |
+| `hooks::resolved_helpers`, the `repo_root` argument at the three resolution points, `SpawnHost.helpers` (the test literals included), its fold inside `definition_hash` (each present copy, read through `hooks::resolved_helpers`, so the step's pin, `fresh_run_if_requested` and `materialize_config_at_rev` all see it) and `cmd_step`'s equality check, its readers `spawn_config_args` and `allowed_tools_args` with both `build_args` callers, the validate check of the copies | 3 |
 | `SpawnHost` with `grep_guard`, `hooks::resolve_spawn_host(defaults)`, `Deps::spawn_host`, the `RunCtx` accessor, the three resolution points (`rigger step` before `enforce_definition_pin`, the critic, the canary), `SpawnOpts.host`, `SpawnOpts::new`, every construction site's edit, the no-`SpawnHost {` assertion | 2 |
 | the cut cadence clauses of `EMIT_PROTOCOL`, `review_protocol`, `DECISIONS_HEADER`, `renderPeers` | 4 |
 | the four hosts' progress texts, the `communication` built-in's progress bullet, the extended spec-120 criterion 14 body pin | 5 |
