@@ -353,6 +353,33 @@ at its integration the operator relaunches the driver by adoption with `--rebase
 procedure every mid-run definition change takes; the drift halt the pin raises at that boundary is
 the expected signal, not a defect.
 
+**THE LAYER ROOT, decided here.** The two reporters of the instruction layer in force (`rigger
+prime` through `instructions_in_force_line`, `rigger instructions` through `render`) read
+`.rigger/instructions/` under ONE root resolved by ONE function, criterion 4's `project_root` (with
+`project_instruction_layer` over it, `src/cli/mod.rs`): the working-tree top level of the main
+worktree that governs the cwd. That is `git rev-parse --show-toplevel` for the main checkout, a
+subdirectory of it, a submodule (its own working tree) and a separate-git-dir repository; the main
+worktree's top level for a linked worktree; the start directory itself outside git. It is NEVER a
+store location, fenced under `RIGGER_STORE_FENCE_DIR` or not (a store location is store isolation,
+not a project root), never the raw cwd and never the parent of `git rev-parse --git-common-dir` (no
+working tree in a submodule or a separate-git-dir repository). `rigger validate` is not one of them
+and is unchanged: it keeps loading the tree it runs from (`.`, `src/cli/validate.rs:163`) and the
+`shadow_advisories` bullet above stands, because validate answers what THIS tree declares (its
+definition and the layer that tree would put in force; from a subdirectory it fails loudly as
+today), while prime and instructions answer what is in force for a spawn, the layer every spawn is
+composed from at the driver's start (`self.cfg.instructions` in `RunCtx::build_system_prompt`,
+`conductor.rs:10792`, loaded from the operator checkout), hence the main worktree's root. The
+correction is made in `main_repo_root`'s own git call (`src/cli/mod.rs`), with no parallel root
+finder: `project_root` stays the thin main root, else the start directory, over it; no caller is
+re-routed by this paragraph; and its existing callers (the store walk's boundary in
+`walk_stores_from`, `config_rigger_dir`, `server_store_location`, `resolve_main_worktree_or_refuse`)
+resolve the same corrected main root, the only change they see being the correction itself in a
+submodule or a separate-git-dir repository. Criterion 4's reporter placement table, a periphery
+test running the built binary's `prime` and `instructions` over the shadowing fixture and asserting
+each row prints the plain root's lines, carries one row per shape: the root and a subdirectory of a
+plain checkout, of a submodule, of a separate-git-dir repository and of a linked worktree; a gate
+process under the store fence; a project in git with no store; and a directory outside git.
+
 **INTERIM SENTENCES, decided here.** A handbook, README or module-doc sentence OUT OF SCOPE assigns
 to a named criterion is rewritten when that criterion lands. An earlier unit whose behaviour makes
 it false leaves it as it is: its hand-over lists the sentence as assigned to that criterion, and its
