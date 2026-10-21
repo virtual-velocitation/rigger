@@ -172,7 +172,9 @@ fn push_section(out: &mut String, name: &str, body: &str) {
 mod tests {
     use super::*;
     use crate::test_support::{
-        assert_carries_the_review_method, builtin_body, builtin_section, COMMUNICATION_NEAR_NAME,
+        assert_carries_the_review_method, builtin_body, builtin_section, rendered_shadowing_layer,
+        shadowing_operator_layer, COMMUNICATION_NEAR_NAME, RENDERED_OPERATOR_HEADING,
+        REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
     };
 
     fn op(name: &str, body: &str) -> Instruction {
@@ -991,5 +993,50 @@ mod tests {
             some.find("engineering-principles").unwrap() < some.find("10-house").unwrap(),
             "built-ins render first"
         );
+    }
+
+    /// Over the named-entry fixture, `render` prints the built-in kept in force with its shipped
+    /// body, the replaced one with the operator file's body and the switched-off one with no body,
+    /// each labelled with its state, then the one file that shadows nothing.
+    #[test]
+    fn render_names_each_built_in_of_the_fixture_as_in_force_replaced_or_switched_off() {
+        assert_eq!(
+            render(&shadowing_operator_layer()),
+            rendered_shadowing_layer(),
+            "each built-in is printed with its state and only the unshadowed file is an operator file"
+        );
+    }
+
+    /// An operator layer whose every file shadows a built-in leaves no operator file to print.
+    #[test]
+    fn render_says_none_when_every_operator_file_shadows_a_built_in() {
+        let out = render(&shadowing_operator_layer()[1..]);
+        assert!(
+            out.ends_with(&format!("{RENDERED_OPERATOR_HEADING}(none)\n")),
+            "an all-shadowing operator layer renders as (none); got:\n{out}"
+        );
+    }
+
+    /// `shadow_advisories` names each built-in an operator file replaces or switches off, in
+    /// `BUILTIN` order, and nothing for a layer that shadows none: an empty one, a near name, or a
+    /// file of another name.
+    #[test]
+    fn shadow_advisories_name_each_shadowed_built_in_and_nothing_else() {
+        assert_eq!(
+            shadow_advisories(&shadowing_operator_layer()),
+            SHADOWING_LAYER_ADVISORIES,
+            "one advisory per replaced or switched-off built-in"
+        );
+        for layer in [
+            Vec::new(),
+            vec![op(COMMUNICATION_NEAR_NAME, REPLACING_COMMUNICATION_BODY)],
+            shadowing_operator_layer()[..1].to_vec(),
+        ] {
+            assert_eq!(
+                shadow_advisories(&layer),
+                Vec::<String>::new(),
+                "a layer that shadows no built-in advises nothing: {layer:?}"
+            );
+        }
     }
 }

@@ -27824,13 +27824,13 @@ fn instructions_prints_a_built_in_layer_that_names_no_language() {
 #[test]
 fn instructions_prints_the_communication_discipline_as_the_last_built_in() {
     use common::fixtures::{
-        assert_communication_once, builtin_instruction_source, printed_built_in_layer,
-        COMMUNICATION_SECTION,
+        assert_communication_section_once, builtin_instruction_source, printed_built_in_layer,
+        RENDERED_COMMUNICATION_SECTION,
     };
     let proj = temp_project();
     let out = run_rigger_ok(proj.path(), &["instructions"]);
     let communication = format!(
-        "{COMMUNICATION_SECTION}{}\n",
+        "{RENDERED_COMMUNICATION_SECTION}{}\n",
         repo_text(&builtin_instruction_source("communication")).trim_end()
     );
     assert!(
@@ -27838,7 +27838,7 @@ fn instructions_prints_the_communication_discipline_as_the_last_built_in() {
         "the built-in layer closes with the communication section and its source's text; \
          got:\n{out}"
     );
-    assert_communication_once(&out);
+    assert_communication_section_once(&out, RENDERED_COMMUNICATION_SECTION);
 }
 
 /// Spec 120, criterion 14: the handbook's built-in entry list is the built-in layer - one
@@ -28014,6 +28014,52 @@ fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path
         lines.next(),
         Some("# Rigger: recent decisions"),
         "got:\n{out}"
+    );
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, operator-facing: given a project whose
+/// `.rigger/instructions/` holds the named-entry fixture - a file replacing the communication
+/// built-in, an empty one switching the working-discipline built-in off and one shadowing no
+/// built-in - when the operator runs `rigger instructions`, `rigger validate` twice and `rigger
+/// prime`, then each names every built-in's state: the layers as rendered, one warning per
+/// shadowed built-in on a success exit with the same lines on the repeat, and the in-force line.
+#[test]
+fn instructions_validate_and_prime_report_each_built_in_s_state() {
+    use common::fixtures::{
+        instructions_dir, rendered_shadowing_layer, shadowing_operator_layer,
+        SHADOWING_LAYER_ADVISORIES, SHADOWING_LAYER_IN_FORCE_LINE,
+    };
+    let proj = temp_project();
+    let root = proj.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let dir = instructions_dir(root);
+    for ins in shadowing_operator_layer() {
+        std::fs::write(dir.join(format!("{}.md", ins.name)), ins.body).unwrap();
+    }
+    assert_eq!(
+        run_rigger_ok(root, &["instructions"]),
+        rendered_shadowing_layer(),
+        "`rigger instructions` prints each built-in with its state, then the unshadowed file"
+    );
+    for _ in 0..2 {
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(
+            ok,
+            "validate succeeds beside its shadow advisories; stderr:\n{err}"
+        );
+        let advisories: Vec<&str> = err
+            .lines()
+            .filter(|line| line.contains("built-in instruction"))
+            .collect();
+        assert_eq!(
+            advisories, SHADOWING_LAYER_ADVISORIES,
+            "validate warns once per shadowed built-in, the same lines on every run"
+        );
+    }
+    assert_eq!(
+        run_rigger_ok(root, &["prime"]).lines().next(),
+        Some(SHADOWING_LAYER_IN_FORCE_LINE),
+        "`rigger prime` opens with the built-ins in force and the unshadowed file count"
     );
 }
 

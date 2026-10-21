@@ -5,7 +5,8 @@
 //! and their checked-in sources, each entry's body by name, a near name that shadows no
 //! built-in, the layers `rigger instructions` prints, the persona an agent definition parses to,
 //! the system prompt a spawn with no operator layer is composed to, and the composed prompt
-//! spelled section by section.
+//! spelled section by section; and the named-entry operator layer the instruction reporters are
+//! read over, with what `rigger instructions`, `rigger validate` and `rigger prime` report on it.
 
 /// The working-discipline body's hand-over section heading.
 pub const HAND_OVER_HEADING: &str = "## Hand over a tree the gates only confirm";
@@ -127,20 +128,86 @@ pub fn expected_composed_prompt(persona: &str, sections: &[(&str, &str)]) -> Str
     out
 }
 
+/// The line that opens the operator layer `rigger instructions` prints, with the blank line before
+/// it.
+pub const RENDERED_OPERATOR_HEADING: &str =
+    "\nOperator (.rigger/instructions/*.md, filename order):\n";
+
+/// The heading `rigger instructions` gives the communication built-in when no operator file
+/// shadows it.
+pub const RENDERED_COMMUNICATION_SECTION: &str = "\n## communication (built-in)\n";
+
+/// The body of the operator file that replaces the communication built-in in
+/// [`shadowing_operator_layer`].
+pub const REPLACING_COMMUNICATION_BODY: &str = "Log each decision in the team channel.";
+
+/// The body of the operator file of [`shadowing_operator_layer`] that shadows no built-in.
+pub const UNSHADOWING_STYLE_BODY: &str = "Keep the house style.";
+
+/// The named-entry fixture the instruction reporters are read over, in filename order as the
+/// loader returns it: `30-style`, which shadows no built-in; `communication`, replacing that
+/// built-in; and an empty `working-discipline`, switching that built-in off. The
+/// `engineering-principles` built-in stays in force.
+pub fn shadowing_operator_layer() -> Vec<rigger::instructions::Instruction> {
+    [
+        ("30-style", UNSHADOWING_STYLE_BODY),
+        ("communication", REPLACING_COMMUNICATION_BODY),
+        ("working-discipline", ""),
+    ]
+    .into_iter()
+    .map(|(name, body)| rigger::instructions::Instruction {
+        name: name.into(),
+        body: body.into(),
+    })
+    .collect()
+}
+
+/// What `rigger instructions` prints over [`shadowing_operator_layer`], spelled without calling
+/// `render`: each built-in in `BUILTIN` order with its state, then the one unshadowed file.
+pub fn rendered_shadowing_layer() -> String {
+    format!(
+        "{}\n\nBuilt-in:\n\n## engineering-principles (built-in)\n{}\n\n## working-discipline \
+         (switched off by .rigger/instructions/working-discipline.md)\n\n## communication \
+         (replaced by .rigger/instructions/communication.md)\n{REPLACING_COMMUNICATION_BODY}\n\
+         {RENDERED_OPERATOR_HEADING}\n## 30-style\n{UNSHADOWING_STYLE_BODY}\n",
+        rigger::instructions::HEADING,
+        builtin_body("engineering-principles").trim_end()
+    )
+}
+
+/// The advisories `rigger validate` prints over [`shadowing_operator_layer`], in `BUILTIN` order.
+pub const SHADOWING_LAYER_ADVISORIES: [&str; 2] = [
+    "warning: built-in instruction working-discipline is switched off by \
+     .rigger/instructions/working-discipline.md",
+    "warning: built-in instruction communication is replaced by \
+     .rigger/instructions/communication.md",
+];
+
+/// The first line `rigger prime` prints over [`shadowing_operator_layer`].
+pub const SHADOWING_LAYER_IN_FORCE_LINE: &str = "# Rigger instructions in force: \
+     engineering-principles, communication (replaced) (+1 operator files) - see rigger \
+     instructions";
+
 /// The built-in layer of `out`, what `rigger instructions` printed: every line before the
 /// operator layer opens.
 pub fn printed_built_in_layer(out: &str) -> &str {
-    out.split_once("\nOperator (")
+    out.split_once(RENDERED_OPERATOR_HEADING)
         .unwrap_or_else(|| panic!("the operator layer must follow the built-in one; got:\n{out}"))
         .0
 }
 
-/// Assert `text` - a composed system prompt, or the layers `rigger instructions` prints - carries
-/// the communication built-in's section exactly once and the heading the conductor once appended
-/// nowhere.
+/// Assert `text`, a composed system prompt, carries the communication built-in's section exactly
+/// once and the heading the conductor once appended nowhere.
 pub fn assert_communication_once(text: &str) {
+    assert_communication_section_once(text, COMMUNICATION_SECTION);
+}
+
+/// Assert `text` - a composed system prompt, or the layers `rigger instructions` prints - carries
+/// the communication built-in's heading line `section` exactly once and the heading the conductor
+/// once appended nowhere.
+pub fn assert_communication_section_once(text: &str, section: &str) {
     assert_eq!(
-        text.matches(COMMUNICATION_SECTION).count(),
+        text.matches(section).count(),
         1,
         "the communication section appears exactly once; got: {text:?}"
     );

@@ -1192,7 +1192,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3c505da5ae1a",
+    "id": "dup-3b7f3dc952e5",
     "classification": "semantic",
     "sites": [
       {
@@ -3246,6 +3246,26 @@
         "content_hash": "25597419b8dbb616"
       },
       {
+        "file": "tests/common/fixtures/instructions.rs",
+        "name": "\"\\nOperator (.rigger/instructions/*.md, filename order):\\n\"",
+        "content_hash": "e24c1bc0d9d4b92a"
+      },
+      {
+        "file": "tests/common/fixtures/instructions.rs",
+        "name": "\"{}\\n\\nBuilt-in:\\n\\n## engineering-principles (built-in)\\n{}\\n\\n## working-discipline \\\n         (switched off by .rigger/instructions/working-discipline.md)\\n\\n## communication \\\n         (replaced by .rigger/instructions/communication.md)\\n{REPLACING_COMMUNICATION_BODY}\\n\\\n         {RENDERED_OPERATOR_HEADING}\\n## 30-style\\n{UNSHADOWING_STYLE_BODY}\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/common/fixtures/instructions.rs",
+        "name": "\"warning: built-in instruction working-discipline is switched off by \\\n     .rigger/instructions/working-discipline.md\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/common/fixtures/instructions.rs",
+        "name": "\"warning: built-in instruction communication is replaced by \\\n     .rigger/instructions/communication.md\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
         "file": "tests/common/layer_cli.rs",
         "name": "\".rigger\"",
         "content_hash": "eb4fced0969e6c77"
@@ -4217,7 +4237,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 604 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 608 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

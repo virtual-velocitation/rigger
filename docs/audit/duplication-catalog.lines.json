@@ -144,8 +144,8 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 81,
-        "end_line": 83
+        "start_line": 82,
+        "end_line": 84
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
@@ -1120,7 +1120,7 @@
     ]
   },
   {
-    "id": "dup-3c505da5ae1a",
+    "id": "dup-3b7f3dc952e5",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3084,33 +3084,33 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28029,
-        "end_line": 28029
+        "start_line": 28075,
+        "end_line": 28075
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28033,
-        "end_line": 28033
+        "start_line": 28079,
+        "end_line": 28079
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28103,
-        "end_line": 28103
+        "start_line": 28149,
+        "end_line": 28149
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28141,
-        "end_line": 28141
+        "start_line": 28187,
+        "end_line": 28187
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28601,
-        "end_line": 28601
+        "start_line": 28647,
+        "end_line": 28647
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28619,
-        "end_line": 28619
+        "start_line": 28665,
+        "end_line": 28665
       },
       {
         "file": "tests/common/cli.rs",
@@ -3171,6 +3171,26 @@
         "file": "tests/common/fixtures/extraction_tree.rs",
         "start_line": 76,
         "end_line": 76
+      },
+      {
+        "file": "tests/common/fixtures/instructions.rs",
+        "start_line": 134,
+        "end_line": 134
+      },
+      {
+        "file": "tests/common/fixtures/instructions.rs",
+        "start_line": 169,
+        "end_line": 169
+      },
+      {
+        "file": "tests/common/fixtures/instructions.rs",
+        "start_line": 180,
+        "end_line": 180
+      },
+      {
+        "file": "tests/common/fixtures/instructions.rs",
+        "start_line": 182,
+        "end_line": 182
       },
       {
         "file": "tests/common/layer_cli.rs",
@@ -5299,8 +5319,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/instructions.rs",
-        "start_line": 178,
-        "end_line": 183
+        "start_line": 180,
+        "end_line": 185
       },
       {
         "file": "crates/rigger-gates-shell/src/gate.rs",
@@ -7414,8 +7434,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28023,
-        "end_line": 28043
+        "start_line": 28069,
+        "end_line": 28089
       }
     ]
   },

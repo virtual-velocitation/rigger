@@ -4390,4 +4390,41 @@ mod tests {
             hits.join("\n")
         );
     }
+
+    /// `rigger prime`'s first line lists the built-ins in force over the named-entry fixture, a
+    /// replaced one marked and a switched-off one left out, and counts only the operator files
+    /// that shadow no built-in: one, then none once the unshadowed file is dropped.
+    #[test]
+    fn the_in_force_line_names_each_built_in_s_state_and_counts_only_unshadowed_files() {
+        use crate::test_support::{shadowing_operator_layer, SHADOWING_LAYER_IN_FORCE_LINE};
+        assert_eq!(
+            instructions_in_force_line(&shadowing_operator_layer()),
+            SHADOWING_LAYER_IN_FORCE_LINE,
+            "the replaced built-in is marked, the switched-off one omitted, one file counted"
+        );
+        assert_eq!(
+            instructions_in_force_line(&shadowing_operator_layer()[1..]),
+            "# Rigger instructions in force: engineering-principles, communication (replaced) - \
+             see rigger instructions",
+            "a file that shadows a built-in is never counted as an operator file"
+        );
+    }
+
+    /// With every built-in switched off, `rigger prime`'s first line says none is in force.
+    #[test]
+    fn the_in_force_line_says_none_when_every_built_in_is_switched_off() {
+        let off = |name: &str| instructions::Instruction {
+            name: name.into(),
+            body: String::new(),
+        };
+        assert_eq!(
+            instructions_in_force_line(&[
+                off("communication"),
+                off("engineering-principles"),
+                off("working-discipline"),
+            ]),
+            "# Rigger instructions in force: none - see rigger instructions",
+            "no built-in is in force and no operator file remains"
+        );
+    }
 }
