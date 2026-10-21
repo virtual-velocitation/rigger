@@ -14197,6 +14197,7 @@ mod tests {
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
     };
     use crate::test_support::{MergeBreakDriver, MERGE_BREAK_BASE};
+    use crate::test_support::{COMMUNICATION_SECTION, RETIRED_COMMUNICATION_HEADING};
     use std::path::Path;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
@@ -28931,9 +28932,6 @@ mod tests {
         );
     }
 
-    /// The heading line the communication built-in opens in a composed system prompt.
-    const COMMUNICATION_SECTION: &str = "\n## communication\n";
-
     #[test]
     fn the_conductor_threads_each_agents_persona_to_the_driver() {
         // The agent's PERSONA (its role - the markdown body of its definition) must be
@@ -29056,7 +29054,7 @@ mod tests {
             "the system prompt carries the communication section exactly once; got: {sys:?}"
         );
         assert!(
-            !sys.contains("# Rigger communication discipline (non-negotiable)"),
+            !sys.contains(RETIRED_COMMUNICATION_HEADING),
             "the retired communication heading is gone from the system prompt; got: {sys:?}"
         );
     }

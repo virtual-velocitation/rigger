@@ -1794,6 +1794,7 @@ mod tests {
     use crate::test_support::git_init_quiet;
     use crate::test_support::language_marker_hits;
     use crate::test_support::tool_available;
+    use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
 
     /// Spec 101: a graph rebuild reports its progress in tenths of the log positions it covers -
     /// a line each time a batch carries it into a new tenth, never twice for one tenth - with the
@@ -4327,7 +4328,7 @@ mod tests {
         )
         .unwrap();
         let mut texts = every_shipped_agent_text();
-        let handbook = repo().join("docs/handbook/authoring-agents.md");
+        let handbook = repo().join(AUTHORING_AGENTS_HANDBOOK);
         texts.push((
             handbook.display().to_string(),
             std::fs::read_to_string(&handbook).unwrap(),

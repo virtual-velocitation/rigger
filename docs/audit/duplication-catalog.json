@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-8aafdf9cb543",
+    "id": "dup-f19c20e54878",
     "classification": "near",
     "sites": [
       {
@@ -148,6 +148,11 @@
         "content_hash": "6fd90a8c2eed6379"
       },
       {
+        "file": "tests/common/fixtures/instructions.rs",
+        "name": "builtin_instruction_source",
+        "content_hash": "b0b4170272f04fb7"
+      },
+      {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
         "name": "unit_branch",
         "content_hash": "6fd90a8c2eed6379"
@@ -163,7 +168,7 @@
         "content_hash": "6fd90a8c2eed6379"
       }
     ],
-    "proposed_home": "a new shared module (sites span 16 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/mod.rs, tests/canary_model_drift_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 17 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/mod.rs, tests/canary_model_drift_periphery.rs, tests/common/fixtures/instructions.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

@@ -155,6 +155,10 @@ mod graph_fixtures;
 mod ingest_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/instructions.rs"]
+mod instruction_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/plan_critique.rs"]
 mod plan_critique_fixtures;
 /// THE READ FAULT fixture the run sink's test arms, compiled here from the same file as the
@@ -198,6 +202,7 @@ mod test_support {
     #[cfg(feature = "symbols")]
     pub use crate::host_fixtures::*;
     pub use crate::ingest_fixtures::*;
+    pub use crate::instruction_fixtures::*;
     #[cfg(feature = "symbols")]
     pub use crate::ledger_fixtures::*;
     pub use crate::plan_critique_fixtures::*;

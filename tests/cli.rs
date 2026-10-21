@@ -13357,7 +13357,7 @@ fn validate_residue_scan_surfaces_an_unreadable_store_conn_never_misreporting_li
 #[test]
 fn empty_repo_scaffold_path_prints_the_agent_collection_pointer() {
     const COLLECTION_URL: &str = "github.com/msitarzewski/agency-agents";
-    const HANDBOOK: &str = "docs/handbook/authoring-agents.md";
+    const HANDBOOK: &str = common::fixtures::AUTHORING_AGENTS_HANDBOOK;
 
     let dir = temp_project();
     let root = dir.path();
@@ -27770,13 +27770,125 @@ fn instructions_prints_a_built_in_layer_that_names_no_language() {
         rigger::instructions::render(&[]),
         "with no operator file the binary prints every layer as rendered"
     );
-    let (built_in, _) = out
-        .split_once("\nOperator (")
-        .unwrap_or_else(|| panic!("the operator layer must follow the built-in one; got:\n{out}"));
+    let built_in = common::fixtures::printed_built_in_layer(&out);
     assert_eq!(
         common::fixtures::language_marker_hits(built_in),
         Vec::<&str>::new(),
         "the built-in layer the binary prints names no language"
+    );
+}
+
+/// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN, operator-facing: given a
+/// fresh project, when the operator runs `rigger instructions`, then the built-in layer it prints
+/// closes with the `communication` section carrying its checked-in source's text, the section
+/// appears once, and the heading the conductor once appended appears nowhere.
+#[test]
+fn instructions_prints_the_communication_discipline_as_the_last_built_in() {
+    use common::fixtures::{
+        builtin_instruction_source, printed_built_in_layer, COMMUNICATION_SECTION,
+        RETIRED_COMMUNICATION_HEADING,
+    };
+    let proj = temp_project();
+    let out = run_rigger_ok(proj.path(), &["instructions"]);
+    let communication = format!(
+        "{COMMUNICATION_SECTION}{}\n",
+        repo_text(&builtin_instruction_source("communication")).trim_end()
+    );
+    assert!(
+        printed_built_in_layer(&out).ends_with(&communication),
+        "the built-in layer closes with the communication section and its source's text; \
+         got:\n{out}"
+    );
+    assert_eq!(
+        out.matches(COMMUNICATION_SECTION).count(),
+        1,
+        "the communication section is printed once; got:\n{out}"
+    );
+    assert!(
+        !out.contains(RETIRED_COMMUNICATION_HEADING),
+        "the retired communication heading is printed nowhere; got:\n{out}"
+    );
+}
+
+/// Spec 120, criterion 14: the handbook's built-in entry list is the built-in layer - one
+/// numbered entry per built-in entry, in the layer's order, each naming the checked-in source
+/// whose text is that entry's body.
+#[test]
+fn the_handbook_lists_every_built_in_entry_in_order_with_its_source() {
+    use common::fixtures::{builtin_instruction_source, AUTHORING_AGENTS_HANDBOOK};
+    let handbook = repo_text(AUTHORING_AGENTS_HANDBOOK);
+    let listed: Vec<(String, String)> = handbook
+        .lines()
+        .filter(|line| line.contains("Source: `"))
+        .map(|line| {
+            let entry = line.split_once(" - ").unwrap_or_default().0;
+            let source = line.rsplit_once("Source: ").unwrap_or_default().1;
+            (entry.to_string(), source.to_string())
+        })
+        .collect();
+    let layer: Vec<(String, String)> = rigger::instructions::BUILTIN
+        .iter()
+        .enumerate()
+        .map(|(at, (name, _))| {
+            (
+                format!("{}. `{name}`", at + 1),
+                format!("`{}`.", builtin_instruction_source(name)),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed, layer,
+        "the handbook numbers every built-in entry in the layer's order with its source"
+    );
+    for (name, body) in rigger::instructions::BUILTIN {
+        assert_eq!(
+            repo_text(&builtin_instruction_source(name)),
+            *body,
+            "the source the handbook names for {name:?} is that entry's body"
+        );
+    }
+}
+
+/// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN, end to end: given a project
+/// whose one stage spawns its worker through the real subprocess driver, when the operator runs
+/// `rigger run`, then the file the agent's `--system-prompt-file` names holds exactly `compose`'s
+/// output over the worker's persona - the communication section once, the retired heading
+/// nowhere, nothing appended after the composed layers.
+#[cfg(unix)]
+#[test]
+fn run_spawns_the_worker_with_the_composed_system_prompt_and_nothing_appended() {
+    use common::fixtures::{
+        composed_system_prompt, COMMUNICATION_SECTION, RETIRED_COMMUNICATION_HEADING,
+    };
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let work = tempfile::tempdir().unwrap();
+    let path = common::repo::stub_path(work.path(), "claude", Some("prompt-capture-agent.sh"));
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path),
+            ("PROMPT_CAPTURE_DIR", work.path().to_str().unwrap()),
+        ],
+    );
+    assert!(ok, "the run must succeed; stderr: {err}\nstdout: {out}");
+    let system = std::fs::read_to_string(work.path().join("system-prompt"))
+        .unwrap_or_else(|e| panic!("the worker's system prompt was captured: {e}"));
+    assert_eq!(
+        system,
+        composed_system_prompt(UNISOLATED_WORKER),
+        "the worker's system prompt is compose's output over its persona, nothing appended"
+    );
+    assert_eq!(
+        system.matches(COMMUNICATION_SECTION).count(),
+        1,
+        "the worker's system prompt carries the communication section once; got:\n{system}"
+    );
+    assert!(
+        !system.contains(RETIRED_COMMUNICATION_HEADING),
+        "the retired communication heading is gone from the worker's system prompt; got:\n{system}"
     );
 }
 

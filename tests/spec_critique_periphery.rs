@@ -18,7 +18,7 @@ use common::cli::{
     run_rigger, run_rigger_envs, run_rigger_ok, run_stream_identity, seed_run_events, seed_store,
     temp_project, temp_repoless_project, write_spec_project,
 };
-use common::fixtures::{git_ok, temp_git_project_with_commit};
+use common::fixtures::{composed_system_prompt, git_ok, temp_git_project_with_commit};
 use common::repo::{
     critique_stub_argv, critique_stub_record, critique_stub_spawns, critique_stub_task,
     write_critique_stub, write_critique_stub_reporting, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
@@ -241,12 +241,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     );
     assert_eq!(
         system,
-        rigger::instructions::compose(
-            &rigger::config::parse_agent(CRITIC.as_bytes())
-                .unwrap()
-                .prompt,
-            &[]
-        ),
+        composed_system_prompt(CRITIC),
         "the critic's system prompt is compose's output over its persona, as every spawn's is"
     );
 
