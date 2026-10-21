@@ -28074,23 +28074,15 @@ fn validate_warns_of_no_built_in_for_a_near_named_or_other_operator_file() {
 /// exists, then each reports the main checkout's layer, never the worktree's own.
 #[test]
 fn prime_and_instructions_from_a_nested_worktree_report_the_main_checkout_s_instruction_layer() {
-    use common::cli::{
-        assert_instructions_render_the_shadowing_layer,
-        assert_prime_names_the_shadowing_layer_states, assert_reported_from_a_nested_worktree,
-        seed_store,
-    };
-    let cases: [(bool, common::cli::Reporter); 4] = [
-        (true, assert_prime_names_the_shadowing_layer_states),
-        (true, assert_instructions_render_the_shadowing_layer),
-        (false, assert_prime_names_the_shadowing_layer_states),
-        (false, assert_instructions_render_the_shadowing_layer),
-    ];
-    for (store, report) in cases {
-        let proj = temp_git_project_with_commit();
-        if store {
-            seed_store(proj.path());
+    use common::cli::{assert_reported_from_a_nested_worktree, seed_store, INSTRUCTION_REPORTERS};
+    for store in [true, false] {
+        for report in INSTRUCTION_REPORTERS {
+            let proj = temp_git_project_with_commit();
+            if store {
+                seed_store(proj.path());
+            }
+            assert_reported_from_a_nested_worktree(proj.path(), report);
         }
-        assert_reported_from_a_nested_worktree(proj.path(), report);
     }
 }
 
@@ -28100,10 +28092,8 @@ fn prime_and_instructions_from_a_nested_worktree_report_the_main_checkout_s_inst
 /// discovery stopped at the directory's parent, then each reports that layer, read at the cwd.
 #[test]
 fn prime_and_instructions_outside_git_with_no_store_read_the_layer_at_the_cwd() {
-    use common::cli::{run_rigger_envs, write_operator_layer};
-    use common::fixtures::{
-        rendered_shadowing_layer, shadowing_operator_layer, SHADOWING_LAYER_IN_FORCE_LINE,
-    };
+    use common::cli::{write_operator_layer, INSTRUCTION_REPORTERS};
+    use common::fixtures::shadowing_operator_layer;
     let proj = tempfile::tempdir().expect("a directory outside any git repository");
     let root = proj.path();
     write_operator_layer(root, &shadowing_operator_layer());
@@ -28111,23 +28101,26 @@ fn prime_and_instructions_outside_git_with_no_store_read_the_layer_at_the_cwd() 
         "GIT_CEILING_DIRECTORIES",
         root.parent().unwrap().to_str().unwrap(),
     )];
-    let (prime, err, ok) = run_rigger_envs(root, &["prime"], &ceiling);
-    assert!(ok, "`rigger prime` succeeds outside git; stderr:\n{err}");
-    assert_eq!(
-        prime.lines().next(),
-        Some(SHADOWING_LAYER_IN_FORCE_LINE),
-        "`rigger prime` reads the cwd's layer when no store or git repository names a root"
-    );
-    let (instructions, err, ok) = run_rigger_envs(root, &["instructions"], &ceiling);
-    assert!(
-        ok,
-        "`rigger instructions` succeeds outside git; stderr:\n{err}"
-    );
-    assert_eq!(
-        instructions,
-        rendered_shadowing_layer(),
-        "`rigger instructions` reads the cwd's layer when no store or git repository names a root"
-    );
+    for report in INSTRUCTION_REPORTERS {
+        report(root, &ceiling);
+    }
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, beside a store below the project root: given a
+/// project whose `.rigger/instructions/` holds the named-entry fixture and whose subdirectory holds
+/// a store of its own, when the operator runs `rigger instructions` and `rigger prime` in that
+/// subdirectory, then each reports the project's layer, never the layer beside the store it finds.
+#[test]
+fn prime_and_instructions_beside_a_store_in_a_subdirectory_report_the_project_s_layer() {
+    use common::cli::{seed_store, write_operator_layer, INSTRUCTION_REPORTERS};
+    use common::fixtures::{shadowing_operator_layer, subdirectory_of};
+    let proj = temp_project();
+    let sub = subdirectory_of(proj.path());
+    seed_store(&sub);
+    write_operator_layer(proj.path(), &shadowing_operator_layer());
+    for report in INSTRUCTION_REPORTERS {
+        report(&sub, &[]);
+    }
 }
 
 /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from below the project root: given a project
@@ -28169,15 +28162,8 @@ fn prime_and_instructions_from_a_subdirectory_report_the_project_s_instruction_l
 /// project's layer exactly as an unfenced run does.
 #[test]
 fn prime_and_instructions_under_the_gate_store_fence_report_the_project_s_instruction_layer() {
-    use common::cli::{
-        assert_instructions_render_the_shadowing_layer,
-        assert_prime_names_the_shadowing_layer_states, assert_reported_under_the_store_fence,
-    };
-    let reporters: [common::cli::Reporter; 2] = [
-        assert_instructions_render_the_shadowing_layer,
-        assert_prime_names_the_shadowing_layer_states,
-    ];
-    for report in reporters {
+    use common::cli::{assert_reported_under_the_store_fence, INSTRUCTION_REPORTERS};
+    for report in INSTRUCTION_REPORTERS {
         for project in [temp_store_project(), temp_project()] {
             assert_reported_under_the_store_fence(project.path(), report);
         }

@@ -168,6 +168,13 @@ pub fn prime_first_line(cwd: &Path, envs: &[(&str, &str)]) -> Option<String> {
 /// in a directory with the given environment set, and asserts what it printed.
 pub type Reporter = fn(&Path, &[(&str, &str)]);
 
+/// Both instruction reporters' assertions over the named-entry fixture: `rigger instructions`,
+/// then `rigger prime`.
+pub const INSTRUCTION_REPORTERS: [Reporter; 2] = [
+    assert_instructions_render_the_shadowing_layer,
+    assert_prime_names_the_shadowing_layer_states,
+];
+
 /// Write the named-entry fixture (`shadowing_operator_layer`) into the project at `root`, then run
 /// the reporter assertion `report` at `root` and in its subdirectory: the reporter reads the
 /// project's instruction layer from either, never the subdirectory's own.
