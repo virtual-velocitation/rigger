@@ -157,6 +157,7 @@ fn push_section(out: &mut String, name: &str, body: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::builtin_body;
 
     fn op(name: &str, body: &str) -> Instruction {
         Instruction {
@@ -278,15 +279,6 @@ mod tests {
             ),
             "the third built-in carries the communication discipline's body verbatim"
         );
-    }
-
-    /// The body of the built-in entry named `name`.
-    fn builtin_body(name: &str) -> &'static str {
-        BUILTIN
-            .iter()
-            .find(|(entry, _)| *entry == name)
-            .map(|(_, body)| *body)
-            .unwrap_or_else(|| panic!("the {name:?} entry is built in"))
     }
 
     /// The built-in working discipline's body.

@@ -2,7 +2,7 @@
 //! prompt tests, the binary's shipped-text tests and the integration suites: the working-discipline
 //! body's section headings and the review method its `## When you review` section holds; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
-//! and their checked-in sources, the layers `rigger instructions` prints, and the system prompt a
+//! and their checked-in sources, each entry's body by name, the layers `rigger instructions` prints, and the system prompt a
 //! spawn with no operator layer is composed to.
 
 /// The working-discipline body's hand-over section heading.
@@ -79,6 +79,17 @@ pub const AUTHORING_AGENTS_HANDBOOK: &str = "docs/handbook/authoring-agents.md";
 /// root.
 pub fn builtin_instruction_source(name: &str) -> String {
     format!("crates/rigger-domain/src/instructions/{name}.md")
+}
+
+/// The body of the built-in instruction entry `name`.
+pub fn builtin_body(name: &str) -> &'static str {
+    match rigger::instructions::BUILTIN
+        .iter()
+        .find(|(entry, _)| *entry == name)
+    {
+        Some((_, body)) => body,
+        None => panic!("the {name:?} entry is built in"),
+    }
 }
 
 /// The system prompt a spawn of the agent defined by `agent_file` receives with no operator

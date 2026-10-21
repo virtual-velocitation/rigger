@@ -2522,10 +2522,7 @@ mod tests {
         let skill = PLANNING_A_SPEC_BODY;
         let guide = PLANNING_FIELD_GUIDE_BODY;
         let preflight = spec_preflight_body(&ctx);
-        let (_, discipline) = crate::instructions::BUILTIN
-            .iter()
-            .find(|(name, _)| *name == "working-discipline")
-            .expect("the working-discipline entry is built in");
+        let discipline = crate::test_support::builtin_body("working-discipline");
         for (label, list) in [
             (
                 "the working-discipline instruction",

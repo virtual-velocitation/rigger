@@ -3807,7 +3807,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/instructions.rs:161-166` `op`
+- `crates/rigger-domain/src/instructions.rs:162-167` `op`
 - `crates/rigger-gates-shell/src/gate.rs:1688-1693` `unavailable`
 
 #### `dup-557d6899b868` (exact, 2 sites)
