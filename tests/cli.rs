@@ -28026,42 +28026,52 @@ fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path
 /// shadowed built-in on a success exit with the same lines on the repeat, and the in-force line.
 #[test]
 fn instructions_validate_and_prime_report_each_built_in_s_state() {
+    use common::cli::{assert_reporters_name_the_shadowing_layer_states, write_operator_layer};
+    use common::fixtures::shadowing_operator_layer;
+    let proj = temp_project();
+    let root = proj.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    write_operator_layer(root, &shadowing_operator_layer());
+    assert_reporters_name_the_shadowing_layer_states(root);
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED through the loader: given the named-entry
+/// fixture whose working-discipline file holds a blank body other than an empty one - a lone byte
+/// order mark, ASCII whitespace, a byte order mark before an em space - when the operator runs
+/// `rigger instructions`, `rigger validate` twice and `rigger prime`, then each reports that
+/// built-in switched off exactly as for the empty file.
+#[test]
+fn instructions_validate_and_prime_report_a_blank_same_named_file_as_switching_its_built_in_off() {
+    use common::cli::{assert_reporters_name_the_shadowing_layer_states, write_operator_layer};
+    use common::fixtures::{shadowing_operator_layer, BLANK_BODIES};
+    let proj = temp_project();
+    let root = proj.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    for blank in &BLANK_BODIES[1..] {
+        let mut layer = shadowing_operator_layer();
+        layer[2].body = blank.to_string();
+        write_operator_layer(root, &layer);
+        assert_reporters_name_the_shadowing_layer_states(root);
+    }
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, the arm with nothing shadowed: given a project
+/// whose `.rigger/instructions/` holds only a near name of the communication built-in and a file
+/// of another name, when the operator runs `rigger validate`, then it succeeds and warns of no
+/// built-in instruction.
+#[test]
+fn validate_warns_of_no_built_in_for_a_near_named_or_other_operator_file() {
+    use common::cli::{assert_validate_names_the_shadowed_built_ins, write_operator_layer};
     use common::fixtures::{
-        instructions_dir, rendered_shadowing_layer, shadowing_operator_layer,
-        SHADOWING_LAYER_ADVISORIES, SHADOWING_LAYER_IN_FORCE_LINE,
+        op, shadowing_operator_layer, COMMUNICATION_NEAR_NAME, REPLACING_COMMUNICATION_BODY,
     };
     let proj = temp_project();
     let root = proj.path();
     write_workflow_fixture(root, &LIVENESS_WORKFLOW);
-    let dir = instructions_dir(root);
-    for ins in shadowing_operator_layer() {
-        std::fs::write(dir.join(format!("{}.md", ins.name)), ins.body).unwrap();
-    }
-    assert_eq!(
-        run_rigger_ok(root, &["instructions"]),
-        rendered_shadowing_layer(),
-        "`rigger instructions` prints each built-in with its state, then the unshadowed file"
-    );
-    for _ in 0..2 {
-        let (_out, err, ok) = run_rigger(root, &["validate"]);
-        assert!(
-            ok,
-            "validate succeeds beside its shadow advisories; stderr:\n{err}"
-        );
-        let advisories: Vec<&str> = err
-            .lines()
-            .filter(|line| line.contains("built-in instruction"))
-            .collect();
-        assert_eq!(
-            advisories, SHADOWING_LAYER_ADVISORIES,
-            "validate warns once per shadowed built-in, the same lines on every run"
-        );
-    }
-    assert_eq!(
-        run_rigger_ok(root, &["prime"]).lines().next(),
-        Some(SHADOWING_LAYER_IN_FORCE_LINE),
-        "`rigger prime` opens with the built-ins in force and the unshadowed file count"
-    );
+    let mut layer = shadowing_operator_layer();
+    layer[1] = op(COMMUNICATION_NEAR_NAME, REPLACING_COMMUNICATION_BODY);
+    write_operator_layer(root, &layer[..2]);
+    assert_validate_names_the_shadowed_built_ins(root, &[]);
 }
 
 /// `rigger init` scaffolds the operator instruction directory with its README and names it

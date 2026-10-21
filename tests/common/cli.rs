@@ -110,6 +110,54 @@ pub fn run_rigger_ok(cwd: &Path, args: &[&str]) -> String {
     out
 }
 
+/// Write each file of the operator layer `layer` into `root`'s `.rigger/instructions/` as
+/// `<name>.md` holding its body.
+pub fn write_operator_layer(root: &Path, layer: &[rigger::instructions::Instruction]) {
+    let dir = super::fixtures::instructions_dir(root);
+    for ins in layer {
+        std::fs::write(dir.join(format!("{}.md", ins.name)), &ins.body).unwrap();
+    }
+}
+
+/// Run `rigger validate` in `root` and assert it succeeds and that the lines of its stderr warning
+/// of a built-in instruction an operator file shadows are `advisories`, in order.
+pub fn assert_validate_names_the_shadowed_built_ins(root: &Path, advisories: &[&str]) {
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate succeeds beside its shadow advisories; stderr:\n{err}"
+    );
+    assert_eq!(
+        lines_where(&err, |line| line.contains("built-in instruction")),
+        advisories,
+        "validate warns once per shadowed built-in and of no other; stderr:\n{err}"
+    );
+}
+
+/// Assert that over `root`, whose operator layer replaces the communication built-in, switches the
+/// working-discipline built-in off and adds one file that shadows nothing, `rigger instructions`
+/// prints each built-in with its state, `rigger validate` warns once per shadowed built-in on a
+/// success exit with the same lines on the repeat, and `rigger prime` opens with the built-ins in
+/// force and the unshadowed file count.
+pub fn assert_reporters_name_the_shadowing_layer_states(root: &Path) {
+    use super::fixtures::{
+        rendered_shadowing_layer, SHADOWING_LAYER_ADVISORIES, SHADOWING_LAYER_IN_FORCE_LINE,
+    };
+    assert_eq!(
+        run_rigger_ok(root, &["instructions"]),
+        rendered_shadowing_layer(),
+        "`rigger instructions` prints each built-in with its state, then the unshadowed file"
+    );
+    for _ in 0..2 {
+        assert_validate_names_the_shadowed_built_ins(root, &SHADOWING_LAYER_ADVISORIES);
+    }
+    assert_eq!(
+        run_rigger_ok(root, &["prime"]).lines().next(),
+        Some(SHADOWING_LAYER_IN_FORCE_LINE),
+        "`rigger prime` opens with the built-ins in force and the unshadowed file count"
+    );
+}
+
 /// Run `rigger graph --around <seed> --depth <depth>` in `cwd` ([`run_rigger`]) and return
 /// (stdout, stderr, success).
 pub fn run_around(cwd: &Path, seed: &str, depth: i64) -> (String, String, bool) {
