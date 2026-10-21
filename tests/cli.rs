@@ -28067,23 +28067,46 @@ fn validate_warns_of_no_built_in_for_a_near_named_or_other_operator_file() {
     assert_validate_names_the_shadowed_built_ins(root, &[]);
 }
 
-/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from a unit worktree: given a committed project
-/// whose `.rigger/instructions/` holds the named-entry fixture, uncommitted, and a worktree nested
-/// under its `.rigger/` that therefore checks none of that layer out, when the operator runs
-/// `rigger prime` or `rigger instructions` in the worktree, with a store and before any store
-/// exists, then each reports the main checkout's layer, never the worktree's own.
-#[test]
-fn prime_and_instructions_from_a_nested_worktree_report_the_main_checkout_s_instruction_layer() {
-    use common::cli::{assert_reported_from_a_nested_worktree, seed_store, INSTRUCTION_REPORTERS};
-    for store in [true, false] {
-        for report in INSTRUCTION_REPORTERS {
-            let proj = temp_git_project_with_commit();
-            if store {
-                seed_store(proj.path());
-            }
-            assert_reported_from_a_nested_worktree(proj.path(), report);
-        }
-    }
+rigger::test_cases! {
+    /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from a unit worktree: given a committed
+    /// project whose `.rigger/instructions/` holds the named-entry fixture, uncommitted, and a
+    /// worktree nested under its `.rigger/` that therefore checks none of that layer out, when the
+    /// operator runs `rigger prime` or `rigger instructions` in the worktree, with a store and
+    /// before any store exists, then each reports the main checkout's layer, never the worktree's
+    /// own.
+    prime_and_instructions_from_a_nested_worktree_report_the_main_checkout_s_instruction_layer: {
+        use common::cli::{
+            assert_each_reporter_with_and_without_a_store,
+            assert_reported_from_a_nested_worktree,
+        };
+        assert_each_reporter_with_and_without_a_store(assert_reported_from_a_nested_worktree)
+    };
+    /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from below the project root: given a project
+    /// whose `.rigger/instructions/` holds the named-entry fixture - a file replacing the
+    /// communication built-in, an empty one switching the working-discipline built-in off and one
+    /// shadowing no built-in - with a store and in a git project before any store exists, when the
+    /// operator runs `rigger instructions` and `rigger prime` at the root and in a subdirectory,
+    /// then both report the project's layer: the same layers, each built-in with its state, and the
+    /// same in-force line.
+    prime_and_instructions_from_a_subdirectory_report_the_project_s_instruction_layer: {
+        use common::cli::{
+            assert_each_reporter_with_and_without_a_store,
+            assert_reported_from_below,
+        };
+        assert_each_reporter_with_and_without_a_store(assert_reported_from_below)
+    };
+    /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, inside a gate: given a project whose
+    /// `.rigger/instructions/` holds the named-entry fixture, with a store and before any store
+    /// exists, when a gate's process runs `rigger instructions` and `rigger prime` at the project
+    /// root with the gate store fence pinned to a scratch store outside the project, then each
+    /// reports the project's layer exactly as an unfenced run does.
+    prime_and_instructions_under_the_gate_store_fence_report_the_project_s_instruction_layer: {
+        use common::cli::{
+            assert_each_reporter_with_and_without_a_store,
+            assert_reported_under_the_store_fence,
+        };
+        assert_each_reporter_with_and_without_a_store(assert_reported_under_the_store_fence)
+    };
 }
 
 /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, outside any git repository: given a directory
@@ -28120,53 +28143,6 @@ fn prime_and_instructions_beside_a_store_in_a_subdirectory_report_the_project_s_
     write_operator_layer(proj.path(), &shadowing_operator_layer());
     for report in INSTRUCTION_REPORTERS {
         report(&sub, &[]);
-    }
-}
-
-/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from below the project root: given a project
-/// whose `.rigger/instructions/` holds the named-entry fixture - a file replacing the communication
-/// built-in, an empty one switching the working-discipline built-in off and one shadowing no
-/// built-in - when the operator runs a reporter at the root and in a subdirectory, then both report
-/// the project's layer: `rigger prime` in a project with a store and in a git project before any
-/// store exists opens with the same in-force line, and `rigger instructions` prints the same
-/// layers, each built-in with its state.
-#[test]
-fn prime_and_instructions_from_a_subdirectory_report_the_project_s_instruction_layer() {
-    use common::cli::{
-        assert_instructions_render_the_shadowing_layer,
-        assert_prime_names_the_shadowing_layer_states, assert_reported_from_below,
-    };
-    let cases: [(tempfile::TempDir, common::cli::Reporter); 3] = [
-        (
-            temp_store_project(),
-            assert_prime_names_the_shadowing_layer_states,
-        ),
-        (
-            temp_project(),
-            assert_prime_names_the_shadowing_layer_states,
-        ),
-        (
-            temp_project(),
-            assert_instructions_render_the_shadowing_layer,
-        ),
-    ];
-    for (project, report) in cases {
-        assert_reported_from_below(project.path(), report);
-    }
-}
-
-/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, inside a gate: given a project whose
-/// `.rigger/instructions/` holds the named-entry fixture, with a store and before any store
-/// exists, when a gate's process runs `rigger instructions` and `rigger prime` at the project root
-/// with the gate store fence pinned to a scratch store outside the project, then each reports the
-/// project's layer exactly as an unfenced run does.
-#[test]
-fn prime_and_instructions_under_the_gate_store_fence_report_the_project_s_instruction_layer() {
-    use common::cli::{assert_reported_under_the_store_fence, INSTRUCTION_REPORTERS};
-    for report in INSTRUCTION_REPORTERS {
-        for project in [temp_store_project(), temp_project()] {
-            assert_reported_under_the_store_fence(project.path(), report);
-        }
     }
 }
 

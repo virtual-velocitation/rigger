@@ -175,6 +175,21 @@ pub const INSTRUCTION_REPORTERS: [Reporter; 2] = [
     assert_prime_names_the_shadowing_layer_states,
 ];
 
+/// Run the placement assertion `placed` - a reporter run from one place in the project - for each
+/// of [`INSTRUCTION_REPORTERS`], in a committed git project with a store and in one before any
+/// store exists.
+pub fn assert_each_reporter_with_and_without_a_store(placed: fn(&Path, Reporter)) {
+    for store in [true, false] {
+        for report in INSTRUCTION_REPORTERS {
+            let proj = super::fixtures::temp_git_project_with_commit();
+            if store {
+                seed_store(proj.path());
+            }
+            placed(proj.path(), report);
+        }
+    }
+}
+
 /// Write the named-entry fixture (`shadowing_operator_layer`) into the project at `root`, then run
 /// the reporter assertion `report` at `root` and in its subdirectory: the reporter reads the
 /// project's instruction layer from either, never the subdirectory's own.
