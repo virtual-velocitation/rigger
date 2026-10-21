@@ -4359,8 +4359,9 @@ mod tests {
             ("lookup.md", "model: haiku"),
             ("verify.md", "model: sonnet"),
         ] {
-            let committed = read_text(&repo().join(".claude").join("agents").join(file));
-            let scaffolded = dir.path().join(".claude").join("agents").join(file);
+            let helper = Path::new(".claude").join("agents").join(file);
+            let committed = read_text(&repo().join(&helper));
+            let scaffolded = dir.path().join(&helper);
             let scaffolded = std::fs::read_to_string(&scaffolded)
                 .unwrap_or_else(|e| panic!("init must write {}: {e}", scaffolded.display()));
             assert_eq!(
