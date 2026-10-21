@@ -150,14 +150,14 @@ pub const UNSHADOWING_STYLE_BODY: &str = "Keep the house style.";
 /// `engineering-principles` built-in stays in force.
 pub fn shadowing_operator_layer() -> Vec<rigger::instructions::Instruction> {
     [
-        ("30-style", UNSHADOWING_STYLE_BODY),
-        ("communication", REPLACING_COMMUNICATION_BODY),
-        ("working-discipline", ""),
+        ("30-style", Some(UNSHADOWING_STYLE_BODY)),
+        ("communication", Some(REPLACING_COMMUNICATION_BODY)),
+        ("working-discipline", None),
     ]
     .into_iter()
     .map(|(name, body)| rigger::instructions::Instruction {
         name: name.into(),
-        body: body.into(),
+        body: body.unwrap_or_default().into(),
     })
     .collect()
 }
