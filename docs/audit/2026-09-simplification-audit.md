@@ -1980,7 +1980,7 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `tests/cli.rs:26872-26872` `Command::new`
 - `tests/common/cli.rs:21-21` `Command::new`
 - `tests/common/cli.rs:74-74` `Command::new`
-- `tests/common/cli.rs:427-427` `Command::new`
+- `tests/common/cli.rs:452-452` `Command::new`
 - `tests/common/fixtures/conductor.rs:288-288` `Command::new`
 - `tests/common/fixtures/conductor.rs:372-372` `Command::new`
 - `tests/common/fixtures/git.rs:25-25` `Command::new`
@@ -2878,26 +2878,26 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:26828-26828` `".rigger"`
 - `tests/cli.rs:26861-26861` `".rigger"`
 - `tests/cli.rs:27523-27523` `".rigger"`
-- `tests/cli.rs:28174-28174` `"scaffolded .rigger/instructions/README.md"`
-- `tests/cli.rs:28178-28178` `".rigger/instructions/README.md"`
-- `tests/cli.rs:28248-28248` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28286-28286` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28746-28746` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28764-28764` `"gw/.rigger/workflow.yml"`
-- `tests/common/cli.rs:405-405` `".rigger"`
-- `tests/common/cli.rs:416-416` `".rigger"`
-- `tests/common/cli.rs:437-437` `".rigger"`
-- `tests/common/cli.rs:475-475` `".rigger"`
-- `tests/common/cli.rs:960-960` `"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
+- `tests/cli.rs:28196-28196` `"scaffolded .rigger/instructions/README.md"`
+- `tests/cli.rs:28200-28200` `".rigger/instructions/README.md"`
+- `tests/cli.rs:28270-28270` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28308-28308` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28768-28768` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28786-28786` `"gw/.rigger/workflow.yml"`
+- `tests/common/cli.rs:430-430` `".rigger"`
+- `tests/common/cli.rs:441-441` `".rigger"`
+- `tests/common/cli.rs:462-462` `".rigger"`
+- `tests/common/cli.rs:500-500` `".rigger"`
+- `tests/common/cli.rs:985-985` `"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
      vacuums the file, which is a mechanic of the embedded .rigger/events.db store; this project \
      is configured for the server-backed store, where the migration does not run. Re-run it \
      against a project on the sqlite backend. Refusing rather than reporting a migration that did \
      not happen.\n"`
-- `tests/common/cli.rs:1045-1045` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
-- `tests/common/cli.rs:1262-1262` `".rigger"`
-- `tests/common/cli.rs:1263-1263` `"create .rigger/agents"`
-- `tests/common/cli.rs:1376-1376` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
-- `tests/common/cli.rs:1473-1473` `".rigger"`
+- `tests/common/cli.rs:1070-1070` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
+- `tests/common/cli.rs:1287-1287` `".rigger"`
+- `tests/common/cli.rs:1288-1288` `"create .rigger/agents"`
+- `tests/common/cli.rs:1401-1401` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
+- `tests/common/cli.rs:1498-1498` `".rigger"`
 - `tests/common/fixtures/config.rs:120-120` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/fixtures/extraction_tree.rs:76-76` `".rigger/workflow.yml"`
 - `tests/common/fixtures/instructions.rs:142-142` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
@@ -3943,7 +3943,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/spec.rs:2643-2645` `f11`
-- `tests/common/cli.rs:1044-1046` `graph_build_line`
+- `tests/common/cli.rs:1069-1071` `graph_build_line`
 
 #### `dup-d340e212490f` (exact, 2 sites)
 
@@ -4086,11 +4086,11 @@ mandatory sweep: sqlite Connection::open call sites - 60 site(s), collected mech
 - `tests/cli.rs:893-893` `Connection::open`
 - `tests/cli.rs:9347-9347` `Connection::open`
 - `tests/common/cli.rs:98-98` `Connection::open`
-- `tests/common/cli.rs:710-710` `Connection::open`
-- `tests/common/cli.rs:723-723` `Connection::open`
-- `tests/common/cli.rs:781-781` `Connection::open`
-- `tests/common/cli.rs:791-791` `Connection::open`
-- `tests/common/cli.rs:1484-1484` `Connection::open`
+- `tests/common/cli.rs:735-735` `Connection::open`
+- `tests/common/cli.rs:748-748` `Connection::open`
+- `tests/common/cli.rs:806-806` `Connection::open`
+- `tests/common/cli.rs:816-816` `Connection::open`
+- `tests/common/cli.rs:1509-1509` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:8-8` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:22-22` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:31-31` `Connection::open`
@@ -4525,9 +4525,9 @@ Proposed home: `a new shared module (sites span 3 files: src/cli/hygiene.rs, tes
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/hygiene.rs:252-254` `derived_count_phrase`
-- `tests/common/cli.rs:914-921` `migrated_lines`
-- `tests/common/cli.rs:928-933` `derived_menu_line_naming`
-- `tests/common/cli.rs:1537-1542` `bloat_advisory_naming`
+- `tests/common/cli.rs:939-946` `migrated_lines`
+- `tests/common/cli.rs:953-958` `derived_menu_line_naming`
+- `tests/common/cli.rs:1562-1567` `bloat_advisory_naming`
 - `tests/compaction_generations_periphery.rs:4868-4873` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
@@ -4794,7 +4794,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:16608-16619` `status_prints_no_dashboard_line_when_none_was_ever_recorded`
 - `tests/cli.rs:24232-24242` `prime_with_no_spec_path_never_mentions_the_spec_lint`
 - `tests/cli.rs:24653-24662` `workflow_with_no_spec_path_never_mentions_the_spec_lint`
-- `tests/cli.rs:28168-28188` `init_scaffolds_the_instructions_readme_and_names_it`
+- `tests/cli.rs:28190-28210` `init_scaffolds_the_instructions_readme_and_names_it`
 
 #### `dup-84fea880d212` (near, 2 sites)
 
@@ -4857,8 +4857,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/common/cli.rs:48-52` `courier_project`
-- `tests/common/cli.rs:302-306` `temp_rigger_project`
-- `tests/common/cli.rs:310-314` `temp_store_project`
+- `tests/common/cli.rs:327-331` `temp_rigger_project`
+- `tests/common/cli.rs:335-339` `temp_store_project`
 - `tests/courier_registry_refresh_boundary_periphery.rs:40-44` `courier_project_with_commit`
 
 #### `dup-065ac962b8cf` (exact, 3 sites)
@@ -4867,9 +4867,9 @@ Proposed home: `cli::support (consolidate these 3 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:939-941` `derived_menu_lines`
-- `tests/common/cli.rs:1531-1533` `index_lag_lines`
-- `tests/common/cli.rs:1546-1548` `bloat_lines`
+- `tests/common/cli.rs:964-966` `derived_menu_lines`
+- `tests/common/cli.rs:1556-1558` `index_lag_lines`
+- `tests/common/cli.rs:1571-1573` `bloat_lines`
 
 #### `dup-8dd44d643a5c` (semantic, 2 sites)
 
@@ -4877,7 +4877,7 @@ Proposed home: `one shared `write_workflow` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/common/cli.rs:1322-1329` `write_workflow`
+- `tests/common/cli.rs:1347-1354` `write_workflow`
 - `tests/common/workflow_probe.rs:21-23` `write_workflow`
 
 #### `dup-b58b0ff72b22` (near, 3 sites)
@@ -4886,8 +4886,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:1358-1378` `assert_selected_server`
-- `tests/common/cli.rs:1382-1398` `assert_selected_sqlite`
+- `tests/common/cli.rs:1383-1403` `assert_selected_server`
+- `tests/common/cli.rs:1407-1423` `assert_selected_sqlite`
 - `tests/store_secrets.rs:69-107` `assert_server_reached_and_credentials_redacted`
 
 #### `dup-c82a46fd1fec` (exact, 2 sites)
@@ -5288,7 +5288,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9782 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9785 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4994-5035` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15035-15057` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5436,7 +5436,7 @@ Proposed home for each: `tests/common` (the catalog's own `proposed_home` field 
 
 ### 5.3 `tests/cli.rs` split plan
 
-`tests/cli.rs` holds 398 `#[test]` functions. Its existing internal section markers each name the spec and criterion whose tests follow it, not a CLI subcommand or subsystem - ad hoc organization that falls well short of a deliberate, complete per-surface structure. The split proposed below replaces those by-spec markers with a complete, deliberate BY CLI SUBCOMMAND SURFACE organization. A keyword-on-test-name pass (matching each test's dominant CLI verb: `step_`, `run_`, `validate_`, `reset_`, `watch_`/`watchdog_`, `canary_`, `dash_`/`status_`, `store_`/`eventstore_`, `spawn_`/`scratch_`, `review_`/`gate_`, `setup_`/`precommit_`/`hook_`, `courier_`/`registry_`, `spec_`, `replay_`, `worktree_`, `emit_`/`peers_`/`decision_`, `stats_`, `heartbeat_`/`liveness_`, `prime_`/`version_`/`init_`) only cleanly covers 214 of the 398 tests (53%) - disclosed honestly rather than overclaimed, because a real fraction of `cli.rs`'s scenarios are DELIBERATELY end-to-end (a single test legitimately drives `step` + `run` + `validate` + `dash` together to prove a cross-cutting property, e.g. `a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status` or `docs_ships_graph_hygiene_guidance_to_consumers`), which a bare keyword match cannot and should not force into one bucket. The proposed split is BY CLI SUBCOMMAND SURFACE - `cli.rs`'s own natural organizing concept, since the whole file drives the `rigger` binary end to end - into per-surface files (`tests/cli_step.rs`, `tests/cli_run.rs`, `tests/cli_validate.rs`, `tests/cli_reset.rs`, `tests/cli_watch.rs`, `tests/cli_canary.rs`, `tests/cli_dash.rs`, `tests/cli_store.rs`, `tests/cli_review.rs`, `tests/cli_setup.rs`, plus a residual `tests/cli_misc.rs` for the genuinely cross-cutting scenarios), with each test's home decided by its DOMINANT scenario on a human/AI read, not a mechanical keyword match - the same discipline this audit's own responsibility map applied to unassignable functions (named, never silently forced). Cross-referencing the catalog: `cli.rs` also participates in 5 of the catalog's cross-file test-only duplication clusters, several paired against files that WOULD merge with it under this split (`tests/step_attention_periphery.rs`, paired in 1 clusters; `tests/watchdog_cli_periphery.rs`, paired in 1 clusters) - the split is expected to shrink, not grow, the duplication surface.
+`tests/cli.rs` holds 399 `#[test]` functions. Its existing internal section markers each name the spec and criterion whose tests follow it, not a CLI subcommand or subsystem - ad hoc organization that falls well short of a deliberate, complete per-surface structure. The split proposed below replaces those by-spec markers with a complete, deliberate BY CLI SUBCOMMAND SURFACE organization. A keyword-on-test-name pass (matching each test's dominant CLI verb: `step_`, `run_`, `validate_`, `reset_`, `watch_`/`watchdog_`, `canary_`, `dash_`/`status_`, `store_`/`eventstore_`, `spawn_`/`scratch_`, `review_`/`gate_`, `setup_`/`precommit_`/`hook_`, `courier_`/`registry_`, `spec_`, `replay_`, `worktree_`, `emit_`/`peers_`/`decision_`, `stats_`, `heartbeat_`/`liveness_`, `prime_`/`version_`/`init_`) only cleanly covers 215 of the 399 tests (53%) - disclosed honestly rather than overclaimed, because a real fraction of `cli.rs`'s scenarios are DELIBERATELY end-to-end (a single test legitimately drives `step` + `run` + `validate` + `dash` together to prove a cross-cutting property, e.g. `a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status` or `docs_ships_graph_hygiene_guidance_to_consumers`), which a bare keyword match cannot and should not force into one bucket. The proposed split is BY CLI SUBCOMMAND SURFACE - `cli.rs`'s own natural organizing concept, since the whole file drives the `rigger` binary end to end - into per-surface files (`tests/cli_step.rs`, `tests/cli_run.rs`, `tests/cli_validate.rs`, `tests/cli_reset.rs`, `tests/cli_watch.rs`, `tests/cli_canary.rs`, `tests/cli_dash.rs`, `tests/cli_store.rs`, `tests/cli_review.rs`, `tests/cli_setup.rs`, plus a residual `tests/cli_misc.rs` for the genuinely cross-cutting scenarios), with each test's home decided by its DOMINANT scenario on a human/AI read, not a mechanical keyword match - the same discipline this audit's own responsibility map applied to unassignable functions (named, never silently forced). Cross-referencing the catalog: `cli.rs` also participates in 5 of the catalog's cross-file test-only duplication clusters, several paired against files that WOULD merge with it under this split (`tests/step_attention_periphery.rs`, paired in 1 clusters; `tests/watchdog_cli_periphery.rs`, paired in 1 clusters) - the split is expected to shrink, not grow, the duplication surface.
 
 ### 5.4 Duplicated helpers across test files (beyond 5.2's headline cases)
 
@@ -5608,7 +5608,7 @@ Every entry cites section 5's own already-catalogued test-only duplication; none
 
 #### 14. Split `tests/cli.rs` by CLI subcommand surface (section 5.3's plan)
 
-- Scope: 398 tests, split into `tests/cli_{step,run,validate,reset,watch,canary,dash,store,review,setup}.rs` plus a residual `tests/cli_misc.rs` for the genuinely cross-cutting scenarios section 5.3 names, using each test's dominant scenario (a human/AI read, not the 53%-coverage keyword match section 5.3 already disclosed as insufficient alone).
+- Scope: 399 tests, split into `tests/cli_{step,run,validate,reset,watch,canary,dash,store,review,setup}.rs` plus a residual `tests/cli_misc.rs` for the genuinely cross-cutting scenarios section 5.3 names, using each test's dominant scenario (a human/AI read, not the 53%-coverage keyword match section 5.3 already disclosed as insufficient alone).
 - Files: `tests/cli.rs` and the eleven new files above.
 - Expected line delta: 0 net - pure relocation into eleven files.
 - Risk: low-medium - a mechanical per-test move with `cargo test`'s full pass count as the verification.

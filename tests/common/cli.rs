@@ -106,7 +106,13 @@ pub fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 /// Run `rigger <args...>` in `cwd`, asserting it exits 0 (naming its stderr when it does not),
 /// and return its stdout.
 pub fn run_rigger_ok(cwd: &Path, args: &[&str]) -> String {
-    let (out, err, ok) = run_rigger(cwd, args);
+    run_rigger_envs_ok(cwd, args, &[])
+}
+
+/// Run `rigger <args...>` in `cwd` with `envs` set ([`run_rigger_envs`]), asserting it exits 0
+/// (naming its stderr when it does not), and return its stdout.
+pub fn run_rigger_envs_ok(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> String {
+    let (out, err, ok) = run_rigger_envs(cwd, args, envs);
     assert!(ok, "rigger {} must exit 0; stderr:\n{err}", args.join(" "));
     out
 }
@@ -142,49 +148,68 @@ pub fn assert_validate_names_the_shadowed_built_ins(root: &Path, advisories: &[&
 /// force and the unshadowed file count.
 pub fn assert_reporters_name_the_shadowing_layer_states(root: &Path) {
     use super::fixtures::SHADOWING_LAYER_ADVISORIES;
-    assert_instructions_render_the_shadowing_layer(root);
+    assert_instructions_render_the_shadowing_layer(root, &[]);
     for _ in 0..2 {
         assert_validate_names_the_shadowed_built_ins(root, &SHADOWING_LAYER_ADVISORIES);
     }
-    assert_prime_names_the_shadowing_layer_states(root);
+    assert_prime_names_the_shadowing_layer_states(root, &[]);
 }
 
 /// The first line `rigger prime` prints run in `cwd` ([`run_rigger_ok`]): the instructions in
 /// force.
-pub fn prime_first_line(cwd: &Path) -> Option<String> {
-    run_rigger_ok(cwd, &["prime"])
+pub fn prime_first_line(cwd: &Path, envs: &[(&str, &str)]) -> Option<String> {
+    run_rigger_envs_ok(cwd, &["prime"], envs)
         .lines()
         .next()
         .map(str::to_string)
 }
 
+/// A reporter assertion: it runs one instruction reporter (`rigger prime`, `rigger instructions`)
+/// in a directory with the given environment set, and asserts what it printed.
+pub type Reporter = fn(&Path, &[(&str, &str)]);
+
 /// Write the named-entry fixture (`shadowing_operator_layer`) into the project at `root`, then run
 /// the reporter assertion `report` at `root` and in its subdirectory: the reporter reads the
 /// project's instruction layer from either, never the subdirectory's own.
-pub fn assert_reported_from_below(root: &Path, report: super::DirStep) {
+pub fn assert_reported_from_below(root: &Path, report: Reporter) {
     write_operator_layer(root, &super::fixtures::shadowing_operator_layer());
-    report(root);
-    report(&super::fixtures::subdirectory_of(root));
+    report(root, &[]);
+    report(&super::fixtures::subdirectory_of(root), &[]);
 }
 
 /// Write the named-entry fixture (`shadowing_operator_layer`) into the committed git project at
 /// `root`, uncommitted, then run the reporter assertion `report` in a worktree nested under its
 /// `.rigger/`, which therefore checks none of that layer out: the reporter reads the main
 /// checkout's layer, never the worktree's own.
-pub fn assert_reported_from_a_nested_worktree(root: &Path, report: super::DirStep) {
+pub fn assert_reported_from_a_nested_worktree(root: &Path, report: Reporter) {
     write_operator_layer(root, &super::fixtures::shadowing_operator_layer());
-    report(&super::git::nested_worktree(
+    report(
+        &super::git::nested_worktree(root, "rigger-wt-reporter-layer"),
+        &[],
+    );
+}
+
+/// Write the named-entry fixture (`shadowing_operator_layer`) into the project at `root`, then run
+/// the reporter assertion `report` there with the gate store fence
+/// (`rigger::gate::STORE_FENCE_ENV`) pinned to a scratch store outside the project, as a gate's
+/// own process runs a reporter: it reports the project's layer, the same lines as an unfenced run,
+/// since the fence isolates the store and never names the project's root.
+pub fn assert_reported_under_the_store_fence(root: &Path, report: Reporter) {
+    write_operator_layer(root, &super::fixtures::shadowing_operator_layer());
+    let scratch = tempfile::tempdir().expect("create the fence's scratch dir");
+    let fence = scratch.path().join("store-fence");
+    report(
         root,
-        "rigger-wt-reporter-layer",
-    ));
+        &[(rigger::gate::STORE_FENCE_ENV, fence.to_str().unwrap())],
+    );
 }
 
 /// `rigger instructions` run in `cwd` prints the layers of the named-entry fixture
 /// (`shadowing_operator_layer`) its project holds: each built-in with its state, then the
 /// unshadowed file.
-pub fn assert_instructions_render_the_shadowing_layer(cwd: &Path) {
+pub fn assert_instructions_render_the_shadowing_layer(cwd: &Path, envs: &[(&str, &str)]) {
     assert_eq!(
-        run_rigger_ok(cwd, &["instructions"]),
+        run_rigger_envs_ok(cwd, &["instructions"], envs),
         super::fixtures::rendered_shadowing_layer(),
         "`rigger instructions` prints each built-in with its state, then the unshadowed file"
     );
@@ -192,9 +217,9 @@ pub fn assert_instructions_render_the_shadowing_layer(cwd: &Path) {
 
 /// `rigger prime` run in `cwd` opens with the in-force line of the named-entry fixture
 /// (`shadowing_operator_layer`) its project holds.
-pub fn assert_prime_names_the_shadowing_layer_states(cwd: &Path) {
+pub fn assert_prime_names_the_shadowing_layer_states(cwd: &Path, envs: &[(&str, &str)]) {
     assert_eq!(
-        prime_first_line(cwd).as_deref(),
+        prime_first_line(cwd, envs).as_deref(),
         Some(super::fixtures::SHADOWING_LAYER_IN_FORCE_LINE),
         "`rigger prime` opens with the built-ins in force and the unshadowed file count"
     );

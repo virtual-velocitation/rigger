@@ -27979,7 +27979,7 @@ fn run_spawns_the_worker_with_no_section_for_a_built_in_an_empty_same_named_file
 fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
     let proj = temp_project();
     assert_eq!(
-        common::cli::prime_first_line(proj.path()).as_deref(),
+        common::cli::prime_first_line(proj.path(), &[]).as_deref(),
         Some(common::fixtures::BUILT_INS_ONLY_IN_FORCE_LINE),
         "with no operator files the parenthetical is omitted"
     );
@@ -28079,7 +28079,7 @@ fn prime_and_instructions_from_a_nested_worktree_report_the_main_checkout_s_inst
         assert_prime_names_the_shadowing_layer_states, assert_reported_from_a_nested_worktree,
         seed_store,
     };
-    let cases: [(bool, common::DirStep); 4] = [
+    let cases: [(bool, common::cli::Reporter); 4] = [
         (true, assert_prime_names_the_shadowing_layer_states),
         (true, assert_instructions_render_the_shadowing_layer),
         (false, assert_prime_names_the_shadowing_layer_states),
@@ -28143,7 +28143,7 @@ fn prime_and_instructions_from_a_subdirectory_report_the_project_s_instruction_l
         assert_instructions_render_the_shadowing_layer,
         assert_prime_names_the_shadowing_layer_states, assert_reported_from_below,
     };
-    let cases: [(tempfile::TempDir, common::DirStep); 3] = [
+    let cases: [(tempfile::TempDir, common::cli::Reporter); 3] = [
         (
             temp_store_project(),
             assert_prime_names_the_shadowing_layer_states,
@@ -28159,6 +28159,28 @@ fn prime_and_instructions_from_a_subdirectory_report_the_project_s_instruction_l
     ];
     for (project, report) in cases {
         assert_reported_from_below(project.path(), report);
+    }
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, inside a gate: given a project whose
+/// `.rigger/instructions/` holds the named-entry fixture, with a store and before any store
+/// exists, when a gate's process runs `rigger instructions` and `rigger prime` at the project root
+/// with the gate store fence pinned to a scratch store outside the project, then each reports the
+/// project's layer exactly as an unfenced run does.
+#[test]
+fn prime_and_instructions_under_the_gate_store_fence_report_the_project_s_instruction_layer() {
+    use common::cli::{
+        assert_instructions_render_the_shadowing_layer,
+        assert_prime_names_the_shadowing_layer_states, assert_reported_under_the_store_fence,
+    };
+    let reporters: [common::cli::Reporter; 2] = [
+        assert_instructions_render_the_shadowing_layer,
+        assert_prime_names_the_shadowing_layer_states,
+    ];
+    for report in reporters {
+        for project in [temp_store_project(), temp_project()] {
+            assert_reported_under_the_store_fence(project.path(), report);
+        }
     }
 }
 
