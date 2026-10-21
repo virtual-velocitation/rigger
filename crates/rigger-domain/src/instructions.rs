@@ -8,9 +8,11 @@
 //! ```
 //!
 //! The BUILT-IN layer ships inside the binary ([`BUILTIN`]) and reaches every agent rigger
-//! spawns anywhere, for every consumer, regardless of persona text; an operator file named
-//! byte for byte as a built-in entry, its body not blank, replaces that entry's body in the
-//! entry's place ([`resolve_layers`]). The OPERATOR layer is every other `*.md` under
+//! spawns anywhere, for every consumer, regardless of persona text, unless switched off; an
+//! operator file named byte for byte as a built-in entry, its body not blank, replaces that
+//! entry's body in the entry's place, and one whose body is blank switches the entry off, so
+//! neither the entry nor the file is injected ([`resolve_layers`]). The OPERATOR layer is
+//! every other `*.md` under
 //! `.rigger/instructions/`, in filename order, read by the store-gated loader in
 //! `config_store` and carried on `Config::instructions`, so this module stays pure and
 //! compiles in the `core` lane. `rigger instructions` prints the composed layers ([`render`])
@@ -23,12 +25,15 @@ pub struct Instruction {
     pub body: String,
 }
 
-/// The built-in layer, in the order it is injected. The first entry is the engineering law
+/// The built-in layer, in the order it is injected, each entry unless an operator file switches
+/// it off ([`resolve_layers`]). The first entry is the engineering law
 /// the project holds every change to: Clean Architecture, SOLID, DRY, KISS, YAGNI, TDD and
 /// BDD where relevant. The second is the working discipline every agent follows: one pass by
 /// excellence, a turn's end being the session's end (every job waited on inside the turn), the
 /// hand-over an author's tree meets before it reports (each outcome with the
 /// check that proves it), and fanning mechanical work out to the `lookup` and `verify` helpers.
+/// The third is the communication discipline: each decision and finding recorded the moment it
+/// is made, peers checked between actions, a peer's decision superseded explicitly.
 /// A harness-wide rule lives here once,
 /// never copied into persona files; a persona carries only the project's anchors for it.
 pub const BUILTIN: &[(&str, &str)] = &[
@@ -58,6 +63,9 @@ pub enum LayerState<'a> {
     /// An operator file of the same name replaces the entry: the file's body, its leading
     /// U+FEFF stripped, is in force in the entry's place.
     Replaced(&'a str),
+    /// An operator file of the same name with a blank body switches the entry off: nothing is
+    /// in force in its place.
+    SwitchedOff,
 }
 
 /// One built-in entry, in [`BUILTIN`] order, with the state the operator layer left it in.
@@ -77,20 +85,21 @@ pub struct Layers<'a> {
 
 /// Resolve every built-in's state against `operator`, the one authority for shadowing. An
 /// operator file whose `name` equals a built-in's name byte for byte (case-sensitive, never
-/// trimmed) and whose body is not blank - empty once one leading U+FEFF is stripped and
-/// Unicode White_Space trimmed - replaces that built-in ([`LayerState::Replaced`]) and leaves
-/// the operator layer; every other file, a near name or a blank body included, stays in the
-/// operator layer in the order given.
+/// trimmed) shadows that built-in and leaves the operator layer: a body that is not blank -
+/// empty once one leading U+FEFF is stripped and Unicode White_Space trimmed - replaces it
+/// ([`LayerState::Replaced`]), a blank one switches it off ([`LayerState::SwitchedOff`]).
+/// Every other file, a near name included, stays in the operator layer in the order given.
 pub fn resolve_layers(operator: &[Instruction]) -> Layers<'_> {
-    let shadows = |ins: &Instruction, name: &str| {
-        ins.name == name && !without_bom(&ins.body).trim().is_empty()
-    };
+    let shadows = |ins: &Instruction, name: &str| ins.name == name;
     let builtins = BUILTIN
         .iter()
         .map(|&(name, body)| BuiltInLayer {
             name,
             state: match operator.iter().find(|ins| shadows(ins, name)) {
-                Some(ins) => LayerState::Replaced(without_bom(&ins.body)),
+                Some(ins) => match without_bom(&ins.body) {
+                    blank if blank.trim().is_empty() => LayerState::SwitchedOff,
+                    body => LayerState::Replaced(body),
+                },
                 None => LayerState::BuiltIn(body),
             },
         })
@@ -108,10 +117,12 @@ fn without_bom(body: &str) -> &str {
 }
 
 /// Compose `persona` followed by the built-in layer and then `operator`, each section under
-/// its own `## <name>` heading beneath [`HEADING`]. An empty persona still receives every
-/// layer; an empty operator layer adds nothing after the built-ins. It is the one authority for
-/// every spawn's system prompt: the conductor, the canary runner and the spec critic all
-/// thread its output, appending nothing after it.
+/// its own `## <name>` heading beneath [`HEADING`]: a built-in in force or replaced prints its
+/// section, a switched-off one prints none, and [`HEADING`] is printed even when no section
+/// follows it. An empty persona still receives every built-in not switched off; an empty
+/// operator layer adds nothing after the built-ins. It is the one authority for every spawn's
+/// system prompt: the conductor, the canary runner and the spec critic all thread its output,
+/// appending nothing after it.
 pub fn compose(persona: &str, operator: &[Instruction]) -> String {
     let layers = resolve_layers(operator);
     let mut out = String::from(persona);
@@ -119,11 +130,12 @@ pub fn compose(persona: &str, operator: &[Instruction]) -> String {
     out.push_str(HEADING);
     out.push('\n');
     for layer in &layers.builtins {
-        let body = match layer.state {
-            LayerState::BuiltIn(body) => body,
-            LayerState::Replaced(body) => body,
-        };
-        push_section(&mut out, layer.name, body);
+        match layer.state {
+            LayerState::BuiltIn(body) | LayerState::Replaced(body) => {
+                push_section(&mut out, layer.name, body)
+            }
+            LayerState::SwitchedOff => {}
+        }
     }
     for ins in layers.operator {
         push_section(&mut out, &ins.name, &ins.body);

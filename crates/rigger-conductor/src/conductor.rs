@@ -5038,7 +5038,8 @@ impl RunCtx<'_> {
     /// write the unit worktree - the [`REVIEWER_DISCIPLINE`] every lens, the adversary and the
     /// adjudicator carry (through [`review_protocol`] and [`Self::run_adjudicator`]) forbids it,
     /// and the working-discipline body's `## When you review` section, which reaches each of them
-    /// through [`crate::instructions::compose`], has them reproduce a suspected failure in their
+    /// through [`crate::instructions::compose`] unless an operator file switches it off, has them
+    /// reproduce a suspected failure in their
     /// OWN scratch worktree instead - so a worktree the round leaves dirty, or whose tip has
     /// moved off `round_start_sha` (the sha [`Self::review_unit`] captured before spawning ANY
     /// tier), is residue: a reviewer's own tooling breaking protocol, or an out-of-band actor,
@@ -12475,7 +12476,7 @@ pub fn review_protocol(actor: &str) -> String {
 /// [`gate_evidence_block`] shows green, the one targeted reproduction in a scratch worktree, and
 /// never running a gate's command as the gate runs it - is guidance, so it sits under the
 /// working-discipline body's `## When you review` section, which reaches a reviewer through
-/// [`crate::instructions::compose`]. Shared by
+/// [`crate::instructions::compose`] unless an operator file switches it off. Shared by
 /// [`review_protocol`] (the lens and adversary tiers, which also record findings through it)
 /// and [`RunCtx::run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
