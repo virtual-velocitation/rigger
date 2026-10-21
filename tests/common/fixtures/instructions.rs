@@ -2,9 +2,10 @@
 //! prompt tests, the binary's shipped-text tests and the integration suites: the working-discipline
 //! body's section headings and the review method its `## When you review` section holds; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
-//! and their checked-in sources, each entry's body by name, the layers `rigger instructions`
-//! prints, the persona an agent definition parses to, the system prompt a spawn with no operator
-//! layer is composed to, and the composed prompt spelled section by section.
+//! and their checked-in sources, each entry's body by name, a near name that shadows no
+//! built-in, the layers `rigger instructions` prints, the persona an agent definition parses to,
+//! the system prompt a spawn with no operator layer is composed to, and the composed prompt
+//! spelled section by section.
 
 /// The working-discipline body's hand-over section heading.
 pub const HAND_OVER_HEADING: &str = "## Hand over a tree the gates only confirm";
@@ -92,6 +93,10 @@ pub fn builtin_body(name: &str) -> &'static str {
         None => panic!("the {name:?} entry is built in"),
     }
 }
+
+/// A near name of the `communication` built-in: its name with a trailing space, which shadows
+/// nothing and appends as an operator file.
+pub const COMMUNICATION_NEAR_NAME: &str = "communication ";
 
 /// The persona the agent definition `agent_file` parses to: the markdown body after its front
 /// matter.

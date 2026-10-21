@@ -5574,6 +5574,24 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-9e67fe96f3eb",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/instructions.rs",
+        "name": "a_replacing_body_is_printed_without_its_leading_byte_order_mark",
+        "content_hash": "3d4f31084f273d3b"
+      },
+      {
+        "file": "crates/rigger-domain/src/instructions.rs",
+        "name": "a_replacing_body_keeps_a_second_leading_byte_order_mark",
+        "content_hash": "3d4f31084f273d3b"
+      }
+    ],
+    "proposed_home": "instructions::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
     "id": "dup-557d6899b868",
     "classification": "exact",
     "sites": [

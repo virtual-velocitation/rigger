@@ -144,8 +144,8 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 81,
-        "end_line": 83
+        "start_line": 82,
+        "end_line": 84
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
@@ -3084,33 +3084,33 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27993,
-        "end_line": 27993
+        "start_line": 28000,
+        "end_line": 28000
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27997,
-        "end_line": 27997
+        "start_line": 28004,
+        "end_line": 28004
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28067,
-        "end_line": 28067
+        "start_line": 28074,
+        "end_line": 28074
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28105,
-        "end_line": 28105
+        "start_line": 28112,
+        "end_line": 28112
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28565,
-        "end_line": 28565
+        "start_line": 28572,
+        "end_line": 28572
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28583,
-        "end_line": 28583
+        "start_line": 28590,
+        "end_line": 28590
       },
       {
         "file": "tests/common/cli.rs",
@@ -5310,6 +5310,21 @@
     ]
   },
   {
+    "id": "dup-9e67fe96f3eb",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/instructions.rs",
+        "start_line": 323,
+        "end_line": 337
+      },
+      {
+        "file": "crates/rigger-domain/src/instructions.rs",
+        "start_line": 341,
+        "end_line": 355
+      }
+    ]
+  },
+  {
     "id": "dup-557d6899b868",
     "sites": [
       {
@@ -7414,8 +7429,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27987,
-        "end_line": 28007
+        "start_line": 27994,
+        "end_line": 28014
       }
     ]
   },

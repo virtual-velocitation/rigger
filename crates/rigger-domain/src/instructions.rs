@@ -160,7 +160,7 @@ fn push_section(out: &mut String, name: &str, body: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{builtin_body, builtin_section};
+    use crate::test_support::{builtin_body, builtin_section, COMMUNICATION_NEAR_NAME};
 
     fn op(name: &str, body: &str) -> Instruction {
         Instruction {
@@ -336,6 +336,24 @@ mod tests {
         );
     }
 
+    /// The strip takes one leading U+FEFF only: a second one is the body's own text and stays.
+    #[test]
+    fn a_replacing_body_keeps_a_second_leading_byte_order_mark() {
+        let sys = compose(
+            "P.",
+            &[op("working-discipline", "\u{feff}\u{feff}Team discipline.")],
+        );
+        assert_eq!(
+            sys,
+            expected_prompt(&[
+                builtin_section("engineering-principles"),
+                ("working-discipline", "\u{feff}Team discipline."),
+                builtin_section("communication"),
+            ]),
+            "exactly one leading byte-order mark is stripped; the second stays in the section"
+        );
+    }
+
     /// A name that differs from a built-in's by case or a trailing space shadows nothing: the
     /// built-in stays and the file appends after the built-ins, in the order given.
     #[test]
@@ -344,7 +362,7 @@ mod tests {
             "P.",
             &[
                 op("Communication", "Case rule."),
-                op("communication ", "Space rule."),
+                op(COMMUNICATION_NEAR_NAME, "Space rule."),
             ],
         );
         assert_eq!(
@@ -354,7 +372,7 @@ mod tests {
                 builtin_section("working-discipline"),
                 builtin_section("communication"),
                 ("Communication", "Case rule."),
-                ("communication ", "Space rule."),
+                (COMMUNICATION_NEAR_NAME, "Space rule."),
             ]),
             "a case change or a trailing space is another name, appended as an operator file"
         );

@@ -27911,7 +27911,10 @@ fn run_spawns_the_worker_with_the_composed_system_prompt_and_nothing_appended() 
 #[test]
 fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_in() {
     use common::cli::run_capturing_system_prompt;
-    use common::fixtures::{builtin_section, expected_composed_prompt, instructions_dir, persona};
+    use common::fixtures::{
+        builtin_section, expected_composed_prompt, instructions_dir, persona,
+        COMMUNICATION_NEAR_NAME,
+    };
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &LIVENESS_WORKFLOW);
@@ -27919,7 +27922,11 @@ fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_i
     let near = "A near name replaces nothing.\n";
     let instructions = instructions_dir(root);
     std::fs::write(instructions.join("communication.md"), house).unwrap();
-    std::fs::write(instructions.join("communication .md"), near).unwrap();
+    std::fs::write(
+        instructions.join(format!("{COMMUNICATION_NEAR_NAME}.md")),
+        near,
+    )
+    .unwrap();
     let system = run_capturing_system_prompt(root, &["run"]);
     assert_eq!(
         system,
@@ -27929,7 +27936,7 @@ fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_i
                 builtin_section("engineering-principles"),
                 builtin_section("working-discipline"),
                 ("communication", house),
-                ("communication ", near),
+                (COMMUNICATION_NEAR_NAME, near),
             ]
         ),
         "the same-named file's body stands in the communication section in its place, the \
