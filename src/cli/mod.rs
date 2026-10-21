@@ -584,8 +584,7 @@ fn warn_if_conn_file_is_exposed(path: &Path) {
 /// linked worktree, so a cwd-anchored read would miss it and fracture the store selection. Falls
 /// back to the cwd's `.rigger` outside any git context.
 fn config_rigger_dir() -> PathBuf {
-    let cwd = cwd();
-    main_repo_root(&cwd).unwrap_or(cwd).join(RIGGER_DIR)
+    project_root(&cwd()).join(RIGGER_DIR)
 }
 
 /// The process's working directory, or `.` when it cannot be read.
@@ -1315,16 +1314,20 @@ fn store_if_any() -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std
 }
 
 /// The operator instruction layer the instruction reporters (`rigger prime`, `rigger
-/// instructions`) report, read under the project root: the main repo root governing the cwd
-/// ([`main_repo_root`]), else, outside any git repository, the cwd itself - so a reporter run from
-/// a subdirectory or a nested worktree reads the project's layer, never the subdirectory's own.
-/// The resolved store is never consulted: under the gate store fence it is a scratch store whose
-/// parent is no project.
+/// instructions`) report, read under the project root governing the cwd ([`project_root`]) - so a
+/// reporter run from a subdirectory or a nested worktree reads the project's layer, never the
+/// subdirectory's own. The resolved store is never consulted: under the gate store fence it is a
+/// scratch store whose parent is no project.
 fn project_instruction_layer() -> Result<Vec<instructions::Instruction>, Box<dyn std::error::Error>>
 {
-    let cwd = std::env::current_dir()?;
-    let root = main_repo_root(&cwd).unwrap_or(cwd);
+    let root = project_root(&std::env::current_dir()?);
     Ok(config_store::load_instructions(&root)?)
+}
+
+/// The project root governing `start`: the main repo root ([`main_repo_root`]), else, outside any
+/// git repository, `start` itself.
+fn project_root(start: &Path) -> PathBuf {
+    main_repo_root(start).unwrap_or_else(|| start.to_path_buf())
 }
 
 /// The MAIN repo root governing `start`: the parent of `git rev-parse --git-common-dir`
@@ -1512,9 +1515,7 @@ fn scratch_defaults(loc: &StoreLocation) -> (String, u32) {
 /// that READS - so a server-configured project resolves the SAME store from every path (spec 48,
 /// "one resolution authority"), never a second parallel mapping that could drift.
 fn server_store_location(cwd: &Path) -> StoreLocation {
-    let dir = main_repo_root(cwd)
-        .unwrap_or_else(|| cwd.to_path_buf())
-        .join(RIGGER_DIR);
+    let dir = project_root(cwd).join(RIGGER_DIR);
     StoreLocation { dir }
 }
 

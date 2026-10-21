@@ -8381,7 +8381,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "5e91eabaa4fc36e7"
+    "content_hash": "da834e7f5d0ee17f"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8581,7 +8581,15 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "5c1605ad0b137130"
+    "content_hash": "8613150d3eeb8b14"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "project_root",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "5df7ea0d38a25f54"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8661,7 +8669,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"store_\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "ef37db03e8786409"
+    "content_hash": "9e79a85651b0b4f6"
   },
   {
     "file": "src/cli/mod.rs",
