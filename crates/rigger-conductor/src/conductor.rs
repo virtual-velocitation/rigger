@@ -5036,13 +5036,15 @@ impl RunCtx<'_> {
     }
 
     /// A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6): reviewers never
-    /// write the unit worktree - [`review_protocol`] tells every lens, the adversary and the
-    /// adjudicator to reproduce a suspected failure in their OWN scratch worktree instead -
-    /// so a worktree the round leaves dirty, or whose tip has moved off `round_start_sha`
-    /// (the sha [`Self::review_unit`] captured before spawning ANY tier), is residue: a
-    /// reviewer's own tooling breaking protocol, or an out-of-band actor, never legitimate
-    /// implementer work (the implementer already committed and gated before the round
-    /// began). Called from `review_unit` on EVERY exit (spec 103 criterion 6, round 2,
+    /// write the unit worktree - the [`REVIEWER_DISCIPLINE`] every lens, the adversary and the
+    /// adjudicator carry (through [`review_protocol`] and [`Self::run_adjudicator`]) forbids it,
+    /// and the working-discipline body's `## When you review` section, which reaches each of them
+    /// through [`crate::instructions::compose`], has them reproduce a suspected failure in their
+    /// OWN scratch worktree instead - so a worktree the round leaves dirty, or whose tip has
+    /// moved off `round_start_sha` (the sha [`Self::review_unit`] captured before spawning ANY
+    /// tier), is residue: a reviewer's own tooling breaking protocol, or an out-of-band actor,
+    /// never legitimate implementer work (the implementer already committed and gated before
+    /// the round began). Called from `review_unit` on EVERY exit (spec 103 criterion 6, round 2,
     /// adv-u103c6-guard-skipped-on-tier-err): directly, at each point the round's LAST
     /// tier result is recorded on the SUCCESS path (whichever of the adjudicator, the
     /// adversary, or the lenses actually ran last), before the verdict is acted on either
@@ -34393,14 +34395,15 @@ mod tests {
 
     #[test]
     fn a_review_rounds_dirty_residue_is_restored_named_and_never_merged() {
-        // Spec 103, criterion 6 (A REVIEW ROUND LEAVES THE TREE IT REVIEWED): the review
-        // protocol tells the adjudicator to reproduce any suspected failure in its OWN
-        // scratch worktree, never the unit's - so this drives it to break that protocol
-        // and drop an UNTRACKED file into the unit's own worktree as its side effect while
-        // still approving, then proves the residue never reaches integration: it is named
-        // in a lesson, the worktree is restored to the sha the round actually judged, and
-        // the `reviewed` stamp carries THAT sha - never a later read that could pick up
-        // the residue.
+        // Spec 103, criterion 6 (A REVIEW ROUND LEAVES THE TREE IT REVIEWED): the reviewer
+        // discipline tells the adjudicator never to write the unit's worktree, and the
+        // working-discipline body's `## When you review` section (reaching it through
+        // `compose`) has it reproduce any suspected failure in its OWN scratch worktree - so
+        // this drives it to break that protocol and drop an UNTRACKED file into the unit's
+        // own worktree as its side effect while still approving, then proves the residue
+        // never reaches integration: it is named in a lesson, the worktree is restored to the
+        // sha the round actually judged, and the `reviewed` stamp carries THAT sha - never a
+        // later read that could pick up the residue.
         let (_repo, repo_path, events) = approving_round_with_residue(|stub| Stub {
             write_file_by_agent: HashMap::from([(
                 "judge".to_string(),

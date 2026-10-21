@@ -449,10 +449,11 @@ impl Worktree {
 
     /// Restores THIS worktree's TRACKED and UNTRACKED state to `sha` (spec 103, criterion
     /// 6): a review round's own tiers must never leave residue in the unit worktree - the
-    /// review protocol tells every lens, adversary and adjudicator to reproduce a suspected
-    /// failure in its OWN scratch worktree, never this one - so a worktree a round leaves
-    /// dirty, or whose tip has moved off the sha it actually judged, is residue, never
-    /// legitimate work. [`Self::reset_branch_to`] alone rewinds only tracked content; an
+    /// reviewer discipline every lens, adversary and adjudicator carries forbids writing it, and
+    /// the working-discipline body's `## When you review` section, reaching each of them through
+    /// `compose`, has them reproduce a suspected failure in their OWN scratch worktree, never
+    /// this one - so a worktree a round leaves dirty, or whose tip has moved off the sha it
+    /// actually judged, is residue, never legitimate work. [`Self::reset_branch_to`] alone rewinds only tracked content; an
     /// untracked file dropped against protocol would otherwise survive the hard reset and
     /// keep the tree dirty for the caller's very next check, so this also runs `git clean`
     /// (respecting `.gitignore`, never `-x`) to clear it. The caller PROVES the worktree is
