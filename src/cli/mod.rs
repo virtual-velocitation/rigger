@@ -1627,12 +1627,11 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
 /// store yet (set up before any run) reads its own `.rigger/`, so a lookup there still answers
 /// its not-found note instead of refusing; every other resolution failure propagates.
 fn owning_graph_to_read() -> Result<Projector, Box<dyn std::error::Error>> {
-    let loc = match require_store_dir() {
-        Ok((loc, _selection)) => loc,
-        Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => StoreLocation {
+    let loc = match store_if_any()? {
+        Some((loc, _selection)) => loc,
+        None => StoreLocation {
             dir: std::env::current_dir()?.join(RIGGER_DIR),
         },
-        Err(e) => return Err(e),
     };
     open_graph_to_read(&loc.file("graph.db"), &loc.identity())
 }
