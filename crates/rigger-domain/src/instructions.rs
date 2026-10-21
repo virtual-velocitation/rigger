@@ -160,7 +160,9 @@ fn push_section(out: &mut String, name: &str, body: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{builtin_body, builtin_section, COMMUNICATION_NEAR_NAME};
+    use crate::test_support::{
+        assert_carries_the_review_method, builtin_body, builtin_section, COMMUNICATION_NEAR_NAME,
+    };
 
     fn op(name: &str, body: &str) -> Instruction {
         Instruction {
@@ -366,24 +368,81 @@ mod tests {
         );
     }
 
-    /// A same-named file whose body is blank once one leading U+FEFF is stripped and Unicode
-    /// White_Space trimmed replaces nothing: the built-in stays and the file appends as an
-    /// operator file (spec 120 Design: so until the switch-off arm lands).
+    /// Spec 120, criterion 3: a same-named file whose body is blank once one leading U+FEFF is
+    /// stripped and Unicode White_Space trimmed switches its built-in off: neither the built-in's
+    /// section nor the file's is injected, and every other section is unchanged.
     #[test]
-    fn a_blank_same_named_file_replaces_nothing_and_appends() {
+    fn a_blank_same_named_file_switches_its_built_in_off() {
         for blank in ["", "\u{feff}", " \t\n", "\u{feff}\u{2003}\n"] {
             let sys = compose("P.", &[op("engineering-principles", blank)]);
             assert_eq!(
                 sys,
                 expected_prompt(&[
-                    builtin_section("engineering-principles"),
                     builtin_section("working-discipline"),
                     builtin_section("communication"),
-                    ("engineering-principles", blank),
                 ]),
-                "the blank body {blank:?} leaves the built-in in force and appends"
+                "the blank body {blank:?} injects no section for the built-in or the file"
             );
         }
+    }
+
+    /// The strip that decides blankness takes one leading U+FEFF only: a body of two is the
+    /// second U+FEFF, not blank, so it replaces the built-in rather than switching it off.
+    #[test]
+    fn a_body_of_two_byte_order_marks_replaces_rather_than_switches_off() {
+        let sys = compose("P.", &[op("engineering-principles", "\u{feff}\u{feff}")]);
+        assert_eq!(
+            sys,
+            expected_prompt(&[
+                ("engineering-principles", "\u{feff}"),
+                builtin_section("working-discipline"),
+                builtin_section("communication"),
+            ]),
+            "one U+FEFF survives the strip, so the body is not blank and replaces"
+        );
+    }
+
+    /// Two built-ins switched off by a fixed two-file fixture leave the third built-in and the
+    /// operator file between them in place, under the bare heading; the review method the
+    /// working discipline's `## When you review` section holds goes with it.
+    #[test]
+    fn two_blank_same_named_files_switch_two_built_ins_off_and_leave_the_operator_layer() {
+        let sys = compose(
+            "P.",
+            &[
+                op("communication", "\u{3000}"),
+                op("40-ops", "Ops rule."),
+                op("working-discipline", "\u{2028}"),
+            ],
+        );
+        assert_eq!(
+            sys,
+            expected_prompt(&[
+                builtin_section("engineering-principles"),
+                ("40-ops", "Ops rule."),
+            ]),
+            "the two switched-off built-ins and their files print nothing; the rest is unchanged"
+        );
+        assert_carries_the_review_method("the prompt with working-discipline off", &sys, 0);
+    }
+
+    /// With every built-in switched off and no other operator file, the prompt is the persona
+    /// and the bare heading alone.
+    #[test]
+    fn the_heading_stays_when_every_built_in_is_switched_off() {
+        let sys = compose(
+            "P.",
+            &[
+                op("engineering-principles", "\u{a0}"),
+                op("working-discipline", "\u{feff} "),
+                op("communication", "\u{85}"),
+            ],
+        );
+        assert_eq!(
+            sys,
+            expected_prompt(&[]),
+            "the heading is printed though no section remains"
+        );
     }
 
     #[test]

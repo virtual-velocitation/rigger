@@ -144,8 +144,8 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 82,
-        "end_line": 84
+        "start_line": 80,
+        "end_line": 82
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
@@ -5299,8 +5299,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/instructions.rs",
-        "start_line": 165,
-        "end_line": 170
+        "start_line": 167,
+        "end_line": 172
       },
       {
         "file": "crates/rigger-gates-shell/src/gate.rs",

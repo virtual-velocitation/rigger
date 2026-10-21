@@ -42,25 +42,23 @@ pub fn assert_task_prompt_carries_only_the_reviewer_contract(
         1,
         "the {tier} task prompt carries the reviewer discipline exactly once; prompt was:\n{prompt}"
     );
-    for sentence in WHEN_YOU_REVIEW {
-        assert_eq!(
-            prompt.matches(sentence).count(),
-            0,
-            "the {tier} task prompt leaves {sentence:?} to `## When you review`; prompt \
-             was:\n{prompt}"
-        );
-    }
+    assert_carries_the_review_method(&format!("the {tier} task prompt"), prompt, 0);
 }
 
 /// The review `tier`'s whitespace-normalized `system` prompt carries each review sentence
 /// `## When you review` holds exactly once.
 pub fn assert_system_prompt_carries_the_review_method_once(tier: &str, system: &str) {
+    assert_carries_the_review_method(&format!("the {tier} system prompt"), system, 1);
+}
+
+/// `text`, which `what` names, carries each review sentence `## When you review` holds exactly
+/// `times` times.
+pub fn assert_carries_the_review_method(what: &str, text: &str, times: usize) {
     for sentence in WHEN_YOU_REVIEW {
         assert_eq!(
-            system.matches(sentence).count(),
-            1,
-            "the {tier} system prompt carries {sentence:?} once; system prompt \
-             was:\n{system}"
+            text.matches(sentence).count(),
+            times,
+            "{what} carries {sentence:?} {times} time(s); it was:\n{text}"
         );
     }
 }
