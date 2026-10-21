@@ -1024,7 +1024,7 @@ mod tests {
 
     #[test]
     fn compose_places_the_working_discipline_after_the_law_and_before_the_operator_layer() {
-        let sys = compose("P.", &[op("10-house", "House rule.")]);
+        let sys = compose("P.", &house_and_team_operator_layer()[..1]);
         let law = sys.find("## engineering-principles").expect("the law");
         let discipline = sys.find("## working-discipline").expect(
             "the working discipline reaches this spawn, which no operator file switches off",
@@ -1045,7 +1045,7 @@ mod tests {
                 && none.contains("(none)"),
             "an empty operator layer renders as (none); got:\n{none}"
         );
-        let some = render(&[op("10-house", "House rule.")]);
+        let some = render(&house_and_team_operator_layer()[..1]);
         assert!(
             !some.contains("(none)") && some.contains("## 10-house"),
             "operator files render by name; got:\n{some}"
