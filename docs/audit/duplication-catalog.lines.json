@@ -934,8 +934,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 163,
-        "end_line": 163
+        "start_line": 162,
+        "end_line": 162
       },
       {
         "file": "tests/common/repo.rs",
@@ -3209,8 +3209,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 312,
-        "end_line": 312
+        "start_line": 311,
+        "end_line": 311
       },
       {
         "file": "tests/common/workflow_probe.rs",
@@ -4974,8 +4974,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 524,
-        "end_line": 538
+        "start_line": 523,
+        "end_line": 537
       }
     ]
   },
@@ -6499,8 +6499,8 @@
       },
       {
         "file": "tests/common/mod.rs",
-        "start_line": 475,
-        "end_line": 480
+        "start_line": 474,
+        "end_line": 479
       }
     ]
   },

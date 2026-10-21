@@ -1991,7 +1991,7 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `tests/common/fixtures/host.rs:98-98` `Command::new`
 - `tests/common/fixtures/host.rs:185-185` `Command::new`
 - `tests/common/layer_cli.rs:71-71` `Command::new`
-- `tests/common/mod.rs:163-163` `Command::new`
+- `tests/common/mod.rs:162-162` `Command::new`
 - `tests/common/repo.rs:380-380` `Command::new`
 - `tests/common/served.rs:295-295` `Command::new`
 - `tests/compiler_pass_stage1_audit.rs:193-193` `Command::new`
@@ -2913,7 +2913,7 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/layer_cli.rs:22-22` `".rigger"`
 - `tests/common/layer_cli.rs:28-28` `".rigger"`
 - `tests/common/layer_cli.rs:301-301` `".rigger"`
-- `tests/common/mod.rs:312-312` `"{}/.rigger-test-scratch"`
+- `tests/common/mod.rs:311-311` `"{}/.rigger-test-scratch"`
 - `tests/common/workflow_probe.rs:15-15` `".rigger"`
 - `tests/common/workflow_probe.rs:16-16` `"create .rigger"`
 - `tests/compaction_generations_periphery.rs:1192-1192` `".rigger"`
@@ -3637,7 +3637,7 @@ Proposed home: `one shared `spawn_request` helper (e.g. relocated into `tests/co
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-domain/src/agent.rs:178-207` `spawn_request`
-- `tests/common/mod.rs:524-538` `spawn_request`
+- `tests/common/mod.rs:523-537` `spawn_request`
 
 #### `dup-2a5626cb9627` (near, 2 sites)
 
@@ -4356,7 +4356,7 @@ Proposed home: `one shared `project_events` helper (e.g. relocated into `tests/c
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:207-213` `project_events`
-- `tests/common/mod.rs:475-480` `project_events`
+- `tests/common/mod.rs:474-479` `project_events`
 
 #### `dup-e10b6988960c` (exact, 2 sites)
 
