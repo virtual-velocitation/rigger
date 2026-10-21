@@ -5360,7 +5360,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a64cd249a992",
+    "id": "dup-af8b91bc2b2a",
     "classification": "near",
     "sites": [
       {
@@ -5369,7 +5369,7 @@
         "content_hash": "6a7f9c9540df1486"
       },
       {
-        "file": "tests/common/fixtures/language_markers.rs",
+        "file": "tests/common/source_audit.rs",
         "name": "is_ident_char",
         "content_hash": "7b60646c82d8cb53"
       },
@@ -5379,7 +5379,7 @@
         "content_hash": "68a8eb36f4ce0b8d"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/config.rs, tests/common/fixtures/language_markers.rs, tests/no_os_kill_audit.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/config.rs, tests/common/source_audit.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

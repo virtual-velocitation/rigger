@@ -3683,7 +3683,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/concepts.rs:80-82` `is_label_doc`
 - `crates/rigger-domain/src/ingest.rs:48-50` `is_derived_index_type`
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:751-753` `is_std_root`
-- `tests/common/source_audit.rs:430-432` `is_keyword`
+- `tests/common/source_audit.rs:435-437` `is_keyword`
 
 #### `dup-b1d15044e7fc` (near, 5 sites)
 
@@ -3706,14 +3706,14 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/config.rs:386-388` `depth`
 - `crates/rigger-domain/src/eventstore.rs:422-424` `facts`
 
-#### `dup-a64cd249a992` (near, 3 sites)
+#### `dup-af8b91bc2b2a` (near, 3 sites)
 
-Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/src/config.rs, tests/common/fixtures/language_markers.rs, tests/no_os_kill_audit.rs)`
+Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/src/config.rs, tests/common/source_audit.rs, tests/no_os_kill_audit.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/config.rs:1461-1463` `is_word_byte`
-- `tests/common/fixtures/language_markers.rs:65-67` `is_ident_char`
+- `tests/common/source_audit.rs:198-200` `is_ident_char`
 - `tests/no_os_kill_audit.rs:59-61` `is_word_char`
 
 #### `dup-08ca12f5868a` (near, 2 sites)
@@ -4283,7 +4283,7 @@ Proposed home: `crates/rigger-grounder/src/grounder/symbols/extract.rs::extract 
 mandatory sweep: bespoke source-text lexer/scanner functions duplicating the canonical tree-sitter extractor - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:270-531` `extract`
-- `tests/common/source_audit.rs:443-549` `tokenize`
+- `tests/common/source_audit.rs:448-554` `tokenize`
 - `tests/simplification_audit.rs:212-214` `scan_file`
 
 #### `dup-6741e1f3023b` (semantic, 2 sites)

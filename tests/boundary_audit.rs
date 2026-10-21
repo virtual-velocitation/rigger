@@ -600,7 +600,7 @@ fn fn_name(line: &str) -> String {
     let after = line.split("fn ").nth(1).unwrap_or_default();
     after
         .chars()
-        .take_while(|c| common::fixtures::is_ident_char(*c))
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
         .collect()
 }
 
