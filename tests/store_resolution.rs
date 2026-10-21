@@ -35,7 +35,7 @@ fn enclosing_fn(lines: &[&str], idx: usize) -> Option<String> {
             if let Some(rest) = line.strip_prefix(prefix) {
                 let name: String = rest
                     .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .take_while(|c| common::fixtures::is_ident_char(*c))
                     .collect();
                 if !name.is_empty() {
                     return Some(name);

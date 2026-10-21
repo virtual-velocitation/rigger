@@ -1,5 +1,7 @@
 //! Language-marker fixtures: the oracle spec 120's MARKERS rule reads a shipped text with, shared
-//! by the binary's unit tests and the integration suites that read the same text at a boundary.
+//! by the binary's unit tests and the integration suites that read the same text at a boundary,
+//! and the identifier character class it splits on, which the source audits and the suites that
+//! read an identifier off a source line share too.
 
 /// Every language marker `text` spells under spec 120's MARKERS rule, the word markers first
 /// and then the substring markers, each in list order. The text is lower-cased; a word marker
@@ -34,7 +36,7 @@ pub fn language_marker_hits(text: &str) -> Vec<&'static str> {
     ];
     let text = text.to_lowercase();
     let tokens: Vec<&str> = text
-        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .split(|c: char| !is_ident_char(c))
         .filter(|t| !t.is_empty())
         .collect();
     let word_hits = |marker: &str| {
@@ -55,4 +57,11 @@ pub fn language_marker_hits(text: &str) -> Vec<&'static str> {
                 .filter(|marker| text.contains(marker)),
         )
         .collect()
+}
+
+/// Whether `c` is an identifier character, a letter, a digit or `_`: the word-token class the
+/// marker oracle splits a text on and the source audits read an identifier with, so e.g.
+/// `fnv1a_64` is never mistaken for the `fn` keyword.
+pub fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }

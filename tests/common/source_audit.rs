@@ -86,8 +86,7 @@ pub fn is_fn_sig_line(line: &str) -> bool {
         if chars[start..start + marker.len()] != marker[..] {
             continue;
         }
-        let before_ok =
-            start == 0 || !(chars[start - 1].is_alphanumeric() || chars[start - 1] == '_');
+        let before_ok = start == 0 || !is_ident_char(chars[start - 1]);
         if before_ok {
             return true;
         }
@@ -193,11 +192,7 @@ pub fn enclosing_fn_line(lines: &[&str], sigs: &[usize], at: usize) -> Option<us
         .find(|&s| s <= at && at <= block_span(lines, s).1)
 }
 
-/// Whether `c` is a Rust identifier-continuation character (used for word-boundary checks so
-/// e.g. `fnv1a_64` is never mistaken for the `fn` keyword).
-pub fn is_ident_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
-}
+pub use crate::common::fixtures::is_ident_char;
 
 /// If `chars[i..]` opens a string literal (`"...\"`, `r"..."`, `r#"..."#`, ..., `b"..."`,
 /// `br#"..."#`, ...), advance `*i` past its closing delimiter and return how many `\n`s it

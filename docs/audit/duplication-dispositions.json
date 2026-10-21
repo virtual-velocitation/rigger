@@ -475,7 +475,7 @@
     "reason": "Two different workflows built from the already-shared config fixtures: `critique_cfg` wires an adversary into the plan-critique gate while `two_episode_cfg` runs it with no adversary and a different agent roster."
   },
   {
-    "id": "dup-af8b91bc2b2a",
+    "id": "dup-a64cd249a992",
     "disposition": "not-a-duplicate",
     "reason": "Three word-character predicates with different domains: a byte-level config scanner, a char-level alphabetic-only kill-word audit, and a char-level identifier test that also admits digits."
   },

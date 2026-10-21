@@ -5089,8 +5089,8 @@
       },
       {
         "file": "tests/common/source_audit.rs",
-        "start_line": 435,
-        "end_line": 437
+        "start_line": 430,
+        "end_line": 432
       }
     ]
   },
@@ -5140,7 +5140,7 @@
     ]
   },
   {
-    "id": "dup-af8b91bc2b2a",
+    "id": "dup-a64cd249a992",
     "sites": [
       {
         "file": "crates/rigger-domain/src/config.rs",
@@ -5148,9 +5148,9 @@
         "end_line": 1463
       },
       {
-        "file": "tests/common/source_audit.rs",
-        "start_line": 198,
-        "end_line": 200
+        "file": "tests/common/fixtures/language_markers.rs",
+        "start_line": 65,
+        "end_line": 67
       },
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -6379,8 +6379,8 @@
       },
       {
         "file": "tests/common/source_audit.rs",
-        "start_line": 448,
-        "end_line": 554
+        "start_line": 443,
+        "end_line": 549
       },
       {
         "file": "tests/simplification_audit.rs",
