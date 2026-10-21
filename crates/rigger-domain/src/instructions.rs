@@ -14,8 +14,12 @@
 //! so neither the entry nor the file is injected ([`resolve_layers`]). The OPERATOR layer is
 //! every other `*.md` under `.rigger/instructions/`, in filename order, read by the store-gated
 //! loader in `config_store` and carried on `Config::instructions`, so this module stays pure
-//! and compiles in the `core` lane. `rigger instructions` prints the composed layers ([`render`])
-//! so an operator can read exactly what their agents are held to.
+//! and compiles in the `core` lane. `rigger instructions` prints every layer, each built-in with
+//! its state - in force, replaced or switched off - ([`render`]) so an operator can read exactly
+//! what their agents are held to; `rigger validate` warns of each shadowed built-in
+//! ([`shadow_advisories`]).
+
+use crate::config::RIGGER_DIR;
 
 /// One instruction section: `name` is the file stem (or the built-in id) and `body` its text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,29 +146,84 @@ pub fn compose(persona: &str, operator: &[Instruction]) -> String {
     out
 }
 
-/// The text `rigger instructions` prints: every layer in injection order, named.
+/// The text `rigger instructions` prints, read from [`resolve_layers`]: every built-in in
+/// [`BUILTIN`] order labelled with its state - `(built-in)` with its shipped body, `(replaced by
+/// .rigger/instructions/<name>.md)` with the operator file's body, or `(switched off by
+/// .rigger/instructions/<name>.md)` with no body - then each operator file that shadows no
+/// built-in, by name, or `(none)` when no such file remains.
 pub fn render(operator: &[Instruction]) -> String {
+    let layers = resolve_layers(operator);
     let mut out = String::new();
     out.push_str(HEADING);
-    out.push_str("\n\nBuilt-in (every agent rigger spawns, not removable):\n");
-    for (name, body) in BUILTIN {
-        push_section(&mut out, name, body);
+    out.push_str("\n\nBuilt-in:\n");
+    for layer in &layers.builtins {
+        let label = shadowed_by(layer).unwrap_or_else(|| "built-in".to_string());
+        let heading = format!("{} ({label})", layer.name);
+        match layer.state {
+            LayerState::BuiltIn(body) | LayerState::Replaced(body) => {
+                push_section(&mut out, &heading, body)
+            }
+            LayerState::SwitchedOff => push_heading(&mut out, &heading),
+        }
     }
-    out.push_str("\nOperator (.rigger/instructions/*.md, filename order):\n");
-    if operator.is_empty() {
+    out.push_str(&format!(
+        "\nOperator ({}, filename order):\n",
+        operator_path("*.md")
+    ));
+    if layers.operator.is_empty() {
         out.push_str("(none)\n");
     }
-    for ins in operator {
+    for ins in layers.operator {
         push_section(&mut out, &ins.name, &ins.body);
     }
     out
 }
 
+/// One warning line per built-in an operator file replaces or switches off, in [`BUILTIN`]
+/// order, read from [`resolve_layers`]: `warning: built-in instruction <name> is replaced by
+/// .rigger/instructions/<name>.md` or `... is switched off by .rigger/instructions/<name>.md`.
+/// A layer that shadows no built-in yields none. `rigger validate` prints each to stderr and
+/// still succeeds.
+pub fn shadow_advisories(operator: &[Instruction]) -> Vec<String> {
+    resolve_layers(operator)
+        .builtins
+        .iter()
+        .filter_map(|layer| {
+            shadowed_by(layer)
+                .map(|by| format!("warning: built-in instruction {} is {by}", layer.name))
+        })
+        .collect()
+}
+
+/// What shadows `layer`: `replaced by <file>` or `switched off by <file>`, the file being the
+/// operator file named as the built-in, or `None` for a built-in no operator file shadows.
+fn shadowed_by(layer: &BuiltInLayer) -> Option<String> {
+    let verb = match layer.state {
+        LayerState::BuiltIn(_) => return None,
+        LayerState::Replaced(_) => "replaced",
+        LayerState::SwitchedOff => "switched off",
+    };
+    Some(format!(
+        "{verb} by {}",
+        operator_path(&format!("{}.md", layer.name))
+    ))
+}
+
+/// `file` under the operator layer's directory, `.rigger/instructions`, as the reports name it.
+fn operator_path(file: &str) -> String {
+    format!("{RIGGER_DIR}/instructions/{file}")
+}
+
 fn push_section(out: &mut String, name: &str, body: &str) {
+    push_heading(out, name);
+    out.push_str(body.trim_end());
+    out.push('\n');
+}
+
+/// A section's `## <name>` heading line, after a blank line.
+fn push_heading(out: &mut String, name: &str) {
     out.push_str("\n## ");
     out.push_str(name);
-    out.push('\n');
-    out.push_str(body.trim_end());
     out.push('\n');
 }
 

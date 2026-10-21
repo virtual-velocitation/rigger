@@ -1405,18 +1405,30 @@ fn top_level_key(line: &str) -> Option<&str> {
     Some(key.trim_end())
 }
 
-/// The first line `rigger prime` prints: the instruction layers in force for this project,
-/// counting its `operator` files, so a session starts knowing which law its agents are held to.
-fn instructions_in_force_line(operator: usize) -> String {
-    let builtin = instructions::BUILTIN
+/// The first line `rigger prime` prints: the instruction layers in force for this project, read
+/// from `instructions::resolve_layers` over its `operator` files, so a session starts knowing
+/// which law its agents are held to. It lists the built-ins in force in `BUILTIN` order, a
+/// replaced one as `<name> (replaced)` and a switched-off one not at all (`none` when no built-in
+/// is in force), and counts only the operator files that shadow no built-in.
+fn instructions_in_force_line(operator: &[instructions::Instruction]) -> String {
+    let layers = instructions::resolve_layers(operator);
+    let in_force = layers
+        .builtins
         .iter()
-        .map(|(name, _)| *name)
-        .collect::<Vec<_>>()
-        .join(", ");
-    let extra = if operator == 0 {
-        String::new()
+        .filter_map(|layer| match layer.state {
+            instructions::LayerState::BuiltIn(_) => Some(layer.name.to_string()),
+            instructions::LayerState::Replaced(_) => Some(format!("{} (replaced)", layer.name)),
+            instructions::LayerState::SwitchedOff => None,
+        })
+        .collect::<Vec<_>>();
+    let builtin = if in_force.is_empty() {
+        "none".to_string()
     } else {
-        format!(" (+{operator} operator files)")
+        in_force.join(", ")
+    };
+    let extra = match layers.operator.len() {
+        0 => String::new(),
+        operator => format!(" (+{operator} operator files)"),
     };
     format!(
         "{} in force: {builtin}{extra} - see rigger instructions",
@@ -1434,7 +1446,7 @@ pub(crate) fn cmd_prime(args: &[String]) -> Res {
     let spec_path = args.first();
     println!(
         "{}",
-        instructions_in_force_line(config_store::load_instructions(Path::new("."))?.len())
+        instructions_in_force_line(&config_store::load_instructions(Path::new("."))?)
     );
     // The one store-location authority every courier resolves through: a session started in a
     // subdirectory or a unit worktree reads the project's own store and identity, never the cwd's.
