@@ -32,7 +32,7 @@ pub mod grounder;
 pub mod ingest;
 /// Instruction injection: the built-in engineering law, working discipline and communication
 /// discipline and the operator's `.rigger/instructions/*.md` layered into every spawned agent's
-/// system prompt.
+/// system prompt, a built-in entry unless an operator file switches it off.
 pub mod instructions;
 pub mod ledger;
 pub mod metrics;

@@ -3619,7 +3619,8 @@ mod tests {
     }
 
     /// DRY: a harness-wide rule lives in the built-in instruction layer, which reaches every
-    /// spawn; no persona file or scaffold seed carries a copy of any of its lines.
+    /// spawn unless an operator file switches its entry off; no persona file or scaffold seed
+    /// carries a copy of any of its lines.
     #[test]
     fn personas_and_seeds_carry_no_copy_of_a_built_in_instruction() {
         for (at, text) in every_shipped_persona() {
@@ -3627,8 +3628,8 @@ mod tests {
                 for line in body.lines().map(str::trim).filter(|l| l.len() > 40) {
                     assert!(
                         !text.contains(line),
-                        "{at} copies a line of the built-in {name:?} (it reaches every spawn \
-                         already): {line:?}"
+                        "{at} copies a line of the built-in {name:?} (the built-in layer already \
+                         carries it): {line:?}"
                     );
                 }
             }
