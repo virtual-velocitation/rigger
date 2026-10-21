@@ -28067,22 +28067,6 @@ fn validate_warns_of_no_built_in_for_a_near_named_or_other_operator_file() {
     assert_validate_names_the_shadowed_built_ins(root, &[]);
 }
 
-/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from below the project root: given a project
-/// with a store whose `.rigger/instructions/` holds the named-entry fixture - a file replacing the
-/// communication built-in, an empty one switching the working-discipline built-in off and one
-/// shadowing no built-in - when the operator runs `rigger prime` at the root and in a subdirectory,
-/// then both open with the same in-force line, read from the project's instruction layer.
-#[test]
-fn prime_from_a_subdirectory_names_the_project_s_built_in_states() {
-    use common::cli::{assert_prime_names_the_shadowing_layer_states, write_operator_layer};
-    use common::fixtures::{shadowing_operator_layer, subdirectory_of};
-    let proj = temp_store_project();
-    let root = proj.path();
-    write_operator_layer(root, &shadowing_operator_layer());
-    assert_prime_names_the_shadowing_layer_states(root);
-    assert_prime_names_the_shadowing_layer_states(&subdirectory_of(root));
-}
-
 /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from a unit worktree: given a committed project
 /// with a store whose `.rigger/instructions/` holds the named-entry fixture, uncommitted, and a
 /// worktree nested under its `.rigger/` that therefore checks none of that layer out, when the
@@ -28102,28 +28086,36 @@ fn prime_from_a_nested_worktree_names_the_project_s_built_in_states() {
     assert_prime_names_the_shadowing_layer_states(&nested_worktree(root, "rigger-wt-prime-layer"));
 }
 
-/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, before any store exists: given a project with no
-/// store whose `.rigger/instructions/` holds the named-entry fixture, when the operator runs
-/// `rigger prime` at the root and in a subdirectory, then the root opens with that layer's
-/// in-force line and the subdirectory, which holds no layer, with the built-ins alone - the layer
-/// is read at the cwd until a store resolves the project root.
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from below the project root: given a project
+/// whose `.rigger/instructions/` holds the named-entry fixture - a file replacing the communication
+/// built-in, an empty one switching the working-discipline built-in off and one shadowing no
+/// built-in - when the operator runs a reporter at the root and in a subdirectory, then both report
+/// the project's layer: `rigger prime` in a project with a store and in a git project before any
+/// store exists opens with the same in-force line, and `rigger instructions` prints the same
+/// layers, each built-in with its state.
 #[test]
-fn prime_without_a_store_reads_the_instruction_layer_at_the_cwd() {
+fn prime_and_instructions_from_a_subdirectory_report_the_project_s_instruction_layer() {
     use common::cli::{
-        assert_prime_names_the_shadowing_layer_states, prime_first_line, write_operator_layer,
+        assert_instructions_render_the_shadowing_layer,
+        assert_prime_names_the_shadowing_layer_states, assert_reported_from_below, Reporter,
     };
-    use common::fixtures::{
-        shadowing_operator_layer, subdirectory_of, BUILT_INS_ONLY_IN_FORCE_LINE,
-    };
-    let proj = temp_project();
-    let root = proj.path();
-    write_operator_layer(root, &shadowing_operator_layer());
-    assert_prime_names_the_shadowing_layer_states(root);
-    assert_eq!(
-        prime_first_line(&subdirectory_of(root)).as_deref(),
-        Some(BUILT_INS_ONLY_IN_FORCE_LINE),
-        "with no store the subdirectory's own, empty, layer is read"
-    );
+    let cases: [(tempfile::TempDir, Reporter); 3] = [
+        (
+            temp_store_project(),
+            assert_prime_names_the_shadowing_layer_states,
+        ),
+        (
+            temp_project(),
+            assert_prime_names_the_shadowing_layer_states,
+        ),
+        (
+            temp_project(),
+            assert_instructions_render_the_shadowing_layer,
+        ),
+    ];
+    for (project, report) in cases {
+        assert_reported_from_below(project.path(), report);
+    }
 }
 
 /// `rigger init` scaffolds the operator instruction directory with its README and names it

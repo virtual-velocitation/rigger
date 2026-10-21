@@ -141,12 +141,8 @@ pub fn assert_validate_names_the_shadowed_built_ins(root: &Path, advisories: &[&
 /// success exit with the same lines on the repeat, and `rigger prime` opens with the built-ins in
 /// force and the unshadowed file count.
 pub fn assert_reporters_name_the_shadowing_layer_states(root: &Path) {
-    use super::fixtures::{rendered_shadowing_layer, SHADOWING_LAYER_ADVISORIES};
-    assert_eq!(
-        run_rigger_ok(root, &["instructions"]),
-        rendered_shadowing_layer(),
-        "`rigger instructions` prints each built-in with its state, then the unshadowed file"
-    );
+    use super::fixtures::SHADOWING_LAYER_ADVISORIES;
+    assert_instructions_render_the_shadowing_layer(root);
     for _ in 0..2 {
         assert_validate_names_the_shadowed_built_ins(root, &SHADOWING_LAYER_ADVISORIES);
     }
@@ -160,6 +156,30 @@ pub fn prime_first_line(cwd: &Path) -> Option<String> {
         .lines()
         .next()
         .map(str::to_string)
+}
+
+/// A reporter assertion run in a directory: it runs one instruction reporter there and asserts
+/// what it printed.
+pub type Reporter = fn(&Path);
+
+/// Write the named-entry fixture (`shadowing_operator_layer`) into the project at `root`, then run
+/// the reporter assertion `report` at `root` and in its subdirectory: the reporter reads the
+/// project's instruction layer from either, never the subdirectory's own.
+pub fn assert_reported_from_below(root: &Path, report: Reporter) {
+    write_operator_layer(root, &super::fixtures::shadowing_operator_layer());
+    report(root);
+    report(&super::fixtures::subdirectory_of(root));
+}
+
+/// `rigger instructions` run in `cwd` prints the layers of the named-entry fixture
+/// (`shadowing_operator_layer`) its project holds: each built-in with its state, then the
+/// unshadowed file.
+pub fn assert_instructions_render_the_shadowing_layer(cwd: &Path) {
+    assert_eq!(
+        run_rigger_ok(cwd, &["instructions"]),
+        super::fixtures::rendered_shadowing_layer(),
+        "`rigger instructions` prints each built-in with its state, then the unshadowed file"
+    );
 }
 
 /// `rigger prime` run in `cwd` opens with the in-force line of the named-entry fixture
