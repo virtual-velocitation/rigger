@@ -242,18 +242,15 @@ fn push_heading(out: &mut String, name: &str) {
 mod tests {
     use super::*;
     use crate::test_support::{
-        assert_carries_the_review_method, builtin_body, builtin_section, op,
-        rendered_shadowing_layer, shadowing_operator_layer, COMMUNICATION_NEAR_NAME,
-        NON_EMPTY_BLANK_BODIES, RENDERED_OPERATOR_HEADING, REPLACING_COMMUNICATION_BODY,
-        SHADOWING_LAYER_ADVISORIES,
+        assert_carries_the_review_method, builtin_body, builtin_section,
+        house_and_team_operator_layer, op, rendered_shadowing_layer, shadowing_operator_layer,
+        COMMUNICATION_NEAR_NAME, NON_EMPTY_BLANK_BODIES, RENDERED_OPERATOR_HEADING,
+        REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
     };
 
     #[test]
     fn compose_places_persona_then_builtin_then_operator_in_order() {
-        let sys = compose(
-            "You are the persona.",
-            &[op("10-house", "House rule."), op("20-team", "Team rule.")],
-        );
+        let sys = compose("You are the persona.", &house_and_team_operator_layer());
         let persona = sys.find("You are the persona.").expect("persona leads");
         let heading = sys
             .find(HEADING)

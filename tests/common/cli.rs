@@ -1,5 +1,6 @@
 //! Fixtures for suites that drive the compiled `rigger` binary against a throwaway project:
-//! running it, seeding the stores it reads, and reading back what it wrote.
+//! running it, seeding the stores and operator instruction files it reads, and reading back what
+//! it wrote.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

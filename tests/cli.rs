@@ -27997,13 +27997,7 @@ fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
 fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path() {
     let proj = temp_store_project();
     let root = proj.path();
-    common::cli::write_operator_layer(
-        root,
-        &[
-            common::fixtures::op("10-house", "House rule."),
-            common::fixtures::op("20-team", "Team rule."),
-        ],
-    );
+    common::cli::write_operator_layer(root, &common::fixtures::house_and_team_operator_layer());
     let (out, err, ok) = run_rigger(root, &["prime"]);
     assert!(ok, "`rigger prime` must succeed; stderr:\n{err}");
     let mut lines = out.lines();

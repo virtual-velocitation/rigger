@@ -3,7 +3,8 @@
 //! body's section headings and the review method its `## When you review` section holds; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
 //! and their checked-in sources, each entry's body by name, a near name that shadows no
-//! built-in, the layers `rigger instructions` prints, the persona an agent definition parses to,
+//! built-in, the non-empty bodies that still switch a built-in off, two operator files that shadow
+//! nothing, the layers `rigger instructions` prints, the persona an agent definition parses to,
 //! the system prompt a spawn with no operator layer is composed to, and the composed prompt
 //! spelled section by section; an operator instruction file by name and body; and the named-entry
 //! operator layer the instruction reporters are read over, with what `rigger instructions`,
@@ -157,6 +158,11 @@ pub fn op(name: &str, body: &str) -> rigger::instructions::Instruction {
         name: name.into(),
         body: body.into(),
     }
+}
+
+/// Two operator files that shadow no built-in, in filename order: `10-house`, then `20-team`.
+pub fn house_and_team_operator_layer() -> Vec<rigger::instructions::Instruction> {
+    vec![op("10-house", "House rule."), op("20-team", "Team rule.")]
 }
 
 /// The named-entry fixture the instruction reporters are read over, in filename order as the
