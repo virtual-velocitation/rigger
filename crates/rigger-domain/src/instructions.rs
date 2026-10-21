@@ -82,21 +82,23 @@ pub struct Layers<'a> {
 /// the operator layer; every other file, a near name or a blank body included, stays in the
 /// operator layer in the order given.
 pub fn resolve_layers(operator: &[Instruction]) -> Layers<'_> {
-    let shadows = |ins: &Instruction| {
-        BUILTIN.iter().any(|(name, _)| ins.name == *name)
-            && !without_bom(&ins.body).trim().is_empty()
+    let shadows = |ins: &Instruction, name: &str| {
+        ins.name == name && !without_bom(&ins.body).trim().is_empty()
     };
     let builtins = BUILTIN
         .iter()
         .map(|&(name, body)| BuiltInLayer {
             name,
-            state: match operator.iter().find(|ins| ins.name == name && shadows(ins)) {
+            state: match operator.iter().find(|ins| shadows(ins, name)) {
                 Some(ins) => LayerState::Replaced(without_bom(&ins.body)),
                 None => LayerState::BuiltIn(body),
             },
         })
         .collect();
-    let operator = operator.iter().filter(|ins| !shadows(ins)).collect();
+    let operator = operator
+        .iter()
+        .filter(|ins| !BUILTIN.iter().any(|&(name, _)| shadows(ins, name)))
+        .collect();
     Layers { builtins, operator }
 }
 
