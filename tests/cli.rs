@@ -27944,6 +27944,35 @@ fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_i
     );
 }
 
+/// Spec 120's AN EMPTY SAME-NAMED OPERATOR FILE SWITCHES A BUILT-IN OFF, end to end: given a
+/// project whose `.rigger/instructions/` holds an empty `working-discipline.md`, when the
+/// operator runs `rigger run`, then the worker's system prompt carries no section for the
+/// working-discipline built-in or for the file, and the other two built-ins stand unchanged in
+/// their order under the bare heading.
+#[cfg(unix)]
+#[test]
+fn run_spawns_the_worker_with_no_section_for_a_built_in_an_empty_same_named_file_switches_off() {
+    use common::cli::run_capturing_system_prompt;
+    use common::fixtures::{builtin_section, expected_composed_prompt, instructions_dir, persona};
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    std::fs::File::create(instructions_dir(root).join("working-discipline.md")).unwrap();
+    let system = run_capturing_system_prompt(root, &["run"]);
+    assert_eq!(
+        system,
+        expected_composed_prompt(
+            &persona(UNISOLATED_WORKER),
+            &[
+                builtin_section("engineering-principles"),
+                builtin_section("communication"),
+            ]
+        ),
+        "the empty file switches the working-discipline built-in off and is not appended; \
+         every other section is unchanged"
+    );
+}
+
 /// `rigger prime` opens with the instructions in force on the absent-db path, counting the
 /// operator files.
 #[test]
