@@ -80,6 +80,10 @@ mod graph_fixtures;
 mod ingest_fixtures;
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/instructions.rs"]
+mod instructions_fixtures;
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
 mod spawn_fixtures;
 #[cfg(test)]
@@ -88,5 +92,6 @@ mod test_support {
     pub use crate::graph_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::ingest_fixtures::*;
+    pub use crate::instructions_fixtures::*;
     pub use crate::spawn_fixtures::*;
 }

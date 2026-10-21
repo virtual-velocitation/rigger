@@ -1794,6 +1794,9 @@ mod tests {
     use crate::test_support::git_init_quiet;
     use crate::test_support::language_marker_hits;
     use crate::test_support::tool_available;
+    use crate::test_support::{
+        FAN_OUT_HEADING, HAND_OVER_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
+    };
 
     /// Spec 101: a graph rebuild reports its progress in tenths of the log positions it covers -
     /// a line each time a batch carries it into a new tenth, never twice for one tenth - with the
@@ -3519,6 +3522,44 @@ mod tests {
             hits,
             Vec::<(&str, Vec<&str>)>::new(),
             "the built-in layer and the reviewer discipline name no language"
+        );
+    }
+
+    /// Spec 120's THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: the working-discipline body,
+    /// read through the shipped-text helper, holds the three review sentences the reviewer
+    /// discipline no longer carries, in order, as the whole of its `## When you review` section,
+    /// which sits after the hand-over section and before the fan-out one, and the fan-out
+    /// section's `verify` bullet no longer restates the battery rule.
+    #[test]
+    fn the_working_discipline_body_holds_the_review_method_under_when_you_review() {
+        let body = every_shipped_agent_text()
+            .into_iter()
+            .find(|(at, _)| at == "BUILTIN working-discipline")
+            .map(|(_, text)| text)
+            .expect("the working-discipline body is shipped");
+        let words = rigger::wave::normalize_ws(&body);
+        let section = format!(
+            "{WHEN_YOU_REVIEW_HEADING} {} {FAN_OUT_HEADING}",
+            WHEN_YOU_REVIEW.join(" ")
+        );
+        let review = words.find(&section).expect(
+            "`## When you review` holds the three review sentences, in order, and nothing else, \
+             right before the fan-out section",
+        );
+        assert_eq!(
+            (
+                words.matches(&section).count(),
+                words.find(HAND_OVER_HEADING).is_some_and(|at| at < review)
+            ),
+            (1, true),
+            "the review section appears once, after the hand-over section"
+        );
+        assert_eq!(
+            persona_section(&body, FAN_OUT_HEADING)
+                .matches("battery")
+                .count(),
+            0,
+            "the fan-out section leaves the battery rule to `## When you review`"
         );
     }
 

@@ -49,6 +49,7 @@ use serde_json::{json, Value};
 
 use common::cli::{planted_graph, temp_project};
 use common::fixtures::apply_next_json;
+use common::fixtures::assert_task_prompt_carries_only_the_reviewer_contract;
 use common::fixtures::language_marker_hits;
 use common::fixtures::{
     edge, file_half, member_graph, BARE_PARENT, LEAF_PLACEHOLDER, NESTED_METHOD, RANGE_ARTIFACT,
@@ -912,17 +913,18 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
     }
 }
 
-/// Spec 113 (THE CORE NAMES NO GATE), at the review boundary end to end: the reviewer discipline
-/// every review tier receives forbids running a gate's command as the gate runs it by naming the
-/// generic mechanism, never the one gate the core once knew or its tool. The conductor's in-process
-/// `every_reviewer_prompt_leaves_the_gates_and_their_tools_to_the_gates` pins the assembled
-/// strings; this pins the exact bytes the lens, the adversary AND the adjudicator each receive
-/// through the `AgentDriver` port during a live fan-out `run`, so a review call site that dropped
-/// the discipline, or a core string that named the gate or its tool again, reddens here. Spec 120's
-/// THE BUILT-IN LAYER NAMES NO LANGUAGE at the same boundary: each tier receives the discipline
-/// whole, and the discipline as received spells no marker of the MARKERS rule.
+/// Spec 113 (THE CORE NAMES NO GATE), at the review boundary end to end: no line of the task
+/// prompt the lens, the adversary AND the adjudicator each receive through the `AgentDriver` port
+/// during a live fan-out `run` names the one gate the core once knew or its tool. Spec 120's THE
+/// REVIEWER PROMPT CARRIES ONLY THE CONTRACT at the same boundary: each tier's task prompt carries
+/// the reviewer discipline whole and once, and none of the review method `## When you review`
+/// holds, so a review call site that dropped the discipline, or a core string that restated the
+/// method, reddens here; the conductor's in-process
+/// `every_reviewer_prompt_carries_only_the_contract_and_its_system_prompt_the_method` pins the
+/// method in the system prompt. Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE: the discipline as
+/// received spells no marker of the MARKERS rule.
 #[test]
-fn every_review_spawn_is_forbidden_a_gates_tool_without_naming_the_gate_or_its_tool() {
+fn every_review_spawn_carries_the_reviewer_contract_without_naming_the_gate_or_its_tool() {
     let graph = Projector::open(":memory:", "test").unwrap();
     let finding = json!({
         "id": "f_sweep",
@@ -939,18 +941,10 @@ fn every_review_spawn_is_forbidden_a_gates_tool_without_naming_the_gate_or_its_t
         "the three review tiers spawn once each, in order"
     );
     for (role, prompt) in &prompts {
-        assert_eq!(
-            prompt
-                .matches(
-                    "Never run a gate's command as the gate runs it, directly or through a verify \
-                     helper: the gate evidence in your prompt is that gate's verdict, and a \
-                     reviewer's run only repeats it at review cost; the one targeted reproduction \
-                     above is not a gate run."
-                )
-                .count(),
-            1,
-            "the {role:?} review prompt carries the gate-tool discipline exactly once; prompt \
-             was:\n{prompt}"
+        assert_task_prompt_carries_only_the_reviewer_contract(
+            &format!("{role:?} review"),
+            prompt,
+            REVIEWER_DISCIPLINE,
         );
         let discipline = prompt
             .find(REVIEWER_DISCIPLINE)

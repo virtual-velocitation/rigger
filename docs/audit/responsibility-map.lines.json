@@ -4881,48 +4881,48 @@
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "every_review_tier_prompt_carries_the_gate_evidence_of_the_commit_it_judges",
     "start_line": 37764,
-    "end_line": 37801
+    "end_line": 37797
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "digested_verdict",
-    "start_line": 37804,
-    "end_line": 37817
+    "start_line": 37800,
+    "end_line": 37813
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_digest_address_is_the_commit_its_gate_ran_on",
-    "start_line": 37823,
-    "end_line": 37834
+    "start_line": 37819,
+    "end_line": 37830
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_gate_evidence_block_lists_only_the_units_gates_on_the_commit_under_review",
-    "start_line": 37842,
-    "end_line": 37894
+    "start_line": 37838,
+    "end_line": 37890
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_reviewer_builds_into_the_units_review_cache_never_the_units_own",
-    "start_line": 37902,
-    "end_line": 37941
+    "start_line": 37898,
+    "end_line": 37937
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "review_tier_prompts",
-    "start_line": 37946,
-    "end_line": 37967
+    "start_line": 37942,
+    "end_line": 37968
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "review_agents_emit_findings_via_the_review_protocol",
-    "start_line": 37970,
-    "end_line": 38000
+    "start_line": 37971,
+    "end_line": 38001
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "every_reviewer_prompt_leaves_the_gates_and_their_tools_to_the_gates",
-    "start_line": 38008,
+    "name": "every_reviewer_prompt_carries_only_the_contract_and_its_system_prompt_the_method",
+    "start_line": 38009,
     "end_line": 38039
   },
   {

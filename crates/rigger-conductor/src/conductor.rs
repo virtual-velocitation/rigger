@@ -37781,12 +37781,8 @@ mod tests {
                 let block = format!(
                     "GATE EVIDENCE for the commit under review (commit {commit}, which `git \
                      rev-parse HEAD` prints in the unit's worktree): every gate below already \
-                     ran on exactly this commit. Never re-run a gate shown PASS here, by \
-                     hand or through a verify helper: the gate is the instrument that proves \
-                     it, and your judgment covers what no gate sees. Reproduce only a specific \
-                     suspicion - one named test, a reversion probe, a single-crate `cargo test \
-                     -p <crate> <test>` - in your own scratch worktree, never the whole \
-                     battery.\n- ok: PASS (input digest {digest})\n    PASS\n"
+                     ran on exactly this commit.\n- ok: PASS (input digest {digest})\n    \
+                     PASS\n"
                 );
                 assert!(
                     prompt.contains(&block),
@@ -37869,7 +37865,7 @@ mod tests {
             digested_verdict("u", "test", 2, true, "T1"),
         ];
         let block = gate_evidence_block(&events, "u", "T1");
-        let rows = block.split_once("battery.\n").unwrap().1;
+        let rows = block.split_once("this commit.\n").unwrap().1;
         assert_eq!(
             rows,
             format!(
@@ -37940,10 +37936,10 @@ mod tests {
         }
     }
 
-    /// The prompts one approving review round hands its three tiers, `(lens, adversary,
-    /// adjudicator)`: a single `review` stage with one lens, run in isolation on a stub that
-    /// approves.
-    fn review_tier_prompts() -> (String, String, String) {
+    /// The prompts one approving review round hands its three tiers, `[lens, adversary,
+    /// adjudicator]`, each as its `(task prompt, system prompt)`: a single `review` stage with one
+    /// lens, run in isolation on a stub that approves.
+    fn review_tier_prompts() -> [(String, String); 3] {
         let mut cfg = Config::default();
         cfg.agents.insert("lens".into(), agent("lens"));
         cfg.agents.insert("adversary".into(), agent("adversary"));
@@ -37962,8 +37958,13 @@ mod tests {
         let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
         run_isolated(&cfg, &deps).unwrap();
-        let last = |id: &str| driver.prompts_for(id).pop().unwrap();
-        (last("lens"), last("adversary"), last("adj"))
+        let last = |id: &str| {
+            (
+                driver.prompts_for(id).pop().unwrap(),
+                driver.system_prompt_for(id).unwrap(),
+            )
+        };
+        [last("lens"), last("adversary"), last("adj")]
     }
 
     #[test]
@@ -37971,7 +37972,7 @@ mod tests {
         // Item 3: a lens / adversary prompt must carry the review_protocol telling it
         // to record each finding as a ReviewFinding; the adjudicator's must NOT (it
         // ends with its verdict line, not a finding emit).
-        let (lens_prompt, adv_prompt, adj_prompt) = review_tier_prompts();
+        let [(lens_prompt, _), (adv_prompt, _), (adj_prompt, _)] = review_tier_prompts();
         assert!(
             lens_prompt.contains("ReviewFinding"),
             "a lens must be told to emit findings as ReviewFindings; prompt was:\n{lens_prompt}"
@@ -37999,42 +38000,41 @@ mod tests {
         );
     }
 
-    /// The gates grade the work, a review judges the residue: every review tier - lens,
-    /// adversary and adjudicator - is told never to re-run the battery or a gate already green on
-    /// its tree, to reproduce only a specific suspicion in its own scratch worktree building into
-    /// the unit's review cache, and never to run a gate's command as the gate runs it, itself or
-    /// through a verify helper, since the gate evidence in its prompt is that gate's verdict.
+    /// Spec 120's THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: the reviewer discipline holds
+    /// exactly what the harness enforces or provides - the two worktree sentences
+    /// `guard_review_round_tree` enforces and the build-cache sentence - so every review tier's task
+    /// prompt carries it once and none of the review method, which reaches the tier through its
+    /// system prompt's working-discipline body, each sentence once.
     #[test]
-    fn every_reviewer_prompt_leaves_the_gates_and_their_tools_to_the_gates() {
-        let (lens, adversary, adjudicator) = review_tier_prompts();
-        for (tier, prompt) in [
+    fn every_reviewer_prompt_carries_only_the_contract_and_its_system_prompt_the_method() {
+        assert_eq!(
+            REVIEWER_DISCIPLINE,
+            " Never write to this unit's own worktree - it is the tree being judged, not yours to \
+             edit. A reproduction builds into the build cache your spawn carries: the unit's review \
+             cache, never the cache the unit's gates use. Leave the unit's worktree exactly as you \
+             found it.",
+            "the reviewer discipline is the two worktree sentences and the build-cache sentence"
+        );
+        let [lens, adversary, adjudicator] = review_tier_prompts();
+        for (tier, (prompt, system)) in [
             ("lens", lens),
             ("adversary", adversary),
             ("adjudicator", adjudicator),
         ] {
-            assert!(
-                prompt.contains(
-                    "Never run a gate's command as the gate runs it, directly or through a verify \
-                     helper: the gate evidence in your prompt is that gate's verdict, and a \
-                     reviewer's run only repeats it at review cost; the one targeted reproduction \
-                     above is not a gate run."
-                ),
-                "the {tier} must be told never to run a gate's command as the gate runs it; prompt \
-                 was:\n{prompt}"
+            crate::test_support::assert_task_prompt_carries_only_the_reviewer_contract(
+                tier,
+                &prompt,
+                REVIEWER_DISCIPLINE,
             );
-            assert!(
-                prompt.contains(
-                    "Never re-run the gate battery, or any gate the gate evidence shows green on \
-                     the tree under review: the gates are the instrument that grades the work, \
-                     and a review judges what they cannot see. To reproduce a specific \
-                     suspicion - one named test, a reversion probe, a single targeted test run \
-                     through the project's test command - create your own throwaway scratch \
-                     worktree and run it there. A reproduction builds into the build cache your \
-                     spawn carries: the unit's review cache, never the cache the unit's gates \
-                     use."
-                ),
-                "the {tier} must leave the battery to the gates; prompt was:\n{prompt}"
-            );
+            let system = normalize_ws(&system);
+            for sentence in crate::test_support::WHEN_YOU_REVIEW {
+                assert_eq!(
+                    system.matches(sentence).count(),
+                    1,
+                    "the {tier} system prompt carries {sentence:?} once; system prompt \
+                     was:\n{system}"
+                );
+            }
         }
     }
 

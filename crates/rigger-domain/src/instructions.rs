@@ -189,7 +189,7 @@ mod tests {
         let body = working_discipline();
         for heading in [
             "## One pass, by excellence",
-            "## Fan out the mechanical work",
+            crate::test_support::FAN_OUT_HEADING,
         ] {
             assert_eq!(
                 body.matches(heading).count(),
@@ -284,7 +284,7 @@ mod tests {
             .find("A denied or blocked command comes back to you")
             .expect("the denied-command sentence is present");
         let hand_over = words
-            .find("## Hand over a tree the gates only confirm")
+            .find(crate::test_support::HAND_OVER_HEADING)
             .expect("the hand-over section is present");
         assert!(
             section < denied && denied < hand_over,
@@ -354,8 +354,7 @@ mod tests {
     fn the_working_discipline_states_each_hand_over_outcome_and_its_check() {
         let body = working_discipline();
         assert_eq!(
-            body.matches("## Hand over a tree the gates only confirm")
-                .count(),
+            body.matches(crate::test_support::HAND_OVER_HEADING).count(),
             1,
             "the working discipline carries the hand-over section exactly once"
         );

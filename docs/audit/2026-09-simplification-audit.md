@@ -728,14 +728,14 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
   - `crates/rigger-conductor/src/conductor.rs:37604-37628` `run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
   - `crates/rigger-conductor/src/conductor.rs:37632-37743` `lens_finding_reaches_later_tiers_through_the_graph` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
   - `crates/rigger-conductor/src/conductor.rs:37746-37756` `ok_gate_digest` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-conductor/src/conductor.rs:37764-37801` `every_review_tier_prompt_carries_the_gate_evidence_of_the_commit_it_judges` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-conductor/src/conductor.rs:37804-37817` `digested_verdict` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-conductor/src/conductor.rs:37823-37834` `a_digest_address_is_the_commit_its_gate_ran_on` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-conductor/src/conductor.rs:37842-37894` `the_gate_evidence_block_lists_only_the_units_gates_on_the_commit_under_review` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-conductor/src/conductor.rs:37902-37941` `a_reviewer_builds_into_the_units_review_cache_never_the_units_own` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-conductor/src/conductor.rs:37946-37967` `review_tier_prompts` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-conductor/src/conductor.rs:37970-38000` `review_agents_emit_findings_via_the_review_protocol` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-conductor/src/conductor.rs:38008-38039` `every_reviewer_prompt_leaves_the_gates_and_their_tools_to_the_gates` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-conductor/src/conductor.rs:37764-37797` `every_review_tier_prompt_carries_the_gate_evidence_of_the_commit_it_judges` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-conductor/src/conductor.rs:37800-37813` `digested_verdict` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-conductor/src/conductor.rs:37819-37830` `a_digest_address_is_the_commit_its_gate_ran_on` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-conductor/src/conductor.rs:37838-37890` `the_gate_evidence_block_lists_only_the_units_gates_on_the_commit_under_review` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-conductor/src/conductor.rs:37898-37937` `a_reviewer_builds_into_the_units_review_cache_never_the_units_own` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-conductor/src/conductor.rs:37942-37968` `review_tier_prompts` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-conductor/src/conductor.rs:37971-38001` `review_agents_emit_findings_via_the_review_protocol` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-conductor/src/conductor.rs:38009-38039` `every_reviewer_prompt_carries_only_the_contract_and_its_system_prompt_the_method` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
   - `crates/rigger-conductor/src/conductor.rs:38042-38080` `unparseable_adjudicator_output_blocks_integration` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
   - `crates/rigger-conductor/src/conductor.rs:38083-38146` `failing_gate_evidence_threaded_into_retry_prompt` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
   - `crates/rigger-conductor/src/conductor.rs:38151-38179` `silent_gate_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
@@ -1957,8 +1957,8 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `src/cli/run.rs:3287-3287` `Command::new`
 - `src/cli/run.rs:3331-3331` `Command::new`
 - `src/cli/run.rs:3400-3400` `Command::new`
-- `src/cli/setup.rs:3911-3911` `Command::new`
-- `src/cli/setup.rs:4202-4202` `Command::new`
+- `src/cli/setup.rs:3952-3952` `Command::new`
+- `src/cli/setup.rs:4243-4243` `Command::new`
 - `src/cli/validate.rs:1452-1452` `Command::new`
 - `src/cli/validate.rs:1731-1731` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2376,55 +2376,55 @@ __END__
              package-lock.json and ran npm install)"`
 - `src/cli/setup.rs:1316-1316` `"kept existing .rigger/agents/{name} (import never overwrites)"`
 - `src/cli/setup.rs:1344-1344` `"imported .rigger/agents/{name} (id: {id})"`
-- `src/cli/setup.rs:2108-2108` `"nothing is written - no .rigger, no .claude, no .gitignore"`
-- `src/cli/setup.rs:2175-2175` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2180-2180` `"no gate template set matches this project (rust: Cargo.toml at the project \
+- `src/cli/setup.rs:2111-2111` `"nothing is written - no .rigger, no .claude, no .gitignore"`
+- `src/cli/setup.rs:2178-2178` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2183-2183` `"no gate template set matches this project (rust: Cargo.toml at the project \
                   root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2206-2206` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
-- `src/cli/setup.rs:2234-2234` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2235-2235` `"no gate template set matches this project (demo: a or b; other: c at the project \
+- `src/cli/setup.rs:2209-2209` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
+- `src/cli/setup.rs:2237-2237` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2238-2238` `"no gate template set matches this project (demo: a or b; other: c at the project \
                  root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2252-2252` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:2572-2572` `".rigger/agents/"`
-- `src/cli/setup.rs:2626-2626` `".rigger/dash.url"`
-- `src/cli/setup.rs:2627-2627` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2628-2628` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2637-2637` `".rigger/store.conn"`
-- `src/cli/setup.rs:2654-2654` `".rigger/\n"`
-- `src/cli/setup.rs:2660-2660` `".rigger/dash.url"`
-- `src/cli/setup.rs:2663-2663` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2666-2666` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2667-2667` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
+- `src/cli/setup.rs:2255-2255` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:2575-2575` `".rigger/agents/"`
+- `src/cli/setup.rs:2629-2629` `".rigger/dash.url"`
+- `src/cli/setup.rs:2630-2630` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2631-2631` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2640-2640` `".rigger/store.conn"`
+- `src/cli/setup.rs:2657-2657` `".rigger/\n"`
+- `src/cli/setup.rs:2663-2663` `".rigger/dash.url"`
+- `src/cli/setup.rs:2666-2666` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2669-2669` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2670-2670` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
              even when .rigger/ broadly covers them, so the committed .gitignore stays \
              self-contained, got: {:?}"`
-- `src/cli/setup.rs:2675-2675` `".rigger/dash.url"`
-- `src/cli/setup.rs:2676-2676` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2677-2677` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2678-2678` `"all three explicit per-file dash ignore lines are present in the committed \
+- `src/cli/setup.rs:2678-2678` `".rigger/dash.url"`
+- `src/cli/setup.rs:2679-2679` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2680-2680` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2681-2681` `"all three explicit per-file dash ignore lines are present in the committed \
              .gitignore even though .rigger/ already covers them, got:\n{content}"`
-- `src/cli/setup.rs:2688-2688` `".rigger/dash.url"`
-- `src/cli/setup.rs:2691-2691` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2694-2694` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3047-3047` `".rigger/agents/researcher.md"`
-- `src/cli/setup.rs:3076-3076` `".rigger/agents/planner.md"`
-- `src/cli/setup.rs:3106-3106` `".rigger/agents/newcomer.md"`
-- `src/cli/setup.rs:3184-3184` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:3414-3414` `".rigger"`
-- `src/cli/setup.rs:3541-3541` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:3743-3743` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:3745-3745` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:3746-3746` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:3747-3747` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:3757-3757` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:3760-3760` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:3774-3774` `"The count and the caller lookup run once per item of the walk's hunk list - every \
+- `src/cli/setup.rs:2691-2691` `".rigger/dash.url"`
+- `src/cli/setup.rs:2694-2694` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2697-2697` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3050-3050` `".rigger/agents/researcher.md"`
+- `src/cli/setup.rs:3079-3079` `".rigger/agents/planner.md"`
+- `src/cli/setup.rs:3109-3109` `".rigger/agents/newcomer.md"`
+- `src/cli/setup.rs:3187-3187` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:3417-3417` `".rigger"`
+- `src/cli/setup.rs:3582-3582` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:3784-3784` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:3786-3786` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:3787-3787` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:3788-3788` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:3798-3798` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:3801-3801` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:3815-3815` `"The count and the caller lookup run once per item of the walk's hunk list - every \
              item the hunks touch, new or pre-existing, its body or its doc changed - each \
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers."`
-- `src/cli/setup.rs:3864-3864` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:4073-4073` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:3905-3905` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:4114-4114` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
@@ -4056,7 +4056,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/liveness.rs:924-938` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
-- `src/cli/setup.rs:2397-2411` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
+- `src/cli/setup.rs:2400-2414` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-6f7131d21aaa` (semantic, 60 sites)
 
@@ -5291,7 +5291,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9719 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9721 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4996-5037` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15076-15098` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
