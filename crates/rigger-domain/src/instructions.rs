@@ -318,40 +318,28 @@ mod tests {
         );
     }
 
-    /// A replacing body is printed with its one leading U+FEFF (a byte-order mark) stripped.
+    /// A replacing body is printed with its one leading U+FEFF (a byte-order mark) stripped; the
+    /// strip takes one only, so a second leading U+FEFF is the body's own text and stays.
     #[test]
     fn a_replacing_body_is_printed_without_its_leading_byte_order_mark() {
-        let sys = compose(
-            "P.",
-            &[op("working-discipline", "\u{feff}House discipline.")],
-        );
-        assert_eq!(
-            sys,
-            expected_prompt(&[
-                builtin_section("engineering-principles"),
-                ("working-discipline", "House discipline."),
-                builtin_section("communication"),
-            ]),
-            "the replacing body loses its leading byte-order mark and nothing else"
-        );
-    }
-
-    /// The strip takes one leading U+FEFF only: a second one is the body's own text and stays.
-    #[test]
-    fn a_replacing_body_keeps_a_second_leading_byte_order_mark() {
-        let sys = compose(
-            "P.",
-            &[op("working-discipline", "\u{feff}\u{feff}Team discipline.")],
-        );
-        assert_eq!(
-            sys,
-            expected_prompt(&[
-                builtin_section("engineering-principles"),
-                ("working-discipline", "\u{feff}Team discipline."),
-                builtin_section("communication"),
-            ]),
-            "exactly one leading byte-order mark is stripped; the second stays in the section"
-        );
+        for (file_body, printed) in [
+            ("\u{feff}House discipline.", "House discipline."),
+            (
+                "\u{feff}\u{feff}Team discipline.",
+                "\u{feff}Team discipline.",
+            ),
+        ] {
+            let sys = compose("P.", &[op("working-discipline", file_body)]);
+            assert_eq!(
+                sys,
+                expected_prompt(&[
+                    builtin_section("engineering-principles"),
+                    ("working-discipline", printed),
+                    builtin_section("communication"),
+                ]),
+                "the replacing body {file_body:?} loses its one leading byte-order mark and nothing else"
+            );
+        }
     }
 
     /// A name that differs from a built-in's by case or a trailing space shadows nothing: the
