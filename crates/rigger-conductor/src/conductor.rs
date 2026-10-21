@@ -12521,7 +12521,7 @@ pub fn review_protocol(actor: &str) -> String {
 /// [`gate_evidence_block`] shows green, the one targeted reproduction in a scratch worktree, and
 /// never running a gate's command as the gate runs it - is guidance, so it sits under the
 /// working-discipline body's `## When you review` section, which reaches a reviewer through
-/// [`crate::instructions::compose`] and which an operator replaces or switches off. Shared by
+/// [`crate::instructions::compose`]. Shared by
 /// [`review_protocol`] (the lens and adversary tiers, which also record findings through it)
 /// and [`RunCtx::run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
