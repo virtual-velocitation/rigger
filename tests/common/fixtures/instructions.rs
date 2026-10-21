@@ -1,5 +1,6 @@
 //! Instruction-layer fixtures: the headings a composed system prompt carries, the handbook
-//! chapter that lists the built-in entries, and the system prompt every spawn is composed to.
+//! chapter that lists the built-in entries and their checked-in sources, the layers `rigger
+//! instructions` prints, and the system prompt a spawn with no operator layer is composed to.
 
 /// The heading line the communication built-in opens in a composed system prompt.
 pub const COMMUNICATION_SECTION: &str = "\n## communication\n";
@@ -38,16 +39,17 @@ pub fn printed_built_in_layer(out: &str) -> &str {
         .0
 }
 
-/// Assert the system prompt `sys` carries the communication built-in's section exactly once and
-/// the heading the conductor once appended nowhere.
-pub fn assert_communication_once(sys: &str) {
+/// Assert `text` - a composed system prompt, or the layers `rigger instructions` prints - carries
+/// the communication built-in's section exactly once and the heading the conductor once appended
+/// nowhere.
+pub fn assert_communication_once(text: &str) {
     assert_eq!(
-        sys.matches(COMMUNICATION_SECTION).count(),
+        text.matches(COMMUNICATION_SECTION).count(),
         1,
-        "the system prompt carries the communication section exactly once; got: {sys:?}"
+        "the communication section appears exactly once; got: {text:?}"
     );
     assert!(
-        !sys.contains(RETIRED_COMMUNICATION_HEADING),
-        "the retired communication heading is gone from the system prompt; got: {sys:?}"
+        !text.contains(RETIRED_COMMUNICATION_HEADING),
+        "the retired communication heading appears nowhere; got: {text:?}"
     );
 }

@@ -144,8 +144,8 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 18,
-        "end_line": 20
+        "start_line": 19,
+        "end_line": 21
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",

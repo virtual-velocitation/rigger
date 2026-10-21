@@ -1734,7 +1734,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/cli/mod.rs:4565-4567` `skill_source_rel`
 - `src/cli/mod.rs:5071-5077` `spec_lint_next_step`
 - `tests/canary_model_drift_periphery.rs:112-114` `prose_claiming`
-- `tests/common/fixtures/instructions.rs:18-20` `builtin_instruction_source`
+- `tests/common/fixtures/instructions.rs:19-21` `builtin_instruction_source`
 - `tests/halted_spawn_wip_recovery_periphery.rs:128-130` `unit_branch`
 - `tests/native_driver_pipelining_behavior.rs:597-599` `worker_prompts_harness`
 - `tests/regate_landed_on_resume_periphery.rs:76-78` `unit_branch`
