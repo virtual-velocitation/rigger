@@ -28097,8 +28097,8 @@ fn prime_from_a_nested_worktree_names_the_project_s_built_in_states() {
     };
     use common::fixtures::shadowing_operator_layer;
     use common::git::nested_worktree;
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
     seed_store(root);
     write_operator_layer(root, &shadowing_operator_layer());
     assert_prime_names_the_shadowing_layer_states(&nested_worktree(root, "rigger-wt-prime-layer"));
@@ -28111,7 +28111,9 @@ fn prime_from_a_nested_worktree_names_the_project_s_built_in_states() {
 /// is read at the cwd until a store resolves the project root.
 #[test]
 fn prime_without_a_store_reads_the_instruction_layer_at_the_cwd() {
-    use common::cli::{assert_prime_names_the_shadowing_layer_states, write_operator_layer};
+    use common::cli::{
+        assert_prime_names_the_shadowing_layer_states, prime_first_line, write_operator_layer,
+    };
     use common::fixtures::{
         shadowing_operator_layer, subdirectory_of, BUILT_INS_ONLY_IN_FORCE_LINE,
     };
@@ -28120,9 +28122,7 @@ fn prime_without_a_store_reads_the_instruction_layer_at_the_cwd() {
     write_operator_layer(root, &shadowing_operator_layer());
     assert_prime_names_the_shadowing_layer_states(root);
     assert_eq!(
-        run_rigger_ok(&subdirectory_of(root), &["prime"])
-            .lines()
-            .next(),
+        prime_first_line(&subdirectory_of(root)).as_deref(),
         Some(BUILT_INS_ONLY_IN_FORCE_LINE),
         "with no store the subdirectory's own, empty, layer is read"
     );

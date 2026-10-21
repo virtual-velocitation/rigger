@@ -153,11 +153,20 @@ pub fn assert_reporters_name_the_shadowing_layer_states(root: &Path) {
     assert_prime_names_the_shadowing_layer_states(root);
 }
 
+/// The first line `rigger prime` prints run in `cwd` ([`run_rigger_ok`]): the instructions in
+/// force.
+pub fn prime_first_line(cwd: &Path) -> Option<String> {
+    run_rigger_ok(cwd, &["prime"])
+        .lines()
+        .next()
+        .map(str::to_string)
+}
+
 /// `rigger prime` run in `cwd` opens with the in-force line of the named-entry fixture
 /// (`shadowing_operator_layer`) its project holds.
 pub fn assert_prime_names_the_shadowing_layer_states(cwd: &Path) {
     assert_eq!(
-        run_rigger_ok(cwd, &["prime"]).lines().next(),
+        prime_first_line(cwd).as_deref(),
         Some(super::fixtures::SHADOWING_LAYER_IN_FORCE_LINE),
         "`rigger prime` opens with the built-ins in force and the unshadowed file count"
     );
