@@ -12518,9 +12518,8 @@ pub fn review_protocol(actor: &str) -> String {
 /// exists to catch, name in a lesson, and restore. THE GATES GRADE, A REVIEW JUDGES THE
 /// RESIDUE: no tier re-runs the battery or a gate its [`gate_evidence_block`] shows green, and a
 /// reproduction builds into the unit's review cache ([`RunCtx::spawn_env`]). A REVIEW RUNS NO
-/// GATE'S TOOL: its last sentence keeps every gate's command, as the gate runs it, out of every
-/// review, since the gate owns its run and a reviewer's run only repeats it at review cost; the
-/// one targeted reproduction its third sentence names is not a gate run. Shared by
+/// GATE'S TOOL: its last sentence keeps every gate's own tool out of every review, since the
+/// gate owns its run and a reviewer's run only repeats it at review cost. Shared by
 /// [`review_protocol`] (the lens and adversary tiers, which also record findings through it)
 /// and [`RunCtx::run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
