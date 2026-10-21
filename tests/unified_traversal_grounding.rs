@@ -145,8 +145,8 @@ struct ReviewDriver {
     finding: Value,
     /// `(agent id, prompt)` for every spawn, in spawn order.
     prompts: Mutex<Vec<(String, String)>>,
-    /// `(agent id, system prompt)` for every spawn, in spawn order.
-    system_prompts: Mutex<Vec<(String, String)>>,
+    /// The system prompt of every spawn, in spawn order, so the nth is `prompts`' nth spawn's.
+    system_prompts: Mutex<Vec<String>>,
 }
 
 impl AgentDriver for ReviewDriver {
@@ -164,7 +164,7 @@ impl AgentDriver for ReviewDriver {
         self.system_prompts
             .lock()
             .unwrap()
-            .push((agent.id.clone(), opts.system_prompt.clone()));
+            .push(opts.system_prompt.clone());
         // The lens raises its finding to the graph (the review_protocol channel), so the adversary
         // and the adjudicator - which ground AFTER it - retrieve it through `graph_context`, never a
         // hand-threaded stdout block. This is the exact cross-tier path the implement-only trim must
@@ -713,12 +713,12 @@ fn run_and_capture_review_prompts(graph: &Projector, finding: Value) -> Vec<(Str
     run_and_capture_review_spawns(graph, finding).0
 }
 
-/// The `(agent id, prompt)` and the `(agent id, system prompt)` of every review spawn
+/// The `(agent id, prompt)` and the system prompt of every review spawn
 /// [`run_and_capture_review_prompts`] describes, each in spawn order.
 fn run_and_capture_review_spawns(
     graph: &Projector,
     finding: Value,
-) -> (Vec<(String, String)>, Vec<(String, String)>) {
+) -> (Vec<(String, String)>, Vec<String>) {
     let grounder = SeedGrounder {
         file: "core.rs".into(),
     };
@@ -960,7 +960,7 @@ fn every_review_spawn_carries_the_reviewer_contract_without_naming_the_gate_or_i
         vec!["lens", "adversary", "adj"],
         "the three review tiers spawn once each, in order"
     );
-    for ((role, prompt), (_, system)) in prompts.iter().zip(&system_prompts) {
+    for ((role, prompt), system) in prompts.iter().zip(&system_prompts) {
         let tier = format!("{role:?} review");
         assert_task_prompt_carries_only_the_reviewer_contract(&tier, prompt, REVIEWER_DISCIPLINE);
         assert_system_prompt_carries_the_review_method_once(&tier, &normalize_ws(system));
