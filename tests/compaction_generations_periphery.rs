@@ -3734,7 +3734,7 @@ fn a_setup_rerun_after_its_rebuild_stopped_past_its_prune_reports_the_same_count
 /// mark it must then drop is a directory it cannot remove, and its failure names that mark - then
 /// `meanwhile`, while that mark still says `graph.db` owes its rebuild, and clear the mark: what
 /// the stopped setup printed, and whether it exited successfully.
-fn stop_setup_past_its_prune(root: &Path, meanwhile: fn(&Path)) -> (String, bool) {
+fn stop_setup_past_its_prune(root: &Path, meanwhile: common::DirStep) -> (String, bool) {
     let mark = rigger_file(root, "graph.db.owed");
     std::fs::create_dir(&mark).unwrap();
     let (stopped, err, stopped_ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
@@ -3772,11 +3772,11 @@ fn stop_setup_past_its_prune(root: &Path, meanwhile: fn(&Path)) -> (String, bool
 /// and no edge left to reclaim.
 #[test]
 fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run_that_closed() {
-    let active_run_decides: fn(&Path) = |root| {
+    let active_run_decides: common::DirStep = |root| {
         let (out, err, ok) = emit_decision(root, "d-window");
         assert!(ok, "the emit appends; stdout: {out} stderr: {err}");
     };
-    let another_writer_starts_a_run: fn(&Path) = |root| {
+    let another_writer_starts_a_run: common::DirStep = |root| {
         common::cli::with_run_store(root, |store| {
             store
                 .append(
@@ -3794,7 +3794,7 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
                 .unwrap();
         });
     };
-    let active_run_re_records_a_closed_runs_decision: fn(&Path) = |root| {
+    let active_run_re_records_a_closed_runs_decision: common::DirStep = |root| {
         let (out, err, ok) = run_rigger(
             root,
             &[
@@ -3805,7 +3805,7 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
         );
         assert!(ok, "the emit appends; stdout: {out} stderr: {err}");
     };
-    let a_swap_cut_short_left_its_copy: fn(&Path) = |root| {
+    let a_swap_cut_short_left_its_copy: common::DirStep = |root| {
         std::fs::write(
             rigger_file(root, "graph.db.pruned"),
             b"left by a swap cut short",

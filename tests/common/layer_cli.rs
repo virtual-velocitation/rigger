@@ -55,7 +55,7 @@ pub struct LayerCli {
     /// nodes, zero recorded events.
     pub empty_summary: [&'static str; 3],
     /// Seeds a non-empty input graph into the fixture's real store.
-    pub seed: fn(&Path),
+    pub seed: crate::common::DirStep,
 }
 
 impl LayerCli {

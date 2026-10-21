@@ -158,14 +158,10 @@ pub fn prime_first_line(cwd: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// A reporter assertion run in a directory: it runs one instruction reporter there and asserts
-/// what it printed.
-pub type Reporter = fn(&Path);
-
 /// Write the named-entry fixture (`shadowing_operator_layer`) into the project at `root`, then run
 /// the reporter assertion `report` at `root` and in its subdirectory: the reporter reads the
 /// project's instruction layer from either, never the subdirectory's own.
-pub fn assert_reported_from_below(root: &Path, report: Reporter) {
+pub fn assert_reported_from_below(root: &Path, report: super::DirStep) {
     write_operator_layer(root, &super::fixtures::shadowing_operator_layer());
     report(root);
     report(&super::fixtures::subdirectory_of(root));
@@ -175,7 +171,7 @@ pub fn assert_reported_from_below(root: &Path, report: Reporter) {
 /// `root`, uncommitted, then run the reporter assertion `report` in a worktree nested under its
 /// `.rigger/`, which therefore checks none of that layer out: the reporter reads the main
 /// checkout's layer, never the worktree's own.
-pub fn assert_reported_from_a_nested_worktree(root: &Path, report: Reporter) {
+pub fn assert_reported_from_a_nested_worktree(root: &Path, report: super::DirStep) {
     write_operator_layer(root, &super::fixtures::shadowing_operator_layer());
     report(&super::git::nested_worktree(
         root,

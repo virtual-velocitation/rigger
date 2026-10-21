@@ -25,6 +25,10 @@ pub mod workflow_probe;
 #[allow(unused_imports)]
 pub use fixtures::wait_until;
 
+/// A step run against a directory: a reporter assertion run in it, a fixture seeding it, or a
+/// concurrent writer acting on it.
+pub type DirStep = fn(&Path);
+
 /// Asserts the reported `line` names every one of `parts` together (`why` naming the line).
 pub fn assert_names(line: &str, parts: &[&str], why: &str) {
     assert!(parts.iter().all(|p| line.contains(p)), "{why}: {line}");

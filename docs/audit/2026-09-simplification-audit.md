@@ -1980,7 +1980,7 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `tests/cli.rs:26872-26872` `Command::new`
 - `tests/common/cli.rs:21-21` `Command::new`
 - `tests/common/cli.rs:74-74` `Command::new`
-- `tests/common/cli.rs:431-431` `Command::new`
+- `tests/common/cli.rs:427-427` `Command::new`
 - `tests/common/fixtures/conductor.rs:288-288` `Command::new`
 - `tests/common/fixtures/conductor.rs:372-372` `Command::new`
 - `tests/common/fixtures/git.rs:25-25` `Command::new`
@@ -1990,7 +1990,7 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `tests/common/fixtures/host.rs:98-98` `Command::new`
 - `tests/common/fixtures/host.rs:185-185` `Command::new`
 - `tests/common/layer_cli.rs:71-71` `Command::new`
-- `tests/common/mod.rs:159-159` `Command::new`
+- `tests/common/mod.rs:163-163` `Command::new`
 - `tests/common/repo.rs:380-380` `Command::new`
 - `tests/common/served.rs:295-295` `Command::new`
 - `tests/compiler_pass_stage1_audit.rs:193-193` `Command::new`
@@ -2884,20 +2884,20 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:28286-28286` `"gw/.rigger/workflow.yml"`
 - `tests/cli.rs:28746-28746` `"gw/.rigger/workflow.yml"`
 - `tests/cli.rs:28764-28764` `"gw/.rigger/workflow.yml"`
-- `tests/common/cli.rs:409-409` `".rigger"`
-- `tests/common/cli.rs:420-420` `".rigger"`
-- `tests/common/cli.rs:441-441` `".rigger"`
-- `tests/common/cli.rs:479-479` `".rigger"`
-- `tests/common/cli.rs:964-964` `"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
+- `tests/common/cli.rs:405-405` `".rigger"`
+- `tests/common/cli.rs:416-416` `".rigger"`
+- `tests/common/cli.rs:437-437` `".rigger"`
+- `tests/common/cli.rs:475-475` `".rigger"`
+- `tests/common/cli.rs:960-960` `"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
      vacuums the file, which is a mechanic of the embedded .rigger/events.db store; this project \
      is configured for the server-backed store, where the migration does not run. Re-run it \
      against a project on the sqlite backend. Refusing rather than reporting a migration that did \
      not happen.\n"`
-- `tests/common/cli.rs:1049-1049` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
-- `tests/common/cli.rs:1266-1266` `".rigger"`
-- `tests/common/cli.rs:1267-1267` `"create .rigger/agents"`
-- `tests/common/cli.rs:1380-1380` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
-- `tests/common/cli.rs:1477-1477` `".rigger"`
+- `tests/common/cli.rs:1045-1045` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
+- `tests/common/cli.rs:1262-1262` `".rigger"`
+- `tests/common/cli.rs:1263-1263` `"create .rigger/agents"`
+- `tests/common/cli.rs:1376-1376` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
+- `tests/common/cli.rs:1473-1473` `".rigger"`
 - `tests/common/fixtures/config.rs:120-120` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/fixtures/extraction_tree.rs:76-76` `".rigger/workflow.yml"`
 - `tests/common/fixtures/instructions.rs:142-142` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
@@ -2912,7 +2912,7 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/layer_cli.rs:22-22` `".rigger"`
 - `tests/common/layer_cli.rs:28-28` `".rigger"`
 - `tests/common/layer_cli.rs:301-301` `".rigger"`
-- `tests/common/mod.rs:308-308` `"{}/.rigger-test-scratch"`
+- `tests/common/mod.rs:312-312` `"{}/.rigger-test-scratch"`
 - `tests/common/workflow_probe.rs:15-15` `".rigger"`
 - `tests/common/workflow_probe.rs:16-16` `"create .rigger"`
 - `tests/compaction_generations_periphery.rs:1192-1192` `".rigger"`
@@ -3636,7 +3636,7 @@ Proposed home: `one shared `spawn_request` helper (e.g. relocated into `tests/co
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-domain/src/agent.rs:178-207` `spawn_request`
-- `tests/common/mod.rs:520-534` `spawn_request`
+- `tests/common/mod.rs:524-538` `spawn_request`
 
 #### `dup-2a5626cb9627` (near, 2 sites)
 
@@ -3943,7 +3943,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/spec.rs:2643-2645` `f11`
-- `tests/common/cli.rs:1048-1050` `graph_build_line`
+- `tests/common/cli.rs:1044-1046` `graph_build_line`
 
 #### `dup-d340e212490f` (exact, 2 sites)
 
@@ -4086,11 +4086,11 @@ mandatory sweep: sqlite Connection::open call sites - 60 site(s), collected mech
 - `tests/cli.rs:893-893` `Connection::open`
 - `tests/cli.rs:9347-9347` `Connection::open`
 - `tests/common/cli.rs:98-98` `Connection::open`
-- `tests/common/cli.rs:714-714` `Connection::open`
-- `tests/common/cli.rs:727-727` `Connection::open`
-- `tests/common/cli.rs:785-785` `Connection::open`
-- `tests/common/cli.rs:795-795` `Connection::open`
-- `tests/common/cli.rs:1488-1488` `Connection::open`
+- `tests/common/cli.rs:710-710` `Connection::open`
+- `tests/common/cli.rs:723-723` `Connection::open`
+- `tests/common/cli.rs:781-781` `Connection::open`
+- `tests/common/cli.rs:791-791` `Connection::open`
+- `tests/common/cli.rs:1484-1484` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:8-8` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:22-22` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:31-31` `Connection::open`
@@ -4355,7 +4355,7 @@ Proposed home: `one shared `project_events` helper (e.g. relocated into `tests/c
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:207-213` `project_events`
-- `tests/common/mod.rs:471-476` `project_events`
+- `tests/common/mod.rs:475-480` `project_events`
 
 #### `dup-e10b6988960c` (exact, 2 sites)
 
@@ -4525,9 +4525,9 @@ Proposed home: `a new shared module (sites span 3 files: src/cli/hygiene.rs, tes
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/hygiene.rs:252-254` `derived_count_phrase`
-- `tests/common/cli.rs:918-925` `migrated_lines`
-- `tests/common/cli.rs:932-937` `derived_menu_line_naming`
-- `tests/common/cli.rs:1541-1546` `bloat_advisory_naming`
+- `tests/common/cli.rs:914-921` `migrated_lines`
+- `tests/common/cli.rs:928-933` `derived_menu_line_naming`
+- `tests/common/cli.rs:1537-1542` `bloat_advisory_naming`
 - `tests/compaction_generations_periphery.rs:4868-4873` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
@@ -4857,8 +4857,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/common/cli.rs:48-52` `courier_project`
-- `tests/common/cli.rs:306-310` `temp_rigger_project`
-- `tests/common/cli.rs:314-318` `temp_store_project`
+- `tests/common/cli.rs:302-306` `temp_rigger_project`
+- `tests/common/cli.rs:310-314` `temp_store_project`
 - `tests/courier_registry_refresh_boundary_periphery.rs:40-44` `courier_project_with_commit`
 
 #### `dup-065ac962b8cf` (exact, 3 sites)
@@ -4867,9 +4867,9 @@ Proposed home: `cli::support (consolidate these 3 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:943-945` `derived_menu_lines`
-- `tests/common/cli.rs:1535-1537` `index_lag_lines`
-- `tests/common/cli.rs:1550-1552` `bloat_lines`
+- `tests/common/cli.rs:939-941` `derived_menu_lines`
+- `tests/common/cli.rs:1531-1533` `index_lag_lines`
+- `tests/common/cli.rs:1546-1548` `bloat_lines`
 
 #### `dup-8dd44d643a5c` (semantic, 2 sites)
 
@@ -4877,7 +4877,7 @@ Proposed home: `one shared `write_workflow` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/common/cli.rs:1326-1333` `write_workflow`
+- `tests/common/cli.rs:1322-1329` `write_workflow`
 - `tests/common/workflow_probe.rs:21-23` `write_workflow`
 
 #### `dup-b58b0ff72b22` (near, 3 sites)
@@ -4886,8 +4886,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:1362-1382` `assert_selected_server`
-- `tests/common/cli.rs:1386-1402` `assert_selected_sqlite`
+- `tests/common/cli.rs:1358-1378` `assert_selected_server`
+- `tests/common/cli.rs:1382-1398` `assert_selected_sqlite`
 - `tests/store_secrets.rs:69-107` `assert_server_reached_and_credentials_redacted`
 
 #### `dup-c82a46fd1fec` (exact, 2 sites)

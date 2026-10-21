@@ -28077,9 +28077,9 @@ fn prime_and_instructions_from_a_nested_worktree_report_the_main_checkout_s_inst
     use common::cli::{
         assert_instructions_render_the_shadowing_layer,
         assert_prime_names_the_shadowing_layer_states, assert_reported_from_a_nested_worktree,
-        seed_store, Reporter,
+        seed_store,
     };
-    let cases: [(bool, Reporter); 4] = [
+    let cases: [(bool, common::DirStep); 4] = [
         (true, assert_prime_names_the_shadowing_layer_states),
         (true, assert_instructions_render_the_shadowing_layer),
         (false, assert_prime_names_the_shadowing_layer_states),
@@ -28141,9 +28141,9 @@ fn prime_and_instructions_outside_git_with_no_store_read_the_layer_at_the_cwd() 
 fn prime_and_instructions_from_a_subdirectory_report_the_project_s_instruction_layer() {
     use common::cli::{
         assert_instructions_render_the_shadowing_layer,
-        assert_prime_names_the_shadowing_layer_states, assert_reported_from_below, Reporter,
+        assert_prime_names_the_shadowing_layer_states, assert_reported_from_below,
     };
-    let cases: [(tempfile::TempDir, Reporter); 3] = [
+    let cases: [(tempfile::TempDir, common::DirStep); 3] = [
         (
             temp_store_project(),
             assert_prime_names_the_shadowing_layer_states,
