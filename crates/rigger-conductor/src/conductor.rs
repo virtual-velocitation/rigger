@@ -37759,8 +37759,9 @@ mod tests {
 
     /// The gates are the instrument; the reviewers judge the residue. Every review tier's prompt
     /// carries the evidence `run_gates_at` recorded for the exact commit it judges - each gate's
-    /// id, its verdict, its input digest and its evidence lines - so no reviewer re-runs a gate
-    /// the evidence shows green. A later round judges a new commit, so it carries that commit's
+    /// id, its verdict, its input digest and its evidence lines - the evidence the working
+    /// discipline's `## When you review` section tells a reviewer never to re-run a gate it shows
+    /// green against. A later round judges a new commit, so it carries that commit's
     /// evidence and never the earlier round's.
     #[test]
     fn every_review_tier_prompt_carries_the_gate_evidence_of_the_commit_it_judges() {
