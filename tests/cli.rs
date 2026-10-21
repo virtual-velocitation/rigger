@@ -13549,12 +13549,7 @@ fn installed_rigger_workflow() -> String {
     let root = dir.path();
     setup_ok(root, &[("RIGGER_NPM", "true")]);
     let installed = root.join(".claude").join("workflows").join("rigger.js");
-    std::fs::read_to_string(&installed).unwrap_or_else(|e| {
-        panic!(
-            "rigger setup must install the workflow at {}; read failed: {e}",
-            installed.display()
-        )
-    })
+    common::fixtures::read_text(&installed)
 }
 
 /// The installed `/rigger` workflow defines the step-courier agent prompt (anchored on it so
@@ -17400,8 +17395,7 @@ fn docs_rendered_skill_family(names: &[&str]) -> tempfile::TempDir {
         );
 
         let path = root.join(&rel);
-        let rendered = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("rigger docs must have written {rel}: {e}"));
+        let rendered = common::fixtures::read_text(&path);
         assert!(
             rendered.starts_with(&format!("---\nname: {name}\n")),
             "{name}: must open with its own loadable frontmatter; got: {}",
@@ -17474,8 +17468,7 @@ fn assert_setup_installs_each_skill(names: &[&str]) -> tempfile::TempDir {
             "setup must report installing {name}; got:\n{out}"
         );
 
-        let installed = std::fs::read_to_string(&installed_path)
-            .unwrap_or_else(|e| panic!("{name} was installed: {e}"));
+        let installed = common::fixtures::read_text(&installed_path);
         assert!(
             installed.starts_with(&format!("---\nname: {name}\n")),
             "the installed {name} skill must be loadable; got: {}",

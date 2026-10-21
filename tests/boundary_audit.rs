@@ -131,8 +131,7 @@ fn is_dependency_table(header: &str) -> bool {
 /// The package name and every dependency key (renames resolved through `package = "..."`) the
 /// manifest at `dir` declares in its normal and build dependency tables.
 fn read_member(dir: &Path) -> (String, Vec<String>) {
-    let manifest = fs::read_to_string(dir.join("Cargo.toml"))
-        .unwrap_or_else(|e| panic!("read {}/Cargo.toml: {e}", dir.display()));
+    let manifest = common::fixtures::read_text(&dir.join("Cargo.toml"));
     let name = table_lines(&manifest, "package")
         .iter()
         .find(|l| l.trim_start().starts_with("name"))

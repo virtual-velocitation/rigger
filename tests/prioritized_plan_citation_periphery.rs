@@ -54,17 +54,14 @@
 mod common;
 
 use std::collections::HashMap;
-use std::fs;
 
-use common::repo::repo_root;
 use regex::Regex;
 
 const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
 const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
 
 fn read_report() -> String {
-    fs::read_to_string(repo_root().join(REPORT_PATH))
-        .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"))
+    common::repo::repo_text(REPORT_PATH)
 }
 
 /// Only the fields this file needs per site - deliberately independent of the producer's own
@@ -84,8 +81,7 @@ struct MinimalCluster {
 }
 
 fn load_clusters() -> Vec<MinimalCluster> {
-    let raw = fs::read_to_string(repo_root().join(CATALOG_PATH))
-        .unwrap_or_else(|e| panic!("{CATALOG_PATH} is missing or unreadable ({e})"));
+    let raw = common::repo::repo_text(CATALOG_PATH);
     serde_json::from_str(&raw)
         .unwrap_or_else(|e| panic!("{CATALOG_PATH} does not deserialize as a cluster list: {e}"))
 }

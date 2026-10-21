@@ -4361,9 +4361,7 @@ mod tests {
         ] {
             let helper = Path::new(".claude").join("agents").join(file);
             let committed = read_text(&repo().join(&helper));
-            let scaffolded = dir.path().join(&helper);
-            let scaffolded = std::fs::read_to_string(&scaffolded)
-                .unwrap_or_else(|e| panic!("init must write {}: {e}", scaffolded.display()));
+            let scaffolded = read_text(&dir.path().join(&helper));
             assert_eq!(
                 scaffolded, committed,
                 "{file}: the scaffold mirrors the committed file"

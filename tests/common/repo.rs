@@ -231,7 +231,7 @@ pub fn production_sources(root: &Path) -> Vec<(String, String)> {
         })
         .filter(|(rel, _)| rel.starts_with("src/") || rel.split('/').nth(2) == Some("src"))
         .map(|(rel, p)| {
-            let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            let text = super::fixtures::read_text(&p);
             (rel, text)
         })
         .collect()

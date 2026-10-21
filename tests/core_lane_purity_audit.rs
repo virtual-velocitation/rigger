@@ -24,6 +24,8 @@
 //! authored and confirmed clean - see this file's own `verification` field in the JSON and this
 //! unit's own `DecisionMade` record.
 
+mod common;
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -37,7 +39,7 @@ const PURITY_RECORD: &str = "docs/audit/core-lane-purity.json";
 
 /// A line, 1-indexed, from a source file.
 fn nth_line(path: &str, line: u64) -> String {
-    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
+    let text = common::fixtures::read_text(Path::new(path));
     text.lines()
         .nth((line - 1) as usize)
         .unwrap_or_else(|| panic!("{path}:{line} - file has fewer lines than that"))
@@ -75,7 +77,7 @@ const CRATE_PATTERNS: &[&str] = &[
 /// is itself a banned import", is never misread as a real usage). Returns `(line, pattern)`
 /// pairs, 1-indexed, in file order.
 fn scan(path: &str) -> Vec<(usize, &'static str)> {
-    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
+    let text = common::fixtures::read_text(Path::new(path));
     let mut hits = Vec::new();
     for (i, line) in text.lines().enumerate() {
         if line.trim_start().starts_with("//") {
@@ -144,7 +146,7 @@ fn split_crate_parent(m: &str) -> Option<(String, String)> {
         }
         Some((dir, name)) => (format!("{src}/{dir}.rs"), name),
     };
-    let text = fs::read_to_string(&parent).unwrap_or_else(|e| panic!("reading {parent}: {e}"));
+    let text = common::fixtures::read_text(Path::new(&parent));
     Some((text, name.to_string()))
 }
 

@@ -488,10 +488,7 @@ fn run_gate_over_anchor_with(
 /// tip, its misses, the run base it records and its catch map.
 fn anchor_left(scratch: &Path) -> (String, String, String, String) {
     let anchor = scratch.join("mutation-anchor");
-    let read = |fact: &str| {
-        std::fs::read_to_string(anchor.join(fact))
-            .unwrap_or_else(|e| panic!("the anchor must hold `{fact}`: {e}"))
-    };
+    let read = |fact: &str| common::fixtures::read_text(&anchor.join(fact));
     (
         read("tip"),
         read("missed.txt"),

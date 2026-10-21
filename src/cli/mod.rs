@@ -6049,8 +6049,7 @@ mod tests {
             checks.push((manifest.join(rel), body.render(&ctx)));
         }
         for (path, fresh) in checks {
-            let committed = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+            let committed = crate::test_support::read_text(&path);
             assert_eq!(
                 committed,
                 fresh,

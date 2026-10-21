@@ -850,8 +850,7 @@ fn scan_target_files_with_content(root: &Path) -> (Vec<ScannedFn>, HashMap<&'sta
     let mut contents = HashMap::new();
     for rel in TARGET_FILES {
         let path = root.join(rel);
-        let content = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("simplification_audit: cannot read {rel}: {e}"));
+        let content = common::fixtures::read_text(&path);
         out.extend(scan_file(rel, &content));
         contents.insert(rel, content);
     }
@@ -2469,8 +2468,7 @@ fn scan_dirs(root: &Path, dirs: &[String]) -> Vec<FileScan> {
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            let content = fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("simplification_audit: cannot read {rel}: {e}"));
+            let content = common::fixtures::read_text(&path);
             let chars: Vec<char> = content.chars().collect();
             let tokens = tokenize(&chars);
             let core = scan_file_core(&rel, &content);
@@ -3312,8 +3310,7 @@ struct Disposition {
 /// The committed [`DISPOSITIONS_PATH`] under `root` - the ONE reader of that sidecar.
 fn load_dispositions(root: &Path) -> Vec<Disposition> {
     let path = root.join(DISPOSITIONS_PATH);
-    let raw = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{DISPOSITIONS_PATH} is missing or unreadable ({e})"));
+    let raw = common::fixtures::read_text(&path);
     serde_json::from_str(&raw)
         .unwrap_or_else(|e| panic!("{DISPOSITIONS_PATH} is not a disposition list: {e}"))
 }
@@ -3774,8 +3771,7 @@ fn replace_section_2(existing: &str, section_2: &str) -> String {
 
 /// The lines of the repo file `rel`.
 fn repo_lines(rel: &str) -> Vec<String> {
-    fs::read_to_string(repo_root().join(rel))
-        .unwrap_or_else(|e| panic!("the report cites {rel}, which is unreadable ({e})"))
+    common::repo::repo_text(rel)
         .lines()
         .map(str::to_string)
         .collect()
@@ -6035,8 +6031,7 @@ fn collect_files_with_content(root: &Path, dirs: &[String]) -> Vec<(String, Stri
                 .unwrap_or(&p)
                 .to_string_lossy()
                 .replace('\\', "/");
-            let content = fs::read_to_string(&p)
-                .unwrap_or_else(|e| panic!("dead-code sweep: cannot read {rel}: {e}"));
+            let content = common::fixtures::read_text(&p);
             (rel, content)
         })
         .collect()
@@ -11267,8 +11262,7 @@ mod config_key_readers {
             UNREAD_KEY_ALLOWLIST.is_empty(),
             "the unread-key allowlist must be empty - wire or delete each key: {UNREAD_KEY_ALLOWLIST:?}"
         );
-        let content = fs::read_to_string(repo_root().join(CONFIG_SCHEMA_FILE))
-            .unwrap_or_else(|e| panic!("cannot read {CONFIG_SCHEMA_FILE}: {e}"));
+        let content = common::repo::repo_text(CONFIG_SCHEMA_FILE);
         let fields = schema_fields(&content);
         assert!(
             fields.iter().any(|(s, f)| s == "Defaults" && f == "budget")
