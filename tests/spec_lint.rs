@@ -1966,10 +1966,12 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
         "F10 landing-order circularity's corpus-wide total is pinned to its observed count"
     );
     assert_eq!(
-        f11_total, 42,
+        f11_total, 43,
         "F11 undecided removal's corpus-wide total (both tells) is pinned to its observed \
          count, minus 1 hit removed by the rewrite of specs/107 (operator review 2026-10-05: its \
-         rebuild identity names its comparison surface)"
+         rebuild identity names its comparison surface), plus 1 hit from specs/120 criterion 5 \
+         (its identity claim names no comparison surface; operator review 2026-10-20; specs/121 \
+         adds none)"
     );
     assert_eq!(
         f1_total, 214,
@@ -2023,7 +2025,7 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          or a regression in the heuristic"
     );
     assert_eq!(
-        shape_total, 82,
+        shape_total, 136,
         "F2 bundling / F6 copyability's corpus-wide total is pinned as a regression guard \
          (spot-checked legitimate by the round-5 adversary sweep), plus 8 hits added by \
          specs/80-criteria-survive-extraction.md, specs/81-deflake-held-port-contract.md and \
@@ -2032,7 +2034,11 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          single physical lines - and therefore over-long to this heuristic - so their full \
          text survives the first-physical-line extractor truncation that spec 80 itself \
          fixes; once 80's fix is in the operator binary, new specs wrap normally again and \
-         this pin only ever decreases from those files; a changed total otherwise means \
+         this pin only ever decreases from those files, plus 54 hits added by \
+         specs/120-rigger-is-language-and-process-agnostic.md (8 F2, 15 F6) and \
+         specs/121-every-prompt-the-binary-ships-is-contract-or-framing.md (12 F2, 19 F6) \
+         (operator review 2026-10-20: multi-clause and over-long criteria, advisory output on \
+         the two specs' own text); a changed total otherwise means \
          either a real spec edit (update this pin after reviewing the new/removed hits) or \
          a regression in the heuristic"
     );
