@@ -366,7 +366,8 @@ mod tests {
         builtin_body("working-discipline")
     }
 
-    /// The persona the instruction layer's `compose` tests compose over.
+    /// The persona this module's `compose` tests compose over and [`expected_prompt`] expects;
+    /// only the tests of the persona's place and of an empty persona name their own.
     const PERSONA: &str = "P.";
 
     /// The prompt `compose(PERSONA, ..)` must return: the persona, the bare [`HEADING`], then each
