@@ -14617,6 +14617,46 @@ fn canary_rejects_unknown_arguments_and_a_missing_corpus() {
     );
 }
 
+/// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN, through the canary: given a
+/// project whose review panel's three agents share one persona and a one-item corpus, when the
+/// operator runs `rigger canary`, then the system prompt a panel spawn receives through the real
+/// subprocess driver is exactly `compose`'s output over that persona - the communication section
+/// once, the retired heading nowhere, nothing appended after the composed layers.
+#[cfg(unix)]
+#[test]
+fn canary_spawns_its_panel_with_the_composed_system_prompt_and_nothing_appended() {
+    use common::cli::run_capturing_system_prompt;
+    use common::fixtures::{assert_communication_once, composed_system_prompt};
+    let dir = temp_project();
+    let root = dir.path();
+    for id in ["lens", "adv", "judge"] {
+        write_agent(root, id, "Read", "You review the canary item.");
+    }
+    write_scaffold(
+        root,
+        &[],
+        "defaults:\n  grounder: nop\n  review:\n    lenses: [lens]\n    adversary: adv\n    \
+         adjudicator: judge\nstages:\n  solo:\n    agent: lens\n    on_pass: none\n",
+    );
+    let corpus = root.join("corpus");
+    std::fs::create_dir_all(&corpus).unwrap();
+    std::fs::write(
+        corpus.join("control.md"),
+        "---\nid: control\ndefect_class: none\nplanted: false\nanchor: src/lib.rs\n\
+         expected_verdict: approve\n---\nfn control() {}\n",
+    )
+    .unwrap();
+    let system = run_capturing_system_prompt(root, &["canary", "--corpus", "corpus"]);
+    let persona =
+        std::fs::read_to_string(common::cli::rigger_file(root, "agents").join("judge.md")).unwrap();
+    assert_eq!(
+        system,
+        composed_system_prompt(&persona),
+        "a panel spawn's system prompt is compose's output over its persona, nothing appended"
+    );
+    assert_communication_once(&system);
+}
+
 /// `rigger canary --jobs <n>` (spec 61 criterion 5, ITEM SHARDING AND THE JOBS CAP): the
 /// flag's validation is CLI glue this suite's sibling test above already pins for
 /// `--corpus`/`--if-model-changed`/an unknown flag, exercised here through the real binary
@@ -27849,25 +27889,12 @@ fn the_handbook_lists_every_built_in_entry_in_order_with_its_source() {
 #[cfg(unix)]
 #[test]
 fn run_spawns_the_worker_with_the_composed_system_prompt_and_nothing_appended() {
-    use common::fixtures::{
-        assert_communication_once, captured_system_prompt, composed_system_prompt,
-        PROMPT_CAPTURE_DIR,
-    };
+    use common::cli::run_capturing_system_prompt;
+    use common::fixtures::{assert_communication_once, composed_system_prompt};
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &LIVENESS_WORKFLOW);
-    let work = tempfile::tempdir().unwrap();
-    let path = common::repo::stub_path(work.path(), "claude", Some("prompt-capture-agent.sh"));
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["run"],
-        &[
-            ("PATH", &path),
-            (PROMPT_CAPTURE_DIR, work.path().to_str().unwrap()),
-        ],
-    );
-    assert!(ok, "the run must succeed; stderr: {err}\nstdout: {out}");
-    let system = captured_system_prompt(work.path());
+    let system = run_capturing_system_prompt(root, &["run"]);
     assert_eq!(
         system,
         composed_system_prompt(UNISOLATED_WORKER),

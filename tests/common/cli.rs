@@ -153,6 +153,30 @@ pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (Str
     )
 }
 
+/// Run `rigger <args>` in `cwd` with the checked-in prompt-capture agent first on PATH as
+/// `claude`, assert the command succeeds, and return the system prompt the last agent it spawned
+/// was handed: the text of the file its `--system-prompt-file` named.
+pub fn run_capturing_system_prompt(cwd: &Path, args: &[&str]) -> String {
+    let work = tempfile::tempdir().unwrap();
+    let path = super::repo::stub_path(work.path(), "claude", Some("prompt-capture-agent.sh"));
+    let (out, err, ok) = run_rigger_envs(
+        cwd,
+        args,
+        &[
+            ("PATH", &path),
+            (
+                super::fixtures::PROMPT_CAPTURE_DIR,
+                work.path().to_str().unwrap(),
+            ),
+        ],
+    );
+    assert!(
+        ok,
+        "rigger {args:?} must succeed; stderr: {err}\nstdout: {out}"
+    );
+    super::fixtures::captured_system_prompt(work.path())
+}
+
 /// `rigger setup` in `cwd` with extra environment `envs`, which must succeed: its stdout.
 pub fn setup_ok(cwd: &Path, envs: &[(&str, &str)]) -> String {
     let (out, err, ok) = run_rigger_envs(cwd, &["setup"], envs);

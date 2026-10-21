@@ -1972,12 +1972,12 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `tests/cli.rs:5520-5520` `Command::new`
 - `tests/cli.rs:13049-13049` `Command::new`
 - `tests/cli.rs:13785-13785` `Command::new`
-- `tests/cli.rs:18729-18729` `Command::new`
-- `tests/cli.rs:23788-23788` `Command::new`
-- `tests/cli.rs:26832-26832` `Command::new`
+- `tests/cli.rs:18769-18769` `Command::new`
+- `tests/cli.rs:23828-23828` `Command::new`
+- `tests/cli.rs:26872-26872` `Command::new`
 - `tests/common/cli.rs:20-20` `Command::new`
 - `tests/common/cli.rs:73-73` `Command::new`
-- `tests/common/cli.rs:313-313` `Command::new`
+- `tests/common/cli.rs:337-337` `Command::new`
 - `tests/common/fixtures/conductor.rs:288-288` `Command::new`
 - `tests/common/fixtures/conductor.rs:372-372` `Command::new`
 - `tests/common/fixtures/git.rs:25-25` `Command::new`
@@ -2802,105 +2802,105 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:14109-14109` `".rigger/project.id"`
 - `tests/cli.rs:14123-14123` `".rigger"`
 - `tests/cli.rs:14351-14351` `".rigger"`
-- `tests/cli.rs:14954-14954` `".rigger"`
-- `tests/cli.rs:15083-15083` `".rigger"`
-- `tests/cli.rs:15085-15085` `".rigger"`
-- `tests/cli.rs:15234-15234` `".rigger"`
-- `tests/cli.rs:15591-15591` `".rigger"`
-- `tests/cli.rs:15635-15635` `".rigger"`
-- `tests/cli.rs:16075-16075` `".rigger"`
-- `tests/cli.rs:16090-16090` `"the driver never recorded a dash URL in .rigger/dash.url; stderr:\n{err}"`
-- `tests/cli.rs:16150-16150` `".rigger"`
-- `tests/cli.rs:16493-16493` `".rigger"`
-- `tests/cli.rs:17201-17201` `".rigger"`
-- `tests/cli.rs:17203-17203` `".rigger"`
-- `tests/cli.rs:18108-18108` `".rigger/dash.marker"`
-- `tests/cli.rs:18166-18166` `".rigger/dash.url"`
-- `tests/cli.rs:18174-18174` `".rigger/dash.marker"`
-- `tests/cli.rs:18396-18396` `".rigger/dash.url"`
-- `tests/cli.rs:18398-18398` `".rigger/dash.marker"`
-- `tests/cli.rs:18469-18469` `".rigger/dash.marker"`
-- `tests/cli.rs:18476-18476` `".rigger/dash.attempt"`
-- `tests/cli.rs:19311-19311` `".rigger"`
-- `tests/cli.rs:20025-20025` `".rigger"`
-- `tests/cli.rs:20351-20351` `".rigger"`
-- `tests/cli.rs:20386-20386` `".rigger"`
-- `tests/cli.rs:20461-20461` `"the first step must record a dash marker at .rigger/dash.marker; stderr:\n{err1}"`
-- `tests/cli.rs:20542-20542` `"the step must record a dash marker at .rigger/dash.marker; stderr:\n{err}"`
-- `tests/cli.rs:20556-20556` `"`rigger step` under RIGGER_DASH_PORT={dash_port} must bind its step-path dash at EXACTLY \
+- `tests/cli.rs:14994-14994` `".rigger"`
+- `tests/cli.rs:15123-15123` `".rigger"`
+- `tests/cli.rs:15125-15125` `".rigger"`
+- `tests/cli.rs:15274-15274` `".rigger"`
+- `tests/cli.rs:15631-15631` `".rigger"`
+- `tests/cli.rs:15675-15675` `".rigger"`
+- `tests/cli.rs:16115-16115` `".rigger"`
+- `tests/cli.rs:16130-16130` `"the driver never recorded a dash URL in .rigger/dash.url; stderr:\n{err}"`
+- `tests/cli.rs:16190-16190` `".rigger"`
+- `tests/cli.rs:16533-16533` `".rigger"`
+- `tests/cli.rs:17241-17241` `".rigger"`
+- `tests/cli.rs:17243-17243` `".rigger"`
+- `tests/cli.rs:18148-18148` `".rigger/dash.marker"`
+- `tests/cli.rs:18206-18206` `".rigger/dash.url"`
+- `tests/cli.rs:18214-18214` `".rigger/dash.marker"`
+- `tests/cli.rs:18436-18436` `".rigger/dash.url"`
+- `tests/cli.rs:18438-18438` `".rigger/dash.marker"`
+- `tests/cli.rs:18509-18509` `".rigger/dash.marker"`
+- `tests/cli.rs:18516-18516` `".rigger/dash.attempt"`
+- `tests/cli.rs:19351-19351` `".rigger"`
+- `tests/cli.rs:20065-20065` `".rigger"`
+- `tests/cli.rs:20391-20391` `".rigger"`
+- `tests/cli.rs:20426-20426` `".rigger"`
+- `tests/cli.rs:20501-20501` `"the first step must record a dash marker at .rigger/dash.marker; stderr:\n{err1}"`
+- `tests/cli.rs:20582-20582` `"the step must record a dash marker at .rigger/dash.marker; stderr:\n{err}"`
+- `tests/cli.rs:20596-20596` `"`rigger step` under RIGGER_DASH_PORT={dash_port} must bind its step-path dash at EXACTLY \
          that port and record it in .rigger/dash.marker (proving the override reaches the real \
          bind, not the fixed dash::DEFAULT_PORT); the marker instead recorded {marker_port}"`
-- `tests/cli.rs:20617-20617` `".rigger"`
-- `tests/cli.rs:20701-20701` `".rigger"`
-- `tests/cli.rs:21086-21086` `".rigger"`
-- `tests/cli.rs:21098-21098` `".rigger"`
-- `tests/cli.rs:21125-21125` `".rigger"`
-- `tests/cli.rs:21153-21153` `".rigger"`
-- `tests/cli.rs:21164-21164` `".rigger"`
-- `tests/cli.rs:21201-21201` `".rigger"`
-- `tests/cli.rs:21290-21290` `"the first step must record a dash marker at .rigger/dash.marker; stderr:\n{err1}"`
-- `tests/cli.rs:21359-21359` `"{root}/.rigger/events.db"`
-- `tests/cli.rs:21972-21972` `"{other_root}/.rigger/events.db"`
-- `tests/cli.rs:22359-22359` `"/stale/root/.rigger/events.db"`
-- `tests/cli.rs:22381-22381` `"/live/root/.rigger/events.db"`
-- `tests/cli.rs:22464-22464` `"the step must record a dash marker at .rigger/dash.marker"`
-- `tests/cli.rs:22664-22664` `".rigger"`
-- `tests/cli.rs:22847-22847` `".rigger"`
-- `tests/cli.rs:22951-22951` `".rigger"`
-- `tests/cli.rs:23077-23077` `".rigger"`
-- `tests/cli.rs:23757-23757` `".rigger/gates"`
-- `tests/cli.rs:23763-23763` `".rigger/gates/{name}"`
-- `tests/cli.rs:23804-23804` `"sh .rigger/gates/content.sh {check} \"$RIGGER_RUN_BASE\""`
-- `tests/cli.rs:23811-23811` `"sh .rigger/gates/content.sh {check}"`
-- `tests/cli.rs:23859-23859` `".rigger/dash.attempt"`
-- `tests/cli.rs:23860-23860` `"a real step's own ensure_run_dashboard call must record .rigger/dash.attempt \
+- `tests/cli.rs:20657-20657` `".rigger"`
+- `tests/cli.rs:20741-20741` `".rigger"`
+- `tests/cli.rs:21126-21126` `".rigger"`
+- `tests/cli.rs:21138-21138` `".rigger"`
+- `tests/cli.rs:21165-21165` `".rigger"`
+- `tests/cli.rs:21193-21193` `".rigger"`
+- `tests/cli.rs:21204-21204` `".rigger"`
+- `tests/cli.rs:21241-21241` `".rigger"`
+- `tests/cli.rs:21330-21330` `"the first step must record a dash marker at .rigger/dash.marker; stderr:\n{err1}"`
+- `tests/cli.rs:21399-21399` `"{root}/.rigger/events.db"`
+- `tests/cli.rs:22012-22012` `"{other_root}/.rigger/events.db"`
+- `tests/cli.rs:22399-22399` `"/stale/root/.rigger/events.db"`
+- `tests/cli.rs:22421-22421` `"/live/root/.rigger/events.db"`
+- `tests/cli.rs:22504-22504` `"the step must record a dash marker at .rigger/dash.marker"`
+- `tests/cli.rs:22704-22704` `".rigger"`
+- `tests/cli.rs:22887-22887` `".rigger"`
+- `tests/cli.rs:22991-22991` `".rigger"`
+- `tests/cli.rs:23117-23117` `".rigger"`
+- `tests/cli.rs:23797-23797` `".rigger/gates"`
+- `tests/cli.rs:23803-23803` `".rigger/gates/{name}"`
+- `tests/cli.rs:23844-23844` `"sh .rigger/gates/content.sh {check} \"$RIGGER_RUN_BASE\""`
+- `tests/cli.rs:23851-23851` `"sh .rigger/gates/content.sh {check}"`
+- `tests/cli.rs:23899-23899` `".rigger/dash.attempt"`
+- `tests/cli.rs:23900-23900` `"a real step's own ensure_run_dashboard call must record .rigger/dash.attempt \
          (record_dash_attempt); without it this test cannot exercise the round-8 fact at all"`
-- `tests/cli.rs:23935-23935` `".rigger/dash.marker"`
-- `tests/cli.rs:23964-23964` `".rigger/dash.url"`
-- `tests/cli.rs:23971-23971` `".rigger/dash.attempt"`
-- `tests/cli.rs:24031-24031` `".rigger/dash.marker"`
-- `tests/cli.rs:24034-24034` `".rigger/dash.url"`
-- `tests/cli.rs:24087-24087` `".rigger/dash.marker"`
-- `tests/cli.rs:24109-24109` `".rigger/dash.url"`
-- `tests/cli.rs:24114-24114` `".rigger/dash.attempt"`
-- `tests/cli.rs:24152-24152` `".rigger/dash.url"`
-- `tests/cli.rs:24163-24163` `".rigger/dash.marker"`
-- `tests/cli.rs:24643-24643` `".rigger"`
-- `tests/cli.rs:24796-24796` `".rigger"`
-- `tests/cli.rs:25695-25695` `".rigger"`
-- `tests/cli.rs:25785-25785` `".rigger"`
-- `tests/cli.rs:26016-26016` `".rigger"`
-- `tests/cli.rs:26470-26470` `"the hook must be inert on a project without .rigger/; got:\n{out}"`
-- `tests/cli.rs:26476-26476` `".rigger"`
-- `tests/cli.rs:26495-26495` `".rigger"`
-- `tests/cli.rs:26521-26521` `".rigger"`
-- `tests/cli.rs:26557-26557` `".rigger"`
-- `tests/cli.rs:26596-26596` `".rigger"`
-- `tests/cli.rs:26788-26788` `".rigger"`
-- `tests/cli.rs:26821-26821` `".rigger"`
-- `tests/cli.rs:27483-27483` `".rigger"`
-- `tests/cli.rs:27728-27728` `".rigger"`
-- `tests/cli.rs:27902-27902` `".rigger"`
-- `tests/cli.rs:27933-27933` `"scaffolded .rigger/instructions/README.md"`
-- `tests/cli.rs:27937-27937` `".rigger/instructions/README.md"`
-- `tests/cli.rs:28007-28007` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28045-28045` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28505-28505` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28523-28523` `"gw/.rigger/workflow.yml"`
-- `tests/common/cli.rs:291-291` `".rigger"`
-- `tests/common/cli.rs:302-302` `".rigger"`
-- `tests/common/cli.rs:323-323` `".rigger"`
-- `tests/common/cli.rs:361-361` `".rigger"`
-- `tests/common/cli.rs:846-846` `"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
+- `tests/cli.rs:23975-23975` `".rigger/dash.marker"`
+- `tests/cli.rs:24004-24004` `".rigger/dash.url"`
+- `tests/cli.rs:24011-24011` `".rigger/dash.attempt"`
+- `tests/cli.rs:24071-24071` `".rigger/dash.marker"`
+- `tests/cli.rs:24074-24074` `".rigger/dash.url"`
+- `tests/cli.rs:24127-24127` `".rigger/dash.marker"`
+- `tests/cli.rs:24149-24149` `".rigger/dash.url"`
+- `tests/cli.rs:24154-24154` `".rigger/dash.attempt"`
+- `tests/cli.rs:24192-24192` `".rigger/dash.url"`
+- `tests/cli.rs:24203-24203` `".rigger/dash.marker"`
+- `tests/cli.rs:24683-24683` `".rigger"`
+- `tests/cli.rs:24836-24836` `".rigger"`
+- `tests/cli.rs:25735-25735` `".rigger"`
+- `tests/cli.rs:25825-25825` `".rigger"`
+- `tests/cli.rs:26056-26056` `".rigger"`
+- `tests/cli.rs:26510-26510` `"the hook must be inert on a project without .rigger/; got:\n{out}"`
+- `tests/cli.rs:26516-26516` `".rigger"`
+- `tests/cli.rs:26535-26535` `".rigger"`
+- `tests/cli.rs:26561-26561` `".rigger"`
+- `tests/cli.rs:26597-26597` `".rigger"`
+- `tests/cli.rs:26636-26636` `".rigger"`
+- `tests/cli.rs:26828-26828` `".rigger"`
+- `tests/cli.rs:26861-26861` `".rigger"`
+- `tests/cli.rs:27523-27523` `".rigger"`
+- `tests/cli.rs:27768-27768` `".rigger"`
+- `tests/cli.rs:27929-27929` `".rigger"`
+- `tests/cli.rs:27960-27960` `"scaffolded .rigger/instructions/README.md"`
+- `tests/cli.rs:27964-27964` `".rigger/instructions/README.md"`
+- `tests/cli.rs:28034-28034` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28072-28072` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28532-28532` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28550-28550` `"gw/.rigger/workflow.yml"`
+- `tests/common/cli.rs:315-315` `".rigger"`
+- `tests/common/cli.rs:326-326` `".rigger"`
+- `tests/common/cli.rs:347-347` `".rigger"`
+- `tests/common/cli.rs:385-385` `".rigger"`
+- `tests/common/cli.rs:870-870` `"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
      vacuums the file, which is a mechanic of the embedded .rigger/events.db store; this project \
      is configured for the server-backed store, where the migration does not run. Re-run it \
      against a project on the sqlite backend. Refusing rather than reporting a migration that did \
      not happen.\n"`
-- `tests/common/cli.rs:931-931` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
-- `tests/common/cli.rs:1148-1148` `".rigger"`
-- `tests/common/cli.rs:1149-1149` `"create .rigger/agents"`
-- `tests/common/cli.rs:1262-1262` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
-- `tests/common/cli.rs:1359-1359` `".rigger"`
+- `tests/common/cli.rs:955-955` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
+- `tests/common/cli.rs:1172-1172` `".rigger"`
+- `tests/common/cli.rs:1173-1173` `"create .rigger/agents"`
+- `tests/common/cli.rs:1286-1286` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
+- `tests/common/cli.rs:1383-1383` `".rigger"`
 - `tests/common/fixtures/config.rs:102-102` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/fixtures/extraction_tree.rs:76-76` `".rigger/workflow.yml"`
 - `tests/common/layer_cli.rs:22-22` `".rigger"`
@@ -3389,21 +3389,21 @@ mandatory sweep: /proc-path string literals - 55 site(s), collected mechanically
 - `crates/rigger-worktree-git/src/worktree.rs:2976-2976` `"/proc/{}"`
 - `src/cli/run.rs:3392-3392` `"/proc"`
 - `src/cli/run.rs:3496-3496` `"/proc"`
-- `tests/cli.rs:20644-20644` `"/proc"`
-- `tests/cli.rs:24859-24859` `"/proc"`
-- `tests/cli.rs:24967-24967` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
-- `tests/cli.rs:25004-25004` `"/proc"`
-- `tests/cli.rs:25055-25055` `"/proc"`
-- `tests/cli.rs:25078-25078` `"/proc"`
-- `tests/cli.rs:25103-25103` `"/proc"`
-- `tests/cli.rs:25167-25167` `"/proc"`
-- `tests/cli.rs:25193-25193` `"/proc"`
-- `tests/cli.rs:25291-25291` `"/proc"`
-- `tests/cli.rs:25329-25329` `"held_port_holder's message half and describe_held_port_if_confirmed's own return \
+- `tests/cli.rs:20684-20684` `"/proc"`
+- `tests/cli.rs:24899-24899` `"/proc"`
+- `tests/cli.rs:25007-25007` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
+- `tests/cli.rs:25044-25044` `"/proc"`
+- `tests/cli.rs:25095-25095` `"/proc"`
+- `tests/cli.rs:25118-25118` `"/proc"`
+- `tests/cli.rs:25143-25143` `"/proc"`
+- `tests/cli.rs:25207-25207` `"/proc"`
+- `tests/cli.rs:25233-25233` `"/proc"`
+- `tests/cli.rs:25331-25331` `"/proc"`
+- `tests/cli.rs:25369-25369` `"held_port_holder's message half and describe_held_port_if_confirmed's own return \
              must agree (scheduler-state letter normalized away since each call independently \
              re-reads /proc and can observe a state flap) - they are documented as sharing one \
              discovery"`
-- `tests/cli.rs:25348-25348` `"/proc"`
+- `tests/cli.rs:25388-25388` `"/proc"`
 - `tests/common/fixtures/host.rs:78-78` `"/proc/{pid}/stat has a pgrp field after comm"`
 - `tests/duplication_catalog_contract_periphery.rs:101-101` `"/proc-path string literals"`
 - `tests/kurrentdb_store_threads.rs:21-21` `"/proc/self/task"`
@@ -3946,7 +3946,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/spec.rs:2643-2645` `f11`
-- `tests/common/cli.rs:930-932` `graph_build_line`
+- `tests/common/cli.rs:954-956` `graph_build_line`
 
 #### `dup-d340e212490f` (exact, 2 sites)
 
@@ -4089,11 +4089,11 @@ mandatory sweep: sqlite Connection::open call sites - 60 site(s), collected mech
 - `tests/cli.rs:893-893` `Connection::open`
 - `tests/cli.rs:9347-9347` `Connection::open`
 - `tests/common/cli.rs:97-97` `Connection::open`
-- `tests/common/cli.rs:596-596` `Connection::open`
-- `tests/common/cli.rs:609-609` `Connection::open`
-- `tests/common/cli.rs:667-667` `Connection::open`
-- `tests/common/cli.rs:677-677` `Connection::open`
-- `tests/common/cli.rs:1370-1370` `Connection::open`
+- `tests/common/cli.rs:620-620` `Connection::open`
+- `tests/common/cli.rs:633-633` `Connection::open`
+- `tests/common/cli.rs:691-691` `Connection::open`
+- `tests/common/cli.rs:701-701` `Connection::open`
+- `tests/common/cli.rs:1394-1394` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:8-8` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:22-22` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:31-31` `Connection::open`
@@ -4528,9 +4528,9 @@ Proposed home: `a new shared module (sites span 3 files: src/cli/hygiene.rs, tes
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/hygiene.rs:252-254` `derived_count_phrase`
-- `tests/common/cli.rs:800-807` `migrated_lines`
-- `tests/common/cli.rs:814-819` `derived_menu_line_naming`
-- `tests/common/cli.rs:1423-1428` `bloat_advisory_naming`
+- `tests/common/cli.rs:824-831` `migrated_lines`
+- `tests/common/cli.rs:838-843` `derived_menu_line_naming`
+- `tests/common/cli.rs:1447-1452` `bloat_advisory_naming`
 - `tests/compaction_generations_periphery.rs:4868-4873` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
@@ -4697,10 +4697,10 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cause_wire_periphery.rs:137-168` `the_reject_recurrence_line_names_the_latest_of_several_recorded_causes_through_the_real_binary`
 - `tests/cli.rs:9287-9324` `stats_reports_the_latest_run_by_default_and_all_for_the_aggregate`
 - `tests/cli.rs:9579-9593` `stats_cli_reports_no_recorded_spawns_when_the_run_has_none`
-- `tests/cli.rs:19874-19932` `release_ready_handoff_surfaces_on_status_for_a_done_run`
-- `tests/cli.rs:20133-20173` `release_ready_is_silent_on_status_for_an_unfinished_run`
-- `tests/cli.rs:20243-20275` `release_ready_pluralizes_the_unit_count_on_status_for_a_multi_unit_run`
-- `tests/cli.rs:20319-20340` `release_ready_is_silent_on_status_for_a_spec_defective_run`
+- `tests/cli.rs:19914-19972` `release_ready_handoff_surfaces_on_status_for_a_done_run`
+- `tests/cli.rs:20173-20213` `release_ready_is_silent_on_status_for_an_unfinished_run`
+- `tests/cli.rs:20283-20315` `release_ready_pluralizes_the_unit_count_on_status_for_a_multi_unit_run`
+- `tests/cli.rs:20359-20380` `release_ready_is_silent_on_status_for_a_spec_defective_run`
 - `tests/escalation_resume_periphery.rs:85-108` `a_unit_resumed_event_seeded_directly_through_a_real_store_reaches_status_without_the_command`
 - `tests/escalation_resume_periphery.rs:119-147` `a_legacy_shaped_unit_resumed_event_missing_both_optional_fields_survives_a_real_store_round_trip`
 - `tests/escalation_resume_periphery.rs:235-265` `the_resumed_banner_survives_a_genuinely_in_flight_re_parked_attempt_not_yet_resolved`
@@ -4725,12 +4725,12 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:13871-13891` `result_if_absent_records_when_the_spawn_is_unanswered`
 - `tests/cli.rs:14424-14433` `stats_canary_on_a_project_with_no_canary_run_says_so`
 - `tests/cli.rs:14589-14618` `canary_rejects_unknown_arguments_and_a_missing_corpus`
-- `tests/cli.rs:14647-14661` `canary_accepts_a_jobs_flag_alongside_other_flags`
-- `tests/cli.rs:14799-14834` `canary_rejects_a_malformed_or_unknown_tier_model_pin`
-- `tests/cli.rs:16446-16458` `status_json_appends_no_dashboard_entry_when_none_was_ever_recorded`
-- `tests/cli.rs:24205-24222` `prime_given_a_spec_path_names_the_spec_lint_as_a_next_step`
-- `tests/cli.rs:24225-24247` `prime_given_a_spec_path_names_the_spec_lint_alongside_recent_decisions`
-- `tests/cli.rs:25731-25763` `mcp_rejects_a_malformed_spawn_flag_or_unexpected_arguments`
+- `tests/cli.rs:14687-14701` `canary_accepts_a_jobs_flag_alongside_other_flags`
+- `tests/cli.rs:14839-14874` `canary_rejects_a_malformed_or_unknown_tier_model_pin`
+- `tests/cli.rs:16486-16498` `status_json_appends_no_dashboard_entry_when_none_was_ever_recorded`
+- `tests/cli.rs:24245-24262` `prime_given_a_spec_path_names_the_spec_lint_as_a_next_step`
+- `tests/cli.rs:24265-24287` `prime_given_a_spec_path_names_the_spec_lint_alongside_recent_decisions`
+- `tests/cli.rs:25771-25803` `mcp_rejects_a_malformed_spawn_flag_or_unexpected_arguments`
 - `tests/graph_show_periphery.rs:112-129` `graph_show_and_around_with_no_store_print_the_not_found_note`
 - `tests/reset_build_cache_periphery.rs:103-129` `reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything`
 - `tests/reset_build_cache_periphery.rs:167-177` `reset_build_cache_flag_is_registered_and_rejects_a_duplicate`
@@ -4785,7 +4785,7 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:11546-11548` `path_with_fake_sccache`
-- `tests/cli.rs:18795-18797` `stage_rigger_shim`
+- `tests/cli.rs:18835-18837` `stage_rigger_shim`
 
 #### `dup-c72ffc4edd8c` (near, 5 sites)
 
@@ -4794,10 +4794,10 @@ Proposed home: `cli::support (consolidate these 5 sites into one function in thi
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:13402-13433` `init_reports_the_positive_summary_then_is_a_quiet_noop`
-- `tests/cli.rs:16568-16579` `status_prints_no_dashboard_line_when_none_was_ever_recorded`
-- `tests/cli.rs:24192-24202` `prime_with_no_spec_path_never_mentions_the_spec_lint`
-- `tests/cli.rs:24613-24622` `workflow_with_no_spec_path_never_mentions_the_spec_lint`
-- `tests/cli.rs:27927-27947` `init_scaffolds_the_instructions_readme_and_names_it`
+- `tests/cli.rs:16608-16619` `status_prints_no_dashboard_line_when_none_was_ever_recorded`
+- `tests/cli.rs:24232-24242` `prime_with_no_spec_path_never_mentions_the_spec_lint`
+- `tests/cli.rs:24653-24662` `workflow_with_no_spec_path_never_mentions_the_spec_lint`
+- `tests/cli.rs:27954-27974` `init_scaffolds_the_instructions_readme_and_names_it`
 
 #### `dup-84fea880d212` (near, 2 sites)
 
@@ -4805,8 +4805,8 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:16867-16897` `docs_ships_three_verb_lookup_guidance_to_consumers`
-- `tests/cli.rs:27602-27649` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
+- `tests/cli.rs:16907-16937` `docs_ships_three_verb_lookup_guidance_to_consumers`
+- `tests/cli.rs:27642-27689` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
 
 #### `dup-21b08556e493` (exact, 2 sites)
 
@@ -4814,8 +4814,8 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:19214-19219` `stage_failing_docs_rigger_shim`
-- `tests/cli.rs:19239-19256` `stage_stale_rigger_shim`
+- `tests/cli.rs:19254-19259` `stage_failing_docs_rigger_shim`
+- `tests/cli.rs:19279-19296` `stage_stale_rigger_shim`
 
 #### `dup-4fbc57c56116` (near, 2 sites)
 
@@ -4860,8 +4860,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/common/cli.rs:47-51` `courier_project`
-- `tests/common/cli.rs:188-192` `temp_rigger_project`
-- `tests/common/cli.rs:196-200` `temp_store_project`
+- `tests/common/cli.rs:212-216` `temp_rigger_project`
+- `tests/common/cli.rs:220-224` `temp_store_project`
 - `tests/courier_registry_refresh_boundary_periphery.rs:40-44` `courier_project_with_commit`
 
 #### `dup-065ac962b8cf` (exact, 3 sites)
@@ -4870,9 +4870,9 @@ Proposed home: `cli::support (consolidate these 3 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:825-827` `derived_menu_lines`
-- `tests/common/cli.rs:1417-1419` `index_lag_lines`
-- `tests/common/cli.rs:1432-1434` `bloat_lines`
+- `tests/common/cli.rs:849-851` `derived_menu_lines`
+- `tests/common/cli.rs:1441-1443` `index_lag_lines`
+- `tests/common/cli.rs:1456-1458` `bloat_lines`
 
 #### `dup-8dd44d643a5c` (semantic, 2 sites)
 
@@ -4880,7 +4880,7 @@ Proposed home: `one shared `write_workflow` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/common/cli.rs:1208-1215` `write_workflow`
+- `tests/common/cli.rs:1232-1239` `write_workflow`
 - `tests/common/workflow_probe.rs:21-23` `write_workflow`
 
 #### `dup-b58b0ff72b22` (near, 3 sites)
@@ -4889,8 +4889,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:1244-1264` `assert_selected_server`
-- `tests/common/cli.rs:1268-1284` `assert_selected_sqlite`
+- `tests/common/cli.rs:1268-1288` `assert_selected_server`
+- `tests/common/cli.rs:1292-1308` `assert_selected_sqlite`
 - `tests/store_secrets.rs:69-107` `assert_server_reached_and_credentials_redacted`
 
 #### `dup-c82a46fd1fec` (exact, 2 sites)
@@ -5291,7 +5291,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9727 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9729 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4995-5036` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15030-15052` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5439,7 +5439,7 @@ Proposed home for each: `tests/common` (the catalog's own `proposed_home` field 
 
 ### 5.3 `tests/cli.rs` split plan
 
-`tests/cli.rs` holds 389 `#[test]` functions. Its existing internal section markers each name the spec and criterion whose tests follow it, not a CLI subcommand or subsystem - ad hoc organization that falls well short of a deliberate, complete per-surface structure. The split proposed below replaces those by-spec markers with a complete, deliberate BY CLI SUBCOMMAND SURFACE organization. A keyword-on-test-name pass (matching each test's dominant CLI verb: `step_`, `run_`, `validate_`, `reset_`, `watch_`/`watchdog_`, `canary_`, `dash_`/`status_`, `store_`/`eventstore_`, `spawn_`/`scratch_`, `review_`/`gate_`, `setup_`/`precommit_`/`hook_`, `courier_`/`registry_`, `spec_`, `replay_`, `worktree_`, `emit_`/`peers_`/`decision_`, `stats_`, `heartbeat_`/`liveness_`, `prime_`/`version_`/`init_`) only cleanly covers 207 of the 389 tests (53%) - disclosed honestly rather than overclaimed, because a real fraction of `cli.rs`'s scenarios are DELIBERATELY end-to-end (a single test legitimately drives `step` + `run` + `validate` + `dash` together to prove a cross-cutting property, e.g. `a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status` or `docs_ships_graph_hygiene_guidance_to_consumers`), which a bare keyword match cannot and should not force into one bucket. The proposed split is BY CLI SUBCOMMAND SURFACE - `cli.rs`'s own natural organizing concept, since the whole file drives the `rigger` binary end to end - into per-surface files (`tests/cli_step.rs`, `tests/cli_run.rs`, `tests/cli_validate.rs`, `tests/cli_reset.rs`, `tests/cli_watch.rs`, `tests/cli_canary.rs`, `tests/cli_dash.rs`, `tests/cli_store.rs`, `tests/cli_review.rs`, `tests/cli_setup.rs`, plus a residual `tests/cli_misc.rs` for the genuinely cross-cutting scenarios), with each test's home decided by its DOMINANT scenario on a human/AI read, not a mechanical keyword match - the same discipline this audit's own responsibility map applied to unassignable functions (named, never silently forced). Cross-referencing the catalog: `cli.rs` also participates in 5 of the catalog's cross-file test-only duplication clusters, several paired against files that WOULD merge with it under this split (`tests/step_attention_periphery.rs`, paired in 1 clusters; `tests/watchdog_cli_periphery.rs`, paired in 1 clusters) - the split is expected to shrink, not grow, the duplication surface.
+`tests/cli.rs` holds 390 `#[test]` functions. Its existing internal section markers each name the spec and criterion whose tests follow it, not a CLI subcommand or subsystem - ad hoc organization that falls well short of a deliberate, complete per-surface structure. The split proposed below replaces those by-spec markers with a complete, deliberate BY CLI SUBCOMMAND SURFACE organization. A keyword-on-test-name pass (matching each test's dominant CLI verb: `step_`, `run_`, `validate_`, `reset_`, `watch_`/`watchdog_`, `canary_`, `dash_`/`status_`, `store_`/`eventstore_`, `spawn_`/`scratch_`, `review_`/`gate_`, `setup_`/`precommit_`/`hook_`, `courier_`/`registry_`, `spec_`, `replay_`, `worktree_`, `emit_`/`peers_`/`decision_`, `stats_`, `heartbeat_`/`liveness_`, `prime_`/`version_`/`init_`) only cleanly covers 208 of the 390 tests (53%) - disclosed honestly rather than overclaimed, because a real fraction of `cli.rs`'s scenarios are DELIBERATELY end-to-end (a single test legitimately drives `step` + `run` + `validate` + `dash` together to prove a cross-cutting property, e.g. `a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status` or `docs_ships_graph_hygiene_guidance_to_consumers`), which a bare keyword match cannot and should not force into one bucket. The proposed split is BY CLI SUBCOMMAND SURFACE - `cli.rs`'s own natural organizing concept, since the whole file drives the `rigger` binary end to end - into per-surface files (`tests/cli_step.rs`, `tests/cli_run.rs`, `tests/cli_validate.rs`, `tests/cli_reset.rs`, `tests/cli_watch.rs`, `tests/cli_canary.rs`, `tests/cli_dash.rs`, `tests/cli_store.rs`, `tests/cli_review.rs`, `tests/cli_setup.rs`, plus a residual `tests/cli_misc.rs` for the genuinely cross-cutting scenarios), with each test's home decided by its DOMINANT scenario on a human/AI read, not a mechanical keyword match - the same discipline this audit's own responsibility map applied to unassignable functions (named, never silently forced). Cross-referencing the catalog: `cli.rs` also participates in 5 of the catalog's cross-file test-only duplication clusters, several paired against files that WOULD merge with it under this split (`tests/step_attention_periphery.rs`, paired in 1 clusters; `tests/watchdog_cli_periphery.rs`, paired in 1 clusters) - the split is expected to shrink, not grow, the duplication surface.
 
 ### 5.4 Duplicated helpers across test files (beyond 5.2's headline cases)
 
@@ -5611,7 +5611,7 @@ Every entry cites section 5's own already-catalogued test-only duplication; none
 
 #### 14. Split `tests/cli.rs` by CLI subcommand surface (section 5.3's plan)
 
-- Scope: 389 tests, split into `tests/cli_{step,run,validate,reset,watch,canary,dash,store,review,setup}.rs` plus a residual `tests/cli_misc.rs` for the genuinely cross-cutting scenarios section 5.3 names, using each test's dominant scenario (a human/AI read, not the 53%-coverage keyword match section 5.3 already disclosed as insufficient alone).
+- Scope: 390 tests, split into `tests/cli_{step,run,validate,reset,watch,canary,dash,store,review,setup}.rs` plus a residual `tests/cli_misc.rs` for the genuinely cross-cutting scenarios section 5.3 names, using each test's dominant scenario (a human/AI read, not the 53%-coverage keyword match section 5.3 already disclosed as insufficient alone).
 - Files: `tests/cli.rs` and the eleven new files above.
 - Expected line delta: 0 net - pure relocation into eleven files.
 - Risk: low-medium - a mechanical per-test move with `cargo test`'s full pass count as the verification.
