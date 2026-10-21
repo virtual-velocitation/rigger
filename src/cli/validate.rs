@@ -1160,9 +1160,10 @@ fn docs_drift_failure(root: &Path) -> Option<String> {
 /// `rigger instructions` - print the instruction layers every spawned agent is held to: each
 /// built-in (the law, the working discipline and the communication discipline) with its state -
 /// in force, replaced or switched off by a same-named operator file - then the other operator
-/// files in `.rigger/instructions/`.
+/// files in the project's `.rigger/instructions/`, read under the project root even from a
+/// subdirectory ([`project_instruction_layer`]).
 pub(crate) fn cmd_instructions(_args: &[String]) -> Res {
-    let ops = config_store::load_instructions(Path::new("."))?;
+    let ops = project_instruction_layer(store_if_any()?.as_ref())?;
     print!("{}", instructions::render(&ops));
     Ok(())
 }

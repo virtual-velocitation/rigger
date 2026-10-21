@@ -8569,6 +8569,22 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "store_if_any",
+    "is_test": false,
+    "proposed_module": "main::store",
+    "reason": "name contains \"store_\" (store hygiene); grouped under `main::store`.",
+    "content_hash": "eede45cb20b6fb43"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "project_instruction_layer",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "30ab55f9e144aec6"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "main_repo_root",
     "is_test": false,
     "proposed_module": null,

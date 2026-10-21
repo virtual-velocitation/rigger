@@ -1303,6 +1303,35 @@ fn find_store_dir_from(start: &Path) -> Option<PathBuf> {
     walk_stores_from(start).dir
 }
 
+/// The store [`require_store_dir`] resolves, or `None` when no store exists yet
+/// ([`NoStoreFound`], a project set up before any run); every other resolution failure
+/// propagates.
+fn store_if_any() -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std::error::Error>> {
+    match require_store_dir() {
+        Ok(found) => Ok(Some(found)),
+        Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// The operator instruction layer the instruction reporters (`rigger prime`, `rigger
+/// instructions`) report, read under the project root: the owning root of the `store` that
+/// resolved ([`StoreLocation::repo_root`]), else the main repo root governing the cwd
+/// ([`main_repo_root`]), else the cwd itself - so a reporter run from a subdirectory or a nested
+/// worktree reads the project's layer, never the subdirectory's own.
+fn project_instruction_layer(
+    store: Option<&(StoreLocation, StoreSelection)>,
+) -> Result<Vec<instructions::Instruction>, Box<dyn std::error::Error>> {
+    let root = match store {
+        Some((loc, _)) => PathBuf::from(loc.repo_root()),
+        None => std::env::current_dir()
+            .ok()
+            .and_then(|cwd| main_repo_root(&cwd))
+            .unwrap_or_else(|| PathBuf::from(".")),
+    };
+    Ok(config_store::load_instructions(&root)?)
+}
+
 /// The MAIN repo root governing `start`: the parent of `git rev-parse --git-common-dir`
 /// run from `start`. For a linked worktree the common dir is the main repo's `.git`, so
 /// this resolves to the main checkout's root - exactly the outermost directory the

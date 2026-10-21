@@ -1450,18 +1450,12 @@ pub(crate) fn cmd_prime(args: &[String]) -> Res {
     let spec_path = args.first();
     // The one store-location authority every courier resolves through: a session started in a
     // subdirectory or a unit worktree reads the project's own store, identity and instruction
-    // layer, never the cwd's. A fresh project with no store yet reads the layer from the cwd.
-    let found = match require_store_dir() {
-        Ok(found) => Some(found),
-        Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => None,
-        Err(e) => return Err(e),
-    };
-    let root = found
-        .as_ref()
-        .map_or_else(|| ".".to_string(), |(loc, _)| loc.repo_root());
+    // layer, never the cwd's. A project with no store yet reads the layer under the main repo
+    // root governing the cwd.
+    let found = store_if_any()?;
     println!(
         "{}",
-        instructions_in_force_line(&config_store::load_instructions(Path::new(&root))?)
+        instructions_in_force_line(&project_instruction_layer(found.as_ref())?)
     );
     let Some((loc, selection)) = found else {
         println!("# Rigger: no decisions recorded yet (run `rigger run` to start).");
