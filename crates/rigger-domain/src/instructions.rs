@@ -231,17 +231,10 @@ fn push_heading(out: &mut String, name: &str) {
 mod tests {
     use super::*;
     use crate::test_support::{
-        assert_carries_the_review_method, builtin_body, builtin_section, rendered_shadowing_layer,
-        shadowing_operator_layer, COMMUNICATION_NEAR_NAME, RENDERED_OPERATOR_HEADING,
-        REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
+        assert_carries_the_review_method, builtin_body, builtin_section, op,
+        rendered_shadowing_layer, shadowing_operator_layer, COMMUNICATION_NEAR_NAME,
+        RENDERED_OPERATOR_HEADING, REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
     };
-
-    fn op(name: &str, body: &str) -> Instruction {
-        Instruction {
-            name: name.into(),
-            body: body.into(),
-        }
-    }
 
     #[test]
     fn compose_places_persona_then_builtin_then_operator_in_order() {

@@ -5,8 +5,9 @@
 //! and their checked-in sources, each entry's body by name, a near name that shadows no
 //! built-in, the layers `rigger instructions` prints, the persona an agent definition parses to,
 //! the system prompt a spawn with no operator layer is composed to, and the composed prompt
-//! spelled section by section; and the named-entry operator layer the instruction reporters are
-//! read over, with what `rigger instructions`, `rigger validate` and `rigger prime` report on it.
+//! spelled section by section; an operator instruction file by name and body; and the named-entry
+//! operator layer the instruction reporters are read over, with what `rigger instructions`,
+//! `rigger validate` and `rigger prime` report on it.
 
 /// The working-discipline body's hand-over section heading.
 pub const HAND_OVER_HEADING: &str = "## Hand over a tree the gates only confirm";
@@ -144,6 +145,14 @@ pub const REPLACING_COMMUNICATION_BODY: &str = "Log each decision in the team ch
 /// The body of the operator file of [`shadowing_operator_layer`] that shadows no built-in.
 pub const UNSHADOWING_STYLE_BODY: &str = "Keep the house style.";
 
+/// An operator instruction file named `name` with `body`, as the loader reads it.
+pub fn op(name: &str, body: &str) -> rigger::instructions::Instruction {
+    rigger::instructions::Instruction {
+        name: name.into(),
+        body: body.into(),
+    }
+}
+
 /// The named-entry fixture the instruction reporters are read over, in filename order as the
 /// loader returns it: `30-style`, which shadows no built-in; `communication`, replacing that
 /// built-in; and an empty `working-discipline`, switching that built-in off. The
@@ -155,10 +164,7 @@ pub fn shadowing_operator_layer() -> Vec<rigger::instructions::Instruction> {
         ("working-discipline", None),
     ]
     .into_iter()
-    .map(|(name, body)| rigger::instructions::Instruction {
-        name: name.into(),
-        body: body.unwrap_or_default().into(),
-    })
+    .map(|(name, body)| op(name, body.unwrap_or_default()))
     .collect()
 }
 

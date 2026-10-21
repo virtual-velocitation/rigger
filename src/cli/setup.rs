@@ -4425,10 +4425,8 @@ mod tests {
     /// With every built-in switched off, `rigger prime`'s first line says none is in force.
     #[test]
     fn the_in_force_line_says_none_when_every_built_in_is_switched_off() {
-        let off = |name: &str| instructions::Instruction {
-            name: name.into(),
-            body: String::new(),
-        };
+        use crate::test_support::op;
+        let off = |name| op(name, Default::default());
         assert_eq!(
             instructions_in_force_line(&[
                 off("communication"),

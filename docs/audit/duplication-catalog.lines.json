@@ -149,8 +149,8 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 82,
-        "end_line": 84
+        "start_line": 83,
+        "end_line": 85
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
@@ -3174,23 +3174,23 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 134,
-        "end_line": 134
+        "start_line": 135,
+        "end_line": 135
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 169,
-        "end_line": 169
+        "start_line": 175,
+        "end_line": 175
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 180,
-        "end_line": 180
+        "start_line": 186,
+        "end_line": 186
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 182,
-        "end_line": 182
+        "start_line": 188,
+        "end_line": 188
       },
       {
         "file": "tests/common/layer_cli.rs",
@@ -5311,21 +5311,6 @@
         "file": "tests/published_content_key_split_periphery.rs",
         "start_line": 40,
         "end_line": 43
-      }
-    ]
-  },
-  {
-    "id": "dup-64eda8b7ffd5",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/instructions.rs",
-        "start_line": 239,
-        "end_line": 244
-      },
-      {
-        "file": "crates/rigger-gates-shell/src/gate.rs",
-        "start_line": 1688,
-        "end_line": 1693
       }
     ]
   },

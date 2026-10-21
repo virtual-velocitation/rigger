@@ -5575,25 +5575,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-64eda8b7ffd5",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/instructions.rs",
-        "name": "op",
-        "content_hash": "2e3a7c94c3c240d3"
-      },
-      {
-        "file": "crates/rigger-gates-shell/src/gate.rs",
-        "name": "unavailable",
-        "content_hash": "2e3a7c94c3c240d3"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/instructions.rs, crates/rigger-gates-shell/src/gate.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-557d6899b868",
     "classification": "exact",
     "sites": [
