@@ -3,15 +3,27 @@
 
 /// Every language marker `text` spells under spec 120's MARKERS rule, the word markers first
 /// and then the substring markers, each in list order. The text is lower-cased; a word marker
-/// hits when it, or it followed by `s`, equals a token (a run of letters, digits and `_`), or,
-/// unless it is a whole-token marker, equals any `_`-separated part of one; a syntax or
-/// phrase marker hits as a substring.
+/// hits when it, or it followed by `s`, equals a token (a run of letters, digits and `_`) or any
+/// `_`-separated part of one, so a marker holding `_` hits only as a whole token, since no part
+/// holds `_`; a syntax or phrase marker hits as a substring.
 pub fn language_marker_hits(text: &str) -> Vec<&'static str> {
-    const PART_WORDS: &[&str] = &[
-        "fn", "crate", "impl", "trait", "match", "matches", "cargo", "clippy", "rustfmt", "wasm",
-        "rs", "rust", "rustdoc",
+    const WORDS: &[&str] = &[
+        "fn",
+        "crate",
+        "impl",
+        "trait",
+        "match",
+        "matches",
+        "cargo",
+        "clippy",
+        "rustfmt",
+        "wasm",
+        "rs",
+        "rust",
+        "rustdoc",
+        "create_dir_all",
+        "for_extension",
     ];
-    const WHOLE_TOKEN_WORDS: &[&str] = &["create_dir_all", "for_extension"];
     const SUBSTRINGS: &[&str] = &[
         "#[",
         "//!",
@@ -25,23 +37,17 @@ pub fn language_marker_hits(text: &str) -> Vec<&'static str> {
         .split(|c: char| !(c.is_alphanumeric() || c == '_'))
         .filter(|t| !t.is_empty())
         .collect();
-    let word_hits = |marker: &str, by_part: bool| {
+    let word_hits = |marker: &str| {
         tokens.iter().any(|token| {
             *token == marker
                 || token.strip_suffix('s') == Some(marker)
-                || (by_part && token.split('_').any(|part| part == marker))
+                || token.split('_').any(|part| part == marker)
         })
     };
-    PART_WORDS
+    WORDS
         .iter()
         .copied()
-        .filter(|marker| word_hits(marker, true))
-        .chain(
-            WHOLE_TOKEN_WORDS
-                .iter()
-                .copied()
-                .filter(|marker| word_hits(marker, false)),
-        )
+        .filter(|marker| word_hits(marker))
         .chain(
             SUBSTRINGS
                 .iter()

@@ -3457,8 +3457,8 @@ mod tests {
     }
 
     /// The MARKERS rule itself: a word marker hits as a token, as its plural or as a part of a
-    /// `_`-joined token, never inside a longer word, a whole-token marker never as a part, and a
-    /// syntax or phrase marker as a substring of the lower-cased text.
+    /// `_`-joined token, never inside a longer word, a marker holding `_` only as a whole token,
+    /// and a syntax or phrase marker as a substring of the lower-cased text.
     #[test]
     fn a_language_marker_hits_as_a_token_its_plural_or_a_part_and_never_inside_a_word() {
         assert_eq!(
@@ -3467,8 +3467,8 @@ mod tests {
                  for_extension_y and a feature-lane"
             ),
             Vec::<&str>::new(),
-            "a marker inside a longer word, a doubled plural, a whole-token marker as a part and \
-             a hyphenated phrase are no hits"
+            "a marker inside a longer word, a doubled plural, a marker holding `_` inside a longer \
+             token and a hyphenated phrase are no hits"
         );
         assert_eq!(
             language_marker_hits("Fn fns, `trait`, crates"),
@@ -3478,7 +3478,7 @@ mod tests {
         assert_eq!(
             language_marker_hits("CARGO_TARGET_DIR, file.rs and for_extension(\"rs\")"),
             ["cargo", "rs", "for_extension"],
-            "a word marker hits as a part of a `_`-joined token, and a whole-token marker whole"
+            "a word marker hits as a part of a `_`-joined token, and a marker holding `_` whole"
         );
         assert_eq!(
             language_marker_hits(
