@@ -1315,20 +1315,15 @@ fn store_if_any() -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std
 }
 
 /// The operator instruction layer the instruction reporters (`rigger prime`, `rigger
-/// instructions`) report, read under the project root: the owning root of the `store` that
-/// resolved ([`StoreLocation::repo_root`]), else the main repo root governing the cwd
-/// ([`main_repo_root`]), else the cwd itself - so a reporter run from a subdirectory or a nested
-/// worktree reads the project's layer, never the subdirectory's own.
-fn project_instruction_layer(
-    store: Option<&(StoreLocation, StoreSelection)>,
-) -> Result<Vec<instructions::Instruction>, Box<dyn std::error::Error>> {
-    let root = match store {
-        Some((loc, _)) => PathBuf::from(loc.repo_root()),
-        None => std::env::current_dir()
-            .ok()
-            .and_then(|cwd| main_repo_root(&cwd))
-            .unwrap_or_else(|| PathBuf::from(".")),
-    };
+/// instructions`) report, read under the project root: the main repo root governing the cwd
+/// ([`main_repo_root`]), else, outside any git repository, the cwd itself - so a reporter run from
+/// a subdirectory or a nested worktree reads the project's layer, never the subdirectory's own.
+/// The resolved store is never consulted: under the gate store fence it is a scratch store whose
+/// parent is no project.
+fn project_instruction_layer() -> Result<Vec<instructions::Instruction>, Box<dyn std::error::Error>>
+{
+    let cwd = std::env::current_dir()?;
+    let root = main_repo_root(&cwd).unwrap_or(cwd);
     Ok(config_store::load_instructions(&root)?)
 }
 

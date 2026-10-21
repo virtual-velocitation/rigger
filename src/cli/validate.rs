@@ -1161,9 +1161,9 @@ fn docs_drift_failure(root: &Path) -> Option<String> {
 /// built-in (the law, the working discipline and the communication discipline) with its state -
 /// in force, replaced or switched off by a same-named operator file - then the other operator
 /// files in the project's `.rigger/instructions/`, read under the project root even from a
-/// subdirectory ([`project_instruction_layer`]).
+/// subdirectory, a nested worktree or a gate's store fence ([`project_instruction_layer`]).
 pub(crate) fn cmd_instructions(_args: &[String]) -> Res {
-    let ops = project_instruction_layer(store_if_any()?.as_ref())?;
+    let ops = project_instruction_layer()?;
     print!("{}", instructions::render(&ops));
     Ok(())
 }
