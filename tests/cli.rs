@@ -28104,8 +28104,8 @@ fn prime_and_instructions_outside_git_with_no_store_read_the_layer_at_the_cwd() 
     use common::fixtures::{
         rendered_shadowing_layer, shadowing_operator_layer, SHADOWING_LAYER_IN_FORCE_LINE,
     };
-    let dir = tempfile::tempdir().expect("a directory outside any git repository");
-    let root = dir.path();
+    let proj = tempfile::tempdir().expect("a directory outside any git repository");
+    let root = proj.path();
     write_operator_layer(root, &shadowing_operator_layer());
     let ceiling = [(
         "GIT_CEILING_DIRECTORIES",
