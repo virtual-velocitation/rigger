@@ -2514,7 +2514,8 @@ mod tests {
     /// Spec 112, criterion 4: the shipped docs carry ONE corner list of eight, walked in one
     /// order - `planning-a-spec`'s step 3, the field guide's F3 countermeasure,
     /// `spec-preflight`'s step 2 and the built-in working-discipline instruction every spawn
-    /// receives unless an operator file switches it off (`d112-op-seam-items-from-c4`) each
+    /// receives unless a same-named operator file replaces or switches it off
+    /// (`d112-op-seam-items-from-c4`) each
     /// name empty, repeated, revert, DROPPED,
     /// concurrent, crash-resume, cold start and existing data.
     #[test]

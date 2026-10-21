@@ -5038,8 +5038,8 @@ impl RunCtx<'_> {
     /// write the unit worktree - the [`REVIEWER_DISCIPLINE`] every lens, the adversary and the
     /// adjudicator carry (through [`review_protocol`] and [`Self::run_adjudicator`]) forbids it,
     /// and the working-discipline body's `## When you review` section, which reaches each of them
-    /// through [`crate::instructions::compose`] unless an operator file switches it off, has them
-    /// reproduce a suspected failure in their
+    /// through [`crate::instructions::compose`] unless a same-named operator file replaces or
+    /// switches it off, has them reproduce a suspected failure in their
     /// OWN scratch worktree instead - so a worktree the round leaves dirty, or whose tip has
     /// moved off `round_start_sha` (the sha [`Self::review_unit`] captured before spawning ANY
     /// tier), is residue: a reviewer's own tooling breaking protocol, or an out-of-band actor,
@@ -12476,7 +12476,7 @@ pub fn review_protocol(actor: &str) -> String {
 /// [`gate_evidence_block`] shows green, the one targeted reproduction in a scratch worktree, and
 /// never running a gate's command as the gate runs it - is guidance, so it sits under the
 /// working-discipline body's `## When you review` section, which reaches a reviewer through
-/// [`crate::instructions::compose`] unless an operator file switches it off. Shared by
+/// [`crate::instructions::compose`]. Shared by
 /// [`review_protocol`] (the lens and adversary tiers, which also record findings through it)
 /// and [`RunCtx::run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
@@ -29024,8 +29024,9 @@ mod tests {
     fn the_system_prompt_carries_the_communication_built_in_once() {
         // The communication discipline (emit decisions/findings live, check peers, never
         // silently contradict a peer) is a built-in instruction entry: a spawned agent's
-        // system prompt carries it once, as the `## communication` section `compose`
-        // prints, and the conductor appends no second copy under the retired heading.
+        // system prompt, its operator layer empty here, carries it once, as the
+        // `## communication` section `compose` prints, and the conductor appends no second
+        // copy under the retired heading.
         let mut cfg = Config::default();
         cfg.agents.insert(
             "a".into(),
@@ -29076,8 +29077,9 @@ mod tests {
         let driver = Stub::new();
         let deps = stub_deps(&st, &driver, Vec::new());
         run_isolated(&cfg, &deps).unwrap();
-        // An agent with no persona body still receives every built-in instruction entry,
-        // the communication discipline among them, but no fabricated persona text - the
+        // An agent with no persona body, in this config with no operator instruction file,
+        // still receives every built-in instruction entry, the communication discipline
+        // among them, but no fabricated persona text - the
         // system prompt is exactly `compose`'s output over the empty persona.
         let sys = driver.system_prompt_for("a").expect("agent a was spawned");
         assert_eq!(
@@ -29097,11 +29099,11 @@ mod tests {
 
     #[test]
     fn operator_instructions_reach_every_spawned_agent_after_every_built_in() {
-        // The operator layer on `cfg.instructions` is composed into EVERY spawned agent's
-        // system prompt - the implementer and all three review tiers - after the persona and
-        // every built-in entry: the law, the working discipline and the communication
-        // discipline. An agent with no persona still carries the built-in engineering
-        // principles.
+        // The operator layer on `cfg.instructions`, here one file named as no built-in, is
+        // composed into EVERY spawned agent's system prompt - the implementer and all three
+        // review tiers - after the persona and every built-in entry, none replaced or switched
+        // off: the law, the working discipline and the communication discipline. An agent with
+        // no persona still carries the built-in engineering principles.
         let mut cfg = Config {
             instructions: vec![Instruction {
                 name: "10-house".into(),
@@ -34341,7 +34343,7 @@ mod tests {
         // Spec 103, criterion 6 (A REVIEW ROUND LEAVES THE TREE IT REVIEWED): the reviewer
         // discipline tells the adjudicator never to write the unit's worktree, and the
         // working-discipline body's `## When you review` section (reaching it through
-        // `compose`) has it reproduce any suspected failure in its OWN scratch worktree - so
+        // `compose`, which this config's empty operator layer leaves in force) has it reproduce any suspected failure in its OWN scratch worktree - so
         // this drives it to break that protocol and drop an UNTRACKED file into the unit's
         // own worktree as its side effect while still approving, then proves the residue
         // never reaches integration: it is named in a lesson, the worktree is restored to the
@@ -37952,8 +37954,9 @@ mod tests {
     /// Spec 120's THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: the reviewer discipline holds
     /// exactly what the harness enforces or provides - the two worktree sentences
     /// `guard_review_round_tree` enforces and the build-cache sentence - so every review tier's task
-    /// prompt carries it once and none of the review method, which reaches the tier through its
-    /// system prompt's working-discipline body, each sentence once.
+    /// prompt carries it once and none of the review method, which - no operator file replacing
+    /// or switching off the working discipline here - reaches the tier through its system
+    /// prompt's working-discipline body, each sentence once.
     #[test]
     fn every_reviewer_prompt_carries_only_the_contract_and_its_system_prompt_the_method() {
         assert_eq!(

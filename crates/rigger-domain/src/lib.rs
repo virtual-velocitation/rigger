@@ -31,8 +31,9 @@ pub mod grounder;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod ingest;
 /// Instruction injection: the built-in engineering law, working discipline and communication
-/// discipline and the operator's `.rigger/instructions/*.md` layered into every spawned agent's
-/// system prompt, a built-in entry unless an operator file switches it off.
+/// discipline, each unless a same-named operator file replaces or switches it off, and every
+/// other `.rigger/instructions/*.md` file, layered into every spawned agent's system prompt; a
+/// same-named file is never layered itself.
 pub mod instructions;
 pub mod ledger;
 pub mod metrics;

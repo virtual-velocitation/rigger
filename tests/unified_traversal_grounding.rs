@@ -940,7 +940,8 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
 /// holds, so a review call site that dropped the discipline, or a core string that restated the
 /// method, reddens here; and each tier's system prompt, received through the same port, carries
 /// each review sentence `## When you review` holds exactly once, so the method the task prompt no
-/// longer carries still reaches every tier, through the working-discipline body. Spec 120's THE
+/// longer carries still reaches every tier, through the working-discipline body, which this
+/// run's empty operator layer neither replaces nor switches off. Spec 120's THE
 /// BUILT-IN LAYER NAMES NO LANGUAGE: the discipline as received spells no marker of the MARKERS
 /// rule.
 #[test]

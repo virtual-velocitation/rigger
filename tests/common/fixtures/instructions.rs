@@ -31,7 +31,8 @@ pub const WHEN_YOU_REVIEW: [&str; 3] = [
 ];
 
 /// The review `tier`'s task `prompt` carries the reviewer `discipline` exactly once and none of the
-/// review method `## When you review` holds, the method reaching the tier through its system prompt.
+/// review method `## When you review` holds, the method reaching the tier through its system prompt
+/// when no operator file replaces or switches off the working discipline.
 pub fn assert_task_prompt_carries_only_the_reviewer_contract(
     tier: &str,
     prompt: &str,

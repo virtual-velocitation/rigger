@@ -3619,8 +3619,8 @@ mod tests {
     }
 
     /// DRY: a harness-wide rule lives in the built-in instruction layer, which reaches every
-    /// spawn unless an operator file switches its entry off; no persona file or scaffold seed
-    /// carries a copy of any of its lines.
+    /// spawn unless a same-named operator file replaces or switches its entry off; no persona
+    /// file or scaffold seed carries a copy of any of its lines.
     #[test]
     fn personas_and_seeds_carry_no_copy_of_a_built_in_instruction() {
         for (at, text) in every_shipped_persona() {

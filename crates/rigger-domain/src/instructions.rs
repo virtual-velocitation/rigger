@@ -8,14 +8,13 @@
 //! ```
 //!
 //! The BUILT-IN layer ships inside the binary ([`BUILTIN`]) and reaches every agent rigger
-//! spawns anywhere, for every consumer, regardless of persona text, unless switched off; an
-//! operator file named byte for byte as a built-in entry, its body not blank, replaces that
-//! entry's body in the entry's place, and one whose body is blank switches the entry off, so
-//! neither the entry nor the file is injected ([`resolve_layers`]). The OPERATOR layer is
-//! every other `*.md` under
-//! `.rigger/instructions/`, in filename order, read by the store-gated loader in
-//! `config_store` and carried on `Config::instructions`, so this module stays pure and
-//! compiles in the `core` lane. `rigger instructions` prints the composed layers ([`render`])
+//! spawns anywhere, for every consumer, regardless of persona text, unless replaced or switched
+//! off; an operator file named byte for byte as a built-in entry, its body not blank, replaces
+//! that entry's body in the entry's place, and one whose body is blank switches the entry off,
+//! so neither the entry nor the file is injected ([`resolve_layers`]). The OPERATOR layer is
+//! every other `*.md` under `.rigger/instructions/`, in filename order, read by the store-gated
+//! loader in `config_store` and carried on `Config::instructions`, so this module stays pure
+//! and compiles in the `core` lane. `rigger instructions` prints the composed layers ([`render`])
 //! so an operator can read exactly what their agents are held to.
 
 /// One instruction section: `name` is the file stem (or the built-in id) and `body` its text.
@@ -25,8 +24,8 @@ pub struct Instruction {
     pub body: String,
 }
 
-/// The built-in layer, in the order it is injected, each entry unless an operator file switches
-/// it off ([`resolve_layers`]). The first entry is the engineering law
+/// The built-in layer, in the order it is injected, each entry unless a same-named operator file
+/// replaces or switches it off ([`resolve_layers`]). The first entry is the engineering law
 /// the project holds every change to: Clean Architecture, SOLID, DRY, KISS, YAGNI, TDD and
 /// BDD where relevant. The second is the working discipline every agent follows: one pass by
 /// excellence, a turn's end being the session's end (every job waited on inside the turn), the
@@ -414,8 +413,8 @@ mod tests {
         );
     }
 
-    /// Two built-ins switched off by a fixed two-file fixture leave the third built-in and the
-    /// operator file between them in place, under the bare heading; the review method the
+    /// Two blank same-named files switch two built-ins off and leave the third built-in and the
+    /// operator file between those files in place, under the bare heading; the review method the
     /// working discipline's `## When you review` section holds goes with it.
     #[test]
     fn two_blank_same_named_files_switch_two_built_ins_off_and_leave_the_operator_layer() {
@@ -964,9 +963,9 @@ mod tests {
     fn compose_places_the_working_discipline_after_the_law_and_before_the_operator_layer() {
         let sys = compose("P.", &[op("10-house", "House rule.")]);
         let law = sys.find("## engineering-principles").expect("the law");
-        let discipline = sys
-            .find("## working-discipline")
-            .expect("the working discipline reaches every spawn");
+        let discipline = sys.find("## working-discipline").expect(
+            "the working discipline reaches this spawn, which no operator file switches off",
+        );
         let house = sys.find("## 10-house").expect("the operator file");
         assert!(
             law < discipline && discipline < house,
