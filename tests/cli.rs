@@ -27765,12 +27765,13 @@ fn instructions_on_a_fresh_project_prints_the_built_in_law_and_no_operator_layer
 #[test]
 fn instructions_prints_an_operator_file_after_the_built_in_law() {
     let proj = temp_project();
-    let dir = common::fixtures::instructions_dir(proj.path());
-    std::fs::write(
-        dir.join("10-house.md"),
-        "House rule: name every error path.\n",
-    )
-    .unwrap();
+    common::cli::write_operator_layer(
+        proj.path(),
+        &[common::fixtures::op(
+            "10-house",
+            "House rule: name every error path.\n",
+        )],
+    );
     let (out, err, ok) = run_rigger(proj.path(), &["instructions"]);
     assert!(ok, "`rigger instructions` must succeed; stderr:\n{err}");
     let builtin = out
@@ -27910,23 +27911,22 @@ fn run_spawns_the_worker_with_the_composed_system_prompt_and_nothing_appended() 
 #[cfg(unix)]
 #[test]
 fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_in() {
-    use common::cli::run_capturing_system_prompt;
+    use common::cli::{run_capturing_system_prompt, write_operator_layer};
     use common::fixtures::{
-        builtin_section, expected_composed_prompt, instructions_dir, persona,
-        COMMUNICATION_NEAR_NAME,
+        builtin_section, expected_composed_prompt, op, persona, COMMUNICATION_NEAR_NAME,
     };
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &LIVENESS_WORKFLOW);
     let house = "Post each decision in the team channel.\n\n- One line, never batched.\n";
     let near = "A near name replaces nothing.\n";
-    let instructions = instructions_dir(root);
-    std::fs::write(instructions.join("communication.md"), house).unwrap();
-    std::fs::write(
-        instructions.join(format!("{COMMUNICATION_NEAR_NAME}.md")),
-        near,
-    )
-    .unwrap();
+    write_operator_layer(
+        root,
+        &[
+            op("communication", house),
+            op(COMMUNICATION_NEAR_NAME, near),
+        ],
+    );
     let system = run_capturing_system_prompt(root, &["run"]);
     assert_eq!(
         system,
@@ -27952,12 +27952,12 @@ fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_i
 #[cfg(unix)]
 #[test]
 fn run_spawns_the_worker_with_no_section_for_a_built_in_an_empty_same_named_file_switches_off() {
-    use common::cli::run_capturing_system_prompt;
-    use common::fixtures::{builtin_section, expected_composed_prompt, instructions_dir, persona};
+    use common::cli::{run_capturing_system_prompt, write_operator_layer};
+    use common::fixtures::{builtin_section, expected_composed_prompt, op, persona};
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &LIVENESS_WORKFLOW);
-    std::fs::File::create(instructions_dir(root).join("working-discipline.md")).unwrap();
+    write_operator_layer(root, &[op("working-discipline", Default::default())]);
     let system = run_capturing_system_prompt(root, &["run"]);
     assert_eq!(
         system,
@@ -27997,9 +27997,13 @@ fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
 fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path() {
     let proj = temp_store_project();
     let root = proj.path();
-    let dir = common::fixtures::instructions_dir(root);
-    std::fs::write(dir.join("10-house.md"), "House rule.").unwrap();
-    std::fs::write(dir.join("20-team.md"), "Team rule.").unwrap();
+    common::cli::write_operator_layer(
+        root,
+        &[
+            common::fixtures::op("10-house", "House rule."),
+            common::fixtures::op("20-team", "Team rule."),
+        ],
+    );
     let (out, err, ok) = run_rigger(root, &["prime"]);
     assert!(ok, "`rigger prime` must succeed; stderr:\n{err}");
     let mut lines = out.lines();
