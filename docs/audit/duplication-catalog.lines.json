@@ -934,8 +934,8 @@
       },
       {
         "file": "tests/common/repo.rs",
-        "start_line": 378,
-        "end_line": 378
+        "start_line": 384,
+        "end_line": 384
       },
       {
         "file": "tests/common/served.rs",
@@ -2004,8 +2004,8 @@
       },
       {
         "file": "tests/boundary_audit.rs",
-        "start_line": 835,
-        "end_line": 835
+        "start_line": 840,
+        "end_line": 840
       },
       {
         "file": "tests/canary_model_drift_periphery.rs",

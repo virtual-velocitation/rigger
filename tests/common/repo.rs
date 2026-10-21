@@ -8,6 +8,12 @@ pub fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// The committed simplification audit report, relative to [`repo_root`].
+pub const AUDIT_REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
+
+/// The committed duplication catalog, relative to [`repo_root`].
+pub const DUPLICATION_CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
+
 /// The text of the checked-in file at `rel` (relative to [`repo_root`]).
 pub fn repo_text(rel: &str) -> String {
     super::fixtures::read_text(&repo_root().join(rel))

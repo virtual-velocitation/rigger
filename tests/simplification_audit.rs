@@ -1817,7 +1817,7 @@ fn render_section_1(entries: &[MapEntry], lines: &[MapEntryLines]) -> String {
 // REPORT ASSEMBLY (placeholders for the sections this unit does NOT own)
 // =========================================================================================
 
-const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
+use common::repo::AUDIT_REPORT_PATH as REPORT_PATH;
 const MAP_PATH: &str = "docs/audit/responsibility-map.json";
 
 /// Spec 90 criterion 2: the UNGUARDED sibling carrying [`MAP_PATH`]'s line spans (see
@@ -1976,7 +1976,7 @@ fn prefix_len(n: usize) -> usize {
     n - min_overlap.min(n) + 1
 }
 
-const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
+use common::repo::DUPLICATION_CATALOG_PATH as CATALOG_PATH;
 
 /// Spec 90 criterion 2: the UNGUARDED sibling carrying [`CATALOG_PATH`]'s line spans, moved out
 /// of the guarded file so a pin bump or a sibling unit's own insertion elsewhere never perturbs

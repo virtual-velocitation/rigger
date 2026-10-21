@@ -274,7 +274,7 @@ fn the_committed_map_and_its_lines_sibling_are_position_joined() {
     }
 }
 
-const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
+use common::repo::AUDIT_REPORT_PATH as REPORT_PATH;
 
 /// Section 1's per-entry citations (`render_section_1`'s own shared template for both the
 /// "Proposed module tree" and "Unassigned" lists: `` `{file}:{start}-{end}` `{name}` - {reason}

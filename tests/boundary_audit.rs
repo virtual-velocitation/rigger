@@ -91,10 +91,15 @@ fn quoted(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The package manifest of the crate or workspace at `dir`.
+fn manifest_at(dir: &Path) -> PathBuf {
+    dir.join("Cargo.toml")
+}
+
 /// The member directories `[workspace] members` names under `root`, a trailing `/*` expanded
 /// to every child directory holding a `Cargo.toml`.
 fn member_dirs(root: &Path) -> Vec<PathBuf> {
-    let manifest = fs::read_to_string(root.join("Cargo.toml")).expect("read the root manifest");
+    let manifest = common::fixtures::read_text(&manifest_at(root));
     let table = table_lines(&manifest, "workspace").join("\n");
     let Some(start) = table.find("members") else {
         return vec![root.to_path_buf()];
@@ -109,7 +114,7 @@ fn member_dirs(root: &Path) -> Vec<PathBuf> {
                     .flatten()
                     .flatten()
                     .map(|e| e.path())
-                    .filter(|p| p.join("Cargo.toml").is_file())
+                    .filter(|p| manifest_at(p).is_file())
                     .collect();
                 children.sort();
                 dirs.extend(children);
@@ -131,7 +136,7 @@ fn is_dependency_table(header: &str) -> bool {
 /// The package name and every dependency key (renames resolved through `package = "..."`) the
 /// manifest at `dir` declares in its normal and build dependency tables.
 fn read_member(dir: &Path) -> (String, Vec<String>) {
-    let manifest = common::fixtures::read_text(&dir.join("Cargo.toml"));
+    let manifest = common::fixtures::read_text(&manifest_at(dir));
     let name = table_lines(&manifest, "package")
         .iter()
         .find(|l| l.trim_start().starts_with("name"))

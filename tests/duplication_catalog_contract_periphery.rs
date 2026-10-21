@@ -86,7 +86,7 @@ struct ConsumedDupCluster {
     disposition: Option<String>,
 }
 
-const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
+use common::repo::DUPLICATION_CATALOG_PATH as CATALOG_PATH;
 /// The documented contract a downstream consumer decodes [`CATALOG_PATH`] as.
 const CATALOG_CONTRACT: &str =
     "DupCluster contract (id/classification/sites/proposed_home/note, sites as file/name/content_hash)";
@@ -348,7 +348,7 @@ fn the_committed_catalog_and_its_lines_sibling_are_position_joined_by_id_and_sit
     }
 }
 
-const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
+use common::repo::AUDIT_REPORT_PATH as REPORT_PATH;
 
 /// One cited site's `(file, start_line, end_line)`.
 type CitedSite = (String, usize, usize);

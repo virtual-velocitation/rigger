@@ -610,7 +610,7 @@ rigger::test_cases! {
 // stronger, already-covered check than a raw-key scan would add on its own.
 // -----------------------------------------------------------------------------------------
 
-const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
+use common::repo::AUDIT_REPORT_PATH as REPORT_PATH;
 
 /// Section 4.3's per-candidate citation shape (`render_dead_code_full_list`'s own template:
 /// `` - **{name}** (`{file}:{line}`, ... ``), extracted from the section between its own "### 4.3"

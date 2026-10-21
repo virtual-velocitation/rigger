@@ -57,8 +57,8 @@ use std::collections::HashMap;
 
 use regex::Regex;
 
-const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
-const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
+use common::repo::AUDIT_REPORT_PATH as REPORT_PATH;
+use common::repo::DUPLICATION_CATALOG_PATH as CATALOG_PATH;
 
 fn read_report() -> String {
     common::repo::repo_text(REPORT_PATH)
