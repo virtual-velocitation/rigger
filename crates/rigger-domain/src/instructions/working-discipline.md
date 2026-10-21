@@ -263,6 +263,16 @@ tool that searches them.
   no job you started is still running and `git status --porcelain` is empty when you end your
   turn.
 
+## When you review
+
+Never re-run the gate battery, or any gate the gate evidence shows green on the tree under review:
+the gates are the instrument that grades the work, and a review judges what they cannot see. To
+reproduce a specific suspicion - one named test, a reversion probe, a single targeted test run
+through the project's test command - create your own throwaway scratch worktree and run it there.
+Never run a gate's command as the gate runs it, directly or through a verify helper: the gate
+evidence in your prompt is that gate's verdict, and a reviewer's run only repeats it at review
+cost; the one targeted reproduction above is not a gate run.
+
 ## Fan out the mechanical work
 
 You reason; subagents look things up in the knowledge graph and check things. The graph is the
@@ -282,8 +292,7 @@ helpers rigger scaffolds into `.claude/agents/`:
 - `verify` (Sonnet, with a shell): ONE instance for a build, a test run or a
   reproduction. They compete for the machine's CPU, memory and disk, so a second at once only
   slows both; the machine-wide build slots belong to gate commands alone. Wait for it; do not
-  start a second. A reviewer never sends it the gate battery: the gate evidence in its prompt
-  already proves what the gates ran.
+  start a second.
 
 Keep at most 16 subagents in flight. Fan out anywhere the work is enumerable; keep every
 judgment call - decomposition, design, what a test must prove, a verdict - in your own turn.

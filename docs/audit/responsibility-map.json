@@ -125,7 +125,7 @@
     "is_test": false,
     "proposed_module": "conductor::gate",
     "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "4e4e6bd487e2ac17"
+    "content_hash": "8e85b7e629a290c6"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5973,7 +5973,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "630aba177223e021"
+    "content_hash": "8b03e18d431fac25"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6501,7 +6501,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "8a252d3827bf7691"
+    "content_hash": "415cd6039cca4f48"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6525,7 +6525,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "807286ae10349d94"
+    "content_hash": "08413bba78d8d310"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6541,7 +6541,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b0ba9ef5a594a316"
+    "content_hash": "b745bc753f056a13"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6549,15 +6549,15 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a4c11c14231e14d7"
+    "content_hash": "46cc472acfa2937e"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "every_reviewer_prompt_leaves_the_gates_and_their_tools_to_the_gates",
+    "name": "every_reviewer_prompt_carries_only_the_contract_and_its_system_prompt_the_method",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "bf3fcc3b7c0e2d43"
+    "content_hash": "3dac20253a817cda"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

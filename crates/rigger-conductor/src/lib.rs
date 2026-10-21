@@ -156,7 +156,7 @@ mod ingest_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/instructions.rs"]
-mod instruction_fixtures;
+mod instructions_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/plan_critique.rs"]
@@ -202,7 +202,7 @@ mod test_support {
     #[cfg(feature = "symbols")]
     pub use crate::host_fixtures::*;
     pub use crate::ingest_fixtures::*;
-    pub use crate::instruction_fixtures::*;
+    pub use crate::instructions_fixtures::*;
     #[cfg(feature = "symbols")]
     pub use crate::ledger_fixtures::*;
     pub use crate::plan_critique_fixtures::*;
