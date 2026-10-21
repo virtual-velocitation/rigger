@@ -292,11 +292,7 @@ mod tests {
     /// The prompt `compose("P.", ..)` must return: the persona, the bare [`HEADING`], then each
     /// named section in order, its body with trailing whitespace trimmed.
     fn expected_prompt(sections: &[(&str, &str)]) -> String {
-        let mut out = format!("P.\n\n{HEADING}\n");
-        for (name, body) in sections {
-            out.push_str(&format!("\n## {name}\n{}\n", body.trim_end()));
-        }
-        out
+        crate::test_support::expected_composed_prompt("P.", sections)
     }
 
     /// Spec 120, criterion 2: an operator file named as a built-in byte for byte replaces that

@@ -360,14 +360,9 @@ mod tests {
     use super::*;
     use crate::test_support::agent as agent_def;
     use crate::test_support::agent_with_prompt;
+    use crate::test_support::instructions_dir;
 
     // ---- instruction injection: the operator layer loader ----
-
-    fn instructions_dir(root: &Path) -> std::path::PathBuf {
-        let d = root.join(".rigger").join("instructions");
-        std::fs::create_dir_all(&d).expect("create .rigger/instructions");
-        d
-    }
 
     #[test]
     fn load_instructions_is_empty_when_the_directory_is_absent() {

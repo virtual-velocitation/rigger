@@ -3,7 +3,8 @@
 //! body's section headings and the review method its `## When you review` section holds; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
 //! and their checked-in sources, each entry's body by name, the layers `rigger instructions`
-//! prints, and the system prompt a spawn with no operator layer is composed to.
+//! prints, the persona an agent definition parses to, the system prompt a spawn with no operator
+//! layer is composed to, and the composed prompt spelled section by section.
 
 /// The working-discipline body's hand-over section heading.
 pub const HAND_OVER_HEADING: &str = "## Hand over a tree the gates only confirm";
@@ -92,15 +93,29 @@ pub fn builtin_body(name: &str) -> &'static str {
     }
 }
 
+/// The persona the agent definition `agent_file` parses to: the markdown body after its front
+/// matter.
+pub fn persona(agent_file: &str) -> String {
+    rigger::config::parse_agent(agent_file.as_bytes())
+        .unwrap()
+        .prompt
+}
+
 /// The system prompt a spawn of the agent defined by `agent_file` receives with no operator
 /// layer: `compose`'s output over the persona the definition parses to.
 pub fn composed_system_prompt(agent_file: &str) -> String {
-    rigger::instructions::compose(
-        &rigger::config::parse_agent(agent_file.as_bytes())
-            .unwrap()
-            .prompt,
-        &[],
-    )
+    rigger::instructions::compose(&persona(agent_file), &[])
+}
+
+/// The system prompt `compose` must return over `persona`, spelled without calling it: the
+/// persona, the bare heading, then each named section in order, its body with trailing
+/// whitespace trimmed.
+pub fn expected_composed_prompt(persona: &str, sections: &[(&str, &str)]) -> String {
+    let mut out = format!("{persona}\n\n{}\n", rigger::instructions::HEADING);
+    for (name, body) in sections {
+        out.push_str(&format!("\n## {name}\n{}\n", body.trim_end()));
+    }
+    out
 }
 
 /// The built-in layer of `out`, what `rigger instructions` printed: every line before the

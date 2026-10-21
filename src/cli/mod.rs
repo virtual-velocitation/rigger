@@ -8598,8 +8598,7 @@ mod tests {
         // The operator instruction layer is part of the definition: adding a file changes the
         // hash, editing it changes it again, and trailing-whitespace noise does not.
         let before_instructions = definition_hash(dir).unwrap();
-        let ins_dir = base.path().join(".rigger").join("instructions");
-        std::fs::create_dir_all(&ins_dir).unwrap();
+        let ins_dir = crate::test_support::instructions_dir(base.path());
         std::fs::write(ins_dir.join("10-house.md"), "House rule.\n").unwrap();
         let with_instruction = definition_hash(dir).unwrap();
         assert_ne!(

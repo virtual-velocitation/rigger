@@ -27765,8 +27765,7 @@ fn instructions_on_a_fresh_project_prints_the_built_in_law_and_no_operator_layer
 #[test]
 fn instructions_prints_an_operator_file_after_the_built_in_law() {
     let proj = temp_project();
-    let dir = proj.path().join(".rigger").join("instructions");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::fixtures::instructions_dir(proj.path());
     std::fs::write(
         dir.join("10-house.md"),
         "House rule: name every error path.\n",
@@ -27903,6 +27902,44 @@ fn run_spawns_the_worker_with_the_composed_system_prompt_and_nothing_appended() 
     assert_communication_once(&system);
 }
 
+/// Spec 120's A SAME-NAMED OPERATOR FILE REPLACES A BUILT-IN, end to end: given a project whose
+/// `.rigger/instructions/` holds `communication.md` and the near name `communication .md`, when
+/// the operator runs `rigger run`, then the worker's system prompt opens its layers under the
+/// bare heading, carries the first file's body in the communication built-in's own section in
+/// that built-in's place, and appends the near-named file after the built-ins.
+#[cfg(unix)]
+#[test]
+fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_in() {
+    use common::cli::run_capturing_system_prompt;
+    use common::fixtures::{builtin_body, expected_composed_prompt, instructions_dir, persona};
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+    let house = "Post each decision in the team channel.\n\n- One line, never batched.\n";
+    let near = "A near name replaces nothing.\n";
+    let instructions = instructions_dir(root);
+    std::fs::write(instructions.join("communication.md"), house).unwrap();
+    std::fs::write(instructions.join("communication .md"), near).unwrap();
+    let system = run_capturing_system_prompt(root, &["run"]);
+    assert_eq!(
+        system,
+        expected_composed_prompt(
+            &persona(UNISOLATED_WORKER),
+            &[
+                (
+                    "engineering-principles",
+                    builtin_body("engineering-principles")
+                ),
+                ("working-discipline", builtin_body("working-discipline")),
+                ("communication", house),
+                ("communication ", near),
+            ]
+        ),
+        "the same-named file's body stands in the communication section in its place, the \
+         near name appends after the built-ins, and the heading is bare"
+    );
+}
+
 /// `rigger prime` opens with the instructions in force on the absent-db path, counting the
 /// operator files.
 #[test]
@@ -27926,8 +27963,7 @@ fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
 fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path() {
     let proj = temp_store_project();
     let root = proj.path();
-    let dir = root.join(".rigger").join("instructions");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::fixtures::instructions_dir(root);
     std::fs::write(dir.join("10-house.md"), "House rule.").unwrap();
     std::fs::write(dir.join("20-team.md"), "Team rule.").unwrap();
     let (out, err, ok) = run_rigger(root, &["prime"]);

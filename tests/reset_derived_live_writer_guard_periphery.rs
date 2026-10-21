@@ -630,9 +630,7 @@ fn reset_from_with_a_fresh_marker_under(
 
 /// `root`'s subdirectory `sub`, created, for a command run from below the store's owning root.
 fn subdirectory_of(root: &Path) -> PathBuf {
-    let sub = root.join("sub");
-    std::fs::create_dir_all(&sub).expect("create the subdirectory the command runs from");
-    sub
+    common::fixtures::created_dir(root.join("sub"))
 }
 
 /// With no `defaults.workdir` configured, a run stamps its markers under the store owner's

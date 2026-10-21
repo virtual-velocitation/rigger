@@ -1,6 +1,19 @@
-//! Workflow-configuration fixtures: agents, review panels and gates.
+//! Workflow-configuration fixtures: agents, review panels and gates, and the project
+//! directories a test creates, the operator instruction directory among them.
 
 use rigger::config::{AgentDef, Config, Gate, ReviewPanel, Stage};
+use std::path::{Path, PathBuf};
+
+/// `dir`, created with its parents.
+pub fn created_dir(dir: PathBuf) -> PathBuf {
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
+    dir
+}
+
+/// `root`'s operator instruction directory, `.rigger/instructions`, created.
+pub fn instructions_dir(root: &Path) -> PathBuf {
+    created_dir(root.join(".rigger").join("instructions"))
+}
 
 /// An agent definition carrying only its `id`.
 pub fn agent(id: &str) -> AgentDef {
