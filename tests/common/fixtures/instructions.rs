@@ -99,10 +99,11 @@ pub fn builtin_body(name: &str) -> &'static str {
 /// nothing and appends as an operator file.
 pub const COMMUNICATION_NEAR_NAME: &str = "communication ";
 
-/// Operator file bodies that are blank once one leading U+FEFF is stripped and Unicode
-/// White_Space trimmed, so a same-named file holding one switches its built-in off: empty, a lone
-/// byte order mark, ASCII whitespace, and a byte order mark before an em space.
-pub const BLANK_BODIES: [&str; 4] = ["", "\u{feff}", " \t\n", "\u{feff}\u{2003}\n"];
+/// Operator file bodies other than the empty one that are blank once one leading U+FEFF is
+/// stripped and Unicode White_Space trimmed, so a same-named file holding one switches its
+/// built-in off: a lone byte order mark, ASCII whitespace, and a byte order mark before an em
+/// space.
+pub const NON_EMPTY_BLANK_BODIES: [&str; 3] = ["\u{feff}", " \t\n", "\u{feff}\u{2003}\n"];
 
 /// The persona the agent definition `agent_file` parses to: the markdown body after its front
 /// matter.

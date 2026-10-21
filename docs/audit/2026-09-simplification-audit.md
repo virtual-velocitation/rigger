@@ -2898,14 +2898,14 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/cli.rs:1431-1431` `".rigger"`
 - `tests/common/fixtures/config.rs:115-115` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/fixtures/extraction_tree.rs:76-76` `".rigger/workflow.yml"`
-- `tests/common/fixtures/instructions.rs:140-140` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
-- `tests/common/fixtures/instructions.rs:180-180` `"{}\n\nBuilt-in:\n\n## engineering-principles (built-in)\n{}\n\n## working-discipline \
+- `tests/common/fixtures/instructions.rs:141-141` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
+- `tests/common/fixtures/instructions.rs:181-181` `"{}\n\nBuilt-in:\n\n## engineering-principles (built-in)\n{}\n\n## working-discipline \
          (switched off by .rigger/instructions/working-discipline.md)\n\n## communication \
          (replaced by .rigger/instructions/communication.md)\n{REPLACING_COMMUNICATION_BODY}\n\
          {RENDERED_OPERATOR_HEADING}\n## 30-style\n{UNSHADOWING_STYLE_BODY}\n"`
-- `tests/common/fixtures/instructions.rs:191-191` `"warning: built-in instruction working-discipline is switched off by \
+- `tests/common/fixtures/instructions.rs:192-192` `"warning: built-in instruction working-discipline is switched off by \
      .rigger/instructions/working-discipline.md"`
-- `tests/common/fixtures/instructions.rs:193-193` `"warning: built-in instruction communication is replaced by \
+- `tests/common/fixtures/instructions.rs:194-194` `"warning: built-in instruction communication is replaced by \
      .rigger/instructions/communication.md"`
 - `tests/common/layer_cli.rs:22-22` `".rigger"`
 - `tests/common/layer_cli.rs:28-28` `".rigger"`

@@ -28043,11 +28043,11 @@ fn instructions_validate_and_prime_report_each_built_in_s_state() {
 #[test]
 fn instructions_validate_and_prime_report_a_blank_same_named_file_as_switching_its_built_in_off() {
     use common::cli::{assert_reporters_name_the_shadowing_layer_states, write_operator_layer};
-    use common::fixtures::{shadowing_operator_layer, BLANK_BODIES};
+    use common::fixtures::{shadowing_operator_layer, NON_EMPTY_BLANK_BODIES};
     let proj = temp_project();
     let root = proj.path();
     write_workflow_fixture(root, &LIVENESS_WORKFLOW);
-    for blank in &BLANK_BODIES[1..] {
+    for blank in NON_EMPTY_BLANK_BODIES {
         let mut layer = shadowing_operator_layer();
         layer[2].body = blank.to_string();
         write_operator_layer(root, &layer);

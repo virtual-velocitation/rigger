@@ -243,8 +243,9 @@ mod tests {
     use super::*;
     use crate::test_support::{
         assert_carries_the_review_method, builtin_body, builtin_section, op,
-        rendered_shadowing_layer, shadowing_operator_layer, BLANK_BODIES, COMMUNICATION_NEAR_NAME,
-        RENDERED_OPERATOR_HEADING, REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
+        rendered_shadowing_layer, shadowing_operator_layer, COMMUNICATION_NEAR_NAME,
+        NON_EMPTY_BLANK_BODIES, RENDERED_OPERATOR_HEADING, REPLACING_COMMUNICATION_BODY,
+        SHADOWING_LAYER_ADVISORIES,
     };
 
     #[test]
@@ -449,7 +450,7 @@ mod tests {
     /// section nor the file's is injected, and every other section is unchanged.
     #[test]
     fn a_blank_same_named_file_switches_its_built_in_off() {
-        for blank in BLANK_BODIES {
+        for blank in std::iter::once(Default::default()).chain(NON_EMPTY_BLANK_BODIES) {
             let sys = compose("P.", &[op("engineering-principles", blank)]);
             assert_eq!(
                 sys,
