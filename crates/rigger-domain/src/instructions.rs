@@ -250,8 +250,9 @@ mod tests {
 
     #[test]
     fn compose_places_persona_then_builtin_then_operator_in_order() {
-        let sys = compose("You are the persona.", &house_and_team_operator_layer());
-        let persona = sys.find("You are the persona.").expect("persona leads");
+        let persona = "You are the persona.";
+        let sys = compose(persona, &house_and_team_operator_layer());
+        let persona = sys.find(persona).expect("persona leads");
         let heading = sys
             .find(HEADING)
             .expect("the instructions heading follows the persona");
@@ -365,10 +366,13 @@ mod tests {
         builtin_body("working-discipline")
     }
 
-    /// The prompt `compose("P.", ..)` must return: the persona, the bare [`HEADING`], then each
+    /// The persona the instruction layer's `compose` tests compose over.
+    const PERSONA: &str = "P.";
+
+    /// The prompt `compose(PERSONA, ..)` must return: the persona, the bare [`HEADING`], then each
     /// named section in order, its body with trailing whitespace trimmed.
     fn expected_prompt(sections: &[(&str, &str)]) -> String {
-        crate::test_support::expected_composed_prompt("P.", sections)
+        crate::test_support::expected_composed_prompt(PERSONA, sections)
     }
 
     /// Spec 120, criterion 2: an operator file named as a built-in byte for byte replaces that
@@ -377,7 +381,7 @@ mod tests {
     #[test]
     fn a_same_named_operator_file_replaces_the_built_in_body_in_place_under_the_bare_heading() {
         let body = "Our team posts every decision in the run channel.\n- One line each.";
-        let sys = compose("P.", &[op("communication", body)]);
+        let sys = compose(PERSONA, &[op("communication", body)]);
         assert_eq!(
             sys,
             expected_prompt(&[
@@ -405,7 +409,7 @@ mod tests {
                 "\u{feff}Team discipline.",
             ),
         ] {
-            let sys = compose("P.", &[op("working-discipline", file_body)]);
+            let sys = compose(PERSONA, &[op("working-discipline", file_body)]);
             assert_eq!(
                 sys,
                 expected_prompt(&[
@@ -423,7 +427,7 @@ mod tests {
     #[test]
     fn a_near_name_shadows_nothing_and_appends_after_the_built_ins() {
         let sys = compose(
-            "P.",
+            PERSONA,
             &[
                 op("Communication", "Case rule."),
                 op(COMMUNICATION_NEAR_NAME, "Space rule."),
@@ -448,7 +452,7 @@ mod tests {
     #[test]
     fn a_blank_same_named_file_switches_its_built_in_off() {
         for blank in std::iter::once(Default::default()).chain(NON_EMPTY_BLANK_BODIES) {
-            let sys = compose("P.", &[op("engineering-principles", blank)]);
+            let sys = compose(PERSONA, &[op("engineering-principles", blank)]);
             assert_eq!(
                 sys,
                 expected_prompt(&[
@@ -464,7 +468,7 @@ mod tests {
     /// second U+FEFF, not blank, so it replaces the built-in rather than switching it off.
     #[test]
     fn a_body_of_two_byte_order_marks_replaces_rather_than_switches_off() {
-        let sys = compose("P.", &[op("engineering-principles", "\u{feff}\u{feff}")]);
+        let sys = compose(PERSONA, &[op("engineering-principles", "\u{feff}\u{feff}")]);
         assert_eq!(
             sys,
             expected_prompt(&[
@@ -482,7 +486,7 @@ mod tests {
     #[test]
     fn two_blank_same_named_files_switch_two_built_ins_off_and_leave_the_operator_layer() {
         let sys = compose(
-            "P.",
+            PERSONA,
             &[
                 op("communication", "\u{3000}"),
                 op("40-ops", "Ops rule."),
@@ -505,7 +509,7 @@ mod tests {
     #[test]
     fn the_heading_stays_when_every_built_in_is_switched_off() {
         let sys = compose(
-            "P.",
+            PERSONA,
             &[
                 op("engineering-principles", "\u{a0}"),
                 op("working-discipline", "\u{feff} "),
@@ -1024,7 +1028,7 @@ mod tests {
 
     #[test]
     fn compose_places_the_working_discipline_after_the_law_and_before_the_operator_layer() {
-        let sys = compose("P.", &house_and_team_operator_layer()[..1]);
+        let sys = compose(PERSONA, &house_and_team_operator_layer()[..1]);
         let law = sys.find("## engineering-principles").expect("the law");
         let discipline = sys.find("## working-discipline").expect(
             "the working discipline reaches this spawn, which no operator file switches off",
