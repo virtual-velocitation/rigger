@@ -1415,10 +1415,14 @@ fn instructions_in_force_line(operator: &[instructions::Instruction]) -> String 
     let in_force = layers
         .builtins
         .iter()
-        .filter_map(|layer| match layer.state {
-            instructions::LayerState::BuiltIn(_) => Some(layer.name.to_string()),
-            instructions::LayerState::Replaced(_) => Some(format!("{} (replaced)", layer.name)),
-            instructions::LayerState::SwitchedOff => None,
+        .filter_map(|layer| {
+            layer
+                .state
+                .in_force()
+                .map(|_| match layer.state.shadow_verb() {
+                    Some(verb) => format!("{} ({verb})", layer.name),
+                    None => layer.name.to_string(),
+                })
         })
         .collect::<Vec<_>>();
     let builtin = if in_force.is_empty() {

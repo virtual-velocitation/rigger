@@ -71,6 +71,27 @@ pub enum LayerState<'a> {
     SwitchedOff,
 }
 
+impl<'a> LayerState<'a> {
+    /// The body in force in the entry's place: the shipped body ([`LayerState::BuiltIn`]), the
+    /// operator file's ([`LayerState::Replaced`]), or `None` for a switched-off entry.
+    pub fn in_force(self) -> Option<&'a str> {
+        match self {
+            LayerState::BuiltIn(body) | LayerState::Replaced(body) => Some(body),
+            LayerState::SwitchedOff => None,
+        }
+    }
+
+    /// How a same-named operator file shadows the entry, as the reports word it: `replaced`,
+    /// `switched off`, or `None` when no operator file shadows it.
+    pub fn shadow_verb(self) -> Option<&'static str> {
+        match self {
+            LayerState::BuiltIn(_) => None,
+            LayerState::Replaced(_) => Some("replaced"),
+            LayerState::SwitchedOff => Some("switched off"),
+        }
+    }
+}
+
 /// One built-in entry, in [`BUILTIN`] order, with the state the operator layer left it in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BuiltInLayer<'a> {
@@ -133,11 +154,8 @@ pub fn compose(persona: &str, operator: &[Instruction]) -> String {
     out.push_str(HEADING);
     out.push('\n');
     for layer in &layers.builtins {
-        match layer.state {
-            LayerState::BuiltIn(body) | LayerState::Replaced(body) => {
-                push_section(&mut out, layer.name, body)
-            }
-            LayerState::SwitchedOff => {}
+        if let Some(body) = layer.state.in_force() {
+            push_section(&mut out, layer.name, body);
         }
     }
     for ins in layers.operator {
@@ -159,11 +177,9 @@ pub fn render(operator: &[Instruction]) -> String {
     for layer in &layers.builtins {
         let label = shadowed_by(layer).unwrap_or_else(|| "built-in".to_string());
         let heading = format!("{} ({label})", layer.name);
-        match layer.state {
-            LayerState::BuiltIn(body) | LayerState::Replaced(body) => {
-                push_section(&mut out, &heading, body)
-            }
-            LayerState::SwitchedOff => push_heading(&mut out, &heading),
+        match layer.state.in_force() {
+            Some(body) => push_section(&mut out, &heading, body),
+            None => push_heading(&mut out, &heading),
         }
     }
     out.push_str(&format!(
@@ -198,15 +214,10 @@ pub fn shadow_advisories(operator: &[Instruction]) -> Vec<String> {
 /// What shadows `layer`: `replaced by <file>` or `switched off by <file>`, the file being the
 /// operator file named as the built-in, or `None` for a built-in no operator file shadows.
 fn shadowed_by(layer: &BuiltInLayer) -> Option<String> {
-    let verb = match layer.state {
-        LayerState::BuiltIn(_) => return None,
-        LayerState::Replaced(_) => "replaced",
-        LayerState::SwitchedOff => "switched off",
-    };
-    Some(format!(
-        "{verb} by {}",
-        operator_path(&format!("{}.md", layer.name))
-    ))
+    layer
+        .state
+        .shadow_verb()
+        .map(|verb| format!("{verb} by {}", operator_path(&format!("{}.md", layer.name))))
 }
 
 /// `file` under the operator layer's directory, `.rigger/instructions`, as the reports name it.
