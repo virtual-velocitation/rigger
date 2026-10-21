@@ -2130,7 +2130,7 @@ mandatory sweep: .rigger-path string literals - 609 site(s), collected mechanica
              walk of the whole tree.\n"`
 - `crates/rigger-domain/src/docs.rs:1674-1674` `"the partition holding .rigger/ needs about the compacted size of the log \
                      free"`
-- `crates/rigger-domain/src/instructions.rs:139-139` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
+- `crates/rigger-domain/src/instructions.rs:140-140` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
 - `crates/rigger-gates-shell/src/gate.rs:336-336` `".rigger-cache-probe-{}"`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8401-8401` `".rigger/workflow.yml"`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8409-8409` `".rigger/workflow.yml"`
@@ -3249,7 +3249,7 @@ Proposed home: `one shared `gating_agent_ids` helper (e.g. relocated into `tests
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `crates/rigger-config-files/src/config.rs:21-38` `gating_agent_ids`
+- `crates/rigger-config-files/src/config.rs:22-39` `gating_agent_ids`
 - `crates/rigger-domain/src/config.rs:419-428` `gating_agent_ids`
 
 #### `dup-3d575d71e10f` (exact, 2 sites)
@@ -3807,7 +3807,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/instructions.rs:162-167` `op`
+- `crates/rigger-domain/src/instructions.rs:163-168` `op`
 - `crates/rigger-gates-shell/src/gate.rs:1688-1693` `unavailable`
 
 #### `dup-557d6899b868` (exact, 2 sites)

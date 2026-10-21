@@ -13,7 +13,8 @@
 //! entry's place ([`resolve_layers`]). The OPERATOR layer is every other `*.md` under
 //! `.rigger/instructions/`, in filename order, read by the store-gated loader in
 //! `config_store` and carried on `Config::instructions`, so this module stays pure and
-//! compiles in the `core` lane. `rigger instructions` prints the composed layers ([`render`]) so an operator can read exactly what their agents are held to.
+//! compiles in the `core` lane. `rigger instructions` prints the composed layers ([`render`])
+//! so an operator can read exactly what their agents are held to.
 
 /// One instruction section: `name` is the file stem (or the built-in id) and `body` its text.
 #[derive(Clone, Debug, PartialEq, Eq)]
