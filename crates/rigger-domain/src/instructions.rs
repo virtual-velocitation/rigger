@@ -219,13 +219,125 @@ mod tests {
         );
     }
 
-    /// The built-in working discipline's body.
-    fn working_discipline() -> &'static str {
+    /// The body of the built-in entry named `name`.
+    fn builtin_body(name: &str) -> &'static str {
         BUILTIN
             .iter()
-            .find(|(name, _)| *name == "working-discipline")
+            .find(|(entry, _)| *entry == name)
             .map(|(_, body)| *body)
-            .expect("the working-discipline entry is built in")
+            .unwrap_or_else(|| panic!("the {name:?} entry is built in"))
+    }
+
+    /// The built-in working discipline's body.
+    fn working_discipline() -> &'static str {
+        builtin_body("working-discipline")
+    }
+
+    /// The prompt `compose("P.", ..)` must return: the persona, the bare [`HEADING`], then each
+    /// named section in order, its body with trailing whitespace trimmed.
+    fn expected_prompt(sections: &[(&str, &str)]) -> String {
+        let mut out = format!("P.\n\n{HEADING}\n");
+        for (name, body) in sections {
+            out.push_str(&format!("\n## {name}\n{}\n", body.trim_end()));
+        }
+        out
+    }
+
+    /// Spec 120, criterion 2: an operator file named as a built-in byte for byte replaces that
+    /// built-in's body in place, under the built-in's own heading; the file never also appends,
+    /// and the layers open under the bare heading with no "(non-negotiable)" anywhere.
+    #[test]
+    fn a_same_named_operator_file_replaces_the_built_in_body_in_place_under_the_bare_heading() {
+        let body = "Our team posts every decision in the run channel.\n- One line each.";
+        let sys = compose("P.", &[op("communication", body)]);
+        assert_eq!(
+            sys,
+            expected_prompt(&[
+                (
+                    "engineering-principles",
+                    builtin_body("engineering-principles")
+                ),
+                ("working-discipline", working_discipline()),
+                ("communication", body),
+            ]),
+            "the replacing body sits byte for byte in the communication section, in the \
+             built-in's place, and is not appended again"
+        );
+        assert!(
+            !sys.contains("(non-negotiable)"),
+            "no \"(non-negotiable)\" remains anywhere in the composed prompt; got:\n{sys}"
+        );
+    }
+
+    /// A replacing body is printed with its one leading U+FEFF (a byte-order mark) stripped.
+    #[test]
+    fn a_replacing_body_is_printed_without_its_leading_byte_order_mark() {
+        let sys = compose(
+            "P.",
+            &[op("working-discipline", "\u{feff}House discipline.")],
+        );
+        assert_eq!(
+            sys,
+            expected_prompt(&[
+                (
+                    "engineering-principles",
+                    builtin_body("engineering-principles")
+                ),
+                ("working-discipline", "House discipline."),
+                ("communication", builtin_body("communication")),
+            ]),
+            "the replacing body loses its leading byte-order mark and nothing else"
+        );
+    }
+
+    /// A name that differs from a built-in's by case or a trailing space shadows nothing: the
+    /// built-in stays and the file appends after the built-ins, in the order given.
+    #[test]
+    fn a_near_name_shadows_nothing_and_appends_after_the_built_ins() {
+        let sys = compose(
+            "P.",
+            &[
+                op("Communication", "Case rule."),
+                op("communication ", "Space rule."),
+            ],
+        );
+        assert_eq!(
+            sys,
+            expected_prompt(&[
+                (
+                    "engineering-principles",
+                    builtin_body("engineering-principles")
+                ),
+                ("working-discipline", working_discipline()),
+                ("communication", builtin_body("communication")),
+                ("Communication", "Case rule."),
+                ("communication ", "Space rule."),
+            ]),
+            "a case change or a trailing space is another name, appended as an operator file"
+        );
+    }
+
+    /// A same-named file whose body is blank once one leading U+FEFF is stripped and Unicode
+    /// White_Space trimmed replaces nothing: the built-in stays and the file appends as an
+    /// operator file (spec 120 Design: so until the switch-off arm lands).
+    #[test]
+    fn a_blank_same_named_file_replaces_nothing_and_appends() {
+        for blank in ["", "\u{feff}", " \t\n", "\u{feff}\u{2003}\n"] {
+            let sys = compose("P.", &[op("engineering-principles", blank)]);
+            assert_eq!(
+                sys,
+                expected_prompt(&[
+                    (
+                        "engineering-principles",
+                        builtin_body("engineering-principles")
+                    ),
+                    ("working-discipline", working_discipline()),
+                    ("communication", builtin_body("communication")),
+                    ("engineering-principles", blank),
+                ]),
+                "the blank body {blank:?} leaves the built-in in force and appends"
+            );
+        }
     }
 
     #[test]
