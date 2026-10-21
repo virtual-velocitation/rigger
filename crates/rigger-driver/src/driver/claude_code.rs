@@ -1261,6 +1261,7 @@ mod tests {
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
+    use crate::test_support::{captured_system_prompt, PROMPT_CAPTURE_DIR};
     use std::io::Read;
 
     // ---- build_args: pure, no process ----
@@ -1845,7 +1846,7 @@ mod tests {
         let mut o = opts("u/adversary#0");
         o.system_prompt = "p".repeat(131_072 + 1);
         o.env = vec![(
-            "PROMPT_CAPTURE_DIR".to_string(),
+            PROMPT_CAPTURE_DIR.to_string(),
             capture.path().to_string_lossy().into_owned(),
         )];
 
@@ -1856,7 +1857,7 @@ mod tests {
         launch.child.wait().unwrap();
 
         assert_eq!(
-            std::fs::read_to_string(capture.path().join("system-prompt")).unwrap(),
+            captured_system_prompt(capture.path()),
             o.system_prompt,
             "the whole persona arrived through the system-prompt file"
         );

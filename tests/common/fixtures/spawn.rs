@@ -20,3 +20,13 @@ pub fn test_request(
         ..SpawnRequest::default()
     }
 }
+
+/// The environment variable naming the directory the checked-in
+/// `tests/fixtures/prompt-capture-agent.sh` copies what it was handed into.
+pub const PROMPT_CAPTURE_DIR: &str = "PROMPT_CAPTURE_DIR";
+
+/// The system prompt the prompt-capture agent copied into `capture`: the text of the file its
+/// `--system-prompt-file` argument named.
+pub fn captured_system_prompt(capture: &std::path::Path) -> String {
+    std::fs::read_to_string(capture.join("system-prompt")).unwrap()
+}

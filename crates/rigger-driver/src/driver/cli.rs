@@ -297,6 +297,8 @@ pub fn build_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::test_support::{captured_system_prompt, PROMPT_CAPTURE_DIR};
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Mutex;
@@ -643,7 +645,7 @@ thinking out loud, not json\n\
             dir: dir.to_string_lossy().into_owned(),
             system_prompt: persona.clone(),
             env: vec![(
-                "PROMPT_CAPTURE_DIR".to_string(),
+                PROMPT_CAPTURE_DIR.to_string(),
                 capture.path().to_string_lossy().into_owned(),
             )],
             ..Default::default()
@@ -669,7 +671,7 @@ thinking out loud, not json\n\
             stdin.len()
         );
         assert_eq!(
-            std::fs::read_to_string(capture.path().join("system-prompt")).unwrap(),
+            captured_system_prompt(capture.path()),
             persona,
             "the whole persona arrived through the system-prompt file"
         );
@@ -696,7 +698,7 @@ thinking out loud, not json\n\
             id: "plan/planner#0".into(),
             system_prompt: "You plan.".into(),
             env: vec![(
-                "PROMPT_CAPTURE_DIR".to_string(),
+                PROMPT_CAPTURE_DIR.to_string(),
                 capture.path().to_string_lossy().into_owned(),
             )],
             ..Default::default()
@@ -718,10 +720,7 @@ thinking out loud, not json\n\
             )
             .unwrap();
 
-        assert_eq!(
-            std::fs::read_to_string(capture.path().join("system-prompt")).unwrap(),
-            "You plan."
-        );
+        assert_eq!(captured_system_prompt(capture.path()), "You plan.");
         assert!(std::fs::read_to_string(capture.path().join("stdin"))
             .unwrap()
             .starts_with("plan it"));

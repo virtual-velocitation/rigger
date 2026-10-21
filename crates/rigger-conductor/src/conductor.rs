@@ -14185,6 +14185,7 @@ mod tests {
     use crate::test_support::run_isolated;
     use crate::test_support::temp_git_project_with_commit;
     use crate::test_support::trimmed_stdout;
+    use crate::test_support::{assert_communication_once, COMMUNICATION_SECTION};
     use crate::test_support::{
         assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
     };
@@ -14197,7 +14198,6 @@ mod tests {
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
     };
     use crate::test_support::{MergeBreakDriver, MERGE_BREAK_BASE};
-    use crate::test_support::{COMMUNICATION_SECTION, RETIRED_COMMUNICATION_HEADING};
     use std::path::Path;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
@@ -29048,15 +29048,7 @@ mod tests {
             sys.contains("You are the implementer persona."),
             "the system prompt must carry the persona; got: {sys:?}"
         );
-        assert_eq!(
-            sys.matches(COMMUNICATION_SECTION).count(),
-            1,
-            "the system prompt carries the communication section exactly once; got: {sys:?}"
-        );
-        assert!(
-            !sys.contains(RETIRED_COMMUNICATION_HEADING),
-            "the retired communication heading is gone from the system prompt; got: {sys:?}"
-        );
+        assert_communication_once(&sys);
     }
 
     #[test]

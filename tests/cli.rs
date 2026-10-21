@@ -27785,8 +27785,8 @@ fn instructions_prints_a_built_in_layer_that_names_no_language() {
 #[test]
 fn instructions_prints_the_communication_discipline_as_the_last_built_in() {
     use common::fixtures::{
-        builtin_instruction_source, printed_built_in_layer, COMMUNICATION_SECTION,
-        RETIRED_COMMUNICATION_HEADING,
+        assert_communication_once, builtin_instruction_source, printed_built_in_layer,
+        COMMUNICATION_SECTION,
     };
     let proj = temp_project();
     let out = run_rigger_ok(proj.path(), &["instructions"]);
@@ -27799,15 +27799,7 @@ fn instructions_prints_the_communication_discipline_as_the_last_built_in() {
         "the built-in layer closes with the communication section and its source's text; \
          got:\n{out}"
     );
-    assert_eq!(
-        out.matches(COMMUNICATION_SECTION).count(),
-        1,
-        "the communication section is printed once; got:\n{out}"
-    );
-    assert!(
-        !out.contains(RETIRED_COMMUNICATION_HEADING),
-        "the retired communication heading is printed nowhere; got:\n{out}"
-    );
+    assert_communication_once(&out);
 }
 
 /// Spec 120, criterion 14: the handbook's built-in entry list is the built-in layer - one
@@ -27858,7 +27850,8 @@ fn the_handbook_lists_every_built_in_entry_in_order_with_its_source() {
 #[test]
 fn run_spawns_the_worker_with_the_composed_system_prompt_and_nothing_appended() {
     use common::fixtures::{
-        composed_system_prompt, COMMUNICATION_SECTION, RETIRED_COMMUNICATION_HEADING,
+        assert_communication_once, captured_system_prompt, composed_system_prompt,
+        PROMPT_CAPTURE_DIR,
     };
     let dir = temp_git_project_with_commit();
     let root = dir.path();
@@ -27870,26 +27863,17 @@ fn run_spawns_the_worker_with_the_composed_system_prompt_and_nothing_appended() 
         &["run"],
         &[
             ("PATH", &path),
-            ("PROMPT_CAPTURE_DIR", work.path().to_str().unwrap()),
+            (PROMPT_CAPTURE_DIR, work.path().to_str().unwrap()),
         ],
     );
     assert!(ok, "the run must succeed; stderr: {err}\nstdout: {out}");
-    let system = std::fs::read_to_string(work.path().join("system-prompt"))
-        .unwrap_or_else(|e| panic!("the worker's system prompt was captured: {e}"));
+    let system = captured_system_prompt(work.path());
     assert_eq!(
         system,
         composed_system_prompt(UNISOLATED_WORKER),
         "the worker's system prompt is compose's output over its persona, nothing appended"
     );
-    assert_eq!(
-        system.matches(COMMUNICATION_SECTION).count(),
-        1,
-        "the worker's system prompt carries the communication section once; got:\n{system}"
-    );
-    assert!(
-        !system.contains(RETIRED_COMMUNICATION_HEADING),
-        "the retired communication heading is gone from the worker's system prompt; got:\n{system}"
-    );
+    assert_communication_once(&system);
 }
 
 /// `rigger prime` opens with the instructions in force on the absent-db path, counting the

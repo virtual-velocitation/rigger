@@ -37,3 +37,17 @@ pub fn printed_built_in_layer(out: &str) -> &str {
         .unwrap_or_else(|| panic!("the operator layer must follow the built-in one; got:\n{out}"))
         .0
 }
+
+/// Assert the system prompt `sys` carries the communication built-in's section exactly once and
+/// the heading the conductor once appended nowhere.
+pub fn assert_communication_once(sys: &str) {
+    assert_eq!(
+        sys.matches(COMMUNICATION_SECTION).count(),
+        1,
+        "the system prompt carries the communication section exactly once; got: {sys:?}"
+    );
+    assert!(
+        !sys.contains(RETIRED_COMMUNICATION_HEADING),
+        "the retired communication heading is gone from the system prompt; got: {sys:?}"
+    );
+}
