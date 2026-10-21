@@ -201,6 +201,11 @@ pub const SHADOWING_LAYER_ADVISORIES: [&str; 2] = [
      .rigger/instructions/communication.md",
 ];
 
+/// The first line `rigger prime` prints when no operator file is read: every built-in in force
+/// and no operator file count.
+pub const BUILT_INS_ONLY_IN_FORCE_LINE: &str = "# Rigger instructions in force: \
+     engineering-principles, working-discipline, communication - see rigger instructions";
+
 /// The first line `rigger prime` prints over [`shadowing_operator_layer`].
 pub const SHADOWING_LAYER_IN_FORCE_LINE: &str = "# Rigger instructions in force: \
      engineering-principles, communication (replaced) (+1 operator files) - see rigger \

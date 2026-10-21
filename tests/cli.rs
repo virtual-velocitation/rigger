@@ -27982,10 +27982,7 @@ fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
     assert!(ok, "`rigger prime` must succeed; stderr:\n{err}");
     assert_eq!(
         out.lines().next(),
-        Some(
-            "# Rigger instructions in force: engineering-principles, working-discipline, \
-             communication - see rigger instructions"
-        ),
+        Some(common::fixtures::BUILT_INS_ONLY_IN_FORCE_LINE),
         "with no operator files the parenthetical is omitted; got:\n{out}"
     );
 }
@@ -28086,6 +28083,49 @@ fn prime_from_a_subdirectory_names_the_project_s_built_in_states() {
     write_operator_layer(root, &shadowing_operator_layer());
     assert_prime_names_the_shadowing_layer_states(root);
     assert_prime_names_the_shadowing_layer_states(&subdirectory_of(root));
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from a unit worktree: given a committed project
+/// with a store whose `.rigger/instructions/` holds the named-entry fixture, uncommitted, and a
+/// worktree nested under its `.rigger/` that therefore checks none of that layer out, when the
+/// operator runs `rigger prime` in the worktree, then it opens with the project's in-force line,
+/// never the built-ins alone the worktree's own tree would give.
+#[test]
+fn prime_from_a_nested_worktree_names_the_project_s_built_in_states() {
+    use common::cli::{
+        assert_prime_names_the_shadowing_layer_states, seed_store, write_operator_layer,
+    };
+    use common::fixtures::shadowing_operator_layer;
+    use common::git::nested_worktree;
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    seed_store(root);
+    write_operator_layer(root, &shadowing_operator_layer());
+    assert_prime_names_the_shadowing_layer_states(&nested_worktree(root, "rigger-wt-prime-layer"));
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, before any store exists: given a project with no
+/// store whose `.rigger/instructions/` holds the named-entry fixture, when the operator runs
+/// `rigger prime` at the root and in a subdirectory, then the root opens with that layer's
+/// in-force line and the subdirectory, which holds no layer, with the built-ins alone - the layer
+/// is read at the cwd until a store resolves the project root.
+#[test]
+fn prime_without_a_store_reads_the_instruction_layer_at_the_cwd() {
+    use common::cli::{assert_prime_names_the_shadowing_layer_states, write_operator_layer};
+    use common::fixtures::{
+        shadowing_operator_layer, subdirectory_of, BUILT_INS_ONLY_IN_FORCE_LINE,
+    };
+    let proj = temp_project();
+    let root = proj.path();
+    write_operator_layer(root, &shadowing_operator_layer());
+    assert_prime_names_the_shadowing_layer_states(root);
+    assert_eq!(
+        run_rigger_ok(&subdirectory_of(root), &["prime"])
+            .lines()
+            .next(),
+        Some(BUILT_INS_ONLY_IN_FORCE_LINE),
+        "with no store the subdirectory's own, empty, layer is read"
+    );
 }
 
 /// `rigger init` scaffolds the operator instruction directory with its README and names it
