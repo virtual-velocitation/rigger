@@ -8,11 +8,12 @@
 //! ```
 //!
 //! The BUILT-IN layer ships inside the binary ([`BUILTIN`]) and reaches every agent rigger
-//! spawns anywhere, for every consumer, regardless of persona text; no configuration removes
-//! it. The OPERATOR layer is every `*.md` under `.rigger/instructions/`, in filename order,
-//! read by the store-gated loader in `config_store` and carried on `Config::instructions`, so
-//! this module stays pure and compiles in the `core` lane. `rigger instructions` prints the
-//! composed layers ([`render`]) so an operator can read exactly what their agents are held to.
+//! spawns anywhere, for every consumer, regardless of persona text; an operator file named
+//! byte for byte as a built-in entry, its body not blank, replaces that entry's body in the
+//! entry's place ([`resolve_layers`]). The OPERATOR layer is every other `*.md` under
+//! `.rigger/instructions/`, in filename order, read by the store-gated loader in
+//! `config_store` and carried on `Config::instructions`, so this module stays pure and
+//! compiles in the `core` lane. `rigger instructions` prints the composed layers ([`render`]) so an operator can read exactly what their agents are held to.
 
 /// One instruction section: `name` is the file stem (or the built-in id) and `body` its text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,20 +49,80 @@ pub const BUILTIN: &[(&str, &str)] = &[
 /// key on it.
 pub const HEADING: &str = "# Rigger instructions";
 
+/// What the operator layer made of one built-in entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayerState<'a> {
+    /// No operator file shadows the entry: its shipped body is in force.
+    BuiltIn(&'static str),
+    /// An operator file of the same name replaces the entry: the file's body, its leading
+    /// U+FEFF stripped, is in force in the entry's place.
+    Replaced(&'a str),
+}
+
+/// One built-in entry, in [`BUILTIN`] order, with the state the operator layer left it in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuiltInLayer<'a> {
+    pub name: &'static str,
+    pub state: LayerState<'a>,
+}
+
+/// The resolved layers: every built-in entry with its state, then the operator files that
+/// shadow no built-in, in the order given.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Layers<'a> {
+    pub builtins: Vec<BuiltInLayer<'a>>,
+    pub operator: Vec<&'a Instruction>,
+}
+
+/// Resolve every built-in's state against `operator`, the one authority for shadowing. An
+/// operator file whose `name` equals a built-in's name byte for byte (case-sensitive, never
+/// trimmed) and whose body is not blank - empty once one leading U+FEFF is stripped and
+/// Unicode White_Space trimmed - replaces that built-in ([`LayerState::Replaced`]) and leaves
+/// the operator layer; every other file, a near name or a blank body included, stays in the
+/// operator layer in the order given.
+pub fn resolve_layers(operator: &[Instruction]) -> Layers<'_> {
+    let shadows = |ins: &Instruction| {
+        BUILTIN.iter().any(|(name, _)| ins.name == *name)
+            && !without_bom(&ins.body).trim().is_empty()
+    };
+    let builtins = BUILTIN
+        .iter()
+        .map(|&(name, body)| BuiltInLayer {
+            name,
+            state: match operator.iter().find(|ins| ins.name == name && shadows(ins)) {
+                Some(ins) => LayerState::Replaced(without_bom(&ins.body)),
+                None => LayerState::BuiltIn(body),
+            },
+        })
+        .collect();
+    let operator = operator.iter().filter(|ins| !shadows(ins)).collect();
+    Layers { builtins, operator }
+}
+
+/// `body` with its one leading U+FEFF (a byte-order mark) stripped.
+fn without_bom(body: &str) -> &str {
+    body.strip_prefix('\u{feff}').unwrap_or(body)
+}
+
 /// Compose `persona` followed by the built-in layer and then `operator`, each section under
 /// its own `## <name>` heading beneath [`HEADING`]. An empty persona still receives every
 /// layer; an empty operator layer adds nothing after the built-ins. It is the one authority for
 /// every spawn's system prompt: the conductor, the canary runner and the spec critic all
 /// thread its output, appending nothing after it.
 pub fn compose(persona: &str, operator: &[Instruction]) -> String {
+    let layers = resolve_layers(operator);
     let mut out = String::from(persona);
     out.push_str("\n\n");
     out.push_str(HEADING);
-    out.push_str(" (non-negotiable)\n");
-    for (name, body) in BUILTIN {
-        push_section(&mut out, name, body);
+    out.push('\n');
+    for layer in &layers.builtins {
+        let body = match layer.state {
+            LayerState::BuiltIn(body) => body,
+            LayerState::Replaced(body) => body,
+        };
+        push_section(&mut out, layer.name, body);
     }
-    for ins in operator {
+    for ins in layers.operator {
         push_section(&mut out, &ins.name, &ins.body);
     }
     out
