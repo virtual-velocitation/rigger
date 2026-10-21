@@ -1958,8 +1958,8 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `src/cli/run.rs:3287-3287` `Command::new`
 - `src/cli/run.rs:3331-3331` `Command::new`
 - `src/cli/run.rs:3400-3400` `Command::new`
-- `src/cli/setup.rs:3970-3970` `Command::new`
-- `src/cli/setup.rs:4261-4261` `Command::new`
+- `src/cli/setup.rs:3975-3975` `Command::new`
+- `src/cli/setup.rs:4266-4266` `Command::new`
 - `src/cli/validate.rs:1459-1459` `Command::new`
 - `src/cli/validate.rs:1738-1738` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2373,55 +2373,55 @@ __END__
              package-lock.json and ran npm install)"`
 - `src/cli/setup.rs:1316-1316` `"kept existing .rigger/agents/{name} (import never overwrites)"`
 - `src/cli/setup.rs:1344-1344` `"imported .rigger/agents/{name} (id: {id})"`
-- `src/cli/setup.rs:2128-2128` `"nothing is written - no .rigger, no .claude, no .gitignore"`
-- `src/cli/setup.rs:2195-2195` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2200-2200` `"no gate template set matches this project (rust: Cargo.toml at the project \
+- `src/cli/setup.rs:2133-2133` `"nothing is written - no .rigger, no .claude, no .gitignore"`
+- `src/cli/setup.rs:2200-2200` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2205-2205` `"no gate template set matches this project (rust: Cargo.toml at the project \
                   root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2226-2226` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
-- `src/cli/setup.rs:2254-2254` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2255-2255` `"no gate template set matches this project (demo: a or b; other: c at the project \
+- `src/cli/setup.rs:2231-2231` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
+- `src/cli/setup.rs:2259-2259` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2260-2260` `"no gate template set matches this project (demo: a or b; other: c at the project \
                  root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2272-2272` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:2592-2592` `".rigger/agents/"`
-- `src/cli/setup.rs:2646-2646` `".rigger/dash.url"`
-- `src/cli/setup.rs:2647-2647` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2648-2648` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2657-2657` `".rigger/store.conn"`
-- `src/cli/setup.rs:2674-2674` `".rigger/\n"`
-- `src/cli/setup.rs:2680-2680` `".rigger/dash.url"`
-- `src/cli/setup.rs:2683-2683` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2686-2686` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2687-2687` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
+- `src/cli/setup.rs:2277-2277` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:2597-2597` `".rigger/agents/"`
+- `src/cli/setup.rs:2651-2651` `".rigger/dash.url"`
+- `src/cli/setup.rs:2652-2652` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2653-2653` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2662-2662` `".rigger/store.conn"`
+- `src/cli/setup.rs:2679-2679` `".rigger/\n"`
+- `src/cli/setup.rs:2685-2685` `".rigger/dash.url"`
+- `src/cli/setup.rs:2688-2688` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2691-2691` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2692-2692` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
              even when .rigger/ broadly covers them, so the committed .gitignore stays \
              self-contained, got: {:?}"`
-- `src/cli/setup.rs:2695-2695` `".rigger/dash.url"`
-- `src/cli/setup.rs:2696-2696` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2697-2697` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2698-2698` `"all three explicit per-file dash ignore lines are present in the committed \
+- `src/cli/setup.rs:2700-2700` `".rigger/dash.url"`
+- `src/cli/setup.rs:2701-2701` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2702-2702` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2703-2703` `"all three explicit per-file dash ignore lines are present in the committed \
              .gitignore even though .rigger/ already covers them, got:\n{content}"`
-- `src/cli/setup.rs:2708-2708` `".rigger/dash.url"`
-- `src/cli/setup.rs:2711-2711` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2714-2714` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3067-3067` `".rigger/agents/researcher.md"`
-- `src/cli/setup.rs:3096-3096` `".rigger/agents/planner.md"`
-- `src/cli/setup.rs:3126-3126` `".rigger/agents/newcomer.md"`
-- `src/cli/setup.rs:3204-3204` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:3434-3434` `".rigger"`
-- `src/cli/setup.rs:3599-3599` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:3802-3802` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:3804-3804` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:3805-3805` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:3806-3806` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:3816-3816` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:3819-3819` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:3833-3833` `"The count and the caller lookup run once per item of the walk's hunk list - every \
+- `src/cli/setup.rs:2713-2713` `".rigger/dash.url"`
+- `src/cli/setup.rs:2716-2716` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2719-2719` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3072-3072` `".rigger/agents/researcher.md"`
+- `src/cli/setup.rs:3101-3101` `".rigger/agents/planner.md"`
+- `src/cli/setup.rs:3131-3131` `".rigger/agents/newcomer.md"`
+- `src/cli/setup.rs:3209-3209` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:3439-3439` `".rigger"`
+- `src/cli/setup.rs:3604-3604` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:3807-3807` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:3809-3809` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:3810-3810` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:3811-3811` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:3821-3821` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:3824-3824` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:3838-3838` `"The count and the caller lookup run once per item of the walk's hunk list - every \
              item the hunks touch, new or pre-existing, its body or its doc changed - each \
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers."`
-- `src/cli/setup.rs:3923-3923` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:4132-4132` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:3928-3928` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:4137-4137` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
@@ -4051,7 +4051,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/liveness.rs:924-938` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
-- `src/cli/setup.rs:2417-2431` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
+- `src/cli/setup.rs:2422-2436` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-6f7131d21aaa` (semantic, 60 sites)
 

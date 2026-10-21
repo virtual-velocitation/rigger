@@ -1448,22 +1448,27 @@ fn instructions_in_force_line(operator: &[instructions::Instruction]) -> String 
 /// exactly as it was - no lint mention.
 pub(crate) fn cmd_prime(args: &[String]) -> Res {
     let spec_path = args.first();
+    // The one store-location authority every courier resolves through: a session started in a
+    // subdirectory or a unit worktree reads the project's own store, identity and instruction
+    // layer, never the cwd's. A fresh project with no store yet reads the layer from the cwd.
+    let found = match require_store_dir() {
+        Ok(found) => Some(found),
+        Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => None,
+        Err(e) => return Err(e),
+    };
+    let root = found
+        .as_ref()
+        .map_or_else(|| ".".to_string(), |(loc, _)| loc.repo_root());
     println!(
         "{}",
-        instructions_in_force_line(&config_store::load_instructions(Path::new("."))?)
+        instructions_in_force_line(&config_store::load_instructions(Path::new(&root))?)
     );
-    // The one store-location authority every courier resolves through: a session started in a
-    // subdirectory or a unit worktree reads the project's own store and identity, never the cwd's.
-    let (loc, selection) = match require_store_dir() {
-        Ok(found) => found,
-        Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => {
-            println!("# Rigger: no decisions recorded yet (run `rigger run` to start).");
-            if let Some(spec) = spec_path {
-                println!("{}", spec_lint_next_step(spec));
-            }
-            return Ok(());
+    let Some((loc, selection)) = found else {
+        println!("# Rigger: no decisions recorded yet (run `rigger run` to start).");
+        if let Some(spec) = spec_path {
+            println!("{}", spec_lint_next_step(spec));
         }
-        Err(e) => return Err(e),
+        return Ok(());
     };
     let backend = resolve_store(&selection, &store_file(&loc.dir, "events.db"))?;
     // Every run's decisions BY TYPE on this project's run stream (spec 101): a session start
