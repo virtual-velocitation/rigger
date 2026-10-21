@@ -27974,7 +27974,7 @@ fn run_spawns_the_worker_with_no_section_for_a_built_in_an_empty_same_named_file
 }
 
 /// `rigger prime` opens with the instructions in force on the absent-db path, counting the
-/// operator files.
+/// operator files that shadow no built-in: here there are none.
 #[test]
 fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
     let proj = temp_project();
@@ -27991,7 +27991,8 @@ fn prime_first_line_names_the_instructions_in_force_on_the_absent_db_path() {
 }
 
 /// `rigger prime` opens with the instructions in force on the recent-decisions path too,
-/// counting the operator files, and keeps the recent-decisions heading next.
+/// counting the operator files that shadow no built-in (both of them here), and keeps the
+/// recent-decisions heading next.
 #[test]
 fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path() {
     let proj = temp_store_project();
