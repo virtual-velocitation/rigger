@@ -171,6 +171,18 @@ pub fn assert_reported_from_below(root: &Path, report: Reporter) {
     report(&super::fixtures::subdirectory_of(root));
 }
 
+/// Write the named-entry fixture (`shadowing_operator_layer`) into the committed git project at
+/// `root`, uncommitted, then run the reporter assertion `report` in a worktree nested under its
+/// `.rigger/`, which therefore checks none of that layer out: the reporter reads the main
+/// checkout's layer, never the worktree's own.
+pub fn assert_reported_from_a_nested_worktree(root: &Path, report: Reporter) {
+    write_operator_layer(root, &super::fixtures::shadowing_operator_layer());
+    report(&super::git::nested_worktree(
+        root,
+        "rigger-wt-reporter-layer",
+    ));
+}
+
 /// `rigger instructions` run in `cwd` prints the layers of the named-entry fixture
 /// (`shadowing_operator_layer`) its project holds: each built-in with its state, then the
 /// unshadowed file.

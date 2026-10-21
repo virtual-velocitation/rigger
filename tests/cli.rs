@@ -28068,22 +28068,66 @@ fn validate_warns_of_no_built_in_for_a_near_named_or_other_operator_file() {
 }
 
 /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from a unit worktree: given a committed project
-/// with a store whose `.rigger/instructions/` holds the named-entry fixture, uncommitted, and a
-/// worktree nested under its `.rigger/` that therefore checks none of that layer out, when the
-/// operator runs `rigger prime` in the worktree, then it opens with the project's in-force line,
-/// never the built-ins alone the worktree's own tree would give.
+/// whose `.rigger/instructions/` holds the named-entry fixture, uncommitted, and a worktree nested
+/// under its `.rigger/` that therefore checks none of that layer out, when the operator runs
+/// `rigger prime` or `rigger instructions` in the worktree, with a store and before any store
+/// exists, then each reports the main checkout's layer, never the worktree's own.
 #[test]
-fn prime_from_a_nested_worktree_names_the_project_s_built_in_states() {
+fn prime_and_instructions_from_a_nested_worktree_report_the_main_checkout_s_instruction_layer() {
     use common::cli::{
-        assert_prime_names_the_shadowing_layer_states, seed_store, write_operator_layer,
+        assert_instructions_render_the_shadowing_layer,
+        assert_prime_names_the_shadowing_layer_states, assert_reported_from_a_nested_worktree,
+        seed_store, Reporter,
     };
-    use common::fixtures::shadowing_operator_layer;
-    use common::git::nested_worktree;
-    let proj = temp_git_project_with_commit();
-    let root = proj.path();
-    seed_store(root);
+    let cases: [(bool, Reporter); 4] = [
+        (true, assert_prime_names_the_shadowing_layer_states),
+        (true, assert_instructions_render_the_shadowing_layer),
+        (false, assert_prime_names_the_shadowing_layer_states),
+        (false, assert_instructions_render_the_shadowing_layer),
+    ];
+    for (store, report) in cases {
+        let proj = temp_git_project_with_commit();
+        if store {
+            seed_store(proj.path());
+        }
+        assert_reported_from_a_nested_worktree(proj.path(), report);
+    }
+}
+
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, outside any git repository: given a directory
+/// that is no git repository, with no store, whose `.rigger/instructions/` holds the named-entry
+/// fixture, when the operator runs `rigger prime` and `rigger instructions` there, with git
+/// discovery stopped at the directory's parent, then each reports that layer, read at the cwd.
+#[test]
+fn prime_and_instructions_outside_git_with_no_store_read_the_layer_at_the_cwd() {
+    use common::cli::{run_rigger_envs, write_operator_layer};
+    use common::fixtures::{
+        rendered_shadowing_layer, shadowing_operator_layer, SHADOWING_LAYER_IN_FORCE_LINE,
+    };
+    let dir = tempfile::tempdir().expect("a directory outside any git repository");
+    let root = dir.path();
     write_operator_layer(root, &shadowing_operator_layer());
-    assert_prime_names_the_shadowing_layer_states(&nested_worktree(root, "rigger-wt-prime-layer"));
+    let ceiling = [(
+        "GIT_CEILING_DIRECTORIES",
+        root.parent().unwrap().to_str().unwrap(),
+    )];
+    let (prime, err, ok) = run_rigger_envs(root, &["prime"], &ceiling);
+    assert!(ok, "`rigger prime` succeeds outside git; stderr:\n{err}");
+    assert_eq!(
+        prime.lines().next(),
+        Some(SHADOWING_LAYER_IN_FORCE_LINE),
+        "`rigger prime` reads the cwd's layer when no store or git repository names a root"
+    );
+    let (instructions, err, ok) = run_rigger_envs(root, &["instructions"], &ceiling);
+    assert!(
+        ok,
+        "`rigger instructions` succeeds outside git; stderr:\n{err}"
+    );
+    assert_eq!(
+        instructions,
+        rendered_shadowing_layer(),
+        "`rigger instructions` reads the cwd's layer when no store or git repository names a root"
+    );
 }
 
 /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from below the project root: given a project
