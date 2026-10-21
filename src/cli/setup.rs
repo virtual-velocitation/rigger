@@ -4360,6 +4360,46 @@ mod tests {
         assert!(!rerun.changed(), "a rerun rewrites no helper");
     }
 
+    /// Spec 120's THE SCAFFOLDED README DOCUMENTS THE OVERRIDE: the README `init` scaffolds
+    /// lists every built-in entry, in injection order, as the `<name>.md` file that overrides
+    /// it, states the replace, switch-off and append rules, and the repository's own committed
+    /// `.rigger/instructions/README.md` carries the same text, whitespace normalized.
+    #[test]
+    fn the_scaffolded_instructions_readme_names_every_built_in_and_the_override_rules() {
+        let listed: Vec<&str> = SCAFFOLD_INSTRUCTIONS_README
+            .lines()
+            .filter(|line| line.starts_with("- `"))
+            .collect();
+        let expected: Vec<String> = instructions::BUILTIN
+            .iter()
+            .map(|(name, _)| format!("- `{name}.md`"))
+            .collect();
+        assert_eq!(
+            listed, expected,
+            "the README lists every built-in entry as its `<name>.md` file, in injection order"
+        );
+        let readme = rigger::wave::normalize_ws(SCAFFOLD_INSTRUCTIONS_README);
+        for rule in [
+            "A file in this directory named exactly as a built-in (case-sensitive, nothing \
+             trimmed) replaces that built-in: its body is injected in the built-in's place.",
+            "A same-named file whose body is blank (empty or whitespace only, one leading \
+             byte-order mark ignored) switches the built-in off: neither the built-in nor the \
+             file is injected.",
+            "Every other `*.md` file in this directory (except this README) is appended after \
+             the built-ins, in filename order.",
+        ] {
+            assert!(readme.contains(rule), "the README must state {rule:?}");
+        }
+        let committed = read_text(
+            &crate::test_support::instructions_dir(&repo()).join(config_store::INSTRUCTIONS_README),
+        );
+        assert_eq!(
+            rigger::wave::normalize_ws(&committed),
+            readme,
+            "the committed instructions README carries the scaffold's text"
+        );
+    }
+
     /// KISS is the fewest moving parts, never a line count: no agent, instruction or handbook
     /// text rigger ships states a size limit.
     #[test]
