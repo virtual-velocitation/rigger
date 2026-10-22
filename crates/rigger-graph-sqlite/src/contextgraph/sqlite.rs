@@ -15025,6 +15025,98 @@ mod tests {
                 assert_eq!(projection_but_applied(&p), projection_but_applied(&in_hand));
             }
 
+            /// What a second connection reads committed of a fold pass over a graph owing its tail:
+            /// the positions of the `applied` ledger and the rebuild's cursor.
+            type Committed = (Vec<i64>, Position);
+
+            /// What a second connection reads committed of a fold pass that has folded nothing.
+            const NOTHING_COMMITTED: Committed = (Vec::new(), 0);
+
+            /// What `p`'s own connection reads committed ([`Committed`]).
+            fn committed_of(p: &Projector) -> Committed {
+                (applied_positions(p), cursor_of(p))
+            }
+
+            /// What [`fold_answering`] found.
+            #[derive(Debug, PartialEq)]
+            struct Answered {
+                /// The entry's body's answer, its error as text.
+                folded: Result<(), String>,
+                /// What a second connection read committed at each ask of the batch function.
+                asks: Vec<Committed>,
+                /// What it read committed once the entry's body returned.
+                after: Committed,
+                /// The generation `gc/src/f.rs` then holds.
+                generation: Option<String>,
+            }
+
+            /// Fold the entry of `h1` at position 7 ([`h1_at_7`]) alone through the entry's body of
+            /// a fold pass ([`fold_entry_alone`]), on a connection of its own to a fresh graph
+            /// owing its tail ([`owing_its_tail`]), its batch function answering `answers` in turn.
+            fn fold_answering(mut answers: Vec<BatchAnswer>) -> Answered {
+                let (_dir, path, p) = owing_its_tail();
+                let mut conn = connection_to(&path);
+                let mut asks = Vec::new();
+                let folded = fold_entry_alone(
+                    &mut conn,
+                    "test",
+                    &h1_at_7(),
+                    &mut |_| {
+                        asks.push(committed_of(&p));
+                        Ok(answers.remove(0))
+                    },
+                    false,
+                    &mut 0,
+                );
+                Answered {
+                    folded: folded.map_err(|e| e.0),
+                    asks,
+                    after: committed_of(&p),
+                    generation: generation_of_f(&p),
+                }
+            }
+
+            /// Spec 122, THE REVERSE RACE: an entry whose read before its transaction extracted
+            /// nothing, but whose fold asks a batch, answers `Unread`: its `applied` row is undone
+            /// with the rolled-back savepoint and the cursor is not advanced, so the retry finds
+            /// both as they stood, and the one retry folds the batch it extracted.
+            #[test]
+            fn an_entry_whose_batch_is_unread_is_undone_and_retried_once() {
+                assert_eq!(
+                    fold_answering(vec![
+                        BatchAnswer::Unread,
+                        BatchAnswer::Batch(Some(h1_batch()))
+                    ]),
+                    Answered {
+                        folded: Ok(()),
+                        asks: vec![NOTHING_COMMITTED; 2],
+                        after: (vec![7], 7),
+                        generation: Some("h1".to_string()),
+                    },
+                    "the retry finds no applied row and the cursor unmoved, and is the only one"
+                );
+            }
+
+            /// Spec 122, THE REVERSE RACE: an entry `Unread` on its retry too fails the pass, with
+            /// nothing of it written and the cursor where it stood.
+            #[test]
+            fn an_entry_unread_twice_fails_the_pass() {
+                assert_eq!(
+                    fold_answering(vec![BatchAnswer::Unread, BatchAnswer::Unread]),
+                    Answered {
+                        folded: Err(
+                            "the GenerationIngested entry at position 7 asked for a batch \
+                                     it was not handed: another writer installed a newer \
+                                     generation of its identity while it folded"
+                                .to_string()
+                        ),
+                        asks: vec![NOTHING_COMMITTED; 2],
+                        after: NOTHING_COMMITTED,
+                        generation: None,
+                    }
+                );
+            }
+
             #[test]
             fn the_entry_builder_stamps_the_identity_as_group_and_the_generation_key() {
                 let named = GenerationIngested {
