@@ -337,8 +337,10 @@ pub fn fold_of(p: &dyn Projection, events: &[Event]) -> rigger::contextgraph::Fo
 /// graph file `graph_db` under the project `test` from `source`, owed when `owed` says so, while
 /// `writer` folds `events` through the public fold ([`fold_of`]) between two waits on a barrier
 /// whose other party is the rebuild's first ask of `reextract`, which answers `batch` only once
-/// the writer's fold has returned. It insists the rebuild ran, passing nothing over and pruning
-/// nothing, and asked `reextract` once, and answers what became of the writer's fold.
+/// the writer's fold has returned. A rebuild that ends without asking meets the writer's two waits
+/// itself once it has returned, so the writer folds after it and this goes red rather than hangs.
+/// It insists the rebuild ran, passing nothing over and pruning nothing ([`clean_rebuild`]), and
+/// asked `reextract` once, and answers what became of the writer's fold.
 pub fn rebuild_meeting_a_writer(
     graph_db: &str,
     owed: bool,
@@ -349,14 +351,14 @@ pub fn rebuild_meeting_a_writer(
 ) -> rigger::contextgraph::Fold {
     let barrier = std::sync::Barrier::new(2);
     let mut asked = 0;
-    let written = std::thread::scope(|s| {
+    let (written, rebuilt) = std::thread::scope(|s| {
         let folding = s.spawn(|| {
             barrier.wait();
             let written = fold_of(writer, events);
             barrier.wait();
             written
         });
-        rebuild_clean(graph_db, owed, source, &mut |_| {
+        let rebuilt = rebuild_answer(graph_db, owed, source, &mut |_| {
             asked += 1;
             if asked == 1 {
                 barrier.wait();
@@ -364,32 +366,54 @@ pub fn rebuild_meeting_a_writer(
             }
             Ok(Some(batch.to_vec()))
         });
-        folding.join().unwrap()
+        if asked == 0 {
+            barrier.wait();
+            barrier.wait();
+        }
+        (folding.join().unwrap(), rebuilt)
     });
+    assert_eq!(rebuilt, clean_rebuild());
     assert_eq!(asked, 1, "the rebuild asks the entry's batch once");
     written
 }
 
+/// What a rebuild that ran answers ([`rebuild_answer`]) when it passed nothing over and pruned
+/// nothing.
+pub fn clean_rebuild() -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, String> {
+    Ok(Some(rigger::contextgraph::sqlite::Rebuilt::default()))
+}
+
 /// Rebuild the graph file `graph_db` under the project `test` from `source`, owed when `owed` says
-/// so, re-extracting each ledger entry with `reextract` and reporting no progress, and insist the
-/// rebuild ran, passing nothing over and pruning nothing.
-pub fn rebuild_clean(
+/// so, re-extracting each ledger entry with `reextract` and reporting no progress, and answer what
+/// the rebuild did, its error as text.
+pub fn rebuild_answer(
     graph_db: &str,
     owed: bool,
     source: &mut rigger::contextgraph::sqlite::RebuildSource,
     reextract: &mut rigger::contextgraph::sqlite::Reextract,
-) {
-    let rebuilt = Projector::rebuild(
+) -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, String> {
+    Projector::rebuild(
         &Projector::lock_rebuild(graph_db).unwrap(),
         "test",
         owed,
         source,
         reextract,
         &mut |_| {},
-    );
+    )
+    .map_err(|e| e.0)
+}
+
+/// Rebuild the graph file `graph_db` as [`rebuild_answer`] does, and insist the rebuild ran,
+/// passing nothing over and pruning nothing ([`clean_rebuild`]).
+pub fn rebuild_clean(
+    graph_db: &str,
+    owed: bool,
+    source: &mut rigger::contextgraph::sqlite::RebuildSource,
+    reextract: &mut rigger::contextgraph::sqlite::Reextract,
+) {
     assert_eq!(
-        rebuilt.map_err(|e| e.0),
-        Ok(Some(rigger::contextgraph::sqlite::Rebuilt::default()))
+        rebuild_answer(graph_db, owed, source, reextract),
+        clean_rebuild()
     );
 }
 

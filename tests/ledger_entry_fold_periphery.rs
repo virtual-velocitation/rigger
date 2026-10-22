@@ -31,6 +31,7 @@
 mod common;
 
 use std::cell::Cell;
+use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -41,7 +42,7 @@ use common::fixtures::{
     decision_json, event_of, generation_ingested, live_edges, live_node_ids, nanos, placed_at,
     SETUP_PAYS,
 };
-use rigger::contextgraph::sqlite::Projector;
+use rigger::contextgraph::sqlite::{Projector, RebuildSink};
 use rigger::contextgraph::{
     wired, EntryFold, Error, Fold, Projection, KIND_DECISION, OWED_LOST_FOLD, REBUILD_OWED,
     REL_CONTAINS, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
@@ -253,7 +254,7 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
     assert_eq!(generation(port, IDENTITY), None);
     assert_eq!(node_ids(&p), Vec::<String>::new());
     assert_eq!(
-        fold_through_port(port, &first, Ok(Some(vec![defines(F, "alpha", 1, true)]))),
+        fold_through_port(port, &first, Ok(Some(alpha_batch()))),
         (Ok(EntryFold::BatchAsked), 1),
         "position 7 was not recorded by the fold that failed"
     );
@@ -360,11 +361,7 @@ fn the_mark_a_refused_public_fold_writes_binds_a_second_projector_on_the_file() 
     let path = graph_db(&dir);
     let first = Projector::open(&path, "test").unwrap();
     assert_eq!(
-        fold_through_port(
-            &first,
-            &entry(F, "h1", 7, 10),
-            Ok(Some(vec![defines(F, "alpha", 1, true)]))
-        ),
+        fold_through_port(&first, &entry(F, "h1", 7, 10), Ok(Some(alpha_batch()))),
         (Ok(EntryFold::BatchAsked), 1)
     );
     let held = served(&first);
@@ -421,11 +418,7 @@ fn the_mark_a_failed_ledger_fold_writes_binds_a_second_projector_on_the_file() {
     assert_eq!(second.owed_because().unwrap(), vec![OWED_LOST_FOLD]);
     assert!(port.rebuild_owed().unwrap());
     assert_eq!(
-        fold_through_port(
-            port,
-            &entry(F, "h1", 7, 10),
-            Ok(Some(vec![defines(F, "alpha", 1, true)]))
-        ),
+        fold_through_port(port, &entry(F, "h1", 7, 10), Ok(Some(alpha_batch()))),
         (Err(REBUILD_OWED.to_string()), 0)
     );
     assert_eq!(generation(port, IDENTITY), None);
@@ -452,7 +445,7 @@ fn a_second_projector_folding_the_same_generation_meanwhile_waits_and_meets_a_re
                     Box::new(move || {
                         entered_tx.send(()).unwrap();
                         release_rx.recv().unwrap();
-                        Ok(Some(vec![defines(F, "alpha", 1, true)]))
+                        Ok(Some(alpha_batch()))
                     }),
                 )
                 .map_err(|e| e.0)
@@ -492,8 +485,6 @@ fn a_second_projector_folding_the_same_generation_meanwhile_waits_and_meets_a_re
 #[test]
 fn a_writer_folds_into_the_file_while_its_rebuild_tail_extracts_an_entry_and_the_entry_folds_as_in_hand(
 ) {
-    use rigger::contextgraph::sqlite::RebuildSink;
-
     let dir = tempfile::tempdir().unwrap();
     let path = graph_db(&dir);
     let log = vec![
@@ -501,41 +492,172 @@ fn a_writer_folds_into_the_file_while_its_rebuild_tail_extracts_an_entry_and_the
         entry(F, "h1", 7, 10),
         decision("d8", 8, 12),
     ];
-    let batch = vec![defines(F, "alpha", 1, true)];
     let writer = Projector::open(&path, "test").unwrap();
     let reads = Cell::new(0);
     let written = common::fixtures::rebuild_meeting_a_writer(
         &path,
         true,
-        &mut |after, sink: &mut RebuildSink| {
-            // The shadow's read finds the log before the entry was appended; the tail's, whole.
-            reads.set(reads.get() + 1);
-            let read = if reads.get() == 1 { &log[..1] } else { &log };
-            common::fixtures::one_read(read, after, sink)
-        },
+        &mut grown_while_the_shadow_folded(&log, &reads, || {}),
         &writer,
         &log[2..],
-        &batch,
+        &alpha_batch(),
     );
     assert_eq!(
         (written, reads.get()),
         (Fold::Folded, 2),
         "the writer's fold lands while the tail extracts the entry's batch"
     );
-    let rebuilt = std::path::Path::new(&path);
-    assert_eq!(applied_positions(rebuilt), vec![6, 7, 8]);
+    assert_eq!(applied_positions(Path::new(&path)), vec![6, 7, 8]);
     // The same events folded in the order they committed: the writer's decision before the entry.
-    let in_hand = dir.path().join("in_hand.db");
-    let oracle = Projector::open(in_hand.to_str().unwrap(), "test").unwrap();
+    let (in_hand, oracle) = oracle_file(&dir);
     common::fixtures::folds(&oracle, &log[..1]);
     common::fixtures::folds(&oracle, &log[2..]);
     assert_eq!(
-        fold_through_port(&oracle, &log[1], Ok(Some(batch))),
+        fold_through_port(&oracle, &log[1], Ok(Some(alpha_batch()))),
+        (Ok(EntryFold::BatchAsked), 1)
+    );
+    assert_same_graph(&path, &in_hand);
+}
+
+/// Spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION, through the public rebuild: given a
+/// `graph.db` whose rebuild's tail meets a ledger entry that a writer holding a connection of its
+/// own folded through the port after the swap and before the tail read the log - and then a newer
+/// generation of its identity over it, so only the entry's `applied` row says it was folded - when
+/// the tail reaches the entry, then it never asks the entry's batch, and the file holds the
+/// writer's folds.
+#[test]
+fn a_rebuild_tail_never_extracts_an_entry_a_writer_folded_before_the_tail_read_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = graph_db(&dir);
+    let log = vec![
+        decision("d6", 6, 6),
+        entry(F, "h1", 7, 10),
+        entry(F, "h2", 8, 20),
+    ];
+    let writer = Projector::open(&path, "test").unwrap();
+    let (written, reads, asks) = tail_after_a_writer(&path, &log, || {
+        log[1..]
+            .iter()
+            .map(|e| fold_through_port(&writer, e, Ok(Some(alpha_batch()))))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        (written, reads, asks),
+        (Some(vec![(Ok(EntryFold::BatchAsked), 1); 2]), 2, 0),
+        "the tail asks no batch for an entry the file already folded"
+    );
+    assert_eq!(applied_positions(Path::new(&path)), vec![6, 7, 8]);
+    let (in_hand, oracle) = oracle_file(&dir);
+    common::fixtures::folds(&oracle, &log[..1]);
+    for e in &log[1..] {
+        assert_eq!(
+            fold_through_port(&oracle, e, Ok(Some(alpha_batch()))),
+            (Ok(EntryFold::BatchAsked), 1)
+        );
+    }
+    assert_same_graph(&path, &in_hand);
+}
+
+/// Spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION, through the public rebuild: given a
+/// `graph.db` whose rebuild's tail meets a ledger entry of the generation a writer holding a
+/// connection of its own installed through the port, from a later entry, after the swap and
+/// before the tail read the log, when the tail reaches the earlier entry, then it never asks its
+/// batch - a re-recording - and records its position alone.
+#[test]
+fn a_rebuild_tail_never_extracts_a_re_recording_of_the_generation_a_writer_installed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = graph_db(&dir);
+    let log = vec![
+        decision("d6", 6, 6),
+        entry(F, "h1", 7, 10),
+        entry(F, "h1", 9, 20),
+    ];
+    let writer = Projector::open(&path, "test").unwrap();
+    let (written, reads, asks) = tail_after_a_writer(&path, &log, || {
+        fold_through_port(&writer, &log[2], Ok(Some(alpha_batch())))
+    });
+    assert_eq!(
+        (written, reads, asks),
+        (Some((Ok(EntryFold::BatchAsked), 1)), 2, 0),
+        "the tail asks no batch for a re-recording"
+    );
+    assert_eq!(applied_positions(Path::new(&path)), vec![6, 7, 9]);
+    let (in_hand, oracle) = oracle_file(&dir);
+    common::fixtures::folds(&oracle, &log[..1]);
+    assert_eq!(
+        fold_through_port(&oracle, &log[2], Ok(Some(alpha_batch()))),
         (Ok(EntryFold::BatchAsked), 1)
     );
     assert_eq!(
-        common::cli::graph_identity(rebuilt, "test"),
-        common::cli::graph_identity(&in_hand, "test")
+        fold_through_port(&oracle, &log[1], Ok(Some(alpha_batch()))),
+        (Ok(EntryFold::ReRecording), 0)
+    );
+    assert_same_graph(&path, &in_hand);
+}
+
+/// The one definition `alpha` of [`F`], as an entry's batch.
+fn alpha_batch() -> Vec<Event> {
+    vec![defines(F, "alpha", 1, true)]
+}
+
+/// A rebuild source over `log` for a `graph.db` whose log grew while its rebuild's shadow folded:
+/// the first read - the shadow's - finds `log[..1]`, and each later read - the tail's - finds it
+/// whole, `before_tail` run once just before the first of them. `reads` counts the reads.
+fn grown_while_the_shadow_folded<'a>(
+    log: &'a [Event],
+    reads: &'a Cell<u32>,
+    mut before_tail: impl FnMut() + 'a,
+) -> impl FnMut(u64, &mut RebuildSink) -> Result<(), Error> + 'a {
+    move |after, sink| {
+        reads.set(reads.get() + 1);
+        if reads.get() == 2 {
+            before_tail();
+        }
+        let read = if reads.get() == 1 { &log[..1] } else { log };
+        common::fixtures::one_read(read, after, sink)
+    }
+}
+
+/// Rebuild the `graph.db` at `path`, owed, from `log` grown while its shadow folded
+/// ([`grown_while_the_shadow_folded`]), `write` run just before the tail reads it, answering
+/// [`alpha_batch`] for every entry's batch: what `write` answered, how many reads the rebuild
+/// made, and how many times it asked an entry's batch.
+fn tail_after_a_writer<T>(
+    path: &str,
+    log: &[Event],
+    write: impl FnOnce() -> T,
+) -> (Option<T>, u32, u32) {
+    let reads = Cell::new(0);
+    let mut write = Some(write);
+    let mut written = None;
+    let mut asks = 0;
+    common::fixtures::rebuild_clean(
+        path,
+        true,
+        &mut grown_while_the_shadow_folded(log, &reads, || {
+            written = write.take().map(|write| write());
+        }),
+        &mut |_| {
+            asks += 1;
+            Ok(Some(alpha_batch()))
+        },
+    );
+    (written, reads.get(), asks)
+}
+
+/// A fresh graph file `in_hand.db` in `dir` and a projector on it, the oracle a rebuilt file is
+/// compared with ([`assert_same_graph`]).
+fn oracle_file(dir: &tempfile::TempDir) -> (String, Projector) {
+    let in_hand = dir.path().join("in_hand.db").to_str().unwrap().to_string();
+    let oracle = Projector::open(&in_hand, "test").unwrap();
+    (in_hand, oracle)
+}
+
+/// Insist the graph files at `rebuilt` and `in_hand` hold one graph ([`common::cli::graph_identity`]).
+fn assert_same_graph(rebuilt: &str, in_hand: &str) {
+    assert_eq!(
+        common::cli::graph_identity(Path::new(rebuilt), "test"),
+        common::cli::graph_identity(Path::new(in_hand), "test")
     );
 }
 
@@ -702,7 +824,7 @@ fn the_ledger_form_appends_each_entry_once_folds_it_with_its_batch_and_writes_on
             .append_entry_and_fold(
                 LEDGER_STREAM,
                 &named(F, "h1", "b1", false).event(1),
-                vec![defines(F, "alpha", 1, true)],
+                alpha_batch(),
             )
             .unwrap(),
     );
@@ -878,7 +1000,7 @@ fn the_ledger_form_wired_to_no_graph_appends_the_entry_and_says_nothing_of_its_f
             .append_entry_and_fold(
                 LEDGER_STREAM,
                 &named(F, "h1", "b1", false).event(1),
-                vec![defines(F, "alpha", 1, true)],
+                alpha_batch(),
             )
             .unwrap(),
     );
@@ -912,7 +1034,7 @@ fn the_ledger_form_never_opens_the_graph_for_an_entry_the_store_did_not_place() 
             .append_entry_and_fold(
                 LEDGER_STREAM,
                 &named(F, "h1", "b1", false).event(1),
-                vec![defines(F, "alpha", 1, true)],
+                alpha_batch(),
             )
             .unwrap(),
     );
@@ -934,7 +1056,7 @@ fn the_ledger_form_never_opens_the_graph_for_an_entry_the_store_did_not_place() 
         .append_entry_and_fold(
             LEDGER_STREAM,
             &named(F, "h1", "b1", false).event(1),
-            vec![defines(F, "alpha", 1, true)],
+            alpha_batch(),
         )
         .unwrap();
     assert_eq!(
