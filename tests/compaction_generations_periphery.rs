@@ -46,6 +46,7 @@ use common::cli::{LOG_LEFT_AS_IT_STANDS_LINE, NOTHING_TO_SHED_LINE};
 use common::fixtures::cleanup;
 use common::fixtures::f_rs_batch_def;
 use common::fixtures::files_open_by;
+use common::fixtures::fresh_test_reference;
 use common::fixtures::nanos;
 use common::fixtures::wait_until_for;
 use common::fixtures::with_graph_locked;
@@ -203,15 +204,6 @@ fn community_of(node: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "node": node, "community": "community/1/c0", "resolution": 1.0, "hash": "h",
         "fresh": true,
-    }))
-    .unwrap()
-}
-
-/// A test file's proof reference to `name` at `line`: test-origin evidence heading its file's batch.
-fn proof(name: &str, line: u32) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "file": "tests/t.rs", "name": name, "lang": "rust", "fresh": true, "line": line,
-        "is_test": true,
     }))
     .unwrap()
 }
@@ -1198,12 +1190,7 @@ impl ReleaseEraStore {
     /// (which `rigger setup` then mints, moving the log to it).
     fn with_identity(minted: bool) -> Self {
         let mut log = two_generations_dropping_facts();
-        log.push(keyed(
-            TYPE_EDGE_INFERRED,
-            proof("alpha", 3),
-            "gc/tests/t.rs@k1#0",
-            30,
-        ));
+        log.push(fresh_test_reference("alpha", 3, 30));
         let store = Self::logging(minted, &log);
         let (project, appended) = (store.project(), store.log());
         let graph_db = &store.graph_db;

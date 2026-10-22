@@ -4657,7 +4657,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-99a8136efbc4",
+    "id": "dup-38e1ee983333",
     "classification": "semantic",
     "sites": [
       {
@@ -4836,6 +4836,16 @@
         "content_hash": "0a68549443b7c66d"
       },
       {
+        "file": "tests/proofs_settle_once_periphery.rs",
+        "name": "\"/proc/thread-self/schedstat\"",
+        "content_hash": "80b7f6cc644adb8f"
+      },
+      {
+        "file": "tests/proofs_settle_once_periphery.rs",
+        "name": "\"/proc/thread-self/schedstat names the thread's CPU time\"",
+        "content_hash": "6330ce3a5a38ef8d"
+      },
+      {
         "file": "tests/simplification_audit.rs",
         "name": "\"/proc/<pid>/stat or /proc/<pid>/status field-extraction functions\"",
         "content_hash": "e24c1bc0d9d4b92a"
@@ -4937,7 +4947,7 @@
       }
     ],
     "proposed_home": "crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 55 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

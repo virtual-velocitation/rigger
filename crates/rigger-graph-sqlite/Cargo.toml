@@ -48,5 +48,11 @@ rigger-process = { path = "../rigger-process", default-features = false }
 # it, so this crate's core-lane tests build the root in the same lane as every other dependency.
 rigger-root = { package = "rigger", path = "../..", default-features = false }
 
+# Target-gated as the production entry is. `trace`: the count test of proof settlement (spec 122)
+# counts the definition lookups a fold executes through a statement-trace callback; the
+# production entry never enables it.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+rusqlite = { version = "0.32", features = ["trace"] }
+
 [lints]
 workspace = true

@@ -800,6 +800,25 @@ pub fn marked_partial(mut head: serde_json::Value) -> serde_json::Value {
     head
 }
 
+/// `payload` marked the head of its file's batch when `fresh`, and not when not: the flag on which
+/// the fold supersedes what the file's prior batch recorded.
+pub fn marked_fresh(mut payload: serde_json::Value, fresh: bool) -> serde_json::Value {
+    payload["fresh"] = fresh.into();
+    payload
+}
+
+/// `tests/t.rs`'s test reference to `name` at `line` heading its batch ([`marked_fresh`]), as
+/// event 0 of its generation `k1` (replay-keyed `gc/tests/t.rs@k1#0`), valid from `secs`.
+pub fn fresh_test_reference(name: &str, line: u32, secs: u64) -> Event {
+    let payload = marked_fresh(edge_inferred_evidence_json("tests/t.rs", name, line), true);
+    keyed(
+        TYPE_EDGE_INFERRED,
+        serde_json::to_vec(&payload).unwrap(),
+        "gc/tests/t.rs@k1#0",
+        secs,
+    )
+}
+
 /// The Rust definition of `name`, a `kind` at `line` in `file` ([`kind_def_json`]), as an unkeyed
 /// batch event, its batch's head when `fresh`.
 pub fn definition_event(file: &str, name: &str, kind: &str, line: u64, fresh: bool) -> Event {
@@ -1429,6 +1448,24 @@ pub fn proven_by_attr(p: &Projector, id: &str) -> Option<String> {
 /// carrying a proof is not equal to them.
 pub fn definition(name: &str, kind: &str, line: u64) -> BTreeMap<String, String> {
     definition_in("rust", name, kind, line)
+}
+
+/// The attrs of a Rust definition `name`, a `kind` at `line` ([`definition`]), proven by the test
+/// references at the `file:line`s of `evidence`, in the order the proof lists them: their count as
+/// `proven_by` and their JSON list as `proof_evidence`.
+pub fn proven_definition(
+    name: &str,
+    kind: &str,
+    line: u64,
+    evidence: &[&str],
+) -> BTreeMap<String, String> {
+    let mut attrs = definition(name, kind, line);
+    attrs.insert("proven_by".to_string(), evidence.len().to_string());
+    attrs.insert(
+        "proof_evidence".to_string(),
+        serde_json::to_string(evidence).unwrap(),
+    );
+    attrs
 }
 
 /// The attrs of a definition `name` in the language `lang`, a `kind` at `line`, and of nothing

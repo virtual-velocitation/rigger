@@ -8851,6 +8851,12 @@ mod tests {
             .unwrap()
     }
 
+    /// The text of the definition lookup a proof's resolution ([`resolve_proofs`]) and a
+    /// reference's same-file candidates ([`same_file_candidates`]) run, with a file bound.
+    fn definition_lookup_sql() -> String {
+        leaf_definitions_sql(&admitted_sql(Admitted::LiveCallTargets), true)
+    }
+
     /// Every row of every table but the `applied` ledger, straight off the projector's own
     /// connection, as `<table>: <columns>`, sorted, so two dumps compare whatever order a table
     /// hands its rows in.
@@ -12668,11 +12674,7 @@ mod tests {
             let same_file = params!["new", KIND_CODE_ENTITY, "test", "a.rs"];
             for plan in [
                 query_plan(&p, &pinned, []),
-                query_plan(
-                    &p,
-                    &leaf_definitions_sql(&admitted_sql(Admitted::LiveCallTargets), true),
-                    same_file,
-                ),
+                query_plan(&p, &definition_lookup_sql(), same_file),
             ] {
                 assert_plan_uses(&plan, "USING INDEX idx_nodes_leaf");
             }
@@ -13222,8 +13224,7 @@ mod tests {
         /// Fold onto `p`, at `pos`, the first event of generation `generation` of `f.rs`: its
         /// top-level reference to `name` ([`apply_generation_head_event`]).
         fn apply_reference_head(p: &Projector, pos: u64, generation: &str, name: &str) {
-            let mut head = ref_json("f.rs", name);
-            head["fresh"] = true.into();
+            let head = crate::test_support::marked_fresh(ref_json("f.rs", name), true);
             apply_generation_head_event(p, pos, "f.rs", generation, TYPE_EDGE_INFERRED, head, pos);
         }
 
@@ -13822,6 +13823,201 @@ mod tests {
         }
     }
 
+    /// Spec 122 criterion 5, PROOFS SETTLE ONCE PER TRANSACTION: a name a fold owes its proofs
+    /// is resolved once, before its transaction commits, however many of its references and
+    /// definitions the transaction folds, and the rows that leaves equal those of settling after
+    /// every event.
+    mod proofs_settle_once {
+        use super::*;
+        use crate::contextgraph::CODE_KIND_FUNCTION;
+        use crate::test_support::{
+            attrs_of, definition_event, edge_inferred_evidence_json, entry_at, event_of,
+            fold_events, folds, marked_fresh, placed_at, proven_definition, GENERATION_AFTER,
+            GENERATION_BEFORE,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// The executions of the definition lookup [`resolve_proofs`] runs that the
+        /// statement-trace callback [`count_lookup`] saw since [`lookups_taken`] last read it.
+        static LOOKUPS: AtomicUsize = AtomicUsize::new(0);
+
+        /// The statement-trace callback of a counted connection: a traced statement, its bound
+        /// parameters replaced by their values, is the definition lookup when it opens with the
+        /// lookup's built text up to that text's first bound parameter.
+        fn count_lookup(traced: &str) {
+            let built = definition_lookup_sql();
+            let head = &built[..built.find('?').unwrap_or(built.len())];
+            if traced.starts_with(head) {
+                LOOKUPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        /// The lookups counted since the last read, the count reset to zero.
+        fn lookups_taken() -> usize {
+            LOOKUPS.swap(0, Ordering::SeqCst)
+        }
+
+        /// The test references `tests/owed.rs` holds to `owed` at log positions
+        /// `from..from + count`, none its batch's head.
+        fn references_to_owed(from: u64, count: u64) -> Vec<Event> {
+            (from..from + count)
+                .map(|pos| {
+                    let json = edge_inferred_evidence_json("tests/owed.rs", "owed", pos as u32);
+                    placed_at(event_of(TYPE_EDGE_INFERRED, json), pos, pos)
+                })
+                .collect()
+        }
+
+        /// A projector whose connection counts the definition lookups ([`count_lookup`]),
+        /// holding `seeded` proof rows of `owed` ([`references_to_owed`]), the lookups the
+        /// seeding took read and reset.
+        fn counted_holding(seeded: u64) -> Projector {
+            let p = fold_events([]);
+            p.conn.lock().unwrap().trace(Some(count_lookup));
+            folds(&p, &references_to_owed(1, seeded));
+            lookups_taken();
+            p
+        }
+
+        /// THE COUNT TEST: over r = 2 recorded proof rows of `owed`, k = 3 more test references
+        /// to it folded in one transaction resolve `owed` once, executing the definition lookup
+        /// 1 + r + k = 6 times - its one `only` lookup and one same-file lookup per row - where
+        /// folding each in its own transaction, resolving after every reference, executes it
+        /// k(1 + r) + k(k + 1)/2 = 15 times.
+        #[test]
+        fn one_transaction_resolves_an_owed_name_once_where_one_per_reference_resolves_it_each_time(
+        ) {
+            const R: u64 = 2;
+            const K: u64 = 3;
+            let once = counted_holding(R);
+            let per_reference = counted_holding(R);
+            let references = references_to_owed(R + 1, K);
+            folds(&once, &references);
+            let in_one = lookups_taken();
+            for reference in &references {
+                folds(&per_reference, std::slice::from_ref(reference));
+            }
+            let in_each = lookups_taken();
+            assert_eq!(
+                (in_one, in_each),
+                (
+                    (1 + R + K) as usize,
+                    (K * (1 + R) + K * (K + 1) / 2) as usize
+                )
+            );
+        }
+
+        /// One part of [`settling_log`]: a ledger entry with the batch it folds with, or another
+        /// event alone.
+        type Part = (Event, Option<Vec<Event>>);
+
+        /// Fold `part` in `tx`: an entry with its batch ([`fold_entry`]), any other event
+        /// alone ([`fold_new`]).
+        fn fold_part(tx: &Transaction, project: &str, (e, batch): &Part) -> Result<(), Error> {
+            match batch {
+                Some(batch) => fold_entry(tx, e, project, || {
+                    Ok(BatchAnswer::Batch(Some(batch.clone())))
+                })
+                .map(drop),
+                None => fold_new(tx, std::slice::from_ref(e), project),
+            }
+        }
+
+        /// `src/settled.rs` defines `lead`, `kept` and `dropped`, proven by
+        /// `tests/settled_a.rs` and `tests/settled_b.rs`; `tests/settled_a.rs`'s next
+        /// generation drops its reference to `dropped`, and last, so no later fold rewrites
+        /// `kept`'s proof, `src/settled.rs`'s next keeps `kept` behind its head `lead` and
+        /// drops `dropped`.
+        fn settling_log() -> Vec<Part> {
+            let def = |name, line, head| {
+                definition_event("src/settled.rs", name, CODE_KIND_FUNCTION, line, head)
+            };
+            let proof = |file, name, line, head| {
+                let json = marked_fresh(edge_inferred_evidence_json(file, name, line), head);
+                event_of(TYPE_EDGE_INFERRED, json)
+            };
+            let entry = |file, generation, pos, batch| {
+                (entry_at("gc", file, generation, pos, pos), Some(batch))
+            };
+            vec![
+                entry(
+                    "src/settled.rs",
+                    GENERATION_BEFORE,
+                    1,
+                    vec![
+                        def("lead", 1, true),
+                        def("kept", 2, false),
+                        def("dropped", 3, false),
+                    ],
+                ),
+                entry(
+                    "tests/settled_a.rs",
+                    GENERATION_BEFORE,
+                    2,
+                    vec![
+                        proof("tests/settled_a.rs", "kept", 3, true),
+                        proof("tests/settled_a.rs", "dropped", 4, false),
+                    ],
+                ),
+                (
+                    placed_at(proof("tests/settled_b.rs", "kept", 5, false), 3, 3),
+                    None,
+                ),
+                (
+                    placed_at(proof("tests/settled_b.rs", "dropped", 6, false), 4, 4),
+                    None,
+                ),
+                entry(
+                    "tests/settled_a.rs",
+                    GENERATION_AFTER,
+                    5,
+                    vec![proof("tests/settled_a.rs", "kept", 3, true)],
+                ),
+                entry(
+                    "src/settled.rs",
+                    GENERATION_AFTER,
+                    6,
+                    vec![def("lead", 1, true), def("kept", 2, false)],
+                ),
+            ]
+        }
+
+        /// THE EQUALITY ORACLE: [`settling_log`] folded in one transaction leaves, on every
+        /// table but `applied`, the rows of folding each of its parts in a transaction of its
+        /// own, settled after every part; and THE REVIVED PROOF: `kept`, retired after its next
+        /// generation's head and revived by the event after it, keeps on both the proof
+        /// `tests/settled_b.rs` and `tests/settled_a.rs` record on it.
+        #[test]
+        fn a_log_settled_once_folds_to_the_rows_of_settling_after_every_event() {
+            let log = settling_log();
+            let once = fold_events([]);
+            once.transact(|tx| {
+                log.iter()
+                    .try_for_each(|part| fold_part(tx, &once.project, part))
+            })
+            .unwrap();
+            let per_event = fold_events([]);
+            for part in &log {
+                per_event
+                    .transact(|tx| fold_part(tx, &per_event.project, part))
+                    .unwrap();
+            }
+            assert_eq!(
+                projection_but_applied(&once),
+                projection_but_applied(&per_event)
+            );
+            let proven = proven_definition(
+                "kept",
+                CODE_KIND_FUNCTION,
+                2,
+                &["tests/settled_b.rs:5", "tests/settled_a.rs:3"],
+            );
+            for p in [&once, &per_event] {
+                assert_eq!(attrs_of(p, "src/settled.rs::kept"), proven);
+            }
+        }
+    }
+
     /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE). Proven directly against the fold (raw
     /// `TYPE_EDGE_INFERRED` payloads), never through the extraction pass - the emit half's own
     /// contract (`extract_events`'s empty-after-exclusion boundary) is proven separately in
@@ -14349,11 +14545,11 @@ mod tests {
                 fold_generation(&rebuilt, 1, "h2", 20);
                 fold_a_cross_file_call_and_a_proof(&rebuilt, 6);
 
-                let mut proven = definition("x", "function", line);
-                proven.insert("proven_by".to_string(), "1".to_string());
-                proven.insert(
-                    "proof_evidence".to_string(),
-                    r#"["tests/t.rs:3"]"#.to_string(),
+                let proven = crate::test_support::proven_definition(
+                    "x",
+                    "function",
+                    line,
+                    &["tests/t.rs:3"],
                 );
                 for (p, why) in [
                     (&folded, "folded onto generation 1"),
@@ -14792,16 +14988,10 @@ mod tests {
         fn a_retired_node_that_returns_keeps_the_proof_another_file_recorded_on_it() {
             let p = Projector::open(":memory:", "test").unwrap();
             apply_generation_head(&p, 1, "src/f.rs", "h1", "alpha", 10);
-            apply_keyed(
+            crate::test_support::fold_at(
                 &p,
                 2,
-                TYPE_EDGE_INFERRED,
-                serde_json::json!({
-                    "file": "tests/t.rs", "name": "alpha", "lang": "rust", "line": 3,
-                    "is_test": true, "fresh": true,
-                }),
-                "gc/tests/t.rs@k1#0",
-                11,
+                crate::test_support::fresh_test_reference("alpha", 3, 11),
             );
             // h2's first event defines another name, so `alpha` is retired at the boundary and
             // comes back with the event after it.
@@ -16436,9 +16626,11 @@ mod tests {
                     &[("Kestrel", CODE_KIND_TYPE), ("Hawk", CODE_KIND_TYPE)],
                 );
                 let go = |name: &str, fresh: bool| {
-                    let mut json = code_entity_json("src/g.go", name, CODE_KIND_TYPE, 1, "go");
-                    json["fresh"] = fresh.into();
-                    event_of(TYPE_CODE_ENTITY_EXTRACTED, json)
+                    let json = code_entity_json("src/g.go", name, CODE_KIND_TYPE, 1, "go");
+                    event_of(
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        crate::test_support::marked_fresh(json, fresh),
+                    )
                 };
                 fold(
                     &p,
@@ -18549,10 +18741,12 @@ mod tests {
         apply_def(&p, 1, "u.rs", "helper", 1, true);
         apply_call(&p, 2, "u.rs", "helper", "helper");
         for (pos, file) in [(3, "u.rs"), (4, "v.rs")] {
-            let mut head = crate::test_support::marked_partial(
-                crate::test_support::tagged_ref_json(file, "Ledger", "use", None),
+            let head = crate::test_support::marked_fresh(
+                crate::test_support::marked_partial(crate::test_support::tagged_ref_json(
+                    file, "Ledger", "use", None,
+                )),
+                true,
             );
-            head["fresh"] = true.into();
             apply_json(&p, pos, TYPE_EDGE_INFERRED, head);
         }
         assert_eq!(
