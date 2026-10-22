@@ -438,15 +438,16 @@ pub fn rebuild_answer(
     source: &mut rigger::contextgraph::sqlite::RebuildSource,
     reextract: &mut rigger::contextgraph::sqlite::Reextract,
 ) -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, String> {
-    Projector::rebuild(
-        &Projector::lock_rebuild(graph_db).unwrap(),
-        "test",
-        owed,
-        source,
-        reextract,
-        &mut |_| {},
-    )
-    .map_err(|e| e.0)
+    Projector::open(graph_db, "test")
+        .unwrap()
+        .rebuild(
+            &Projector::lock_rebuild(graph_db).unwrap(),
+            owed,
+            source,
+            reextract,
+            &mut |_| {},
+        )
+        .map_err(|e| e.0)
 }
 
 /// Rebuild the graph file `graph_db` as [`rebuild_answer`] does, and insist the rebuild ran,

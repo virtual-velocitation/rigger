@@ -427,15 +427,18 @@ impl Projector {
         take_rebuild_lock(path)?.ok_or_else(|| Error(REBUILD_IN_PROGRESS.to_string()))
     }
 
-    /// Pay the rebuild the graph file `held` names owes (spec 101), and report whether there was one
-    /// to pay - `None` when there was not, else what it did ([`Rebuilt`]): how many events it passed
+    /// Pay the rebuild this projector's graph file - the one `held` names - owes (spec 101), and
+    /// report whether there was one to pay - `None` when there was not, else what it did
+    /// ([`Rebuilt`]): how many events it passed
     /// over because the fold rejects their payload (see `fold_source`) and what its run-closure
     /// prune removed - owed because its caller found it so (`owed`: what [`Projector::owed_against`]
     /// read of its ledger against the log), or because the file itself records an older fold rule
     /// or carries the [`owed_mark`] a failed fold left, both read again here. A rebuild's own
     /// unfinished work is paid too, with no owed cause: the shadow a rebuild whose swap stopped
     /// left standing, whose swap it finishes before any tail, and the tail past the cursor a swap
-    /// put in place. The mark is dropped once the rebuilt file is in place.
+    /// put in place. The mark is dropped once the rebuilt file is in place. The live file is this
+    /// projector's own: its connection, held under its mutex for the whole rebuild, is the one the
+    /// swap copies into and the tail folds through, under this projector's project.
     ///
     /// The rebuild folds `source` - the log's live selection, whose cost is bounded by the live
     /// projection rather than the log's age - each ledger entry of perception with the batch
@@ -480,20 +483,21 @@ impl Projector {
     /// reports the counts stamped with the swap. Only then is the rebuild state dropped, the cursor
     /// and the attribution together.
     pub fn rebuild(
+        &self,
         held: &RebuildLock,
-        project: &str,
         owed: bool,
         source: &mut RebuildSource,
         reextract: &mut Reextract,
         progress: &mut dyn FnMut(RebuildProgress),
     ) -> Result<Option<Rebuilt>, Error> {
         let path = held.path();
-        let mut live = open_connection(path).map_err(be)?;
+        let project = self.project.as_str();
+        let mut live = self.conn.lock().unwrap();
+        let live = &mut *live;
         let mut passed_over = 0;
         let shadow_path = shadow_of(path);
-        let mark = owed_mark(path);
         let swap_unfinished = Path::new(&shadow_path).exists();
-        if owed || swap_unfinished || !owed_by_file(&live, &mark)?.is_empty() {
+        if owed || swap_unfinished || !owed_by_file(live, &self.owed_mark)?.is_empty() {
             let mut shadow = open_shadow(&shadow_path)?;
             schema(&shadow, project)?;
             in_transaction(&mut shadow, project, |tx| {
@@ -505,7 +509,7 @@ impl Projector {
             let copy = pruned_copy(path);
             let pruned = prune_a_copy(&shadow, &copy, project)?;
             // Every page in one step: one write transaction on the live file.
-            rusqlite::backup::Backup::new(&pruned, &mut live)
+            rusqlite::backup::Backup::new(&pruned, live)
                 .map_err(be)?
                 .run_to_completion(i32::MAX, std::time::Duration::from_millis(50), None)
                 .map_err(be)?;
@@ -513,16 +517,16 @@ impl Projector {
             remove_if_present(&copy)?;
             // Paid: the swapped-in file holds every event the source held. Dropped before the
             // tail, so a fold lost while the tail runs marks the file owed again.
-            if let Some(mark) = mark {
+            if let Some(mark) = &self.owed_mark {
                 remove_if_present(mark)?;
             }
             // The swap ends with its shadow: until it is gone a rerun resumes it, and from then on
             // only the tail is owed.
             remove_shadow(shadow, &shadow_path)?;
-        } else if !rebuild_tail_owed(&live)? {
+        } else if !rebuild_tail_owed(live)? {
             return Ok(None);
         }
-        passed_over += fold_source(&mut live, project, source, reextract, progress, false)?;
+        passed_over += fold_source(live, project, source, reextract, progress, false)?;
         let pruned = live
             .query_row(
                 "SELECT pruned_nodes, reclaimed_edges FROM rebuild_cursor",
@@ -535,7 +539,7 @@ impl Projector {
                 },
             )
             .map_err(be)?;
-        in_transaction(&mut live, project, |tx| {
+        in_transaction(live, project, |tx| {
             tx.execute_batch(DROP_REBUILD_STATE).map_err(be)
         })?;
         Ok(Some(Rebuilt {
@@ -5697,15 +5701,16 @@ mod tests {
             "the rebuild records the event it passed over, so the ledger holds every position"
         );
         drop(p);
-        let again = Projector::rebuild(
-            &locked(path),
-            "test",
-            false,
-            &mut |_, _| panic!("a paid rebuild reads nothing"),
-            &mut |_| Ok(None),
-            &mut |_| {},
-        )
-        .unwrap();
+        let again = Projector::open(path, "test")
+            .unwrap()
+            .rebuild(
+                &locked(path),
+                false,
+                &mut |_, _| panic!("a paid rebuild reads nothing"),
+                &mut |_| Ok(None),
+                &mut |_| {},
+            )
+            .unwrap();
         assert_eq!(again, None, "a paid rebuild does not run again");
     }
 
@@ -5744,9 +5749,8 @@ mod tests {
         batch: usize,
         reads_from: &mut Vec<u64>,
     ) -> Result<Option<Rebuilt>, Error> {
-        Projector::rebuild(
+        Projector::open(path, "test")?.rebuild(
             &Projector::lock_rebuild(path)?,
-            "test",
             true,
             &mut |after, sink| {
                 reads_from.push(after);
@@ -5764,9 +5768,8 @@ mod tests {
         log: &[Event],
     ) -> Result<Option<Rebuilt>, Error> {
         let mut batches = 0;
-        Projector::rebuild(
+        Projector::open(path, "test").unwrap().rebuild(
             &locked(path),
-            "test",
             true,
             &mut |after, sink| {
                 stream_past(log, after, 2, &mut |events, head| {
@@ -5849,19 +5852,20 @@ mod tests {
         let path = path.to_str().unwrap();
         drop(Projector::open(path, "test").unwrap());
         let mut reads = 0;
-        let rebuilt = Projector::rebuild(
-            &locked(path),
-            "test",
-            true,
-            &mut |after, sink| {
-                reads += 1;
-                let log: &[Event] = if reads == 1 { &before } else { &gained };
-                stream_past(log, after, 10, sink)
-            },
-            &mut |_| Ok(None),
-            &mut |_| {},
-        )
-        .unwrap();
+        let rebuilt = Projector::open(path, "test")
+            .unwrap()
+            .rebuild(
+                &locked(path),
+                true,
+                &mut |after, sink| {
+                    reads += 1;
+                    let log: &[Event] = if reads == 1 { &before } else { &gained };
+                    stream_past(log, after, 10, sink)
+                },
+                &mut |_| Ok(None),
+                &mut |_| {},
+            )
+            .unwrap();
         let p = Projector::open(path, "test").unwrap();
         assert_eq!(
             (
@@ -5989,16 +5993,17 @@ mod tests {
     /// rebuild against the log, then pay that - reporting whether it rebuilt.
     fn rebuild_as_setup_does(path: &str, log: &[Event]) -> bool {
         let owed = !owed_against_the_log(&Projector::open(path, "test").unwrap(), log).is_empty();
-        Projector::rebuild(
-            &locked(path),
-            "test",
-            owed,
-            &mut |after, sink| stream_past(log, after, 10, sink),
-            &mut |_| Ok(None),
-            &mut |_| {},
-        )
-        .unwrap()
-        .is_some()
+        Projector::open(path, "test")
+            .unwrap()
+            .rebuild(
+                &locked(path),
+                owed,
+                &mut |after, sink| stream_past(log, after, 10, sink),
+                &mut |_| Ok(None),
+                &mut |_| {},
+            )
+            .unwrap()
+            .is_some()
     }
 
     /// A lost fold owed by the `graph.db` at `path`, then paid: a fresh projector on the file
@@ -6078,9 +6083,8 @@ mod tests {
         let resumed = dir.path().join("resumed.db");
         let resumed = resumed.to_str().unwrap();
         drop(Projector::open(resumed, "test").unwrap());
-        let interrupted = Projector::rebuild(
+        let interrupted = Projector::open(resumed, "test").unwrap().rebuild(
             &locked(resumed),
-            "test",
             true,
             &mut |after, sink| {
                 let first = stream_past(&log, after, 2, sink);
@@ -6199,21 +6203,22 @@ mod tests {
             let mut reads_from = Vec::new();
             let mut read = Vec::new();
             let owed = owed_against_the_log(&Projector::open(&path, "test").unwrap(), &whole);
-            let resumed = Projector::rebuild(
-                &locked(&path),
-                "test",
-                !owed.is_empty(),
-                &mut |after, sink| {
-                    reads_from.push(after);
-                    stream_past(&whole, after, 10, &mut |events, head| {
-                        read.extend(crate::test_support::positions_of(events));
-                        sink(events, head)
-                    })
-                },
-                &mut |_| Ok(None),
-                &mut |_| {},
-            )
-            .unwrap();
+            let resumed = Projector::open(&path, "test")
+                .unwrap()
+                .rebuild(
+                    &locked(&path),
+                    !owed.is_empty(),
+                    &mut |after, sink| {
+                        reads_from.push(after);
+                        stream_past(&whole, after, 10, &mut |events, head| {
+                            read.extend(crate::test_support::positions_of(events));
+                            sink(events, head)
+                        })
+                    },
+                    &mut |_| Ok(None),
+                    &mut |_| {},
+                )
+                .unwrap();
             let p = Projector::open(&path, "test").unwrap();
             let cold = fresh("cold.db");
             let cold_report = rebuild_in_batches(&cold, &whole, 10, &mut Vec::new()).unwrap();
@@ -6364,21 +6369,22 @@ mod tests {
             let path = dir.path().join("graph.db").to_str().unwrap().to_string();
             drop(Projector::open(&path, "test").unwrap());
             let mut reads = 0;
-            let stopped = Projector::rebuild(
-                &locked(&path),
-                "test",
-                true,
-                &mut |after, sink| {
-                    reads += 1;
-                    match reads {
-                        1 => stream_past(&log, after, 10, sink),
-                        _ => Err(Error("interrupted in its tail".to_string())),
-                    }
-                },
-                &mut |_| Ok(None),
-                &mut |_| {},
-            )
-            .map_err(|e| e.to_string());
+            let stopped = Projector::open(&path, "test")
+                .unwrap()
+                .rebuild(
+                    &locked(&path),
+                    true,
+                    &mut |after, sink| {
+                        reads += 1;
+                        match reads {
+                            1 => stream_past(&log, after, 10, sink),
+                            _ => Err(Error("interrupted in its tail".to_string())),
+                        }
+                    },
+                    &mut |_| Ok(None),
+                    &mut |_| {},
+                )
+                .map_err(|e| e.to_string());
             (path, stopped)
         };
         let dir = tempfile::tempdir().unwrap();
@@ -6388,20 +6394,21 @@ mod tests {
 
         let mut read = Vec::new();
         let owed = !owed_tail_only.is_empty();
-        let finished = Projector::rebuild(
-            &locked(path),
-            "test",
-            owed,
-            &mut |after, sink| {
-                stream_past(&whole, after, 10, &mut |events, head| {
-                    read.extend(crate::test_support::positions_of(events));
-                    sink(events, head)
-                })
-            },
-            &mut |_| Ok(None),
-            &mut |_| {},
-        )
-        .unwrap();
+        let finished = Projector::open(path, "test")
+            .unwrap()
+            .rebuild(
+                &locked(path),
+                owed,
+                &mut |after, sink| {
+                    stream_past(&whole, after, 10, &mut |events, head| {
+                        read.extend(crate::test_support::positions_of(events));
+                        sink(events, head)
+                    })
+                },
+                &mut |_| Ok(None),
+                &mut |_| {},
+            )
+            .unwrap();
         let p = Projector::open(path, "test").unwrap();
         assert_eq!(
             (
@@ -6596,30 +6603,32 @@ mod tests {
 
         let tail = fresh("tail.db");
         let mut reads = 0;
-        let tail_stopped = Projector::rebuild(
-            &locked(&tail),
-            "test",
-            true,
-            &mut |after, sink| {
-                reads += 1;
-                if reads == 2 {
-                    return Err(Error("interrupted in its tail".to_string()));
-                }
-                stream_past(&log, after, 10, sink)
-            },
-            &mut |_| Ok(None),
-            &mut |_| {},
-        )
-        .map_err(|e| e.to_string());
-        let resumed_in_the_tail = Projector::rebuild(
-            &locked(&tail),
-            "test",
-            false,
-            &mut |after, sink| stream_past(&log, after, 10, sink),
-            &mut |_| Ok(None),
-            &mut |_| {},
-        )
-        .unwrap();
+        let tail_stopped = Projector::open(&tail, "test")
+            .unwrap()
+            .rebuild(
+                &locked(&tail),
+                true,
+                &mut |after, sink| {
+                    reads += 1;
+                    if reads == 2 {
+                        return Err(Error("interrupted in its tail".to_string()));
+                    }
+                    stream_past(&log, after, 10, sink)
+                },
+                &mut |_| Ok(None),
+                &mut |_| {},
+            )
+            .map_err(|e| e.to_string());
+        let resumed_in_the_tail = Projector::open(&tail, "test")
+            .unwrap()
+            .rebuild(
+                &locked(&tail),
+                false,
+                &mut |after, sink| stream_past(&log, after, 10, sink),
+                &mut |_| Ok(None),
+                &mut |_| {},
+            )
+            .unwrap();
 
         assert_eq!(
             (
@@ -7188,19 +7197,20 @@ mod tests {
         let held = locked(path);
         let before_its_first_write = second();
         let mut while_it_rebuilds = Vec::new();
-        let first = Projector::rebuild(
-            &held,
-            "test",
-            true,
-            &mut |after, sink| {
-                stream_past(log, after, 10, sink)?;
-                while_it_rebuilds.push(second());
-                Ok(())
-            },
-            &mut |_| Ok(None),
-            &mut |_| {},
-        )
-        .map_err(|e| e.to_string());
+        let first = Projector::open(held.path(), "test")
+            .unwrap()
+            .rebuild(
+                &held,
+                true,
+                &mut |after, sink| {
+                    stream_past(log, after, 10, sink)?;
+                    while_it_rebuilds.push(second());
+                    Ok(())
+                },
+                &mut |_| Ok(None),
+                &mut |_| {},
+            )
+            .map_err(|e| e.to_string());
         drop(held);
         let p = Projector::open(path, "test").unwrap();
         assert_eq!(
@@ -15365,23 +15375,24 @@ mod tests {
                     (rebuild_cursor(&conn).unwrap(), last as u64)
                 };
                 let (mut extracted, mut seam, mut reported) = (Vec::new(), Vec::new(), Vec::new());
-                let rebuilt = Projector::rebuild(
-                    &locked(&path),
-                    "test",
-                    false,
-                    &mut |after, sink| {
-                        crate::test_support::two_read_batches(&log, 790, after, sink, || {
-                            crate::test_support::folds(&p, std::slice::from_ref(&log[794]));
-                            seam.push(committed());
-                        })
-                    },
-                    &mut |e| {
-                        extracted.push((e.position, committed()));
-                        Ok(None)
-                    },
-                    &mut |at| reported.push(at),
-                )
-                .unwrap();
+                let rebuilt = Projector::open(&path, "test")
+                    .unwrap()
+                    .rebuild(
+                        &locked(&path),
+                        false,
+                        &mut |after, sink| {
+                            crate::test_support::two_read_batches(&log, 790, after, sink, || {
+                                crate::test_support::folds(&p, std::slice::from_ref(&log[794]));
+                                seam.push(committed());
+                            })
+                        },
+                        &mut |e| {
+                            extracted.push((e.position, committed()));
+                            Ok(None)
+                        },
+                        &mut |at| reported.push(at),
+                    )
+                    .unwrap();
                 assert_eq!(rebuilt, Some(Rebuilt::default()));
                 assert_eq!(
                     extracted,
@@ -18156,20 +18167,21 @@ mod tests {
                 assert_eq!(folded.len(), 3, "premise: the log stages three rows");
                 drop(incremental);
                 let log: Vec<Event> = batches.iter().map(|(entry, _)| entry.clone()).collect();
-                Projector::rebuild(
-                    &Projector::lock_rebuild(&path).unwrap(),
-                    "test",
-                    true,
-                    &mut |after, sink| stream_past(&log, after, 10, sink),
-                    &mut |entry| {
-                        Ok(batches
-                            .iter()
-                            .find(|(e, _)| e.position == entry.position)
-                            .map(|(_, batch)| batch.clone()))
-                    },
-                    &mut |_| {},
-                )
-                .unwrap();
+                Projector::open(&path, "test")
+                    .unwrap()
+                    .rebuild(
+                        &Projector::lock_rebuild(&path).unwrap(),
+                        true,
+                        &mut |after, sink| stream_past(&log, after, 10, sink),
+                        &mut |entry| {
+                            Ok(batches
+                                .iter()
+                                .find(|(e, _)| e.position == entry.position)
+                                .map(|(_, batch)| batch.clone()))
+                        },
+                        &mut |_| {},
+                    )
+                    .unwrap();
                 assert_eq!(refs_dump(&Projector::open(&path, "test").unwrap()), folded);
             }
 

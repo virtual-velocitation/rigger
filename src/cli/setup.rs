@@ -1033,7 +1033,8 @@ fn pay_owed_rebuild<'t>(
     source: &mut contextgraph::sqlite::RebuildSource,
     reextract: &mut contextgraph::sqlite::Reextract,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let causes = Projector::open(held.path(), project)?.owed_against(live)?;
+    let graph = Projector::open(held.path(), project)?;
+    let causes = graph.owed_against(live)?;
     if !causes.is_empty() {
         println!(
             "rebuilding graph.db from the event log: {}, so the log's live selection is refolded \
@@ -1042,18 +1043,11 @@ fn pay_owed_rebuild<'t>(
         );
     }
     let mut printed = 0;
-    let rebuilt = Projector::rebuild(
-        held,
-        project,
-        !causes.is_empty(),
-        source,
-        reextract,
-        &mut |at| {
-            if let Some(line) = rebuild_progress_line(at, &mut printed) {
-                println!("{line}");
-            }
-        },
-    )?;
+    let rebuilt = graph.rebuild(held, !causes.is_empty(), source, reextract, &mut |at| {
+        if let Some(line) = rebuild_progress_line(at, &mut printed) {
+            println!("{line}");
+        }
+    })?;
     if let Some(rebuilt) = rebuilt {
         println!("rebuilt graph.db from the event log");
         println!("{} from the rebuilt graph", pruned_line(&rebuilt.pruned));
@@ -1063,7 +1057,6 @@ fn pay_owed_rebuild<'t>(
                 rebuilt.passed_over
             );
         }
-        let graph = Projector::open(held.path(), project)?;
         println!(
             "{}",
             rebuild_report_line(identities_behind_their_recording(log, &graph, tree)?)

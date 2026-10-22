@@ -934,18 +934,20 @@ fn rebuild_resolving(
 ) -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, String> {
     let mut blobs = rigger::worktree::BlobBatch::start(root);
     assert!(blobs.is_some(), "the tree is a repository");
-    Projector::rebuild(
-        &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
-        project,
-        true,
-        &mut one_by_one(log),
-        &mut |entry| {
-            let mut source = |id: &str| blobs.as_mut().unwrap().blob(id).map_err(|e| Error(e.0));
-            rigger::ingest::resolve_entry(root, entry, Some(&mut source))
-        },
-        &mut no_progress,
-    )
-    .map_err(|e| e.0)
+    Projector::open(db.to_str().unwrap(), project)
+        .unwrap()
+        .rebuild(
+            &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
+            true,
+            &mut one_by_one(log),
+            &mut |entry| {
+                let mut source =
+                    |id: &str| blobs.as_mut().unwrap().blob(id).map_err(|e| Error(e.0));
+                rigger::ingest::resolve_entry(root, entry, Some(&mut source))
+            },
+            &mut no_progress,
+        )
+        .map_err(|e| e.0)
 }
 
 /// Given a log whose second entry names a loose object whose body is truncated, when a rebuild
@@ -1265,18 +1267,19 @@ fn a_rebuild_whose_re_extracted_batch_the_fold_rejects_fails_rather_than_passing
         .to_string();
     let asked = std::cell::RefCell::new(Vec::new());
     let rebuild = |batch: Vec<Event>| {
-        Projector::rebuild(
-            &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
-            PROJECT,
-            true,
-            &mut one_by_one(&log),
-            &mut |entry| {
-                asked.borrow_mut().push(entry.position);
-                Ok(Some(batch.clone()))
-            },
-            &mut no_progress,
-        )
-        .map_err(|e| e.0)
+        Projector::open(db.to_str().unwrap(), PROJECT)
+            .unwrap()
+            .rebuild(
+                &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
+                true,
+                &mut one_by_one(&log),
+                &mut |entry| {
+                    asked.borrow_mut().push(entry.position);
+                    Ok(Some(batch.clone()))
+                },
+                &mut no_progress,
+            )
+            .map_err(|e| e.0)
     };
     let before = graph_identity(&db, PROJECT);
 
@@ -1994,17 +1997,18 @@ fn a_rebuild_interrupted_and_resumed_reports_the_number_a_single_pass_does() {
         .position(|event| event.position == positions[2])
         .unwrap();
 
-    let interrupted = Projector::rebuild(
-        &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
-        &project,
-        true,
-        &mut |after, sink: &mut RebuildSink| {
-            rigger::contextgraph::sqlite::stream_past(&log[..=through], after, 1, sink)?;
-            Err(Error("interrupted".to_string()))
-        },
-        &mut |entry| rigger::ingest::resolve_entry(root, entry, None),
-        &mut no_progress,
-    );
+    let interrupted = Projector::open(graph_db.to_str().unwrap(), &project)
+        .unwrap()
+        .rebuild(
+            &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
+            true,
+            &mut |after, sink: &mut RebuildSink| {
+                rigger::contextgraph::sqlite::stream_past(&log[..=through], after, 1, sink)?;
+                Err(Error("interrupted".to_string()))
+            },
+            &mut |entry| rigger::ingest::resolve_entry(root, entry, None),
+            &mut no_progress,
+        );
     assert_eq!(interrupted.map_err(|e| e.0), Err("interrupted".to_string()));
     let shadow = rigger_file(root, "graph.db.rebuild");
     assert_eq!(

@@ -478,14 +478,15 @@ fn rebuild(
     source: &mut rigger::contextgraph::sqlite::RebuildSource,
 ) -> Result<Option<Rebuilt>, rigger::contextgraph::Error> {
     use rigger::contextgraph::sqlite::Projector;
-    Projector::rebuild(
-        &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
-        PROJECT,
-        false,
-        source,
-        &mut |_| Ok(None),
-        &mut no_progress,
-    )
+    Projector::open(db.to_str().unwrap(), PROJECT)
+        .unwrap()
+        .rebuild(
+            &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
+            false,
+            source,
+            &mut |_| Ok(None),
+            &mut no_progress,
+        )
 }
 
 /// A `graph.db` folded before the generation rule - with no ledgers at all, or with them in an
@@ -517,15 +518,16 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
     drop(graph);
     let afters = std::cell::RefCell::new(Vec::new());
     let mut reported = Vec::new();
-    let ran = Projector::rebuild(
-        &Projector::lock_rebuild(old_db.to_str().unwrap()).unwrap(),
-        PROJECT,
-        false,
-        &mut source_over(&log, 2, &afters),
-        &mut |_| Ok(None),
-        &mut |at| reported.push(at),
-    )
-    .unwrap();
+    let ran = Projector::open(old_db.to_str().unwrap(), PROJECT)
+        .unwrap()
+        .rebuild(
+            &Projector::lock_rebuild(old_db.to_str().unwrap()).unwrap(),
+            false,
+            &mut source_over(&log, 2, &afters),
+            &mut |_| Ok(None),
+            &mut |at| reported.push(at),
+        )
+        .unwrap();
     assert_eq!(ran, Some(Rebuilt::default()), "the owed rebuild runs");
     let (p, head) = (|i: usize| log[i].position, log[4].position);
     let at = |through, folded| RebuildProgress {
@@ -611,15 +613,16 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
             2,
         ))
         .unwrap();
-    let rebuilt = Projector::rebuild(
-        &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
-        PROJECT,
-        !owed.is_empty(),
-        &mut stream_source(&counting, rigger::conductor::STREAM, 2),
-        &mut |_| Ok(None),
-        &mut no_progress,
-    )
-    .unwrap();
+    let rebuilt = Projector::open(graph_db.to_str().unwrap(), PROJECT)
+        .unwrap()
+        .rebuild(
+            &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
+            !owed.is_empty(),
+            &mut stream_source(&counting, rigger::conductor::STREAM, 2),
+            &mut |_| Ok(None),
+            &mut no_progress,
+        )
+        .unwrap();
     assert_eq!(
         (owed, rebuilt, counting.reads()),
         (
@@ -904,30 +907,31 @@ fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_
     let committed = || (rebuild_cursor_of(db), applied_positions(db));
     let (mut reads, mut seam, mut extracted) = (0, Vec::new(), Vec::new());
 
-    let rebuilt = Projector::rebuild(
-        &Projector::lock_rebuild(&path).unwrap(),
-        PROJECT,
-        true,
-        &mut |after, sink| {
-            reads += 1;
-            if reads == 1 {
-                return sink(&log[..swapped], at(swapped - 1));
-            }
-            two_read_batches(&log, split, after, sink, || {
-                folds(
-                    &Projector::open(&path, PROJECT).unwrap(),
-                    std::slice::from_ref(&log[writer]),
-                );
-                seam.push(committed());
-            })
-        },
-        &mut |e| {
-            extracted.push((e.position, committed()));
-            Ok(None)
-        },
-        &mut no_progress,
-    )
-    .unwrap();
+    let rebuilt = Projector::open(&path, PROJECT)
+        .unwrap()
+        .rebuild(
+            &Projector::lock_rebuild(&path).unwrap(),
+            true,
+            &mut |after, sink| {
+                reads += 1;
+                if reads == 1 {
+                    return sink(&log[..swapped], at(swapped - 1));
+                }
+                two_read_batches(&log, split, after, sink, || {
+                    folds(
+                        &Projector::open(&path, PROJECT).unwrap(),
+                        std::slice::from_ref(&log[writer]),
+                    );
+                    seam.push(committed());
+                })
+            },
+            &mut |e| {
+                extracted.push((e.position, committed()));
+                Ok(None)
+            },
+            &mut no_progress,
+        )
+        .unwrap();
 
     let before = |i: usize| (at(i - 1), positions_of(&log[..i]));
     assert_eq!(
@@ -1536,17 +1540,18 @@ fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_l
     let store = ReleaseEraStore::folded_at_rule_1();
     let (log, shadow) = (store.log(), rigger_file(store.root(), "graph.db.rebuild"));
     let head = log.last().unwrap().position;
-    let interrupted = Projector::rebuild(
-        &Projector::lock_rebuild(store.graph_db.to_str().unwrap()).unwrap(),
-        &store.project(),
-        false,
-        &mut |_, sink| {
-            sink(&log, head)?;
-            Err(rigger::contextgraph::Error("interrupted".to_string()))
-        },
-        &mut |_| Ok(None),
-        &mut no_progress,
-    );
+    let interrupted = Projector::open(store.graph_db.to_str().unwrap(), &store.project())
+        .unwrap()
+        .rebuild(
+            &Projector::lock_rebuild(store.graph_db.to_str().unwrap()).unwrap(),
+            false,
+            &mut |_, sink| {
+                sink(&log, head)?;
+                Err(rigger::contextgraph::Error("interrupted".to_string()))
+            },
+            &mut |_| Ok(None),
+            &mut no_progress,
+        );
     assert_eq!(
         (interrupted.unwrap_err().0.as_str(), shadow.exists()),
         ("interrupted", true),
@@ -1696,21 +1701,22 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
             let backend = Store::open(events_db.to_str().unwrap()).unwrap();
             let mut batches = 0;
             let mut source = live_selection_of(&backend, &project, 1);
-            let ran = Projector::rebuild(
-                &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
-                &project,
-                false,
-                &mut source,
-                &mut |_| Ok(None),
-                &mut |_| {
-                    batches += 1;
-                    if batches == 1 {
-                        paused_tx.send(()).unwrap();
-                        resume_rx.recv().unwrap();
-                    }
-                },
-            )
-            .unwrap();
+            let ran = Projector::open(graph_db.to_str().unwrap(), &project)
+                .unwrap()
+                .rebuild(
+                    &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
+                    false,
+                    &mut source,
+                    &mut |_| Ok(None),
+                    &mut |_| {
+                        batches += 1;
+                        if batches == 1 {
+                            paused_tx.send(()).unwrap();
+                            resume_rx.recv().unwrap();
+                        }
+                    },
+                )
+                .unwrap();
             ran
         })
     };
@@ -2227,22 +2233,23 @@ fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_on
             let backend = Store::open(events_db.to_str().unwrap()).unwrap();
             let mut source = live_selection_of(&backend, &project, 1);
             let mut reads = 0;
-            Projector::rebuild(
-                &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
-                &project,
-                false,
-                &mut |after, sink| {
-                    reads += 1;
-                    if reads == 2 {
-                        paused_tx.send(after).unwrap();
-                        resume_rx.recv().unwrap();
-                    }
-                    source(after, sink)
-                },
-                &mut |_| Ok(None),
-                &mut |_| {},
-            )
-            .unwrap()
+            Projector::open(graph_db.to_str().unwrap(), &project)
+                .unwrap()
+                .rebuild(
+                    &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
+                    false,
+                    &mut |after, sink| {
+                        reads += 1;
+                        if reads == 2 {
+                            paused_tx.send(after).unwrap();
+                            resume_rx.recv().unwrap();
+                        }
+                        source(after, sink)
+                    },
+                    &mut |_| Ok(None),
+                    &mut |_| {},
+                )
+                .unwrap()
         })
     };
     let tail_after = paused.recv().unwrap();
@@ -4594,23 +4601,24 @@ fn a_rebuild_whose_process_is_gone_leaves_no_lock_and_the_next_setup_resumes_its
     let mut batches = 0;
     let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let mut live = live_selection_of(&backend, &project, 2);
-    let stopped = Projector::rebuild(
-        &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
-        &project,
-        true,
-        &mut |after, sink| {
-            live(after, &mut |events, head| {
-                batches += 1;
-                if batches > 2 {
-                    return Err(rigger::contextgraph::Error("stopped".to_string()));
-                }
-                sink(events, head)
-            })
-        },
-        &mut |_| Ok(None),
-        &mut |_| {},
-    )
-    .map_err(|e| e.to_string());
+    let stopped = Projector::open(graph_db.to_str().unwrap(), &project)
+        .unwrap()
+        .rebuild(
+            &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
+            true,
+            &mut |after, sink| {
+                live(after, &mut |events, head| {
+                    batches += 1;
+                    if batches > 2 {
+                        return Err(rigger::contextgraph::Error("stopped".to_string()));
+                    }
+                    sink(events, head)
+                })
+            },
+            &mut |_| Ok(None),
+            &mut |_| {},
+        )
+        .map_err(|e| e.to_string());
     drop(live);
     let cursor = rebuild_cursor_of(&rigger_file(root, "graph.db.rebuild"));
     // Its process holds the lock until it is gone.

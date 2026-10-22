@@ -329,15 +329,16 @@ pub fn rebuild_from_the_log(
 ) {
     use rigger::contextgraph::sqlite::{stream_past, Projector, RebuildSink};
 
-    let rebuilt = Projector::rebuild(
-        &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
-        "test",
-        true,
-        &mut |after, sink: &mut RebuildSink| stream_past(log, after, batch, sink),
-        reextract,
-        &mut |_| {},
-    )
-    .unwrap();
+    let rebuilt = Projector::open(graph_db.to_str().unwrap(), "test")
+        .unwrap()
+        .rebuild(
+            &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
+            true,
+            &mut |after, sink: &mut RebuildSink| stream_past(log, after, batch, sink),
+            reextract,
+            &mut |_| {},
+        )
+        .unwrap();
     assert!(rebuilt.is_some(), "premise: the rebuild ran");
 }
 
