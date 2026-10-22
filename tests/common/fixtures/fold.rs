@@ -308,6 +308,17 @@ pub fn owed_refusal() -> rigger::contextgraph::Fold {
     rigger::contextgraph::Fold::NotFolded(graph_error(rigger::contextgraph::REBUILD_OWED))
 }
 
+/// What the emit tool answers for the event it appended at `position`: folded, or - given the
+/// `reason` its fold failed for - not folded, and why.
+pub fn emit_answer(position: u64, reason: Option<&str>) -> serde_json::Value {
+    match reason {
+        None => serde_json::json!({ "position": position, "folded": true }),
+        Some(reason) => {
+            serde_json::json!({ "position": position, "folded": false, "reason": reason })
+        }
+    }
+}
+
 /// The reason a failing batch function gives ([`blob_unread`]).
 pub const BLOB_UNREAD: &str = "the blob could not be read";
 

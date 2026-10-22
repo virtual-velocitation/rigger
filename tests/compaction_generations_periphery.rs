@@ -1893,11 +1893,12 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
     );
     assert_eq!(
         emitted["result"]["structuredContent"],
-        serde_json::json!({
-            "position": log.last().unwrap().position,
-            "folded": false,
-            "reason": common::fixtures::graph_error(rigger::contextgraph::REBUILD_OWED),
-        }),
+        common::fixtures::emit_answer(
+            log.last().unwrap().position,
+            Some(&common::fixtures::graph_error(
+                rigger::contextgraph::REBUILD_OWED
+            ))
+        ),
         "the emit succeeds and says it was not folded, naming the rebuild; got: {emitted}"
     );
     assert!(
@@ -1917,7 +1918,7 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
     let emitted = mcp.tool_call("rigger_emit", decision("d-paid"));
     assert_eq!(
         emitted["result"]["structuredContent"],
-        serde_json::json!({"position": store.log().last().unwrap().position, "folded": true}),
+        common::fixtures::emit_answer(store.log().last().unwrap().position, None),
         "the emit succeeds and says it folded; got: {emitted}"
     );
     mcp.finish_cleanly();
@@ -2392,7 +2393,7 @@ fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
     let free_at = read_run_events(root).last().unwrap().position;
     assert_eq!(
         free["result"]["structuredContent"],
-        serde_json::json!({"position": free_at, "folded": true}),
+        common::fixtures::emit_answer(free_at, None),
         "an emit into an unlocked graph folds; got: {free}"
     );
 
@@ -2411,11 +2412,12 @@ fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
     );
     assert_eq!(
         locked["result"]["structuredContent"],
-        serde_json::json!({
-            "position": last.position,
-            "folded": false,
-            "reason": "graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it",
-        }),
+        common::fixtures::emit_answer(
+            last.position,
+            Some(&common::fixtures::lost_fold(&common::fixtures::graph_error(
+                common::fixtures::DATABASE_IS_LOCKED
+            )))
+        ),
         "the tool answers the position and the fold it could not make, with the reason; got: {locked}"
     );
     assert_eq!(

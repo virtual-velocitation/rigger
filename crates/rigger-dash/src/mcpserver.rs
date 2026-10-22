@@ -2391,11 +2391,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             emitted["result"]["structuredContent"],
-            json!({
-                "position": log[0].position,
-                "folded": false,
-                "reason": crate::test_support::graph_error(REBUILD_OWED),
-            }),
+            crate::test_support::emit_answer(
+                log[0].position,
+                Some(&crate::test_support::graph_error(REBUILD_OWED))
+            ),
             "the emit answers that the owed graph did not fold it, naming the rebuild"
         );
         assert_eq!(

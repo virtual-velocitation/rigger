@@ -14898,7 +14898,8 @@ mod tests {
 
             /// The generation `p` holds for `gc/src/f.rs`, the identity [`h1_at_7`] names.
             fn generation_of_f(p: &Projector) -> Option<String> {
-                p.current_generation("gc/src/f.rs").unwrap()
+                p.current_generation(&crate::test_support::gc_identity("src/f.rs"))
+                    .unwrap()
             }
 
             /// Every distinct `(identity, generation)` pair in `p`'s `table`, in order: the
