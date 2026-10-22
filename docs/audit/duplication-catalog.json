@@ -568,7 +568,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-e2420edc22e9",
+    "id": "dup-17929363b267",
     "classification": "near",
     "sites": [
       {
@@ -577,12 +577,17 @@
         "content_hash": "9c80ca639aa5a725"
       },
       {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "proof_targets_sql",
+        "content_hash": "14b162c1828e22af"
+      },
+      {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
         "name": "key_expr",
         "content_hash": "14b162c1828e22af"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
