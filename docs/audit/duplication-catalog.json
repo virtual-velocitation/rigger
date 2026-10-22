@@ -3202,7 +3202,7 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "name": "\"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \\\n     vacuums the file, which is a mechanic of the embedded .rigger/events.db store; this project \\\n     is configured for the server-backed store, where the migration does not run. Re-run it \\\n     against a project on the sqlite backend. Refusing rather than reporting a migration that did \\\n     not happen.\\n\"",
+        "name": "\"reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \\\n         file, which is a mechanic of the embedded .rigger/events.db store; this project is \\\n         configured for the server-backed store, where the migration does not run. Re-run it \\\n         against a project on the sqlite backend. Refusing rather than reporting a migration that \\\n         did not happen.\"",
         "content_hash": "25597419b8dbb616"
       },
       {
