@@ -1,9 +1,9 @@
 //! Periphery test for spec 122 criterion 5, PROOFS SETTLE ONCE PER TRANSACTION, at the frames the
 //! crate's own oracle does not reach. That oracle folds through the projector's private fold
 //! inside its `transact` frame; the settlement runs in every transaction frame of the file, so
-//! this test drives the same hand-built log, from OUTSIDE the crate, through the public live fold
-//! as one batch and one event to a transaction, and through `Projector::rebuild` folding the log
-//! as one batch and one event to a batch. Each frame must leave every definition with the same
+//! this test drives one hand-built log of its own, from OUTSIDE the crate, through the public live
+//! fold as one batch and one event to a transaction, and through `Projector::rebuild` folding the
+//! log as one batch and one event to a batch. Each frame must leave every definition with the same
 //! exact proof: the forward references a frame folds before their definitions land, and a
 //! generation dropping a reference and one dropping a definition take their proofs away. It
 //! runs on both lanes.
