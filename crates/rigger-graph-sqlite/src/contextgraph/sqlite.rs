@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS refs (
 );
 CREATE INDEX IF NOT EXISTS idx_refs_leaf ON refs(project, leaf);
 CREATE INDEX IF NOT EXISTS idx_refs_kind ON refs(project, ref_kind);
+CREATE TABLE IF NOT EXISTS proofs_owed (name TEXT PRIMARY KEY);
 ";
 
 /// The fold rule `graph.db` was folded under, recorded as the file's `user_version`. Rule 1 is
@@ -495,7 +496,7 @@ impl Projector {
         if owed || swap_unfinished || !owed_by_file(&live, &mark)?.is_empty() {
             let mut shadow = open_shadow(&shadow_path)?;
             schema(&shadow, project)?;
-            in_transaction(&mut shadow, |tx| {
+            in_transaction(&mut shadow, project, |tx| {
                 tx.execute_batch(REBUILD_STATE).map_err(be)
             })?;
             passed_over += fold_source(&mut shadow, project, source, reextract, progress, true)?;
@@ -534,7 +535,7 @@ impl Projector {
                 },
             )
             .map_err(be)?;
-        in_transaction(&mut live, |tx| {
+        in_transaction(&mut live, project, |tx| {
             tx.execute_batch(DROP_REBUILD_STATE).map_err(be)
         })?;
         Ok(Some(Rebuilt {
@@ -641,10 +642,11 @@ impl Projector {
     }
 
     /// Run `body` in ONE transaction on this file's connection, held under its lock for the
-    /// whole of it ([`in_transaction`]): the one lock -> transaction -> body -> commit frame,
-    /// taken by each method that writes in a transaction. The lock is released when this returns.
+    /// whole of it ([`in_transaction`]): the one lock -> transaction -> body -> settlement ->
+    /// commit frame, taken by each method that writes in a transaction, settling the proofs
+    /// `body` owed in this projector's project. The lock is released when this returns.
     fn transact<T>(&self, body: impl FnOnce(&Transaction) -> Result<T, Error>) -> Result<T, Error> {
-        in_transaction(&mut self.conn.lock().unwrap(), body)
+        in_transaction(&mut self.conn.lock().unwrap(), &self.project, body)
     }
 
     /// Run `fold` under the two guards every fold into this file keeps. It refuses before
@@ -1315,20 +1317,25 @@ fn prune_in(
 }
 
 /// Run `body` in ONE transaction on `conn` and commit it: the one IMMEDIATE transaction -> body ->
-/// commit frame of this file; [`open_current`] keeps its own immediate transaction on the shared
-/// connection it is handed. The open takes the write lock (spec 122), so a frame meeting a lock
-/// another connection holds fails at its open once the busy timeout passes, before `body` runs,
-/// and a `body` that reads before it writes never finds its read outdated by another's commit. A
-/// `body` that fails, or a commit that does, leaves nothing written - the transaction rolls back
-/// whole as it drops.
+/// settlement -> commit frame of this file; [`open_current`] keeps its own immediate transaction
+/// on the shared connection it is handed. The open takes the write lock (spec 122), so a frame
+/// meeting a lock another connection holds fails at its open once the busy timeout passes, before
+/// `body` runs, and a `body` that reads before it writes never finds its read outdated by
+/// another's commit. Before the commit, outside every savepoint `body` opened, the proofs of every
+/// name `body` owed are settled in `project`, each name once ([`settle_proofs`], spec 122, PROOFS
+/// SETTLE ONCE PER TRANSACTION); a `body` that owed none settles nothing. A `body` that fails, a
+/// settlement that does, or a commit that does, leaves nothing written - the transaction rolls
+/// back whole as it drops.
 fn in_transaction<T>(
     conn: &mut Connection,
+    project: &str,
     body: impl FnOnce(&Transaction) -> Result<T, Error>,
 ) -> Result<T, Error> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(be)?;
     let answer = body(&tx)?;
+    settle_proofs(&tx, project)?;
     tx.commit().map_err(be)?;
     Ok(answer)
 }
@@ -1342,7 +1349,7 @@ fn in_transaction<T>(
 /// however many passes the rebuild took, and what it removed is stamped, in its transaction, as
 /// the counts the rebuild state records - the cold rebuild's counts, never a sum.
 fn prune_run_closure(conn: &mut Connection, project: &str) -> Result<(), Error> {
-    in_transaction(conn, |tx| {
+    in_transaction(conn, project, |tx| {
         let gathered = tx
             .prepare(
                 "SELECT position, type, data, valid_from FROM rebuild_run_closure ORDER BY position",
@@ -1515,7 +1522,7 @@ fn fold_source(
                     gather_run_closure,
                     &mut passed_over,
                 )?,
-                _ => in_transaction(conn, |tx| {
+                _ => in_transaction(conn, project, |tx| {
                     for e in part {
                         fold_in_savepoint(tx, e, gather_run_closure, &mut passed_over, || {
                             fold_new(tx, std::slice::from_ref(e), project).map(|()| true)
@@ -1606,7 +1613,7 @@ fn fold_entry_alone(
 ) -> Result<(), Error> {
     let mut attempt = || -> Result<bool, Error> {
         let answer = batch(&*conn)?;
-        in_transaction(&mut *conn, |tx| {
+        in_transaction(&mut *conn, project, |tx| {
             let read = fold_in_savepoint(tx, entry, gather_run_closure, passed_over, || {
                 fold_entry(tx, entry, project, || Ok(answer))
                     .map(|outcome| !matches!(outcome, EntryOutcome::Unread))
@@ -2877,7 +2884,7 @@ fn definition_name(tx: &Transaction, id: &str, project: &str) -> Result<Option<S
 /// ([`edge_binds_leaf_sql`], spelled `<file>::<name>` or `<file>::%<name>`) and that no assertion
 /// holds - a staged reference's edge is its row's to settle ([`settle_references`]) - tiered
 /// INFERRED because a definition of it existed is demoted to AMBIGUOUS when no other call target has `name` as its
-/// leaf ([`node_leaf_sql`], nested or not: [`reference_tier`]'s own rule), and the test proofs of `name` are resolved again without it ([`resolve_proofs`]): what
+/// leaf ([`node_leaf_sql`], nested or not: [`reference_tier`]'s own rule), and the test proofs of `name` are owed their settlement ([`owe_proofs`]), which resolves them again without it before the transaction commits ([`settle_proofs`]): what
 /// landed on `id` waits for, or moves to, the definition that now answers the name, and a retired
 /// `id` keeps no proof to come back with.
 fn definition_retired(tx: &Transaction, id: &str, name: &str, project: &str) -> Result<(), Error> {
@@ -2908,8 +2915,7 @@ fn definition_retired(tx: &Transaction, id: &str, name: &str, project: &str) -> 
     )
     .map_err(be)?;
     remove_attr_keys(tx, "retired_nodes", id, &proof_keys(), project)?;
-    resolve_proofs(tx, name, project)?;
-    Ok(())
+    owe_proofs(tx, name)
 }
 
 /// Detach node `id`'s live graph-derived attachments - the `IN_COMMUNITY` and `REALIZES` edges a
@@ -3410,12 +3416,14 @@ fn fold_event(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Resu
                     ],
                 )
                 .map_err(be)?;
-                // Spec 86 criterion 2's convergent half: any TEST-ORIGIN evidence staged before this
-                // definition existed (a forward reference to a file the sorted ingest had not yet
-                // reached) names it now - transfer it onto `entity` and clear the stage. Same
-                // convergence point as the tier upgrade just above (this definition folding is what
-                // makes both resolvable), never a second timing authority.
-                resolve_proofs(tx, &c.name, project)?;
+                // Spec 86 criterion 2's convergent half: any TEST-ORIGIN evidence recorded before
+                // this definition existed (a forward reference to a file the sorted ingest had not
+                // yet reached) names it now - this definition owes its name's proofs
+                // ([`owe_proofs`]), which the transaction settles once before it commits
+                // ([`settle_proofs`], spec 122), landing them on `entity`. The same fold that makes
+                // the tier upgrade just above resolvable owes them; the transaction's frame is the
+                // one timing authority of the proof.
+                owe_proofs(tx, &c.name)?;
             }
         }
         TYPE_EDGE_INFERRED => {
@@ -4695,8 +4703,9 @@ fn reference_tier(
 /// test-origin content extends to its evidence. When `r.fresh` marks the first test reference of its
 /// file's batch, the file's prior evidence is superseded first ([`supersede_file_proof`]). An EMPTY
 /// `r.name` is the file's empty-boundary sentinel (its test reference set dropped to zero): the
-/// supersession is its whole job. Otherwise the reference is recorded in `proofs` and the proofs of
-/// its name are resolved ([`resolve_proofs`]).
+/// supersession is its whole job. Otherwise the reference is recorded in `proofs` and its name owes
+/// its proofs their settlement ([`owe_proofs`]), which resolves them once before the transaction
+/// commits ([`settle_proofs`]).
 fn fold_test_evidence(
     tx: &Transaction,
     r: &super::EdgeInferred,
@@ -4721,37 +4730,109 @@ fn fold_test_evidence(
         ],
     )
     .map_err(be)?;
-    resolve_proofs(tx, &r.name, project)
+    owe_proofs(tx, &r.name)
 }
 
 /// Supersede-on-re-extract for EVIDENCE (spec 86 criterion 2, round 2): a test file's re-extracted
 /// batch replaces every proof its prior batch recorded, so an unchanged reference set nets to the
 /// same proof and a reference the edit removed is gone from whatever it proved.
 fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(), Error> {
-    let targets: Vec<String> = {
+    reproving(tx, project, "file", file, || {
+        tx.execute(
+            "DELETE FROM proofs WHERE project = ?1 AND file = ?2",
+            params![project, file],
+        )
+        .map(drop)
+        .map_err(be)
+    })
+}
+
+/// Run `change` over the proof rows of `project` whose `key` column - `file` or `name` - holds
+/// `value`, then rewrite the proof attrs ([`write_proof`]) of every target those rows held before
+/// it or hold after it, each once and in id order: an entity a row left, reached or kept carries
+/// what the rows resolved to it now give it.
+fn reproving(
+    tx: &Transaction,
+    project: &str,
+    key: &str,
+    value: &str,
+    change: impl FnOnce() -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut targets = proof_targets_by(tx, project, key, value)?;
+    change()?;
+    targets.extend(proof_targets_by(tx, project, key, value)?);
+    for target in &targets {
+        write_proof(tx, target, project)?;
+    }
+    Ok(())
+}
+
+/// The targets the proof rows of `project` whose `key` column - `file` or `name` - holds `value`
+/// resolve to, each once, sorted.
+fn proof_targets_by(
+    tx: &Transaction,
+    project: &str,
+    key: &str,
+    value: &str,
+) -> Result<BTreeSet<String>, Error> {
+    let mut stmt = tx
+        .prepare(&format!(
+            "SELECT DISTINCT target FROM proofs
+              WHERE project = ?1 AND {key} = ?2 AND target IS NOT NULL"
+        ))
+        .map_err(be)?;
+    let targets = stmt
+        .query_map(params![project, value], |r| r.get(0))
+        .map_err(be)?
+        .collect::<Result<_, _>>()
+        .map_err(be)?;
+    Ok(targets)
+}
+
+/// Owe the proofs of `name` their settlement (spec 122, PROOFS SETTLE ONCE PER TRANSACTION): its
+/// row in `proofs_owed`, one however often the transaction owes it, which the transaction's frame
+/// pays before it commits ([`settle_proofs`]). Owed whenever a test reference to `name` is
+/// recorded ([`fold_test_evidence`]) and whenever a call-target definition of `name` folds or
+/// stops being one ([`definition_retired`]).
+fn owe_proofs(tx: &Transaction, name: &str) -> Result<(), Error> {
+    tx.execute(
+        "INSERT OR IGNORE INTO proofs_owed (name) VALUES (?1)",
+        [name],
+    )
+    .map(drop)
+    .map_err(be)
+}
+
+/// Settle every name `tx` owed its proofs ([`owe_proofs`]) in `project`, in name order, and pay
+/// its row, so `proofs_owed` is empty when the transaction commits ([`in_transaction`]): each is
+/// resolved once ([`resolve_proofs`]), and every target its rows held before or hold after has
+/// its proof attrs rewritten ([`reproving`]) - so a definition retired and revived within the
+/// transaction, whose rows never moved off it, regains the proof its retirement stripped (THE
+/// REVIVED PROOF). A file without `proofs_owed` - one that owes its rebuild, opened as it stands
+/// ([`Projector::open`]) - owes no name, since no fold writes into it, and settles nothing.
+fn settle_proofs(tx: &Transaction, project: &str) -> Result<(), Error> {
+    if !has_table(tx, "proofs_owed")? {
+        return Ok(());
+    }
+    let owed: Vec<String> = {
         let mut stmt = tx
-            .prepare(
-                "SELECT DISTINCT target FROM proofs
-                  WHERE project = ?1 AND file = ?2 AND target IS NOT NULL
-                  ORDER BY target",
-            )
+            .prepare("SELECT name FROM proofs_owed ORDER BY name")
             .map_err(be)?;
         let rows = stmt
-            .query_map(params![project, file], |r| r.get(0))
+            .query_map([], |r| r.get(0))
             .map_err(be)?
             .collect::<Result<_, _>>()
             .map_err(be)?;
         rows
     };
-    tx.execute(
-        "DELETE FROM proofs WHERE project = ?1 AND file = ?2",
-        params![project, file],
-    )
-    .map_err(be)?;
-    for target in &targets {
-        write_proof(tx, target, project)?;
+    for name in &owed {
+        reproving(tx, project, "name", name, || {
+            resolve_proofs(tx, name, project)
+        })?;
     }
-    Ok(())
+    tx.execute("DELETE FROM proofs_owed", [])
+        .map(drop)
+        .map_err(be)
 }
 
 /// Resolve every recorded test reference to `name` against the call-target definitions of the leaf
@@ -4761,10 +4842,11 @@ fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(
 /// the reference's own file's one candidate when it has exactly one ([`same_file_candidates`], the
 /// `#[cfg(test)] mod tests` idiom), else, when its file has none, the ONE definition of `name` in
 /// the project, else none - two same-file candidates name none, and a reference waits, never
-/// guessing among several same-named definitions. Run whenever a reference is recorded and whenever a definition of
-/// `name` folds or stops being one, so where a proof lands is a pure function of the live
-/// definitions and references - the same whichever order they folded in, and the same for a log
-/// and its compacted form.
+/// guessing among several same-named definitions. Run once per transaction for each name it owed
+/// ([`settle_proofs`]) - a name is owed whenever a reference to it is recorded and whenever a
+/// definition of it folds or stops being one ([`owe_proofs`]) - so where a proof lands is a pure
+/// function of the live definitions and references - the same whichever order they folded in, and
+/// the same for a log and its compacted form.
 fn resolve_proofs(tx: &Transaction, name: &str, project: &str) -> Result<(), Error> {
     let definitions = definitions_with_suffix(tx, name, project, Admitted::LiveCallTargets, None)?;
     let only = match definitions.as_slice() {
@@ -5858,7 +5940,7 @@ mod tests {
             .unwrap();
         let ran = std::cell::Cell::new(false);
         let opened = crate::test_support::with_graph_locked(Path::new(&path), || {
-            in_transaction(&mut conn, |tx| {
+            in_transaction(&mut conn, "test", |tx| {
                 ran.set(true);
                 record_applied(tx, 1).map(drop)
             })
