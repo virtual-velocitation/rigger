@@ -363,8 +363,9 @@ pub fn fold_of(p: &dyn Projection, events: &[Event]) -> rigger::contextgraph::Fo
 /// graph file `graph_db` under the project `test` from `source`, owed when `owed` says so, while
 /// `writer` folds `events` through the public fold ([`fold_of`]) between two waits on a barrier
 /// whose other party is the rebuild's first ask of `reextract`, which answers `batch` only once
-/// the writer's fold has returned. A rebuild that ends without asking meets the writer's two waits
-/// itself once it has returned, so the writer folds after it and this goes red rather than hangs.
+/// the writer's fold has returned. A rebuild that ends or panics without asking meets the writer's
+/// two waits itself once it has returned, and a writer whose fold panics still meets the rebuild's
+/// second wait, so either goes red - the panic resumed once both have returned - rather than hangs.
 /// It insists the rebuild ran, passing nothing over and pruning nothing ([`clean_rebuild`]), and
 /// asked `reextract` once, and answers what became of the writer's fold.
 pub fn rebuild_meeting_a_writer(
@@ -375,29 +376,37 @@ pub fn rebuild_meeting_a_writer(
     events: &[Event],
     batch: &[Event],
 ) -> rigger::contextgraph::Fold {
+    use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+
     let barrier = std::sync::Barrier::new(2);
     let mut asked = 0;
     let (written, rebuilt) = std::thread::scope(|s| {
         let folding = s.spawn(|| {
             barrier.wait();
-            let written = fold_of(writer, events);
+            let written = catch_unwind(AssertUnwindSafe(|| fold_of(writer, events)));
             barrier.wait();
             written
         });
-        let rebuilt = rebuild_answer(graph_db, owed, source, &mut |_| {
-            asked += 1;
-            if asked == 1 {
-                barrier.wait();
-                barrier.wait();
-            }
-            Ok(Some(batch.to_vec()))
-        });
+        let rebuilt = catch_unwind(AssertUnwindSafe(|| {
+            rebuild_answer(graph_db, owed, source, &mut |_| {
+                asked += 1;
+                if asked == 1 {
+                    barrier.wait();
+                    barrier.wait();
+                }
+                Ok(Some(batch.to_vec()))
+            })
+        }));
         if asked == 0 {
             barrier.wait();
             barrier.wait();
         }
         (folding.join().unwrap(), rebuilt)
     });
+    let (written, rebuilt) = (
+        written.unwrap_or_else(|panic| resume_unwind(panic)),
+        rebuilt.unwrap_or_else(|panic| resume_unwind(panic)),
+    );
     assert_eq!(rebuilt, clean_rebuild());
     assert_eq!(asked, 1, "the rebuild asks the entry's batch once");
     written
