@@ -89,8 +89,8 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "start_line": 17620,
-        "end_line": 17624
+        "start_line": 17605,
+        "end_line": 17609
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -234,8 +234,8 @@
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 398,
-        "end_line": 400
+        "start_line": 445,
+        "end_line": 447
       },
       {
         "file": "tests/common/fixtures/graph.rs",
@@ -5824,8 +5824,8 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "start_line": 15937,
-        "end_line": 15937
+        "start_line": 15922,
+        "end_line": 15922
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
@@ -7639,8 +7639,8 @@
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 628,
-        "end_line": 630
+        "start_line": 675,
+        "end_line": 677
       }
     ]
   },
@@ -7649,13 +7649,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 836,
-        "end_line": 838
+        "start_line": 883,
+        "end_line": 885
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 860,
-        "end_line": 862
+        "start_line": 907,
+        "end_line": 909
       }
     ]
   },
@@ -7664,8 +7664,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 1180,
-        "end_line": 1189
+        "start_line": 1227,
+        "end_line": 1236
       },
       {
         "file": "tests/community_resolution_knob.rs",

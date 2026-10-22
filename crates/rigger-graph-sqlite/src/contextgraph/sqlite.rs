@@ -15150,29 +15150,14 @@ mod tests {
                     h1_at_7(),
                     decision_at("d8", "src/d.rs", 8),
                 ];
-                let barrier = std::sync::Barrier::new(2);
-                let written = std::thread::scope(|s| {
-                    let writer = s.spawn(|| {
-                        barrier.wait();
-                        let written = crate::test_support::fold_of(&p, &log[2..]);
-                        barrier.wait();
-                        written
-                    });
-                    let rebuilt = Projector::rebuild(
-                        &locked(&path),
-                        "test",
-                        false,
-                        &mut |after, sink| stream_past(&log, after, log.len(), sink),
-                        &mut |_| {
-                            barrier.wait();
-                            barrier.wait();
-                            Ok(Some(h1_batch()))
-                        },
-                        &mut |_| {},
-                    );
-                    assert_eq!(rebuilt.map_err(|e| e.0), Ok(Some(Rebuilt::default())));
-                    writer.join().unwrap()
-                });
+                let (written, _) = crate::test_support::rebuild_meeting_a_writer(
+                    &path,
+                    false,
+                    &mut |after, sink| stream_past(&log, after, log.len(), sink),
+                    &p,
+                    &log[2..],
+                    &h1_batch(),
+                );
                 assert_eq!(
                     written,
                     Fold::Folded,

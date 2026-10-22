@@ -342,14 +342,7 @@ fn a_ledger_entry_the_public_fold_refused_folds_afterwards_through_apply_generat
     assert_eq!(live_edges(&p), vec![contains("alpha", 40, 10)]);
 
     // A batch holding an entry is refused whole: the decision before the entry did not land.
-    let batch = [
-        placed_at(
-            event_of(TYPE_DECISION_MADE, decision_json("d1", "x", &["a.rs"], "")),
-            11,
-            50,
-        ),
-        entry(F, "h2", 12, 50),
-    ];
+    let batch = [decision("d1", 11, 50), entry(F, "h2", 12, 50)];
     assert_eq!(common::fixtures::fold_of(port, &batch), refused);
     assert_eq!(
         live_node_ids(&p.whole().unwrap(), KIND_DECISION),
@@ -494,6 +487,70 @@ fn a_second_projector_folding_the_same_generation_meanwhile_waits_and_meets_a_re
     assert_eq!(generation(&third, IDENTITY), Some("h1".to_string()));
     assert_eq!(live_edges(&third), vec![contains("alpha", 10, 7)]);
     assert!(!third.rebuild_owed().unwrap());
+}
+
+/// Spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION, through the public rebuild: given a
+/// `graph.db` whose rebuild's tail meets a ledger entry appended while its shadow folded, when a
+/// writer holding a connection of its own to that file folds a decision while the tail's
+/// `reextract` blocks on a barrier for the entry, then the writer's fold lands, and the rebuilt
+/// file holds what folding the entry with its batch in hand, after the writer's decision, gives.
+#[test]
+fn a_writer_folds_into_the_file_while_its_rebuild_tail_extracts_an_entry_and_the_entry_folds_as_in_hand(
+) {
+    use rigger::contextgraph::sqlite::{stream_past, RebuildSink};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = graph_db(&dir);
+    let log = vec![
+        decision("d6", 6, 6),
+        entry(F, "h1", 7, 10),
+        decision("d8", 8, 12),
+    ];
+    let batch = vec![defines(F, "alpha", 1, true)];
+    let writer = Projector::open(&path, "test").unwrap();
+    let reads = Cell::new(0);
+    let (written, extracted) = common::fixtures::rebuild_meeting_a_writer(
+        &path,
+        true,
+        &mut |after, sink: &mut RebuildSink| {
+            // The shadow's read finds the log before the entry was appended; the tail's, whole.
+            reads.set(reads.get() + 1);
+            let read = if reads.get() == 1 { &log[..1] } else { &log };
+            stream_past(read, after, log.len(), sink)
+        },
+        &writer,
+        &log[2..],
+        &batch,
+    );
+    assert_eq!(
+        (written, reads.get(), extracted),
+        (Fold::Folded, 2, 1),
+        "the writer's fold lands while the tail extracts the entry's batch, asked once"
+    );
+    let rebuilt = std::path::Path::new(&path);
+    assert_eq!(applied_positions(rebuilt), vec![6, 7, 8]);
+    // The same events folded in the order they committed: the writer's decision before the entry.
+    let in_hand = dir.path().join("in_hand.db");
+    let oracle = Projector::open(in_hand.to_str().unwrap(), "test").unwrap();
+    common::fixtures::folds(&oracle, &log[..1]);
+    common::fixtures::folds(&oracle, &log[2..]);
+    assert_eq!(
+        fold_through_port(&oracle, &log[1], Ok(Some(batch))),
+        (Ok(EntryFold::BatchAsked), 1)
+    );
+    assert_eq!(
+        common::cli::graph_identity(rebuilt, "test"),
+        common::cli::graph_identity(&in_hand, "test")
+    );
+}
+
+/// The decision `id`, at position `pos`, valid from `secs`.
+fn decision(id: &str, pos: u64, secs: u64) -> Event {
+    placed_at(
+        event_of(TYPE_DECISION_MADE, decision_json(id, "x", &["a.rs"], "")),
+        pos,
+        secs,
+    )
 }
 
 /// The entry [`RAW_PAYLOAD`] records.

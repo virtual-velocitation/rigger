@@ -5,8 +5,8 @@
 //! show-renderer seed with the oracles its `rigger_graph` `show` and `around` objects are checked
 //! by, the live edges and calls a projector serves with the spec-119 enum's `CONTAINS` edges they
 //! are checked against, the module declarations' `CONTAINS` edges it serves, the read-backs
-//! suites take of a folded `Graph`, and the two read batches a rebuild source hands with a writer
-//! between them. `apply` returns `Err` on a fold failure, so every helper
+//! suites take of a folded `Graph`, the two read batches a rebuild source hands with a writer
+//! between them, and a rebuild whose extraction a writer meets. `apply` returns `Err` on a fold failure, so every helper
 //! unwraps it - a successful call is itself evidence the payload folded - but
 //! [`fold_entry_result`], which answers the error text a failing fold meets.
 
@@ -280,6 +280,53 @@ pub fn reference(from: &str, to: &str, tier: &str) -> (String, String, String, S
 /// Fold `events` into `p` through the public fold, answering what became of them.
 pub fn fold_of(p: &dyn Projection, events: &[Event]) -> rigger::contextgraph::Fold {
     rigger::contextgraph::Fold::of_batch(|| rigger::contextgraph::wired(Some(p)), events)
+}
+
+/// A REBUILD MEETING A WRITER (spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION): rebuild the
+/// graph file `graph_db` under the project `test` from `source`, owed when `owed` says so, while
+/// `writer` folds `events` through the public fold ([`fold_of`]) between two waits on a barrier
+/// whose other party is the rebuild's first ask of `reextract`, which answers `batch` only once
+/// the writer's fold has returned. It insists the rebuild ran, passing nothing over and pruning
+/// nothing, and answers what became of the writer's fold and how many times `reextract` was asked.
+pub fn rebuild_meeting_a_writer(
+    graph_db: &str,
+    owed: bool,
+    source: &mut rigger::contextgraph::sqlite::RebuildSource,
+    writer: &(dyn Projection + Sync),
+    events: &[Event],
+    batch: &[Event],
+) -> (rigger::contextgraph::Fold, u32) {
+    let barrier = std::sync::Barrier::new(2);
+    let mut asked = 0;
+    let written = std::thread::scope(|s| {
+        let folding = s.spawn(|| {
+            barrier.wait();
+            let written = fold_of(writer, events);
+            barrier.wait();
+            written
+        });
+        let rebuilt = Projector::rebuild(
+            &Projector::lock_rebuild(graph_db).unwrap(),
+            "test",
+            owed,
+            source,
+            &mut |_| {
+                asked += 1;
+                if asked == 1 {
+                    barrier.wait();
+                    barrier.wait();
+                }
+                Ok(Some(batch.to_vec()))
+            },
+            &mut |_| {},
+        );
+        assert_eq!(
+            rebuilt.map_err(|e| e.0),
+            Ok(Some(rigger::contextgraph::sqlite::Rebuilt::default()))
+        );
+        folding.join().unwrap()
+    });
+    (written, asked)
 }
 
 /// Fold `events` into `p` through the public fold ([`fold_of`]), and insist they landed: the one
