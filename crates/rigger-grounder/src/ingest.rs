@@ -2309,11 +2309,10 @@ mod entry_of_batch_tests {
                 never
             ),
             (
-                Err(
-                    "whether graph.db owes its rebuild could not be read: graph: the mark is \
-                     unreadable"
-                        .to_string()
-                ),
+                Err(format!(
+                    "whether graph.db owes its rebuild could not be read: {}",
+                    crate::test_support::graph_error("the mark is unreadable")
+                )),
                 asked(&["gc/src/lib.rs"], &["owed"])
             )
         );
@@ -2327,11 +2326,10 @@ mod entry_of_batch_tests {
                     never
                 ),
                 (
-                    Err(
-                        "graph.db's current generation of gc/src/lib.rs could not be read: \
-                         graph: the table is locked"
-                            .to_string()
-                    ),
+                    Err(format!(
+                        "graph.db's current generation of gc/src/lib.rs could not be read: {}",
+                        crate::test_support::graph_error("the table is locked")
+                    )),
                     asked(&["gc/src/lib.rs"], &["owed", "current gc/src/lib.rs"])
                 ),
                 "on a graph whose owed answer is {owed}"

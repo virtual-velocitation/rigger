@@ -1561,8 +1561,10 @@ mod tests {
 
             assert_eq!(
                 failure.to_string(),
-                "graph.db's current generation of gc/src/checks.rs could not be read: \
-                 graph: the generation could not be read"
+                format!(
+                    "graph.db's current generation of gc/src/checks.rs could not be read: {}",
+                    crate::test_support::graph_error("the generation could not be read")
+                )
             );
             assert_eq!(recorded(&store), only(Vec::new()));
             assert_eq!(graph.folds.load(std::sync::atomic::Ordering::SeqCst), 0);
