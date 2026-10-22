@@ -206,9 +206,15 @@ beside cargo builds on every core, so wall clock measures the machine's load, no
 is 5 s of CPU. The Goal's 32.1 s is wall clock on an idle core over c745e589's blobs, not the
 fixture's, so the pre-fix baseline on the fixture is measured by the timed test's own red run (the
 test exists before the fix): the red run must exceed the 5 s bound, and the unit's hand-over reports
-that red-run CPU figure beside the post-fix figure the same test measures. The criterion is met only
-when the bound is at least three times the post-fix figure; a missed bound escalates with the
-measured figures and never loosens the bound. THE MEASUREMENT (reported, not bounded, and not a
+that red-run CPU figure beside the post-fix figure the same test measures. The bound is the
+criterion's pass condition; the margin under it is reported, never required: the unit's hand-over
+states the red-run figure, the post-fix figure and the floor (the same fold with the settlement
+switched off), each as thread CPU on this fixture in the debug build the gates run. At the unit's
+first attempt they were 78.1 s red, 2.36 s and 2.41 s post-fix, 1.80 s and 1.81 s floor, so the
+bound stands at about 2.1 times the post-fix figure and the floor caps any attainable margin below
+2.8 times on this fixture; a multiple of the post-fix figure is therefore no condition. A missed
+bound escalates with the measured figures and never loosens the bound. THE MEASUREMENT (reported,
+not bounded, and not a
 test): criterion 5's unit reports in its hand-over the wall-clock refold of `src/cli/mod.rs` into a
 graph holding the whole tree, through the production path (`rigger graph build` on a scratch
 checkout, or the harness's `bytes_batch` then `Projector::apply_generation`), beside the Goal's
@@ -284,8 +290,9 @@ red and green, from its timed test.
 LANES: criterion 5's timed periphery test needs `bytes_batch`, so it is gated on the `symbols`
 feature; its count test is not, and runs in both lanes.
 
-WHAT THE GATES CANNOT SEE: criterion 5's timed test runs under gate load, so its bound carries the
-three-times margin over the post-fix figure; the full-tree refold of `src/cli/mod.rs` is no test, so
+WHAT THE GATES CANNOT SEE: criterion 5's timed test runs under gate load and measures thread CPU,
+which load barely moves, and its bound stands about 2.1 times over the post-fix figure (THE TIMED
+TEST'S CLOCK); the full-tree refold of `src/cli/mod.rs` is no test, so
 criterion 5's unit reports THE MEASUREMENT in its hand-over, and the adjudicator demands it.
 
 ## Global constraints
