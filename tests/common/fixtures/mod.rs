@@ -66,6 +66,8 @@ mod kurrentdb;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod ledger;
 #[cfg(any(feature = "store", not(feature = "core")))]
+mod passed_over;
+#[cfg(any(feature = "store", not(feature = "core")))]
 mod plan_critique;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod sqlite;
@@ -85,6 +87,8 @@ pub use ingest::*;
 pub use kurrentdb::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use ledger::*;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use passed_over::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use plan_critique::*;
 #[cfg(any(feature = "store", not(feature = "core")))]

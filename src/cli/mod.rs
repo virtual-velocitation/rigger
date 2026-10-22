@@ -5200,6 +5200,63 @@ mod tests {
         );
     }
 
+    /// Spec 124, CATCH-UP LINES: the note a read-only surface prints says how many events
+    /// `graph.db` passed over, by cause, read from the `passed_over` rows the file holds - beside
+    /// the rebuild note when the file also owes its rebuild, and never from a file without the
+    /// table, which reads as none.
+    #[test]
+    fn the_passed_over_note_counts_by_cause_the_rows_graph_db_holds() {
+        let (_dir, graph_db) = crate::test_support::temp_graph_db();
+        let log = [
+            crate::test_support::entry_at("gc", "src/a.rs", "g-a", 1, 1),
+            crate::test_support::placed_at(
+                Event::new(
+                    contextgraph::TYPE_DECISION_MADE,
+                    b"{ not valid json".to_vec(),
+                ),
+                2,
+                2,
+            ),
+        ];
+        assert_eq!(
+            crate::test_support::rebuild_answer(
+                &graph_db,
+                true,
+                &mut |after, sink| contextgraph::sqlite::stream_past(&log, after, 10, sink),
+                &mut |_| Ok(None),
+            ),
+            crate::test_support::clean_rebuild()
+        );
+        let passed_over = "note: graph.db passed over 2 event(s) (1 rejected payload(s), 0 fold \
+                           failure(s), 1 resolved to nothing); a rebuild under a later fold rule \
+                           retries them";
+        assert_eq!(
+            graph_rebuild_owed_note(&graph_db, "test"),
+            Some(passed_over.to_string())
+        );
+
+        let path = Path::new(&graph_db);
+        crate::test_support::stamp_user_version(path, 0);
+        let owed = format!(
+            "note: {} - until then the context graph answers as it stands",
+            contextgraph::REBUILD_OWED
+        );
+        assert_eq!(
+            graph_rebuild_owed_note(&graph_db, "test"),
+            Some(format!("{owed}\n{passed_over}")),
+            "a file that owes its rebuild says so first"
+        );
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch("DROP TABLE passed_over")
+            .unwrap();
+        assert_eq!(
+            graph_rebuild_owed_note(&graph_db, "test"),
+            Some(owed),
+            "a file without the table passed nothing over"
+        );
+    }
+
     /// A minimal spawn request: the deterministic id derived from `unit` + `role` + `attempt`
     /// (so it cannot drift from the labels), every optional field empty.
     fn test_request(

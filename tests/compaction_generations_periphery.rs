@@ -697,12 +697,18 @@ fn a_rebuild_skips_an_event_whose_fold_fails() {
     let afters = std::cell::RefCell::new(Vec::new());
     let ran = rebuild(&rebuilt, &mut source_over(&log, 10, &afters)).unwrap();
     assert_eq!(
-        ran,
-        Some(Rebuilt {
-            passed_over: 1,
-            pruned: PruneStats::default()
-        }),
-        "the owed rebuild runs, passing over the malformed event"
+        (
+            ran.map(|r| r.pruned),
+            common::fixtures::passed_over_rows(rebuilt.to_str().unwrap())
+        ),
+        (
+            Some(PruneStats::default()),
+            vec![(
+                log[3].position,
+                common::fixtures::judged_cause("payload rejected", "DecisionMade", &log[3].data)
+            )]
+        ),
+        "the owed rebuild runs, passing over the malformed event with its cause"
     );
     let without: Vec<Event> = log
         .iter()
@@ -3075,10 +3081,10 @@ fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_ser
     });
 }
 
-/// Given an event on the log whose payload the fold rejects - appended without the emit surface's
-/// shape check - when the operator runs `rigger setup`, then setup finds it missing from the
-/// graph's ledger, rebuilds, and says it passed that one event over, recording it as folded so the
-/// next setup owes nothing for it.
+/// Given events on the log whose payload the fold rejects - appended without the emit surface's
+/// shape check - when the operator runs `rigger setup`, then setup finds them missing from the
+/// graph's ledger, rebuilds, and says it passed them over, recording each as folded with its cause
+/// so the next setup owes nothing for them and only says again what the file passed over.
 #[test]
 fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rejects() {
     let dir = temp_store_project();
@@ -3103,14 +3109,15 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
                 .filter(|l| l.starts_with("rebuilding graph.db")
                     || l.starts_with("rebuilt graph.db")
                     || l.starts_with("passed over "))
+                .map(str::to_string)
                 .collect::<Vec<_>>(),
             rejected.map(|at| applied(&rigger_file(root, "graph.db"), at)),
         ),
         (
             vec![
-                LOST_FOLD_REBUILD_LINE,
-                "rebuilt graph.db from the event log",
-                "passed over 2 event(s) whose payload the fold rejects, recorded as folded",
+                LOST_FOLD_REBUILD_LINE.to_string(),
+                "rebuilt graph.db from the event log".to_string(),
+                common::cli::passed_over_line(2, 0, 0),
             ],
             [true, true]
         ),
@@ -3118,9 +3125,18 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
          with trailing bytes; stdout: {out}"
     );
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(
-        ok && !out.contains("graph.db"),
-        "the passed-over event is not owed again; stdout: {out} stderr: {err}"
+    assert_eq!(
+        (
+            ok,
+            out.contains("graph.db"),
+            out.lines()
+                .filter(|l| l.starts_with("passed over "))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        ),
+        (true, false, vec![common::cli::passed_over_line(2, 0, 0)]),
+        "the passed-over events are not owed again, and setup says again what the file passed \
+         over; stdout: {out} stderr: {err}"
     );
 }
 

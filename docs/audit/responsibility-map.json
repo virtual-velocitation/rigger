@@ -9385,6 +9385,14 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "the_passed_over_note_counts_by_cause_the_rows_graph_db_holds",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "f53a14dfba371f7f"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "test_request",
     "is_test": true,
     "proposed_module": "main::tests",

@@ -57,6 +57,10 @@ mod host_fixtures;
 use rigger_process::{holders, reap};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/passed_over.rs"]
+mod passed_over_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/write_lock.rs"]
 mod write_lock_fixtures;
 #[cfg(test)]
@@ -68,6 +72,8 @@ mod test_support {
     pub use crate::graph_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::host_fixtures::*;
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    pub use crate::passed_over_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::write_lock_fixtures::*;
 }

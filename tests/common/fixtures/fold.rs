@@ -377,7 +377,7 @@ pub fn fold_of(p: &dyn Projection, events: &[Event]) -> rigger::contextgraph::Fo
 /// the writer's fold has returned. A rebuild that ends or panics without asking meets the writer's
 /// two waits itself once it has returned, and a writer whose fold panics still meets the rebuild's
 /// second wait, so either goes red - the panic resumed once both have returned - rather than hangs.
-/// It insists the rebuild ran, passing nothing over and pruning nothing ([`clean_rebuild`]), and
+/// It insists the rebuild ran, pruning nothing ([`clean_rebuild`]), and
 /// asked `reextract` once, and answers what became of the writer's fold.
 pub fn rebuild_meeting_a_writer(
     graph_db: &str,
@@ -423,8 +423,7 @@ pub fn rebuild_meeting_a_writer(
     written
 }
 
-/// What a rebuild that ran answers ([`rebuild_answer`]) when it passed nothing over and pruned
-/// nothing.
+/// What a rebuild that ran answers ([`rebuild_answer`]) when it pruned nothing.
 pub fn clean_rebuild() -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, String> {
     Ok(Some(rigger::contextgraph::sqlite::Rebuilt::default()))
 }
@@ -451,7 +450,7 @@ pub fn rebuild_answer(
 }
 
 /// Rebuild the graph file `graph_db` as [`rebuild_answer`] does, and insist the rebuild ran,
-/// passing nothing over and pruning nothing ([`clean_rebuild`]).
+/// pruning nothing ([`clean_rebuild`]).
 pub fn rebuild_clean(
     graph_db: &str,
     owed: bool,

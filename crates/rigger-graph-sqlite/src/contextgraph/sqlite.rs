@@ -5787,18 +5787,18 @@ mod tests {
 
     /// A rebuild passes over exactly the events whose payload the fold rejects - of any type the
     /// fold reads a payload for - recording each in the `applied` ledger so the rebuilt file owes
-    /// nothing for them, and says how many it passed over; every other event folds.
+    /// nothing for them, and its cause, the judge's text, in `passed_over`; every other event
+    /// folds.
     #[test]
-    fn a_rebuild_passes_over_only_a_payload_the_fold_rejects_and_says_how_many() {
+    fn a_rebuild_passes_over_only_a_payload_the_fold_rejects_recording_its_cause() {
+        let malformed: &[u8] = b"{ not valid json";
+        let mistyped: &[u8] = br#"{"unit": 5}"#;
+        let trailing: &[u8] = br#"{"id":"d-trailing","governs":["t.rs"]} x"#;
         let log = [
             decision_at("d1", "a.rs", 1),
-            event_at(TYPE_DECISION_MADE, b"{ not valid json", 2),
-            event_at(TYPE_UNIT_INTEGRATED, br#"{"unit": 5}"#, 3),
-            event_at(
-                TYPE_DECISION_MADE,
-                br#"{"id":"d-trailing","governs":["t.rs"]} x"#,
-                4,
-            ),
+            event_at(TYPE_DECISION_MADE, malformed, 2),
+            event_at(TYPE_UNIT_INTEGRATED, mistyped, 3),
+            event_at(TYPE_DECISION_MADE, trailing, 4),
             decision_at("d5", "b.rs", 5),
         ];
         let dir = tempfile::tempdir().unwrap();
@@ -5808,39 +5808,50 @@ mod tests {
 
         let rebuilt = rebuild_in_batches(path, &log, 10, &mut Vec::new()).unwrap();
         let p = Projector::open(path, "test").unwrap();
+        let rejected = |type_: &str, data: &[u8]| {
+            crate::test_support::judged_cause("payload rejected", type_, data)
+        };
         assert_eq!(
             (
-                rebuilt,
+                rebuilt.map(|r| r.pruned),
                 (1..=5).map(|at| applied(&p, at)).collect::<Vec<_>>(),
+                crate::test_support::passed_over_rows(path),
                 live_governs(&p)
                     .into_iter()
                     .map(|g| g.1)
                     .collect::<Vec<_>>(),
             ),
             (
-                Some(Rebuilt {
-                    passed_over: 3,
-                    pruned: PruneStats::default()
-                }),
+                Some(PruneStats::default()),
                 vec![true; 5],
+                vec![
+                    (2, rejected(TYPE_DECISION_MADE, malformed)),
+                    (3, rejected(TYPE_UNIT_INTEGRATED, mistyped)),
+                    (4, rejected(TYPE_DECISION_MADE, trailing)),
+                ],
                 vec!["a.rs".to_string(), "b.rs".to_string()]
             ),
-            "the three rejected payloads (malformed, mistyped, trailing bytes) are passed over and \
-             counted, recorded as folded, and the rest fold"
+            "the three rejected payloads (malformed, mistyped, trailing bytes) are passed over \
+             with their causes, recorded as folded, and the rest fold"
         );
         drop(p);
         assert_eq!(
-            rebuild_in_batches(path, &[decision_at("d6", "c.rs", 6)], 10, &mut Vec::new()).unwrap(),
-            Some(Rebuilt::default()),
-            "a rebuild that rejects nothing passed over nothing"
+            (
+                rebuild_in_batches(path, &[decision_at("d6", "c.rs", 6)], 10, &mut Vec::new())
+                    .unwrap()
+                    .map(|r| r.pruned),
+                crate::test_support::passed_over_rows(path).len(),
+            ),
+            (Some(PruneStats::default()), 0),
+            "a rebuild that rejects nothing passes nothing over"
         );
     }
 
-    /// What a rebuild says it passed over is the sum of what its fold of the shadow and its tail
-    /// into the live file each passed over: two rejected payloads the log held when it started and
-    /// one it gained meanwhile are three.
+    /// What a rebuild passed over is recorded by its fold of the shadow and by its tail into the
+    /// live file alike: two rejected payloads the log held when it started, carried by the swap,
+    /// and one it gained meanwhile, each with its cause.
     #[test]
-    fn a_rebuild_counts_what_its_fold_and_its_tail_each_passed_over() {
+    fn a_rebuild_records_what_its_fold_and_its_tail_each_passed_over() {
         let before = [
             event_at(TYPE_DECISION_MADE, b"{ not valid json", 1),
             decision_at("d2", "a.rs", 2),
@@ -5867,20 +5878,164 @@ mod tests {
             )
             .unwrap();
         let p = Projector::open(path, "test").unwrap();
+        let rejected = |e: &Event| {
+            (
+                e.position,
+                crate::test_support::judged_cause("payload rejected", &e.type_, &e.data),
+            )
+        };
         assert_eq!(
             (
-                rebuilt,
-                (1..=4).map(|at| applied(&p, at)).collect::<Vec<_>>()
+                rebuilt.map(|r| r.pruned),
+                (1..=4).map(|at| applied(&p, at)).collect::<Vec<_>>(),
+                crate::test_support::passed_over_rows(path),
             ),
             (
-                Some(Rebuilt {
-                    passed_over: 3,
-                    pruned: PruneStats::default()
-                }),
-                vec![true; 4]
+                Some(PruneStats::default()),
+                vec![true; 4],
+                vec![
+                    rejected(&before[0]),
+                    rejected(&before[2]),
+                    rejected(&gained[0])
+                ],
             ),
             "two passed over by the fold and one by the tail, each recorded as folded"
         );
+    }
+
+    /// The log [`a_rebuild_passes_an_unresolved_entry_and_a_rejected_batch_over_with_their_causes`]
+    /// and [`a_direct_fold_meeting_its_own_passed_over_position_answers_its_cause_with_no_mark`]
+    /// rebuild: a ledger entry at 1 no source resolves, one at 2 whose re-extracted batch
+    /// ([`batch_of_the_rejected_entry`]) the judge rejects, a decision at 3 whose own payload it
+    /// rejects ([`POISON`]), and a decision at 4 that folds.
+    fn passing_over_log() -> [Event; 4] {
+        [
+            crate::test_support::entry_at("gc", "src/a.rs", "g-a", 1, 1),
+            crate::test_support::entry_at("gc", "src/b.rs", "g-b", 2, 2),
+            event_at(TYPE_DECISION_MADE, POISON, 3),
+            decision_at("d4", "d.rs", 4),
+        ]
+    }
+
+    /// A payload no type's judge accepts.
+    const POISON: &[u8] = b"{ not valid json";
+
+    /// What the re-extraction of [`passing_over_log`] answers for `entry`: no batch for the entry at
+    /// 1, and for the one at 2 a batch whose one event's payload the judge rejects.
+    fn batch_of_the_rejected_entry(entry: &Event) -> Result<Option<Vec<Event>>, Error> {
+        Ok((entry.position == 2).then(|| vec![event_at(TYPE_CODE_ENTITY_EXTRACTED, POISON, 0)]))
+    }
+
+    /// [`passing_over_log`] rebuilt into a fresh graph file, as setup rebuilds it: the rebuild
+    /// completes, and the file's directory and path are handed back.
+    fn rebuilt_passing_over() -> (tempfile::TempDir, String) {
+        let (dir, path) = crate::test_support::temp_graph_db();
+        let log = passing_over_log();
+        assert_eq!(
+            crate::test_support::rebuild_answer(
+                &path,
+                true,
+                &mut |after, sink| stream_past(&log, after, 10, sink),
+                &mut batch_of_the_rejected_entry,
+            ),
+            crate::test_support::clean_rebuild(),
+            "the rebuild completes, passing every position it cannot fold over"
+        );
+        (dir, path)
+    }
+
+    /// Spec 124, THE DECIDE STEP: a rebuild passes over, each with its cause, a ledger entry whose
+    /// re-extraction resolves to nothing (`resolved to nothing`), one whose re-extracted batch the
+    /// judge rejects (`fold failed`) and an event whose own payload it rejects (`payload
+    /// rejected`), recording every position in the `applied` ledger, and completes, folding the
+    /// rest - neither entry installs a generation.
+    #[test]
+    fn a_rebuild_passes_an_unresolved_entry_and_a_rejected_batch_over_with_their_causes() {
+        let (_dir, path) = rebuilt_passing_over();
+        let p = Projector::open(&path, "test").unwrap();
+        assert_eq!(
+            (
+                crate::test_support::passed_over_rows(&path),
+                (1..=4).map(|at| applied(&p, at)).collect::<Vec<_>>(),
+                live_governs(&p)
+                    .into_iter()
+                    .map(|g| g.1)
+                    .collect::<Vec<_>>(),
+                [
+                    p.current_generation(&crate::test_support::gc_identity("src/a.rs"))
+                        .unwrap(),
+                    p.current_generation(&crate::test_support::gc_identity("src/b.rs"))
+                        .unwrap(),
+                ],
+            ),
+            (
+                vec![
+                    (1, "resolved to nothing".to_string()),
+                    (
+                        2,
+                        crate::test_support::judged_cause(
+                            "fold failed",
+                            TYPE_CODE_ENTITY_EXTRACTED,
+                            POISON
+                        )
+                    ),
+                    (
+                        3,
+                        crate::test_support::judged_cause(
+                            "payload rejected",
+                            TYPE_DECISION_MADE,
+                            POISON
+                        )
+                    ),
+                ],
+                vec![true; 4],
+                vec!["d.rs".to_string()],
+                [None, None],
+            )
+        );
+    }
+
+    /// Spec 124, the direct fold's own-position answer: a direct fold meeting its own position
+    /// already passed over answers that position's cause - through `apply_generation`, through
+    /// `apply`, and through `apply_batch` beside a position it folds and still commits - writing no
+    /// mark, and the next fold into the file is not refused.
+    #[test]
+    fn a_direct_fold_meeting_its_own_passed_over_position_answers_its_cause_with_no_mark() {
+        use crate::contextgraph::Fold;
+        let (dir, path) = rebuilt_passing_over();
+        let log = passing_over_log();
+        let p = Projector::open(&path, "test").unwrap();
+        let rejected =
+            crate::test_support::judged_cause("payload rejected", TYPE_DECISION_MADE, POISON);
+        assert_eq!(
+            (
+                crate::test_support::fold_entry_result(&p, &log[0], Vec::new()),
+                crate::test_support::fold_entry_result(&p, &log[1], Vec::new()),
+                crate::test_support::fold_of(&p, &log[2..3]),
+                crate::test_support::fold_of(&p, &[log[2].clone(), decision_at("d5", "e.rs", 5)]),
+            ),
+            (
+                Err("resolved to nothing".to_string()),
+                Err(crate::test_support::judged_cause(
+                    "fold failed",
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    POISON
+                )),
+                Fold::NotFolded(crate::test_support::graph_error(&rejected)),
+                Fold::NotFolded(crate::test_support::graph_error(&rejected)),
+            ),
+            "each direct fold answers its own passed-over position's cause"
+        );
+        assert_eq!(
+            (
+                dir.path().join("graph.db.owed").exists(),
+                p.rebuild_owed().unwrap(),
+                applied(&p, 5),
+            ),
+            (false, false, true),
+            "no mark is written, the file owes nothing, and the batch's other position committed"
+        );
+        crate::test_support::folds(&p, &[decision_at("d6", "f.rs", 6)]);
     }
 
     /// A rebuild that meets a storage error folding an event whose payload the fold reads is not a

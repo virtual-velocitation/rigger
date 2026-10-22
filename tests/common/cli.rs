@@ -679,6 +679,18 @@ pub fn applied(db: &Path, position: u64) -> bool {
     )
 }
 
+/// The line `rigger setup` prints once its graph step ends while `graph.db` holds `passed_over`
+/// rows (spec 124, CATCH-UP LINES): `rejected` rejected payloads, `failed` fold failures and
+/// `unresolved` entries resolved to nothing, counted by cause and in total.
+pub fn passed_over_line(rejected: usize, failed: usize, unresolved: usize) -> String {
+    let n = rejected + failed + unresolved;
+    format!(
+        "passed over {n} event(s) the fold could not fold ({rejected} rejected payload(s), \
+         {failed} fold failure(s), {unresolved} resolved to nothing), recorded as folded - a \
+         rebuild under a later fold rule retries them"
+    )
+}
+
 /// Every position `db`'s applied ledger records, ascending.
 pub fn applied_positions(db: &Path) -> Vec<u64> {
     let conn = rusqlite::Connection::open(db).unwrap();
