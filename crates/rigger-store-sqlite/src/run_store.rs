@@ -292,7 +292,7 @@ mod tests {
             seed_one_shot_fixture(&inner, STREAM, &[]);
             let store = ReadCountingStore::new(&inner).interleaving(call, STREAM, late());
             let events = read_run(&store, STREAM).unwrap();
-            let positions: Vec<u64> = events.iter().map(|e| e.position).collect();
+            let positions: Vec<u64> = crate::test_support::positions_of(&events);
             let mut ordered = positions.clone();
             ordered.sort_unstable();
             ordered.dedup();

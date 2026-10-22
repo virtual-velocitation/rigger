@@ -92,7 +92,7 @@ impl Projection for CapturingProjection {
         self.batches
             .lock()
             .unwrap()
-            .push(events.iter().map(|e| e.position).collect());
+            .push(crate::common::fixtures::positions_of(events));
         Ok(())
     }
     crate::projection_reads_nothing!();
@@ -819,7 +819,7 @@ fn the_built_binary_cites_only_positions_the_log_actually_holds() {
 
     let run = cli_held(root, "events.db", rigger::conductor::STREAM);
     assert_eq!(
-        run.iter().map(|e| e.position).collect::<Vec<_>>(),
+        crate::common::fixtures::positions_of(&run),
         vec![first, second],
         "the log holds exactly the events the two commands claimed to write, at exactly \
          the positions they cited"
@@ -836,10 +836,11 @@ fn the_built_binary_cites_only_positions_the_log_actually_holds() {
         "the progress line names the spawn it recorded for: {progress_out}"
     );
     assert_eq!(
-        cli_held(root, "progress.db", rigger::progress::STREAM)
-            .iter()
-            .map(|e| e.position)
-            .collect::<Vec<_>>(),
+        crate::common::fixtures::positions_of(&cli_held(
+            root,
+            "progress.db",
+            rigger::progress::STREAM
+        )),
         vec![recorded],
         "and the SEPARATE progress log holds that one report at the position the command \
          cited"

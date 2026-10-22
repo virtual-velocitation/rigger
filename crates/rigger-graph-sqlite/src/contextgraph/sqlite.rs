@@ -5714,7 +5714,7 @@ mod tests {
     /// Hand `sink` the positions of `log`, in order, in batches of at most `batch`.
     fn positions_in(log: &[Event], batch: usize, sink: &mut PositionSink) -> Result<(), Error> {
         log.chunks(batch)
-            .try_for_each(|b| sink(&b.iter().map(|e| e.position).collect::<Vec<_>>()))
+            .try_for_each(|b| sink(&crate::test_support::positions_of(b)))
     }
 
     /// Why the file behind `p` owes its rebuild once its ledger is read against `log`, streamed
@@ -5945,7 +5945,7 @@ mod tests {
                 &mut |after, sink| {
                     reads_from.push(after);
                     stream_past(&whole, after, 10, &mut |events, head| {
-                        read.extend(events.iter().map(|e| e.position));
+                        read.extend(crate::test_support::positions_of(events));
                         sink(events, head)
                     })
                 },
@@ -5985,7 +5985,7 @@ mod tests {
                     ((true, true), (true, true), false),
                     Vec::<&str>::new(),
                     reads,
-                    window.iter().map(|e| e.position).collect::<Vec<_>>(),
+                    crate::test_support::positions_of(&window),
                     kept.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                     (false, false),
                     serde_json::to_string(
@@ -6131,7 +6131,7 @@ mod tests {
             owed,
             &mut |after, sink| {
                 stream_past(&whole, after, 10, &mut |events, head| {
-                    read.extend(events.iter().map(|e| e.position));
+                    read.extend(crate::test_support::positions_of(events));
                     sink(events, head)
                 })
             },

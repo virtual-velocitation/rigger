@@ -565,12 +565,11 @@ fn positions_read_hands_every_position_of_the_stream_in_order_in_batches(store: 
             .append(stream, ExpectedRevision::Any, &[at(t)])
             .expect("the fixture stream appends");
     }
-    let held: Vec<u64> = store
-        .read_stream("c-positions", 0, Direction::Forward)
-        .expect("the stream reads")
-        .into_iter()
-        .map(|e| e.position)
-        .collect();
+    let held: Vec<u64> = crate::test_support::positions_of(
+        &store
+            .read_stream("c-positions", 0, Direction::Forward)
+            .expect("the stream reads"),
+    );
     let batches = |stream: &str| -> Vec<Vec<u64>> {
         let mut out = Vec::new();
         store
@@ -1492,7 +1491,7 @@ fn concurrent_appends_to_distinct_streams_get_distinct_positions(store: &dyn Eve
         N,
         "all N concurrently-appended events must be visible on a single $all read"
     );
-    let read_positions: Vec<u64> = all.iter().map(|e| e.position).collect();
+    let read_positions: Vec<u64> = crate::test_support::positions_of(&all);
     let mut sorted = read_positions.clone();
     sorted.sort_unstable();
     sorted.dedup();

@@ -810,7 +810,7 @@ fn an_interrupted_rebuild_leaves_graph_db_untouched_and_resumes_from_its_last_co
         source(after, &mut |events, head| {
             handed
                 .borrow_mut()
-                .extend(events.iter().map(|e| e.position));
+                .extend(crate::common::fixtures::positions_of(events));
             sink(events, head)
         })
     })
@@ -892,7 +892,9 @@ fn rebuild_cursor_of(db: &Path) -> u64 {
 #[test]
 fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_batches() {
     use common::cli::applied_positions;
-    use common::fixtures::{entry_at, folds, run_started, temp_graph_db, two_read_batches};
+    use common::fixtures::{
+        entry_at, folds, positions_of, run_started, temp_graph_db, two_read_batches,
+    };
     use rigger::contextgraph::sqlite::Projector;
     let (dir, path) = temp_graph_db();
     let db = Path::new(&path);
@@ -907,7 +909,6 @@ fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_
     let log = run_events(&backend, PROJECT);
     fold_in_batches(db, PROJECT, &[log[..swapped].to_vec()]);
     let at = |i: usize| log[i].position;
-    let positions = |events: &[Event]| events.iter().map(|e| e.position).collect::<Vec<_>>();
     let (split, writer) = (swapped + 500, swapped + 550);
     // The cursor and every position `applied` holds, as a connection of its own reads them.
     let committed = || (rebuild_cursor_of(db), applied_positions(db));
@@ -938,7 +939,7 @@ fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_
     )
     .unwrap();
 
-    let before = |i: usize| (at(i - 1), positions(&log[..i]));
+    let before = |i: usize| (at(i - 1), positions_of(&log[..i]));
     assert_eq!(
         (rebuilt, reads),
         (Some(Rebuilt::default()), 2),
@@ -956,13 +957,13 @@ fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_
         seam,
         vec![(
             at(split - 1),
-            [positions(&log[..split]), vec![at(writer)]].concat()
+            [positions_of(&log[..split]), vec![at(writer)]].concat()
         )],
         "the writer's fold lands between the read batches, the cursor at the first one's end"
     );
     assert_eq!(
         applied_positions(db),
-        positions(&log),
+        positions_of(&log),
         "the applied ledger holds exactly the log's positions"
     );
 }
@@ -1936,7 +1937,7 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
 fn streamed_past(log: &[Event], after: u64, batch: usize) -> Vec<(Vec<u64>, u64)> {
     let mut handed = Vec::new();
     rigger::contextgraph::sqlite::stream_past(log, after, batch, &mut |events, head| {
-        handed.push((events.iter().map(|e| e.position).collect(), head));
+        handed.push((crate::common::fixtures::positions_of(events), head));
         Ok(())
     })
     .unwrap();
@@ -1954,7 +1955,7 @@ fn stream_past_hands_only_what_lies_past_the_position_in_batches_with_the_head()
         &[(rigger::conductor::STREAM, two_generations_dropping_facts())],
     );
     let log = run_events(&backend, PROJECT);
-    let p: Vec<u64> = log.iter().map(|e| e.position).collect();
+    let p: Vec<u64> = crate::common::fixtures::positions_of(&log);
     assert_eq!(
         streamed_past(&log, 0, 2),
         vec![
@@ -2001,7 +2002,7 @@ fn selected_past(backend: &Store, project: &str, after: u64, batch: usize) -> Ve
             after,
             batch,
             &mut |events, head| {
-                handed.push((events.iter().map(|e| e.position).collect(), head));
+                handed.push((crate::common::fixtures::positions_of(events), head));
                 Ok(())
             },
         )
@@ -2050,8 +2051,8 @@ fn the_live_selection_is_one_projects_stream_with_that_streams_head() {
     let mine = run_events(&backend, PROJECT);
     let theirs = run_events(&backend, other);
     let (m, t) = (
-        mine.iter().map(|e| e.position).collect::<Vec<_>>(),
-        theirs.iter().map(|e| e.position).collect::<Vec<_>>(),
+        crate::common::fixtures::positions_of(&mine),
+        crate::common::fixtures::positions_of(&theirs),
     );
     assert!(
         t[2] > m[2],
@@ -3938,7 +3939,7 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
         let graph_db = rigger_file(root, "graph.db");
         let log = read_run_events(root);
         let head = log.last().unwrap().position;
-        let gained: Vec<u64> = log[held..].iter().map(|e| e.position).collect();
+        let gained: Vec<u64> = crate::common::fixtures::positions_of(&log[held..]);
         // Whether the graph's applied ledger records each event the log gained.
         let folded = || -> Vec<bool> { gained.iter().map(|&p| applied(&graph_db, p)).collect() };
         let folded_before = folded();

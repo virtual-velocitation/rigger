@@ -87,7 +87,8 @@ mod tests {
     use crate::ingest::DERIVED_INDEX_TYPES;
     use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
     use crate::test_support::{
-        ev, types_of, CountedRead, HandBuiltLog, ReadCountingStore, ONE_SHOT_PERCEPTION_TYPES,
+        ev, positions_of, types_of, CountedRead, HandBuiltLog, ReadCountingStore,
+        ONE_SHOT_PERCEPTION_TYPES,
     };
 
     const STREAM: &str = "run";
@@ -114,10 +115,6 @@ mod tests {
         events
     }
 
-    fn positions(events: &[Event]) -> Vec<u64> {
-        events.iter().map(|e| e.position).collect()
-    }
-
     /// READERS SKIP PERCEPTION, with a `RunStarted` before the entry: the run slice refuses the
     /// five perception types from the boundary, so the entry and every derived event recorded in
     /// the run are absent, as an earlier run's are, and the run's own events are all there.
@@ -136,7 +133,7 @@ mod tests {
             types_of(&slice),
             ["RunStarted", "UnitStarted", "DecisionMade"]
         );
-        assert_eq!(positions(&slice), [3, 4, 10]);
+        assert_eq!(positions_of(&slice), [3, 4, 10]);
         assert_eq!(run_id, "r2");
         assert_eq!(
             store.reads(),
@@ -161,7 +158,10 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(positions(&read_run(&log, STREAM).unwrap()), [1, 3, 4, 10]);
+        assert_eq!(
+            positions_of(&read_run(&log, STREAM).unwrap()),
+            [1, 3, 4, 10]
+        );
     }
 
     /// READERS SKIP PERCEPTION, with no `RunStarted`: the whole stream is the run, and its one
@@ -176,7 +176,7 @@ mod tests {
 
         let (slice, run_id) = read_current_run(&store, STREAM).unwrap();
         assert_eq!(types_of(&slice), ["UnitStarted", "DecisionMade"]);
-        assert_eq!(positions(&slice), [1, 7]);
+        assert_eq!(positions_of(&slice), [1, 7]);
         assert_eq!(run_id, "");
         assert_eq!(
             store.reads(),

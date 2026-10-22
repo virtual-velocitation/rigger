@@ -906,7 +906,7 @@ fn a_run_read_through_the_namespace_is_a_log_prefix_whatever_a_concurrent_writer
         let counted = ReadCountingStore::new(&backend).interleaving(after, stream, late(tag));
         let events =
             rigger::run::read::read_run(&Namespaced::new(&counted, "alpha"), STREAM).unwrap();
-        let positions: Vec<u64> = events.iter().map(|e| e.position).collect();
+        let positions: Vec<u64> = crate::common::fixtures::positions_of(&events);
         let mut ordered = positions.clone();
         ordered.sort_unstable();
         ordered.dedup();

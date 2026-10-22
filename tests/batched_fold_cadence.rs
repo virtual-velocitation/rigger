@@ -60,7 +60,7 @@ impl Projection for CapturingProjection {
         self.batch_positions
             .lock()
             .unwrap()
-            .push(events.iter().map(|e| e.position).collect());
+            .push(crate::common::fixtures::positions_of(events));
         if self.fail {
             return Err(CgError("fold failed".into()));
         }
@@ -744,7 +744,7 @@ fn a_folding_store_reads_exactly_what_the_store_it_wraps_holds() {
     store.append("run", ExpectedRevision::Any, &events).unwrap();
     let log = |_: &str| {};
     let folding = rigger::ingest::FoldingStore::new(&store, NO_GRAPH, &log);
-    let ids = |es: Vec<Event>| es.into_iter().map(|e| e.position).collect::<Vec<_>>();
+    let ids = |es: Vec<Event>| crate::common::fixtures::positions_of(&es);
     let filter = rigger::eventstore::Filter::default();
     let first = |s: rigger::eventstore::Subscription| {
         s.recv_timeout(std::time::Duration::from_secs(5))

@@ -41,6 +41,10 @@ mod scratch_fixtures;
 use scratch_fixtures::temp_root;
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/events.rs"]
+mod event_fixtures;
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/graph.rs"]
 mod graph_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
@@ -57,6 +61,7 @@ use rigger_process::{holders, reap};
 mod write_lock_fixtures;
 #[cfg(test)]
 mod test_support {
+    pub use crate::event_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::fold_fixtures::*;
     pub use crate::graph_fixtures::*;

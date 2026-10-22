@@ -179,15 +179,12 @@ fn the_counting_double_records_every_read_exactly_and_forwards_it_unchanged() {
         stream_prefix: Some("t".to_string()),
     };
     let all_fwd = counted.read_all(0, Direction::Forward, &t_only).unwrap();
-    assert_eq!(
-        all_fwd.iter().map(|e| e.position).collect::<Vec<_>>(),
-        [5, 6]
-    );
+    assert_eq!(crate::common::fixtures::positions_of(&all_fwd), [5, 6]);
     let all_back = counted
         .read_all(1, Direction::Backward, &Filter::default())
         .unwrap();
     assert_eq!(
-        all_back.iter().map(|e| e.position).collect::<Vec<_>>(),
+        crate::common::fixtures::positions_of(&all_back),
         [6, 5, 4, 3, 2]
     );
     let sub = counted.subscribe_stream("s", 2).unwrap();

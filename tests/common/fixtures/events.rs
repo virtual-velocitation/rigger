@@ -51,6 +51,11 @@ pub fn types_of(events: &[Event]) -> Vec<&str> {
     events.iter().map(|e| e.type_.as_str()).collect()
 }
 
+/// Each event's log position, in the order given.
+pub fn positions_of(events: &[Event]) -> Vec<Position> {
+    events.iter().map(|e| e.position).collect()
+}
+
 /// How many of `events` are of type `type_`.
 pub fn count_of_type(events: &[Event], type_: &str) -> usize {
     events.iter().filter(|e| e.type_ == type_).count()
