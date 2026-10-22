@@ -20,6 +20,9 @@ use common::fixtures::{
 use rigger::contextgraph::sqlite::Projector;
 use rigger::eventstore::Event;
 
+/// The node `src/f.rs`'s definition of `lead` folds to.
+const LEAD: &str = "src/f.rs::lead";
+
 /// `tests/t.rs`'s generation `k1` references `kept`, `dropped` and `lead` before `src/f.rs`'s
 /// generation `h1` defines them; `k2` drops the reference to `lead`; `h2` keeps `lead`, its head,
 /// and `kept` and drops the definition of `dropped`.
@@ -82,17 +85,18 @@ fn a_generation_dropping_a_reference_and_a_definition_settles_alike_in_every_fra
     let forward = tempfile::tempdir().unwrap();
     let whole = tempfile::tempdir().unwrap();
 
+    let kept = (
+        "src/f.rs::kept".to_string(),
+        proven_definition("kept", "function", 2, &["tests/t.rs:3"]),
+    );
     let referenced_first = vec![
         (
             "src/f.rs::dropped".to_string(),
             proven_definition("dropped", "function", 3, &["tests/t.rs:4"]),
         ),
+        kept.clone(),
         (
-            "src/f.rs::kept".to_string(),
-            proven_definition("kept", "function", 2, &["tests/t.rs:3"]),
-        ),
-        (
-            "src/f.rs::lead".to_string(),
+            LEAD.to_string(),
             proven_definition("lead", "function", 1, &["tests/t.rs:5"]),
         ),
     ];
@@ -100,16 +104,7 @@ fn a_generation_dropping_a_reference_and_a_definition_settles_alike_in_every_fra
         assert_eq!(definitions_of(&p), referenced_first, "{frame}, to h1");
     }
 
-    let settled = vec![
-        (
-            "src/f.rs::kept".to_string(),
-            proven_definition("kept", "function", 2, &["tests/t.rs:3"]),
-        ),
-        (
-            "src/f.rs::lead".to_string(),
-            definition("lead", "function", 1),
-        ),
-    ];
+    let settled = vec![kept, (LEAD.to_string(), definition("lead", "function", 1))];
     for (p, frame) in folded_in_every_frame(whole.path(), &log) {
         assert_eq!(definitions_of(&p), settled, "{frame}, to h2");
     }
