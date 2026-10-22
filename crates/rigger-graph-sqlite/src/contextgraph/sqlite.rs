@@ -15150,7 +15150,7 @@ mod tests {
                     h1_at_7(),
                     decision_at("d8", "src/d.rs", 8),
                 ];
-                let (written, _) = crate::test_support::rebuild_meeting_a_writer(
+                let written = crate::test_support::rebuild_meeting_a_writer(
                     &path,
                     false,
                     &mut |after, sink| crate::test_support::one_read(&log, after, sink),

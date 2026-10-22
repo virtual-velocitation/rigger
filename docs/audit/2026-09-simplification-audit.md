@@ -1764,7 +1764,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:12578-12580` `audit_id`
 - `crates/rigger-domain/src/spawn.rs:140-142` `spawn_id`
 - `crates/rigger-driver/src/driver/claude_code.rs:1120-1128` `stop_message`
-- `tests/common/fixtures/fold.rs:455-457` `code_batch_key`
+- `tests/common/fixtures/fold.rs:456-458` `code_batch_key`
 - `tests/common/fixtures/graph.rs:204-206` `spoke_id`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:56-58` `expected_postmerge_dir`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:59-61` `expected_postmerge_branch`
@@ -4936,7 +4936,7 @@ Proposed home: `fold::support (consolidate these 2 sites into one function in th
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/common/fixtures/fold.rs:249-251` `alias_json`
-- `tests/common/fixtures/fold.rs:685-687` `ref_json`
+- `tests/common/fixtures/fold.rs:686-688` `ref_json`
 
 #### `dup-c3c8358993cf` (near, 2 sites)
 
@@ -4944,8 +4944,8 @@ Proposed home: `fold::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:893-895` `apply_ref`
-- `tests/common/fixtures/fold.rs:917-919` `apply_call`
+- `tests/common/fixtures/fold.rs:894-896` `apply_ref`
+- `tests/common/fixtures/fold.rs:918-920` `apply_call`
 
 #### `dup-9c3b5c80063e` (near, 3 sites)
 
@@ -4953,7 +4953,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/common/fixtures/f
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:1237-1246` `live_node_ids`
+- `tests/common/fixtures/fold.rs:1238-1247` `live_node_ids`
 - `tests/community_resolution_knob.rs:139-148` `live_memberships_of`
 - `tests/graph_superseded_prune.rs:32-41` `live_contains`
 

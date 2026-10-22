@@ -509,7 +509,7 @@ fn a_writer_folds_into_the_file_while_its_rebuild_tail_extracts_an_entry_and_the
     let batch = vec![defines(F, "alpha", 1, true)];
     let writer = Projector::open(&path, "test").unwrap();
     let reads = Cell::new(0);
-    let (written, extracted) = common::fixtures::rebuild_meeting_a_writer(
+    let written = common::fixtures::rebuild_meeting_a_writer(
         &path,
         true,
         &mut |after, sink: &mut RebuildSink| {
@@ -523,9 +523,9 @@ fn a_writer_folds_into_the_file_while_its_rebuild_tail_extracts_an_entry_and_the
         &batch,
     );
     assert_eq!(
-        (written, reads.get(), extracted),
-        (Fold::Folded, 2, 1),
-        "the writer's fold lands while the tail extracts the entry's batch, asked once"
+        (written, reads.get()),
+        (Fold::Folded, 2),
+        "the writer's fold lands while the tail extracts the entry's batch"
     );
     let rebuilt = std::path::Path::new(&path);
     assert_eq!(applied_positions(rebuilt), vec![6, 7, 8]);

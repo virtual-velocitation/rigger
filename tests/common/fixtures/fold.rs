@@ -287,7 +287,7 @@ pub fn fold_of(p: &dyn Projection, events: &[Event]) -> rigger::contextgraph::Fo
 /// `writer` folds `events` through the public fold ([`fold_of`]) between two waits on a barrier
 /// whose other party is the rebuild's first ask of `reextract`, which answers `batch` only once
 /// the writer's fold has returned. It insists the rebuild ran, passing nothing over and pruning
-/// nothing, and answers what became of the writer's fold and how many times `reextract` was asked.
+/// nothing, and asked `reextract` once, and answers what became of the writer's fold.
 pub fn rebuild_meeting_a_writer(
     graph_db: &str,
     owed: bool,
@@ -295,7 +295,7 @@ pub fn rebuild_meeting_a_writer(
     writer: &(dyn Projection + Sync),
     events: &[Event],
     batch: &[Event],
-) -> (rigger::contextgraph::Fold, u32) {
+) -> rigger::contextgraph::Fold {
     let barrier = std::sync::Barrier::new(2);
     let mut asked = 0;
     let written = std::thread::scope(|s| {
@@ -326,7 +326,8 @@ pub fn rebuild_meeting_a_writer(
         );
         folding.join().unwrap()
     });
-    (written, asked)
+    assert_eq!(asked, 1, "the rebuild asks the entry's batch once");
+    written
 }
 
 /// Fold `events` into `p` through the public fold ([`fold_of`]), and insist they landed: the one
