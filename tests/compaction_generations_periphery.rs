@@ -2915,9 +2915,10 @@ fn a_fold_lost_where_its_mark_cannot_be_written_is_paid_by_the_next_setup_from_t
     let lost = read_run_events(root).last().unwrap().position;
     let prefix = format!(
         "emitted DecisionMade (position {lost}); {}",
-        not_folded(&graph_error(&format!(
-            "{DATABASE_IS_LOCKED}; the mark that graph.db owes its rebuild was not written ("
-        )))
+        not_folded(&format!(
+            "{}; the mark that graph.db owes its rebuild was not written (",
+            graph_error(DATABASE_IS_LOCKED)
+        ))
     );
     let suffix = lost_fold("graph.db.owed: Permission denied (os error 13))") + "\n";
     assert_eq!(
