@@ -9,8 +9,9 @@
 //! between them, a rebuild whose extraction a writer meets, and the texts a lost or refused fold
 //! answers. `apply` returns `Err` on a fold failure, so every helper that folds unwraps it - a
 //! successful call is itself evidence the payload folded - but [`fold_entry_result`], which
-//! answers the error text a failing fold meets, and [`fold_of`] and [`rebuild_meeting_a_writer`],
-//! which answer what became of a public fold ([`rigger::contextgraph::Fold`]).
+//! answers the error text a failing fold meets, [`fold_of`] and [`rebuild_meeting_a_writer`],
+//! which answer what became of a public fold ([`rigger::contextgraph::Fold`]), and the rebuild
+//! sources [`one_read`] and [`two_read_batches`], which hand on what their sink answers.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, UNIX_EPOCH};
