@@ -3252,8 +3252,7 @@ fn resume_unit_into_a_graph_it_cannot_open_is_on_the_log_and_reported_not_folded
     );
     assert_eq!(
         err,
-        "rigger: recorded 1 run event(s); not folded into the context graph: graph: file is not \
-         a database\n",
+        common::fixtures::recorded_not_folded(1, common::fixtures::NOT_A_DATABASE) + "\n",
         "the fold it could not make is said, with the reason"
     );
 }
@@ -3831,10 +3830,9 @@ fn stop_setup_past_its_prune(root: &Path, meanwhile: fn(&Path)) -> (String, bool
     assert_eq!(
         err.lines().last(),
         Some(
-            format!(
-                "rigger: graph: {}: Is a directory (os error 21)",
+            common::cli::refusal_line(&common::fixtures::directory_refusal(
                 Path::new(".rigger").join("graph.db.owed").display()
-            )
+            ))
             .as_str()
         ),
         "the stopped setup names the mark it could not remove; stdout: {stopped} stderr: {err}"
@@ -4553,10 +4551,7 @@ fn a_second_setup_while_a_rebuild_holds_graph_db_lock_is_refused_at_once_and_tou
                 (
                     false,
                     Vec::<String>::new(),
-                    Some(format!(
-                        "rigger: graph: {}",
-                        rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS
-                    )),
+                    Some(common::cli::rebuild_in_progress_line()),
                     0,
                     true,
                 ),
@@ -4648,15 +4643,8 @@ fn a_rebuild_whose_process_is_gone_leaves_no_lock_and_the_next_setup_resumes_its
             (cold_ok, resumed_graph),
         ),
         (
-            Err("graph: event store: stopped".to_string()),
-            (
-                1,
-                false,
-                Some(format!(
-                    "rigger: graph: {}",
-                    rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS
-                ))
-            ),
+            Err(common::fixtures::graph_error("event store: stopped")),
+            (1, false, Some(common::cli::rebuild_in_progress_line())),
             true,
             vec![format!(
                 "rebuilt {past_the_cursor} events, through position {head} of {head} (100%)"
@@ -4863,10 +4851,7 @@ fn a_graph_db_lock_that_cannot_be_opened_is_named_by_setup_and_by_reset_runs_ove
             .map(|(last, _)| last.to_string()),
     );
     let named = |lock: &Path| {
-        format!(
-            "rigger: graph: {}: Is a directory (os error 21)",
-            lock.display()
-        )
+        common::cli::refusal_line(&common::fixtures::directory_refusal(lock.display()))
     };
     assert_eq!(
         (setup, no_copy, over_copy, help),

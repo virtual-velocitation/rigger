@@ -706,10 +706,7 @@ fn a_run_over_a_graph_db_that_owes_its_rebuild_records_one_entry_per_generation_
     owe_a_rebuild(&files.graph());
     let owed_applied = applied_positions(&files.graph_db());
     let first_walk = walked_git_entry_records(root);
-    let lost = format!(
-        "rigger: recorded 1 run event(s); not folded into the context graph: {}",
-        common::fixtures::graph_error(REBUILD_OWED)
-    );
+    let lost = common::fixtures::recorded_not_folded(1, REBUILD_OWED);
 
     files.run_over(root, "first criterion");
 

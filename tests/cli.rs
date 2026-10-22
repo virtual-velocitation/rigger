@@ -16665,7 +16665,7 @@ fn emit_event_accepts_every_agent_context_event_and_appends_it() {
         });
         assert_eq!(
             emitted.fold,
-            rigger::contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string()),
+            rigger::contextgraph::Fold::NotFolded(common::fixtures::unwired()),
             "with no graph wired the accepted emit folds nothing and says so"
         );
 

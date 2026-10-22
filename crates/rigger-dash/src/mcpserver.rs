@@ -1524,7 +1524,7 @@ mod tests {
             emit_event(&cli_store, "run", || wired(None), &args).expect("the core must append");
         assert_eq!(
             emitted.fold,
-            Fold::NotFolded("graph: no context graph is wired".to_string()),
+            Fold::NotFolded(crate::test_support::unwired()),
             "a surface wired with no graph folds nothing and says so"
         );
 

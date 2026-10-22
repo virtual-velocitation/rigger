@@ -14386,8 +14386,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             snapshot(&lines),
-            vec![format!(
-                "rigger: recorded 1 run event(s); not folded into the context graph: graph: {}",
+            vec![crate::test_support::recorded_not_folded(
+                1,
                 contextgraph::REBUILD_OWED
             )]
         );
@@ -21454,7 +21454,10 @@ mod tests {
                 let deps = sink_deps(&st, &driver, &failing, root, &sized_hash);
                 assert_eq!(
                     handed.emit(&RunCtx::for_test(&cfg, &deps)),
-                    Err(format!("{said}: graph: {GRAPH_REFUSED}"))
+                    Err(format!(
+                        "{said}: {}",
+                        crate::test_support::graph_error(GRAPH_REFUSED)
+                    ))
                 );
                 assert_eq!(recorded(&st), Recorded::new());
             }
@@ -21479,7 +21482,7 @@ mod tests {
 
             assert_eq!(
                 handed_by_the_walk(root, SOURCE).emit(&ctx),
-                Err("graph: no context graph is wired".to_string())
+                Err(crate::test_support::unwired())
             );
             assert_eq!(recorded(&st), Recorded::new());
         }
@@ -21554,10 +21557,7 @@ mod tests {
                     ),
                 ])
             );
-            let refused = format!(
-                "rigger: recorded 1 run event(s); not folded into the context graph: graph: {}",
-                contextgraph::REBUILD_OWED
-            );
+            let refused = crate::test_support::recorded_not_folded(1, contextgraph::REBUILD_OWED);
             assert_eq!(*said.lock().unwrap(), [refused.clone(), refused]);
             assert_eq!(graph.current_generation(SOURCE).unwrap(), None);
         }
@@ -21598,10 +21598,7 @@ mod tests {
             );
             assert_eq!(
                 *said.lock().unwrap(),
-                [format!(
-                    "rigger: recorded 1 run event(s); not folded into the context graph: \
-                     graph: {GRAPH_REFUSED}"
-                )]
+                [crate::test_support::recorded_not_folded(1, GRAPH_REFUSED)]
             );
             assert_eq!(graph.current_generation(SOURCE).unwrap(), None);
         }
@@ -22155,7 +22152,10 @@ mod tests {
                 assert_eq!(
                     handed_twice_over_an_empty_store(root, &source, &failing, &sized_hash),
                     the_same_answer_twice_from_one_lookup(
-                        Err(format!("{said}: graph: {GRAPH_REFUSED}")),
+                        Err(format!(
+                            "{said}: {}",
+                            crate::test_support::graph_error(GRAPH_REFUSED)
+                        )),
                         SOURCE
                     )
                 );

@@ -10,8 +10,9 @@
 //! answers. `apply` returns `Err` on a fold failure, so every helper that folds unwraps it - a
 //! successful call is itself evidence the payload folded - but [`fold_entry_result`], which
 //! answers the error text a failing fold meets, [`fold_of`] and [`rebuild_meeting_a_writer`],
-//! which answer what became of a public fold ([`rigger::contextgraph::Fold`]), and the rebuild
-//! sources [`one_read`] and [`two_read_batches`], which hand on what their sink answers.
+//! which answer what became of a public fold ([`rigger::contextgraph::Fold`]), [`rebuild_answer`],
+//! which answers what a rebuild did or its error as text, and the rebuild sources [`one_read`] and
+//! [`two_read_batches`], which hand on what their sink answers.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, UNIX_EPOCH};
@@ -283,6 +284,31 @@ pub fn reference(from: &str, to: &str, tier: &str) -> (String, String, String, S
 /// The text of a graph error whose reason is `reason`: the domain error's own display.
 pub fn graph_error(reason: &str) -> String {
     rigger::contextgraph::Error(reason.to_string()).to_string()
+}
+
+/// What a fold on a surface wired with no context graph answers: the domain's own refusal
+/// ([`rigger::contextgraph::wired`]) as the fold displays it.
+pub fn unwired() -> String {
+    let Err(refused) = rigger::contextgraph::wired(None) else {
+        panic!("a surface wired with no graph refuses the fold");
+    };
+    refused.to_string()
+}
+
+/// The text of the graph error a fold meets on `path` when a directory stands where it writes a
+/// file.
+pub fn directory_refusal(path: impl std::fmt::Display) -> String {
+    graph_error(&(path.to_string() + ": Is a directory (os error 21)"))
+}
+
+/// What SQLite answers when the file a connection opens holds no database.
+pub const NOT_A_DATABASE: &str = "file is not a database";
+
+/// The line a run surface prints when it recorded `events` run events whose fold the graph did
+/// not make, for `reason` - a graph error's reason, its `graph: ` prefix added ([`graph_error`]).
+pub fn recorded_not_folded(events: usize, reason: &str) -> String {
+    let recorded = format!("rigger: recorded {events} run event(s); ");
+    recorded + "not folded into the context graph: " + &graph_error(reason)
 }
 
 /// The tail every lost fold's error ends with.

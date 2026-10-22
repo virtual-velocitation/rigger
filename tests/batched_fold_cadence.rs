@@ -221,7 +221,7 @@ fn append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch() 
         );
     assert_eq!(
         appended.fold,
-        rigger::contextgraph::Fold::NotFolded("graph: fold failed".to_string()),
+        rigger::contextgraph::Fold::NotFolded(common::fixtures::graph_error("fold failed")),
         "the fold error is returned beside the append, for the caller to report"
     );
     let appended = appended.appended;
@@ -252,7 +252,7 @@ fn append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch() 
         .unwrap();
     assert_eq!(
         appended2.fold,
-        rigger::contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string()),
+        rigger::contextgraph::Fold::NotFolded(common::fixtures::unwired()),
         "graph=None folds nothing and says so"
     );
     let appended2 = appended2.appended;
@@ -595,15 +595,15 @@ fn a_folding_store_says_a_lost_fold_through_its_sink_and_a_graphless_one_stays_s
         .unwrap();
     assert_eq!(
         (
-            store.read_stream("run", 0, Direction::Forward).unwrap().len(),
+            store
+                .read_stream("run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
             lines.lock().unwrap().clone(),
         ),
         (
             3,
-            vec![
-                "rigger: recorded 2 run event(s); not folded into the context graph: graph: fold failed"
-                    .to_string()
-            ]
+            vec![common::fixtures::recorded_not_folded(2, "fold failed")]
         ),
         "every append lands; only the refused fold into a wired graph is said"
     );
@@ -702,7 +702,7 @@ fn a_folding_store_opens_its_graph_only_after_the_append_is_on_the_log() {
                 .len(),
         );
         Err(rigger::contextgraph::Error(
-            "file is not a database".to_string(),
+            common::fixtures::NOT_A_DATABASE.to_string(),
         ))
     };
     let appended = rigger::ingest::FoldingStore::new(&store, Some(open), &log)
@@ -721,11 +721,10 @@ fn a_folding_store_opens_its_graph_only_after_the_append_is_on_the_log() {
         (
             vec![(0, 1)],
             vec![1],
-            vec![
-                "rigger: recorded 1 run event(s); not folded into the context graph: graph: file \
-                 is not a database"
-                    .to_string()
-            ]
+            vec![common::fixtures::recorded_not_folded(
+                1,
+                common::fixtures::NOT_A_DATABASE
+            )]
         ),
         "the event is on the log before the graph is opened, once, and the lost fold is said"
     );
@@ -909,7 +908,7 @@ fn folding_into_a_held_graph_folds_there_and_over_none_folds_nothing() {
             vec![(0, 2), (1, 3)],
             true,
             vec![(0, 4)],
-            rigger::contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string()),
+            rigger::contextgraph::Fold::NotFolded(common::fixtures::unwired()),
             vec![vec![2, 3]],
             0,
             3,

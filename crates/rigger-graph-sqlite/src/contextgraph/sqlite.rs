@@ -5815,7 +5815,10 @@ mod tests {
                 failed.map_err(|e| e.to_string()),
                 applied(&Projector::open(path, "test").unwrap(), 1),
             ),
-            (Err("graph: disk gave out".to_string()), false),
+            (
+                Err(crate::test_support::graph_error("disk gave out")),
+                false
+            ),
             "the storage error propagates and the live file is untouched"
         );
         Connection::open(&shadow)
@@ -6144,7 +6147,9 @@ mod tests {
                     resumed.map(|r| r.pruned),
                 ),
                 (
-                    Err(format!("graph: {path}.owed: Is a directory (os error 21)")),
+                    Err(crate::test_support::directory_refusal(format!(
+                        "{path}.owed"
+                    ))),
                     ((true, true), (true, true), false),
                     Vec::<&str>::new(),
                     reads,
@@ -6313,7 +6318,7 @@ mod tests {
                 rebuild_state(path),
             ),
             (
-                Err("graph: interrupted in its tail".to_string()),
+                Err(crate::test_support::graph_error("interrupted in its tail")),
                 Vec::<&str>::new(),
                 vec![5, 6],
                 Some(Rebuilt {
@@ -6395,7 +6400,9 @@ mod tests {
                 serde_json::to_string(&p.whole().unwrap()).unwrap(),
             ),
             (
-                Err("graph: interrupted after the first batch".to_string()),
+                Err(crate::test_support::graph_error(
+                    "interrupted after the first batch"
+                )),
                 vec![0, 4],
                 vec!["d-live".to_string()],
                 reset_runs_leaves(&log),
@@ -6534,11 +6541,11 @@ mod tests {
             (
                 pruned,
                 report,
-                Err(format!("graph: {stopped}.owed: Is a directory (os error 21)")),
+                Err(crate::test_support::directory_refusal(format!("{stopped}.owed"))),
                 report,
-                Err("graph: interrupted in its tail".to_string()),
+                Err(crate::test_support::graph_error("interrupted in its tail")),
                 report,
-                Err(format!("graph: {windowed}.owed: Is a directory (os error 21)")),
+                Err(crate::test_support::directory_refusal(format!("{windowed}.owed"))),
                 Some(Rebuilt {
                     passed_over: 0,
                     pruned: PruneStats {
@@ -6803,10 +6810,7 @@ mod tests {
                 mark.is_dir()
             ),
             (
-                Err(format!(
-                    "graph: {}: Is a directory (os error 21)",
-                    mark.display()
-                )),
+                Err(crate::test_support::directory_refusal(mark.display())),
                 true
             ),
             "the mark that cannot be removed is named, and stands"
@@ -6996,7 +7000,7 @@ mod tests {
         let copy = dir.path().join("graph.db.pruned");
         std::fs::create_dir(&lock).unwrap();
         std::fs::write(&copy, b"left by a swap that stopped").unwrap();
-        let named = format!("graph: {}: Is a directory (os error 21)", lock.display());
+        let named = crate::test_support::directory_refusal(lock.display());
         assert_eq!(
             (
                 Projector::lock_rebuild(path)
@@ -7155,9 +7159,9 @@ mod tests {
         assert_eq!(
             (forgotten, stands, rebuilt, copy.is_dir()),
             (
-                Err(format!("graph: {}: Is a directory (os error 21)", copy.display())),
+                Err(crate::test_support::directory_refusal(copy.display())),
                 true,
-                Err(format!("graph: {}: Is a directory (os error 21)", copy.display())),
+                Err(crate::test_support::directory_refusal(copy.display())),
                 true
             ),
             "forgetting the copy and a rebuild over it both fail naming the directory, which stands"
@@ -14417,7 +14421,9 @@ mod tests {
                         p.owed_because().unwrap(),
                     ),
                     (
-                        Err("graph: interrupted after the first batch".to_string()),
+                        Err(crate::test_support::graph_error(
+                            "interrupted after the first batch"
+                        )),
                         vec![0, 3],
                         definition("x", "function", 3),
                         Vec::<&str>::new(),
@@ -14840,9 +14846,6 @@ mod tests {
             use crate::test_support::{event_of, ONE_COMMUNITY};
             use rigger_domain::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
             use std::cell::Cell;
-
-            /// The tail every lost fold's error ends with, as the shared fold fixture spells it.
-            pub(in crate::contextgraph::sqlite::tests) use crate::test_support::SETUP_PAYS;
 
             /// The hand-built entry of `<prefix>/<file>` at `generation`, at log position `pos`,
             /// valid from `secs` past the epoch.
@@ -15714,7 +15717,7 @@ mod tests {
                 let asked = Cell::new(0);
                 assert_eq!(
                     apply_entry(&p, &entry, batch, &asked),
-                    Err(format!("{why}{SETUP_PAYS}"))
+                    Err(crate::test_support::lost_fold(why))
                 );
                 assert_eq!(
                     (p.rebuild_owed().unwrap(), mark.exists()),
@@ -16140,7 +16143,7 @@ mod tests {
         mod staged_references {
             use super::super::leaf_keys_resolution::{keyed, write_directly};
             use super::ledger_entries::{
-                label, owe_without_refs, view_over_a_missing_table, MISSING_TABLE, SETUP_PAYS,
+                label, owe_without_refs, view_over_a_missing_table, MISSING_TABLE,
             };
             use super::*;
             use crate::contextgraph::{
@@ -17658,7 +17661,7 @@ mod tests {
                     &refusing(refused),
                     setup,
                     failing,
-                    format!("{REFUSED}{SETUP_PAYS}"),
+                    crate::test_support::lost_fold(REFUSED),
                 );
             }
 
@@ -17738,9 +17741,9 @@ mod tests {
                     ),
                     |_| {},
                     a_batch("a1", 1, &["CAP"]),
-                    format!(
-                        "Invalid column type Blob at index: {index}, name: {column}{SETUP_PAYS}"
-                    ),
+                    crate::test_support::lost_fold(&format!(
+                        "Invalid column type Blob at index: {index}, name: {column}"
+                    )),
                 );
             }
 
@@ -18431,7 +18434,9 @@ mod tests {
                         &format!("UPDATE nodes SET attrs = x'00' WHERE id = '{MODULE_FILE}'"),
                         held,
                         declaring_entry(2),
-                        format!("Invalid column type Blob at index: 2, name: attrs{SETUP_PAYS}"),
+                        crate::test_support::lost_fold(
+                            "Invalid column type Blob at index: 2, name: attrs",
+                        ),
                     );
                 }
 

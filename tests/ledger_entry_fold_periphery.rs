@@ -40,7 +40,6 @@ use common::cli::{
 };
 use common::fixtures::{
     decision_json, event_of, generation_ingested, live_edges, live_node_ids, nanos, placed_at,
-    SETUP_PAYS,
 };
 use rigger::contextgraph::sqlite::{Projector, RebuildSink};
 use rigger::contextgraph::{
@@ -260,7 +259,7 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
     assert_eq!(generation(port, IDENTITY), None);
     assert_eq!(node_ids(&p), Vec::<String>::new());
     assert_eq!(
-        fold_through_port(port, &first, Ok(Some(alpha_batch()))),
+        fold_through_port(port, &first, alpha_answer()),
         BATCH_ASKED,
         "position 7 was not recorded by the fold that failed"
     );
@@ -275,8 +274,8 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
             Ok(Some(vec![defines(F, "other", 5, true)]))
         ),
         (
-            Err(format!(
-                "GenerationIngested payload: missing field `prefix` at line 1 column 2{SETUP_PAYS}"
+            Err(common::fixtures::lost_fold(
+                "GenerationIngested payload: missing field `prefix` at line 1 column 2"
             )),
             0
         )
@@ -306,7 +305,7 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
                 Event::new(TYPE_CODE_ENTITY_EXTRACTED, poison.to_vec()),
             ]))
         ),
-        (Err(format!("{rejected}{SETUP_PAYS}")), 1)
+        (Err(common::fixtures::lost_fold(&rejected)), 1)
     );
     assert_eq!(
         generation(port, "gc/src/g.rs"),
@@ -367,7 +366,7 @@ fn the_mark_a_refused_public_fold_writes_binds_a_second_projector_on_the_file() 
     let path = graph_db(&dir);
     let first = Projector::open(&path, "test").unwrap();
     assert_eq!(
-        fold_through_port(&first, &entry(F, "h1", 7, 10), Ok(Some(alpha_batch()))),
+        fold_through_port(&first, &entry(F, "h1", 7, 10), alpha_answer()),
         BATCH_ASKED
     );
     let held = served(&first);
@@ -424,7 +423,7 @@ fn the_mark_a_failed_ledger_fold_writes_binds_a_second_projector_on_the_file() {
     assert_eq!(second.owed_because().unwrap(), vec![OWED_LOST_FOLD]);
     assert!(port.rebuild_owed().unwrap());
     assert_eq!(
-        fold_through_port(port, &entry(F, "h1", 7, 10), Ok(Some(alpha_batch()))),
+        fold_through_port(port, &entry(F, "h1", 7, 10), alpha_answer()),
         (Err(REBUILD_OWED.to_string()), 0)
     );
     assert_eq!(generation(port, IDENTITY), None);
@@ -451,7 +450,7 @@ fn a_second_projector_folding_the_same_generation_meanwhile_waits_and_meets_a_re
                     Box::new(move || {
                         entered_tx.send(()).unwrap();
                         release_rx.recv().unwrap();
-                        Ok(Some(alpha_batch()))
+                        alpha_answer()
                     }),
                 )
                 .map_err(|e| e.0)
@@ -518,7 +517,7 @@ fn a_writer_folds_into_the_file_while_its_rebuild_tail_extracts_an_entry_and_the
     common::fixtures::folds(&oracle, &log[..1]);
     common::fixtures::folds(&oracle, &log[2..]);
     assert_eq!(
-        fold_through_port(&oracle, &log[1], Ok(Some(alpha_batch()))),
+        fold_through_port(&oracle, &log[1], alpha_answer()),
         BATCH_ASKED
     );
     assert_same_graph(&path, &in_hand);
@@ -543,7 +542,7 @@ fn a_rebuild_tail_never_extracts_an_entry_a_writer_folded_before_the_tail_read_i
     let (written, reads, asks) = tail_after_a_writer(&path, &log, || {
         log[1..]
             .iter()
-            .map(|e| fold_through_port(&writer, e, Ok(Some(alpha_batch()))))
+            .map(|e| fold_through_port(&writer, e, alpha_answer()))
             .collect::<Vec<_>>()
     });
     assert_eq!(
@@ -555,10 +554,7 @@ fn a_rebuild_tail_never_extracts_an_entry_a_writer_folded_before_the_tail_read_i
     let (in_hand, oracle) = oracle_file(&dir);
     common::fixtures::folds(&oracle, &log[..1]);
     for e in &log[1..] {
-        assert_eq!(
-            fold_through_port(&oracle, e, Ok(Some(alpha_batch()))),
-            BATCH_ASKED
-        );
+        assert_eq!(fold_through_port(&oracle, e, alpha_answer()), BATCH_ASKED);
     }
     assert_same_graph(&path, &in_hand);
 }
@@ -579,7 +575,7 @@ fn a_rebuild_tail_never_extracts_a_re_recording_of_the_generation_a_writer_insta
     ];
     let writer = Projector::open(&path, "test").unwrap();
     let (written, reads, asks) = tail_after_a_writer(&path, &log, || {
-        fold_through_port(&writer, &log[2], Ok(Some(alpha_batch())))
+        fold_through_port(&writer, &log[2], alpha_answer())
     });
     assert_eq!(
         (written, reads, asks),
@@ -590,11 +586,11 @@ fn a_rebuild_tail_never_extracts_a_re_recording_of_the_generation_a_writer_insta
     let (in_hand, oracle) = oracle_file(&dir);
     common::fixtures::folds(&oracle, &log[..1]);
     assert_eq!(
-        fold_through_port(&oracle, &log[2], Ok(Some(alpha_batch()))),
+        fold_through_port(&oracle, &log[2], alpha_answer()),
         BATCH_ASKED
     );
     assert_eq!(
-        fold_through_port(&oracle, &log[1], Ok(Some(alpha_batch()))),
+        fold_through_port(&oracle, &log[1], alpha_answer()),
         RE_RECORDED
     );
     assert_same_graph(&path, &in_hand);
@@ -603,6 +599,11 @@ fn a_rebuild_tail_never_extracts_a_re_recording_of_the_generation_a_writer_insta
 /// The one definition `alpha` of [`F`], as an entry's batch.
 fn alpha_batch() -> Vec<Event> {
     vec![defines(F, "alpha", 1, true)]
+}
+
+/// A batch function's answer that resolves the entry to [`alpha_batch`].
+fn alpha_answer() -> Result<Option<Vec<Event>>, Error> {
+    Ok(Some(alpha_batch()))
 }
 
 /// A rebuild source over `log` for a `graph.db` whose log grew while its rebuild's shadow folded:
@@ -644,7 +645,7 @@ fn tail_after_a_writer<T>(
         }),
         &mut |_| {
             asks += 1;
-            Ok(Some(alpha_batch()))
+            alpha_answer()
         },
     );
     (written, reads.get(), asks)
@@ -938,7 +939,9 @@ fn the_ledger_form_answers_a_fold_it_could_not_make_beside_an_entry_that_is_on_t
     let Some(failed_at) = failed.0 else {
         panic!("the store placed the entry whose fold failed");
     };
-    let lost = Fold::NotFolded(format!("graph: {rejected}{SETUP_PAYS}"));
+    let lost = Fold::NotFolded(common::fixtures::lost_fold(&common::fixtures::graph_error(
+        &rejected,
+    )));
     assert_eq!(failed, (Some(failed_at), lost.clone(), None));
     assert_eq!(p.owed_because().unwrap(), vec![OWED_LOST_FOLD]);
     assert_eq!(applied_positions(&graph_path), Vec::<u64>::new());
@@ -980,14 +983,8 @@ fn the_ledger_form_answers_a_fold_it_could_not_make_beside_an_entry_that_is_on_t
     assert_eq!(
         said.lines(),
         vec![
-            format!(
-                "rigger: recorded 1 run event(s); not folded into the context graph: graph: \
-                 {rejected}{SETUP_PAYS}"
-            ),
-            format!(
-                "rigger: recorded 3 run event(s); not folded into the context graph: graph: \
-                 {REBUILD_OWED}"
-            ),
+            common::fixtures::recorded_not_folded(1, &common::fixtures::lost_fold(&rejected)),
+            common::fixtures::recorded_not_folded(3, REBUILD_OWED),
         ]
     );
 }
@@ -1012,7 +1009,7 @@ fn the_ledger_form_wired_to_no_graph_appends_the_entry_and_says_nothing_of_its_f
     let Some(placed_at) = done.0 else {
         panic!("the store placed the entry");
     };
-    let unwired = Fold::NotFolded("graph: no context graph is wired".to_string());
+    let unwired = Fold::NotFolded(common::fixtures::unwired());
     assert_eq!(done, (Some(placed_at), unwired.clone(), None));
     assert_eq!(logged(&store).len(), 1);
     folding.say_fold_lost(1, &unwired);
@@ -1082,7 +1079,7 @@ fn settle_names_a_fold_that_was_made_and_one_that_was_not_with_its_reason() {
         ],
         [
             Fold::Folded,
-            Fold::NotFolded("graph: the write was refused".to_string())
+            Fold::NotFolded(common::fixtures::graph_error("the write was refused"))
         ]
     );
 }

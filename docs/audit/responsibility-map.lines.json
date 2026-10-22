@@ -2745,102 +2745,102 @@
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_failing_read_of_the_log_side_or_of_the_graph_side_fails_the_emit_and_records_nothing",
     "start_line": 21418,
-    "end_line": 21462
+    "end_line": 21465
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_emit_wired_to_no_graph_fails_and_records_nothing",
-    "start_line": 21467,
-    "end_line": 21485
+    "start_line": 21470,
+    "end_line": 21488
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_gd_file_emptied_after_the_walk_records_nothing_and_the_emit_succeeds",
-    "start_line": 21491,
-    "end_line": 21506
+    "start_line": 21494,
+    "end_line": 21509
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_graph_that_owes_its_rebuild_records_one_entry_per_generation",
-    "start_line": 21513,
+    "start_line": 21516,
     "end_line": 21563
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_entry_whose_ledger_fold_fails_is_recorded_and_the_lost_fold_is_said",
     "start_line": 21568,
-    "end_line": 21607
+    "end_line": 21604
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_revert_a_b_a_records_three_entries_and_leaves_as_facts",
-    "start_line": 21613,
-    "end_line": 21669
+    "start_line": 21610,
+    "end_line": 21666
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_batch_whose_append_is_refused_at_first_sight_appends_whole_on_the_next_sight",
-    "start_line": 21675,
-    "end_line": 21706
+    "start_line": 21672,
+    "end_line": 21703
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_generation_whose_append_is_refused_leaves_the_process_on_the_recorded_generation",
-    "start_line": 21713,
-    "end_line": 21767
+    "start_line": 21710,
+    "end_line": 21764
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_first_sight_lookup_racing_a_newer_generation_leaves_the_process_on_the_stored_generation",
-    "start_line": 21776,
-    "end_line": 21844
+    "start_line": 21773,
+    "end_line": 21841
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_run_ingest_whose_group_lookup_is_unanswered_fails_appends_nothing_and_walks_again",
-    "start_line": 21851,
-    "end_line": 21884
+    "start_line": 21848,
+    "end_line": 21881
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_integration_reindex_whose_group_lookup_is_unanswered_fails_and_appends_nothing",
-    "start_line": 21889,
-    "end_line": 21910
+    "start_line": 21886,
+    "end_line": 21907
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_current_batch_handed_twice_makes_one_group_lookup",
-    "start_line": 21920,
-    "end_line": 21959
+    "start_line": 21917,
+    "end_line": 21956
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_identity_is_looked_up_once_and_its_later_batches_answer_from_the_entry_recorded",
-    "start_line": 21968,
-    "end_line": 22018
+    "start_line": 21965,
+    "end_line": 22015
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_batch_whose_group_lookup_failed_handed_again_makes_a_second_lookup",
-    "start_line": 22025,
-    "end_line": 22072
+    "start_line": 22022,
+    "end_line": 22069
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "handed_twice_over_an_empty_store",
-    "start_line": 22077,
-    "end_line": 22096
+    "start_line": 22074,
+    "end_line": 22093
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_same_answer_twice_from_one_lookup",
-    "start_line": 22099,
-    "end_line": 22108
+    "start_line": 22096,
+    "end_line": 22105
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_identity_the_log_holds_no_recording_of_is_still_looked_up_once_when_its_batch_records_nothing",
-    "start_line": 22119,
+    "start_line": 22116,
     "end_line": 22182
   },
   {

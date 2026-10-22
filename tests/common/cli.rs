@@ -850,6 +850,21 @@ pub fn reclaimed_line(bytes: u64) -> String {
     format!("reset --derived: compacted the log file and reclaimed {bytes} byte(s) on disk\n")
 }
 
+/// The line the binary ends a failed command's stderr with: `rigger: ` before the `error` the
+/// command failed on.
+pub fn refusal_line(error: &str) -> String {
+    let mut line = String::from("rigger: ");
+    line.push_str(error);
+    line
+}
+
+/// The [`refusal_line`] of a command that met a rebuild holding `graph.db.lock`: the graph error
+/// [`rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS`].
+pub fn rebuild_in_progress_line() -> String {
+    let refused = super::fixtures::graph_error(rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS);
+    refusal_line(&refused)
+}
+
 /// The line a command refused at `graph.db.lock` ends its stderr with, whoever holds the lock.
 pub const REBUILD_LOCK_REFUSAL: &str =
     "rigger: graph: graph.db.lock is held by another `rigger setup` or `rigger reset`";

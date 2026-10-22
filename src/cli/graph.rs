@@ -1256,7 +1256,13 @@ mod tests {
 
             let built = ingest_tree(&store, &graph, root).unwrap();
 
-            assert_eq!(built, (18, Fold::NotFolded(format!("graph: {FIRST_LOSS}"))));
+            assert_eq!(
+                built,
+                (
+                    18,
+                    Fold::NotFolded(crate::test_support::graph_error(FIRST_LOSS))
+                )
+            );
             assert_eq!(recorded(&store), only(walked_entries(tree.path())));
             assert_eq!(graph.folds.load(std::sync::atomic::Ordering::SeqCst), 6);
         }

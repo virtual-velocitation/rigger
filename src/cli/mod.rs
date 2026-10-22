@@ -8940,7 +8940,7 @@ mod tests {
             moved.map(|(n, decision)| (n, decision.fold)),
             Some((
                 1,
-                contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string())
+                contextgraph::Fold::NotFolded(crate::test_support::unwired())
             )),
             "one legacy stream renamed; with no graph wired its decision says it was not folded"
         );

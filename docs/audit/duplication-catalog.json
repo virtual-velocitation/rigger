@@ -441,7 +441,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-2b8f802a2dc3",
+    "id": "dup-a386b1c4e6df",
     "classification": "semantic",
     "sites": [
       {
@@ -467,7 +467,7 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it",
-        "content_hash": "42988f6041c63d74"
+        "content_hash": "46f7d5ef5b2d100a"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -492,7 +492,7 @@
       {
         "file": "tests/batched_fold_cadence.rs",
         "name": "append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch",
-        "content_hash": "5fb726832c6fe0ec"
+        "content_hash": "22258618be4ecac8"
       },
       {
         "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
