@@ -366,7 +366,9 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
     };
     assert_eq!(
         common::fixtures::fold_of(&failing, &batch),
-        rigger::contextgraph::Fold::NotFolded("graph: apply failed at position 2".to_string()),
+        rigger::contextgraph::Fold::NotFolded(common::fixtures::graph_error(
+            "apply failed at position 2"
+        )),
         "an apply error must surface from the default apply_batch"
     );
     assert_eq!(
