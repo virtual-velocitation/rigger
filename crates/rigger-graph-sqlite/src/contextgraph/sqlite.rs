@@ -4774,6 +4774,15 @@ fn proof_rows_by(key: &str) -> String {
     format!("proofs WHERE project = ?1 AND {key} = ?2")
 }
 
+/// The text of the read of the targets the proof rows whose `key` column - `file` or `name` -
+/// holds a value resolve to ([`proof_targets_by`]), each once.
+fn proof_targets_sql(key: &str) -> String {
+    format!(
+        "SELECT DISTINCT target FROM {} AND target IS NOT NULL",
+        proof_rows_by(key)
+    )
+}
+
 /// The targets the proof rows of `project` whose `key` column - `file` or `name` - holds `value`
 /// resolve to, each once, sorted.
 fn proof_targets_by(
@@ -4782,12 +4791,7 @@ fn proof_targets_by(
     key: &str,
     value: &str,
 ) -> Result<BTreeSet<String>, Error> {
-    let mut stmt = tx
-        .prepare(&format!(
-            "SELECT DISTINCT target FROM {} AND target IS NOT NULL",
-            proof_rows_by(key)
-        ))
-        .map_err(be)?;
+    let mut stmt = tx.prepare(&proof_targets_sql(key)).map_err(be)?;
     let targets = stmt
         .query_map(params![project, value], |r| r.get(0))
         .map_err(be)?
@@ -13926,26 +13930,34 @@ mod tests {
 
         thread_local! {
             /// The executions of the definition lookup [`resolve_proofs`] runs on this thread that
-            /// the statement-trace callback [`count_lookup`] saw since [`lookups_taken`] last read
-            /// it: one count per test thread, so tests counting at once never read each other's
-            /// lookups (SQLite calls the callback on the thread running the statement).
+            /// the statement-trace callback [`count_lookup`] saw since [`taken`] last read it: one
+            /// count per test thread, so tests counting at once never read each other's lookups
+            /// (SQLite calls the callback on the thread running the statement).
             static LOOKUPS: Cell<usize> = const { Cell::new(0) };
+            /// The executions of the read of a name's proof targets ([`proof_targets_sql`] for
+            /// `name`) [`count_lookup`] saw on this thread since [`taken`] last read it.
+            static TARGET_READS: Cell<usize> = const { Cell::new(0) };
         }
 
         /// The statement-trace callback of a counted connection: a traced statement, its bound
-        /// parameters replaced by their values, is the definition lookup when it opens with the
-        /// lookup's built text up to that text's first bound parameter.
+        /// parameters replaced by their values, is the definition lookup, or the read of a name's
+        /// proof targets, when it opens with that statement's built text up to the text's first
+        /// bound parameter.
         fn count_lookup(traced: &str) {
-            let built = definition_lookup_sql();
-            let head = &built[..built.find('?').unwrap_or(built.len())];
-            if traced.starts_with(head) {
-                LOOKUPS.with(|n| n.set(n.get() + 1));
+            for (built, count) in [
+                (definition_lookup_sql(), &LOOKUPS),
+                (proof_targets_sql("name"), &TARGET_READS),
+            ] {
+                let head = &built[..built.find('?').unwrap_or(built.len())];
+                if traced.starts_with(head) {
+                    count.with(|n| n.set(n.get() + 1));
+                }
             }
         }
 
-        /// The lookups counted on this thread since its last read, the count reset to zero.
-        fn lookups_taken() -> usize {
-            LOOKUPS.with(|n| n.replace(0))
+        /// The executions `count` counted on this thread since its last read, reset to zero.
+        fn taken(count: &'static std::thread::LocalKey<Cell<usize>>) -> usize {
+            count.with(|n| n.replace(0))
         }
 
         /// The test references `tests/owed.rs` holds to `owed` at log positions
@@ -13959,14 +13971,15 @@ mod tests {
                 .collect()
         }
 
-        /// A projector whose connection counts the definition lookups ([`count_lookup`]),
-        /// holding `seeded` proof rows of `owed` ([`references_to_owed`]), the lookups the
-        /// seeding took read and reset.
+        /// A projector whose connection counts the definition lookups and the proof-target reads
+        /// ([`count_lookup`]), holding `seeded` proof rows of `owed` ([`references_to_owed`]),
+        /// the counts the seeding took read and reset.
         fn counted_holding(seeded: u64) -> Projector {
             let p = fold_events([]);
             p.conn.lock().unwrap().trace(Some(count_lookup));
             folds(&p, &references_to_owed(1, seeded));
-            lookups_taken();
+            taken(&LOOKUPS);
+            taken(&TARGET_READS);
             p
         }
 
@@ -13984,11 +13997,11 @@ mod tests {
             let per_reference = counted_holding(R);
             let references = references_to_owed(R + 1, K);
             folds(&once, &references);
-            let in_one = lookups_taken();
+            let in_one = taken(&LOOKUPS);
             for reference in &references {
                 folds(&per_reference, std::slice::from_ref(reference));
             }
-            let in_each = lookups_taken();
+            let in_each = taken(&LOOKUPS);
             assert_eq!(
                 (in_one, in_each),
                 (
@@ -13996,6 +14009,17 @@ mod tests {
                     (K * (1 + R) + K * (K + 1) / 2) as usize
                 )
             );
+        }
+
+        /// Settlement reads an owed name's proof targets once per transaction, after resolving
+        /// it ([`settle_proofs`]): over r = 2 recorded proof rows of `owed`, k = 3 more test
+        /// references to it folded in one transaction execute the read of `owed`'s proof
+        /// targets ([`proof_targets_sql`]) once.
+        #[test]
+        fn one_transaction_reads_an_owed_name_proof_targets_once() {
+            let p = counted_holding(2);
+            folds(&p, &references_to_owed(3, 3));
+            assert_eq!(taken(&TARGET_READS), 1);
         }
 
         /// `proofs_owed` is empty after every commit: the transaction that folded the seeded
