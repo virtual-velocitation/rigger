@@ -21,8 +21,8 @@ mod common;
 
 use common::fixtures::{
     a_call_from, attrs_of, cross_file_call_and_proof, definition, ev_at, f_rs_batch_def, folds,
-    folds_each, graph_file_in, landed, proven_by_attr, rebuild_from_the_log, DefRow,
-    NEW_LEAF_MODULE, OLD_LEAF_FN, RENAMED_NODE, RENAMED_PATH,
+    folds_each, graph_file_in, landed, proven_by_attr, rebuilt_graph_file, DefRow, NEW_LEAF_MODULE,
+    OLD_LEAF_FN, RENAMED_NODE, RENAMED_PATH,
 };
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{TIER_AMBIGUOUS, TIER_INFERRED};
@@ -91,9 +91,8 @@ fn a_fn_refolded_as_another_leaf_at_its_path_retires_the_old_leaf_live_and_in_a_
     folds(&live, std::slice::from_ref(&log[4]));
     the_old_leaf_resolves_onto_nothing(&live, NEW_LEAF_MODULE, "the live fold of generation 2");
 
-    rebuild_from_the_log(&dir.path().join("rebuilt.db"), &log, 1, &mut |_| Ok(None));
     the_old_leaf_resolves_onto_nothing(
-        &graph_file_in(dir.path(), "rebuilt.db"),
+        &rebuilt_graph_file(dir.path(), "rebuilt.db", &log, 1),
         NEW_LEAF_MODULE,
         "a cold rebuild of the log, one event to a batch",
     );
@@ -128,11 +127,8 @@ fn a_differing_name_pair_in_one_batch_retires_the_first_leaf_live_and_in_a_cold_
     folds(&after, &log[2..]);
     the_old_leaf_resolves_onto_nothing(&after, settled, "the one-batch pair, then the references");
 
-    rebuild_from_the_log(&dir.path().join("rebuilt.db"), &log, log.len(), &mut |_| {
-        Ok(None)
-    });
     the_old_leaf_resolves_onto_nothing(
-        &graph_file_in(dir.path(), "rebuilt.db"),
+        &rebuilt_graph_file(dir.path(), "rebuilt.db", &log, log.len()),
         settled,
         "a cold rebuild of the log as one batch",
     );

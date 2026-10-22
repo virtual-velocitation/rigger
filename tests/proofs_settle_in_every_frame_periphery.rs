@@ -15,7 +15,7 @@ use std::path::Path;
 
 use common::fixtures::{
     attrs_of, definition, definition_ids, f_rs_batch_def, folds, folds_each, graph_file_in,
-    proven_definition, rebuild_from_the_log, t_rs_batch_reference,
+    proven_definition, rebuilt_graph_file, t_rs_batch_reference, temp_root,
 };
 use rigger::contextgraph::sqlite::Projector;
 use rigger::eventstore::Event;
@@ -56,19 +56,15 @@ fn folded_in_every_frame(dir: &Path, log: &[Event]) -> [(Projector, &'static str
     folds(&one_batch, log);
     let per_event = graph_file_in(dir, "per_event.db");
     folds_each(&per_event, log);
-    rebuild_from_the_log(&dir.join("rebuilt_whole.db"), log, log.len(), &mut |_| {
-        Ok(None)
-    });
-    rebuild_from_the_log(&dir.join("rebuilt_each.db"), log, 1, &mut |_| Ok(None));
     [
         (one_batch, "the live fold of the log as one batch"),
         (per_event, "the live fold, one event to a transaction"),
         (
-            graph_file_in(dir, "rebuilt_whole.db"),
+            rebuilt_graph_file(dir, "rebuilt_whole.db", log, log.len()),
             "a rebuild folding the log as one batch",
         ),
         (
-            graph_file_in(dir, "rebuilt_each.db"),
+            rebuilt_graph_file(dir, "rebuilt_each.db", log, 1),
             "a rebuild folding one event to a batch",
         ),
     ]
@@ -82,8 +78,8 @@ fn folded_in_every_frame(dir: &Path, log: &[Event]) -> [(Projector, &'static str
 #[test]
 fn a_generation_dropping_a_reference_and_a_definition_settles_alike_in_every_frame() {
     let log = the_log();
-    let forward = tempfile::tempdir().unwrap();
-    let whole = tempfile::tempdir().unwrap();
+    let (_forward, forward) = temp_root();
+    let (_whole, whole) = temp_root();
 
     let kept = (
         "src/f.rs::kept".to_string(),
@@ -100,12 +96,12 @@ fn a_generation_dropping_a_reference_and_a_definition_settles_alike_in_every_fra
             proven_definition("lead", "function", 1, &["tests/t.rs:5"]),
         ),
     ];
-    for (p, frame) in folded_in_every_frame(forward.path(), &log[..6]) {
+    for (p, frame) in folded_in_every_frame(Path::new(&forward), &log[..6]) {
         assert_eq!(definitions_of(&p), referenced_first, "{frame}, to h1");
     }
 
     let settled = vec![kept, (LEAD.to_string(), definition("lead", "function", 1))];
-    for (p, frame) in folded_in_every_frame(whole.path(), &log) {
+    for (p, frame) in folded_in_every_frame(Path::new(&whole), &log) {
         assert_eq!(definitions_of(&p), settled, "{frame}, to h2");
     }
 }

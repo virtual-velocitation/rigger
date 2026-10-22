@@ -341,6 +341,18 @@ pub fn rebuild_from_the_log(
     assert!(rebuilt.is_some(), "premise: the rebuild ran");
 }
 
+/// The graph file `name` under `dir` rebuilt from `log` alone ([`rebuild_from_the_log`] in batches
+/// of at most `batch` events, re-extracting no ledger entry), opened as its fold left it.
+pub fn rebuilt_graph_file(
+    dir: &std::path::Path,
+    name: &str,
+    log: &[Event],
+    batch: usize,
+) -> rigger::contextgraph::sqlite::Projector {
+    rebuild_from_the_log(&dir.join(name), log, batch, &mut |_| Ok(None));
+    super::graph_file_in(dir, name)
+}
+
 /// LEAVE `graph` OWING ITS REBUILD: the generic fold refuses a ledger entry and marks the graph
 /// it refused, so every fold after it is refused for that debt.
 pub fn owe_a_rebuild(graph: &dyn rigger::contextgraph::Projection) {

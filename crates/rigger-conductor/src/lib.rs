@@ -186,7 +186,8 @@ use config_fixtures::{agent, gate_def, gate_def_inputs};
 ))]
 use {
     event_fixtures::CountedRead, extraction_tree_fixtures::WALKED,
-    fold_fixtures::generation_ingested, git_fixtures::git_hash_object,
+    fold_fixtures::generation_ingested, fold_fixtures::graph_file_in,
+    git_fixtures::git_hash_object,
 };
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
