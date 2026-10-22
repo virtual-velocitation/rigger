@@ -14872,11 +14872,10 @@ mod tests {
                     "test",
                     false,
                     &mut |after, sink| {
-                        let (first, second) = log.split_at(790);
-                        stream_past(first, after, 1000, sink)?;
-                        crate::test_support::folds(&p, std::slice::from_ref(&log[794]));
-                        seam.push(committed());
-                        stream_past(second, after, 1000, sink)
+                        crate::test_support::two_read_batches(&log, 790, after, sink, || {
+                            crate::test_support::folds(&p, std::slice::from_ref(&log[794]));
+                            seam.push(committed());
+                        })
                     },
                     &mut |e| {
                         extracted.push((e.position, committed()));

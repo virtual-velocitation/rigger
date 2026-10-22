@@ -892,8 +892,8 @@ fn rebuild_cursor_of(db: &Path) -> u64 {
 #[test]
 fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_batches() {
     use common::cli::applied_positions;
-    use common::fixtures::{entry_at, folds, run_started, temp_graph_db};
-    use rigger::contextgraph::sqlite::{stream_past, Projector};
+    use common::fixtures::{entry_at, folds, run_started, temp_graph_db, two_read_batches};
+    use rigger::contextgraph::sqlite::Projector;
     let (dir, path) = temp_graph_db();
     let db = Path::new(&path);
     let mut events = two_generations_dropping_facts();
@@ -922,14 +922,13 @@ fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_
             if reads == 1 {
                 return sink(&log[..swapped], at(swapped - 1));
             }
-            let (first, second) = log.split_at(split);
-            stream_past(first, after, log.len(), sink)?;
-            folds(
-                &Projector::open(&path, PROJECT).unwrap(),
-                std::slice::from_ref(&log[writer]),
-            );
-            seam.push(committed());
-            stream_past(second, after, log.len(), sink)
+            two_read_batches(&log, split, after, sink, || {
+                folds(
+                    &Projector::open(&path, PROJECT).unwrap(),
+                    std::slice::from_ref(&log[writer]),
+                );
+                seam.push(committed());
+            })
         },
         &mut |e| {
             extracted.push((e.position, committed()));

@@ -4,8 +4,9 @@
 //! reference folds read, the canonical spec-53 two-subsystem coupling seed, the spec-119
 //! show-renderer seed with the oracles its `rigger_graph` `show` and `around` objects are checked
 //! by, the live edges and calls a projector serves with the spec-119 enum's `CONTAINS` edges they
-//! are checked against, the module declarations' `CONTAINS` edges it serves, and the read-backs
-//! suites take of a folded `Graph`. `apply` returns `Err` on a fold failure, so every helper
+//! are checked against, the module declarations' `CONTAINS` edges it serves, the read-backs
+//! suites take of a folded `Graph`, and the two read batches a rebuild source hands with a writer
+//! between them. `apply` returns `Err` on a fold failure, so every helper
 //! unwraps it - a successful call is itself evidence the payload folded - but
 //! [`fold_entry_result`], which answers the error text a failing fold meets.
 
@@ -283,6 +284,23 @@ pub fn folds(p: &dyn Projection, events: &[Event]) {
         rigger::contextgraph::Fold::of_batch(|| rigger::contextgraph::wired(Some(p)), events),
         rigger::contextgraph::Fold::Folded
     );
+}
+
+/// A rebuild source's one read past `after`: the events of `log` handed to `sink` as two read
+/// batches, split before `log[split]`, with `between` run once the first is handed and before the
+/// second - where a fold pass holds no transaction, so a writer's commit lands there (spec 122,
+/// THE SEAM).
+pub fn two_read_batches(
+    log: &[Event],
+    split: usize,
+    after: u64,
+    sink: &mut rigger::contextgraph::sqlite::RebuildSink,
+    between: impl FnOnce(),
+) -> Result<(), rigger::contextgraph::Error> {
+    let (first, second) = log.split_at(split);
+    rigger::contextgraph::sqlite::stream_past(first, after, log.len(), sink)?;
+    between();
+    rigger::contextgraph::sqlite::stream_past(second, after, log.len(), sink)
 }
 
 /// Fold `e` onto `p` at log position `pos`.
