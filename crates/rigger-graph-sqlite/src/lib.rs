@@ -61,6 +61,7 @@ use rigger_process::{holders, reap};
 mod write_lock_fixtures;
 #[cfg(test)]
 mod test_support {
+    #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::event_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::fold_fixtures::*;
