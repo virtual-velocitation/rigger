@@ -15130,6 +15130,48 @@ mod tests {
                 assert_eq!(applied_positions(&p), vec![1, 2, 3, 4, 5]);
             }
 
+            /// How many times a rebuild's tail over the graph file at `path`, folding `log` in one
+            /// read, asks its `reextract` for an entry's batch.
+            fn tail_asks(path: &str, log: &[Event]) -> usize {
+                let mut asks = 0;
+                crate::test_support::rebuild_clean(
+                    path,
+                    false,
+                    &mut |after, sink| crate::test_support::one_read(log, after, sink),
+                    &mut |_| {
+                        asks += 1;
+                        Ok(None)
+                    },
+                );
+                asks
+            }
+
+            /// Spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION: the read before an entry's
+            /// transaction extracts nothing for an entry whose position the file already folded -
+            /// here one whose generation its identity no longer holds, so its `applied` row alone
+            /// says so - and the tail leaves the ledger as it stood.
+            #[test]
+            fn a_fold_pass_never_extracts_an_entry_the_file_already_folded() {
+                let (_dir, path, p) = owing_its_tail();
+                holding_h1(&p);
+                crate::test_support::fold_asked(&p, "src/f.rs", "h2", 8, 20, h1_batch());
+                assert_eq!(tail_asks(&path, &[h1_at_7()]), 0);
+                assert_eq!(applied_positions(&p), vec![7, 8]);
+            }
+
+            /// Spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION: the read before an entry's
+            /// transaction extracts nothing for a re-recording the file has not folded - an entry
+            /// naming the generation its identity already holds - which then records its position
+            /// alone.
+            #[test]
+            fn a_fold_pass_never_extracts_a_re_recording_the_file_has_not_folded() {
+                let (_dir, path, p) = owing_its_tail();
+                holding_h1(&p);
+                let again = crate::test_support::placed_at(h1_at_7(), 9, 30);
+                assert_eq!(tail_asks(&path, &[again]), 0);
+                assert_eq!(applied_positions(&p), vec![7, 9]);
+            }
+
             /// Spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION: a rebuild's tail extracts an
             /// entry's batch with no transaction open, so while its `reextract` blocks on a barrier
             /// a writer on a second connection commits, and the entry then folds the batch it
