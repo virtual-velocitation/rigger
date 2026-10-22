@@ -858,16 +858,12 @@ pub fn refusal_line(error: &str) -> String {
     line
 }
 
-/// The [`refusal_line`] of a command that met a rebuild holding `graph.db.lock`: the graph error
-/// [`rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS`].
+/// The [`refusal_line`] a command refused at `graph.db.lock` ends its stderr with, whoever holds
+/// the lock: the graph error [`rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS`].
 pub fn rebuild_in_progress_line() -> String {
     let refused = super::fixtures::graph_error(rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS);
     refusal_line(&refused)
 }
-
-/// The line a command refused at `graph.db.lock` ends its stderr with, whoever holds the lock.
-pub const REBUILD_LOCK_REFUSAL: &str =
-    "rigger: graph: graph.db.lock is held by another `rigger setup` or `rigger reset`";
 
 /// The whole stderr of `rigger reset --derived` on a project configured for the server-backed
 /// store, where the migration does not run.

@@ -42,10 +42,7 @@ use common::cli::temp_store_project;
 use common::cli::write_workflow_fixture;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
 use common::cli::{rebuild_owed, setup_ok, user_version, version_and_owed};
-use common::cli::{
-    LOG_LEFT_AS_IT_STANDS_LINE, NOTHING_TO_SHED_LINE, REBUILD_LOCK_REFUSAL,
-    UNFINISHED_REBUILD_REFUSAL,
-};
+use common::cli::{LOG_LEFT_AS_IT_STANDS_LINE, NOTHING_TO_SHED_LINE, UNFINISHED_REBUILD_REFUSAL};
 use common::fixtures::cleanup;
 use common::fixtures::f_rs_batch_def;
 use common::fixtures::files_open_by;
@@ -4755,7 +4752,7 @@ fn a_setup_refused_by_a_rebuild_in_progress_migrates_nothing_and_names_it_in_its
                 false,
                 Vec::<String>::new(),
                 0,
-                Some(REBUILD_LOCK_REFUSAL.to_string()),
+                Some(common::cli::rebuild_in_progress_line()),
                 (vec!["d-legacy".to_string()], Vec::<String>::new()),
                 true,
             ),

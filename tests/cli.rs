@@ -28667,7 +28667,7 @@ fn reset_derived_refuses_a_held_rebuild_lock_then_an_unfinished_rebuild_and_chan
             (
                 false,
                 String::new(),
-                format!("{}\n", common::cli::REBUILD_LOCK_REFUSAL),
+                common::cli::rebuild_in_progress_line() + "\n",
                 true
             ),
             (
