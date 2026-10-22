@@ -1480,11 +1480,13 @@ fn remove_shadow(shadow: Connection, path: &str) -> Result<(), Error> {
 /// again. Any other failure is the store's, not the payload's: it propagates with its transaction
 /// rolled back, so nothing records the event folded and the next rebuild resumes from the cursor -
 /// the last position the transaction before it committed - and folds it. That is every failure of
-/// an entry whose own payload parses - a re-extracted batch event the fold rejects, which is this
-/// binary's own extraction and never a payload to pass over, and an entry that asks a batch it was
-/// not handed on its retry too ([`unread_entry`]); a `reextract` that fails propagates before the
-/// entry's transaction opens, with the cursor where the last transaction left it. One the file
-/// already folded is passed over by the fold's per-position guard.
+/// an entry whose own payload parses inside its transaction: a re-extracted batch event the fold
+/// rejects, which is this binary's own extraction and never a payload to pass over. Two failures of
+/// an entry propagate with no write of its own and the cursor where the last transaction left it:
+/// a `reextract` that fails, before the entry's transaction opens, and an entry that asks a batch
+/// it was not handed on its retry too, whose savepoint is undone and whose transaction commits no
+/// write before [`unread_entry`] propagates. One the file already folded is passed over by the
+/// fold's per-position guard.
 ///
 /// A shadow fold (`gather_run_closure`) also keeps, in the same transaction, every event of the
 /// [`rigger_domain::run::RUN_CLOSURE_TYPES`] it passes ([`REBUILD_STATE`]), whatever became
@@ -14894,7 +14896,7 @@ mod tests {
                 rebuild_cursor(&p.conn.lock().unwrap()).unwrap()
             }
 
-            /// The generation `p` holds for `gc/src/f.rs`, the identity this module's entries name.
+            /// The generation `p` holds for `gc/src/f.rs`, the identity [`h1_at_7`] names.
             fn generation_of_f(p: &Projector) -> Option<String> {
                 p.current_generation("gc/src/f.rs").unwrap()
             }
