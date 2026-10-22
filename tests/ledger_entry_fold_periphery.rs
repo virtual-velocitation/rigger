@@ -350,7 +350,7 @@ fn a_ledger_entry_the_public_fold_refused_folds_afterwards_through_apply_generat
         ),
         entry(F, "h2", 12, 50),
     ];
-    assert_eq!(Fold::of_batch(|| wired(Some(port)), &batch), refused);
+    assert_eq!(common::fixtures::fold_of(port, &batch), refused);
     assert_eq!(
         live_node_ids(&p.whole().unwrap(), KIND_DECISION),
         Vec::<String>::new()

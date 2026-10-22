@@ -277,13 +277,15 @@ pub fn reference(from: &str, to: &str, tier: &str) -> (String, String, String, S
     (from.into(), REL_REFERENCES.into(), to.into(), tier.into())
 }
 
-/// Fold `events` into `p` through the public fold, and insist they landed: the one spelling of
-/// seeding a graph a test then reads.
+/// Fold `events` into `p` through the public fold, answering what became of them.
+pub fn fold_of(p: &dyn Projection, events: &[Event]) -> rigger::contextgraph::Fold {
+    rigger::contextgraph::Fold::of_batch(|| rigger::contextgraph::wired(Some(p)), events)
+}
+
+/// Fold `events` into `p` through the public fold ([`fold_of`]), and insist they landed: the one
+/// spelling of seeding a graph a test then reads.
 pub fn folds(p: &dyn Projection, events: &[Event]) {
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(|| rigger::contextgraph::wired(Some(p)), events),
-        rigger::contextgraph::Fold::Folded
-    );
+    assert_eq!(fold_of(p, events), rigger::contextgraph::Fold::Folded);
 }
 
 /// A rebuild source's one read past `after`: the events of `log` handed to `sink` as two read

@@ -5347,10 +5347,7 @@ mod tests {
         let p = Projector::open(":memory:", "test").unwrap();
         assert!(
             matches!(
-                crate::contextgraph::Fold::of_batch(
-                    || crate::contextgraph::wired(Some(&p)),
-                    &[good.clone(), poison]
-                ),
+                crate::test_support::fold_of(&p, &[good.clone(), poison]),
                 crate::contextgraph::Fold::NotFolded(_)
             ),
             "a fold error must surface from apply_batch"
@@ -5401,10 +5398,7 @@ mod tests {
             "a fold that succeeds owes nothing"
         );
         assert!(matches!(
-            crate::contextgraph::Fold::of_batch(
-                || crate::contextgraph::wired(Some(&p)),
-                &log[1..2]
-            ),
+            crate::test_support::fold_of(&p, &log[1..2]),
             Fold::NotFolded(_)
         ));
         assert_eq!(
@@ -5413,7 +5407,7 @@ mod tests {
             "the failed fold marks the file owed"
         );
         assert_eq!(
-            crate::contextgraph::Fold::of_batch(|| crate::contextgraph::wired(Some(&p)), &log[2..]),
+            crate::test_support::fold_of(&p, &log[2..]),
             Fold::NotFolded(format!("graph: {REBUILD_OWED}")),
             "a marked file refuses every later fold"
         );
@@ -5476,6 +5470,12 @@ mod tests {
     /// The rebuild lock of the graph file at `path`, which no other holder has.
     fn locked(path: &str) -> RebuildLock {
         Projector::lock_rebuild(path).unwrap()
+    }
+
+    /// A connection of its own to the graph file at `path`, through the opener every connection to
+    /// that file is opened through.
+    fn connection_to(path: &str) -> Connection {
+        open_connection(path).unwrap()
     }
 
     /// A rebuild of the graph file at `path` from `log` in batches of `batch`, owed by its caller,
@@ -5687,7 +5687,7 @@ mod tests {
     fn a_transaction_meeting_a_held_write_lock_fails_at_its_open_before_its_body_runs() {
         let (_dir, path) = crate::test_support::temp_graph_db();
         drop(Projector::open(&path, "test").unwrap());
-        let mut conn = open_connection(&path).unwrap();
+        let mut conn = connection_to(&path);
         conn.busy_timeout(std::time::Duration::from_millis(100))
             .unwrap();
         let ran = std::cell::Cell::new(false);
@@ -6470,10 +6470,7 @@ mod tests {
             .unwrap();
         let folded = crate::test_support::with_graph_locked(Path::new(path), || {
             std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-            let folded = crate::contextgraph::Fold::of_batch(
-                || crate::contextgraph::wired(Some(&p)),
-                &log[1..],
-            );
+            let folded = crate::test_support::fold_of(&p, &log[1..]);
             std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
             folded
         });
@@ -14733,6 +14730,16 @@ mod tests {
                 )
             }
 
+            /// The rebuild's cursor in `p`'s file, read on `p`'s own connection.
+            fn cursor_of(p: &Projector) -> Position {
+                rebuild_cursor(&p.conn.lock().unwrap()).unwrap()
+            }
+
+            /// The generation `p` holds for `gc/src/f.rs`, the identity this module's entries name.
+            fn generation_of_f(p: &Projector) -> Option<String> {
+                p.current_generation("gc/src/f.rs").unwrap()
+            }
+
             /// Every distinct `(identity, generation)` pair in `p`'s `table`, in order: the
             /// generations it holds (`generations`) or made its node assertions under
             /// (`node_assertions`).
@@ -14806,18 +14813,22 @@ mod tests {
                 p.migrate_project(from, "minted").map_err(|e| e.0)
             }
 
+            /// The entry of generation `h1` of `gc/src/f.rs` at log position 7, valid from 10s.
+            fn h1_at_7() -> Event {
+                entry("gc", "src/f.rs", "h1", 7, 10)
+            }
+
+            /// The batch of generation `h1` of `gc/src/f.rs`: the definitions `alpha` and `gone`.
+            fn h1_batch() -> Vec<Event> {
+                vec![def_event("alpha", 1, true), def_event("gone", 9, false)]
+            }
+
             /// `p` holding generation `h1` of `gc/src/f.rs`, folded from the entry at position 7
-            /// valid from 10s: the definitions `alpha` and `gone`.
+            /// valid from 10s ([`h1_at_7`]): the definitions `alpha` and `gone` ([`h1_batch`]).
             fn holding_h1(p: &Projector) {
                 let asked = Cell::new(0);
-                let batch = vec![def_event("alpha", 1, true), def_event("gone", 9, false)];
                 assert_eq!(
-                    apply_entry(
-                        p,
-                        &entry("gc", "src/f.rs", "h1", 7, 10),
-                        Ok(Some(batch)),
-                        &asked
-                    ),
+                    apply_entry(p, &h1_at_7(), Ok(Some(h1_batch())), &asked),
                     Ok(EntryFold::BatchAsked)
                 );
             }
@@ -14949,7 +14960,7 @@ mod tests {
                     false,
                     &mut |after, sink| stream_past(&log, after, log.len(), sink),
                     &mut |e| {
-                        extracted.push((e.position, rebuild_cursor(&p.conn.lock().unwrap())?));
+                        extracted.push((e.position, cursor_of(&p)));
                         Ok(None)
                     },
                     &mut |_| {},
@@ -14994,7 +15005,7 @@ mod tests {
             fn a_resolved_entry_folds_its_batch_at_the_entrys_position_and_installs_its_generation()
             {
                 let p = Projector::open(":memory:", "test").unwrap();
-                assert_eq!(p.current_generation("gc/src/f.rs").unwrap(), None);
+                assert_eq!(generation_of_f(&p), None);
                 // The second batch event carries a replay key naming another identity, and its own
                 // position and valid-time: the fold reads none of the three.
                 let mut stray = def_event("gone", 9, false)
@@ -15008,17 +15019,14 @@ mod tests {
                 assert_eq!(
                     apply_entry(
                         &p,
-                        &entry("gc", "src/f.rs", "h1", 7, 10),
+                        &h1_at_7(),
                         Ok(Some(vec![def_event("alpha", 1, true), stray])),
                         &asked,
                     ),
                     Ok(EntryFold::BatchAsked)
                 );
                 assert_eq!(asked.get(), 1, "the batch is asked for exactly once");
-                assert_eq!(
-                    p.current_generation("gc/src/f.rs").unwrap(),
-                    Some("h1".to_string())
-                );
+                assert_eq!(generation_of_f(&p), Some("h1".to_string()));
                 assert_eq!(
                     live_edges(&p),
                     vec![
@@ -15060,10 +15068,7 @@ mod tests {
                     Ok(EntryFold::BatchAsked)
                 );
                 assert_eq!(asked.get(), 1);
-                assert_eq!(
-                    p.current_generation("gc/src/f.rs").unwrap(),
-                    Some("h2".to_string())
-                );
+                assert_eq!(generation_of_f(&p), Some("h2".to_string()));
                 assert_eq!(
                     live_edges(&p),
                     vec![edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 20, 9)]
@@ -15138,10 +15143,7 @@ mod tests {
                 assert_eq!(asked.get(), asks, "how often the batch was asked for");
                 assert_eq!(projection_but_applied(&p), before, "no fact changes");
                 assert_eq!(applied_positions(&p), vec![7, 8]);
-                assert_eq!(
-                    p.current_generation("gc/src/f.rs").unwrap(),
-                    Some("h1".to_string())
-                );
+                assert_eq!(generation_of_f(&p), Some("h1".to_string()));
                 p
             }
 
@@ -15204,10 +15206,7 @@ mod tests {
                     Ok(EntryFold::BatchAsked)
                 );
                 assert_eq!(asked.get(), 2);
-                assert_eq!(
-                    p.current_generation("gc/src/f.rs").unwrap(),
-                    Some("h2".to_string())
-                );
+                assert_eq!(generation_of_f(&p), Some("h2".to_string()));
                 assert_eq!(
                     live_edges(&p),
                     vec![edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 30, 10)]
@@ -15256,10 +15255,7 @@ mod tests {
                 );
                 assert_eq!(projection_but_applied(&p), before);
                 assert_eq!(applied_positions(&p), vec![3, 7]);
-                assert_eq!(
-                    p.current_generation("gc/src/f.rs").unwrap(),
-                    Some("h1".to_string())
-                );
+                assert_eq!(generation_of_f(&p), Some("h1".to_string()));
                 assert_eq!(p.current_generation("gc/src/new.rs").unwrap(), None);
                 assert_eq!(
                     (p.rebuild_owed().unwrap(), mark.exists()),
@@ -15322,7 +15318,7 @@ mod tests {
                     event_of(TYPE_DECISION_MADE, decision_json("d1", "x", &["a.rs"], ""));
                 held.position = 1;
                 let batch = [held, entry("gc", "src/f.rs", "h1", 2, 10)];
-                assert_eq!(Fold::of_batch(|| wired(Some(&p)), &batch), refused);
+                assert_eq!(crate::test_support::fold_of(&p, &batch), refused);
                 assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
                 assert_eq!(applied_positions(&p), Vec::<i64>::new());
                 assert_eq!(node_ids(&p), Vec::<String>::new());
@@ -15377,7 +15373,7 @@ mod tests {
                 assert_eq!(applied_positions(&p), vec![7]);
                 assert_eq!(projection_but_applied(&p), before);
                 assert_eq!(
-                    p.current_generation("gc/src/f.rs").unwrap(),
+                    generation_of_f(&p),
                     Some("h1".to_string()),
                     "the generation is read from a graph that owes its rebuild"
                 );
@@ -15411,12 +15407,12 @@ mod tests {
             fn a_failed_apply_generation_marks_the_file_owed_and_writes_no_applied_row() {
                 // The batch function fails.
                 fails_and_marks(
-                    entry("gc", "src/f.rs", "h1", 7, 10),
+                    h1_at_7(),
                     Err(Error("the blob could not be read".to_string())),
                     "the blob could not be read",
                 );
                 // The entry's payload does not parse.
-                let mut unparsable = entry("gc", "src/f.rs", "h1", 7, 10);
+                let mut unparsable = h1_at_7();
                 unparsable.data = b"{}".to_vec();
                 fails_and_marks(
                     unparsable,
@@ -15430,7 +15426,7 @@ mod tests {
                     .unwrap_err()
                     .to_string();
                 fails_and_marks(
-                    entry("gc", "src/f.rs", "h1", 7, 10),
+                    h1_at_7(),
                     Ok(Some(vec![
                         def_event("alpha", 1, true),
                         Event::new(TYPE_CODE_ENTITY_EXTRACTED, poison.to_vec()),
@@ -15443,11 +15439,8 @@ mod tests {
             fn current_generation_answers_only_the_asking_projects_own_identity() {
                 let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
                 holding_h1(&ours);
-                assert_eq!(
-                    ours.current_generation("gc/src/f.rs").unwrap(),
-                    Some("h1".to_string())
-                );
-                assert_eq!(theirs.current_generation("gc/src/f.rs").unwrap(), None);
+                assert_eq!(generation_of_f(&ours), Some("h1".to_string()));
+                assert_eq!(generation_of_f(&theirs), None);
                 assert_eq!(ours.current_generation("gd/src/f.rs").unwrap(), None);
             }
 
