@@ -78,8 +78,8 @@ fn folded_in_every_frame(dir: &Path, log: &[Event]) -> [(Projector, &'static str
 #[test]
 fn a_generation_dropping_a_reference_and_a_definition_settles_alike_in_every_frame() {
     let log = the_log();
-    let (_forward, forward) = temp_root();
-    let (_whole, whole) = temp_root();
+    let (forward, _) = temp_root();
+    let (whole, _) = temp_root();
 
     let kept = (
         "src/f.rs::kept".to_string(),
@@ -96,12 +96,12 @@ fn a_generation_dropping_a_reference_and_a_definition_settles_alike_in_every_fra
             proven_definition("lead", "function", 1, &["tests/t.rs:5"]),
         ),
     ];
-    for (p, frame) in folded_in_every_frame(Path::new(&forward), &log[..6]) {
+    for (p, frame) in folded_in_every_frame(forward.path(), &log[..6]) {
         assert_eq!(definitions_of(&p), referenced_first, "{frame}, to h1");
     }
 
     let settled = vec![kept, (LEAD.to_string(), definition("lead", "function", 1))];
-    for (p, frame) in folded_in_every_frame(Path::new(&whole), &log) {
+    for (p, frame) in folded_in_every_frame(whole.path(), &log) {
         assert_eq!(definitions_of(&p), settled, "{frame}, to h2");
     }
 }
