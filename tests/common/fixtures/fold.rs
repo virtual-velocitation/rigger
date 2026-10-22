@@ -121,6 +121,12 @@ pub fn temp_graph_db() -> (tempfile::TempDir, String) {
     (dir, format!("{root}/graph.db"))
 }
 
+/// The graph file `name` under `dir`, opened under the project `test`, the one a rebuild from a
+/// hand-built log folds into.
+pub fn graph_file_in(dir: &std::path::Path, name: &str) -> Projector {
+    Projector::open(dir.join(name).to_str().unwrap(), "test").unwrap()
+}
+
 /// Two projects, `ours` and `theirs`, sharing one fresh `graph.db` ([`temp_graph_db`]), with the
 /// directory that keeps it.
 pub fn ours_and_theirs() -> (tempfile::TempDir, Projector, Projector) {
@@ -461,6 +467,13 @@ pub fn rebuild_clean(
 /// spelling of seeding a graph a test then reads.
 pub fn folds(p: &dyn Projection, events: &[Event]) {
     assert_eq!(fold_of(p, events), rigger::contextgraph::Fold::Folded);
+}
+
+/// Fold each of `events` into `p` alone, in order, each in a transaction of its own ([`folds`]).
+pub fn folds_each(p: &dyn Projection, events: &[Event]) {
+    for e in events {
+        folds(p, std::slice::from_ref(e));
+    }
 }
 
 /// A rebuild source's one read past `after`: the events of `log` past it handed to `sink` as one
@@ -809,10 +822,25 @@ pub fn marked_fresh(mut payload: serde_json::Value, fresh: bool) -> serde_json::
 
 /// `tests/t.rs`'s test reference to `name` at `line` heading its batch ([`marked_fresh`]), as
 /// event 0 of its generation `k1` (replay-keyed `gc/tests/t.rs@k1#0`), valid from `secs`, at no
-/// log position yet ([`keyed_event`]).
+/// log position yet ([`t_rs_batch_reference`]).
 pub fn fresh_test_reference(name: &str, line: u32, secs: u64) -> Event {
-    let payload = marked_fresh(edge_inferred_evidence_json("tests/t.rs", name, line), true);
-    keyed_event(0, TYPE_EDGE_INFERRED, payload, "gc/tests/t.rs@k1#0", secs)
+    t_rs_batch_reference(0, "k1", 0, name, line, secs)
+}
+
+/// `tests/t.rs`'s test reference to `name` at `line` at log position `pos`: event `index` of
+/// generation `generation`'s batch ([`code_batch_key`]), its head ([`test_reference_json`]) when
+/// `index` is 0, valid from `secs` ([`keyed_event`]).
+pub fn t_rs_batch_reference(
+    pos: u64,
+    generation: &str,
+    index: usize,
+    name: &str,
+    line: u32,
+    secs: u64,
+) -> Event {
+    let payload = test_reference_json("tests/t.rs", name, line, index == 0);
+    let key = code_batch_key("tests/t.rs", generation, index);
+    keyed_event(pos, TYPE_EDGE_INFERRED, payload, &key, secs)
 }
 
 /// The Rust definition of `name`, a `kind` at `line` in `file` ([`kind_def_json`]), as an unkeyed
@@ -1041,6 +1069,12 @@ pub fn apply_ref(p: &Projector, pos: u64, file: &str, name: &str) {
 /// the evidence a test's reference to a definition records.
 pub fn edge_inferred_evidence_json(file: &str, name: &str, line: u32) -> serde_json::Value {
     serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true })
+}
+
+/// The test-origin reference of `file` to `name` at line `line` ([`edge_inferred_evidence_json`]),
+/// marked the head of its file's batch when `fresh`, and not when not ([`marked_fresh`]).
+pub fn test_reference_json(file: &str, name: &str, line: u32, fresh: bool) -> serde_json::Value {
+    marked_fresh(edge_inferred_evidence_json(file, name, line), fresh)
 }
 
 /// Fold into `p`, at log position `pos`, one test-origin reference from `file` line `line` to

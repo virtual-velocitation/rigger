@@ -5539,9 +5539,7 @@ mod tests {
 
         // Reference: fold each event one at a time.
         let per_event = Projector::open(":memory:", "test").unwrap();
-        for e in &batch {
-            crate::test_support::folds(&per_event, std::slice::from_ref(e));
-        }
+        crate::test_support::folds_each(&per_event, &batch);
 
         // Batched: fold the whole slice in ONE call.
         let batched = Projector::open(":memory:", "test").unwrap();
@@ -11254,9 +11252,7 @@ mod tests {
 
         // Fold into the (de-noised) graph.
         let p = Projector::open(":memory:", "test").unwrap();
-        for e in &events {
-            crate::test_support::folds(&p, std::slice::from_ref(e));
-        }
+        crate::test_support::folds_each(&p, &events);
         let (nodes, _) = all_nodes_edges(&p);
         assert!(
             !nodes.iter().any(|(_, k)| k == KIND_UNIT || k == KIND_GATE),
@@ -13914,8 +13910,8 @@ mod tests {
         use crate::contextgraph::CODE_KIND_FUNCTION;
         use crate::test_support::{
             attrs_of, definition_event, edge_inferred_evidence_json, entry_at, event_of,
-            fold_events, folds, marked_fresh, placed_at, proven_definition, GENERATION_AFTER,
-            GENERATION_BEFORE,
+            fold_events, folds, placed_at, proven_definition, test_reference_json,
+            GENERATION_AFTER, GENERATION_BEFORE,
         };
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -14015,7 +14011,7 @@ mod tests {
                 definition_event("src/settled.rs", name, CODE_KIND_FUNCTION, line, head)
             };
             let proof = |file, name, line, head| {
-                let json = marked_fresh(edge_inferred_evidence_json(file, name, line), head);
+                let json = test_reference_json(file, name, line, head);
                 event_of(TYPE_EDGE_INFERRED, json)
             };
             let entry = |file, generation, pos, batch| {

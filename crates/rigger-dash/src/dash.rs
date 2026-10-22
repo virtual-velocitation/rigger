@@ -7557,9 +7557,7 @@ mod tests {
             ),
         ]);
         let p = Projector::open(":memory:", "test").unwrap();
-        for e in &run {
-            crate::test_support::folds(&p, std::slice::from_ref(e));
-        }
+        crate::test_support::folds_each(&p, &run);
         let seeds = graph_seeds(&run);
         assert!(
             !seeds.contains(&"u1".to_string()),
@@ -7620,9 +7618,7 @@ mod tests {
         // Fold the run and pre-fetch its subgraph EXACTLY as the dash does (graph_seeds -> subgraph
         // depth 2), so the route sees the same in-memory graph production serves.
         let p = Projector::open(":memory:", "test").unwrap();
-        for e in &run {
-            crate::test_support::folds(&p, std::slice::from_ref(e));
-        }
+        crate::test_support::folds_each(&p, &run);
         let graph = p.subgraph(&graph_seeds(&run), 2).unwrap();
         assert!(
             !graph.nodes.iter().any(|n| n.id == "u1"),

@@ -1368,9 +1368,7 @@ mod tests {
         // node), then run the real prune. It still drops exactly the dead-run content and keeps the
         // active run's decision plus the code it governs.
         let graph = Projector::open(":memory:", "test").unwrap();
-        for e in &stream {
-            crate::test_support::folds(&graph, std::slice::from_ref(e));
-        }
+        crate::test_support::folds_each(&graph, &stream);
         let boundary = superseded_edge_boundary(&stream);
         graph.prune(&drop, boundary).unwrap();
 

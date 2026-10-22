@@ -30,9 +30,7 @@ use rigger::eventstore::Event;
 /// production serves. Returns both so a test can drive `repoint_seed`/`route` over it.
 fn fold_and_prefetch(run: &[Event]) -> Graph {
     let p = Projector::open(":memory:", "test").unwrap();
-    for e in run {
-        common::fixtures::folds(&p, std::slice::from_ref(e));
-    }
+    common::fixtures::folds_each(&p, run);
     p.subgraph(&graph_seeds(run), 2).unwrap()
 }
 

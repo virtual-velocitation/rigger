@@ -349,9 +349,7 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
     // Reference: folding each event through apply one at a time yields the identical record - so the
     // default's RESULT is exactly what applying each event in order would produce.
     let per_event = RecordingProjection::default();
-    for e in &batch {
-        common::fixtures::folds(&per_event, std::slice::from_ref(e));
-    }
+    common::fixtures::folds_each(&per_event, &batch);
     assert_eq!(
         *default_proj.applied.lock().unwrap(),
         *per_event.applied.lock().unwrap(),

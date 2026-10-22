@@ -12285,7 +12285,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4fc3449257b152b5"
+    "content_hash": "85e2f96ee5eb4c03"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12293,7 +12293,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d1a0b038e1e957b2"
+    "content_hash": "4ab598f7a88d3f10"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
