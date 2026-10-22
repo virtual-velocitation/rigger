@@ -4747,10 +4747,10 @@ fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(
     })
 }
 
-/// Run `change` over the proof rows of `project` whose `key` column - `file` or `name` - holds
-/// `value`, then rewrite the proof attrs ([`write_proof`]) of every target those rows held before
-/// it or hold after it, each once and in id order: an entity a row left, reached or kept carries
-/// what the rows resolved to it now give it.
+/// Run `change` over the proof rows of `project` whose `key` column holds `value` - `file`, from
+/// [`supersede_file_proof`], its one caller - then rewrite the proof attrs ([`write_proof`]) of
+/// every target those rows held before it or hold after it, each once and in id order: an entity
+/// a row left, reached or kept carries what the rows resolved to it now give it.
 fn reproving(
     tx: &Transaction,
     project: &str,
@@ -4816,8 +4816,9 @@ fn owe_proofs(tx: &Transaction, name: &str) -> Result<(), Error> {
 
 /// Settle every name `tx` owed its proofs ([`owe_proofs`]) in `project`, in name order, and pay
 /// its row, so `proofs_owed` is empty when the transaction commits ([`in_transaction`]): each is
-/// resolved once ([`resolve_proofs`]), and every target its rows held before or hold after has
-/// its proof attrs rewritten ([`reproving`]) - so a definition retired and revived within the
+/// resolved once ([`resolve_proofs`]), which itself rewrites the proof attrs of the old and new
+/// target of every row it moves, and then every target its rows hold after resolving has its
+/// proof attrs rewritten once ([`write_proof`]) - so a definition retired and revived within the
 /// transaction, whose rows never moved off it, regains the proof its retirement stripped (THE
 /// REVIVED PROOF). A file without `proofs_owed` - one that owes its rebuild, opened as it stands
 /// ([`Projector::open`]) - owes no name, since no fold writes into it, and settles nothing.
@@ -4826,9 +4827,10 @@ fn settle_proofs(tx: &Transaction, project: &str) -> Result<(), Error> {
         return Ok(());
     }
     for name in &owed_names(tx)? {
-        reproving(tx, project, "name", name, || {
-            resolve_proofs(tx, name, project)
-        })?;
+        resolve_proofs(tx, name, project)?;
+        for target in &proof_targets_by(tx, project, "name", name)? {
+            write_proof(tx, target, project)?;
+        }
     }
     tx.execute("DELETE FROM proofs_owed", [])
         .map(drop)

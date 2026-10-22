@@ -159,11 +159,12 @@ the batch's first event (`fold`, :2396-2401), stripping the proof keys from the 
 (`definition_retired`, :2720), and later events of the same transaction revive the node from that
 copy (`ensure_node`, :4682-4686); today the retire-time and revive-time `resolve_proofs` move each
 row's target away and back, so `write_proof` restores the attributes. Settled once, the targets do
-not move, so settlement reads, before resolving, the targets the owed name's rows hold (from
-`proofs`, no new table), resolves, and runs `write_proof` (:4637) on every live target the rows held
-before or hold after: a definition retired and revived within one transaction regains `proven_by`
-and `proof_evidence`. Per owed name this is r resolutions and at most 2r writes, so the folded rows
-equal today's. THE EQUALITY ORACLE: a second connection splits the
+not move, so settlement resolves each owed name and runs `write_proof` (:4637) once on every live
+target the rows hold after resolving (from `proofs`, no new table); a row `resolve_proofs` moves is
+written by `resolve_proofs` itself at its old and new targets, so a definition retired and revived
+within one transaction regains `proven_by` and `proof_evidence`. Per owed name this is r
+resolutions, at most two writes per row `resolve_proofs` moves and at most r writes after it, so
+the folded rows equal today's. THE EQUALITY ORACLE: a second connection splits the
 fixture at every non-entry event and at every entry boundary, folding each part in its own
 `in_transaction` (an entry's batch folds whole at one position, :2019-2024), so settlement runs after
 every part, the finest interleaving the frame allows, and the one-transaction fold on the first connection is compared
@@ -242,7 +243,7 @@ at full-tree scale is outside this spec.
   the rerun resuming from the last commit; the retried entry folds over a newer generation as an
   out-of-order fold does today.
 - Retired and revived in one transaction: settlement rewrites the proof attributes of every live
-  target the owed name's rows held before or hold after, so the revived definition keeps its proof.
+  target the owed name's rows hold after resolving, so the revived definition keeps its proof.
 - A malformed entry: a pre-read that cannot parse it extracts nothing; its own transaction folds it
   with no batch, `fold_entry` fails its parse, and `fold_source` passes it over and records it
   applied, as today.
