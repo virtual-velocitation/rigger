@@ -58,6 +58,12 @@ const F: &str = "src/f.rs";
 /// The identity of [`F`]'s code half.
 const IDENTITY: &str = "gc/src/f.rs";
 
+/// What [`fold_through_port`] answers for an entry whose fold asked its batch once and folded it.
+const BATCH_ASKED: (Result<EntryFold, String>, u32) = (Ok(EntryFold::BatchAsked), 1);
+
+/// What [`fold_through_port`] answers for a re-recording: folded without asking its batch.
+const RE_RECORDED: (Result<EntryFold, String>, u32) = (Ok(EntryFold::ReRecording), 0);
+
 /// What the emit surface answers a type no agent may emit.
 const EMIT_REFUSED: &str = "refusing to emit \"GenerationIngested\": only agent context events \
                             (DecisionMade, ReviewFinding, LessonLearned, UnitProposed) may be \
@@ -171,7 +177,7 @@ fn an_entry_folded_through_the_port_is_held_by_the_file_and_each_outcome_is_name
                 &raw,
                 Ok(Some(vec![defines(F, "alpha", 1, true), stray]))
             ),
-            (Ok(EntryFold::BatchAsked), 1)
+            BATCH_ASKED
         );
     }
 
@@ -202,12 +208,12 @@ fn an_entry_folded_through_the_port_is_held_by_the_file_and_each_outcome_is_name
             &entry(F, "h1", 8, 50),
             Ok(Some(vec![defines(F, "other", 5, true)]))
         ),
-        (Ok(EntryFold::ReRecording), 0)
+        RE_RECORDED
     );
     // Another generation no source resolves.
     assert_eq!(
         fold_through_port(port, &entry(F, "h2", 9, 20), Ok(None)),
-        (Ok(EntryFold::BatchAsked), 1)
+        BATCH_ASKED
     );
     assert_eq!(served(&p), held, "none of the three changed a served fact");
     assert_eq!(generation(port, IDENTITY), Some("h1".to_string()));
@@ -221,7 +227,7 @@ fn an_entry_folded_through_the_port_is_held_by_the_file_and_each_outcome_is_name
             &entry(F, "h2", 10, 30),
             Ok(Some(vec![defines(F, "alpha", 2, true)]))
         ),
-        (Ok(EntryFold::BatchAsked), 1)
+        BATCH_ASKED
     );
     assert_eq!(live_edges(&p), vec![contains("alpha", 30, 10)]);
     assert_eq!(node_ids(&p), vec![F.to_string(), format!("{F}::alpha")]);
@@ -255,7 +261,7 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
     assert_eq!(node_ids(&p), Vec::<String>::new());
     assert_eq!(
         fold_through_port(port, &first, Ok(Some(alpha_batch()))),
-        (Ok(EntryFold::BatchAsked), 1),
+        BATCH_ASKED,
         "position 7 was not recorded by the fold that failed"
     );
     assert_eq!(generation(port, IDENTITY), Some("h1".to_string()));
@@ -281,7 +287,7 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
             &entry(F, "h1", 8, 20),
             Ok(Some(vec![defines(F, "other", 5, true)]))
         ),
-        (Ok(EntryFold::ReRecording), 0),
+        RE_RECORDED,
         "position 8 was not recorded by the entry that did not parse"
     );
 
@@ -310,7 +316,7 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
     assert_eq!(node_ids(&p), vec![F.to_string(), format!("{F}::alpha")]);
     assert_eq!(
         fold_through_port(port, &third, Ok(None)),
-        (Ok(EntryFold::BatchAsked), 1),
+        BATCH_ASKED,
         "position 9 was not recorded by the batch that failed"
     );
     assert_eq!(generation(port, "gc/src/g.rs"), None);
@@ -328,7 +334,7 @@ fn a_ledger_entry_the_public_fold_refused_folds_afterwards_through_apply_generat
     assert_eq!(generation(port, IDENTITY), None);
     assert_eq!(
         fold_through_port(port, &alone, Ok(Some(vec![defines(F, "alpha", 2, true)]))),
-        (Ok(EntryFold::BatchAsked), 1),
+        BATCH_ASKED,
         "position 10 was not recorded by the refusal"
     );
     assert_eq!(generation(port, IDENTITY), Some("h1".to_string()));
@@ -349,7 +355,7 @@ fn a_ledger_entry_the_public_fold_refused_folds_afterwards_through_apply_generat
     );
     assert_eq!(
         fold_through_port(port, &batch[1], Ok(None)),
-        (Ok(EntryFold::BatchAsked), 1),
+        BATCH_ASKED,
         "position 12 was not recorded by the refused batch"
     );
     assert_eq!(generation(port, IDENTITY), Some("h1".to_string()));
@@ -362,7 +368,7 @@ fn the_mark_a_refused_public_fold_writes_binds_a_second_projector_on_the_file() 
     let first = Projector::open(&path, "test").unwrap();
     assert_eq!(
         fold_through_port(&first, &entry(F, "h1", 7, 10), Ok(Some(alpha_batch()))),
-        (Ok(EntryFold::BatchAsked), 1)
+        BATCH_ASKED
     );
     let held = served(&first);
     assert_eq!(first.owed_because().unwrap(), Vec::<&str>::new());
@@ -467,8 +473,7 @@ fn a_second_projector_folding_the_same_generation_meanwhile_waits_and_meets_a_re
 
     assert_eq!(first_outcome, Ok(EntryFold::BatchAsked));
     assert_eq!(
-        second_outcome,
-        (Ok(EntryFold::ReRecording), 0),
+        second_outcome, RE_RECORDED,
         "the second read the generation only after the first installed it"
     );
     let third = Projector::open(&path, "test").unwrap();
@@ -514,7 +519,7 @@ fn a_writer_folds_into_the_file_while_its_rebuild_tail_extracts_an_entry_and_the
     common::fixtures::folds(&oracle, &log[2..]);
     assert_eq!(
         fold_through_port(&oracle, &log[1], Ok(Some(alpha_batch()))),
-        (Ok(EntryFold::BatchAsked), 1)
+        BATCH_ASKED
     );
     assert_same_graph(&path, &in_hand);
 }
@@ -543,7 +548,7 @@ fn a_rebuild_tail_never_extracts_an_entry_a_writer_folded_before_the_tail_read_i
     });
     assert_eq!(
         (written, reads, asks),
-        (Some(vec![(Ok(EntryFold::BatchAsked), 1); 2]), 2, 0),
+        (Some(vec![BATCH_ASKED; 2]), 2, 0),
         "the tail asks no batch for an entry the file already folded"
     );
     assert_eq!(applied_positions(Path::new(&path)), vec![6, 7, 8]);
@@ -552,7 +557,7 @@ fn a_rebuild_tail_never_extracts_an_entry_a_writer_folded_before_the_tail_read_i
     for e in &log[1..] {
         assert_eq!(
             fold_through_port(&oracle, e, Ok(Some(alpha_batch()))),
-            (Ok(EntryFold::BatchAsked), 1)
+            BATCH_ASKED
         );
     }
     assert_same_graph(&path, &in_hand);
@@ -578,7 +583,7 @@ fn a_rebuild_tail_never_extracts_a_re_recording_of_the_generation_a_writer_insta
     });
     assert_eq!(
         (written, reads, asks),
-        (Some((Ok(EntryFold::BatchAsked), 1)), 2, 0),
+        (Some(BATCH_ASKED), 2, 0),
         "the tail asks no batch for a re-recording"
     );
     assert_eq!(applied_positions(Path::new(&path)), vec![6, 7, 9]);
@@ -586,11 +591,11 @@ fn a_rebuild_tail_never_extracts_a_re_recording_of_the_generation_a_writer_insta
     common::fixtures::folds(&oracle, &log[..1]);
     assert_eq!(
         fold_through_port(&oracle, &log[2], Ok(Some(alpha_batch()))),
-        (Ok(EntryFold::BatchAsked), 1)
+        BATCH_ASKED
     );
     assert_eq!(
         fold_through_port(&oracle, &log[1], Ok(Some(alpha_batch()))),
-        (Ok(EntryFold::ReRecording), 0)
+        RE_RECORDED
     );
     assert_same_graph(&path, &in_hand);
 }

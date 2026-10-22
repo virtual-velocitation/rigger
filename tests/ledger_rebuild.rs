@@ -1306,7 +1306,7 @@ fn a_rebuild_whose_re_extracted_batch_the_fold_rejects_fails_rather_than_passing
             "CodeEntityExtracted",
             r#"{"file":"src/lib.rs","name":"alpha","kind":"function","line":1,"lang":"rust","fresh":true}"#,
         )])),
-        Ok(Some(Rebuilt::default())),
+        common::fixtures::clean_rebuild(),
         "the resumed rebuild folds the entry, and passes over nothing more"
     );
     assert_eq!(asked.borrow().clone(), vec![2, 2]);
