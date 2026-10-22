@@ -308,8 +308,13 @@ impl LayerCli {
             (
                 true,
                 format!(
-                    "{}; not folded into the context graph: graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it\n",
-                    folded_line.trim_end_matches('\n')
+                    "{}; {}\n",
+                    folded_line.trim_end_matches('\n'),
+                    crate::common::fixtures::not_folded(&crate::common::fixtures::lost_fold(
+                        &crate::common::fixtures::graph_error(
+                            crate::common::fixtures::DATABASE_IS_LOCKED
+                        )
+                    ))
                 )
             ),
             "the locked pass says the fold it could not make; stderr: {}",

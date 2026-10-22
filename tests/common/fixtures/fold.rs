@@ -304,11 +304,16 @@ pub fn directory_refusal(path: impl std::fmt::Display) -> String {
 /// What SQLite answers when the file a connection opens holds no database.
 pub const NOT_A_DATABASE: &str = "file is not a database";
 
+/// The clause a report line spells for events the graph did not fold, for `why`.
+pub fn not_folded(why: &str) -> String {
+    ["not folded into the context graph: ", why].concat()
+}
+
 /// The line a run surface prints when it recorded `events` run events whose fold the graph did
 /// not make, for `reason` - a graph error's reason, its `graph: ` prefix added ([`graph_error`]).
 pub fn recorded_not_folded(events: usize, reason: &str) -> String {
     let recorded = format!("rigger: recorded {events} run event(s); ");
-    recorded + "not folded into the context graph: " + &graph_error(reason)
+    recorded + &not_folded(&graph_error(reason))
 }
 
 /// The tail every lost fold's error ends with.

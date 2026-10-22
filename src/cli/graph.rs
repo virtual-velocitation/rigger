@@ -1440,8 +1440,10 @@ mod tests {
                 (
                     18,
                     format!(
-                        "; not folded into the context graph: graph: {}",
-                        contextgraph::REBUILD_OWED
+                        "; {}",
+                        crate::test_support::not_folded(&crate::test_support::graph_error(
+                            contextgraph::REBUILD_OWED
+                        ))
                     )
                 )
             );
