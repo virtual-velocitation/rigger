@@ -1042,7 +1042,9 @@ fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equ
     let graph_db = rigger_file(root, "graph.db");
     let stood = graph_identity(&graph_db, &project);
     let (out, err, ok) = setup(root);
-    let refused = format!("rigger: graph: event store: {died}");
+    let refused = common::cli::refusal_line(&common::fixtures::graph_error(&format!(
+        "event store: {died}"
+    )));
     assert_eq!(
         (
             ok,
@@ -1594,11 +1596,11 @@ fn an_object_git_does_not_answer_falls_to_the_tree_and_a_name_that_is_no_object_
     std::fs::write(&truncated, &whole[..whole.len() - 6]).unwrap();
     std::fs::write(loose_object(root, &document), b"garbage").unwrap();
     let (out, err, ok) = setup(root);
-    let refused = format!(
-        "rigger: graph: event store: git cat-file --batch stopped while answering object \
-         {source}: restore the object or remove it, after which git answers it missing and its \
-         entry resolves from the tree"
-    );
+    let refused = common::cli::refusal_line(&common::fixtures::graph_error(&format!(
+        "event store: git cat-file --batch stopped while answering object {source}: restore the \
+         object or remove it, after which git answers it missing and its entry resolves from the \
+         tree"
+    )));
     assert_eq!(
         (ok, err.lines().last()),
         (false, Some(refused.as_str())),

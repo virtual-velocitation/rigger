@@ -3171,6 +3171,7 @@ fn setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_
     );
 
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let refused = common::cli::refusal_line(&graph_error("event store: disk gave out"));
     assert_eq!(
         (
             ok,
@@ -3183,7 +3184,7 @@ fn setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_
         ),
         (
             false,
-            Some("rigger: graph: event store: disk gave out"),
+            Some(refused.as_str()),
             Vec::<&str>::new(),
             true,
             false
@@ -3604,7 +3605,7 @@ fn a_failed_fold_into_an_in_memory_graph_marks_nothing_owed_and_the_next_batch_f
     let graph = Projector::open(":memory:", PROJECT).unwrap();
     let failed = common::fixtures::fold_of(&graph, &[poison]);
     assert!(
-        matches!(&failed, Fold::NotFolded(why) if why.starts_with("graph: ")),
+        matches!(&failed, Fold::NotFolded(why) if why.starts_with(&graph_error(""))),
         "the failed fold is reported: {failed:?}"
     );
     assert_eq!(

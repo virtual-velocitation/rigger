@@ -536,7 +536,7 @@ pub fn unresolved_project() -> tempfile::TempDir {
 
 /// The error `rigger graph --around <seed> --depth 1` fails with over an [`unresolved_project`]
 /// once `sql` ran on its graph, the command printing nothing on stdout and its stderr that error
-/// alone, after the binary's `rigger: graph: ` prefix.
+/// alone, behind the opening of a graph error's [`refusal_line`] ([`super::fixtures::graph_error`]).
 pub fn around_unresolved_fails_after(sql: &str, seed: &str) -> String {
     let dir = unresolved_project();
     rigger_db(dir.path(), "graph.db")
@@ -547,7 +547,7 @@ pub fn around_unresolved_fails_after(sql: &str, seed: &str) -> String {
         out.is_empty() && !ok,
         "the around fails printing nothing; stderr:\n{err}"
     );
-    err.strip_prefix("rigger: graph: ")
+    err.strip_prefix(&refusal_line(&super::fixtures::graph_error("")))
         .map(str::trim_end)
         .unwrap_or_else(|| panic!("a graph error; stderr:\n{err}"))
         .to_string()
