@@ -299,7 +299,7 @@ impl LayerCli {
         );
 
         let graph_db = root.join(".rigger").join("graph.db");
-        let locked = crate::common::cli::with_graph_locked(&graph_db, || self.run(root, &[]));
+        let locked = crate::common::fixtures::with_graph_locked(&graph_db, || self.run(root, &[]));
         assert_eq!(
             (
                 locked.status.success(),

@@ -72,6 +72,8 @@ mod sqlite;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod store;
 #[cfg(any(feature = "store", not(feature = "core")))]
+mod write_lock;
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub use canary::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use conductor::*;
@@ -89,6 +91,8 @@ pub use plan_critique::*;
 pub use sqlite::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use store::*;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use write_lock::*;
 
 /// The text of the README in `root`'s operator instruction directory. It lives here, beside the
 /// re-exports, because it reads through two areas' fixtures ([`read_text`] and

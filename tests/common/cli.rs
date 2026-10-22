@@ -614,16 +614,6 @@ pub fn show_recorded(
     )
 }
 
-/// Hold `graph_db` under another writer's write lock while `run` runs, past every busy timeout
-/// the binary waits on, and hand back what `run` returned once the lock is released.
-pub fn with_graph_locked<T>(graph_db: &Path, run: impl FnOnce() -> T) -> T {
-    let holder = rusqlite::Connection::open(graph_db).unwrap();
-    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let out = run();
-    holder.execute_batch("ROLLBACK").unwrap();
-    out
-}
-
 /// The fold state of the graph at `graph_db` that decides how FUTURE events fold (spec 101, "the
 /// identity"): every recorded test reference and where it resolved (pending ones included), the restorable attrs a retired node keeps, each
 /// identity's current generation, the node and edge assertions of live generations (edges by their

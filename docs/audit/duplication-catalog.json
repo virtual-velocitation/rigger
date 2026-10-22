@@ -6133,7 +6133,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-6f7131d21aaa",
+    "id": "dup-6918d5512406",
     "classification": "semantic",
     "sites": [
       {
@@ -6274,11 +6274,6 @@
       {
         "file": "tests/common/cli.rs",
         "name": "Connection::open",
-        "content_hash": "21e10304a9cde36f"
-      },
-      {
-        "file": "tests/common/cli.rs",
-        "name": "Connection::open",
         "content_hash": "a26e651ef0fda2a7"
       },
       {
@@ -6307,6 +6302,11 @@
         "content_hash": "e4bfcfaa4e39b2d2"
       },
       {
+        "file": "tests/common/fixtures/write_lock.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
+      },
+      {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
         "content_hash": "21e10304a9cde36f"
@@ -6330,21 +6330,6 @@
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
         "content_hash": "84d2f61c8ad3452b"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -6438,7 +6423,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 60 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 57 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

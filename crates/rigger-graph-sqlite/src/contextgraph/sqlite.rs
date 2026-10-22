@@ -5653,6 +5653,37 @@ mod tests {
         );
     }
 
+    /// Spec 122, THE IMMEDIATE OPEN: the transaction frame takes the write lock at its open, so a
+    /// frame meeting a write lock another connection holds fails there once its busy timeout
+    /// passes - its body never run, and nothing written.
+    #[test]
+    fn a_transaction_meeting_a_held_write_lock_fails_at_its_open_before_its_body_runs() {
+        let (_dir, path) = crate::test_support::temp_graph_db();
+        drop(Projector::open(&path, "test").unwrap());
+        let mut conn = open_connection(&path).unwrap();
+        conn.busy_timeout(std::time::Duration::from_millis(100))
+            .unwrap();
+        let ran = std::cell::Cell::new(false);
+        let opened = crate::test_support::with_graph_locked(Path::new(&path), || {
+            in_transaction(&mut conn, |tx| {
+                ran.set(true);
+                record_applied(tx, 1).map(drop)
+            })
+        });
+        let written: i64 = conn
+            .query_row("SELECT count(*) FROM applied", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            (opened.map_err(|e| e.0), ran.get(), written),
+            (
+                Err(crate::test_support::DATABASE_IS_LOCKED.to_string()),
+                false,
+                0
+            ),
+            "the frame fails at its open, its body never run and nothing written"
+        );
+    }
+
     /// Hand `sink` the positions of `log`, in order, in batches of at most `batch`.
     fn positions_in(log: &[Event], batch: usize, sink: &mut PositionSink) -> Result<(), Error> {
         log.chunks(batch)
@@ -6410,14 +6441,15 @@ mod tests {
             .unwrap()
             .busy_timeout(std::time::Duration::from_millis(1))
             .unwrap();
-        let writer = open_connection(path).unwrap();
-        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
-
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-        let folded =
-            crate::contextgraph::Fold::of_batch(|| crate::contextgraph::wired(Some(&p)), &log[1..]);
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        writer.execute_batch("ROLLBACK;").unwrap();
+        let folded = crate::test_support::with_graph_locked(Path::new(path), || {
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+            let folded = crate::contextgraph::Fold::of_batch(
+                || crate::contextgraph::wired(Some(&p)),
+                &log[1..],
+            );
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+            folded
+        });
         assert_eq!(
             (folded, p.owed_because().unwrap(), mark.exists()),
             (
@@ -14760,6 +14792,105 @@ mod tests {
                         &asked
                     ),
                     Ok(EntryFold::BatchAsked)
+                );
+            }
+
+            /// Spec 122, ONE BATCHING RULE and THE SEAM: a rebuild's tail commits a transaction
+            /// after at most `FOLD_BATCH` non-entry events and cuts before and after every ledger
+            /// entry, each transaction advancing the cursor in itself, and holds no transaction
+            /// between the read batches its source hands: a writer on a second connection commits
+            /// there, and each entry's extraction reads, from that connection, every transaction
+            /// before the entry committed. The tail meets the writer's position through the fold's
+            /// per-position guard, so the ledger ends holding exactly the log's positions.
+            #[test]
+            fn a_fold_pass_commits_in_bounded_transactions_and_none_spans_its_read_batches() {
+                let (_dir, path) = crate::test_support::temp_graph_db();
+                let p = Projector::open(&path, "test").unwrap();
+                {
+                    let conn = p.conn.lock().unwrap();
+                    conn.execute_batch(REBUILD_STATE).unwrap();
+                    conn.execute_batch(
+                        "CREATE TABLE cursor_moves (position INTEGER NOT NULL);
+                         CREATE TRIGGER moved AFTER UPDATE ON rebuild_cursor
+                         BEGIN INSERT INTO cursor_moves VALUES (NEW.position); END;",
+                    )
+                    .unwrap();
+                }
+                let log: Vec<Event> = (1..=800)
+                    .map(|pos| match pos {
+                        521 => entry("gc", "src/a.rs", "h1", pos, 10),
+                        778 => entry("gc", "src/b.rs", "h1", pos, 20),
+                        _ => decision_at(&format!("d{pos}"), "src/d.rs", pos),
+                    })
+                    .collect();
+                // The cursor and the last position `applied` holds, as the second connection reads
+                // them committed.
+                let committed = || {
+                    let conn = p.conn.lock().unwrap();
+                    let last: i64 = conn
+                        .query_row("SELECT coalesce(max(position), 0) FROM applied", [], |r| {
+                            r.get(0)
+                        })
+                        .unwrap();
+                    (rebuild_cursor(&conn).unwrap(), last as u64)
+                };
+                let (mut extracted, mut seam, mut reported) = (Vec::new(), Vec::new(), Vec::new());
+                let rebuilt = Projector::rebuild(
+                    &locked(&path),
+                    "test",
+                    false,
+                    &mut |after, sink| {
+                        let (first, second) = log.split_at(790);
+                        stream_past(first, after, 1000, sink)?;
+                        crate::test_support::folds(&p, std::slice::from_ref(&log[794]));
+                        seam.push(committed());
+                        stream_past(second, after, 1000, sink)
+                    },
+                    &mut |e| {
+                        extracted.push((e.position, committed()));
+                        Ok(None)
+                    },
+                    &mut |at| reported.push(at),
+                )
+                .unwrap();
+                assert_eq!(rebuilt, Some(Rebuilt::default()));
+                assert_eq!(
+                    extracted,
+                    vec![(521, (520, 520)), (778, (777, 777))],
+                    "each entry is extracted with every transaction before it committed"
+                );
+                assert_eq!(
+                    seam,
+                    vec![(790, 795)],
+                    "the writer commits between the read batches, the cursor at the first's end"
+                );
+                assert_eq!(
+                    fragment_values::<i64>(&p, "position FROM cursor_moves ORDER BY rowid", []),
+                    vec![256, 512, 520, 521, 777, 778, 790, 800],
+                    "the cursor advances once per transaction: a run of 520 non-entry events \
+                     commits as 256, 256 and 8, one of exactly 256 as one, each entry alone"
+                );
+                assert_eq!(
+                    reported,
+                    vec![
+                        RebuildProgress {
+                            start: 0,
+                            through: 790,
+                            head: 790,
+                            folded: 790
+                        },
+                        RebuildProgress {
+                            start: 0,
+                            through: 800,
+                            head: 800,
+                            folded: 800
+                        },
+                    ],
+                    "progress is reported once per read batch, after its last transaction"
+                );
+                assert_eq!(
+                    applied_positions(&p),
+                    log.iter().map(|e| e.position as i64).collect::<Vec<_>>()
                 );
             }
 

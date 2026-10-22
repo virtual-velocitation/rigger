@@ -39,7 +39,6 @@ use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
 use common::cli::stopping_at_the_grounder;
 use common::cli::temp_store_project;
-use common::cli::with_graph_locked;
 use common::cli::write_workflow_fixture;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
 use common::cli::{rebuild_owed, setup_ok, user_version, version_and_owed};
@@ -52,6 +51,7 @@ use common::fixtures::f_rs_batch_def;
 use common::fixtures::files_open_by;
 use common::fixtures::nanos;
 use common::fixtures::wait_until_for;
+use common::fixtures::with_graph_locked;
 use common::git::temp_git_project_with_commit;
 use rigger::contextgraph::sqlite::{PruneStats, RebuildSink, Rebuilt, PROJECTION_VERSION};
 use rigger::contextgraph::Fold;
@@ -2246,11 +2246,7 @@ fn an_emit_whose_fold_fails_does_not_claim_it_folded() {
         "an emit into an unlocked graph folds; stdout: {out} stderr: {err}"
     );
     let graph_db = rigger_file(root, "graph.db");
-    let holder = rusqlite::Connection::open(&graph_db).unwrap();
-    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
-
-    let (out, err, ok) = emit_decision(root, "d-locked");
-    holder.execute_batch("ROLLBACK").unwrap();
+    let (out, err, ok) = with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
     let log = read_run_events(root);
     let last = log.last().unwrap();
     assert_eq!(
@@ -2306,10 +2302,9 @@ fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
     );
 
     let graph_db = rigger_file(root, "graph.db");
-    let holder = rusqlite::Connection::open(&graph_db).unwrap();
-    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let locked = mcp.tool_call("rigger_emit", decision("d-locked"));
-    holder.execute_batch("ROLLBACK").unwrap();
+    let locked = with_graph_locked(&graph_db, || {
+        mcp.tool_call("rigger_emit", decision("d-locked"))
+    });
     mcp.finish_cleanly();
 
     let log = read_run_events(root);
@@ -2517,11 +2512,9 @@ fn a_result_whose_fold_fails_says_it_was_not_folded() {
         "a result into an unlocked graph folds silently; stderr: {err}"
     );
     let graph_db = rigger_file(root, "graph.db");
-    let holder = rusqlite::Connection::open(&graph_db).unwrap();
-    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
-
-    let (out, err, ok) = run_rigger(root, &["result", "v/implementer#0", "second"]);
-    holder.execute_batch("ROLLBACK").unwrap();
+    let (out, err, ok) = with_graph_locked(&graph_db, || {
+        run_rigger(root, &["result", "v/implementer#0", "second"])
+    });
     let log = read_run_events(root);
     let last = log.last().unwrap();
     assert_eq!(
