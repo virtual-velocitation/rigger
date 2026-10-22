@@ -808,15 +808,11 @@ pub fn marked_fresh(mut payload: serde_json::Value, fresh: bool) -> serde_json::
 }
 
 /// `tests/t.rs`'s test reference to `name` at `line` heading its batch ([`marked_fresh`]), as
-/// event 0 of its generation `k1` (replay-keyed `gc/tests/t.rs@k1#0`), valid from `secs`.
+/// event 0 of its generation `k1` (replay-keyed `gc/tests/t.rs@k1#0`), valid from `secs`, at no
+/// log position yet ([`keyed_event`]).
 pub fn fresh_test_reference(name: &str, line: u32, secs: u64) -> Event {
     let payload = marked_fresh(edge_inferred_evidence_json("tests/t.rs", name, line), true);
-    keyed(
-        TYPE_EDGE_INFERRED,
-        serde_json::to_vec(&payload).unwrap(),
-        "gc/tests/t.rs@k1#0",
-        secs,
-    )
+    keyed_event(0, TYPE_EDGE_INFERRED, payload, "gc/tests/t.rs@k1#0", secs)
 }
 
 /// The Rust definition of `name`, a `kind` at `line` in `file` ([`kind_def_json`]), as an unkeyed
