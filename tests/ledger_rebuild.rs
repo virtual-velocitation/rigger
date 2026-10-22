@@ -49,14 +49,6 @@ const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it
 /// What `rigger setup` prints once its rebuild is in place.
 const REBUILT_LINE: &str = "rebuilt graph.db from the event log";
 
-/// The tail every lost fold's error ends with.
-const SETUP_PAYS: &str =
-    " - the next `rigger setup` finds the event missing from graph.db and rebuilds it";
-
-/// What the public fold reports for a ledger entry, before [`SETUP_PAYS`].
-const ENTRY_REFUSED: &str = "graph: a GenerationIngested entry folds only with its batch, through \
-                             `Projection::apply_generation`";
-
 /// The generation the extraction tree's fixture records for the batch under `prefix` for `path`,
 /// as a graph answers the generation it holds.
 fn held_generation(prefix: &str, path: &str) -> Option<String> {
@@ -1118,7 +1110,7 @@ fn an_entry_the_generic_fold_refused_is_paid_by_setup_through_the_ledger_fold() 
         let graph = Projector::open(graph_db.to_str().unwrap(), &project).unwrap();
         assert_eq!(
             Fold::of(wired(Some(&graph as &dyn Projection)), &entry),
-            Fold::NotFolded(format!("{ENTRY_REFUSED}{SETUP_PAYS}"))
+            common::fixtures::entry_refusal()
         );
     }
     assert_eq!(

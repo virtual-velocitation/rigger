@@ -39,6 +39,7 @@ use common::cli::{
 };
 use common::fixtures::{
     decision_json, event_of, generation_ingested, live_edges, live_node_ids, nanos, placed_at,
+    SETUP_PAYS,
 };
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
@@ -55,14 +56,6 @@ const F: &str = "src/f.rs";
 
 /// The identity of [`F`]'s code half.
 const IDENTITY: &str = "gc/src/f.rs";
-
-/// The tail every lost fold's error ends with.
-const SETUP_PAYS: &str =
-    " - the next `rigger setup` finds the event missing from graph.db and rebuilds it";
-
-/// What the public fold reports for a ledger entry, before [`SETUP_PAYS`].
-const ENTRY_REFUSED: &str = "graph: a GenerationIngested entry folds only with its batch, through \
-                             `Projection::apply_generation`";
 
 /// What the emit surface answers a type no agent may emit.
 const EMIT_REFUSED: &str = "refusing to emit \"GenerationIngested\": only agent context events \
@@ -247,12 +240,11 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
     // The batch function fails.
     let first = entry(F, "h1", 7, 10);
     assert_eq!(
-        fold_through_port(
-            port,
-            &first,
-            Err(Error("the blob could not be read".to_string()))
-        ),
-        (Err(format!("the blob could not be read{SETUP_PAYS}")), 1)
+        fold_through_port(port, &first, common::fixtures::blob_unread()),
+        (
+            Err(common::fixtures::lost_fold(common::fixtures::BLOB_UNREAD)),
+            1
+        )
     );
     assert!(
         !port.rebuild_owed().unwrap(),
@@ -325,7 +317,7 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
 
 #[test]
 fn a_ledger_entry_the_public_fold_refused_folds_afterwards_through_apply_generation() {
-    let refused = Fold::NotFolded(format!("{ENTRY_REFUSED}{SETUP_PAYS}"));
+    let refused = common::fixtures::entry_refusal();
     let p = Projector::open(":memory:", "test").unwrap();
     let port: &dyn Projection = &p;
 
@@ -382,7 +374,7 @@ fn the_mark_a_refused_public_fold_writes_binds_a_second_projector_on_the_file() 
             wired(Some(&first as &dyn Projection)),
             &entry(F, "h2", 8, 20)
         ),
-        Fold::NotFolded(format!("{ENTRY_REFUSED}{SETUP_PAYS}"))
+        common::fixtures::entry_refusal()
     );
 
     let second = Projector::open(&path, "test").unwrap();
@@ -416,9 +408,12 @@ fn the_mark_a_failed_ledger_fold_writes_binds_a_second_projector_on_the_file() {
         fold_through_port(
             &first,
             &entry(F, "h1", 7, 10),
-            Err(Error("the blob could not be read".to_string()))
+            common::fixtures::blob_unread()
         ),
-        (Err(format!("the blob could not be read{SETUP_PAYS}")), 1)
+        (
+            Err(common::fixtures::lost_fold(common::fixtures::BLOB_UNREAD)),
+            1
+        )
     );
 
     let second = Projector::open(&path, "test").unwrap();
@@ -835,7 +830,7 @@ fn the_ledger_form_answers_a_fold_it_could_not_make_beside_an_entry_that_is_on_t
     let Some(refused_at) = refused.0 else {
         panic!("the store placed the entry whose fold was refused");
     };
-    let owed = Fold::NotFolded(format!("graph: {REBUILD_OWED}"));
+    let owed = common::fixtures::owed_refusal();
     assert_eq!(refused, (Some(refused_at), owed.clone(), None));
     assert_eq!(applied_positions(&graph_path), Vec::<u64>::new());
     assert_eq!(

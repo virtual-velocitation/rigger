@@ -521,7 +521,7 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
     );
     assert_eq!(
         common::fixtures::fold_of(&graph, &log[3..]),
-        Fold::NotFolded(format!("graph: {}", rigger::contextgraph::REBUILD_OWED)),
+        common::fixtures::owed_refusal(),
         "nothing folds incrementally into a pre-rule graph.db"
     );
     drop(graph);
@@ -1896,7 +1896,7 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
         serde_json::json!({
             "position": log.last().unwrap().position,
             "folded": false,
-            "reason": format!("graph: {}", rigger::contextgraph::REBUILD_OWED),
+            "reason": common::fixtures::graph_error(rigger::contextgraph::REBUILD_OWED),
         }),
         "the emit succeeds and says it was not folded, naming the rebuild; got: {emitted}"
     );

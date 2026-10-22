@@ -6,9 +6,11 @@
 //! by, the live edges and calls a projector serves with the spec-119 enum's `CONTAINS` edges they
 //! are checked against, the module declarations' `CONTAINS` edges it serves, the read-backs
 //! suites take of a folded `Graph`, the two read batches a rebuild source hands with a writer
-//! between them, and a rebuild whose extraction a writer meets. `apply` returns `Err` on a fold failure, so every helper
-//! unwraps it - a successful call is itself evidence the payload folded - but
-//! [`fold_entry_result`], which answers the error text a failing fold meets.
+//! between them, a rebuild whose extraction a writer meets, and the texts a lost or refused fold
+//! answers. `apply` returns `Err` on a fold failure, so every helper that folds unwraps it - a
+//! successful call is itself evidence the payload folded - but [`fold_entry_result`], which
+//! answers the error text a failing fold meets, and [`fold_of`] and [`rebuild_meeting_a_writer`],
+//! which answer what became of a public fold ([`rigger::contextgraph::Fold`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, UNIX_EPOCH};
@@ -277,6 +279,43 @@ pub fn reference(from: &str, to: &str, tier: &str) -> (String, String, String, S
     (from.into(), REL_REFERENCES.into(), to.into(), tier.into())
 }
 
+/// The text of a graph error whose reason is `reason`: the domain error's own display.
+pub fn graph_error(reason: &str) -> String {
+    rigger::contextgraph::Error(reason.to_string()).to_string()
+}
+
+/// The tail every lost fold's error ends with.
+pub const SETUP_PAYS: &str =
+    " - the next `rigger setup` finds the event missing from graph.db and rebuilds it";
+
+/// The error text of a fold lost for `reason`: the reason, then [`SETUP_PAYS`].
+pub fn lost_fold(reason: &str) -> String {
+    [reason, SETUP_PAYS].concat()
+}
+
+/// What the generic fold answers a ledger entry, the reason of its refusal.
+pub const ENTRY_REFUSED: &str =
+    "a GenerationIngested entry folds only with its batch, through `Projection::apply_generation`";
+
+/// What the public fold answers a batch holding a ledger entry: lost to the generic fold's
+/// refusal ([`ENTRY_REFUSED`]).
+pub fn entry_refusal() -> rigger::contextgraph::Fold {
+    rigger::contextgraph::Fold::NotFolded(lost_fold(&graph_error(ENTRY_REFUSED)))
+}
+
+/// What the public fold answers on a graph that owes its rebuild: refused, naming the debt.
+pub fn owed_refusal() -> rigger::contextgraph::Fold {
+    rigger::contextgraph::Fold::NotFolded(graph_error(rigger::contextgraph::REBUILD_OWED))
+}
+
+/// The reason a failing batch function gives ([`blob_unread`]).
+pub const BLOB_UNREAD: &str = "the blob could not be read";
+
+/// A batch function's failing answer: the entry's blob could not be read ([`BLOB_UNREAD`]).
+pub fn blob_unread() -> Result<Option<Vec<Event>>, rigger::contextgraph::Error> {
+    Err(rigger::contextgraph::Error(BLOB_UNREAD.to_string()))
+}
+
 /// Fold `events` into `p` through the public fold, answering what became of them.
 pub fn fold_of(p: &dyn Projection, events: &[Event]) -> rigger::contextgraph::Fold {
     rigger::contextgraph::Fold::of_batch(|| rigger::contextgraph::wired(Some(p)), events)
@@ -305,29 +344,41 @@ pub fn rebuild_meeting_a_writer(
             barrier.wait();
             written
         });
-        let rebuilt = Projector::rebuild(
-            &Projector::lock_rebuild(graph_db).unwrap(),
-            "test",
-            owed,
-            source,
-            &mut |_| {
-                asked += 1;
-                if asked == 1 {
-                    barrier.wait();
-                    barrier.wait();
-                }
-                Ok(Some(batch.to_vec()))
-            },
-            &mut |_| {},
-        );
-        assert_eq!(
-            rebuilt.map_err(|e| e.0),
-            Ok(Some(rigger::contextgraph::sqlite::Rebuilt::default()))
-        );
+        rebuild_clean(graph_db, owed, source, &mut |_| {
+            asked += 1;
+            if asked == 1 {
+                barrier.wait();
+                barrier.wait();
+            }
+            Ok(Some(batch.to_vec()))
+        });
         folding.join().unwrap()
     });
     assert_eq!(asked, 1, "the rebuild asks the entry's batch once");
     written
+}
+
+/// Rebuild the graph file `graph_db` under the project `test` from `source`, owed when `owed` says
+/// so, re-extracting each ledger entry with `reextract` and reporting no progress, and insist the
+/// rebuild ran, passing nothing over and pruning nothing.
+pub fn rebuild_clean(
+    graph_db: &str,
+    owed: bool,
+    source: &mut rigger::contextgraph::sqlite::RebuildSource,
+    reextract: &mut rigger::contextgraph::sqlite::Reextract,
+) {
+    let rebuilt = Projector::rebuild(
+        &Projector::lock_rebuild(graph_db).unwrap(),
+        "test",
+        owed,
+        source,
+        reextract,
+        &mut |_| {},
+    );
+    assert_eq!(
+        rebuilt.map_err(|e| e.0),
+        Ok(Some(rigger::contextgraph::sqlite::Rebuilt::default()))
+    );
 }
 
 /// Fold `events` into `p` through the public fold ([`fold_of`]), and insist they landed: the one

@@ -5569,7 +5569,7 @@ mod tests {
         );
         assert_eq!(
             crate::test_support::fold_of(&p, &log[2..]),
-            Fold::NotFolded(format!("graph: {REBUILD_OWED}")),
+            crate::test_support::owed_refusal(),
             "a marked file refuses every later fold"
         );
         assert!(
@@ -6379,7 +6379,7 @@ mod tests {
         assert_eq!(
             (refused, refused_reads, untouched),
             (
-                Err(format!("graph: {REBUILD_IN_PROGRESS}")),
+                Err(crate::test_support::graph_error(REBUILD_IN_PROGRESS)),
                 Vec::<u64>::new(),
                 true
             ),
@@ -6638,12 +6638,12 @@ mod tests {
         assert_eq!(
             (folded, p.owed_because().unwrap(), mark.exists()),
             (
-                Fold::NotFolded(format!(
-                    "graph: database is locked; the mark that graph.db owes its rebuild was not \
-                     written ({}: Permission denied (os error 13)) - the next `rigger setup` \
-                     finds the event missing from graph.db and rebuilds it",
+                Fold::NotFolded(crate::test_support::lost_fold(&format!(
+                    "{}; the mark that graph.db owes its rebuild was not written ({}: Permission \
+                     denied (os error 13))",
+                    crate::test_support::graph_error(crate::test_support::DATABASE_IS_LOCKED),
                     mark.display()
-                )),
+                ))),
                 Vec::<&str>::new(),
                 false,
             ),
@@ -6950,7 +6950,7 @@ mod tests {
             (
                 vec![],
                 lock_file.clone(),
-                Err(format!("graph: {REBUILD_IN_PROGRESS}")),
+                Err(crate::test_support::graph_error(REBUILD_IN_PROGRESS)),
                 lock_file.clone(),
                 Ok(()),
                 lock_file,
@@ -7031,7 +7031,10 @@ mod tests {
         assert_eq!(
             (while_it_lives, once_it_is_gone),
             (
-                (1, Err(format!("graph: {REBUILD_IN_PROGRESS}"))),
+                (
+                    1,
+                    Err(crate::test_support::graph_error(REBUILD_IN_PROGRESS))
+                ),
                 (0, Ok(()))
             ),
             "the lock is refused while its holder process lives and free once it is gone"
@@ -7074,7 +7077,7 @@ mod tests {
         };
         let refused = |shadow_stands| {
             (
-                Err(format!("graph: {REBUILD_IN_PROGRESS}")),
+                Err(crate::test_support::graph_error(REBUILD_IN_PROGRESS)),
                 Vec::<u64>::new(),
                 shadow_stands,
                 true,
@@ -14836,13 +14839,8 @@ mod tests {
             use rigger_domain::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
             use std::cell::Cell;
 
-            /// The tail every lost fold's error ends with.
-            pub(in crate::contextgraph::sqlite::tests) const SETUP_PAYS: &str =
-                " - the next `rigger setup` finds the event missing from graph.db and rebuilds it";
-
-            /// What the generic fold answers a ledger entry.
-            const ENTRY_REFUSED: &str = "a GenerationIngested entry folds only with its batch, \
-                                         through `Projection::apply_generation`";
+            /// The tail every lost fold's error ends with, as the shared fold fixture spells it.
+            pub(in crate::contextgraph::sqlite::tests) use crate::test_support::SETUP_PAYS;
 
             /// The hand-built entry of `<prefix>/<file>` at `generation`, at log position `pos`,
             /// valid from `secs` past the epoch.
@@ -15115,19 +15113,15 @@ mod tests {
                     decision_at("d5", "src/d.rs", 5),
                 ];
                 let mut extracted = Vec::new();
-                let rebuilt = Projector::rebuild(
-                    &locked(&path),
-                    "test",
+                crate::test_support::rebuild_clean(
+                    &path,
                     false,
                     &mut |after, sink| crate::test_support::one_read(&log, after, sink),
                     &mut |e| {
                         extracted.push((e.position, cursor_of(&p)));
                         Ok(None)
                     },
-                    &mut |_| {},
-                )
-                .unwrap();
-                assert_eq!(rebuilt, Some(Rebuilt::default()));
+                );
                 assert_eq!(
                     extracted,
                     vec![(2, 1), (3, 2), (4, 3)],
@@ -15599,7 +15593,7 @@ mod tests {
             #[test]
             fn the_generic_fold_refuses_a_ledger_entry_naming_apply_generation_and_marks_the_graph_owed(
             ) {
-                let refused = Fold::NotFolded(format!("graph: {ENTRY_REFUSED}{SETUP_PAYS}"));
+                let refused = crate::test_support::entry_refusal();
                 // A batch holding an entry is refused whole.
                 let (_dir, p, mark) = graph_file();
                 let mut held =
@@ -15696,8 +15690,8 @@ mod tests {
                 // The batch function fails.
                 fails_and_marks(
                     h1_at_7(),
-                    Err(Error("the blob could not be read".to_string())),
-                    "the blob could not be read",
+                    crate::test_support::blob_unread(),
+                    crate::test_support::BLOB_UNREAD,
                 );
                 // The entry's payload does not parse.
                 let mut unparsable = h1_at_7();

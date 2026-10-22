@@ -2394,7 +2394,7 @@ mod tests {
             json!({
                 "position": log[0].position,
                 "folded": false,
-                "reason": format!("graph: {REBUILD_OWED}"),
+                "reason": crate::test_support::graph_error(REBUILD_OWED),
             }),
             "the emit answers that the owed graph did not fold it, naming the rebuild"
         );

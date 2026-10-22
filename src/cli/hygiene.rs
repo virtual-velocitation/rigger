@@ -1630,8 +1630,7 @@ mod tests {
 
         assert_eq!(
             second.into_inner(),
-            [Err(format!(
-                "graph: {}",
+            [Err(crate::test_support::graph_error(
                 rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS
             ))]
         );
