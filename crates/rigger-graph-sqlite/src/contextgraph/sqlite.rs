@@ -152,8 +152,9 @@ const PROJECT_KEYED_LEDGERS: [&str; 8] = [
 ];
 
 /// The state a rebuild ([`Projector::rebuild`]) keeps in the shadow file it folds and, from the
-/// swap until the tail it owes is folded, in the live one, born together in one transaction and
-/// dropped together in one ([`DROP_REBUILD_STATE`]) once the tail is folded - never apart:
+/// swap until the tail it owes is folded, in the live one, born together in one transaction
+/// ([`in_transaction`]) and dropped together in one ([`DROP_REBUILD_STATE`]) once the tail is
+/// folded - never apart:
 /// - `rebuild_cursor`: the last position the rebuild folded, and what its run-closure prune removed
 ///   ([`prune_run_closure`]) - zero in the shadow, which is never pruned, and the one prune's counts
 ///   in the pruned copy the swap puts in place of the live file, so a rebuild interrupted in its
@@ -163,7 +164,6 @@ const PROJECT_KEYED_LEDGERS: [&str; 8] = [
 ///   folded it - so every pass that reaches the swap, a resumed one included, derives the
 ///   run-closure prune from the whole of it ([`prune_run_closure`]).
 const REBUILD_STATE: &str = "
-BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS rebuild_cursor (
     position INTEGER NOT NULL,
     pruned_nodes INTEGER NOT NULL DEFAULT 0,
@@ -176,15 +176,12 @@ CREATE TABLE IF NOT EXISTS rebuild_run_closure (
     data BLOB NOT NULL,
     valid_from INTEGER NOT NULL
 );
-COMMIT;
 ";
 
-/// Drop the [`REBUILD_STATE`] a rebuild kept, both tables in one transaction.
+/// Drop the [`REBUILD_STATE`] a rebuild kept, both tables in one transaction ([`in_transaction`]).
 const DROP_REBUILD_STATE: &str = "
-BEGIN IMMEDIATE;
 DROP TABLE rebuild_cursor;
 DROP TABLE rebuild_run_closure;
-COMMIT;
 ";
 
 /// Where a [`RebuildSource`] hands each batch it streams, with the log's last position.
@@ -496,7 +493,9 @@ impl Projector {
         if owed || swap_unfinished || !owed_by_file(&live, &mark)?.is_empty() {
             let mut shadow = open_shadow(&shadow_path)?;
             schema(&shadow, project)?;
-            shadow.execute_batch(REBUILD_STATE).map_err(be)?;
+            in_transaction(&mut shadow, |tx| {
+                tx.execute_batch(REBUILD_STATE).map_err(be)
+            })?;
             passed_over += fold_source(&mut shadow, project, source, reextract, progress, true)?;
             // The graph the live one would hold, never a larger one: the prune `rigger reset
             // --runs` applies, derived from what the fold gathered, on a copy of the shadow.
@@ -533,7 +532,9 @@ impl Projector {
                 },
             )
             .map_err(be)?;
-        live.execute_batch(DROP_REBUILD_STATE).map_err(be)?;
+        in_transaction(&mut live, |tx| {
+            tx.execute_batch(DROP_REBUILD_STATE).map_err(be)
+        })?;
         Ok(Some(Rebuilt {
             passed_over,
             pruned,
@@ -1554,8 +1555,8 @@ fn fold_source(
 const FOLD_BATCH: usize = 256;
 
 /// The transactions a fold pass ([`fold_source`]) folds `events` in, in order: every ledger entry
-/// of perception alone, and each run of other events between two entries in slices of at most
-/// [`FOLD_BATCH`]. Each is a slice of `events`, never empty.
+/// of perception alone, and every run of other events - before, between or after the entries -
+/// in slices of at most [`FOLD_BATCH`]. Each is a slice of `events`, never empty.
 fn fold_transactions(events: &[Event]) -> impl Iterator<Item = &[Event]> {
     events
         .chunk_by(|a, b| !is_ledger_entry(a) && !is_ledger_entry(b))
