@@ -335,10 +335,20 @@ pub fn folds(p: &dyn Projection, events: &[Event]) {
     assert_eq!(fold_of(p, events), rigger::contextgraph::Fold::Folded);
 }
 
+/// A rebuild source's one read past `after`: the events of `log` past it handed to `sink` as one
+/// read batch.
+pub fn one_read(
+    log: &[Event],
+    after: u64,
+    sink: &mut rigger::contextgraph::sqlite::RebuildSink,
+) -> Result<(), rigger::contextgraph::Error> {
+    rigger::contextgraph::sqlite::stream_past(log, after, usize::MAX, sink)
+}
+
 /// A rebuild source's one read past `after`: the events of `log` handed to `sink` as two read
-/// batches, split before `log[split]`, with `between` run once the first is handed and before the
-/// second - where a fold pass holds no transaction, so a writer's commit lands there (spec 122,
-/// THE SEAM).
+/// batches ([`one_read`] each), split before `log[split]`, with `between` run once the first is
+/// handed and before the second - where a fold pass holds no transaction, so a writer's commit
+/// lands there (spec 122, THE SEAM).
 pub fn two_read_batches(
     log: &[Event],
     split: usize,
@@ -347,9 +357,9 @@ pub fn two_read_batches(
     between: impl FnOnce(),
 ) -> Result<(), rigger::contextgraph::Error> {
     let (first, second) = log.split_at(split);
-    rigger::contextgraph::sqlite::stream_past(first, after, log.len(), sink)?;
+    one_read(first, after, sink)?;
     between();
-    rigger::contextgraph::sqlite::stream_past(second, after, log.len(), sink)
+    one_read(second, after, sink)
 }
 
 /// Fold `e` onto `p` at log position `pos`.

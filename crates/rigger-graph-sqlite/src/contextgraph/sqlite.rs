@@ -15119,7 +15119,7 @@ mod tests {
                     &locked(&path),
                     "test",
                     false,
-                    &mut |after, sink| stream_past(&log, after, log.len(), sink),
+                    &mut |after, sink| crate::test_support::one_read(&log, after, sink),
                     &mut |e| {
                         extracted.push((e.position, cursor_of(&p)));
                         Ok(None)
@@ -15153,7 +15153,7 @@ mod tests {
                 let (written, _) = crate::test_support::rebuild_meeting_a_writer(
                     &path,
                     false,
-                    &mut |after, sink| stream_past(&log, after, log.len(), sink),
+                    &mut |after, sink| crate::test_support::one_read(&log, after, sink),
                     &p,
                     &log[2..],
                     &h1_batch(),

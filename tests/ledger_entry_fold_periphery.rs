@@ -497,7 +497,7 @@ fn a_second_projector_folding_the_same_generation_meanwhile_waits_and_meets_a_re
 #[test]
 fn a_writer_folds_into_the_file_while_its_rebuild_tail_extracts_an_entry_and_the_entry_folds_as_in_hand(
 ) {
-    use rigger::contextgraph::sqlite::{stream_past, RebuildSink};
+    use rigger::contextgraph::sqlite::RebuildSink;
 
     let dir = tempfile::tempdir().unwrap();
     let path = graph_db(&dir);
@@ -516,7 +516,7 @@ fn a_writer_folds_into_the_file_while_its_rebuild_tail_extracts_an_entry_and_the
             // The shadow's read finds the log before the entry was appended; the tail's, whole.
             reads.set(reads.get() + 1);
             let read = if reads.get() == 1 { &log[..1] } else { &log };
-            stream_past(read, after, log.len(), sink)
+            common::fixtures::one_read(read, after, sink)
         },
         &writer,
         &log[2..],
