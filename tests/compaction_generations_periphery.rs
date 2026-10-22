@@ -873,6 +873,101 @@ fn a_rebuild_interrupted_in_its_tail_finishes_the_tail_on_the_next_call() {
     assert_eq!(identity_of(&db), identity_of(&fresh));
 }
 
+/// The last position the rebuild whose cursor the graph file at `db` holds folded, as a connection
+/// of its own reads it committed.
+fn rebuild_cursor_of(db: &Path) -> u64 {
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .query_row("SELECT position FROM rebuild_cursor", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// Spec 122, ONE BATCHING RULE and THE SEAM at the rebuild's public surface: given a log that
+/// gained, while a rebuild folded its shadow, a tail of more than `FOLD_BATCH` events holding two
+/// ledger entries, when that rebuild folds the tail into the swapped-in `graph.db` from two read
+/// batches, and another projector folds an event of the second batch between them, then each entry
+/// is extracted with every event before it committed and none from it on, the writer's fold lands
+/// between the read batches with the cursor at the first one's end, and the `applied` ledger's
+/// positions are the log's.
+#[test]
+fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_batches() {
+    use common::cli::applied_positions;
+    use common::fixtures::{entry_at, folds, run_started, temp_graph_db};
+    use rigger::contextgraph::sqlite::{stream_past, Projector};
+    let (dir, path) = temp_graph_db();
+    let db = Path::new(&path);
+    let mut events = two_generations_dropping_facts();
+    let swapped = events.len();
+    events.extend((0..600).map(|i| match i {
+        300 => entry_at("gc", "src/tail.rs", "g1", 0, 30),
+        450 => entry_at("gc", "src/tail.rs", "g2", 0, 40),
+        _ => run_started(&format!("r{i}"), &[]),
+    }));
+    let (backend, _) = store_with(dir.path(), &[(rigger::conductor::STREAM, events)]);
+    let log = run_events(&backend, PROJECT);
+    fold_in_batches(db, PROJECT, &[log[..swapped].to_vec()]);
+    let at = |i: usize| log[i].position;
+    let positions = |events: &[Event]| events.iter().map(|e| e.position).collect::<Vec<_>>();
+    let (split, writer) = (swapped + 500, swapped + 550);
+    // The cursor and every position `applied` holds, as a connection of its own reads them.
+    let committed = || (rebuild_cursor_of(db), applied_positions(db));
+    let (mut reads, mut seam, mut extracted) = (0, Vec::new(), Vec::new());
+
+    let rebuilt = Projector::rebuild(
+        &Projector::lock_rebuild(&path).unwrap(),
+        PROJECT,
+        true,
+        &mut |after, sink| {
+            reads += 1;
+            if reads == 1 {
+                return sink(&log[..swapped], at(swapped - 1));
+            }
+            let (first, second) = log.split_at(split);
+            stream_past(first, after, log.len(), sink)?;
+            folds(
+                &Projector::open(&path, PROJECT).unwrap(),
+                std::slice::from_ref(&log[writer]),
+            );
+            seam.push(committed());
+            stream_past(second, after, log.len(), sink)
+        },
+        &mut |e| {
+            extracted.push((e.position, committed()));
+            Ok(None)
+        },
+        &mut no_progress,
+    )
+    .unwrap();
+
+    let before = |i: usize| (at(i - 1), positions(&log[..i]));
+    assert_eq!(
+        (rebuilt, reads),
+        (Some(Rebuilt::default()), 2),
+        "the shadow folds the log as it stood, then the tail is read once"
+    );
+    assert_eq!(
+        extracted,
+        vec![
+            (at(swapped + 300), before(swapped + 300)),
+            (at(swapped + 450), before(swapped + 450))
+        ],
+        "each entry is extracted with every event before it committed and none from it on"
+    );
+    assert_eq!(
+        seam,
+        vec![(
+            at(split - 1),
+            [positions(&log[..split]), vec![at(writer)]].concat()
+        )],
+        "the writer's fold lands between the read batches, the cursor at the first one's end"
+    );
+    assert_eq!(
+        applied_positions(db),
+        positions(&log),
+        "the applied ledger holds exactly the log's positions"
+    );
+}
+
 /// `rigger reset --derived` refuses to migrate while the project's `graph.db` still owes its
 /// rebuild, and says how to pay it; `rigger setup` rebuilds it from the log, after which the
 /// migration runs.
@@ -4522,9 +4617,7 @@ fn a_rebuild_whose_process_is_gone_leaves_no_lock_and_the_next_setup_resumes_its
     )
     .map_err(|e| e.to_string());
     drop(live);
-    let cursor: u64 = rigger_db(root, "graph.db.rebuild")
-        .query_row("SELECT position FROM rebuild_cursor", [], |r| r.get(0))
-        .unwrap();
+    let cursor = rebuild_cursor_of(&rigger_file(root, "graph.db.rebuild"));
     // Its process holds the lock until it is gone.
     let lock = rigger_file(root, "graph.db.lock").canonicalize().unwrap();
     let mut rebuilding = common::fixtures::lock_holder(&lock);
