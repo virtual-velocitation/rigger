@@ -42,7 +42,7 @@ use common::cli::temp_store_project;
 use common::cli::write_workflow_fixture;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
 use common::cli::{rebuild_owed, setup_ok, user_version, version_and_owed};
-use common::cli::{LOG_LEFT_AS_IT_STANDS_LINE, NOTHING_TO_SHED_LINE, UNFINISHED_REBUILD_REFUSAL};
+use common::cli::{LOG_LEFT_AS_IT_STANDS_LINE, NOTHING_TO_SHED_LINE};
 use common::fixtures::cleanup;
 use common::fixtures::f_rs_batch_def;
 use common::fixtures::files_open_by;
@@ -4174,10 +4174,10 @@ fn reset_runs_on_a_graph_that_owes_its_rebuild_removes_a_stale_pruned_copy_befor
                  left beside graph.db"
             ],
             Some(
-                format!(
-                    "rigger: reset --runs: {}",
+                common::cli::refusal_line(&format!(
+                    "reset --runs: {}",
                     rigger::contextgraph::REBUILD_OWED
-                )
+                ))
                 .as_str()
             ),
             false,
@@ -5000,7 +5000,7 @@ fn reset_derived_refuses_a_rebuild_stopped_in_its_tail_until_setup_finishes_it()
         (
             false,
             String::new(),
-            format!("{UNFINISHED_REBUILD_REFUSAL}\n"),
+            common::cli::unfinished_rebuild_refusal() + "\n",
             true,
         )
     };

@@ -1384,29 +1384,30 @@ fn every_spec_taking_verb_refuses_a_second_spec_and_an_unknown_flag_through_the_
     for (args, refusal) in [
         (
             ["run", SPEC_REL, "specs/other.md"],
-            "rigger: run: unexpected second positional argument \"specs/other.md\"\n",
+            "run: unexpected second positional argument \"specs/other.md\"",
         ),
-        (
-            ["run", "--frob", SPEC_REL],
-            "rigger: run: unknown flag \"--frob\"\n",
-        ),
+        (["run", "--frob", SPEC_REL], "run: unknown flag \"--frob\""),
         (
             ["workflow", SPEC_REL, "specs/other.md"],
-            "rigger: workflow: unexpected second positional argument \"specs/other.md\"\n",
+            "workflow: unexpected second positional argument \"specs/other.md\"",
         ),
         (
             ["workflow", SPEC_REL, "--frob"],
-            "rigger: workflow: unknown flag \"--frob\"\n",
+            "workflow: unknown flag \"--frob\"",
         ),
         (
             ["critique", SPEC_REL, "--frob"],
-            "rigger: critique: unknown flag \"--frob\"\n",
+            "critique: unknown flag \"--frob\"",
         ),
     ] {
         let (out, err, ok) = run_rigger_envs(root, &args, &envs);
         assert_eq!(
             (out.as_str(), err.as_str(), ok),
-            ("", refusal, false),
+            (
+                "",
+                (common::cli::refusal_line(refusal) + "\n").as_str(),
+                false
+            ),
             "{args:?} refuses through the shared rule, naming its verb"
         );
     }
@@ -1514,9 +1515,9 @@ fn an_unreadable_request_on_the_critique_stream_fails_the_attempt_count_and_spaw
     let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
     assert!(!ok, "an unreadable request fails the count");
     assert!(
-        err.contains(
-            "rigger: event store: a spawn request recorded on the critique stream is unreadable: "
-        ),
+        err.contains(&common::cli::refusal_line(
+            "event store: a spawn request recorded on the critique stream is unreadable: "
+        )),
         "the verb names the unreadable request:\n{err}"
     );
     assert!(

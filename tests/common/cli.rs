@@ -303,9 +303,12 @@ pub fn refused_new_run(command: &str, spec: &str, open: Option<&[String]>) -> St
             serde_json::json!(ids).to_string(),
         ),
     };
+    let refused = refusal_line(&format!(
+        "{command}: refusing to begin a new run on {spec}: {why}"
+    ));
     format!(
-        "rigger: {command}: refusing to begin a new run on {spec}: {why}\n  {CRITIQUE_ROUTE}   \
-         rigger critique {spec}\n  {route} rigger emit DecisionMade '{}'\n",
+        "{refused}\n  {CRITIQUE_ROUTE}   rigger critique {spec}\n  {route} rigger emit \
+         DecisionMade '{}'\n",
         printed_decision(spec, &resolves)
     )
 }
@@ -866,18 +869,25 @@ pub fn rebuild_in_progress_line() -> String {
 }
 
 /// The whole stderr of `rigger reset --derived` on a project configured for the server-backed
-/// store, where the migration does not run.
-pub const SERVER_BACKED_DERIVED_REFUSAL: &str =
-    "rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
-     vacuums the file, which is a mechanic of the embedded .rigger/events.db store; this project \
-     is configured for the server-backed store, where the migration does not run. Re-run it \
-     against a project on the sqlite backend. Refusing rather than reporting a migration that did \
-     not happen.\n";
+/// store, where the migration does not run: one [`refusal_line`], ended.
+pub fn server_backed_derived_refusal() -> String {
+    refusal_line(
+        "reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \
+         file, which is a mechanic of the embedded .rigger/events.db store; this project is \
+         configured for the server-backed store, where the migration does not run. Re-run it \
+         against a project on the sqlite backend. Refusing rather than reporting a migration that \
+         did not happen.",
+    ) + "\n"
+}
 
-/// The line `rigger reset --derived` ends its stderr with over a rebuild left unfinished.
-pub const UNFINISHED_REBUILD_REFUSAL: &str =
-    "rigger: reset --derived: a rebuild of graph.db was left unfinished - run `rigger setup` to \
-     finish it";
+/// The [`refusal_line`] `rigger reset --derived` ends its stderr with over a rebuild left
+/// unfinished.
+pub fn unfinished_rebuild_refusal() -> String {
+    refusal_line(
+        "reset --derived: a rebuild of graph.db was left unfinished - run `rigger setup` to finish \
+         it",
+    )
+}
 
 /// The rebuild lock of the `graph.db` of `root`, held as a `rigger setup` or a `rigger reset`
 /// holds `graph.db.lock`, until it is dropped.
@@ -1218,7 +1228,7 @@ pub fn stopping_at_the_grounder(workflow: &str) -> String {
 /// names, which a new grounder extends. `what` names the entry in the failure.
 pub fn assert_stopped_at_the_grounder(output: &(String, String, bool), what: &str) {
     let (out, err, ok) = output;
-    let clause = format!("rigger: unknown grounder \"{REJECTED_GROUNDER}\"");
+    let clause = refusal_line(&format!("unknown grounder \"{REJECTED_GROUNDER}\""));
     assert!(
         !ok && err
             .lines()
