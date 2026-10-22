@@ -14822,13 +14822,6 @@ mod tests {
                 );
             }
 
-            /// Spec 122, ONE BATCHING RULE and THE SEAM: a rebuild's tail commits a transaction
-            /// after at most `FOLD_BATCH` non-entry events and cuts before and after every ledger
-            /// entry, each transaction advancing the cursor in itself, and holds no transaction
-            /// between the read batches its source hands: a writer on a second connection commits
-            /// there, and each entry's extraction reads, from that connection, every transaction
-            /// before the entry committed. The tail meets the writer's position through the fold's
-            /// per-position guard, so the ledger ends holding exactly the log's positions.
             /// A fresh file-backed graph holding a rebuild's state, so a [`Projector::rebuild`]
             /// that owes nothing folds only the tail past its cursor: the directory that keeps it,
             /// its path and a projector on it.
@@ -14839,6 +14832,13 @@ mod tests {
                 (dir, path, p)
             }
 
+            /// Spec 122, ONE BATCHING RULE and THE SEAM: a rebuild's tail commits a transaction
+            /// after at most `FOLD_BATCH` non-entry events and cuts before and after every ledger
+            /// entry, each transaction advancing the cursor in itself, and holds no transaction
+            /// between the read batches its source hands: a writer on a second connection commits
+            /// there, and each entry's extraction reads, from that connection, every transaction
+            /// before the entry committed. The tail meets the writer's position through the fold's
+            /// per-position guard, so the ledger ends holding exactly the log's positions.
             #[test]
             fn a_fold_pass_commits_in_bounded_transactions_and_none_spans_its_read_batches() {
                 let (_dir, path, p) = owing_its_tail();
