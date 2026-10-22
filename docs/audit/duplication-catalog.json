@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-f19c20e54878",
+    "id": "dup-01a83c269af6",
     "classification": "near",
     "sites": [
       {
@@ -90,6 +90,11 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "file_half_sql",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "proof_rows_by",
         "content_hash": "6fd90a8c2eed6379"
       },
       {

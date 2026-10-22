@@ -4739,7 +4739,7 @@ fn fold_test_evidence(
 fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(), Error> {
     reproving(tx, project, "file", file, || {
         tx.execute(
-            "DELETE FROM proofs WHERE project = ?1 AND file = ?2",
+            &format!("DELETE FROM {}", proof_rows_by("file")),
             params![project, file],
         )
         .map(drop)
@@ -4767,6 +4767,13 @@ fn reproving(
     Ok(())
 }
 
+/// The proof rows of the project bound to `?1` whose `key` column - `file`, `name` or `target` -
+/// holds the value bound to `?2`: the one row selection each read and write of one file's, one
+/// name's or one target's proof rows spells.
+fn proof_rows_by(key: &str) -> String {
+    format!("proofs WHERE project = ?1 AND {key} = ?2")
+}
+
 /// The targets the proof rows of `project` whose `key` column - `file` or `name` - holds `value`
 /// resolve to, each once, sorted.
 fn proof_targets_by(
@@ -4777,8 +4784,8 @@ fn proof_targets_by(
 ) -> Result<BTreeSet<String>, Error> {
     let mut stmt = tx
         .prepare(&format!(
-            "SELECT DISTINCT target FROM proofs
-              WHERE project = ?1 AND {key} = ?2 AND target IS NOT NULL"
+            "SELECT DISTINCT target FROM {} AND target IS NOT NULL",
+            proof_rows_by(key)
         ))
         .map_err(be)?;
     let targets = stmt
@@ -4814,18 +4821,7 @@ fn settle_proofs(tx: &Transaction, project: &str) -> Result<(), Error> {
     if !has_table(tx, "proofs_owed")? {
         return Ok(());
     }
-    let owed: Vec<String> = {
-        let mut stmt = tx
-            .prepare("SELECT name FROM proofs_owed ORDER BY name")
-            .map_err(be)?;
-        let rows = stmt
-            .query_map([], |r| r.get(0))
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be)?;
-        rows
-    };
-    for name in &owed {
+    for name in &owed_names(tx)? {
         reproving(tx, project, "name", name, || {
             resolve_proofs(tx, name, project)
         })?;
@@ -4833,6 +4829,19 @@ fn settle_proofs(tx: &Transaction, project: &str) -> Result<(), Error> {
     tx.execute("DELETE FROM proofs_owed", [])
         .map(drop)
         .map_err(be)
+}
+
+/// The names `conn`'s file owes their proofs ([`owe_proofs`]), in name order.
+fn owed_names(conn: &Connection) -> Result<Vec<String>, Error> {
+    let mut stmt = conn
+        .prepare("SELECT name FROM proofs_owed ORDER BY name")
+        .map_err(be)?;
+    let names = stmt
+        .query_map([], |r| r.get(0))
+        .map_err(be)?
+        .collect::<Result<_, _>>()
+        .map_err(be)?;
+    Ok(names)
 }
 
 /// Resolve every recorded test reference to `name` against the call-target definitions of the leaf
@@ -4855,10 +4864,10 @@ fn resolve_proofs(tx: &Transaction, name: &str, project: &str) -> Result<(), Err
     };
     let recorded: Vec<(i64, String, Option<String>)> = {
         let mut stmt = tx
-            .prepare(
-                "SELECT rowid, file, target FROM proofs
-                  WHERE project = ?1 AND name = ?2 ORDER BY rowid",
-            )
+            .prepare(&format!(
+                "SELECT rowid, file, target FROM {} ORDER BY rowid",
+                proof_rows_by("name")
+            ))
             .map_err(be)?;
         let rows = stmt
             .query_map(params![project, name], |r| {
@@ -4909,10 +4918,10 @@ fn proof_keys() -> BTreeSet<String> {
 fn write_proof(tx: &Transaction, id: &str, project: &str) -> Result<(), Error> {
     let evidence: Vec<String> = {
         let mut stmt = tx
-            .prepare(
-                "SELECT evidence FROM proofs
-                  WHERE project = ?1 AND target = ?2 ORDER BY source, evidence",
-            )
+            .prepare(&format!(
+                "SELECT evidence FROM {} ORDER BY source, evidence",
+                proof_rows_by("target")
+            ))
             .map_err(be)?;
         let rows = stmt
             .query_map(params![project, id], |r| r.get(0))
