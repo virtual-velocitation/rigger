@@ -15,6 +15,12 @@ use crate::ingest::{DERIVED_INDEX_TYPES, META_REPLAY_KEY};
 /// entry in place of the generation's derived batch, which the tree re-derives.
 pub const TYPE_GENERATION_INGESTED: &str = "GenerationIngested";
 
+/// Whether an event of type `type_` is a ledger entry of perception ([`TYPE_GENERATION_INGESTED`]):
+/// the one test the graph's fold and the store's derived read decide an entry by.
+pub fn is_ledger_entry(type_: &str) -> bool {
+    type_ == TYPE_GENERATION_INGESTED
+}
+
 /// The payload of a [`TYPE_GENERATION_INGESTED`] event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GenerationIngested {
@@ -156,6 +162,20 @@ mod tests {
         assert_eq!(
             GenerationIngested::parse(trailing),
             Err("GenerationIngested payload: trailing characters at line 1 column 80".to_string())
+        );
+    }
+
+    #[test]
+    fn only_the_entry_type_is_a_ledger_entry() {
+        assert_eq!(
+            [
+                TYPE_GENERATION_INGESTED,
+                "DecisionMade",
+                "generationingested",
+                ""
+            ]
+            .map(is_ledger_entry),
+            [true, false, false, false]
         );
     }
 

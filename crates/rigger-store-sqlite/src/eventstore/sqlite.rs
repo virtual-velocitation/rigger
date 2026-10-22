@@ -631,7 +631,7 @@ fn read_derived(
         let key: Option<String> = row.get(2).map_err(be)?;
         let valid_from: i64 = row.get(3).map_err(be)?;
         let named = key.as_deref().and_then(crate::ingest::derived_key_parts);
-        if type_ == crate::retention::TYPE_GENERATION_INGESTED {
+        if crate::retention::is_ledger_entry(&type_) {
             if let Some((identity, _)) = named {
                 let entry = read
                     .entries

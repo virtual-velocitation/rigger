@@ -31,7 +31,7 @@ use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Position, Revis
 use crate::lockfile::HeldLock;
 use crate::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT};
 use crate::sqlite::open_connection;
-use rigger_domain::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
+use rigger_domain::retention::{is_ledger_entry, GenerationIngested, TYPE_GENERATION_INGESTED};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS nodes (
@@ -1506,7 +1506,7 @@ fn fold_source(
             through = in_transaction(conn, |tx| {
                 for e in part {
                     tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
-                    let folded = if is_ledger_entry(e) {
+                    let folded = if is_ledger_entry(&e.type_) {
                         fold_entry(tx, e, project, || reextract(e)).map(drop)
                     } else {
                         fold_new(tx, std::slice::from_ref(e), project)
@@ -1559,13 +1559,8 @@ const FOLD_BATCH: usize = 256;
 /// in slices of at most [`FOLD_BATCH`]. Each is a slice of `events`, never empty.
 fn fold_transactions(events: &[Event]) -> impl Iterator<Item = &[Event]> {
     events
-        .chunk_by(|a, b| !is_ledger_entry(a) && !is_ledger_entry(b))
+        .chunk_by(|a, b| !is_ledger_entry(&a.type_) && !is_ledger_entry(&b.type_))
         .flat_map(|run| run.chunks(FOLD_BATCH))
-}
-
-/// Whether `e` is a ledger entry of perception, which folds only with its batch ([`fold_entry`]).
-fn is_ledger_entry(e: &Event) -> bool {
-    e.type_ == TYPE_GENERATION_INGESTED
 }
 
 /// Whether the file behind `conn` was swapped in by a [`Projector::rebuild`] that has not yet
@@ -1980,7 +1975,7 @@ impl<'e> Asserter<'e> {
 /// only with its batch ([`fold_entry`]).
 fn fold_new(tx: &Transaction, events: &[Event], project: &str) -> Result<(), Error> {
     for e in events {
-        if is_ledger_entry(e) {
+        if is_ledger_entry(&e.type_) {
             return Err(Error(format!(
                 "a {TYPE_GENERATION_INGESTED} entry folds only with its batch, through \
                  `Projection::apply_generation`"
