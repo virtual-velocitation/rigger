@@ -14925,6 +14925,44 @@ mod tests {
                 );
             }
 
+            /// Spec 122, ONE BATCHING RULE: the cut falls before AND after every ledger entry, so a
+            /// run of adjacent entries - the shape a code ingest appends - never shares a
+            /// transaction: each entry is extracted with the one before it committed, the cursor
+            /// advancing once per entry.
+            #[test]
+            fn adjacent_ledger_entries_each_commit_in_a_transaction_of_their_own() {
+                let (_dir, path) = crate::test_support::temp_graph_db();
+                let p = Projector::open(&path, "test").unwrap();
+                p.conn.lock().unwrap().execute_batch(REBUILD_STATE).unwrap();
+                let log = vec![
+                    decision_at("d1", "src/d.rs", 1),
+                    entry("gc", "src/a.rs", "h1", 2, 10),
+                    entry("gc", "src/b.rs", "h1", 3, 20),
+                    entry("gc", "src/c.rs", "h1", 4, 30),
+                    decision_at("d5", "src/d.rs", 5),
+                ];
+                let mut extracted = Vec::new();
+                let rebuilt = Projector::rebuild(
+                    &locked(&path),
+                    "test",
+                    false,
+                    &mut |after, sink| stream_past(&log, after, log.len(), sink),
+                    &mut |e| {
+                        extracted.push((e.position, rebuild_cursor(&p.conn.lock().unwrap())?));
+                        Ok(None)
+                    },
+                    &mut |_| {},
+                )
+                .unwrap();
+                assert_eq!(rebuilt, Some(Rebuilt::default()));
+                assert_eq!(
+                    extracted,
+                    vec![(2, 1), (3, 2), (4, 3)],
+                    "each adjacent entry is extracted with the one before it committed alone"
+                );
+                assert_eq!(applied_positions(&p), vec![1, 2, 3, 4, 5]);
+            }
+
             #[test]
             fn the_entry_builder_stamps_the_identity_as_group_and_the_generation_key() {
                 let named = GenerationIngested {

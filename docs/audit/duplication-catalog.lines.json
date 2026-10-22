@@ -89,8 +89,8 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "start_line": 17285,
-        "end_line": 17289
+        "start_line": 17323,
+        "end_line": 17327
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -5824,8 +5824,8 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "start_line": 15602,
-        "end_line": 15602
+        "start_line": 15640,
+        "end_line": 15640
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
