@@ -27,7 +27,7 @@ use common::fixtures::{
     events_of, folds, generation_ingested, held_generations, walked_generation, write_text,
     DOCUMENT_PATH, SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
 };
-use rigger::contextgraph::sqlite::{Projector, RebuildSink, Rebuilt};
+use rigger::contextgraph::sqlite::{Projector, RebuildSink};
 use rigger::contextgraph::{wired, EntryFold, Error, Fold, Projection, TYPE_CODE_ENTITY_EXTRACTED};
 use rigger::eventstore::{Event, ExpectedRevision};
 use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
@@ -931,7 +931,7 @@ fn rebuild_resolving(
     project: &str,
     log: &[Event],
     root: &Path,
-) -> Result<Option<Rebuilt>, String> {
+) -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, String> {
     let mut blobs = rigger::worktree::BlobBatch::start(root);
     assert!(blobs.is_some(), "the tree is a repository");
     Projector::rebuild(
@@ -1005,10 +1005,10 @@ fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equ
     for db in [&single, &resumed] {
         drop(Projector::open(db.to_str().unwrap(), &project).unwrap());
     }
-    let untouched = Rebuilt::default();
+    let untouched = common::fixtures::clean_rebuild();
     assert_eq!(
         rebuild_resolving(&single, &project, &log, root),
-        Ok(Some(untouched)),
+        untouched.clone(),
         "a single pass over the untouched repository"
     );
 
@@ -1055,10 +1055,7 @@ fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equ
     );
 
     std::fs::write(&object, &whole).unwrap();
-    assert_eq!(
-        rebuild_resolving(&resumed, &project, &log, root),
-        Ok(Some(untouched))
-    );
+    assert_eq!(rebuild_resolving(&resumed, &project, &log, root), untouched);
     assert_eq!(
         graph_identity(&resumed, &project),
         graph_identity(&single, &project),
