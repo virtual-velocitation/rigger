@@ -13922,11 +13922,15 @@ mod tests {
             fold_events, folds, placed_at, proven_definition, test_reference_json,
             GENERATION_AFTER, GENERATION_BEFORE,
         };
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::cell::Cell;
 
-        /// The executions of the definition lookup [`resolve_proofs`] runs that the
-        /// statement-trace callback [`count_lookup`] saw since [`lookups_taken`] last read it.
-        static LOOKUPS: AtomicUsize = AtomicUsize::new(0);
+        thread_local! {
+            /// The executions of the definition lookup [`resolve_proofs`] runs on this thread that
+            /// the statement-trace callback [`count_lookup`] saw since [`lookups_taken`] last read
+            /// it: one count per test thread, so tests counting at once never read each other's
+            /// lookups (SQLite calls the callback on the thread running the statement).
+            static LOOKUPS: Cell<usize> = const { Cell::new(0) };
+        }
 
         /// The statement-trace callback of a counted connection: a traced statement, its bound
         /// parameters replaced by their values, is the definition lookup when it opens with the
@@ -13935,13 +13939,13 @@ mod tests {
             let built = definition_lookup_sql();
             let head = &built[..built.find('?').unwrap_or(built.len())];
             if traced.starts_with(head) {
-                LOOKUPS.fetch_add(1, Ordering::SeqCst);
+                LOOKUPS.with(|n| n.set(n.get() + 1));
             }
         }
 
-        /// The lookups counted since the last read, the count reset to zero.
+        /// The lookups counted on this thread since its last read, the count reset to zero.
         fn lookups_taken() -> usize {
-            LOOKUPS.swap(0, Ordering::SeqCst)
+            LOOKUPS.with(|n| n.replace(0))
         }
 
         /// The test references `tests/owed.rs` holds to `owed` at log positions
