@@ -13994,6 +13994,18 @@ mod tests {
             );
         }
 
+        /// `proofs_owed` is empty after every commit: the transaction that folded the seeded
+        /// references to `owed` owed `owed` its proofs ([`owe_proofs`]), and its frame paid the
+        /// row before it committed ([`settle_proofs`]).
+        #[test]
+        fn a_transaction_that_owed_a_name_commits_owing_none() {
+            let p = counted_holding(2);
+            assert_eq!(
+                owed_names(&p.conn.lock().unwrap()).unwrap(),
+                Vec::<String>::new()
+            );
+        }
+
         /// One part of [`settling_log`]: a ledger entry with the batch it folds with, or another
         /// event alone.
         type Part = (Event, Option<Vec<Event>>);
