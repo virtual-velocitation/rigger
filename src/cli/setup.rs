@@ -869,8 +869,9 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     Ok(())
 }
 
-/// How many events a graph rebuild folds per committed batch: an interrupted rebuild resumes from
-/// its last committed batch, and a batch is what it holds in memory at once.
+/// How many events a graph rebuild reads from the log per batch: a batch is what it holds in memory
+/// at once, never a transaction bound - the fold commits each batch in the bounded transactions its
+/// graph cuts it into, and an interrupted rebuild resumes from the last of them committed.
 const REBUILD_BATCH: usize = 10_000;
 
 /// Rebuild this project's `graph.db` from the event log when it owes that rebuild (spec 101) -
@@ -886,7 +887,7 @@ const REBUILD_BATCH: usize = 10_000;
 /// starts owing nothing it recorded. The rebuild folds the log's live selection - the rows `rigger
 /// reset --derived` keeps - into a shadow file whose pruned copy replaces `graph.db` in one step
 /// ([`Projector::rebuild`]), streaming the log once, resuming an interrupted rebuild from its last
-/// committed batch and finishing exactly the tail of one interrupted after its swap.
+/// committed transaction and finishing exactly the tail of one interrupted after its swap.
 ///
 /// A ledger entry of perception folds with the batch re-extracted for it (spec 107,
 /// `ingest::resolve_entry`): from the entry's blob in the repository's object database, read

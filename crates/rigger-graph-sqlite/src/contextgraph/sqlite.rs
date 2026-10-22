@@ -159,11 +159,11 @@ const PROJECT_KEYED_LEDGERS: [&str; 8] = [
 ///   in the pruned copy the swap puts in place of the live file, so a rebuild interrupted in its
 ///   tail still reports what that prune removed ([`Rebuilt::pruned`]).
 /// - `rebuild_run_closure`: the run attribution it gathers as it folds (spec 101) - every folded
-///   event of the [`rigger_domain::run::RUN_CLOSURE_TYPES`], committed with the batch that folded
-///   it - so every pass that reaches the swap, a resumed one included, derives the run-closure
-///   prune from the whole of it ([`prune_run_closure`]).
+///   event of the [`rigger_domain::run::RUN_CLOSURE_TYPES`], committed with the transaction that
+///   folded it - so every pass that reaches the swap, a resumed one included, derives the
+///   run-closure prune from the whole of it ([`prune_run_closure`]).
 const REBUILD_STATE: &str = "
-BEGIN;
+BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS rebuild_cursor (
     position INTEGER NOT NULL,
     pruned_nodes INTEGER NOT NULL DEFAULT 0,
@@ -181,7 +181,7 @@ COMMIT;
 
 /// Drop the [`REBUILD_STATE`] a rebuild kept, both tables in one transaction.
 const DROP_REBUILD_STATE: &str = "
-BEGIN;
+BEGIN IMMEDIATE;
 DROP TABLE rebuild_cursor;
 DROP TABLE rebuild_run_closure;
 COMMIT;
@@ -440,8 +440,9 @@ impl Projector {
     /// The rebuild folds `source` - the log's live selection, whose cost is bounded by the live
     /// projection rather than the log's age - each ledger entry of perception with the batch
     /// `reextract` answers for it (see `fold_source`), into a fresh SHADOW file beside the graph file, in the
-    /// batches `source` hands it, each committed with the last position it folded and the run
-    /// attribution it gathered ([`REBUILD_STATE`]) and reported to `progress`; the live file is only
+    /// batches `source` hands it, each folded in the bounded transactions `fold_source` cuts it
+    /// into, each transaction committed with the last position it folded and the run attribution it
+    /// gathered ([`REBUILD_STATE`]), and each batch reported to `progress`; the live file is only
     /// ever read meanwhile. Once `source` is exhausted, a private copy of the shadow, pruned as
     /// `rigger reset --runs` prunes the live graph and stamped with the current
     /// [`PROJECTION_VERSION`] ([`prune_a_copy`]), is put in place of the live file's content in ONE
@@ -465,10 +466,10 @@ impl Projector {
     /// ([`open_shadow`]), so it ends it by closing and then removing it ([`remove_shadow`]). An
     /// interrupted rebuild leaves the live file untouched, or swapped whole, and no lock - the OS
     /// releases it with the process - and the next one resumes from the shadow's last committed
-    /// batch without refolding it and prunes a fresh copy from the whole run attribution the shadow
-    /// gathered - the same graph and the same counts a cold rebuild reaches, however far the pass
-    /// before it got. A shadow folded under another fold rule holds what that rule gave, so it is
-    /// discarded and the log folded from its start ([`open_shadow`]).
+    /// transaction without refolding it and prunes a fresh copy from the whole run attribution the
+    /// shadow gathered - the same graph and the same counts a cold rebuild reaches, however far the
+    /// pass before it got. A shadow folded under another fold rule holds what that rule gave, so it
+    /// is discarded and the log folded from its start ([`open_shadow`]).
     ///
     /// An emit that found the old file owing appended without folding, and did so before the
     /// copy: so after it `source` is read once more from the cursor alone, into the live file and
@@ -1316,15 +1317,20 @@ fn prune_in(
     })
 }
 
-/// Run `body` in ONE transaction on `conn` and commit it: the one DEFERRED transaction -> body ->
+/// Run `body` in ONE transaction on `conn` and commit it: the one IMMEDIATE transaction -> body ->
 /// commit frame of this file; [`open_current`] keeps its own immediate transaction on the shared
-/// connection it is handed. A `body` that fails, or a commit that does, leaves nothing written -
-/// the transaction rolls back whole as it drops.
+/// connection it is handed. The open takes the write lock (spec 122), so a frame meeting a lock
+/// another connection holds fails at its open once the busy timeout passes, before `body` runs,
+/// and a `body` that reads before it writes never finds its read outdated by another's commit. A
+/// `body` that fails, or a commit that does, leaves nothing written - the transaction rolls back
+/// whole as it drops.
 fn in_transaction<T>(
     conn: &mut Connection,
     body: impl FnOnce(&Transaction) -> Result<T, Error>,
 ) -> Result<T, Error> {
-    let tx = conn.transaction().map_err(be)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(be)?;
     let answer = body(&tx)?;
     tx.commit().map_err(be)?;
     Ok(answer)
@@ -1459,9 +1465,11 @@ fn remove_shadow(shadow: Connection, path: &str) -> Result<(), Error> {
     remove_if_present(path)
 }
 
-/// Fold what `source` hands after the cursor of `conn`'s [`REBUILD_STATE`], one committed transaction per
-/// batch that also records the batch's last position as the cursor, reporting each to
-/// `progress`, and answer how many events it passed over. Each event folds exactly as
+/// Fold what `source` hands after the cursor of `conn`'s [`REBUILD_STATE`], each batch in the
+/// transactions [`fold_transactions`] cuts it into (spec 122, ONE BATCHING RULE) - each committed
+/// with its last position as the cursor, so a writer meeting the pass waits at most one of them and
+/// none spans two batches - reporting each batch to `progress` once its last transaction commits,
+/// and answer how many events it passed over. Each event folds exactly as
 /// [`Projection::apply`] folds it and one at a time - but a ledger entry of perception, which
 /// that fold refuses: it folds as [`Projection::apply_generation`] folds it ([`fold_entry`]), with
 /// the batch `reextract` answers for it, under the same savepoint. So an event whose payload the
@@ -1470,11 +1478,12 @@ fn remove_shadow(shadow: Connection, path: &str) -> Result<(), Error> {
 /// the file owed, the rebuild is what pays that debt, so its position is recorded in the `applied`
 /// ledger all the same, and the rebuilt file does not miss it and the next `rigger setup` does not
 /// rebuild for it again. Any other failure is the store's, not the payload's: it propagates with
-/// the batch rolled back, so nothing records the event folded and the next rebuild resumes from
-/// the cursor and folds it. That is every failure of an entry whose own payload parses - a
-/// `reextract` that fails, and a re-extracted batch event the fold rejects, which is this binary's
-/// own extraction and never a payload to pass over. One the file already folded is passed over by
-/// the fold's per-position guard.
+/// its transaction rolled back, so nothing records the event folded and the next rebuild resumes
+/// from the cursor - the last position the transaction before it committed - and folds it. That
+/// is every failure of an entry whose own payload parses - a `reextract` that fails, and a
+/// re-extracted batch event the fold rejects, which is this binary's own extraction and never a
+/// payload to pass over. One the file already folded is passed over by the fold's per-position
+/// guard.
 ///
 /// A shadow fold (`gather_run_closure`) also keeps, in the same transaction, every event of the
 /// [`rigger_domain::run::RUN_CLOSURE_TYPES`] it passes ([`REBUILD_STATE`]), whatever became
@@ -1491,39 +1500,42 @@ fn fold_source(
     let mut folded = 0;
     let mut passed_over = 0;
     source(start, &mut |events, head| {
-        let through = in_transaction(conn, |tx| {
-            for e in events {
-                tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
-                let folded = if e.type_ == TYPE_GENERATION_INGESTED {
-                    fold_entry(tx, e, project, || reextract(e)).map(drop)
-                } else {
-                    fold_new(tx, std::slice::from_ref(e), project)
-                };
-                if let Err(failed) = folded {
-                    if super::check_fold_payload(&e.type_, &e.data).is_ok() {
-                        return Err(failed);
+        let mut through = start;
+        for part in fold_transactions(events) {
+            through = in_transaction(conn, |tx| {
+                for e in part {
+                    tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
+                    let folded = if is_ledger_entry(e) {
+                        fold_entry(tx, e, project, || reextract(e)).map(drop)
+                    } else {
+                        fold_new(tx, std::slice::from_ref(e), project)
+                    };
+                    if let Err(failed) = folded {
+                        if super::check_fold_payload(&e.type_, &e.data).is_ok() {
+                            return Err(failed);
+                        }
+                        tx.execute_batch("ROLLBACK TO fold_event").map_err(be)?;
+                        record_applied(tx, e.position)?;
+                        passed_over += 1;
                     }
-                    tx.execute_batch("ROLLBACK TO fold_event").map_err(be)?;
-                    record_applied(tx, e.position)?;
-                    passed_over += 1;
+                    tx.execute_batch("RELEASE fold_event").map_err(be)?;
+                    if gather_run_closure
+                        && rigger_domain::run::RUN_CLOSURE_TYPES.contains(&e.type_.as_str())
+                    {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO rebuild_run_closure
+                             (position, type, data, valid_from) VALUES (?1, ?2, ?3, ?4)",
+                            params![e.position as i64, e.type_, e.data, to_nanos(e.valid_from)],
+                        )
+                        .map_err(be)?;
+                    }
                 }
-                tx.execute_batch("RELEASE fold_event").map_err(be)?;
-                if gather_run_closure
-                    && rigger_domain::run::RUN_CLOSURE_TYPES.contains(&e.type_.as_str())
-                {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO rebuild_run_closure (position, type, data, valid_from)
-                         VALUES (?1, ?2, ?3, ?4)",
-                        params![e.position as i64, e.type_, e.data, to_nanos(e.valid_from)],
-                    )
+                let through = part.last().map_or(start, |e| e.position);
+                tx.execute("UPDATE rebuild_cursor SET position = ?1", [through as i64])
                     .map_err(be)?;
-                }
-            }
-            let through = events.last().map_or(start, |e| e.position);
-            tx.execute("UPDATE rebuild_cursor SET position = ?1", [through as i64])
-                .map_err(be)?;
-            Ok(through)
-        })?;
+                Ok(through)
+            })?;
+        }
         folded += events.len();
         progress(RebuildProgress {
             start,
@@ -1534,6 +1546,25 @@ fn fold_source(
         Ok(())
     })?;
     Ok(passed_over)
+}
+
+/// The most events other than ledger entries of perception that one transaction of a fold pass
+/// ([`fold_source`]) folds before it commits (spec 122, ONE BATCHING RULE): a writer meeting the
+/// pass waits at most this many events' fold, or one entry's alone.
+const FOLD_BATCH: usize = 256;
+
+/// The transactions a fold pass ([`fold_source`]) folds `events` in, in order: every ledger entry
+/// of perception alone, and each run of other events between two entries in slices of at most
+/// [`FOLD_BATCH`]. Each is a slice of `events`, never empty.
+fn fold_transactions(events: &[Event]) -> impl Iterator<Item = &[Event]> {
+    events
+        .chunk_by(|a, b| !is_ledger_entry(a) && !is_ledger_entry(b))
+        .flat_map(|run| run.chunks(FOLD_BATCH))
+}
+
+/// Whether `e` is a ledger entry of perception, which folds only with its batch ([`fold_entry`]).
+fn is_ledger_entry(e: &Event) -> bool {
+    e.type_ == TYPE_GENERATION_INGESTED
 }
 
 /// Whether the file behind `conn` was swapped in by a [`Projector::rebuild`] that has not yet
@@ -1948,7 +1979,7 @@ impl<'e> Asserter<'e> {
 /// only with its batch ([`fold_entry`]).
 fn fold_new(tx: &Transaction, events: &[Event], project: &str) -> Result<(), Error> {
     for e in events {
-        if e.type_ == TYPE_GENERATION_INGESTED {
+        if is_ledger_entry(e) {
             return Err(Error(format!(
                 "a {TYPE_GENERATION_INGESTED} entry folds only with its batch, through \
                  `Projection::apply_generation`"
