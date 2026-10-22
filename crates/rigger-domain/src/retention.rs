@@ -171,11 +171,10 @@ mod tests {
             [
                 TYPE_GENERATION_INGESTED,
                 "DecisionMade",
-                "generationingested",
-                ""
+                "generationingested"
             ]
             .map(is_ledger_entry),
-            [true, false, false, false]
+            [true, false, false]
         );
     }
 

@@ -14829,20 +14829,28 @@ mod tests {
             /// there, and each entry's extraction reads, from that connection, every transaction
             /// before the entry committed. The tail meets the writer's position through the fold's
             /// per-position guard, so the ledger ends holding exactly the log's positions.
+            /// A fresh file-backed graph holding a rebuild's state, so a [`Projector::rebuild`]
+            /// that owes nothing folds only the tail past its cursor: the directory that keeps it,
+            /// its path and a projector on it.
+            fn owing_its_tail() -> (tempfile::TempDir, String, Projector) {
+                let (dir, path) = crate::test_support::temp_graph_db();
+                let p = Projector::open(&path, "test").unwrap();
+                p.conn.lock().unwrap().execute_batch(REBUILD_STATE).unwrap();
+                (dir, path, p)
+            }
+
             #[test]
             fn a_fold_pass_commits_in_bounded_transactions_and_none_spans_its_read_batches() {
-                let (_dir, path) = crate::test_support::temp_graph_db();
-                let p = Projector::open(&path, "test").unwrap();
-                {
-                    let conn = p.conn.lock().unwrap();
-                    conn.execute_batch(REBUILD_STATE).unwrap();
-                    conn.execute_batch(
+                let (_dir, path, p) = owing_its_tail();
+                p.conn
+                    .lock()
+                    .unwrap()
+                    .execute_batch(
                         "CREATE TABLE cursor_moves (position INTEGER NOT NULL);
                          CREATE TRIGGER moved AFTER UPDATE ON rebuild_cursor
                          BEGIN INSERT INTO cursor_moves VALUES (NEW.position); END;",
                     )
                     .unwrap();
-                }
                 let log: Vec<Event> = (1..=800)
                     .map(|pos| match pos {
                         521 => entry("gc", "src/a.rs", "h1", pos, 10),
@@ -14926,9 +14934,7 @@ mod tests {
             /// advancing once per entry.
             #[test]
             fn adjacent_ledger_entries_each_commit_in_a_transaction_of_their_own() {
-                let (_dir, path) = crate::test_support::temp_graph_db();
-                let p = Projector::open(&path, "test").unwrap();
-                p.conn.lock().unwrap().execute_batch(REBUILD_STATE).unwrap();
+                let (_dir, path, p) = owing_its_tail();
                 let log = vec![
                     decision_at("d1", "src/d.rs", 1),
                     entry("gc", "src/a.rs", "h1", 2, 10),
