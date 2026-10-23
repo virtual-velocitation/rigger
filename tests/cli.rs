@@ -6724,17 +6724,27 @@ stages:
 }
 
 /// One `rigger run` of a reviewed one-stage unit through the REAL cli host, whose fake `claude`
-/// worker prints `worker_lines` and whose adjudicator prints `judge_lines` before approving: the
-/// host bridges every emit line on an agent's stdout into the conductor's in-process emit. One
-/// remediation attempt, so a refused line escalates the unit at once. Returns everything the run
-/// said (stdout, stderr and every event's payload, one haystack) and the run's events.
+/// worker prints `worker_lines` on its first spawn only and whose adjudicator prints
+/// `judge_lines` before approving: the host bridges every emit line on an agent's stdout into
+/// the conductor's in-process emit. Two attempts, so a line refused on the worker's first spawn
+/// can be charged to that attempt and the second, printing nothing, carries the unit on.
+/// Returns everything the run said (stdout, stderr and every event's payload, one haystack),
+/// the run's events, the task each worker spawn read on its stdin, in spawn order, and every
+/// commit the repository holds afterwards, one `{sha} {subject}` line each.
 #[cfg(unix)]
 fn run_with_bridged_lines(
     worker_lines: &str,
     judge_lines: &str,
-) -> (String, Vec<rigger::eventstore::Event>) {
+) -> (
+    String,
+    Vec<rigger::eventstore::Event>,
+    Vec<String>,
+    Vec<String>,
+) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
+    let tasks = tempfile::tempdir().unwrap();
+    let task_dir = tasks.path().display();
     write_agent(
         root,
         "worker",
@@ -6759,7 +6769,7 @@ fn run_with_bridged_lines(
         r#"defaults:
   grounder: nop
   budget: 60
-  max_retries: 1
+  max_retries: 2
 gates:
   ok: { run: "true", kind: core }
 stages:
@@ -6788,10 +6798,14 @@ LINES
     echo '{{"verdict":"approve"}}'
     ;;
   *RIGGERTEST_WORKER*)
+    n=$(ls "{task_dir}" | wc -l | tr -d ' ')
+    cat > "{task_dir}/$n"
     echo "pub fn work() {{}}" > work.rs
-    cat <<'LINES'
+    if [ "$n" = 0 ]; then
+      cat <<'LINES'
 {worker_lines}
 LINES
+    fi
     ;;
 "#
     ));
@@ -6806,7 +6820,14 @@ LINES
         )
         .collect::<Vec<_>>()
         .join("\n");
-    (said, events)
+    let spawned = std::fs::read_dir(tasks.path()).unwrap().count();
+    let read = (0..spawned)
+        .map(|n| std::fs::read_to_string(tasks.path().join(n.to_string())).unwrap())
+        .collect();
+    let commits = git_answer(root, &["log", "--all", "--format=%H %s"])
+        .map(|log| log.lines().map(str::to_string).collect())
+        .unwrap_or_default();
+    (said, events, read, commits)
 }
 
 /// The `{unit}/{role}` seat stamped on each recorded `DecisionMade` whose id is `id`, in log order.
@@ -6826,11 +6847,17 @@ fn decision_seats(events: &[rigger::eventstore::Event], id: &str) -> Vec<String>
 /// A record a cli-host agent prints on stdout reaches the log through the conductor's in-process
 /// emit, so it is judged by the same guard `rigger emit` runs: a payload the fold cannot apply -
 /// `governs` given as a string, not an array - is refused before the append, so the log holds no
-/// record the fold would pass over, and the refusal reaches the spawn's error.
+/// record the fold would pass over. The refusal is a defect in what the implementer printed, not
+/// an outage: it is charged to that attempt like a review reject, never rerun uncharged as
+/// infra, and the next attempt's prompt names it, so the agent learns why and the unit converges.
+/// The attempt's edits are committed as its checkpoint, as a gate failure's are, so its
+/// `UnitFailed` carries that sha and an escalation's teardown never discards them.
 #[cfg(unix)]
 #[test]
-fn a_cli_host_bridged_record_the_fold_cannot_apply_is_refused_and_lands_nothing() {
-    let (said, events) = run_with_bridged_lines(
+fn a_cli_host_bridged_record_the_fold_cannot_apply_is_refused_and_charged_to_the_attempt_that_printed_it(
+) {
+    let refusal = "refusing to emit: DecisionMade payload field `governs`";
+    let (said, events, tasks, commits) = run_with_bridged_lines(
         r#"{"type":"DecisionMade","data":{"id":"d-bad","summary":"s","governs":"src/work.rs"}}"#,
         "",
     );
@@ -6840,8 +6867,56 @@ fn a_cli_host_bridged_record_the_fold_cannot_apply_is_refused_and_lands_nothing(
         "the refused record landed nothing"
     );
     assert!(
-        said.contains("refusing to emit: DecisionMade payload field `governs`"),
+        said.contains(refusal),
         "the refusal reaches the spawn's error: {said}"
+    );
+    let failed: Vec<serde_json::Value> = events
+        .iter()
+        .filter(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .map(|e| serde_json::from_slice(&e.data).unwrap())
+        .collect();
+    assert_eq!(
+        failed
+            .iter()
+            .map(|f| (f["attempts"].as_u64(), f["cause"].as_str()))
+            .collect::<Vec<_>>(),
+        [(Some(1), Some("reject"))],
+        "the refusal is charged one attempt, as a reject: {failed:?}"
+    );
+    let reason = failed[0]["review_reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains(refusal) && !reason.contains('\u{1}'),
+        "the charged failure carries the refusal, unmarked: {reason:?}"
+    );
+    let failed_sha = events
+        .iter()
+        .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .and_then(|e| e.meta.get(rigger::conductor::META_WORKTREE_SHA))
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        commits.contains(&format!("{failed_sha} rigger: solo attempt 1")),
+        "the refused attempt's edits are committed as its checkpoint, the sha its UnitFailed \
+         carries, as a gate failure's are: {failed_sha:?} in {commits:?}"
+    );
+    assert!(
+        !events.iter().any(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(r#""status":"infra-retry""#)
+        }),
+        "a refusal is never rerun uncharged as infra"
+    );
+    assert_eq!(tasks.len(), 2, "the worker spawned once per attempt");
+    assert!(
+        !tasks[0].contains(refusal) && tasks[1].contains(refusal),
+        "the next attempt's prompt names the refusal: {:?}",
+        tasks[1]
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "the next attempt, printing nothing refused, carries the unit on"
     );
 }
 
@@ -6852,7 +6927,7 @@ fn a_cli_host_bridged_record_the_fold_cannot_apply_is_refused_and_lands_nothing(
 #[cfg(unix)]
 #[test]
 fn a_cli_host_bridged_record_whose_id_another_seat_holds_is_refused_and_lands_nothing() {
-    let (said, events) = run_with_bridged_lines(
+    let (said, events, _tasks, _commits) = run_with_bridged_lines(
         r#"{"type":"DecisionMade","data":{"id":"d-x","summary":"the worker's"}}"#,
         r#"{"type":"DecisionMade","data":{"id":"d-x","summary":"the judge's"}}"#,
     );
@@ -6867,6 +6942,10 @@ fn a_cli_host_bridged_record_whose_id_another_seat_holds_is_refused_and_lands_no
     ] {
         assert!(said.contains(named), "the refusal names {named:?}: {said}");
     }
+    assert!(
+        !said.contains('\u{1}'),
+        "no control-character marker reaches what the run said: {said:?}"
+    );
 }
 
 /// Spec 64 criterion 3, adjudication round 4 (`adv-u3c3r4-concurrent-lens-ensure-present-races-
