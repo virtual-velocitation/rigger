@@ -12582,36 +12582,36 @@ fn audit_id(unit: &str, attempt: u32) -> String {
 /// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
 /// prompt. Older ones collapse into a single visible elision note. The store keeps
 /// the full history; only this prompt slice narrows.
-const DECISIONS_VERBATIM_N: usize = 12;
+pub const DECISIONS_VERBATIM_N: usize = 12;
 
 /// Gap-15 prompt budget: a hard byte cap on the verbatim body of the
 /// decisions-that-govern section. Verbatim rendering stops as soon as the next
 /// entry would cross this budget (whichever of it and [`DECISIONS_VERBATIM_N`]
 /// binds first), so a pile of chunky rejection verdicts can never blow the prompt.
-const DECISIONS_BUDGET_BYTES: usize = 24 * 1024;
+pub const DECISIONS_BUDGET_BYTES: usize = 24 * 1024;
 
 /// Gap-17 prompt budget: the most-recent lessons kept VERBATIM in a prompt. Lessons
 /// are terse one-liners recorded once per escalation, so the count that keeps the
 /// section actionable matches the decisions count.
-const LESSONS_VERBATIM_N: usize = 12;
+pub const LESSONS_VERBATIM_N: usize = 12;
 
 /// Gap-17 prompt budget: a hard byte cap on the verbatim body of the lessons section.
 /// Lessons are the smallest of the three sections (short summaries, few of them), so
 /// this is the tightest budget; the older remainder collapses into a visible note.
-const LESSONS_BUDGET_BYTES: usize = 12 * 1024;
+pub const LESSONS_BUDGET_BYTES: usize = 12 * 1024;
 
 /// Gap-17 prompt budget: the most-recent findings kept VERBATIM in a prompt. Findings
 /// are the PRIMARY cross-tier review channel (a later tier addresses or refutes them),
 /// so a larger count survives verbatim than for decisions or lessons before the byte
 /// budget takes over.
-const FINDINGS_VERBATIM_N: usize = 24;
+pub const FINDINGS_VERBATIM_N: usize = 24;
 
 /// Gap-17 prompt budget: a hard byte cap on the verbatim body of the findings section.
 /// Findings were measured 4-8x larger than decisions on a hot file (~95KiB about
 /// conductor.rs, ~187KiB about main.rs, spec 07 line 11), so this is the LARGEST of the
 /// three per-section budgets - still hard-bounded so an unbounded review history can
 /// never blow the prompt, but generous enough to carry the findings a later tier weighs.
-const FINDINGS_BUDGET_BYTES: usize = 48 * 1024;
+pub const FINDINGS_BUDGET_BYTES: usize = 48 * 1024;
 
 /// The header for the decisions-that-govern injection - single-sourced so the
 /// capped renderer and any test that asserts its presence agree byte-for-byte.
@@ -19384,8 +19384,8 @@ mod tests {
         // as a DecisionMade governing the unit's file) must NOT be concatenated
         // verbatim into the prompt. The most-recent decisions stay verbatim under a
         // hard byte budget; the older remainder collapses into ONE visible elision note
-        // naming the count and the `rigger peers <file>` recovery command. The store
-        // keeps the full history - only the prompt slice narrows.
+        // naming the count and how to read an elided record by id through the graph. The
+        // store keeps the full history - only the prompt slice narrows.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("modifier.rs"), "fn modifier() {}\n").unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
@@ -19465,16 +19465,18 @@ mod tests {
             (1..=DECISIONS_VERBATIM_N).contains(&verbatim),
             "verbatim decisions must be capped to <= N; got {verbatim}"
         );
-        // The trim is VISIBLE: one elision note naming the elided count and the
-        // `rigger peers <file>` recovery command.
+        // The trim is VISIBLE: one elision note naming the elided count and reaching an
+        // elided record by id through the graph (`rigger peers` keeps only the newest under
+        // the same budget, so it is no full-set recovery).
         let elided = K - verbatim;
         assert!(
             prompt.contains(&format!("+{elided} older decision")),
             "the elision note must name the elided count ({elided})"
         );
         assert!(
-            prompt.contains("rigger peers modifier.rs"),
-            "the elision note must name the `rigger peers <file>` recovery command"
+            prompt.contains("`rigger graph --show <id>`")
+                && !prompt.contains("recover the full set with `rigger peers"),
+            "the elision note must name reading an elided record by id through the graph"
         );
     }
 
@@ -19772,15 +19774,15 @@ mod tests {
     /// A capped `noun` section `out`, rendered from `k` chunky entries whose i-th (oldest first)
     /// carries `{marker}_{i} `, stays under `budget` (plus slack for the header and the elision
     /// note line), keeps the newest verbatim, elides the oldest (it stays in the store), and
-    /// makes the trim VISIBLE: one elision note naming the elided count and the
-    /// `rigger peers <file>` recovery command (`peers_why`).
+    /// makes the trim VISIBLE: one elision note naming the elided count and reaching an elided
+    /// record by id through the graph (`recovery_why`), never `rigger peers` as the full set.
     fn assert_capped_with_elision(
         out: &str,
         marker: &str,
         k: usize,
         budget: usize,
         noun: &str,
-        peers_why: &str,
+        recovery_why: &str,
     ) {
         assert!(
             out.len() < budget + 2 * 1024,
@@ -19807,7 +19809,11 @@ mod tests {
             out.contains(&format!("+{elided} older {noun}")),
             "the elision note must name the elided {noun} count ({elided})"
         );
-        assert!(out.contains("rigger peers conductor.rs"), "{peers_why}");
+        assert!(
+            out.contains("`rigger graph --show <id>`")
+                && !out.contains("recover the full set with `rigger peers"),
+            "{recovery_why}"
+        );
     }
 
     #[test]
@@ -19816,9 +19822,9 @@ mod tests {
         // unbounded pile of them ABOUT a hot file could blow the prompt on its own. The
         // findings section rides the SAME budgeted-section writer as decisions: the
         // most-recent findings stay verbatim under FINDINGS_BUDGET_BYTES, the older
-        // remainder collapses into ONE visible elision note naming the count and the
-        // `rigger peers <file>` recovery command. The store keeps the full history - only
-        // the prompt slice narrows.
+        // remainder collapses into ONE visible elision note naming the count and how to
+        // read an elided finding by id through the graph. The store keeps the full history -
+        // only the prompt slice narrows.
         let seed = vec!["conductor.rs".to_string()];
         // K chunky findings, oldest (f000) first; recency grows with i, so f{K-1} is newest.
         const K: usize = 300;
@@ -19845,7 +19851,7 @@ mod tests {
             K,
             FINDINGS_BUDGET_BYTES,
             "finding",
-            "the elision note must name the `rigger peers <file>` recovery command",
+            "the elision note must name reading an elided finding by id through the graph",
         );
         // The finding line still names the raising reviewer (`by`) and the id, preserving
         // the prior write_findings format that a later reviewer reads.
@@ -24011,9 +24017,9 @@ mod tests {
         // half of this unit's charter had ZERO render coverage, which is exactly why a dead
         // recovery note shipped past all three tiers. This pins the whole rendered contract:
         // the header, freshest-first recency, the byte cap firing on a pile of chunky
-        // lessons, and ONE visible elision note naming the elided count and the honest
-        // `rigger peers <file>` recovery (now backed by sidecar::lessons_for). The store
-        // keeps the full history - only the prompt slice narrows.
+        // lessons, and ONE visible elision note naming the elided count and how to read an
+        // elided lesson by id through the graph. The store keeps the full history - only the
+        // prompt slice narrows.
         let seed = vec!["conductor.rs".to_string()];
         // K chunky lessons, oldest (l000) first; recency grows with i, so l{K-1} is newest.
         const K: usize = 200;
@@ -24045,8 +24051,7 @@ mod tests {
             K,
             LESSONS_BUDGET_BYTES,
             "lesson",
-            "the elision note must name the `rigger peers <file>` recovery command \
-             (backed by sidecar::lessons_for so it is not a dead promise)",
+            "the elision note must name reading an elided lesson by id through the graph",
         );
     }
 

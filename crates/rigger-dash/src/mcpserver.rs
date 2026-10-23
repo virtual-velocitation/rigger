@@ -2716,4 +2716,91 @@ mod tests {
             );
         }
     }
+
+    /// The frame size past which the host closes a stdio MCP server's transport: one message
+    /// over it and every rigger tool is gone for the rest of the session.
+    const HOST_FRAME_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+
+    /// The one raw frame `server` writes in answer to `request`.
+    fn raw_frame(server: &Server, request: &str) -> String {
+        let mut out = Vec::new();
+        server.run(Cursor::new(request), &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    /// No tool result may overflow the host's frame: the `rigger_graph` `show` of a decision
+    /// whose summary alone is 9 MiB - carried twice whole, as text and as structured content -
+    /// comes back as one frame under the limit, its text cut with a marked tail and no
+    /// structured content beside it.
+    #[test]
+    fn an_oversized_tool_result_is_cut_under_the_frame_limit_with_a_marked_tail() {
+        use crate::contextgraph::sqlite::Projector;
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let grounder = crate::grounder::Nop;
+        let graph = Projector::open(":memory:", "test").unwrap();
+        let payload = json!({
+            "id": "d-huge",
+            "summary": "y".repeat(9 * 1024 * 1024),
+            "governs": ["a.rs"],
+        });
+        let mut e = Event::new(
+            crate::contextgraph::TYPE_DECISION_MADE,
+            payload.to_string().into_bytes(),
+        );
+        e.position = 1;
+        crate::test_support::folds(&graph, std::slice::from_ref(&e));
+        let server = Server::new(&driver, &store, "run")
+            .with_graph(&graph)
+            .with_grounder(Ok(&grounder));
+
+        let frame = raw_frame(
+            &server,
+            &tools_call("rigger_graph", json!({"show": "d-huge"})),
+        );
+        assert!(
+            frame.len() < HOST_FRAME_LIMIT_BYTES,
+            "the reply frame stays under the host's limit; it was {} bytes",
+            frame.len()
+        );
+        let reply: Value = serde_json::from_str(frame.trim()).unwrap();
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.starts_with('{') && text.contains("[rigger: reply truncated"),
+            "the text keeps the reply's head and marks the cut"
+        );
+        assert!(
+            reply["result"].get("structuredContent").is_none(),
+            "a cut reply carries no structured content"
+        );
+    }
+
+    /// A tool error is bounded by the same cap: a refused `rigger_emit` whose message echoes a
+    /// 17 MiB type comes back as one error frame under the limit, its message cut with a marked
+    /// tail.
+    #[test]
+    fn an_oversized_tool_error_is_cut_under_the_frame_limit_with_a_marked_tail() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let server = Server::new(&driver, &store, "run");
+
+        let request = tools_call(
+            "rigger_emit",
+            json!({"type": "X".repeat(17 * 1024 * 1024), "data": {}}),
+        );
+        let frame = raw_frame(&server, &request);
+        assert!(
+            frame.len() < HOST_FRAME_LIMIT_BYTES,
+            "the error frame stays under the host's limit; it was {} bytes",
+            frame.len()
+        );
+        let reply: Value = serde_json::from_str(frame.trim()).unwrap();
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(
+            message.starts_with("rigger_emit: refusing")
+                && message.contains("[rigger: reply truncated"),
+            "the message keeps its head and marks the cut"
+        );
+    }
 }
