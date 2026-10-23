@@ -239,8 +239,8 @@
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 631,
-        "end_line": 633
+        "start_line": 634,
+        "end_line": 636
       },
       {
         "file": "tests/common/fixtures/graph.rs",
@@ -7664,13 +7664,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 277,
-        "end_line": 279
+        "start_line": 280,
+        "end_line": 282
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 891,
-        "end_line": 893
+        "start_line": 894,
+        "end_line": 896
       }
     ]
   },
@@ -7679,13 +7679,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 1099,
-        "end_line": 1101
+        "start_line": 1102,
+        "end_line": 1104
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 1129,
-        "end_line": 1131
+        "start_line": 1132,
+        "end_line": 1134
       }
     ]
   },
@@ -7694,8 +7694,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 1449,
-        "end_line": 1458
+        "start_line": 1452,
+        "end_line": 1461
       },
       {
         "file": "tests/community_resolution_knob.rs",

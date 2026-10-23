@@ -6,8 +6,11 @@
 //! by, the live edges and calls a projector serves with the spec-119 enum's `CONTAINS` edges they
 //! are checked against, the module declarations' `CONTAINS` edges it serves, the read-backs
 //! suites take of a folded `Graph`, the two read batches a rebuild source hands with a writer
-//! between them, a rebuild whose extraction a writer meets, and the texts a lost or refused fold
-//! answers. `apply` returns `Err` on a fold failure, so every helper that folds unwraps it - a
+//! between them, a rebuild whose extraction a writer meets, the texts a lost or refused fold
+//! answers, the payload no judge accepts and the decision built on it, an entry a test's
+//! re-extraction resolves to nothing, what a test's rebuild source answers when it stops, the owed
+//! mark's path and the note a read-only surface prints while the file owes its rebuild. `apply`
+//! returns `Err` on a fold failure, so every helper that folds unwraps it - a
 //! successful call is itself evidence the payload folded - but [`fold_entry_result`], which
 //! answers the error text a failing fold meets, [`fold_of`] and [`rebuild_meeting_a_writer`],
 //! which answer what became of a public fold ([`rigger::contextgraph::Fold`]), [`rebuild_answer`],
