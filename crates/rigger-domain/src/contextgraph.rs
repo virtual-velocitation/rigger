@@ -735,7 +735,7 @@ pub enum Fold {
     /// not wired), owes its rebuild ([`REBUILD_OWED`]), or refused the write (held past its
     /// busy timeout). A projection that records positions it passed over may also answer here an
     /// event of its own already recorded passed over, with that position's cause: that event is
-    /// not in the graph, while the other events of its batch are folded and committed.
+    /// not in the graph, while the events of its batch that fold are committed.
     NotFolded(String),
 }
 

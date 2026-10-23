@@ -79,8 +79,10 @@ struct ReviewFinding {
 /// a rebuild also passes over the entries whose re-extraction resolves to nothing, which no payload
 /// judgment decides - any other fold failure is the store's, not the payload's. The
 /// error names the offending field and the shape expected; a type whose payload the fold does not
-/// read passes unchecked. Only the store-gated emit surfaces call it, so it compiles where they
-/// and the fold do.
+/// read passes unchecked. Three callers read it: the emit tool, before it appends; the critique,
+/// before it appends its copies of the findings; and a fold pass, for the cause it passes a
+/// rejected payload over with ([`sqlite::rejection`]). It compiles in the store lane, as the fold
+/// ([`sqlite`]) does.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
     // The fold parses with `serde_json::from_slice`, which also refuses bytes trailing the value,
