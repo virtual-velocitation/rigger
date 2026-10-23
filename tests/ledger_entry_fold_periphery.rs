@@ -40,6 +40,7 @@ use common::cli::{
 };
 use common::fixtures::{
     decision_json, event_of, generation_ingested, live_edges, live_node_ids, nanos, placed_at,
+    whole_json,
 };
 use rigger::contextgraph::sqlite::{Projector, RebuildSink};
 use rigger::contextgraph::{
@@ -134,11 +135,6 @@ fn node_ids(p: &Projector) -> Vec<String> {
     ids
 }
 
-/// Everything `p` serves, as one comparable value.
-fn served(p: &Projector) -> String {
-    serde_json::to_string(&p.whole().unwrap()).unwrap()
-}
-
 /// The path of a `graph.db` inside `dir`.
 fn graph_db(dir: &tempfile::TempDir) -> String {
     dir.path().join("graph.db").to_str().unwrap().to_string()
@@ -189,7 +185,7 @@ fn an_entry_folded_through_the_port_is_held_by_the_file_and_each_outcome_is_name
         vec![contains("alpha", 10, 7), contains("gone", 10, 7)],
         "every batch event folded at the entry's position and valid-time"
     );
-    let held = served(&p);
+    let held = whole_json(&p);
 
     // The applied position, whatever generation the entry at it names.
     assert_eq!(
@@ -214,7 +210,11 @@ fn an_entry_folded_through_the_port_is_held_by_the_file_and_each_outcome_is_name
         fold_through_port(port, &entry(F, "h2", 9, 20), Ok(None)),
         BATCH_ASKED
     );
-    assert_eq!(served(&p), held, "none of the three changed a served fact");
+    assert_eq!(
+        whole_json(&p),
+        held,
+        "none of the three changed a served fact"
+    );
     assert_eq!(generation(port, IDENTITY), Some("h1".to_string()));
 
     // The generation that unresolved entry named is still not the held one, so a later entry of
@@ -369,7 +369,7 @@ fn the_mark_a_refused_public_fold_writes_binds_a_second_projector_on_the_file() 
         fold_through_port(&first, &entry(F, "h1", 7, 10), alpha_answer()),
         BATCH_ASKED
     );
-    let held = served(&first);
+    let held = whole_json(&first);
     assert_eq!(first.owed_because().unwrap(), Vec::<&str>::new());
     assert_eq!(
         Fold::of(
@@ -397,7 +397,7 @@ fn the_mark_a_refused_public_fold_writes_binds_a_second_projector_on_the_file() 
         Some("h1".to_string()),
         "the generation still reads from a graph that owes its rebuild"
     );
-    assert_eq!(served(&second), held);
+    assert_eq!(whole_json(&second), held);
 }
 
 #[test]

@@ -19,6 +19,8 @@ mod common;
 
 use common::cli::applied;
 use common::cli::assert_stopped_at_the_grounder;
+use common::cli::backdate_the_log;
+use common::cli::decision_lines;
 use common::cli::escalate_solo_unit;
 use common::cli::exists;
 use common::cli::fold_state;
@@ -36,21 +38,27 @@ use common::cli::rigger_command;
 use common::cli::rigger_db;
 use common::cli::rigger_file;
 use common::cli::run_log;
+use common::cli::run_log_head;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
 use common::cli::stopping_at_the_grounder;
 use common::cli::temp_store_project;
 use common::cli::write_workflow_fixture;
+use common::cli::OLDER_RULE_REBUILD_LINE;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
+use common::cli::{pruned_from_the_rebuilt_graph, rebuilt_through_the_head};
 use common::cli::{rebuild_owed, setup_ok, user_version, version_and_owed};
+use common::cli::{EMIT_FOLDED_ENDING, LOST_FOLD_REBUILD_LINE, REBUILT_LINE, SEEDING_SKIPPED_LINE};
 use common::cli::{LOG_LEFT_AS_IT_STANDS_LINE, NOTHING_TO_SHED_LINE};
-use common::cli::{LOST_FOLD_REBUILD_LINE, REBUILT_LINE};
+use common::fixtures::caught_up_at;
 use common::fixtures::cleanup;
+use common::fixtures::drop_the_cursor;
 use common::fixtures::f_rs_batch_def;
 use common::fixtures::files_open_by;
 use common::fixtures::fresh_test_reference;
 use common::fixtures::nanos;
+use common::fixtures::owned_ids;
 use common::fixtures::rebuild_owed_note;
 use common::fixtures::wait_until_for;
 use common::fixtures::with_graph_locked;
@@ -136,7 +144,7 @@ fn fold_in_batches(graph_db: &Path, project: &str, batches: &[Vec<Event>]) -> St
     for batch in batches {
         common::fixtures::folds(&open(), batch);
     }
-    serde_json::to_string(&open().whole().unwrap()).unwrap()
+    common::fixtures::whole_json(&open())
 }
 
 /// Events folded into a graph AFTER the state under test is reached, so a divergence latent in its
@@ -584,10 +592,11 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
 }
 
 /// Given a log with no live selection - a server-backed log, whose live selection is its run stream
-/// as it stands - and a `graph.db` that misses one of its events, when setup reads the graph's
-/// ledger against it and pays the rebuild, then the owed check reads the stream's positions alone
-/// in one ordered pass, materializing no event, and the rebuild reads each event once: its fold
-/// reads the stream, and its tail reads only the event the stream gained meanwhile.
+/// as it stands - and a `graph.db` that misses one of its events below the last one it applied,
+/// when setup seeds the graph's cursor against it - the server-backed log answering no stamp, so
+/// the hole reads as old - and pays the rebuild, then the seeding reads the stream's positions
+/// alone in one ordered pass, materializing no event, and the rebuild reads each event once: its
+/// fold reads the stream, and its tail reads only the event the stream gained meanwhile.
 #[test]
 fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_each_event_once() {
     use common::fixtures::{CountedRead, ReadCountingStore};
@@ -600,7 +609,11 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
     let log = run_events(&backend, PROJECT);
     let n = log.len();
     let graph_db = dir.path().join("graph.db");
-    fold_in_batches(&graph_db, PROJECT, &[log[..n - 1].to_vec()]);
+    fold_in_batches(
+        &graph_db,
+        PROJECT,
+        &[log[..n - 2].to_vec(), log[n - 1..].to_vec()],
+    );
     let late = Event::new(
         rigger::contextgraph::TYPE_DECISION_MADE,
         br#"{"id":"d-late","summary":"s","governs":["src/f.rs"],"supersedes":""}"#.to_vec(),
@@ -610,14 +623,11 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
         ReadCountingStore::new(&store).interleaving(1, rigger::conductor::STREAM, vec![late]);
     let run = || rigger::conductor::STREAM.to_string();
 
-    let owed = Projector::open(graph_db.to_str().unwrap(), PROJECT)
-        .unwrap()
-        .owed_against(&mut stream_positions(
-            &counting,
-            rigger::conductor::STREAM,
-            2,
-        ))
-        .unwrap();
+    let owed = common::fixtures::owed_once_seeded(
+        &Projector::open(graph_db.to_str().unwrap(), PROJECT).unwrap(),
+        &mut stream_positions(&counting, rigger::conductor::STREAM, 2),
+        &mut |_| Ok(None),
+    );
     let rebuilt = Projector::open(graph_db.to_str().unwrap(), PROJECT)
         .unwrap()
         .rebuild(
@@ -1350,10 +1360,8 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
     assert_eq!(
         rebuild,
         vec![
-            "rebuilding graph.db from the event log: it was folded under an older fold rule, so \
-             the log's live selection is refolded once"
-                .to_string(),
-            format!("rebuilt 3 events, through position {head} of {head} (100%)"),
+            OLDER_RULE_REBUILD_LINE.to_string(),
+            rebuilt_through_the_head(3, head),
             REBUILT_LINE.to_string(),
             "identities the tree holds a file for whose generation in graph.db is not their \
              latest recording's: 0"
@@ -1499,14 +1507,10 @@ fn rigger_setup_rebuilds_a_rule_1_graph_db_and_its_shared_node_takes_its_precede
     let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     let head = store.log().last().unwrap().position;
     assert_eq!(
-        out.lines()
-            .filter(|l| l.starts_with("rebuilding graph.db") || l.starts_with("rebuilt "))
-            .collect::<Vec<_>>(),
+        rebuilding_and_rebuilt_lines(&out),
         vec![
-            "rebuilding graph.db from the event log: it was folded under an older fold rule, so \
-             the log's live selection is refolded once"
-                .to_string(),
-            format!("rebuilt 2 events, through position {head} of {head} (100%)"),
+            OLDER_RULE_REBUILD_LINE.to_string(),
+            rebuilt_through_the_head(2, head),
             REBUILT_LINE.to_string(),
         ],
         "setup names the older rule and refolds both definitions; stdout: {out}"
@@ -1569,13 +1573,8 @@ fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_l
 
     let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     assert_eq!(
-        out.lines()
-            .filter(|l| l.starts_with("rebuilt "))
-            .collect::<Vec<_>>(),
-        vec![
-            format!("rebuilt 2 events, through position {head} of {head} (100%)"),
-            REBUILT_LINE.to_string(),
-        ],
+        common::cli::lines_where(&out, |l| l.starts_with("rebuilt ")),
+        vec![rebuilt_through_the_head(2, head), REBUILT_LINE.to_string(),],
         "setup folds both definitions again, resuming nothing; stdout: {out}"
     );
     let graph = Projector::open(store.graph_db.to_str().unwrap(), &store.project()).unwrap();
@@ -1596,14 +1595,53 @@ fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_l
     );
 }
 
-/// Given a project with no `graph.db`, `rigger setup` owes and reports no rebuild and creates none.
+/// Given a project with no `graph.db` and an empty log, when the operator runs `rigger setup`, then
+/// setup creates `graph.db` and seeds its `caught_up` cursor at 0, and owes and reports no rebuild.
 #[test]
-fn rigger_setup_on_a_project_without_a_graph_db_creates_none() {
+fn rigger_setup_on_a_project_without_a_graph_db_creates_it_and_seeds_its_cursor_at_zero() {
     let dir = common::cli::temp_project();
     let out = setup_ok(dir.path(), &[("RIGGER_NPM", "true")]);
-    assert!(
-        !rigger_file(dir.path(), "graph.db").exists() && !out.contains("graph.db"),
-        "no graph.db is created or rebuilt; stdout: {out}"
+    assert_eq!(
+        (
+            caught_up_at(&rigger_file(dir.path(), "graph.db")),
+            out.contains("graph.db")
+        ),
+        (Some(0), false),
+        "setup creates graph.db with its cursor at 0 and reports no rebuild; stdout: {out}"
+    );
+}
+
+/// Given a `graph.db` without the `caught_up` cursor - folded before any setup seeded it - on a
+/// project whose identity is minted, so no identity migration waits for the next setup, when the
+/// operator runs `rigger setup` while another writer holds the file's write lock past the busy
+/// timeout, then setup exits zero, says the catch-up was not started and the next `rigger setup`
+/// starts it, and writes no cursor; the next `rigger setup`, the lock released, seeds the cursor at
+/// the highest applied position and says nothing of `graph.db`.
+#[test]
+fn a_seeding_that_meets_another_writer_s_lock_is_skipped_and_the_next_setup_seeds_the_cursor() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    emit_the_first_decision_after_setup(root);
+    let first = run_log_head(root);
+    let graph_db = rigger_file(root, "graph.db");
+    // The file as a fold made it before the cursor existed: its first seeding reads the log's
+    // positions against its ledger.
+    drop_the_cursor(&graph_db);
+
+    let out = with_graph_locked(&graph_db, || setup_ok(root, &[("RIGGER_NPM", "true")]));
+    assert_eq!(
+        (
+            common::cli::lines_where(&out, |l| l.contains("graph.db")),
+            caught_up_at(&graph_db)
+        ),
+        (vec![SEEDING_SKIPPED_LINE], None),
+        "the seeding meets the lock: setup exits zero, says so and writes no cursor; stdout: {out}"
+    );
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (out.contains("graph.db"), caught_up_at(&graph_db)),
+        (false, Some(first)),
+        "the next setup seeds the cursor at the highest applied position; stdout: {out}"
     );
 }
 
@@ -2339,11 +2377,29 @@ fn emit_decision(root: &Path, id: &str) -> (String, String, bool) {
     run_rigger(root, &["emit", "DecisionMade", &args])
 }
 
+/// Emit the decision `id` in `root` ([`emit_decision`]), which must succeed and fold it into
+/// `graph.db` ([`EMIT_FOLDED_ENDING`]).
+fn emit_folding(root: &Path, id: &str) {
+    let (out, err, ok) = emit_decision(root, id);
+    assert!(
+        ok && out.ends_with(EMIT_FOLDED_ENDING),
+        "the emit of {id} folds into graph.db; stdout: {out} stderr: {err}"
+    );
+}
+
 /// Emit the decision `d-first` in `root` ([`emit_decision`]), which must succeed: a test's first
-/// emit, which creates its `graph.db`.
+/// emit, creating its `graph.db` when no setup has.
 fn emit_the_first_decision(root: &Path) {
     let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(ok, "the first emit creates graph.db; stderr: {err}");
+    assert!(ok, "the first emit succeeds; stderr: {err}");
+}
+
+/// Run a cold-start `rigger setup` in `root` - minting the project's identity and creating
+/// `graph.db` with its `caught_up` cursor at 0 beside the empty log, so no identity migration
+/// waits for a later setup - then emit the first decision into it ([`emit_the_first_decision`]).
+fn emit_the_first_decision_after_setup(root: &Path) {
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    emit_the_first_decision(root);
 }
 
 /// Given a current `graph.db` another writer holds locked past the busy timeout, when an agent
@@ -2404,7 +2460,7 @@ fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
     };
     let mut mcp = common::mcp::McpSession::start_with(root, &["mcp", "--spawn", "u/implementer#0"]);
     let free = mcp.tool_call("rigger_emit", decision("d-free"));
-    let free_at = read_run_events(root).last().unwrap().position;
+    let free_at = run_log_head(root);
     assert_eq!(
         free["result"]["structuredContent"],
         common::fixtures::emit_answer(free_at, None),
@@ -2608,7 +2664,7 @@ fn a_result_whose_fold_fails_says_it_was_not_folded() {
         "an emit into an unlocked graph folds; stdout: {out} stderr: {err}"
     );
     let (out, err, ok) = run_rigger(root, &["result", "u/implementer#0", "first"]);
-    let free = read_run_events(root).last().unwrap().position;
+    let free = run_log_head(root);
     assert_eq!(
         (ok, out),
         (
@@ -2729,10 +2785,10 @@ fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
         )),
         "the locked emit's fold is lost; stdout: {out} stderr: {err}"
     );
-    let lost = read_run_events(root).last().unwrap().position;
+    let lost = run_log_head(root);
 
     let (out, err, ok) = emit_decision(root, "d-after");
-    let after = read_run_events(root).last().unwrap().position;
+    let after = run_log_head(root);
     assert_eq!(
         (ok, out),
         (
@@ -2777,11 +2833,7 @@ fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
         (true, true),
         "setup's rebuild folds the lost event and the one emitted while owed"
     );
-    let (out, err, ok) = emit_decision(root, "d-rebuilt");
-    assert!(
-        ok && out.ends_with(" and folded it into the context graph\n"),
-        "once rebuilt, an emit folds again; stdout: {out} stderr: {err}"
-    );
+    emit_folding(root, "d-rebuilt");
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert_eq!(
         (ok, out),
@@ -2794,17 +2846,21 @@ fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
     );
 }
 
-/// Given a `graph.db` a lost fold left owed, when the operator removes the graph file and runs
-/// `rigger setup`, then setup drops the mark the removed file left behind, so the next emit makes a
-/// fresh graph and folds into it rather than inheriting a debt that file no longer carries.
+/// Given a `graph.db` a lost fold left owed, on a project whose identity is minted, so no identity
+/// migration waits for the next setup, when the operator removes the graph file and runs `rigger
+/// setup`, then setup drops the mark the removed file left behind and rebuilds a fresh graph from
+/// the log - its own open creates the file, an empty ledger beside a non-empty log - the lost event
+/// folded with the rest, so the next emit folds into it rather than inheriting a debt that file no
+/// longer carries.
 #[test]
 fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_folds() {
     let dir = temp_store_project();
     let root = dir.path();
-    emit_the_first_decision(root);
+    emit_the_first_decision_after_setup(root);
     let graph_db = rigger_file(root, "graph.db");
     let mark = rigger_file(root, "graph.db.owed");
     with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
+    let locked = run_log_head(root);
     assert!(mark.exists(), "the lost fold marks the graph owed");
     for file in ["graph.db", "graph.db-wal", "graph.db-shm"] {
         let path = rigger_file(root, file);
@@ -2814,15 +2870,12 @@ fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_fol
     }
 
     setup_ok(root, &[("RIGGER_NPM", "true")]);
-    assert!(
-        !mark.exists(),
-        "setup drops the mark of the removed graph file"
+    assert_eq!(
+        (mark.exists(), applied(&graph_db, locked)),
+        (false, true),
+        "setup drops the mark of the removed graph file and rebuilds a fresh one from the log"
     );
-    let (out, err, ok) = emit_decision(root, "d-fresh");
-    assert!(
-        ok && out.ends_with(" and folded it into the context graph\n"),
-        "the next emit folds into a fresh graph; stdout: {out} stderr: {err}"
-    );
+    emit_folding(root, "d-fresh");
 }
 
 /// Append a `DecisionMade` whose payload is `data` to `root`'s run stream straight through the
@@ -2841,10 +2894,20 @@ fn append_unfolded_decision(root: &Path, data: &[u8]) -> u64 {
         .unwrap()
 }
 
-/// Given `root`'s `graph.db` misses the event at log position `lost`, when the operator runs
-/// `rigger setup` in a fresh process, then setup names the missing event as the cause, its
-/// rebuild folds it, the next emit folds, and a second `rigger setup` owes nothing - the rebuilt
-/// ledger holds every position of the log's live selection.
+/// Fold a decision into `root`'s `graph.db` above every event it misses, then backdate the log past
+/// the catch-up horizon ([`backdate_the_log`]): each missing event is then an old hole below an
+/// applied position, which the next `rigger setup`'s seeding of a file without `caught_up` finds a
+/// lost fold (spec 124, HORIZON IN TESTS).
+fn bury_below_an_applied_event(root: &Path) {
+    emit_decision(root, "d-above");
+    backdate_the_log(root);
+}
+
+/// Given `root`'s `graph.db`, without `caught_up`, misses the event at log position `lost` below an
+/// applied position and older than the catch-up horizon ([`bury_below_an_applied_event`]), when the
+/// operator runs `rigger setup` in a fresh process, then setup names the missing event as the
+/// cause, its rebuild folds it, the next emit folds, and a second `rigger setup` owes nothing - the
+/// rebuild's drop set the file's cursor, so that setup's seeding reads nothing.
 fn the_next_setup_pays_the_missing_event(root: &Path, lost: u64) {
     let graph_db = rigger_file(root, "graph.db");
     let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
@@ -2866,11 +2929,7 @@ fn the_next_setup_pays_the_missing_event(root: &Path, lost: u64) {
         Vec::<&str>::new(),
         "a rebuild whose every payload folds passes over nothing; stdout: {out}"
     );
-    let (out, err, ok) = emit_decision(root, "d-rebuilt");
-    assert!(
-        ok && out.ends_with(" and folded it into the context graph\n"),
-        "once rebuilt, an emit folds again; stdout: {out} stderr: {err}"
-    );
+    emit_folding(root, "d-rebuilt");
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(
         ok && !out.contains("graph.db"),
@@ -2881,8 +2940,9 @@ fn the_next_setup_pays_the_missing_event(root: &Path, lost: u64) {
 /// Given a current `graph.db`, when an agent's `rigger emit` loses its fold to another writer's
 /// lock while the directory the owed mark lives in is not writable, then the emit appends and
 /// says it did not fold, naming the mark it could not write, and records nothing else - no mark,
-/// no table in the file - yet the loss is not forgotten with the process: the next `rigger setup`
-/// finds the event missing from the graph's ledger and pays it.
+/// no table in the file - yet the loss is not forgotten with the process: once a later event folds
+/// above it and it is older than the catch-up horizon, the next `rigger setup` finds the event
+/// missing from the graph's ledger and pays it.
 #[test]
 fn a_fold_lost_where_its_mark_cannot_be_written_is_paid_by_the_next_setup_from_the_ledger() {
     use std::os::unix::fs::PermissionsExt;
@@ -2907,7 +2967,7 @@ fn a_fold_lost_where_its_mark_cannot_be_written_is_paid_by_the_next_setup_from_t
     let (out, err, ok) = with_graph_locked(&graph_db, || emit_decision(root, "d-lost"));
     std::fs::set_permissions(&rigger_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     drop(keepers);
-    let lost = read_run_events(root).last().unwrap().position;
+    let lost = run_log_head(root);
     let prefix = format!(
         "emitted DecisionMade (position {lost}); {}",
         not_folded(&format!(
@@ -2928,12 +2988,14 @@ fn a_fold_lost_where_its_mark_cannot_be_written_is_paid_by_the_next_setup_from_t
         "the emit appends, says it did not fold and names the unwritten mark, and records the \
          loss nowhere but in the ledger it misses; stdout: {out} stderr: {err}"
     );
+    bury_below_an_applied_event(root);
     the_next_setup_pays_the_missing_event(root, lost);
 }
 
 /// Given an event on the log that no fold ever reached - its process died between the append and
-/// the fold, so nothing ran to record the loss - when the operator runs `rigger setup`, then setup
-/// finds it missing from the graph's ledger and pays it.
+/// the fold, so nothing ran to record the loss - once a later event folds above it and it is older
+/// than the catch-up horizon, when the operator runs `rigger setup`, then setup finds it missing
+/// from the graph's ledger and pays it.
 #[test]
 fn an_event_appended_but_never_folded_is_paid_by_the_next_setup_from_the_ledger() {
     let dir = temp_store_project();
@@ -2947,17 +3009,22 @@ fn an_event_appended_but_never_folded_is_paid_by_the_next_setup_from_the_ledger(
         !applied(&rigger_file(root, "graph.db"), lost),
         "the event is on the log and not in the graph"
     );
+    bury_below_an_applied_event(root);
     the_next_setup_pays_the_missing_event(root, lost);
 }
 
-/// Given a project whose event log is a KurrentDB server, and a `graph.db` on this machine that
-/// misses an event another writer of that server appended - a second machine sharing the log -
-/// when the operator runs `rigger setup`, then setup reads the server's positions against the
-/// graph's ledger, names the missing event as the cause, rebuilds `graph.db` from the server's
-/// whole run stream (a server-backed log has no compaction plan, so its live selection is the
-/// stream as it stands), reports its progress and its prune, and leaves the graph a fold of that
-/// stream. Before the other writer's append, the emit's own fold owes nothing; after the rebuild, a
-/// second setup owes nothing. Gracefully skipped when no container runtime is reachable.
+/// Given a project whose event log is a KurrentDB server, the first `rigger setup` creates
+/// `graph.db` and seeds its `caught_up` cursor at 0 beside the empty stream, and a setup over a
+/// file carrying that cursor reads nothing of its ledger and owes nothing. Given a `graph.db` on
+/// this machine without `caught_up` - as a fold made it before the cursor existed - that misses an
+/// event another writer of that server appended (a second machine sharing the log) below one this
+/// machine folded, when the operator runs `rigger setup`, then setup's seeding reads the server's
+/// positions against the graph's ledger - the server answers no stamp, so the missing event counts
+/// as older than the catch-up horizon - names it as the cause, rebuilds `graph.db` from the
+/// server's whole run stream (a server-backed log has no compaction plan, so its live selection is
+/// the stream as it stands), reports its progress and its prune, leaves the graph a fold of that
+/// stream with its cursor at the stream's head, and a second setup owes nothing. Gracefully
+/// skipped when no container runtime is reachable.
 #[test]
 fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_server_log() {
     common::fixtures::with_kurrentdb(|conn| {
@@ -2978,31 +3045,21 @@ fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_ser
                 .map(str::to_string)
                 .collect()
         };
+        let owes_nothing = |why: &str| {
+            let (out, err, ok) = setup();
+            assert_eq!(
+                (ok, out.contains("graph.db"), rebuild_lines(&out)),
+                (true, false, Vec::<String>::new()),
+                "{why}; stdout: {out} stderr: {err}"
+            );
+        };
         let (out, err, ok) = setup();
         assert_eq!(
-            (ok, rebuild_lines(&out)),
-            (true, Vec::<String>::new()),
-            "setup mints the identity and, with no graph.db, rebuilds nothing; stdout: {out} \
-             stderr: {err}"
+            (ok, rebuild_lines(&out), caught_up_at(&rigger_file(root, "graph.db"))),
+            (true, Vec::<String>::new(), Some(0)),
+            "setup mints the identity, creates graph.db and seeds its cursor at 0 beside the empty \
+             stream, rebuilding nothing; stdout: {out} stderr: {err}"
         );
-        let (out, err, ok) = run_rigger_envs(
-            root,
-            &["emit", "DecisionMade", &decision("d-first")],
-            &server,
-        );
-        assert!(
-            ok && out.ends_with(" and folded it into the context graph\n"),
-            "the emit appends to the server and folds into the local graph.db; stdout: {out} \
-             stderr: {err}"
-        );
-        let (out, err, ok) = setup();
-        assert_eq!(
-            (ok, out.contains("graph.db"), rebuild_lines(&out)),
-            (true, false, Vec::<String>::new()),
-            "the emit's fold recorded the position the server's positions read hands, so setup \
-             owes nothing; stdout: {out} stderr: {err}"
-        );
-
         let project = run_stream_identity(root);
         let backend = rigger::eventstore::kurrentdb::Store::open(conn).unwrap();
         let log = Namespaced::new(&backend, &project);
@@ -3021,6 +3078,24 @@ fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_ser
             "the other writer's event is on the server and not in this machine's graph"
         );
 
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            &["emit", "DecisionMade", &decision("d-first")],
+            &server,
+        );
+        assert!(
+            ok && out.ends_with(EMIT_FOLDED_ENDING),
+            "the emit appends to the server and folds into the local graph.db; stdout: {out} \
+             stderr: {err}"
+        );
+        owes_nothing(
+            "the file carries the cursor the first setup seeded, so setup reads nothing of its \
+             ledger and owes nothing",
+        );
+
+        // The file as a fold made it before the cursor existed: its first seeding reads the
+        // server's positions against its ledger.
+        drop_the_cursor(&graph_db);
         let (out, err, ok) = setup();
         let stream = log
             .read_stream(
@@ -3042,40 +3117,39 @@ fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_ser
                 rebuild_lines(&out),
                 stream.len(),
                 applied(&graph_db, lost),
-                whole_graph(root)
+                whole_graph(root),
+                caught_up_at(&graph_db)
             ),
             (
                 true,
                 vec![
                     LOST_FOLD_REBUILD_LINE.to_string(),
-                    format!("rebuilt 2 events, through position {head} of {head} (100%)"),
+                    rebuilt_through_the_head(2, head),
                     REBUILT_LINE.to_string(),
-                    "pruned 0 dead-run node(s) and reclaimed 0 superseded edge(s) from the \
-                     rebuilt graph"
-                        .to_string(),
+                    pruned_from_the_rebuilt_graph(0, 0),
                 ],
                 2,
                 true,
-                folded
+                folded,
+                Some(head)
             ),
             "setup finds the other writer's event missing from the ledger, rebuilds from the \
              server's whole run stream in one batch, prunes nothing before a run starts, and the \
-             graph is the fold of that stream; stdout: {out} stderr: {err}"
+             graph is the fold of that stream with its cursor at the head; stdout: {out} \
+             stderr: {err}"
         );
-        let (out, err, ok) = setup();
-        assert_eq!(
-            (ok, out.contains("graph.db"), rebuild_lines(&out)),
-            (true, false, Vec::<String>::new()),
-            "the rebuilt ledger holds every position the server hands, so the rebuild is paid; \
-             stdout: {out} stderr: {err}"
+        owes_nothing(
+            "the rebuilt ledger holds every position the server hands, so the rebuild is paid",
         );
     });
 }
 
 /// Given events on the log whose payload the fold rejects - appended without the emit surface's
-/// shape check - when the operator runs `rigger setup`, then setup finds them missing from the
-/// graph's ledger, rebuilds, and says it passed them over, recording each as folded with its cause
-/// so the next setup owes nothing for them and only says again what the file passed over.
+/// shape check - below an event the graph folded and older than the catch-up horizon
+/// ([`bury_below_an_applied_event`]), when the operator runs `rigger setup`, then setup finds them
+/// missing from the graph's ledger, rebuilds, and says it passed them over, recording each as
+/// folded with its cause so the next setup owes nothing for them and only says again what the file
+/// passed over.
 #[test]
 fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rejects() {
     let dir = temp_store_project();
@@ -3088,6 +3162,7 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
             br#"{"id":"d-trailing","summary":"s","governs":["src/t.rs"],"supersedes":""} x"#,
         ),
     ];
+    bury_below_an_applied_event(root);
 
     let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
@@ -3109,8 +3184,9 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
 }
 
 /// Given a `graph.db` that passed nothing over, no read-only surface ([`READ_ONLY_SURFACES`])
-/// prints a note. Given one whose rebuild passed two events over - payloads the fold rejects -
-/// when the operator runs each read-only surface, then each answers and writes nothing to the
+/// prints a note. Given one whose rebuild passed two events over - payloads the fold rejects, below
+/// an event it folded and older than the catch-up horizon ([`bury_below_an_applied_event`]) - when
+/// the operator runs each read-only surface, then each answers and writes nothing to the
 /// file, `rigger validate` says once how many events the file passed over, by cause, and `rigger
 /// graph --show` and `rigger dash --export` say nothing of them; once that file also owes its
 /// rebuild, every surface says so first, and only `rigger validate` then says what it passed over.
@@ -3147,6 +3223,7 @@ fn validate_alone_says_what_graph_db_passed_over_and_no_read_only_surface_writes
     for _ in 0..2 {
         append_unfolded_decision(root, common::fixtures::POISON);
     }
+    bury_below_an_applied_event(root);
     setup_ok(root, &[("RIGGER_NPM", "true")]);
     let passed_over = common::fixtures::passed_over_note(2, 0, 0);
     each_surface_notes(
@@ -3218,7 +3295,8 @@ fn passed_over_counts_each_class_a_rebuild_wrote_by_cause_and_no_other_class() {
     );
 }
 
-/// Given a `graph.db` that misses a well-formed event the log holds, when the operator runs
+/// Given a `graph.db` that misses a well-formed event the log holds below an event it folded, older
+/// than the catch-up horizon ([`bury_below_an_applied_event`]), when the operator runs
 /// `rigger setup` and its rebuild meets a storage error folding that event - the store's failure,
 /// not a payload the fold rejects - then setup fails naming the error, passes nothing over, and
 /// leaves `graph.db` untouched with the event still missing from its ledger; once the storage
@@ -3228,11 +3306,12 @@ fn setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_
     let dir = temp_store_project();
     let root = dir.path();
     emit_the_first_decision(root);
-    let first = read_run_events(root).last().unwrap().position;
+    let first = run_log_head(root);
     let lost = append_unfolded_decision(
         root,
         br#"{"id":"d-boom","summary":"s","governs":["src/f.rs"],"supersedes":""}"#,
     );
+    bury_below_an_applied_event(root);
     let graph_db = rigger_file(root, "graph.db");
     let shadow = rigger_file(root, "graph.db.rebuild");
     drop(
@@ -3309,9 +3388,7 @@ fn every_event_rigger_s_own_verbs_append_is_folded_so_setup_owes_no_rebuild() {
     );
     let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
-        out.lines()
-            .filter(|l| l.starts_with("rebuilding graph.db") || l.starts_with("rebuilt "))
-            .collect::<Vec<_>>(),
+        rebuilding_and_rebuilt_lines(&out),
         Vec::<&str>::new(),
         "setup owes no rebuild for a log its verbs folded; stdout: {out}"
     );
@@ -3746,10 +3823,7 @@ fn a_cold_rebuild_of_a_log_whose_closed_runs_were_pruned_yields_the_live_graph()
     let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
         (live, provenance_nodes(root)),
-        (
-            vec!["d-live".to_string(), "l1".to_string(), "shared".to_string()],
-            vec!["d-live".to_string(), "l1".to_string(), "shared".to_string()],
-        ),
+        (owned_ids(&CLOSED_RUN_KEPT), owned_ids(&CLOSED_RUN_KEPT)),
         "the rebuilt graph holds the live graph's decision, finding and lesson nodes, never the \
          pruned ones; stdout: {out}"
     );
@@ -3769,6 +3843,11 @@ fn a_cold_rebuild_of_a_log_whose_closed_runs_were_pruned_yields_the_live_graph()
         "the rebuilt graph is the live pruned graph, every node and edge"
     );
 }
+
+/// The provenance nodes [`closed_run_store`]'s graph keeps once `rigger reset --runs` prunes it,
+/// and so the nodes a rebuild of its log holds: the active run's `d-live` and `shared` and the
+/// lesson `l1`.
+const CLOSED_RUN_KEPT: [&str; 3] = ["d-live", "l1", "shared"];
 
 /// Set up the project at `root` and record, as a run records it and folded into its live graph as
 /// it lands, a lesson, a closed run `r1` (a decision, a finding, and a decision `d-sup` that
@@ -3865,10 +3944,7 @@ fn setup_reports_the_prune_its_rebuild_made_as_reset_runs_reports_it() {
                 "reset --runs: pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s)"
                     .to_string()
             ),
-            Some(
-                "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph"
-                    .to_string()
-            ),
+            Some(pruned_from_the_rebuilt_graph(3, 1)),
         ),
         "setup reports the prune reset --runs reports, in its words; stdout: {out} stderr: {err}"
     );
@@ -3898,11 +3974,8 @@ fn a_setup_rerun_after_its_rebuild_stopped_past_its_prune_reports_the_same_count
             false,
             None,
             true,
-            Some(
-                "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph"
-                    .to_string()
-            ),
-            vec!["d-live".to_string(), "l1".to_string(), "shared".to_string()],
+            Some(pruned_from_the_rebuilt_graph(3, 1)),
+            owned_ids(&CLOSED_RUN_KEPT),
         ),
         "the stopped setup fails before its rebuilt line, and the rerun reports the prune it \
          made; stdout: {out} stderr: {err}"
@@ -3996,28 +4069,28 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
             1,
             vec!["d-live", "d-window", "l1", "shared"],
             vec![],
-            "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph",
+            pruned_from_the_rebuilt_graph(3, 1),
         ),
         (
             another_writer_starts_a_run,
             2,
             vec!["d-r3", "l1"],
             vec![],
-            "pruned 5 dead-run node(s) and reclaimed 0 superseded edge(s) from the rebuilt graph",
+            pruned_from_the_rebuilt_graph(5, 0),
         ),
         (
             active_run_re_records_a_closed_runs_decision,
             1,
             vec!["d-dead", "d-live", "l1", "shared"],
             vec!["src/f.rs", "src/h.rs"],
-            "pruned 2 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph",
+            pruned_from_the_rebuilt_graph(2, 1),
         ),
         (
             a_swap_cut_short_left_its_copy,
             0,
-            vec!["d-live", "l1", "shared"],
+            CLOSED_RUN_KEPT.to_vec(),
             vec![],
-            "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph",
+            pruned_from_the_rebuilt_graph(3, 1),
         ),
     ] {
         let dir = temp_store_project();
@@ -4077,16 +4150,13 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
                     Vec::<String>::new(),
                     (gains > 0)
                         .then(|| {
-                            format!("rebuilt {gains} events, through position {head} of {head} (100%)")
+                            rebuilt_through_the_head(gains, head)
                         })
                         .into_iter()
                         .collect::<Vec<_>>(),
                     Some(report.to_string()),
-                    kept.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
-                    d_dead_governs
-                        .iter()
-                        .map(|file: &&str| file.to_string())
-                        .collect::<Vec<_>>(),
+                    owned_ids(&kept),
+                    owned_ids(&d_dead_governs),
                     vec![true; gains],
                     [false, false, false, false],
                     runs_prunable(0, 0),
@@ -4098,6 +4168,14 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
              makes; rerun stdout: {out} stderr: {err}; cold stdout: {cold} stderr: {cold_err}"
         );
     }
+}
+
+/// The lines of `rigger setup`'s stdout `out` that say it rebuilds `graph.db` and how far it got:
+/// the cause it rebuilds for, each progress line and that it rebuilt, in the order printed.
+fn rebuilding_and_rebuilt_lines(out: &str) -> Vec<&str> {
+    common::cli::lines_where(out, |l| {
+        l.starts_with("rebuilding graph.db") || l.starts_with("rebuilt ")
+    })
 }
 
 /// The progress lines a `rigger setup` rebuild printed in `out`, in order: how many events each
@@ -4155,7 +4233,7 @@ fn a_setup_stopped_in_its_tail_is_finished_by_the_next_setup_folding_exactly_the
         br#"{"id":"d-tail","summary":"s","governs":["src/t.rs"],"supersedes":""}"#,
     );
     let (emitted, emit_err, emit_ok) = emit_decision(root, "d-emitted");
-    let emitted_at = read_run_events(root).last().unwrap().position;
+    let emitted_at = run_log_head(root);
     let before = (applied(&graph_db, unfolded), applied(&graph_db, emitted_at));
 
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
@@ -4183,7 +4261,7 @@ fn a_setup_stopped_in_its_tail_is_finished_by_the_next_setup_folding_exactly_the
             stopped_ok,
             after_rebuilt(&stopped),
             swapped_cursor,
-            emit_ok && emitted.ends_with(" and folded it into the context graph\n"),
+            emit_ok && emitted.ends_with(EMIT_FOLDED_ENDING),
             before,
             finished,
             again_ok && !again.contains("graph.db"),
@@ -4198,14 +4276,8 @@ fn a_setup_stopped_in_its_tail_is_finished_by_the_next_setup_folding_exactly_the
             (
                 true,
                 Vec::<&str>::new(),
-                vec![format!(
-                    "rebuilt 2 events, through position {emitted_at} of {emitted_at} (100%)"
-                )],
-                Some(
-                    "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt \
-                     graph"
-                        .to_string()
-                ),
+                vec![rebuilt_through_the_head(2, emitted_at)],
+                Some(pruned_from_the_rebuilt_graph(3, 1)),
                 (true, true),
                 vec![
                     "d-emitted".to_string(),
@@ -4300,11 +4372,7 @@ fn a_decision_recorded_before_any_run_is_live_on_both_peers_surfaces_until_a_run
             .collect();
         let (out, err, ok) = run_rigger(root, &["peers", "src/f.rs"]);
         assert!(ok, "rigger peers answers; stdout: {out} stderr: {err}");
-        let cli: Vec<String> = out
-            .lines()
-            .filter(|l| l.starts_with("decision "))
-            .map(str::to_string)
-            .collect();
+        let cli = owned_ids(&decision_lines(&out));
         (tool, cli)
     };
     let before_any_run = both_surfaces();
@@ -4447,17 +4515,11 @@ fn a_log_that_never_started_a_run_is_rebuilt_and_reset_without_pruning_anything(
             reset_runs_pruned(&reset),
             whole_graph(root),
             peers_ok,
-            peers
-                .lines()
-                .filter(|l| l.starts_with("decision "))
-                .collect::<Vec<_>>(),
+            decision_lines(&peers),
         ),
         (
             true,
-            Some(
-                "pruned 0 dead-run node(s) and reclaimed 0 superseded edge(s) from the rebuilt graph"
-                    .to_string()
-            ),
+            Some(pruned_from_the_rebuilt_graph(0, 0)),
             vec![
                 "d-new".to_string(),
                 "d-old".to_string(),
@@ -4647,11 +4709,7 @@ fn a_second_setup_while_a_rebuild_holds_graph_db_lock_is_refused_at_once_and_tou
                 ),
                 (
                     true,
-                    Some(
-                        "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the \
-                         rebuilt graph"
-                            .to_string()
-                    ),
+                    Some(pruned_from_the_rebuilt_graph(3, 1)),
                     false,
                     false,
                     false,
@@ -4737,14 +4795,8 @@ fn a_rebuild_whose_process_is_gone_leaves_no_lock_and_the_next_setup_resumes_its
             Err(common::fixtures::graph_error("event store: stopped")),
             (1, false, Some(common::cli::rebuild_in_progress_line())),
             true,
-            vec![format!(
-                "rebuilt {past_the_cursor} events, through position {head} of {head} (100%)"
-            )],
-            Some(
-                "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt \
-                 graph"
-                    .to_string()
-            ),
+            vec![rebuilt_through_the_head(past_the_cursor, head)],
+            Some(pruned_from_the_rebuilt_graph(3, 1)),
             false,
             (true, whole_graph(root)),
         ),
@@ -4890,6 +4942,9 @@ fn a_graph_db_lock_that_cannot_be_opened_is_named_by_setup_and_by_reset_runs_ove
     let root = dir.path();
     closed_run_store(root);
     let lock = rigger_file(root, "graph.db.lock");
+    // The cold-start setup took the rebuild lock and made its zero-byte file: a directory takes
+    // its place.
+    std::fs::remove_file(&lock).unwrap();
     std::fs::create_dir(&lock).unwrap();
     let copy = rigger_file(root, "graph.db.pruned");
 
@@ -5053,7 +5108,7 @@ fn whole_graph(root: &Path) -> String {
         &run_stream_identity(root),
     )
     .unwrap();
-    serde_json::to_string(&graph.whole().unwrap()).unwrap()
+    common::fixtures::whole_json(&graph)
 }
 
 /// Given a `rigger setup` whose rebuild swapped its pruned graph in and stopped before it folded

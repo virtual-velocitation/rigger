@@ -26,9 +26,9 @@ use common::cli::{
     REBUILT_LINE,
 };
 use common::fixtures::{
-    events_of, folds, generation_ingested, held_generations, judged_cause, passed_over_rows,
-    rejected_row, walked_generation, write_text, DOCUMENT_PATH, SOURCE_PATH, TEST_MODULE_PATH,
-    WORKFLOW_PATH,
+    drop_the_cursor, events_of, folds, generation_ingested, held_generations, judged_cause,
+    passed_over_rows, rejected_row, walked_generation, write_text, DOCUMENT_PATH, SOURCE_PATH,
+    TEST_MODULE_PATH, WORKFLOW_PATH,
 };
 use rigger::contextgraph::sqlite::{
     Projector, RebuildSink, FOLD_FAILED, PAYLOAD_REJECTED, RESOLVED_TO_NOTHING,
@@ -173,14 +173,15 @@ fn setup_rebuild_lines(cwd: &Path) -> Vec<String> {
     rebuild_lines(&setup_ok(cwd, &[("RIGGER_NPM", "true")]))
 }
 
-/// Give the directory `cwd` an event log, and let `rigger setup` settle its scaffold and its
-/// identity before anything is recorded: the project identity the binary now resolves there.
+/// Give the directory `cwd` an event log, and let `rigger setup` settle its scaffold, its identity
+/// and its `graph.db` before anything is recorded: the project identity the binary now resolves
+/// there.
 fn settled(cwd: &Path) -> String {
     init_event_log(cwd);
     assert_eq!(
         setup_rebuild_lines(cwd),
         Vec::<String>::new(),
-        "a project with no graph.db owes no rebuild"
+        "a cold start beside an empty log creates graph.db and owes no rebuild"
     );
     run_stream_identity(cwd)
 }
@@ -250,10 +251,13 @@ fn fold_incrementally(
     outcomes
 }
 
-/// Make sure `cwd`'s `graph.db` stands, as a command that opened it left it: a file whose ledger
-/// misses whatever the log gained by a plain append.
+/// Make sure `cwd`'s `graph.db` stands as a fold made it before the `caught_up` cursor existed: a
+/// file without the cursor ([`drop_the_cursor`]) whose ledger misses whatever the log gained by a
+/// plain append, which the next `rigger setup`'s seeding reads against the log.
 fn stand_graph(cwd: &Path, project: &str) {
-    drop(Projector::open(rigger_file(cwd, "graph.db").to_str().unwrap(), project).unwrap());
+    let graph_db = rigger_file(cwd, "graph.db");
+    drop(Projector::open(graph_db.to_str().unwrap(), project).unwrap());
+    drop_the_cursor(&graph_db);
 }
 
 /// The generation `cwd`'s `graph.db` holds for each of `identities`, in order.

@@ -214,6 +214,11 @@ pub fn fold_asked(
     entry_asked(p, &entry_at("gc", file, generation, pos, secs), batch);
 }
 
+/// Everything `p` serves - every node and edge of its whole graph - as one comparable JSON text.
+pub fn whole_json(p: &Projector) -> String {
+    serde_json::to_string(&p.whole().unwrap()).unwrap()
+}
+
 /// Every live edge `p` serves as `(from, rel, to, valid_from, source)`, sorted.
 pub fn live_edges(p: &Projector) -> Vec<(String, String, String, i64, u64)> {
     let mut edges: Vec<_> = p

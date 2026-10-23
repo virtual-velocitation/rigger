@@ -5951,9 +5951,10 @@ mod tests {
             "the rebuilt file holds the event the refused fold lost"
         );
         assert_eq!(
-            owed_against_the_log(&p, &log),
-            Vec::<&str>::new(),
-            "the rebuild records the event it passed over, so the ledger holds every position"
+            (applied_through(&p, 3), crate::test_support::caught_up_at(Path::new(path))),
+            (vec![true; 3], Some(3)),
+            "the rebuild records the event it passed over, so the ledger holds every position, and \
+             seeds the cursor at its last"
         );
         drop(p);
         let again = Projector::open(path, "test")
@@ -5992,6 +5993,9 @@ mod tests {
 
     /// What the rebuild source of the tests that stop a rebuild in its tail answers there.
     const TAIL_INTERRUPTED: &str = "interrupted in its tail";
+
+    /// What the rebuild source of the tests that stop a rebuild past its first batch answers there.
+    const FIRST_BATCH_INTERRUPTED: &str = "interrupted after the first batch";
 
     /// The rebuild lock of the graph file at `path`, which no other holder has.
     fn locked(path: &str) -> RebuildLock {
@@ -6038,7 +6042,7 @@ mod tests {
                 stream_past(log, after, 2, &mut |events, head| {
                     batches += 1;
                     if batches > 1 {
-                        return Err(Error("interrupted after the first batch".to_string()));
+                        return Err(Error(FIRST_BATCH_INTERRUPTED.to_string()));
                     }
                     sink(events, head)
                 })
@@ -6337,7 +6341,7 @@ mod tests {
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
         drop(Projector::open(path, "test").unwrap());
-        let shadow = format!("{path}.rebuild");
+        let shadow = shadow_of(path);
         drop(Projector::open(&shadow, "test").unwrap());
         Connection::open(&shadow)
             .unwrap()
@@ -6427,15 +6431,20 @@ mod tests {
             .try_for_each(|b| sink(&crate::test_support::positions_of(b)))
     }
 
-    /// Why the file behind `p` owes its rebuild once its ledger is read against `log`, streamed
-    /// in batches of two so a hole in a later batch is met too.
+    /// Why the file behind `p` owes its rebuild once its cursor is seeded against `log` as `rigger
+    /// setup` seeds it ([`crate::test_support::owed_once_seeded`]): `log`'s positions streamed in
+    /// batches of two so a hole in a later batch is met too, each missing position's stamp read
+    /// from `log`.
     fn owed_against_the_log(p: &Projector, log: &[Event]) -> Vec<&'static str> {
-        p.owed_against(&mut |sink| positions_in(log, 2, sink))
-            .unwrap()
+        crate::test_support::owed_once_seeded(
+            p,
+            &mut |sink| positions_in(log, 2, sink),
+            &mut |at| crate::test_support::stamp_in(log, at),
+        )
     }
 
-    /// What `rigger setup` does to the `graph.db` at `path` over `log`: read why it owes its
-    /// rebuild against the log, then pay that - reporting whether it rebuilt.
+    /// What `rigger setup` does to the `graph.db` at `path` over `log`: seed its cursor and read
+    /// why it owes its rebuild against the log, then pay that - reporting whether it rebuilt.
     fn rebuild_as_setup_does(path: &str, log: &[Event]) -> bool {
         let owed = !owed_against_the_log(&Projector::open(path, "test").unwrap(), log).is_empty();
         Projector::open(path, "test")
@@ -6452,25 +6461,268 @@ mod tests {
     }
 
     /// A lost fold owed by the `graph.db` at `path`, then paid: a fresh projector on the file
-    /// holds no record of the loss, its ledger read against `log` names the lost fold as the
-    /// cause, a rebuild from `log` folds the lost position, and the rebuilt file owes nothing and
-    /// folds again.
+    /// holds no record of the loss, its seeding against `log` - whose `lost` position, missing
+    /// below an applied one, is older than the catch-up horizon - finds the prefix violated,
+    /// creating no cursor and naming the lost fold as the cause, a rebuild from `log` folds the
+    /// lost position and seeds the cursor at `log`'s last position, and the rebuilt file owes
+    /// nothing and folds again.
     fn the_ledger_owes_the_lost_fold_and_a_rebuild_pays_it(path: &str, log: &[Event], lost: u64) {
         let p = Projector::open(path, "test").unwrap();
         assert_eq!(
-            (p.owed_because().unwrap(), owed_against_the_log(&p, log)),
-            (Vec::<&str>::new(), vec![OWED_LOST_FOLD]),
-            "the file records nothing, and the ledger's hole is the debt"
+            (
+                p.owed_because().unwrap(),
+                owed_against_the_log(&p, log),
+                crate::test_support::caught_up_at(Path::new(path)),
+            ),
+            (Vec::<&str>::new(), vec![OWED_LOST_FOLD], None),
+            "the file records nothing, and the ledger's old hole is the debt, seeding no cursor"
         );
         drop(p);
         let rebuilt = rebuild_as_setup_does(path, log);
         let p = Projector::open(path, "test").unwrap();
         assert_eq!(
-            (rebuilt, applied(&p, lost), owed_against_the_log(&p, log)),
-            (true, true, Vec::<&str>::new()),
-            "the rebuild folds the lost position and pays the debt"
+            (
+                rebuilt,
+                applied(&p, lost),
+                crate::test_support::caught_up_at(Path::new(path)),
+                owed_against_the_log(&p, log),
+            ),
+            (
+                true,
+                true,
+                log.last().map(|e| e.position),
+                Vec::<&str>::new()
+            ),
+            "the rebuild folds the lost position, seeds the cursor at the log's last position and \
+             pays the debt"
         );
         crate::test_support::folds(&p, &[decision_at("d9", "z.rs", 9)]);
+    }
+
+    /// A decision at each of `positions`, in order, each governing `a.rs`.
+    fn decisions_at(positions: impl IntoIterator<Item = u64>) -> Vec<Event> {
+        positions
+            .into_iter()
+            .map(|at| decision_at(&format!("d{at}"), "a.rs", at))
+            .collect()
+    }
+
+    /// A fresh graph file whose ledger records each position of `folded`, seeded at `now` against
+    /// the positions `log` streams with their stamps, as `rigger setup` seeds it: what the seeding
+    /// answered, and where the file's cursor stands after it.
+    fn seeding_over(log: &[Event], folded: &[u64], now: SystemTime) -> (Seeding, Option<u64>) {
+        let (_dir, path) = crate::test_support::temp_graph_db();
+        let p = Projector::open(&path, "test").unwrap();
+        crate::test_support::folds(&p, &decisions_at(folded.iter().copied()));
+        let seeding = p
+            .seed_cursor(
+                &mut |sink| positions_in(log, 2, sink),
+                &mut |at| crate::test_support::stamp_in(log, at),
+                now,
+            )
+            .unwrap();
+        (seeding, crate::test_support::caught_up_at(Path::new(&path)))
+    }
+
+    /// Decisions at positions 1 through `last`, each stamped as recorded at [`recorded`]: the log
+    /// the seeding tests hand, whose holes are as old as the seeding's clock is past that instant.
+    fn decisions_through(last: u64) -> Vec<Event> {
+        crate::test_support::restamped(&decisions_at(1..=last), |_| recorded())
+    }
+
+    /// When the events of [`decisions_through`] are recorded.
+    fn recorded() -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)
+    }
+
+    /// The clock at which the events of [`decisions_through`], recorded at [`recorded`], are `age`
+    /// old.
+    fn at_age(age: Duration) -> SystemTime {
+        recorded() + age
+    }
+
+    /// THE CURSOR AND ITS SEEDING (spec 124): a file without `caught_up` whose ledger misses no
+    /// position below its highest applied one is seeded there, and an empty ledger beside an empty
+    /// log at 0; a position missing above it is no hole of the prefix, however old. Holes below it
+    /// no older than the catch-up horizon - at the horizon exactly, or stamped after the seeding's
+    /// clock - seed the cursor just below the lowest of them. One older than the horizon by a
+    /// nanosecond, beside a young one too, or one the log answers no stamp for, as the
+    /// server-backed log answers none, violates the prefix, as an empty ledger beside a non-empty
+    /// log does, even one recorded at the seeding's own clock, a non-empty ledger beside an empty
+    /// log, and a highest applied position above the log's head, as when the log is replaced under
+    /// a standing graph file: no cursor is created and the seeding says the file is lost.
+    #[test]
+    fn a_file_without_caught_up_is_seeded_at_its_ledger_s_prefix_and_never_over_an_old_hole() {
+        let log = decisions_through(4);
+        let past = CATCH_UP_HORIZON + Duration::from_nanos(1);
+        let mut mixed = log.clone();
+        mixed[2].recorded_at = recorded() - past;
+        let lost = (Seeding::Ran { lost: true }, None);
+        assert_eq!(
+            [
+                seeding_over(&log, &[1, 2, 3, 4], at_age(past)),
+                seeding_over(&log, &[1, 2], at_age(past)),
+                seeding_over(&log, &[1, 3, 4], at_age(CATCH_UP_HORIZON)),
+                seeding_over(&log, &[1, 4], at_age(CATCH_UP_HORIZON)),
+                seeding_over(&log, &[1, 3, 4], recorded() - Duration::from_secs(1)),
+                seeding_over(&[], &[], recorded()),
+                seeding_over(&log[..3], &[1, 2, 3], recorded()),
+                seeding_over(&log, &[1, 3, 4], at_age(past)),
+                seeding_over(&mixed, &[1, 4], recorded()),
+                seeding_over(&log, &[], recorded()),
+                seeding_over(&[], &[1, 2], recorded()),
+                seeding_over(&log[..3], &[1, 2, 3, 4], recorded()),
+            ],
+            [
+                (Seeding::Ran { lost: false }, Some(4)),
+                (Seeding::Ran { lost: false }, Some(2)),
+                (Seeding::Ran { lost: false }, Some(1)),
+                (Seeding::Ran { lost: false }, Some(1)),
+                (Seeding::Ran { lost: false }, Some(1)),
+                (Seeding::Ran { lost: false }, Some(0)),
+                (Seeding::Ran { lost: false }, Some(3)),
+                lost.clone(),
+                lost.clone(),
+                lost.clone(),
+                lost.clone(),
+                lost.clone(),
+            ],
+            "the cursor stands at the highest applied position, zero beside an empty log, or just \
+             below the lowest young hole, and an old hole, beside a young one too, an empty ledger \
+             beside a non-empty log, a ledger beside an empty log or a ledger past the log's head \
+             creates none"
+        );
+        let (_dir, path) = crate::test_support::temp_graph_db();
+        let p = Projector::open(&path, "test").unwrap();
+        crate::test_support::folds(&p, &[log[0].clone(), log[2].clone()]);
+        assert_eq!(
+            (
+                p.seed_cursor(
+                    &mut |sink| positions_in(&log, 2, sink),
+                    &mut |_| Ok(None),
+                    recorded(),
+                )
+                .unwrap(),
+                crate::test_support::caught_up_at(Path::new(&path)),
+            ),
+            lost,
+            "a hole the log answers no stamp for is old"
+        );
+    }
+
+    /// The seeding runs once per file: a file already carrying `caught_up` is not read - neither
+    /// its log's positions nor a stamp - and keeps its cursor, a hole the log gains below it
+    /// included; its verdict adds no cause.
+    #[test]
+    fn a_file_carrying_caught_up_is_never_read_again_and_keeps_its_cursor() {
+        let log = decisions_through(4);
+        let (_dir, path) = crate::test_support::temp_graph_db();
+        let p = Projector::open(&path, "test").unwrap();
+        crate::test_support::folds(&p, &log[..2]);
+        assert_eq!(owed_against_the_log(&p, &log[..2]), Vec::<&str>::new());
+        crate::test_support::folds(&p, &log[3..]);
+        let seeding = p
+            .seed_cursor(
+                &mut |_| panic!("a seeded file reads no positions"),
+                &mut |_| panic!("a seeded file reads no stamp"),
+                at_age(Duration::from_secs(86_400)),
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                seeding.clone(),
+                crate::test_support::caught_up_at(Path::new(&path)),
+                p.owed_against(&seeding).unwrap(),
+            ),
+            (Seeding::Ran { lost: false }, Some(2), Vec::<&str>::new()),
+            "the seeded file is not read, keeps its cursor and owes nothing"
+        );
+    }
+
+    /// THE TWO WRITES MEETING A LOCK (spec 124): a seeding whose transaction meets another
+    /// writer's lock past the busy timeout is skipped - it reads nothing and creates no cursor -
+    /// and what the file owes is what it carries, read with no lock; the next seeding, the lock
+    /// released, seeds it.
+    #[test]
+    fn a_seeding_that_meets_the_write_lock_is_skipped_reading_and_writing_nothing() {
+        let log = decisions_through(4);
+        let (dir, path) = crate::test_support::temp_graph_db();
+        let p = Projector::open(&path, "test").unwrap();
+        crate::test_support::folds(&p, &log);
+        p.conn
+            .lock()
+            .unwrap()
+            .busy_timeout(Duration::from_millis(1))
+            .unwrap();
+        let seeding = crate::test_support::with_graph_locked(Path::new(&path), || {
+            p.seed_cursor(
+                &mut |_| panic!("a skipped seeding reads no positions"),
+                &mut |_| panic!("a skipped seeding reads no stamp"),
+                recorded(),
+            )
+            .unwrap()
+        });
+        let mark = crate::test_support::owed_mark_in(dir.path());
+        std::fs::write(&mark, b"").unwrap();
+        assert_eq!(
+            (
+                seeding.clone(),
+                crate::test_support::caught_up_at(Path::new(&path)),
+                p.owed_against(&seeding).unwrap(),
+            ),
+            (Seeding::Skipped, None, vec![OWED_LOST_FOLD]),
+            "the contended seeding is skipped, and the file owes what it carries"
+        );
+        std::fs::remove_file(&mark).unwrap();
+        assert_eq!(
+            (
+                owed_against_the_log(&p, &log),
+                crate::test_support::caught_up_at(Path::new(&path))
+            ),
+            (Vec::<&str>::new(), Some(4)),
+            "the next seeding, the lock released, seeds the file"
+        );
+    }
+
+    /// THE REBUILD (spec 124): the rebuild's shadow open creates `caught_up` at the shadow's
+    /// rebuild cursor - zero in a fresh shadow, the cursor a resumed one stands at when an older
+    /// binary left it without one - and the drop that finishes the rebuild sets it to the final
+    /// rebuild cursor.
+    #[test]
+    fn the_rebuild_seeds_caught_up_at_its_shadow_open_and_sets_it_at_its_drop() {
+        let log = decisions_through(6);
+        let (_dir, path) = crate::test_support::temp_graph_db();
+        let shadow = shadow_of(&path);
+        drop(Projector::open(&path, "test").unwrap());
+        let first = rebuild_interrupted_after_its_first_batch(&path, &log).map_err(|e| e.0);
+        let fresh = crate::test_support::caught_up_at(Path::new(&shadow));
+        crate::test_support::drop_the_cursor(Path::new(&shadow));
+        let resumed = rebuild_interrupted_after_its_first_batch(&path, &log).map_err(|e| e.0);
+        let older = crate::test_support::caught_up_at(Path::new(&shadow));
+        let finished = rebuild_in_batches(&path, &log, 2, &mut Vec::new()).unwrap();
+        assert_eq!(
+            (
+                first,
+                fresh,
+                resumed,
+                older,
+                finished.is_some(),
+                Path::new(&shadow).exists(),
+                crate::test_support::caught_up_at(Path::new(&path)),
+                rebuild_state(&path),
+            ),
+            (
+                Err(FIRST_BATCH_INTERRUPTED.to_string()),
+                Some(0),
+                Err(FIRST_BATCH_INTERRUPTED.to_string()),
+                Some(2),
+                true,
+                false,
+                Some(6),
+                (false, false),
+            ),
+            "the shadow open seeds caught_up at its rebuild cursor, the drop at the final one"
+        );
     }
 
     /// Whether `p`'s applied ledger records each position from 1 through `last`, in order
@@ -6539,7 +6791,7 @@ mod tests {
             true,
             &mut |after, sink| {
                 let first = stream_past(&log, after, 2, sink);
-                first.and(Err(Error("interrupted after the first batch".to_string())))
+                first.and(Err(Error(FIRST_BATCH_INTERRUPTED.to_string())))
             },
             &mut |_| Ok(None),
             &mut |_| {},
@@ -6551,13 +6803,12 @@ mod tests {
             (
                 provenance(&Projector::open(whole, "test").unwrap()),
                 provenance(&Projector::open(resumed, "test").unwrap()),
-                serde_json::to_string(&Projector::open(whole, "test").unwrap().whole().unwrap())
-                    .unwrap(),
+                crate::test_support::whole_json(&Projector::open(whole, "test").unwrap()),
             ),
             (
                 expected.clone(),
                 expected,
-                serde_json::to_string(&live.whole().unwrap()).unwrap(),
+                crate::test_support::whole_json(&live),
             ),
             "the rebuilt graph, whole or resumed, holds what reset --runs leaves, node and edge"
         );
@@ -6585,7 +6836,7 @@ mod tests {
         crate::test_support::folds(&live, log);
         live.prune(&superseded_graph_nodes(log), superseded_edge_boundary(log))
             .unwrap();
-        serde_json::to_string(&live.whole().unwrap()).unwrap()
+        crate::test_support::whole_json(&live)
     }
 
     /// Whether the graph file at `path` holds the rebuild's cursor and the run attribution the
@@ -6601,8 +6852,9 @@ mod tests {
     /// A rebuild whose swap stops after it put the pruned copy in place - the owed mark it must
     /// drop is a directory it cannot remove - leaves its shadow unpruned, holding its cursor and the
     /// run attribution it gathered, and no copy behind. When the log gains a window meanwhile, the
-    /// rebuild that reruns as `rigger setup` reruns it - whose ledger owes no lost fold, the window
-    /// lying past the cursor the swap carried in - still resumes that shadow, because its swap never
+    /// rebuild that reruns as `rigger setup` reruns it - whose seeding reads nothing and owes no
+    /// lost fold, the copy the swap put in place carrying `caught_up` beside its rebuild state -
+    /// still resumes that shadow, because its swap never
     /// finished, without refolding a committed batch - it reads only the window's positions - and
     /// prunes a fresh copy of it from the whole gathered attribution: a closed run's decision the
     /// active run records again governs both files, as its two recordings say; a decision the
@@ -6645,9 +6897,9 @@ mod tests {
             let path = fresh("graph.db");
             let stopped = rebuild_stopped_in_its_swap(&path, &log);
             let through_the_swap = (
-                rebuild_state(&format!("{path}.rebuild")),
+                rebuild_state(&shadow_of(&path)),
                 rebuild_state(&path),
-                Path::new(&format!("{path}.pruned")).exists(),
+                Path::new(&pruned_copy(&path)).exists(),
             );
 
             let whole: Vec<Event> = log.iter().cloned().chain(window.iter().cloned()).collect();
@@ -6692,20 +6944,18 @@ mod tests {
                     read,
                     provenance(&p),
                     rebuild_state(&path),
-                    serde_json::to_string(&p.whole().unwrap()).unwrap(),
-                    serde_json::to_string(&p.whole().unwrap()).unwrap(),
+                    crate::test_support::whole_json(&p),
+                    crate::test_support::whole_json(&p),
                     resumed,
                     resumed.map(|r| r.pruned),
                 ),
                 (
-                    Err(crate::test_support::directory_refusal(format!(
-                        "{path}.owed"
-                    ))),
+                    refused_at_its_owed_mark(&path),
                     ((true, true), (true, true), false),
                     Vec::<&str>::new(),
                     reads,
                     crate::test_support::positions_of(&window),
-                    kept.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+                    crate::test_support::owned_ids(&kept),
                     (false, false),
                     serde_json::to_string(
                         &Projector::open(&cold, "test").unwrap().whole().unwrap()
@@ -6747,11 +6997,19 @@ mod tests {
     /// place - the owed mark it must then drop is a directory it cannot remove - and what it
     /// answered.
     fn rebuild_stopped_in_its_swap(path: &str, log: &[Event]) -> Result<Option<Rebuilt>, String> {
-        let mark = format!("{path}.owed");
+        let mark = owed_mark(path).unwrap();
         std::fs::create_dir(&mark).unwrap();
         let stopped = rebuild_in_batches(path, log, 10, &mut Vec::new()).map_err(|e| e.to_string());
         std::fs::remove_dir(&mark).unwrap();
         stopped
+    }
+
+    /// What [`rebuild_stopped_in_its_swap`] answers for the graph file at `path`: the refusal to
+    /// remove the owed mark that stands as a directory.
+    fn refused_at_its_owed_mark(path: &str) -> Result<Option<Rebuilt>, String> {
+        Err(crate::test_support::directory_refusal(
+            owed_mark(path).unwrap().display(),
+        ))
     }
 
     /// A stale copy an interrupted swap left - a file that is not even a graph - is never read: the
@@ -6769,7 +7027,7 @@ mod tests {
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
         drop(Projector::open(path, "test").unwrap());
-        let copy = format!("{path}.pruned");
+        let copy = pruned_copy(path);
         std::fs::write(&copy, b"left by a swap that stopped").unwrap();
 
         let rebuilt = rebuild_in_batches(path, &log, 10, &mut Vec::new());
@@ -6778,7 +7036,7 @@ mod tests {
             (
                 rebuilt.map_err(|e| e.to_string()),
                 Path::new(&copy).exists(),
-                serde_json::to_string(&p.whole().unwrap()).unwrap(),
+                crate::test_support::whole_json(&p),
             ),
             (
                 Ok(Some(Rebuilt {
@@ -6795,11 +7053,15 @@ mod tests {
         );
     }
 
-    /// A rebuild interrupted in its tail leaves the live file owing only that tail: read against
-    /// the log as `rigger setup` reads it, a position past the swapped-in cursor is the tail's debt,
-    /// never a lost fold - so setup finishes exactly the tail, reading only its positions, and
-    /// reports the counts stamped with the swap. A position at or before the cursor the ledger
-    /// misses is still a lost fold.
+    /// A rebuild interrupted in its tail leaves the live file owing only that tail: the file it
+    /// swapped in carries the `caught_up` its shadow opened with beside its rebuild state, so the
+    /// seeding `rigger setup` runs reads nothing and a position past the swapped-in cursor is the
+    /// tail's debt, never a lost fold - setup finishes exactly the tail, reading only its
+    /// positions, reports the counts stamped with the swap and sets the cursor at the tail's last
+    /// position. On a file an older binary swapped in, carrying no `caught_up`, a tail position
+    /// older than the catch-up horizon the ledger misses below one an emit folded past the tail is
+    /// still the tail's debt, and the swapped-in cursor's own position missing from the ledger,
+    /// older than the horizon, is a lost fold.
     #[test]
     fn a_rebuild_interrupted_in_its_tail_is_finished_by_setup_reading_only_the_tail() {
         let log = [
@@ -6840,6 +7102,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (path, stopped) = stopped_in_its_tail(&dir);
         let path = path.as_str();
+        let swapped_in = crate::test_support::caught_up_at(Path::new(path));
         let owed_tail_only = owed_against_the_log(&Projector::open(path, "test").unwrap(), &whole);
 
         let mut read = Vec::new();
@@ -6863,14 +7126,17 @@ mod tests {
         assert_eq!(
             (
                 stopped,
+                swapped_in,
                 owed_tail_only,
                 read,
                 finished,
                 owed_against_the_log(&p, &whole),
+                crate::test_support::caught_up_at(Path::new(path)),
                 rebuild_state(path),
             ),
             (
                 Err(crate::test_support::graph_error(TAIL_INTERRUPTED)),
+                Some(0),
                 Vec::<&str>::new(),
                 vec![5, 6],
                 Some(Rebuilt {
@@ -6880,23 +7146,30 @@ mod tests {
                     }
                 }),
                 Vec::<&str>::new(),
+                Some(6),
                 (false, false),
             ),
-            "the tail is the swap's debt, setup folds exactly it, and reports the swap's prune"
+            "the tail is the swap's debt, setup folds exactly it, reports the swap's prune and \
+             sets the cursor at the tail's last position"
         );
 
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = stopped_in_its_tail(&dir);
+        crate::test_support::drop_the_cursor(Path::new(&path));
         let p = Projector::open(&path, "test").unwrap();
+        crate::test_support::folds(&p, &whole[5..]);
+        let backdated = crate::test_support::backdated(&whole);
+        let owed_below_a_later_fold = owed_against_the_log(&p, &backdated);
         p.conn
             .lock()
             .unwrap()
             .execute("DELETE FROM applied WHERE position = 4", [])
             .unwrap();
         assert_eq!(
-            owed_against_the_log(&p, &whole),
-            vec![OWED_LOST_FOLD],
-            "the cursor's own position missing from the ledger is a lost fold, not the tail"
+            (owed_below_a_later_fold, owed_against_the_log(&p, &backdated)),
+            (Vec::<&str>::new(), vec![OWED_LOST_FOLD]),
+            "an old tail position missing below a later fold is the tail's debt, and the swapped-in \
+             cursor's own position missing from the ledger is a lost fold"
         );
     }
 
@@ -6916,7 +7189,7 @@ mod tests {
         let path = path.to_str().unwrap();
         drop(Projector::open(path, "test").unwrap());
         let interrupted = rebuild_interrupted_after_its_first_batch(path, &log);
-        let shadow = format!("{path}.rebuild");
+        let shadow = shadow_of(path);
         Connection::open(&shadow)
             .unwrap()
             .execute_batch("DROP TABLE rebuild_run_closure;")
@@ -6948,12 +7221,10 @@ mod tests {
                 interrupted.map_err(|e| e.to_string()),
                 reads_from,
                 provenance(&p),
-                serde_json::to_string(&p.whole().unwrap()).unwrap(),
+                crate::test_support::whole_json(&p),
             ),
             (
-                Err(crate::test_support::graph_error(
-                    "interrupted after the first batch"
-                )),
+                Err(crate::test_support::graph_error(FIRST_BATCH_INTERRUPTED)),
                 vec![0, 4],
                 vec!["d-live".to_string()],
                 reset_runs_leaves(&log),
@@ -7091,11 +7362,11 @@ mod tests {
             (
                 pruned,
                 report,
-                Err(crate::test_support::directory_refusal(format!("{stopped}.owed"))),
+                refused_at_its_owed_mark(&stopped),
                 report,
                 Err(crate::test_support::graph_error(TAIL_INTERRUPTED)),
                 report,
-                Err(crate::test_support::directory_refusal(format!("{windowed}.owed"))),
+                refused_at_its_owed_mark(&windowed),
                 Some(Rebuilt {
                     pruned: PruneStats {
                         nodes: 3,
@@ -7139,7 +7410,7 @@ mod tests {
             (
                 rebuilt,
                 provenance(&p),
-                serde_json::to_string(&p.whole().unwrap()).unwrap(),
+                crate::test_support::whole_json(&p),
             ),
             (
                 Some(Rebuilt::default()),
@@ -7149,7 +7420,7 @@ mod tests {
                     "f1".to_string(),
                     "l1".to_string()
                 ],
-                serde_json::to_string(&folded.whole().unwrap()).unwrap(),
+                crate::test_support::whole_json(&folded),
             ),
             "nothing is dead before a run starts: the rebuild prunes nothing and keeps the fold whole"
         );
@@ -7168,8 +7439,9 @@ mod tests {
     /// A batch that fails to fold into a current `graph.db` - lost to another writer's lock -
     /// where the owed mark cannot be written (its directory is not writable) records nothing
     /// else: the fold's error comes back naming the unwritten mark, no process holds the debt,
-    /// and the file itself carries it in its ledger, which misses the lost position - so it
-    /// outlives the process and the rebuild `rigger setup` reads it for pays it.
+    /// and the file itself carries it in its ledger, which misses the lost position below the
+    /// next batch's - so once the hole is older than the catch-up horizon it outlives the process,
+    /// and the rebuild `rigger setup` seeds the file for and reads it for pays it.
     #[test]
     fn a_lost_fold_whose_mark_cannot_be_written_is_owed_by_the_ledger_alone() {
         use crate::contextgraph::Fold;
@@ -7178,7 +7450,7 @@ mod tests {
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
         let mark = crate::test_support::owed_mark_in(dir.path());
-        let log = [decision_at("d1", "a.rs", 1), decision_at("d2", "b.rs", 2)];
+        let log = decisions_through(3);
         let p = Projector::open(path, "test").unwrap();
         crate::test_support::folds(&p, &log[..1]);
         p.conn
@@ -7206,50 +7478,53 @@ mod tests {
             ),
             "the fold's error names the unwritten mark, and nothing else records the loss"
         );
+        crate::test_support::folds(&p, &log[2..]);
         drop(p);
-        the_ledger_owes_the_lost_fold_and_a_rebuild_pays_it(path, &log, 2);
+        the_ledger_owes_the_lost_fold_and_a_rebuild_pays_it(
+            path,
+            &crate::test_support::backdated(&log),
+            2,
+        );
     }
 
     /// An event the log holds that no fold ever reached - its process died between the append
-    /// and the fold, so nothing ran to record anything - is owed by the ledger all the same, and
-    /// the rebuild pays it.
+    /// and the fold, so nothing ran to record anything, while a later event folded - is owed by
+    /// the ledger all the same once it is older than the catch-up horizon, and the rebuild pays
+    /// it.
     #[test]
     fn an_event_appended_but_never_folded_is_owed_by_the_ledger() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
-        let log = [
-            decision_at("d1", "a.rs", 1),
-            decision_at("d2", "b.rs", 2),
-            decision_at("d3", "c.rs", 3),
-        ];
+        let log = decisions_through(3);
         let p = Projector::open(path, "test").unwrap();
-        crate::test_support::folds(&p, &log[..2]);
-        assert_eq!(
-            owed_against_the_log(&p, &log[..2]),
-            Vec::<&str>::new(),
-            "a ledger holding every position owes nothing"
-        );
+        crate::test_support::folds(&p, &[log[0].clone(), log[2].clone()]);
         drop(p);
-        the_ledger_owes_the_lost_fold_and_a_rebuild_pays_it(path, &log, 3);
+        the_ledger_owes_the_lost_fold_and_a_rebuild_pays_it(
+            path,
+            &crate::test_support::backdated(&log),
+            2,
+        );
     }
 
-    /// A file whose mark already names the lost fold owes it once, without reading the log; one
-    /// at an older fold rule whose ledger misses a position owes both causes.
+    /// A file whose mark already names the lost fold, and whose seeding finds an old hole below
+    /// its highest applied position, owes the lost fold once, seeding no cursor; one at an older
+    /// fold rule whose ledger misses an old position is not seeded and owes both causes.
     #[test]
-    fn the_ledger_is_read_only_for_a_cause_the_file_does_not_already_carry() {
+    fn the_lost_fold_is_owed_once_whether_the_mark_or_the_seeding_names_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
-        let path = path.to_str().unwrap();
-        let log = [decision_at("d1", "a.rs", 1), decision_at("d2", "b.rs", 2)];
-        let p = Projector::open(path, "test").unwrap();
-        crate::test_support::folds(&p, &log[..1]);
+        let log = crate::test_support::backdated(&decisions_through(3));
+        let p = Projector::open(path.to_str().unwrap(), "test").unwrap();
+        crate::test_support::folds(&p, &[log[0].clone(), log[2].clone()]);
         std::fs::write(crate::test_support::owed_mark_in(dir.path()), b"").unwrap();
         assert_eq!(
-            p.owed_against(&mut |_| panic!("a marked file reads no positions"))
-                .unwrap(),
-            vec![OWED_LOST_FOLD],
-            "the mark names the lost fold once"
+            (
+                owed_against_the_log(&p, &log),
+                crate::test_support::caught_up_at(&path)
+            ),
+            (vec![OWED_LOST_FOLD], None),
+            "the mark and the seeding name the lost fold once"
         );
         std::fs::remove_file(crate::test_support::owed_mark_in(dir.path())).unwrap();
         p.conn
@@ -7258,8 +7533,12 @@ mod tests {
             .pragma_update(None, "user_version", PROJECTION_VERSION - 1)
             .unwrap();
         assert_eq!(
-            owed_against_the_log(&p, &log),
-            vec![OWED_OLDER_RULE, OWED_LOST_FOLD]
+            (
+                owed_against_the_log(&p, &log),
+                crate::test_support::caught_up_at(&path)
+            ),
+            (vec![OWED_OLDER_RULE, OWED_LOST_FOLD], None),
+            "a file at an older rule owes both causes and is not seeded"
         );
     }
 
@@ -7614,7 +7893,7 @@ mod tests {
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
         drop(Projector::open(path, "test").unwrap());
-        let shadow = format!("{path}.rebuild");
+        let shadow = shadow_of(path);
         let files = || dir_snapshot(dir.path(), "");
         // A second rebuild, started now: what it answered, what it read of the log, whether the
         // holder's shadow stood, and whether every file stands exactly as it did.
@@ -7662,10 +7941,10 @@ mod tests {
                 before_its_first_write,
                 while_it_rebuilds,
                 first,
-                serde_json::to_string(&p.whole().unwrap()).unwrap(),
+                crate::test_support::whole_json(&p),
                 rebuild_state(path),
                 Path::new(&shadow).exists(),
-                Path::new(&format!("{path}.pruned")).exists(),
+                Path::new(&pruned_copy(path)).exists(),
             ),
             (
                 refused(false),
@@ -9405,14 +9684,15 @@ mod tests {
         leaf_definitions_sql(&admitted_sql(Admitted::LiveCallTargets), true)
     }
 
-    /// Every row of every table but the `applied` ledger, straight off the projector's own
-    /// connection, as `<table>: <columns>`, sorted, so two dumps compare whatever order a table
-    /// hands its rows in.
-    fn projection_but_applied(p: &Projector) -> Vec<String> {
+    /// Every row of every table but the ledger's - the `applied` positions and the `caught_up`
+    /// cursor over them - straight off the projector's own connection, as `<table>: <columns>`,
+    /// sorted, so two dumps compare whatever order a table hands its rows in.
+    fn projection_but_ledger(p: &Projector) -> Vec<String> {
         let tables: Vec<String> = raw_rows(
             p,
             "SELECT name FROM sqlite_master
-              WHERE type = 'table' AND name != 'applied' AND name NOT LIKE 'sqlite_%'",
+              WHERE type = 'table' AND name NOT IN ('applied', 'caught_up')
+                AND name NOT LIKE 'sqlite_%'",
             [],
             |r| r.get(0),
         );
@@ -9442,7 +9722,7 @@ mod tests {
         let p = Projector::open(":memory:", "test").unwrap();
         let mut pos = crate::test_support::seed_two_subsystems(&p);
         apply_decision(&p, pos, "d1", "keep", &["src/combat/hit.rs"], "");
-        let seeded = projection_but_applied(&p);
+        let seeded = projection_but_ledger(&p);
         for table in ["nodes: ", "edges: ", "node_assertions: "] {
             assert!(
                 seeded.iter().any(|row| row.starts_with(table)),
@@ -9467,7 +9747,7 @@ mod tests {
                 }),
             );
             assert_eq!(
-                projection_but_applied(&p),
+                projection_but_ledger(&p),
                 seeded,
                 "folding {type_} changes no table but applied"
             );
@@ -14585,8 +14865,8 @@ mod tests {
                     .unwrap();
             }
             assert_eq!(
-                projection_but_applied(&once),
-                projection_but_applied(&per_event)
+                projection_but_ledger(&once),
+                projection_but_ledger(&per_event)
             );
             let proven = proven_definition(
                 "kept",
@@ -15179,7 +15459,7 @@ mod tests {
                 let path = path.to_str().unwrap();
                 drop(Projector::open(path, "test").unwrap());
                 let interrupted = rebuild_interrupted_after_its_first_batch(path, &log);
-                Connection::open(format!("{path}.rebuild"))
+                Connection::open(shadow_of(path))
                     .unwrap()
                     .execute_batch(
                         "UPDATE nodes SET attrs = json_patch(attrs, '{\"kind\":\"field\",\"line\":\"7\"}')
@@ -15199,9 +15479,7 @@ mod tests {
                         p.owed_because().unwrap(),
                     ),
                     (
-                        Err(crate::test_support::graph_error(
-                            "interrupted after the first batch"
-                        )),
+                        Err(crate::test_support::graph_error(FIRST_BATCH_INTERRUPTED)),
                         vec![0, 3],
                         definition("x", "function", 3),
                         Vec::<&str>::new(),
@@ -15983,7 +16261,7 @@ mod tests {
                 crate::test_support::folds(&in_hand, &log[..1]);
                 crate::test_support::folds(&in_hand, &log[2..]);
                 crate::test_support::entry_asked(&in_hand, &log[1], h1_batch());
-                assert_eq!(projection_but_applied(&p), projection_but_applied(&in_hand));
+                assert_eq!(projection_but_ledger(&p), projection_but_ledger(&in_hand));
             }
 
             /// What a second connection reads committed of a fold pass over a graph owing its tail:
@@ -16242,11 +16520,11 @@ mod tests {
             ) -> Projector {
                 let p = Projector::open(":memory:", "test").unwrap();
                 holding_h1(&p);
-                let before = projection_but_applied(&p);
+                let before = projection_but_ledger(&p);
                 let asked = Cell::new(0);
                 assert_eq!(apply_entry(&p, &entry, Ok(batch), &asked), Ok(outcome));
                 assert_eq!(asked.get(), asks, "how often the batch was asked for");
-                assert_eq!(projection_but_applied(&p), before, "no fact changes");
+                assert_eq!(projection_but_ledger(&p), before, "no fact changes");
                 assert_eq!(applied_positions(&p), vec![7, 8]);
                 assert_eq!(generation_of_f(&p), Some("h1".to_string()));
                 p
@@ -16279,7 +16557,7 @@ mod tests {
                     EntryFold::BatchAsked,
                     1,
                 );
-                let held = projection_but_applied(&p);
+                let held = projection_but_ledger(&p);
                 let asked = Cell::new(0);
                 // An identity that holds no generation installs none either.
                 assert_eq!(
@@ -16293,7 +16571,7 @@ mod tests {
                 );
                 assert_eq!(asked.get(), 1, "the batch is asked for exactly once");
                 assert_eq!(
-                    projection_but_applied(&p),
+                    projection_but_ledger(&p),
                     held,
                     "an unresolved entry folds nothing"
                 );
@@ -16323,7 +16601,7 @@ mod tests {
                 let (_dir, p, mark) = graph_file();
                 apply_decision(&p, 3, "d1", "keep", &["src/f.rs"], "");
                 holding_h1(&p);
-                let before = projection_but_applied(&p);
+                let before = projection_but_ledger(&p);
                 let asked = Cell::new(0);
                 // Position 7 is the entry that installed h1; position 3 a decision's.
                 for (file, generation, pos) in [("src/f.rs", "h2", 7), ("src/new.rs", "k1", 3)] {
@@ -16358,7 +16636,7 @@ mod tests {
                     0,
                     "an applied position never asks for its batch"
                 );
-                assert_eq!(projection_but_applied(&p), before);
+                assert_eq!(projection_but_ledger(&p), before);
                 assert_eq!(applied_positions(&p), vec![3, 7]);
                 assert_eq!(generation_of_f(&p), Some("h1".to_string()));
                 assert_eq!(p.current_generation("gc/src/new.rs").unwrap(), None);
@@ -16464,7 +16742,7 @@ mod tests {
                     Fold::NotFolded(_)
                 ));
                 assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
-                let before = projection_but_applied(&p);
+                let before = projection_but_ledger(&p);
                 let asked = Cell::new(0);
                 assert_eq!(
                     apply_entry(
@@ -16477,7 +16755,7 @@ mod tests {
                 );
                 assert_eq!(asked.get(), 0, "a refused fold never asks for its batch");
                 assert_eq!(applied_positions(&p), vec![7]);
-                assert_eq!(projection_but_applied(&p), before);
+                assert_eq!(projection_but_ledger(&p), before);
                 assert_eq!(
                     generation_of_f(&p),
                     Some("h1".to_string()),
@@ -16671,10 +16949,10 @@ mod tests {
                     counted(&PROJECT_KEYED, &[0; 10]),
                     "no row stays under the old scope"
                 );
-                let migrated = projection_but_applied(&old);
+                let migrated = projection_but_ledger(&old);
                 assert_eq!(migrate_to_minted(&old, &from).unwrap(), 0);
                 assert_eq!(
-                    projection_but_applied(&old),
+                    projection_but_ledger(&old),
                     migrated,
                     "a second migration moves nothing"
                 );
@@ -16726,7 +17004,7 @@ mod tests {
                     ["nodes", "edges"].map(|table| column_exists(&conn, table, "project").unwrap());
                 let rule = fold_rule(&conn).unwrap();
                 drop(conn);
-                (projection_but_applied(p), rule, keyed)
+                (projection_but_ledger(p), rule, keyed)
             }
 
             /// Spec 117, A MIGRATED PROJECT STAYS LIVE: a graph.db folded before spec 28 owes
@@ -18604,7 +18882,7 @@ mod tests {
                     entry_asked(&incremental, entry, batch.clone());
                 }
                 let refs_dump = |p: &Projector| -> Vec<String> {
-                    projection_but_applied(p)
+                    projection_but_ledger(p)
                         .into_iter()
                         .filter(|row| row.starts_with("refs: "))
                         .collect()

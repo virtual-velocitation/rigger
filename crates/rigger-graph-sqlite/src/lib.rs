@@ -30,6 +30,10 @@ use rigger_store_sqlite::{lockfile, sqlite};
 extern crate self as rigger;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/cursor.rs"]
+mod cursor_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/fold.rs"]
 mod fold_fixtures;
 // The scratch fixture the fold fixtures name through `super::`, compiled here from the same
@@ -65,6 +69,8 @@ mod passed_over_fixtures;
 mod write_lock_fixtures;
 #[cfg(test)]
 mod test_support {
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    pub use crate::cursor_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::event_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]

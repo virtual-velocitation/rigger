@@ -101,13 +101,13 @@ fn status_line_on_a_clean_run() {
 }
 
 /// The literal state `rigger setup` itself leaves every project in, until the first `rigger
-/// run`: no `.rigger/events.db` exists yet anywhere, only the settings `rigger setup` just
-/// wrote. The editor polls `--line` unconditionally, with no human to read a hard error, so
-/// it must render the SAME graceful text the console's own empty-store shell renders (spec 94
-/// CONSTRAINTS WALK: "no run recorded; start one with `rigger run <spec>`"), exit 0 - never
-/// the CLI's "no rigger store found" refusal every other store-opening courier still gives
-/// (adjudication reject on the prior round: adv-u94c5-setup-wires-a-command-that-hard-fails-
-/// with-no-run-yet).
+/// run`: no `.rigger/events.db` exists yet anywhere, only the settings and the empty `graph.db`
+/// `rigger setup` just wrote. The editor polls `--line` unconditionally, with no human to read a
+/// hard error, so it must render the SAME graceful text the console's own empty-store shell
+/// renders (spec 94 CONSTRAINTS WALK: "no run recorded; start one with `rigger run <spec>`"),
+/// exit 0 - never the CLI's "no rigger store found" refusal every other store-opening courier
+/// still gives (adjudication reject on the prior round:
+/// adv-u94c5-setup-wires-a-command-that-hard-fails-with-no-run-yet).
 #[test]
 fn status_line_on_a_project_with_no_store_yet_renders_a_graceful_placeholder() {
     let dir = temp_project();

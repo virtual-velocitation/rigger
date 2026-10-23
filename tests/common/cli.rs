@@ -441,6 +441,11 @@ pub fn read_run_events(root: &Path) -> Vec<Event> {
     })
 }
 
+/// The position of the newest event in `root`'s namespaced run stream ([`read_run_events`]).
+pub fn run_log_head(root: &Path) -> u64 {
+    read_run_events(root).last().unwrap().position
+}
+
 /// The id of the run [`rigger::run::current_run_id`] resolves over `root`'s own run stream
 /// ([`read_run_events`]), `None` before any run started.
 pub fn current_run_id_of(root: &Path) -> Option<String> {
@@ -663,11 +668,8 @@ pub fn fold_state(graph_db: &Path) -> Vec<String> {
 /// The whole live projection of the graph at `graph_db`, read under `project`, and its
 /// [`fold_state`], as one comparable value: spec 101's comparison surface.
 pub fn graph_identity(graph_db: &Path, project: &str) -> (String, Vec<String>) {
-    let whole = Projector::open(graph_db.to_str().unwrap(), project)
-        .unwrap()
-        .whole()
-        .unwrap();
-    (serde_json::to_string(&whole).unwrap(), fold_state(graph_db))
+    let graph = Projector::open(graph_db.to_str().unwrap(), project).unwrap();
+    (super::fixtures::whole_json(&graph), fold_state(graph_db))
 }
 
 /// Whether `db`'s applied ledger records `position`.
@@ -689,12 +691,53 @@ pub fn applied_each(db: &Path, positions: &[u64]) -> Vec<bool> {
 pub const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it misses an \
      event the log holds, so the log's live selection is refolded once";
 
+/// What `rigger setup` prints before it rebuilds a `graph.db` that owes its rebuild only because
+/// it was folded under an older fold rule.
+pub const OLDER_RULE_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it was folded \
+     under an older fold rule, so the log's live selection is refolded once";
+
 /// The arguments of `rigger dash --export` writing its snapshot to `snapshot.html` in the
 /// project root.
 pub const DASH_SNAPSHOT_ARGS: [&str; 3] = ["dash", "--export", "snapshot.html"];
 
 /// What `rigger setup` prints once its rebuild is in place.
 pub const REBUILT_LINE: &str = "rebuilt graph.db from the event log";
+
+/// The progress line `rigger setup` prints when its rebuild has folded `events` events and reached
+/// the log's head at position `head`.
+pub fn rebuilt_through_the_head(events: usize, head: u64) -> String {
+    format!("rebuilt {events} events, through position {head} of {head} (100%)")
+}
+
+/// What `rigger setup` prints once it has pruned `nodes` dead-run nodes and reclaimed `edges`
+/// superseded edges from the graph it rebuilt.
+pub fn pruned_from_the_rebuilt_graph(nodes: usize, edges: usize) -> String {
+    format!(
+        "pruned {nodes} dead-run node(s) and reclaimed {edges} superseded edge(s) from the rebuilt \
+         graph"
+    )
+}
+
+/// How the stdout of a `rigger emit` that appended its event and folded it into `graph.db` ends.
+pub const EMIT_FOLDED_ENDING: &str = " and folded it into the context graph\n";
+
+/// What `rigger setup` prints, exiting zero, when the transaction that seeds the `graph.db` cursor
+/// meets another writer's lock past the busy timeout (spec 124, CATCH-UP LINES).
+pub const SEEDING_SKIPPED_LINE: &str = "graph.db catch-up was not started: another writer holds \
+     the write lock - the next rigger setup starts it";
+
+/// Backdate every event `root`'s `.rigger/events.db` holds past the catch-up horizon
+/// ([`super::fixtures::past_the_horizon`]), through a connection of its own (spec 124, HORIZON IN
+/// TESTS): what a binary test whose `rigger setup` must rebuild over a hole below an applied
+/// position calls before that setup.
+pub fn backdate_the_log(root: &Path) {
+    rigger_db(root, "events.db")
+        .execute(
+            "UPDATE events SET recorded_at = recorded_at - ?1",
+            [super::fixtures::past_the_horizon().as_nanos() as i64],
+        )
+        .unwrap();
+}
 
 /// The lines of `rigger setup`'s stdout `out` that report its rebuild of `graph.db`: the cause it
 /// rebuilds for, that it rebuilt, and what the file passed over, in the order printed.
@@ -894,6 +937,11 @@ pub const NOTHING_TO_SHED_MENU_LINE: &str = "--derived: no derived event to shed
 /// The `--derived` lines of what bare `rigger reset` printed, in order.
 pub fn derived_menu_lines(stdout: &str) -> Vec<&str> {
     lines_where(stdout, |line| line.starts_with("--derived:"))
+}
+
+/// The decision rows of what `rigger peers` printed, in order.
+pub fn decision_lines(stdout: &str) -> Vec<&str> {
+    lines_where(stdout, |line| line.starts_with("decision "))
 }
 
 /// The line `rigger reset --derived` prints, ended, when the log's file held no free page.
