@@ -877,12 +877,63 @@ fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Eve
     if let Some(vf) = args.get("valid_from") {
         event = event.with_valid_from(parse_valid_from(vf)?);
     }
+    refuse_another_authors_id(store, stream, &event)?;
 
     event.position = store
         .append(stream, ExpectedRevision::Any, std::slice::from_ref(&event))
         .and_then(|appended| appended.one(&format!("the {typ} on {stream:?}")))
         .map_err(|e| e.to_string())?;
     Ok(event)
+}
+
+/// Refuse a record whose id a kept record of ANOTHER author holds ([`run::kept_holder`]): the
+/// graph keeps one node per record id, so landing it would leave the holder reachable only by
+/// reading the log. The author is the `{unit}/{role}` seat of the [`META_SPAWN`] stamp
+/// ([`crate::spawn::unit_role_of`]), the attempt left out, so a unit's role re-emitting its own
+/// record across attempts and respawns is the update path, the later record winning. An unstamped
+/// emit - the operator's - is never refused, while an unstamped holder is another author to every
+/// stamped emit. Only the three record types are judged, so no other emit pays the read.
+///
+/// [`META_SPAWN`]: crate::conductor::META_SPAWN
+/// [`run::kept_holder`]: crate::run::kept_holder
+fn refuse_another_authors_id(
+    store: &dyn EventStore,
+    stream: &str,
+    event: &Event,
+) -> Result<(), String> {
+    use crate::conductor::META_SPAWN;
+    use crate::spawn::unit_role_of;
+    let seat = |e: &Event| {
+        e.meta
+            .get(META_SPAWN)
+            .filter(|s| !s.is_empty())
+            .map(|s| unit_role_of(s).to_string())
+    };
+    let Some(emitter) = seat(event) else {
+        return Ok(());
+    };
+    let record = crate::run::read::CARRY_OVER_TYPES.contains(&event.type_.as_str());
+    let Some(id) = record.then(|| crate::run::graph_node_id(event)).flatten() else {
+        return Ok(());
+    };
+    let events = crate::run::read::read_run(store, stream).map_err(|e| e.to_string())?;
+    let Some(holder) = crate::run::kept_holder(&events, &id) else {
+        return Ok(());
+    };
+    let author = seat(holder);
+    if author.as_deref() == Some(emitter.as_str()) {
+        return Ok(());
+    }
+    Err(format!(
+        "rigger_emit: refusing to emit {typ} {id:?} as {emitter}: the {held} at position {pos}, \
+         recorded by {author}, holds that id, and the graph keeps one record per id, so this one \
+         would hide it. Pick a new id; a DecisionMade that replaces that record names it in \
+         `supersedes`.",
+        typ = event.type_,
+        held = holder.type_,
+        pos = holder.position,
+        author = author.as_deref().unwrap_or("an unstamped emit"),
+    ))
 }
 
 /// The shared core of `rigger_peers` (the MCP tool) and `rigger peers` (the CLI):

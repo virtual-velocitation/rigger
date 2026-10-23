@@ -487,12 +487,30 @@ pub fn superseded_graph_nodes(events: &[Event]) -> Vec<String> {
     drop_candidates.difference(&keep).cloned().collect()
 }
 
-/// The graph-node id the projector folds a `DecisionMade` / `ReviewFinding` event under: the
-/// `id` field of its JSON body (the exact key `contextgraph`'s fold reads, verbatim - the
-/// decision/finding id is never alias-resolved). `None` for a malformed body or a
+/// THE KEPT RECORD HOLDING GRAPH-NODE ID `id` - the record a reader of that node meets, since the
+/// graph keeps one node per id, the latest fold of it: the latest decision, lesson or finding in
+/// `events` whose [`graph_node_id`] is `id` and which the run-closure rule keeps, live against the
+/// active run ([`RunOf::is_live`]) or a lesson, never attributed away. A superseded run's record
+/// holds nothing: it is history `rigger reset --runs` drops. `None` when no kept record holds
+/// `id`. `events` is the run stream in forward order or [`read::read_run`]'s read of it, which
+/// attribute every record the same live answer: a record before the active run's boundary is
+/// another run's, or pre-boundary, and neither is live once a run has started.
+pub fn kept_holder<'e>(events: &'e [Event], id: &str) -> Option<&'e Event> {
+    let active = current_run_id(events);
+    run_attribution(events)
+        .into_iter()
+        .rev()
+        .filter(|(_, run_of)| run_of.is_live(active.as_deref()) || *run_of == RunOf::Lesson)
+        .map(|(i, _)| &events[i])
+        .find(|e| graph_node_id(e).as_deref() == Some(id))
+}
+
+/// The graph-node id the projector folds a `DecisionMade` / `LessonLearned` / `ReviewFinding`
+/// event under: the `id` field of its JSON body (the exact key `contextgraph`'s fold reads,
+/// verbatim - a record id is never alias-resolved). `None` for a malformed body or a
 /// missing/empty id, so a corrupt event is skipped exactly as the projector's own fold skips
 /// it, never dropping an unrelated node.
-fn graph_node_id(e: &Event) -> Option<String> {
+pub fn graph_node_id(e: &Event) -> Option<String> {
     let body: serde_json::Value = serde_json::from_slice(&e.data).ok()?;
     let id = body.get("id")?.as_str()?;
     (!id.is_empty()).then(|| id.to_string())

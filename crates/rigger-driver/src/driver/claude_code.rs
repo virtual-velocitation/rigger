@@ -211,7 +211,7 @@ impl Driver<'_> {
         // operator's own credential rides through untouched and unread. The harness
         // environment every headless worker gets ([`harness_env`]) goes first, so the build
         // environment overrides it under the same key.
-        for (k, v) in harness_env() {
+        for (k, v) in harness_env(&opts.id) {
             cmd.env(k, v);
         }
         for (k, v) in &opts.env {

@@ -77,7 +77,7 @@ impl Driver {
         )?);
         // The harness environment every headless worker gets ([`harness_env`]), applied
         // first so the build environment below overrides it under the same key.
-        for (k, v) in harness_env() {
+        for (k, v) in harness_env(&opts.id) {
             cmd.env(k, v);
         }
         // The ONE build-environment authority's second injection site (spec 65): every

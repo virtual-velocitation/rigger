@@ -242,6 +242,21 @@ pub fn unit_of(id: &str) -> Option<&str> {
     id.rsplit_once('/').map(|(unit, _)| unit)
 }
 
+/// The `{unit}/{role}` SEAT of a spawn id `{unit}/{role}#{attempt}` - the `#{attempt}` ordinal and
+/// a `~retry{n}` respawn suffix both trimmed - the companion of [`unit_of`] and [`spawn_role`].
+/// Every attempt and respawn of one unit's role shares it, so it names a record's author across
+/// the remediation attempts that re-emit the record.
+///
+/// ```
+/// # use rigger_domain::spawn::unit_role_of;
+/// assert_eq!(unit_role_of("u1/implementer#0"), "u1/implementer");
+/// assert_eq!(unit_role_of("u1/adjudicator#1~retry2"), "u1/adjudicator");
+/// assert_eq!(unit_role_of("u1/lens:sdet#3"), "u1/lens:sdet");
+/// ```
+pub fn unit_role_of(id: &str) -> &str {
+    id.split(['#', '~']).next().unwrap_or(id)
+}
+
 /// The remediation ATTEMPT ordinal of a spawn id `{unit}/{role}#{attempt}` (a `~retry{n}`
 /// respawn suffix trimmed first), or `0` when the id carries no `#{attempt}`. The inverse of
 /// the `#{attempt}` ordinal [`spawn_id`] mints - kept here beside [`spawn_role`] so the id
