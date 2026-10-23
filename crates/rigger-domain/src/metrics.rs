@@ -104,6 +104,7 @@ use std::time::{Duration, SystemTime};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::contextgraph::query::referenced_id;
 use crate::contextgraph::{META_ACTOR, TYPE_GATE_VERDICT, TYPE_REVIEW_FINDING};
 use crate::eventstore::Event;
 use crate::ledger::{
@@ -888,7 +889,8 @@ pub fn project(events: &[Event]) -> Metrics {
                 // A finding a lens or the adversary raised. Attribute it to the
                 // conductor-stamped META_ACTOR (falling back to the payload `by`, exactly
                 // as the context-graph fold resolves provenance), and record the files it
-                // concerns for the lens-overlap and adversary-only folds. First sighting
+                // concerns for the lens-overlap and adversary-only folds, a `path:line`
+                // citation read as the file it cites ([`referenced_id`]). First sighting
                 // per id wins (a defensive dedup against a replayed finding).
                 let Some(id) = field_str(e, "id") else {
                     continue;
@@ -903,7 +905,10 @@ pub fn project(events: &[Event]) -> Metrics {
                     .cloned()
                     .or_else(|| field_str(e, "by").filter(|b| !b.is_empty()))
                     .unwrap_or_default();
-                let about = field_str_vec(e, "about");
+                let about: Vec<String> = field_str_vec(e, "about")
+                    .iter()
+                    .map(|f| referenced_id(f).to_string())
+                    .collect();
                 if !actor.is_empty() {
                     for f in &about {
                         file_actors
