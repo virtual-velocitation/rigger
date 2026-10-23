@@ -5233,15 +5233,8 @@ mod tests {
     fn the_passed_over_note_counts_by_cause_the_rows_graph_db_holds() {
         let (_dir, graph_db) = crate::test_support::temp_graph_db();
         let log = [
-            crate::test_support::entry_at("gc", "src/a.rs", "g-a", 1, 1),
-            crate::test_support::placed_at(
-                Event::new(
-                    contextgraph::TYPE_DECISION_MADE,
-                    b"{ not valid json".to_vec(),
-                ),
-                2,
-                2,
-            ),
+            crate::test_support::unresolved_entry_at(1),
+            crate::test_support::poisoned_decision_at(2),
         ];
         assert_eq!(
             crate::test_support::rebuild_answer(

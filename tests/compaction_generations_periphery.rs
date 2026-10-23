@@ -40,6 +40,7 @@ use common::cli::run_stream_identity;
 use common::cli::stopping_at_the_grounder;
 use common::cli::temp_store_project;
 use common::cli::write_workflow_fixture;
+use common::cli::LOST_FOLD_REBUILD_LINE;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
 use common::cli::{rebuild_owed, setup_ok, user_version, version_and_owed};
 use common::cli::{LOG_LEFT_AS_IT_STANDS_LINE, NOTHING_TO_SHED_LINE};
@@ -705,7 +706,11 @@ fn a_rebuild_skips_an_event_whose_fold_fails() {
             Some(PruneStats::default()),
             vec![(
                 log[3].position,
-                common::fixtures::judged_cause("payload rejected", "DecisionMade", &log[3].data)
+                common::fixtures::judged_cause(
+                    rigger::contextgraph::sqlite::PAYLOAD_REJECTED,
+                    &log[3].type_,
+                    &log[3].data
+                )
             )]
         ),
         "the owed rebuild runs, passing over the malformed event with its cause"
@@ -2837,11 +2842,6 @@ fn append_unfolded_decision(root: &Path, data: &[u8]) -> u64 {
         .unwrap()
 }
 
-/// What `rigger setup` prints before it rebuilds a `graph.db` that owes its rebuild only because
-/// it misses an event the log holds.
-const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it misses an event \
-     the log holds, so the log's live selection is refolded once";
-
 /// Given `root`'s `graph.db` misses the event at log position `lost`, when the operator runs
 /// `rigger setup` in a fresh process, then setup names the missing event as the cause, its
 /// rebuild folds it, the next emit folds, and a second `rigger setup` owes nothing - the rebuilt
@@ -3105,36 +3105,17 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
     let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
         (
-            out.lines()
-                .filter(|l| l.starts_with("rebuilding graph.db")
-                    || l.starts_with("rebuilt graph.db")
-                    || l.starts_with("passed over "))
-                .map(str::to_string)
-                .collect::<Vec<_>>(),
+            common::cli::rebuild_lines(&out),
             rejected.map(|at| applied(&rigger_file(root, "graph.db"), at)),
         ),
-        (
-            vec![
-                LOST_FOLD_REBUILD_LINE.to_string(),
-                "rebuilt graph.db from the event log".to_string(),
-                common::cli::passed_over_line(2, 0, 0),
-            ],
-            [true, true]
-        ),
+        (common::cli::rebuilt_passing_over(2, 0, 0), [true, true]),
         "setup rebuilds, and says the two events it passed over - a malformed payload and one \
          with trailing bytes; stdout: {out}"
     );
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert_eq!(
-        (
-            ok,
-            out.contains("graph.db"),
-            out.lines()
-                .filter(|l| l.starts_with("passed over "))
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        ),
-        (true, false, vec![common::cli::passed_over_line(2, 0, 0)]),
+        (ok, common::cli::rebuild_lines(&out)),
+        (true, vec![common::cli::passed_over_line(2, 0, 0)]),
         "the passed-over events are not owed again, and setup says again what the file passed \
          over; stdout: {out} stderr: {err}"
     );

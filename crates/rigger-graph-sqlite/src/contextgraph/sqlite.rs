@@ -392,15 +392,15 @@ pub struct Rebuilt {
 
 /// The class of the cause a fold pass records for an event whose own payload the judge
 /// ([`super::check_fold_payload`]) rejects (spec 124, PASSED OVER WITH ITS CAUSE).
-const PAYLOAD_REJECTED: &str = "payload rejected";
+pub const PAYLOAD_REJECTED: &str = "payload rejected";
 
 /// The class of the cause a fold pass records for a ledger entry an event of whose re-extracted
 /// batch the judge ([`super::check_fold_payload`]) rejects (spec 124, PASSED OVER WITH ITS CAUSE).
-const FOLD_FAILED: &str = "fold failed";
+pub const FOLD_FAILED: &str = "fold failed";
 
 /// The cause a fold pass records for a ledger entry whose re-extraction resolves to nothing - no
 /// source extracts to its generation (spec 124, PASSED OVER WITH ITS CAUSE).
-const RESOLVED_TO_NOTHING: &str = "resolved to nothing";
+pub const RESOLVED_TO_NOTHING: &str = "resolved to nothing";
 
 /// The cause a fold pass records under `class` for the payload `data` of a `type_` event when the
 /// judge ([`super::check_fold_payload`]) rejects it - the class, then the judge's text, the one
@@ -6040,7 +6040,7 @@ mod tests {
     /// folds.
     #[test]
     fn a_rebuild_passes_over_only_a_payload_the_fold_rejects_recording_its_cause() {
-        let malformed: &[u8] = b"{ not valid json";
+        let malformed = crate::test_support::POISON;
         let mistyped: &[u8] = br#"{"unit": 5}"#;
         let trailing: &[u8] = br#"{"id":"d-trailing","governs":["t.rs"]} x"#;
         let log = [
@@ -6058,7 +6058,7 @@ mod tests {
         let rebuilt = rebuild_in_batches(path, &log, 10, &mut Vec::new()).unwrap();
         let p = Projector::open(path, "test").unwrap();
         let rejected = |type_: &str, data: &[u8]| {
-            crate::test_support::judged_cause("payload rejected", type_, data)
+            crate::test_support::judged_cause(PAYLOAD_REJECTED, type_, data)
         };
         assert_eq!(
             (
@@ -6130,7 +6130,7 @@ mod tests {
         let rejected = |e: &Event| {
             (
                 e.position,
-                crate::test_support::judged_cause("payload rejected", &e.type_, &e.data),
+                crate::test_support::judged_cause(PAYLOAD_REJECTED, &e.type_, &e.data),
             )
         };
         assert_eq!(
@@ -6156,23 +6156,33 @@ mod tests {
     /// and [`a_direct_fold_meeting_its_own_passed_over_position_answers_its_cause_with_no_mark`]
     /// rebuild: a ledger entry at 1 no source resolves, one at 2 whose re-extracted batch
     /// ([`batch_of_the_rejected_entry`]) the judge rejects, a decision at 3 whose own payload it
-    /// rejects ([`POISON`]), and a decision at 4 that folds.
+    /// rejects, and a decision at 4 that folds.
     fn passing_over_log() -> [Event; 4] {
         [
-            crate::test_support::entry_at("gc", "src/a.rs", "g-a", 1, 1),
+            crate::test_support::unresolved_entry_at(1),
             crate::test_support::entry_at("gc", "src/b.rs", "g-b", 2, 2),
-            event_at(TYPE_DECISION_MADE, POISON, 3),
+            crate::test_support::poisoned_decision_at(3),
             decision_at("d4", "d.rs", 4),
         ]
     }
 
-    /// A payload no type's judge accepts.
-    const POISON: &[u8] = b"{ not valid json";
-
     /// What the re-extraction of [`passing_over_log`] answers for `entry`: no batch for the entry at
     /// 1, and for the one at 2 a batch whose one event's payload the judge rejects.
     fn batch_of_the_rejected_entry(entry: &Event) -> Result<Option<Vec<Event>>, Error> {
-        Ok((entry.position == 2).then(|| vec![event_at(TYPE_CODE_ENTITY_EXTRACTED, POISON, 0)]))
+        Ok((entry.position == 2).then(|| {
+            vec![event_at(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                crate::test_support::POISON,
+                0,
+            )]
+        }))
+    }
+
+    /// The cause a position of [`passing_over_log`] is passed over with when the judge rejects its
+    /// one payload, an event of `type_` - `class` names whose payload it is: the entry at 2's
+    /// re-extracted batch event (`fold failed`) or the decision at 3's own (`payload rejected`).
+    fn poison_cause(class: &str, type_: &str) -> String {
+        crate::test_support::judged_cause(class, type_, crate::test_support::POISON)
     }
 
     /// [`passing_over_log`] rebuilt into a fresh graph file, as setup rebuilds it: the rebuild
@@ -6219,23 +6229,9 @@ mod tests {
             ),
             (
                 vec![
-                    (1, "resolved to nothing".to_string()),
-                    (
-                        2,
-                        crate::test_support::judged_cause(
-                            "fold failed",
-                            TYPE_CODE_ENTITY_EXTRACTED,
-                            POISON
-                        )
-                    ),
-                    (
-                        3,
-                        crate::test_support::judged_cause(
-                            "payload rejected",
-                            TYPE_DECISION_MADE,
-                            POISON
-                        )
-                    ),
+                    (1, RESOLVED_TO_NOTHING.to_string()),
+                    (2, poison_cause(FOLD_FAILED, TYPE_CODE_ENTITY_EXTRACTED)),
+                    (3, poison_cause(PAYLOAD_REJECTED, TYPE_DECISION_MADE)),
                 ],
                 vec![true; 4],
                 vec!["d.rs".to_string()],
@@ -6254,8 +6250,7 @@ mod tests {
         let (dir, path) = rebuilt_passing_over();
         let log = passing_over_log();
         let p = Projector::open(&path, "test").unwrap();
-        let rejected =
-            crate::test_support::judged_cause("payload rejected", TYPE_DECISION_MADE, POISON);
+        let rejected = poison_cause(PAYLOAD_REJECTED, TYPE_DECISION_MADE);
         assert_eq!(
             (
                 crate::test_support::fold_entry_result(&p, &log[0], Vec::new()),
@@ -6264,12 +6259,8 @@ mod tests {
                 crate::test_support::fold_of(&p, &[log[2].clone(), decision_at("d5", "e.rs", 5)]),
             ),
             (
-                Err("resolved to nothing".to_string()),
-                Err(crate::test_support::judged_cause(
-                    "fold failed",
-                    TYPE_CODE_ENTITY_EXTRACTED,
-                    POISON
-                )),
+                Err(RESOLVED_TO_NOTHING.to_string()),
+                Err(poison_cause(FOLD_FAILED, TYPE_CODE_ENTITY_EXTRACTED)),
                 Fold::NotFolded(crate::test_support::graph_error(&rejected)),
                 Fold::NotFolded(crate::test_support::graph_error(&rejected)),
             ),

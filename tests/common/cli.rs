@@ -679,6 +679,38 @@ pub fn applied(db: &Path, position: u64) -> bool {
     )
 }
 
+/// What `rigger setup` prints before it rebuilds a `graph.db` that owes its rebuild only because
+/// it misses an event the log holds.
+pub const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it misses an \
+     event the log holds, so the log's live selection is refolded once";
+
+/// What `rigger setup` prints once its rebuild is in place.
+pub const REBUILT_LINE: &str = "rebuilt graph.db from the event log";
+
+/// The lines of `rigger setup`'s stdout `out` that report its rebuild of `graph.db`: the cause it
+/// rebuilds for, that it rebuilt, and what the file passed over, in the order printed.
+pub fn rebuild_lines(out: &str) -> Vec<String> {
+    out.lines()
+        .filter(|l| {
+            l.starts_with("rebuilding graph.db")
+                || l.starts_with("rebuilt graph.db")
+                || l.starts_with("passed over ")
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// The [`rebuild_lines`] of a `rigger setup` that rebuilt a `graph.db` missing an event the log
+/// holds and that then holds `passed_over` rows: `rejected` rejected payloads, `failed` fold
+/// failures and `unresolved` entries resolved to nothing ([`passed_over_line`]).
+pub fn rebuilt_passing_over(rejected: usize, failed: usize, unresolved: usize) -> Vec<String> {
+    vec![
+        LOST_FOLD_REBUILD_LINE.to_string(),
+        REBUILT_LINE.to_string(),
+        passed_over_line(rejected, failed, unresolved),
+    ]
+}
+
 /// The line `rigger setup` prints once its graph step ends while `graph.db` holds `passed_over`
 /// rows (spec 124, CATCH-UP LINES): `rejected` rejected payloads, `failed` fold failures and
 /// `unresolved` entries resolved to nothing, counted by cause and in total.

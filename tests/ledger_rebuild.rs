@@ -21,14 +21,16 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use common::cli::{
     applied, graph_identity, init_event_log, no_progress, passed_over_line, read_run_events,
-    rigger_file, run_stream_identity, setup_ok, temp_project, with_pre_ledger_run_store,
-    with_run_store,
+    rebuild_lines, rebuilt_passing_over, rigger_file, run_stream_identity, setup_ok, temp_project,
+    with_pre_ledger_run_store, with_run_store, LOST_FOLD_REBUILD_LINE, REBUILT_LINE,
 };
 use common::fixtures::{
     events_of, folds, generation_ingested, held_generations, judged_cause, passed_over_rows,
     walked_generation, write_text, DOCUMENT_PATH, SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
 };
-use rigger::contextgraph::sqlite::{Projector, RebuildSink};
+use rigger::contextgraph::sqlite::{
+    Projector, RebuildSink, FOLD_FAILED, PAYLOAD_REJECTED, RESOLVED_TO_NOTHING,
+};
 use rigger::contextgraph::{wired, EntryFold, Error, Fold, Projection, TYPE_CODE_ENTITY_EXTRACTED};
 use rigger::eventstore::{Event, ExpectedRevision};
 use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
@@ -42,13 +44,6 @@ use common::fixtures::{
 };
 #[cfg(feature = "symbols")]
 use rigger::contextgraph::{REL_CONTAINS, REL_DOC_REFERENCES, REL_SPECIFIES};
-
-/// What `rigger setup` prints before it rebuilds a `graph.db` that misses an event the log holds.
-const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it misses an event \
-     the log holds, so the log's live selection is refolded once";
-
-/// What `rigger setup` prints once its rebuild is in place.
-const REBUILT_LINE: &str = "rebuilt graph.db from the event log";
 
 /// The generation the extraction tree's fixture records for the batch under `prefix` for `path`,
 /// as a graph answers the generation it holds.
@@ -173,15 +168,7 @@ fn setup(cwd: &Path) -> (String, String, bool) {
 
 /// `rigger setup` in `cwd`, which must succeed: the lines it prints about its rebuild.
 fn setup_rebuild_lines(cwd: &Path) -> Vec<String> {
-    let out = setup_ok(cwd, &[("RIGGER_NPM", "true")]);
-    out.lines()
-        .filter(|l| {
-            l.starts_with("rebuilding graph.db")
-                || l.starts_with("rebuilt graph.db")
-                || l.starts_with("passed over ")
-        })
-        .map(str::to_string)
-        .collect()
+    rebuild_lines(&setup_ok(cwd, &[("RIGGER_NPM", "true")]))
 }
 
 /// Give the directory `cwd` an event log, and let `rigger setup` settle its scaffold and its
@@ -716,14 +703,7 @@ fn setup_in_a_repository_subdirectory_resolves_from_the_top_level_not_the_workin
     );
     stand_graph(&sub, &project);
 
-    assert_eq!(
-        setup_rebuild_lines(&sub),
-        vec![
-            LOST_FOLD_REBUILD_LINE.to_string(),
-            REBUILT_LINE.to_string(),
-            passed_over_line(0, 0, 1)
-        ]
-    );
+    assert_eq!(setup_rebuild_lines(&sub), rebuilt_passing_over(0, 0, 1));
     assert_eq!(
         generations(
             &sub,
@@ -851,18 +831,14 @@ fn a_rebuild_over_an_entry_no_source_resolves_reaches_the_facts_of_every_latest_
 
     assert_eq!(
         setup_rebuild_lines(root),
-        vec![
-            LOST_FOLD_REBUILD_LINE.to_string(),
-            REBUILT_LINE.to_string(),
-            passed_over_line(0, 0, 2)
-        ],
+        rebuilt_passing_over(0, 0, 2),
         "an unresolved entry is passed over, and setup says so"
     );
 
     let graph_db = rigger_file(root, "graph.db");
     assert_eq!(
         passed_over_rows(graph_db.to_str().unwrap()),
-        [positions[3], positions[5]].map(|at| (at, "resolved to nothing".to_string())),
+        [positions[3], positions[5]].map(|at| (at, RESOLVED_TO_NOTHING.to_string())),
         "each entry no source resolves is passed over with its cause"
     );
     assert_eq!(
@@ -1199,20 +1175,13 @@ fn without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
     );
     stand_graph(root, &project);
 
-    assert_eq!(
-        setup_rebuild_lines(root),
-        vec![
-            LOST_FOLD_REBUILD_LINE.to_string(),
-            REBUILT_LINE.to_string(),
-            passed_over_line(0, 0, 4)
-        ]
-    );
+    assert_eq!(setup_rebuild_lines(root), rebuilt_passing_over(0, 0, 4));
     let graph_db = rigger_file(root, "graph.db");
     assert_eq!(
         passed_over_rows(graph_db.to_str().unwrap()),
         positions
             .iter()
-            .map(|&at| (at, "resolved to nothing".to_string()))
+            .map(|&at| (at, RESOLVED_TO_NOTHING.to_string()))
             .collect::<Vec<_>>()
     );
     assert_eq!(
@@ -1255,14 +1224,7 @@ fn an_entry_whose_payload_does_not_parse_is_passed_over_by_a_rebuild_that_comple
     let unparsable = append_unfolded(root, Event::new(TYPE_GENERATION_INGESTED, b"{}".to_vec()));
     let parsable = append_unfolded(root, source_entry());
 
-    assert_eq!(
-        setup_rebuild_lines(root),
-        vec![
-            LOST_FOLD_REBUILD_LINE.to_string(),
-            REBUILT_LINE.to_string(),
-            passed_over_line(1, 0, 1),
-        ]
-    );
+    assert_eq!(setup_rebuild_lines(root), rebuilt_passing_over(1, 0, 1));
     let graph_db = rigger_file(root, "graph.db");
     assert_eq!(
         (
@@ -1272,11 +1234,8 @@ fn an_entry_whose_payload_does_not_parse_is_passed_over_by_a_rebuild_that_comple
         (
             [true, true],
             vec![
-                (
-                    unparsable,
-                    judged_cause("payload rejected", TYPE_GENERATION_INGESTED, b"{}")
-                ),
-                (parsable, "resolved to nothing".to_string()),
+                (unparsable, unparsable_entry_cause()),
+                (parsable, RESOLVED_TO_NOTHING.to_string()),
             ]
         )
     );
@@ -1286,6 +1245,12 @@ fn an_entry_whose_payload_does_not_parse_is_passed_over_by_a_rebuild_that_comple
         "the tree holds no file at the parsable entry's path, so it folded nothing"
     );
     assert_eq!(setup_rebuild_lines(root), vec![passed_over_line(1, 0, 1)]);
+}
+
+/// The cause a ledger entry whose own payload is `{}` - no generation the fold can parse - is
+/// passed over with.
+fn unparsable_entry_cause() -> String {
+    judged_cause(PAYLOAD_REJECTED, TYPE_GENERATION_INGESTED, b"{}")
 }
 
 /// `Projector::rebuild` handed a re-extracting function that answers a batch event whose payload
@@ -1347,13 +1312,10 @@ fn a_rebuild_passes_a_re_extracted_batch_the_fold_rejects_over_as_a_fold_failure
         (
             vec![2],
             vec![
-                (
-                    1,
-                    judged_cause("payload rejected", TYPE_GENERATION_INGESTED, b"{}")
-                ),
+                (1, unparsable_entry_cause()),
                 (
                     2,
-                    judged_cause("fold failed", TYPE_CODE_ENTITY_EXTRACTED, poison)
+                    judged_cause(FOLD_FAILED, TYPE_CODE_ENTITY_EXTRACTED, poison)
                 ),
             ],
             None,
@@ -1381,10 +1343,7 @@ fn a_rebuild_passes_a_re_extracted_batch_the_fold_rejects_over_as_a_fold_failure
             applied(&db, 2),
         ),
         (
-            vec![(
-                1,
-                judged_cause("payload rejected", TYPE_GENERATION_INGESTED, b"{}")
-            )],
+            vec![(1, unparsable_entry_cause())],
             held_generation("gc", SOURCE_PATH),
             true,
             true
@@ -1683,11 +1642,7 @@ fn an_object_git_does_not_answer_falls_to_the_tree_and_a_name_that_is_no_object_
     std::fs::remove_file(&truncated).unwrap();
     assert_eq!(
         setup_rebuild_lines(root),
-        vec![
-            LOST_FOLD_REBUILD_LINE.to_string(),
-            REBUILT_LINE.to_string(),
-            passed_over_line(0, 0, 1)
-        ],
+        rebuilt_passing_over(0, 0, 1),
         "the rebuild completes and passes over only the entry no source resolves"
     );
     let graph_db = rigger_file(root, "graph.db");

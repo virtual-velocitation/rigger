@@ -102,6 +102,24 @@ pub fn entry_at(prefix: &str, file: &str, generation: &str, pos: u64, secs: u64)
     )
 }
 
+/// A payload no type's judge accepts ([`rigger::contextgraph::check_fold_payload`]): malformed
+/// JSON.
+pub const POISON: &[u8] = b"{ not valid json";
+
+/// The ledger entry of `gc/src/a.rs` at generation `g-a`, at log position `position` and valid
+/// from `position` seconds past the epoch, which a test's re-extraction resolves to nothing
+/// ([`entry_at`]).
+pub fn unresolved_entry_at(position: u64) -> Event {
+    entry_at("gc", "src/a.rs", "g-a", position, position)
+}
+
+/// A decision at log position `position`, valid from `position` seconds past the epoch, whose
+/// payload is [`POISON`].
+pub fn poisoned_decision_at(position: u64) -> Event {
+    let poisoned = Event::new(rigger::contextgraph::TYPE_DECISION_MADE, POISON.to_vec());
+    placed_at(poisoned, position, position)
+}
+
 /// The `gc` identity a code file `file` keys its batch under, as its ledger entry names it.
 pub fn gc_identity(file: &str) -> String {
     generation_ingested("gc", file, "", "", false).identity()
