@@ -733,7 +733,9 @@ pub enum Fold {
     Folded,
     /// The events are not in the graph, for this reason: the graph could not be had (unopenable,
     /// not wired), owes its rebuild ([`REBUILD_OWED`]), or refused the write (held past its
-    /// busy timeout).
+    /// busy timeout). A projection that records positions it passed over may also answer here an
+    /// event of its own already recorded passed over, with that position's cause: that event is
+    /// not in the graph, while the other events of its batch are folded and committed.
     NotFolded(String),
 }
 
@@ -780,8 +782,9 @@ impl Fold {
     }
 
     /// Fold `events` in one transaction into the graph `graph` yields, or say why they were not
-    /// folded - the graph could not be had, or refused them. No events is nothing to fold, so it is
-    /// folded without opening the graph.
+    /// folded - the graph could not be had, or refused them, or one of them is a position the graph
+    /// already recorded passed over, whose cause is answered after the batch's other events
+    /// commit. No events is nothing to fold, so it is folded without opening the graph.
     pub fn of_batch<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
         graph: impl FnOnce() -> Result<G, Error>,
         events: &[Event],
@@ -878,8 +881,12 @@ pub trait Projection: Send + Sync {
     fn apply(&self, e: &Event, access: FoldAccess) -> Result<(), Error>;
 
     /// Fold a whole batch of events into the graph in ONE transaction, idempotently per global
-    /// position - the batched analogue of [`apply`](Projection::apply). The result is exactly what
-    /// applying each event in order would produce; the only difference is transaction CADENCE.
+    /// position - the batched analogue of [`apply`](Projection::apply). The graph it leaves is
+    /// exactly what applying each event in order would produce; the only difference is transaction
+    /// CADENCE. One exception to the answer: an implementation that records positions passed over
+    /// may meet one of the batch's own positions already recorded so, and then commits the batch's
+    /// other events and answers the first such position's cause, where the default loop stops at
+    /// it.
     ///
     /// The default folds each event through [`apply`](Projection::apply) (one transaction per
     /// event), so an implementation with no cheaper batch path is unaffected and every `apply`
@@ -896,7 +903,8 @@ pub trait Projection: Send + Sync {
 
     /// Fold one ledger entry of perception - `entry`, a `GenerationIngested` event - with its
     /// batch, in ONE transaction, and answer which of three things happened ([`EntryFold`]): an
-    /// entry whose position this projection already folded folds nothing; one naming the
+    /// entry whose position this projection already folded folds nothing - or, when it recorded
+    /// that position passed over, answers that position's cause as its error; one naming the
     /// generation its identity already holds records only its position; any other records its
     /// position and asks `batch` for the entry's batch, once. A batch `batch` answers folds event
     /// by event at the entry's position and valid-time, every event asserted under the entry's

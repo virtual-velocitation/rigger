@@ -75,7 +75,9 @@ struct ReviewFinding {
 /// never drift from what the fold applies. It answers for every type whose payload the fold reads,
 /// so it is the one judge of a payload the fold deterministically rejects: an emit surface calls it
 /// BEFORE appending, so such an event never reaches the log through it, and a rebuild passes over
-/// exactly the events it rejects - any other fold failure is the store's, not the payload's. The
+/// the events it rejects, and the ledger entries an event of whose re-extracted batch it rejects;
+/// a rebuild also passes over the entries whose re-extraction resolves to nothing, which no payload
+/// judgment decides - any other fold failure is the store's, not the payload's. The
 /// error names the offending field and the shape expected; a type whose payload the fold does not
 /// read passes unchecked. Only the store-gated emit surfaces call it, so it compiles where they
 /// and the fold do.
@@ -122,8 +124,9 @@ mod tests {
     use super::*;
 
     /// Every type whose payload the fold reads has its payload judged - so a rebuild passes over
-    /// exactly the events the fold rejects, a ledger entry of perception among them - and a type
-    /// whose payload the fold does not read passes unchecked.
+    /// the events whose payload the fold rejects, a ledger entry of perception among them, beside
+    /// the entries whose re-extraction resolves to nothing - and a type whose payload the fold does
+    /// not read passes unchecked.
     #[test]
     fn every_type_whose_payload_the_fold_reads_is_judged_and_no_other() {
         let judged = [
