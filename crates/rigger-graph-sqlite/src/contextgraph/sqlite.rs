@@ -6836,12 +6836,15 @@ mod tests {
         assert_eq!(p.owed_because().unwrap(), vec![OWED_OLDER_RULE]);
     }
 
-    /// The shared-node rule (spec 116) is fold rule 2 and the path-addressed node (spec 119) rule
-    /// 3: a file that folded under rule 1 took a shared node's kind and line from the last
-    /// definition folded, and one that folded under rule 2 holds a nested definition at its flat
-    /// id, so each owes its rebuild, and one at rule 3 owes none.
+    /// The shared-node rule (spec 116) is fold rule 2, the path-addressed node (spec 119) rule 3
+    /// and a record's reference read as the id it names rule 4: a file that folded under rule 1
+    /// took a shared node's kind and line from the last definition folded, one that folded under
+    /// rule 2 holds a nested definition at its flat id, and one that folded under rule 3 holds a
+    /// record citing lines of a file ABOUT an artifact at the citation rather than the file, so
+    /// each owes its rebuild, and one at rule 4 owes none.
     #[test]
-    fn a_graph_file_folded_at_projection_version_1_or_2_owes_its_rebuild_and_one_at_3_owes_none() {
+    fn a_graph_file_folded_at_projection_version_1_2_or_3_owes_its_rebuild_and_one_at_4_owes_none()
+    {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let p = Projector::open(path.to_str().unwrap(), "test").unwrap();
@@ -6856,7 +6859,8 @@ mod tests {
         };
         assert_eq!(owed_at(1), vec![OWED_OLDER_RULE]);
         assert_eq!(owed_at(2), vec![OWED_OLDER_RULE]);
-        assert_eq!(owed_at(3), Vec::<&str>::new());
+        assert_eq!(owed_at(3), vec![OWED_OLDER_RULE]);
+        assert_eq!(owed_at(4), Vec::<&str>::new());
     }
 
     /// The owed mark belongs to the graph file whose fold it lost: once that file is gone the mark
