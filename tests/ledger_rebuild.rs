@@ -27,7 +27,8 @@ use common::cli::{
 };
 use common::fixtures::{
     events_of, folds, generation_ingested, held_generations, judged_cause, passed_over_rows,
-    walked_generation, write_text, DOCUMENT_PATH, SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
+    rejected_row, walked_generation, write_text, DOCUMENT_PATH, SOURCE_PATH, TEST_MODULE_PATH,
+    WORKFLOW_PATH,
 };
 use rigger::contextgraph::sqlite::{
     Projector, RebuildSink, FOLD_FAILED, PAYLOAD_REJECTED, RESOLVED_TO_NOTHING,
@@ -1307,7 +1308,7 @@ fn a_rebuild_passes_a_re_extracted_batch_the_fold_rejects_over_as_a_fold_failure
         (
             vec![2],
             vec![
-                (1, unparsable_entry_cause()),
+                rejected_row(&log[0]),
                 (
                     2,
                     judged_cause(FOLD_FAILED, TYPE_CODE_ENTITY_EXTRACTED, poison)
@@ -1338,7 +1339,7 @@ fn a_rebuild_passes_a_re_extracted_batch_the_fold_rejects_over_as_a_fold_failure
             applied(&db, 2),
         ),
         (
-            vec![(1, unparsable_entry_cause())],
+            vec![rejected_row(&log[0])],
             held_generation("gc", SOURCE_PATH),
             true,
             true
