@@ -872,6 +872,16 @@ mod tests {
             ),
             ("a.rs", "other.rs", false, "an unrelated file must not catch"),
         ]);
+        catches_matches_a_citation_of_lines_of_the_anchor: assert_catches(&[
+            ("src/sum.rs", "src/sum.rs:12", true, "a line of the anchor must catch"),
+            (
+                "src/sum.rs",
+                "/home/dev/repo/src/sum.rs:3-9",
+                true,
+                "a span of lines of an absolute spelling of the anchor must catch",
+            ),
+            ("a.rs", "extra.rs:12", false, "a line of another file must not catch"),
+        ]);
     }
 
     #[test]
