@@ -3321,6 +3321,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_record_citing_lines_of_a_file_renders_in_the_files_sections",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "82c58596bcfb59fb"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "grounding_omits_a_resolved_finding_and_keeps_the_open_one",
     "is_test": true,
     "proposed_module": "conductor::tests",
