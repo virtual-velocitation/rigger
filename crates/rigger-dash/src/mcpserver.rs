@@ -594,10 +594,10 @@ impl<'a> Server<'a> {
     /// List peers' decisions, lessons, AND review findings, optionally scoped to a
     /// blast-radius (§5.3). When the caller passes a `files` array (the agent's
     /// blast-radius), only decisions whose `governs`, lessons whose `about`, and findings
-    /// whose `about` intersect it come back; absent or empty, every one does. The findings
-    /// are how concurrent review lenses see each other's findings LIVE, before any of
-    /// them grounds again - the same side-car channel that surfaces peer decisions and the
-    /// lessons a capped prompt section elided.
+    /// whose `about` intersect it come back; absent or empty, every one does - each section the
+    /// newest under its budget (see [`peers_json`]). The findings are how concurrent review
+    /// lenses see each other's findings LIVE, before any of them grounds again - the same
+    /// side-car channel that surfaces peer decisions and lessons.
     fn tool_peers(&self, args: &Value) -> Result<Value, ToolError> {
         let files: Vec<String> = args
             .get("files")
@@ -755,14 +755,14 @@ impl<'a> Server<'a> {
         match self.surface() {
             Surface::SpawnBound => json!([
                 {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Stamped with the spawn this server is bound to; optionally set valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string). meta.spawn, if set, must name THIS server's own bound spawn.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
-                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far this run, so you do not work blind to them. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
+                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs' (each decision labeled live or historical), so you do not work blind to them. Each section returns its newest records under a byte budget; when any are left out, `left_out` counts them and says how to read one by id. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
                 {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
                 {"name": "rigger_graph", "description": "The STRUCTURE and resolution lookups: pass `show` <entity> for its definition site (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
                 {"name": "rigger_progress", "description": "Record one live progress line for the spawn this server is bound to, so an observer sees you working between milestones. Report one short line after each significant step; never batch them up.", "inputSchema": {"type": "object", "properties": {"activity": {"type": "string", "description": "a short one-line description of what you just did"}}, "required": ["activity"]}},
                 {"name": "rigger_scratch", "description": "Your own rigger-assigned scratch container - the one directory every probe repo, verification worktree, test build, or CARGO_TARGET_DIR you create must live under, never /tmp or a session scratchpad. Reaped the moment your result records.", "inputSchema": {"type": "object", "properties": {}}},
             ]),
             Surface::Lookup => json!([
-                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far this run, so you do not work blind to them. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
+                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs' (each decision labeled live or historical), so you do not work blind to them. Each section returns its newest records under a byte budget; when any are left out, `left_out` counts them and says how to read one by id. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
                 {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
                 {"name": "rigger_graph", "description": "The STRUCTURE and resolution lookups: pass `show` <entity> for its definition site (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
             ]),
@@ -770,7 +770,7 @@ impl<'a> Server<'a> {
                 {"name": "rigger_next", "description": "Pick up the next queued agent spawn. The id is empty when nothing is waiting.", "inputSchema": {"type": "object", "properties": {}}},
                 {"name": "rigger_result", "description": "Report an agent's final result by spawn id.", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "output": {"type": "string"}, "error": {"type": "string"}}, "required": ["id"]}},
                 {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Optionally set meta (e.g. the acting agent, which stamps the graph's DECIDED edge) and valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string), e.g. {\"actor\": \"<agent-id>\"}.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
-                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings other agents have raised so far this run, so you do not work blind to them (concurrent reviewers see each other's findings live; lessons recover what a capped prompt section elided). Pass `files` (your blast-radius) to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs`, and lessons and findings whose `about`, intersect these files are returned. Omit for all."}}}},
+                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings other agents have recorded so far, this run's and earlier runs' (each decision labeled live or historical), so you do not work blind to them (concurrent reviewers see each other's findings live). Each section returns its newest records under a byte budget; when any are left out, `left_out` counts them and says how to read one by id. Pass `files` (your blast-radius) to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs`, and lessons and findings whose `about`, intersect these files are returned. Omit for all."}}}},
                 {"name": "rigger_activity", "description": "The live per-agent view of the current run: one entry per in-flight agent with its stage, latest activity, how long since that activity and its last heartbeat, and its last event-store milestone (and how long ago - the blackout this fills). Rigger consolidates the run stream, the progress store, and the liveness markers and presents them here, so you get up-to-the-second agent state with no filesystem access of your own.", "inputSchema": {"type": "object", "properties": {}}},
             ]),
         }
@@ -888,28 +888,85 @@ fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Eve
 /// The shared core of `rigger_peers` (the MCP tool) and `rigger peers` (the CLI):
 /// the peers' decisions, lessons, AND review findings, scoped to `files` (empty = all),
 /// EXACTLY as the MCP tool returns them - `{"decisions": [...], "lessons": [...],
-/// "findings": [...]}`. Both paths call this so the CLI and the MCP surface stay
-/// identical. The three sections mirror the three capped prompt sections
-/// (`graph_context`), so the elision note each capped section renders - "recover the
-/// full set with `rigger peers <file>`" - is honest for every section: what the prompt
-/// trims, this surface returns in full (adj-u1gap17).
+/// "findings": [...]}`, each in log order. Both paths call this so the CLI and the MCP
+/// surface stay identical. Each section keeps its NEWEST records under the matching capped
+/// prompt section's verbatim count and byte budget, through the conductor's one
+/// [`within_budget`](crate::conductor::within_budget) rule, so no file's history can grow a
+/// reply past a bound. When a section leaves records out, a `left_out` object counts them per
+/// section and carries the one-line `note` naming how to narrow the call or read a left-out
+/// record by id ([`RECORD_RECOVERY`](crate::conductor::RECORD_RECOVERY)).
 pub fn peers_json(peers: &Sidecar, files: &[String]) -> Value {
-    let decisions: Vec<Value> = peers
-        .peers_for::<crate::sidecar::PeerDecision>(files)
-        .iter()
-        .map(|d| json!({"id": d.id, "summary": d.summary, "governs": d.governs, "live": d.live}))
-        .collect();
-    let lessons: Vec<Value> = peers
-        .peers_for::<crate::sidecar::PeerLesson>(files)
-        .iter()
-        .map(|l| json!({"id": l.id, "summary": l.summary, "about": l.about}))
-        .collect();
-    let findings: Vec<Value> = peers
-        .peers_for::<crate::sidecar::PeerFinding>(files)
-        .iter()
-        .map(|f| json!({"id": f.id, "by": f.by, "summary": f.summary, "about": f.about}))
-        .collect();
-    json!({"decisions": decisions, "lessons": lessons, "findings": findings})
+    use crate::conductor::{
+        DECISIONS_BUDGET_BYTES, DECISIONS_VERBATIM_N, FINDINGS_BUDGET_BYTES, FINDINGS_VERBATIM_N,
+        LESSONS_BUDGET_BYTES, LESSONS_VERBATIM_N,
+    };
+    let (decisions, decisions_out) = newest_within(
+        peers
+            .peers_for::<crate::sidecar::PeerDecision>(files)
+            .iter()
+            .map(
+                |d| json!({"id": d.id, "summary": d.summary, "governs": d.governs, "live": d.live}),
+            ),
+        DECISIONS_VERBATIM_N,
+        DECISIONS_BUDGET_BYTES,
+    );
+    let (lessons, lessons_out) = newest_within(
+        peers
+            .peers_for::<crate::sidecar::PeerLesson>(files)
+            .iter()
+            .map(|l| json!({"id": l.id, "summary": l.summary, "about": l.about})),
+        LESSONS_VERBATIM_N,
+        LESSONS_BUDGET_BYTES,
+    );
+    let (findings, findings_out) = newest_within(
+        peers
+            .peers_for::<crate::sidecar::PeerFinding>(files)
+            .iter()
+            .map(|f| json!({"id": f.id, "by": f.by, "summary": f.summary, "about": f.about})),
+        FINDINGS_VERBATIM_N,
+        FINDINGS_BUDGET_BYTES,
+    );
+    let mut reply = json!({"decisions": decisions, "lessons": lessons, "findings": findings});
+    let counts: Vec<String> = [
+        (decisions_out, "decision"),
+        (lessons_out, "lesson"),
+        (findings_out, "finding"),
+    ]
+    .iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, noun)| format!("{n} older {noun}(s)"))
+    .collect();
+    if !counts.is_empty() {
+        reply["left_out"] = json!({
+            "decisions": decisions_out,
+            "lessons": lessons_out,
+            "findings": findings_out,
+            "note": format!(
+                "(+{} left out to keep this reply under budget - narrow with fewer files, or {})",
+                counts.join(", "),
+                crate::conductor::RECORD_RECOVERY
+            ),
+        });
+    }
+    reply
+}
+
+/// One `peers_json` section under its budget: `records` arrive in log order (oldest first), so
+/// the newest are walked first through the shared
+/// [`within_budget`](crate::conductor::within_budget) rule, each sized by its JSON rendering;
+/// the kept records return in log order beside how many were left out.
+fn newest_within(
+    records: impl DoubleEndedIterator<Item = Value> + ExactSizeIterator,
+    verbatim_n: usize,
+    budget_bytes: usize,
+) -> (Vec<Value>, usize) {
+    let total = records.len();
+    let mut kept = crate::conductor::within_budget(records.rev(), verbatim_n, budget_bytes, |r| {
+        r.to_string().len()
+    });
+    kept.reverse();
+    let left_out = total - kept.len();
+    (kept, left_out)
 }
 
 /// Parse a `valid_from` argument into a [`SystemTime`]: a JSON integer of unix

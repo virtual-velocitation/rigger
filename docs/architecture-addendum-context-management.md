@@ -169,7 +169,8 @@ graph-edge-based dependency-restore pass (structural, not the external article's
 The only capability that **bounds cross-run growth automatically** (measured: 87% of the graph
 was dead-run cruft; `reset --runs` is the manual shed). A between-runs distiller — a sibling of
 `playbooks.rs`, which already consolidates `LessonLearned` into a rebuildable projection — folds
-**older-than-current-run** findings/decisions into per-file digest nodes, raw kept and
+**older-than-current-run** findings/decisions into per-file digest nodes, raw kept, readable
+by id with `rigger graph --show <id>` and, the newest per file,
 retrievable via `rigger peers`. It runs as a projection over the log (§2.1), carries run
 provenance (§2.3), and preserves `LessonLearned`. This is the automatic form of what
 `reset --runs` does by hand and keeps grounding lean over months, not just after a manual prune.

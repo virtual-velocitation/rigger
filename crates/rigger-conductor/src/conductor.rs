@@ -11177,9 +11177,10 @@ impl RunCtx<'_> {
         // and the producer/planner - keeps the FULL bulk unchanged.
         match slice {
             // The trimmed doer slice: OMIT the capped bulk, point at the lookup verbs instead. The
-            // reference history stays retrievable UNCAPPED through `rigger peers` (memory), with
-            // `rigger graph --around` (structure) and `rigger graph --show` (text) for the rest;
-            // the store keeps everything, the implement prompt just stops pushing the truncated blob.
+            // reference history stays retrievable through `rigger peers` (memory: the newest under
+            // the sections' own budget), with `rigger graph --around` (structure) and `rigger graph
+            // --show` (text, any record by id) for the rest; the store keeps everything, the
+            // implement prompt just stops pushing the truncated blob.
             GroundingSlice::Implement => write_peers_pointer(&mut b),
             // The full slice: every prompt slice is budgeted (Gap 15's principle, extended to all
             // sections by Gap 17): the decisions, lessons, and findings sections each render through
@@ -12581,7 +12582,9 @@ fn audit_id(unit: &str, attempt: u32) -> String {
 
 /// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
 /// prompt. Older ones collapse into a single visible elision note. The store keeps
-/// the full history; only this prompt slice narrows.
+/// the full history; only this prompt slice narrows. This and the five constants after it
+/// also bound `rigger peers` / the `rigger_peers` tool section by section, through the one
+/// [`within_budget`] rule.
 pub const DECISIONS_VERBATIM_N: usize = 12;
 
 /// Gap-15 prompt budget: a hard byte cap on the verbatim body of the
@@ -12702,6 +12705,40 @@ const DESIGN_INTENT_BUDGET_BYTES: usize = 24 * 1024;
 const DESIGN_INTENT_HEADER: &str =
     "Design intent that governs these files (the handbook rule that governs them, the RA/architecture section that specifies them, the load-bearing decision that constrains them, and the local rationale - reached by the one graph traversal, honor them):";
 
+/// The ONE budget rule every capped record surface shares - the prompt sections (through
+/// [`render_capped_section`]) and `rigger peers` / the `rigger_peers` tool alike: walking
+/// `entries` in their ranked order (newest first), keep the leading ones while fewer than
+/// `verbatim_n` are kept AND the next entry's `size` still fits under `budget_bytes`; the first
+/// entry that crosses either cap ends the slice, so the kept prefix is the most-recent slice the
+/// caps allow and everything after it is left out. Entries are produced lazily, so nothing past
+/// the cut is rendered.
+pub fn within_budget<T>(
+    entries: impl IntoIterator<Item = T>,
+    verbatim_n: usize,
+    budget_bytes: usize,
+    size: impl Fn(&T) -> usize,
+) -> Vec<T> {
+    let mut used = 0usize;
+    let mut kept = Vec::new();
+    for entry in entries {
+        let bytes = size(&entry);
+        if kept.len() >= verbatim_n || used + bytes > budget_bytes {
+            break;
+        }
+        used += bytes;
+        kept.push(entry);
+    }
+    kept
+}
+
+/// How a reader reaches a decision, lesson or finding a capped surface left out: by its id
+/// through the graph. Every capped record surface names it in its left-out note - the prompt
+/// sections, `rigger peers` (which keeps only the newest under the same budget, so it is no
+/// full-set recovery) and `rigger graph --around`'s governance tail - so the instruction is
+/// stated once.
+pub const RECORD_RECOVERY: &str = "read one by id with `rigger graph --show <id>` (the \
+     `rigger_graph` tool's `show`; its `around` on a file lists the ids)";
+
 /// The SINGLE recent-N + byte-budget + elision-note core behind EVERY budgeted prompt section -
 /// the three node sections (through [`write_capped_section`]) AND the code-neighborhood section
 /// ([`write_code_neighborhood`]). Given the already-ranked, already-deduped `candidates` and a
@@ -12732,16 +12769,17 @@ fn render_capped_section<'a>(
     b.push_str(header);
     b.push('\n');
 
-    // The verbatim slice under the count / byte caps, tracking the ids actually rendered so
-    // dependency-restore can seed from them and the elision note can exclude anything restored.
-    let mut used = 0usize;
+    // The verbatim slice under the count / byte caps (the one [`within_budget`] rule), tracking
+    // the ids actually rendered so dependency-restore can seed from them and the elision note can
+    // exclude anything restored.
     let mut rendered_ids: BTreeSet<&'a str> = BTreeSet::new();
-    for &n in candidates {
-        let entry = line(n);
-        if rendered_ids.len() >= verbatim_n || used + entry.len() > budget_bytes {
-            break;
-        }
-        used += entry.len();
+    let slice = within_budget(
+        candidates.iter().map(|&n| (n, line(n))),
+        verbatim_n,
+        budget_bytes,
+        |(_, entry)| entry.len(),
+    );
+    for (n, entry) in slice {
         b.push_str(&entry);
         rendered_ids.insert(n.id.as_str());
     }
@@ -13348,15 +13386,16 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
 /// sections (spec 36): the implement prompt stops PUSHING the large, ~85%-truncated reference blob
 /// and says the history is retrievable, not inlined. The three verbs that retrieve it are named by
 /// the shared [`write_lookup_pointer`] appended right after (spec 58), so this note and the pointer
-/// stay one story - `rigger peers` is the memory verb that returns the omitted decisions / lessons
-/// / findings UNCAPPED. A fixed string with no seed/graph data, so it is deterministic by
-/// construction. Hyphens only (a gate rejects U+2014), and it names only first-party tools.
+/// stay one story - `rigger peers` is the memory verb that returns the newest omitted decisions /
+/// lessons / findings scoped to the files, and `rigger graph --show` reads any one by id. A fixed
+/// string with no seed/graph data, so it is deterministic by construction. Hyphens only (a gate
+/// rejects U+2014), and it names only first-party tools.
 fn write_peers_pointer(b: &mut String) {
     b.push_str(
         "\nPrior decisions, lessons, and findings about these files are not inlined here to keep \
-         this prompt precise - retrieve the ones your sub-problem needs, uncapped and scoped to \
-         your blast-radius files, with the lookup verbs below (the full history is retained in the \
-         store, not truncated into this prompt).\n",
+         this prompt precise - retrieve the ones your sub-problem needs, scoped to your \
+         blast-radius files, with the lookup verbs below (the full history is retained in the \
+         store and any record reads by id, not truncated into this prompt).\n",
     );
     write_lookup_pointer(b);
 }
