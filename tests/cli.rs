@@ -6723,6 +6723,152 @@ stages:
     );
 }
 
+/// One `rigger run` of a reviewed one-stage unit through the REAL cli host, whose fake `claude`
+/// worker prints `worker_lines` and whose adjudicator prints `judge_lines` before approving: the
+/// host bridges every emit line on an agent's stdout into the conductor's in-process emit. One
+/// remediation attempt, so a refused line escalates the unit at once. Returns everything the run
+/// said (stdout, stderr and every event's payload, one haystack) and the run's events.
+#[cfg(unix)]
+fn run_with_bridged_lines(
+    worker_lines: &str,
+    judge_lines: &str,
+) -> (String, Vec<rigger::eventstore::Event>) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_agent(
+        root,
+        "worker",
+        "Read, Edit",
+        "RIGGERTEST_WORKER: do the unit.",
+    );
+    write_agent(root, "a", "Read", "RIGGERTEST_LENS: review it.");
+    write_agent(
+        root,
+        "adv",
+        "Read",
+        "RIGGERTEST_ADVERSARY: try to break it.",
+    );
+    write_agent(
+        root,
+        "judge",
+        "Read",
+        "RIGGERTEST_ADJUDICATOR: adjudicate it.",
+    );
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        r#"defaults:
+  grounder: nop
+  budget: 60
+  max_retries: 1
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: none
+    review:
+      lenses: [a]
+      adversary: adv
+      adjudicator: judge
+"#,
+    )
+    .unwrap();
+    let (_fakebin, path_env) = install_fake_claude(&format!(
+        r#"  *RIGGERTEST_LENS*)
+    echo "reviewed: no blocker"
+    ;;
+  *RIGGERTEST_ADVERSARY*)
+    echo "tried and failed"
+    ;;
+  *RIGGERTEST_ADJUDICATOR*)
+    cat <<'LINES'
+{judge_lines}
+LINES
+    echo '{{"verdict":"approve"}}'
+    ;;
+  *RIGGERTEST_WORKER*)
+    echo "pub fn work() {{}}" > work.rs
+    cat <<'LINES'
+{worker_lines}
+LINES
+    ;;
+"#
+    ));
+    let (out, err, _ok) = run_rigger_envs(root, &["run"], &[("PATH", &path_env)]);
+    let events = read_run_events(root);
+    let said = [out, err]
+        .into_iter()
+        .chain(
+            events
+                .iter()
+                .map(|e| String::from_utf8_lossy(&e.data).into_owned()),
+        )
+        .collect::<Vec<_>>()
+        .join("\n");
+    (said, events)
+}
+
+/// The `{unit}/{role}` seat stamped on each recorded `DecisionMade` whose id is `id`, in log order.
+#[cfg(unix)]
+fn decision_seats(events: &[rigger::eventstore::Event], id: &str) -> Vec<String> {
+    events
+        .iter()
+        .filter(|e| e.type_ == rigger::contextgraph::TYPE_DECISION_MADE)
+        .filter(|e| serde_json::from_slice::<serde_json::Value>(&e.data).unwrap()["id"] == id)
+        .map(|e| {
+            let spawn = e.meta.get(rigger::conductor::META_SPAWN);
+            rigger::spawn::unit_role_of(spawn.map_or("", String::as_str)).to_string()
+        })
+        .collect()
+}
+
+/// A record a cli-host agent prints on stdout reaches the log through the conductor's in-process
+/// emit, so it is judged by the same guard `rigger emit` runs: a payload the fold cannot apply -
+/// `governs` given as a string, not an array - is refused before the append, so the log holds no
+/// record the fold would pass over, and the refusal reaches the spawn's error.
+#[cfg(unix)]
+#[test]
+fn a_cli_host_bridged_record_the_fold_cannot_apply_is_refused_and_lands_nothing() {
+    let (said, events) = run_with_bridged_lines(
+        r#"{"type":"DecisionMade","data":{"id":"d-bad","summary":"s","governs":"src/work.rs"}}"#,
+        "",
+    );
+    assert_eq!(
+        decision_seats(&events, "d-bad"),
+        Vec::<String>::new(),
+        "the refused record landed nothing"
+    );
+    assert!(
+        said.contains("refusing to emit: DecisionMade payload field `governs`"),
+        "the refusal reaches the spawn's error: {said}"
+    );
+}
+
+/// A record a cli-host reviewer prints under an id the unit's implementer already holds is
+/// refused before the append, naming the holder, so the implementer's record stays the one the
+/// graph keeps: the in-process emit stamps each bridged line with its spawn, whose
+/// `{unit}/{role}` seat is the author the guard compares.
+#[cfg(unix)]
+#[test]
+fn a_cli_host_bridged_record_whose_id_another_seat_holds_is_refused_and_lands_nothing() {
+    let (said, events) = run_with_bridged_lines(
+        r#"{"type":"DecisionMade","data":{"id":"d-x","summary":"the worker's"}}"#,
+        r#"{"type":"DecisionMade","data":{"id":"d-x","summary":"the judge's"}}"#,
+    );
+    let seats = decision_seats(&events, "d-x");
+    assert!(
+        !seats.is_empty() && seats.iter().all(|seat| seat == "solo/implementer"),
+        "only the implementer's record holds the id: {seats:?}"
+    );
+    for named in [
+        r#"refusing to emit DecisionMade "d-x""#,
+        "recorded by solo/implementer",
+    ] {
+        assert!(said.contains(named), "the refusal names {named:?}: {said}");
+    }
+}
+
 /// Spec 64 criterion 3, adjudication round 4 (`adv-u3c3r4-concurrent-lens-ensure-present-races-
 /// worktree-create`, `sdet-u3c3r4-concurrent-lenses-race-ensure-present-on-the-same-worktree`,
 /// `arch-u3c3r4-speculation-winner-sha-unguarded`, all UPHELD; fixed round 5 with a per-
