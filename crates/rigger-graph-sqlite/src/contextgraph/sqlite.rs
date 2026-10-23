@@ -424,7 +424,7 @@ pub struct PassedOver {
 }
 
 impl PassedOver {
-    /// Every position passed over, whatever its cause.
+    /// Every position counted passed over, under any of the three classes.
     pub fn total(&self) -> usize {
         [self.rejected, self.failed, self.unresolved].iter().sum()
     }
@@ -650,7 +650,7 @@ impl Projector {
     /// How many positions this file records passed over, by the class of their cause (spec 124,
     /// CATCH-UP LINES): its `passed_over` rows as they stand, whoever wrote them, each counted by
     /// the class its cause begins with ([`rejection`]) - [`PAYLOAD_REJECTED`], [`FOLD_FAILED`]
-    /// or [`RESOLVED_TO_NOTHING`]. None on a file without the table, such as one that owes its
+    /// or [`RESOLVED_TO_NOTHING`], the only classes a fold pass writes ([`decide_step`]). None on a file without the table, such as one that owes its
     /// rebuild, which is opened as it stands. Reads, and writes nothing.
     pub fn passed_over(&self) -> Result<PassedOver, Error> {
         let conn = self.conn.lock().unwrap();
