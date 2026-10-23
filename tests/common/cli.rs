@@ -689,6 +689,10 @@ pub fn applied_each(db: &Path, positions: &[u64]) -> Vec<bool> {
 pub const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it misses an \
      event the log holds, so the log's live selection is refolded once";
 
+/// The arguments of `rigger dash --export` writing its snapshot to `snapshot.html` in the
+/// project root.
+pub const DASH_SNAPSHOT_ARGS: [&str; 3] = ["dash", "--export", "snapshot.html"];
+
 /// What `rigger setup` prints once its rebuild is in place.
 pub const REBUILT_LINE: &str = "rebuilt graph.db from the event log";
 

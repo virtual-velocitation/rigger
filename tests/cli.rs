@@ -20223,7 +20223,7 @@ fn release_ready_handoff_reaches_the_dash_export_snapshot() {
             ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
         ],
     );
-    let (out, err, ok) = run_rigger(root, &["dash", "--export", "snapshot.html"]);
+    let (out, err, ok) = run_rigger(root, &common::cli::DASH_SNAPSHOT_ARGS);
     assert!(ok, "rigger dash --export must succeed; stderr:\n{err}");
     assert!(
         out.contains("wrote dash snapshot"),
@@ -20255,7 +20255,7 @@ fn release_ready_handoff_reaches_the_dash_export_snapshot() {
             ("UnitStarted", r#"{"id":"u2","agent":"worker"}"#),
         ],
     );
-    let (_out, err, ok) = run_rigger(root2, &["dash", "--export", "snapshot.html"]);
+    let (_out, err, ok) = run_rigger(root2, &common::cli::DASH_SNAPSHOT_ARGS);
     assert!(ok, "rigger dash --export must succeed; stderr:\n{err}");
     let html = std::fs::read_to_string(root2.join("snapshot.html"))
         .expect("the export writes the snapshot file");

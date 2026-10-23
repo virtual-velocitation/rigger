@@ -1802,7 +1802,7 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
 const READ_ONLY_SURFACES: [&[&str]; 3] = [
     &["graph", "--show", "src/f.rs::gone"],
     &["validate"],
-    &["dash", "--export", "snapshot.html"],
+    &common::cli::DASH_SNAPSHOT_ARGS,
 ];
 
 /// Run the read-only surface `args` ([`READ_ONLY_SURFACES`]) in `root`: its stdout, its stderr,

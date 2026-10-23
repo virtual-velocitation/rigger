@@ -486,7 +486,7 @@ fn the_one_shot_commands_answer_from_the_run_without_materializing_a_derived_or_
 
     // The dash snapshot: the current run alone.
     assert_eq!(
-        rigger_ok(root, &["dash", "--export", "snapshot.html"]),
+        rigger_ok(root, &common::cli::DASH_SNAPSHOT_ARGS),
         "wrote dash snapshot to snapshot.html\n"
     );
     let html = std::fs::read_to_string(root.join("snapshot.html")).unwrap();
