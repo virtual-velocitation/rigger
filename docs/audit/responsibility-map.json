@@ -345,6 +345,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "checkpoint_attempt",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "7c8dcd70b54488d7"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "is_parked",
     "is_test": false,
     "proposed_module": "conductor::spawn",
@@ -605,7 +613,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "2a6ea1ff4e957e10"
+    "content_hash": "5182f9c50109f34b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -965,7 +973,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "32f288366562438a"
+    "content_hash": "56663f038f676343"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1061,7 +1069,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "c7bda573ac2765ae"
+    "content_hash": "2bbef709d70d4181"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1125,7 +1133,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "135c0a86af918916"
+    "content_hash": "a8d70aa0496519f1"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
