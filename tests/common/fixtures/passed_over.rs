@@ -4,11 +4,10 @@
 
 /// The cause a fold pass records, under the class `class` (`payload rejected` for an event's own
 /// payload, `fold failed` for an event of a re-extracted batch), for the payload `data` of a
-/// `type_` event the judge rejects ([`rigger::contextgraph::check_fold_payload`]): the class, then
-/// the judge's text.
+/// `type_` event the judge rejects ([`rigger::contextgraph::check_fold_payload`]), as the fold
+/// composes it ([`rigger::contextgraph::sqlite::rejection`]).
 pub fn judged_cause(class: &str, type_: &str, data: &[u8]) -> String {
-    let why = rigger::contextgraph::check_fold_payload(type_, data).unwrap_err();
-    format!("{class}: {why}")
+    rigger::contextgraph::sqlite::rejection(class, type_, data).expect("the judge rejects it")
 }
 
 /// Every row of the `passed_over` table of the graph file at `graph_db` (spec 124, PASSED OVER WITH

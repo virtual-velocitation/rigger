@@ -335,7 +335,8 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     }
     // REBUILD OWED advisory (spec 101): a `graph.db` that owes its rebuild - folded under an older
     // fold rule, or marked by a fold into it that failed - answers as it stands until `rigger setup` rebuilds it;
-    // validate says so and writes nothing to it.
+    // validate says so, and how many events the file passed over by cause (spec 124), and writes
+    // nothing to it.
     if let Some(note) = graph_rebuild_owed_note(&db_path("graph.db"), &project_identity()) {
         eprintln!("{note}");
     }

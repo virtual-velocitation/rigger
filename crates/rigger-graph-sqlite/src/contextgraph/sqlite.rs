@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS refs (
 CREATE INDEX IF NOT EXISTS idx_refs_leaf ON refs(project, leaf);
 CREATE INDEX IF NOT EXISTS idx_refs_kind ON refs(project, ref_kind);
 CREATE TABLE IF NOT EXISTS proofs_owed (name TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS passed_over (position INTEGER PRIMARY KEY, cause TEXT NOT NULL);
 ";
 
 /// The fold rule `graph.db` was folded under, recorded as the file's `user_version`. Rule 1 is
@@ -195,8 +196,9 @@ pub type RebuildSink<'s> = dyn FnMut(&[Event], Position) -> Result<(), Error> + 
 pub type RebuildSource<'s> = dyn FnMut(Position, &mut RebuildSink) -> Result<(), Error> + 's;
 
 /// Re-extracts the batch of a ledger entry of perception (spec 107): handed the entry's event, it
-/// answers the batch the entry's generation names, that no source resolves it, or an error, which
-/// fails the rebuild. What a [`Projector::rebuild`] folds each entry with, behind the ledger
+/// answers the batch the entry's generation names, that no source resolves it, which the rebuild
+/// passes the entry over for (spec 124, THE DECIDE STEP), or an error, which fails the rebuild.
+/// What a [`Projector::rebuild`] folds each entry with, behind the ledger
 /// fold, asked before the entry's transaction opens, so it holds no write lock
 /// ([`extracted_batch`]); `rigger setup` binds the one that reads the repository's object database
 /// and the tree.
@@ -379,15 +381,88 @@ pub struct PruneStats {
     pub superseded_edges: usize,
 }
 
-/// What a [`Projector::rebuild`] that ran did (spec 101): how many events it passed over because
-/// the fold rejects their payload, and what its run-closure prune removed from the rebuilt graph -
-/// the counts `rigger reset --runs` reports for its own prune.
+/// What a [`Projector::rebuild`] that ran did (spec 101): what its run-closure prune removed from
+/// the rebuilt graph - the counts `rigger reset --runs` reports for its own prune. What it passed
+/// over is the file's own record, read by [`Projector::passed_over`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Rebuilt {
-    /// Events passed over because the fold rejects their payload, recorded as folded.
-    pub passed_over: usize,
     /// What the run-closure prune removed, however many passes it took to get there.
     pub pruned: PruneStats,
+}
+
+/// The class of the cause a fold pass records for an event whose own payload the judge
+/// ([`super::check_fold_payload`]) rejects (spec 124, PASSED OVER WITH ITS CAUSE).
+const PAYLOAD_REJECTED: &str = "payload rejected";
+
+/// The class of the cause a fold pass records for a ledger entry an event of whose re-extracted
+/// batch the judge ([`super::check_fold_payload`]) rejects (spec 124, PASSED OVER WITH ITS CAUSE).
+const FOLD_FAILED: &str = "fold failed";
+
+/// The cause a fold pass records for a ledger entry whose re-extraction resolves to nothing - no
+/// source extracts to its generation (spec 124, PASSED OVER WITH ITS CAUSE).
+const RESOLVED_TO_NOTHING: &str = "resolved to nothing";
+
+/// The cause a fold pass records under `class` for the payload `data` of a `type_` event when the
+/// judge ([`super::check_fold_payload`]) rejects it - the class, then the judge's text, the one
+/// spelling [`Projector::passed_over`] reads the class back from, up to its first `:` - or none
+/// when the judge accepts it.
+pub fn rejection(class: &str, type_: &str, data: &[u8]) -> Option<String> {
+    let why = super::check_fold_payload(type_, data).err()?;
+    Some([class, &why].join(": "))
+}
+
+/// How many positions a graph file records passed over ([`Projector::passed_over`]), by the class
+/// of their cause (spec 124, CATCH-UP LINES).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PassedOver {
+    /// Events whose own payload the judge rejects (`payload rejected`).
+    pub rejected: usize,
+    /// Ledger entries an event of whose re-extracted batch the judge rejects (`fold failed`).
+    pub failed: usize,
+    /// Ledger entries whose re-extraction resolves to nothing (`resolved to nothing`).
+    pub unresolved: usize,
+}
+
+impl PassedOver {
+    /// Every position passed over, whatever its cause.
+    pub fn total(&self) -> usize {
+        [self.rejected, self.failed, self.unresolved].iter().sum()
+    }
+}
+
+/// What the one transaction frame ([`in_transaction`]) answers when it does not answer its
+/// body's value (spec 124, EXISTING MECHANISMS): CONTENTION is read at the frame's IMMEDIATE open,
+/// before [`be`] stringifies anything, so a caller decides by the variant, never by an error's
+/// text.
+#[derive(Debug)]
+enum FrameError {
+    /// The open met another connection's write lock past the busy timeout: SQLite's busy or
+    /// locked code (CONTENTION), the error as SQLite gave it.
+    Contended(rusqlite::Error),
+    /// Every other failure: another open error, the body's, the settlement's or the commit's.
+    Failed(Error),
+    /// A direct fold met its own position already passed over: that position's `passed_over`
+    /// cause, a recorded outcome rather than a lost fold.
+    Recorded(String),
+}
+
+impl From<Error> for FrameError {
+    fn from(e: Error) -> Self {
+        FrameError::Failed(e)
+    }
+}
+
+impl FrameError {
+    /// The domain's error for this frame error, for a caller that is not a fold, and for a rebuild
+    /// pass, which fails on CONTENTION as on any failure: the text the open's error gives as
+    /// [`be`] gives it, the failure's own error, or the recorded cause.
+    fn unframed(self) -> Error {
+        match self {
+            FrameError::Contended(e) => be(e),
+            FrameError::Failed(e) => e,
+            FrameError::Recorded(cause) => Error(cause),
+        }
+    }
 }
 
 // `Located`, `EntitySite` and `Candidate` (the `rigger graph --show <entity>` resolution, spec 58)
@@ -429,10 +504,8 @@ impl Projector {
 
     /// Pay the rebuild this projector's graph file - the one `held` names - owes (spec 101), and
     /// report whether there was one to pay - `None` when there was not, else what it did
-    /// ([`Rebuilt`]): how many events it passed
-    /// over because the fold rejects their payload (see `fold_source`) and what its run-closure
-    /// prune removed - owed because its caller found it so (`owed`: what [`Projector::owed_against`]
-    /// read of its ledger against the log), or because the file itself records an older fold rule
+    /// ([`Rebuilt`]): what its run-closure prune removed - owed because its caller found it so
+    /// (`owed`: what [`Projector::owed_against`] read of its ledger against the log), or because the file itself records an older fold rule
     /// or carries the [`owed_mark`] a failed fold left, both read again here. A rebuild's own
     /// unfinished work is paid too, with no owed cause: the shadow a rebuild whose swap stopped
     /// left standing, whose swap it finishes before any tail, and the tail past the cursor a swap
@@ -494,7 +567,6 @@ impl Projector {
         let project = self.project.as_str();
         let mut live = self.conn.lock().unwrap();
         let live = &mut *live;
-        let mut passed_over = 0;
         let shadow_path = shadow_of(path);
         let swap_unfinished = Path::new(&shadow_path).exists();
         if owed || swap_unfinished || !owed_by_file(live, &self.owed_mark)?.is_empty() {
@@ -502,8 +574,9 @@ impl Projector {
             schema(&shadow, project)?;
             in_transaction(&mut shadow, project, |tx| {
                 tx.execute_batch(REBUILD_STATE).map_err(be)
-            })?;
-            passed_over += fold_source(&mut shadow, project, source, reextract, progress, true)?;
+            })
+            .map_err(FrameError::unframed)?;
+            fold_source(&mut shadow, project, source, reextract, progress, true)?;
             // The graph the live one would hold, never a larger one: the prune `rigger reset
             // --runs` applies, derived from what the fold gathered, on a copy of the shadow.
             let copy = pruned_copy(path);
@@ -526,7 +599,7 @@ impl Projector {
         } else if !rebuild_tail_owed(live)? {
             return Ok(None);
         }
-        passed_over += fold_source(live, project, source, reextract, progress, false)?;
+        fold_source(live, project, source, reextract, progress, false)?;
         let pruned = live
             .query_row(
                 "SELECT pruned_nodes, reclaimed_edges FROM rebuild_cursor",
@@ -541,11 +614,9 @@ impl Projector {
             .map_err(be)?;
         in_transaction(live, project, |tx| {
             tx.execute_batch(DROP_REBUILD_STATE).map_err(be)
-        })?;
-        Ok(Some(Rebuilt {
-            passed_over,
-            pruned,
-        }))
+        })
+        .map_err(FrameError::unframed)?;
+        Ok(Some(Rebuilt { pruned }))
     }
 
     /// Whether a rebuild of the graph file `held` names was left unfinished (spec 107): the file
@@ -574,6 +645,40 @@ impl Projector {
     /// it reads nothing else and writes nothing.
     pub fn owed_because(&self) -> Result<Vec<&'static str>, Error> {
         owed_by_file(&self.conn.lock().unwrap(), &self.owed_mark)
+    }
+
+    /// How many positions this file records passed over, by the class of their cause (spec 124,
+    /// CATCH-UP LINES): its `passed_over` rows as they stand, whoever wrote them, each counted by
+    /// the class its cause begins with ([`rejection`]) - [`PAYLOAD_REJECTED`], [`FOLD_FAILED`]
+    /// or [`RESOLVED_TO_NOTHING`]. None on a file without the table, such as one that owes its
+    /// rebuild, which is opened as it stands. Reads, and writes nothing.
+    pub fn passed_over(&self) -> Result<PassedOver, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut counts = PassedOver::default();
+        if !has_table(&conn, "passed_over")? {
+            return Ok(counts);
+        }
+        let mut classes = conn
+            .prepare(
+                "SELECT substr(cause, 1, instr(cause || ':', ':') - 1), count(*)
+                 FROM passed_over GROUP BY 1",
+            )
+            .map_err(be)?;
+        let classes = classes
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize))
+            })
+            .map_err(be)?;
+        for class in classes {
+            let (class, n) = class.map_err(be)?;
+            match class.as_str() {
+                PAYLOAD_REJECTED => counts.rejected += n,
+                FOLD_FAILED => counts.failed += n,
+                RESOLVED_TO_NOTHING => counts.unresolved += n,
+                _ => {}
+            }
+        }
+        Ok(counts)
     }
 
     /// Why this file owes its rebuild once its `applied` ledger is read against the log (spec
@@ -649,7 +754,13 @@ impl Projector {
     /// whole of it ([`in_transaction`]): the one lock -> transaction -> body -> settlement ->
     /// commit frame, taken by each method that writes in a transaction, settling the proofs
     /// `body` owed in this projector's project. The lock is released when this returns.
-    fn transact<T>(&self, body: impl FnOnce(&Transaction) -> Result<T, Error>) -> Result<T, Error> {
+    fn transact<T, E>(
+        &self,
+        body: impl FnOnce(&Transaction) -> Result<T, E>,
+    ) -> Result<T, FrameError>
+    where
+        FrameError: From<E>,
+    {
         in_transaction(&mut self.conn.lock().unwrap(), &self.project, body)
     }
 
@@ -662,14 +773,17 @@ impl Projector {
     /// answer that depends on the fold with [`REBUILD_OWED`] without reading the log; a mark that
     /// cannot be written is named beside the fold's error and nothing else is recorded - the
     /// ledger still carries the debt. Either way the error ends by naming the one command that
-    /// pays it, so every surface that reports the lost fold says who does.
-    fn guarded<T>(&self, fold: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+    /// pays it, so every surface that reports the lost fold says who does. A fold that answers its
+    /// own position already recorded passed over ([`FrameError::Recorded`], spec 124) lost nothing:
+    /// it answers that position's cause alone, writing no mark.
+    fn guarded<T>(&self, fold: impl FnOnce() -> Result<T, FrameError>) -> Result<T, Error> {
         if self.rebuild_owed()? {
             return Err(Error(REBUILD_OWED.to_string()));
         }
         let lost = match fold() {
-            Err(lost) => lost,
-            folded => return folded,
+            Ok(folded) => return Ok(folded),
+            Err(FrameError::Recorded(cause)) => return Err(Error(cause)),
+            Err(lost) => lost.unframed(),
         };
         let unmarked = match self.mark_lost_fold() {
             Ok(()) => String::new(),
@@ -759,6 +873,7 @@ impl Projector {
         superseded_before: Option<i64>,
     ) -> Result<PruneStats, Error> {
         self.transact(|tx| prune_in(tx, &self.project, node_ids, superseded_before))
+            .map_err(FrameError::unframed)
     }
 
     /// A read-only PREVIEW of what [`prune`] would remove (spec 68, "the reset surface"): the
@@ -906,8 +1021,9 @@ impl Projector {
             for table in PROJECT_KEYED_LEDGERS {
                 rekey(table)?;
             }
-            Ok(nodes)
+            Ok::<_, Error>(nodes)
         })
+        .map_err(FrameError::unframed)
     }
 
     /// Resolve a `rigger graph --show <entity>` query to a located entity, a candidate list, or
@@ -1324,20 +1440,30 @@ fn prune_in(
 /// settlement -> commit frame of this file; [`open_current`] keeps its own immediate transaction
 /// on the shared connection it is handed. The open takes the write lock (spec 122), so a frame
 /// meeting a lock another connection holds fails at its open once the busy timeout passes, before
-/// `body` runs, and a `body` that reads before it writes never finds its read outdated by
-/// another's commit. Before the commit, outside every savepoint `body` opened, the proofs of every
-/// name `body` owed are settled in `project`, each name once ([`settle_proofs`], spec 122, PROOFS
-/// SETTLE ONCE PER TRANSACTION); a `body` that owed none settles nothing. A `body` that fails, a
-/// settlement that does, or a commit that does, leaves nothing written - the transaction rolls
-/// back whole as it drops.
-fn in_transaction<T>(
+/// `body` runs - [`FrameError::Contended`] for SQLite's busy or locked code, read there before
+/// anything stringifies it, and [`FrameError::Failed`] for any other open error (spec 124) - and a
+/// `body` that reads before it writes never finds its read outdated by another's commit. Before
+/// the commit, outside every savepoint `body` opened, the proofs of every name `body` owed are
+/// settled in `project`, each name once ([`settle_proofs`], spec 122, PROOFS SETTLE ONCE PER
+/// TRANSACTION); a `body` that owed none settles nothing. A `body` that fails - with the domain's
+/// error, which is [`FrameError::Failed`], or a frame error of its own - a settlement that does,
+/// or a commit that does, leaves nothing written - the transaction rolls back whole as it drops.
+fn in_transaction<T, E>(
     conn: &mut Connection,
     project: &str,
-    body: impl FnOnce(&Transaction) -> Result<T, Error>,
-) -> Result<T, Error> {
+    body: impl FnOnce(&Transaction) -> Result<T, E>,
+) -> Result<T, FrameError>
+where
+    FrameError: From<E>,
+{
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(be)?;
+        .map_err(|e| match e.sqlite_error_code() {
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
+                FrameError::Contended(e)
+            }
+            _ => FrameError::Failed(be(e)),
+        })?;
     let answer = body(&tx)?;
     settle_proofs(&tx, project)?;
     tx.commit().map_err(be)?;
@@ -1353,7 +1479,7 @@ fn in_transaction<T>(
 /// however many passes the rebuild took, and what it removed is stamped, in its transaction, as
 /// the counts the rebuild state records - the cold rebuild's counts, never a sum.
 fn prune_run_closure(conn: &mut Connection, project: &str) -> Result<(), Error> {
-    in_transaction(conn, project, |tx| {
+    in_transaction(conn, project, |tx| -> Result<(), Error> {
         let gathered = tx
             .prepare(
                 "SELECT position, type, data, valid_from FROM rebuild_run_closure ORDER BY position",
@@ -1381,6 +1507,7 @@ fn prune_run_closure(conn: &mut Connection, project: &str) -> Result<(), Error> 
         .map_err(be)?;
         Ok(())
     })
+    .map_err(FrameError::unframed)
 }
 
 /// The private copy a [`Projector::rebuild`] of the graph file at `path` prunes and swaps in: it
@@ -1476,28 +1603,13 @@ fn remove_shadow(shadow: Connection, path: &str) -> Result<(), Error> {
 /// Fold what `source` hands after the cursor of `conn`'s [`REBUILD_STATE`], each batch in the
 /// transactions [`fold_transactions`] cuts it into (spec 122, ONE BATCHING RULE) - each committed
 /// with its last position as the cursor, so a writer meeting the pass waits at most one of them and
-/// none spans two batches - reporting each batch to `progress` once its last transaction commits,
-/// and answer how many events it passed over. Each event folds exactly as
-/// [`Projection::apply`] folds it and one at a time - but a ledger entry of perception, which
-/// that fold refuses: it folds as [`Projection::apply_generation`] folds it ([`fold_entry`]), in
-/// the entry's body ([`fold_entry_alone`]), with the batch `reextract` answers for it before the
-/// entry's transaction opens ([`extracted_batch`], spec 122, EXTRACTION OUTSIDE THE WRITE
-/// TRANSACTION), so no extraction holds the write lock. Each event folds under a savepoint of its
-/// own ([`fold_in_savepoint`]), so an event whose payload the fold rejects
-/// ([`super::check_fold_payload`] - deterministic, so no fold will ever hold it) is passed over and
-/// the rest still fold: where the live fold rolls its whole batch back and marks the file owed, the
-/// rebuild is what pays that debt, so its position is recorded in the `applied` ledger all the
-/// same, and the rebuilt file does not miss it and the next `rigger setup` does not rebuild for it
-/// again. Any other failure is the store's, not the payload's: it propagates with its transaction
-/// rolled back, so nothing records the event folded and the next rebuild resumes from the cursor -
-/// the last position the transaction before it committed - and folds it. That is every failure of
-/// an entry whose own payload parses inside its transaction: a re-extracted batch event the fold
-/// rejects, which is this binary's own extraction and never a payload to pass over. Two failures of
-/// an entry propagate with no write of its own and the cursor where the last transaction left it:
-/// a `reextract` that fails, before the entry's transaction opens, and an entry that asks a batch
-/// it was not handed on its retry too, whose savepoint is undone and whose transaction commits no
-/// write before [`unread_entry`] propagates. One the file already folded is passed over by the
-/// fold's per-position guard.
+/// none spans two batches - reporting each batch to `progress` once its last transaction commits.
+/// Each transaction is decided and folded by THE DECIDE STEP ([`decide_step`], spec 124), so a
+/// position it passes over is recorded with its cause in the file's `passed_over` table; any
+/// other failure propagates with its transaction rolled back, so nothing records the event folded
+/// and the next rebuild resumes from the cursor - the last position the transaction before it
+/// committed - and folds it. A rebuild pass meeting another writer's lock past the busy timeout
+/// fails the same way, with the error's own text ([`FrameError::unframed`]).
 ///
 /// A shadow fold (`gather_run_closure`) also keeps, in the same transaction, every event of the
 /// [`rigger_domain::run::RUN_CLOSURE_TYPES`] it passes ([`REBUILD_STATE`]), whatever became
@@ -1509,32 +1621,15 @@ fn fold_source(
     reextract: &mut Reextract,
     progress: &mut dyn FnMut(RebuildProgress),
     gather_run_closure: bool,
-) -> Result<usize, Error> {
+) -> Result<(), Error> {
     let start = rebuild_cursor(conn)?;
     let mut folded = 0;
-    let mut passed_over = 0;
     source(start, &mut |events, head| {
         let mut through = start;
         for part in fold_transactions(events) {
             through = part.last().map_or(start, |e| e.position);
-            match part {
-                [entry] if is_ledger_entry(&entry.type_) => fold_entry_alone(
-                    conn,
-                    project,
-                    entry,
-                    &mut |read| extracted_batch(read, project, entry, reextract),
-                    gather_run_closure,
-                    &mut passed_over,
-                )?,
-                _ => in_transaction(conn, project, |tx| {
-                    for e in part {
-                        fold_in_savepoint(tx, e, gather_run_closure, &mut passed_over, || {
-                            fold_new(tx, std::slice::from_ref(e), project).map(|()| true)
-                        })?;
-                    }
-                    advance_cursor(tx, through)
-                })?,
-            }
+            decide_step(conn, project, part, through, reextract, gather_run_closure)
+                .map_err(FrameError::unframed)?;
         }
         folded += events.len();
         progress(RebuildProgress {
@@ -1544,39 +1639,103 @@ fn fold_source(
             folded,
         });
         Ok(())
-    })?;
-    Ok(passed_over)
+    })
 }
 
-/// Fold the event `e` of a fold pass ([`fold_source`]) through `fold`, in `tx`, under a savepoint
-/// of its own, and answer whether it is read: false when `fold` answered that its ledger entry
-/// asked a batch it was not handed ([`EntryOutcome::Unread`]), which rolls the savepoint back, the
-/// event's `applied` row with it, and writes nothing. A failure of `fold` propagates unless the
-/// event's own payload is one the fold rejects ([`super::check_fold_payload`]): then the savepoint
-/// rolls back, the position is recorded in the `applied` ledger and `passed_over` counts it. A
-/// read event of the [`rigger_domain::run::RUN_CLOSURE_TYPES`] is kept for the run-closure prune
-/// when `gather_run_closure` asks it ([`REBUILD_STATE`]).
+/// THE DECIDE STEP (spec 124): fold the one transaction cut `part` of a fold pass
+/// ([`fold_transactions`]) - one ledger entry of perception alone, or a run of other events - into
+/// `conn`, deciding each position in order, and advance the cursor to `through`, the cut's last
+/// position ([`advance_cursor`]), in the transaction that folds it. A position already in the `applied`
+/// ledger, passed over or folded, is passed by the fold's per-position guard. An event other than
+/// an entry folds as [`Projection::apply`] folds it, from its own bytes, under a savepoint of its
+/// own ([`fold_in_savepoint`]); one whose own payload the judge ([`super::check_fold_payload`] -
+/// deterministic, so no fold will ever hold it) rejects is passed over with the class
+/// [`PAYLOAD_REJECTED`]. An entry folds as [`Projection::apply_generation`] folds it
+/// ([`fold_entry`]), in its own transaction ([`fold_entry_alone`]), with the batch `reextract`
+/// answers for it before that transaction opens ([`extracted_batch`], spec 122, EXTRACTION
+/// OUTSIDE THE WRITE TRANSACTION), so no extraction holds the write lock: one whose own payload
+/// the judge rejects is passed over with [`PAYLOAD_REJECTED`], one whose re-extracted batch holds
+/// an event the judge rejects with [`FOLD_FAILED`], and one whose re-extraction resolves to
+/// nothing with [`RESOLVED_TO_NOTHING`] (CONTENT). Any other failure (ENVIRONMENT) - a
+/// `reextract` that fails, before the entry's transaction opens; an entry that asks a batch it
+/// was not handed on its retry too ([`unread_entry`]); a fold's own error over a payload and a
+/// batch the judge accepts; a statement outside every fold - propagates with the cut's
+/// transaction rolled back, and an open meeting another writer's lock past the busy timeout
+/// answers [`FrameError::Contended`] (CONTENTION), so nothing is passed over but CONTENT.
+fn decide_step(
+    conn: &mut Connection,
+    project: &str,
+    part: &[Event],
+    through: Position,
+    reextract: &mut Reextract,
+    gather_run_closure: bool,
+) -> Result<(), FrameError> {
+    match part {
+        [entry] if is_ledger_entry(&entry.type_) => fold_entry_alone(
+            conn,
+            project,
+            entry,
+            &mut |read| extracted_batch(read, project, entry, reextract),
+            gather_run_closure,
+        ),
+        _ => in_transaction(conn, project, |tx| {
+            for e in part {
+                fold_in_savepoint(
+                    tx,
+                    e,
+                    gather_run_closure,
+                    || fold_new(tx, std::slice::from_ref(e), project).map(|_| Decided::Read),
+                    || rejected_payload(e),
+                )?;
+            }
+            advance_cursor(tx, through)
+        }),
+    }
+}
+
+/// What the fold of one position of a fold pass decided ([`fold_in_savepoint`], THE DECIDE STEP):
+/// it is read - folded, or found folded already - or, a ledger entry, it asked a batch it was not
+/// handed ([`EntryOutcome::Unread`]), or it is passed over with the cause it carries.
+enum Decided {
+    Read,
+    Unread,
+    PassedOver(String),
+}
+
+/// The cause a fold pass passes the event `e` over with when the judge
+/// ([`super::check_fold_payload`]) rejects its own payload ([`PAYLOAD_REJECTED`]), or none.
+fn rejected_payload(e: &Event) -> Option<String> {
+    rejection(PAYLOAD_REJECTED, &e.type_, &e.data)
+}
+
+/// Fold the event `e` of a fold pass ([`decide_step`]) through `fold`, in `tx`, under a savepoint
+/// of its own, and answer whether it is read. A position `fold` decides is not read
+/// ([`Decided::Unread`]) rolls the savepoint back, the event's `applied` row with it, and writes
+/// nothing. A position it passes over ([`Decided::PassedOver`]), and one whose `fold` fails while
+/// `rejected` names the cause the judge rejects it for, rolls the savepoint back and is recorded
+/// passed over with that cause ([`pass_over`]); any other failure of `fold` propagates. A read
+/// event of the [`rigger_domain::run::RUN_CLOSURE_TYPES`] is kept for the run-closure prune when
+/// `gather_run_closure` asks it ([`REBUILD_STATE`]).
 fn fold_in_savepoint(
     tx: &Transaction,
     e: &Event,
     gather_run_closure: bool,
-    passed_over: &mut usize,
-    fold: impl FnOnce() -> Result<bool, Error>,
+    fold: impl FnOnce() -> Result<Decided, Error>,
+    rejected: impl FnOnce() -> Option<String>,
 ) -> Result<bool, Error> {
     tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
-    let (read, rejected) = match fold() {
-        Ok(read) => (read, false),
-        Err(failed) if super::check_fold_payload(&e.type_, &e.data).is_ok() => return Err(failed),
-        Err(_) => (true, true),
+    let decided = match fold() {
+        Ok(decided) => decided,
+        Err(failed) => Decided::PassedOver(rejected().ok_or(failed)?),
     };
-    if !read || rejected {
+    if !matches!(decided, Decided::Read) {
         tx.execute_batch("ROLLBACK TO fold_event").map_err(be)?;
     }
-    if rejected {
-        record_applied(tx, e.position)?;
-        *passed_over += 1;
+    if let Decided::PassedOver(cause) = &decided {
+        pass_over(tx, e.position, cause)?;
     }
     tx.execute_batch("RELEASE fold_event").map_err(be)?;
+    let read = !matches!(decided, Decided::Unread);
     if read
         && gather_run_closure
         && rigger_domain::run::RUN_CLOSURE_TYPES.contains(&e.type_.as_str())
@@ -1591,6 +1750,30 @@ fn fold_in_savepoint(
     Ok(read)
 }
 
+/// Record `position` passed over with `cause` in `tx` (spec 124, PASSED OVER WITH ITS CAUSE): its
+/// row in the `applied` ledger, so no fold folds it again and no rebuild is owed for it, and its
+/// row in `passed_over`, written together in one transaction.
+fn pass_over(tx: &Transaction, position: Position, cause: &str) -> Result<(), Error> {
+    record_applied(tx, position)?;
+    tx.execute(
+        "INSERT INTO passed_over (position, cause) VALUES (?1, ?2)",
+        params![position as i64, cause],
+    )
+    .map(drop)
+    .map_err(be)
+}
+
+/// The cause `conn`'s file recorded `position` passed over with ([`pass_over`]), or none.
+fn passed_over_cause(conn: &Connection, position: Position) -> Result<Option<String>, Error> {
+    conn.query_row(
+        "SELECT cause FROM passed_over WHERE position = ?1",
+        [position as i64],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(be)
+}
+
 /// Record `through` as the cursor of the rebuild state in `tx` ([`REBUILD_STATE`]): the last
 /// position a fold pass ([`fold_source`]) folded, committed with the transaction that folded it.
 fn advance_cursor(tx: &Transaction, through: Position) -> Result<(), Error> {
@@ -1599,65 +1782,99 @@ fn advance_cursor(tx: &Transaction, through: Position) -> Result<(), Error> {
         .map_err(be)
 }
 
-/// The entry's body of a fold pass ([`fold_source`], spec 122, EXTRACTION OUTSIDE THE WRITE
+/// The entry's body of a fold pass ([`decide_step`], spec 122, EXTRACTION OUTSIDE THE WRITE
 /// TRANSACTION): fold the ledger entry `entry` alone, in a transaction on `conn` of its own that
 /// advances the cursor to it ([`advance_cursor`]), its fold ([`fold_entry`]) handed what `batch`
 /// answers - asked, with no transaction open on `conn`, before that transaction opens. An entry
-/// whose fold asks a batch `batch` did not extract ([`BatchAnswer::Unread`]) is undone with its
-/// savepoint ([`fold_in_savepoint`]), so its transaction commits no write and leaves the cursor
-/// where it stood; `batch` is asked again and the entry retried ONCE (THE REVERSE RACE), and a
-/// second miss fails with [`unread_entry`].
+/// whose re-extraction resolves to nothing ([`EntryOutcome::Unresolved`]) is passed over with
+/// [`RESOLVED_TO_NOTHING`]; one whose fold fails is passed over with the cause the judge rejects
+/// its own payload for, else the one `batch` named for its batch, else the failure propagates
+/// ([`fold_in_savepoint`]). An entry whose fold asks a batch `batch` did not extract
+/// ([`BatchAnswer::Unread`]) is undone with its savepoint, so its transaction commits no write
+/// and leaves the cursor where it stood; `batch` is asked again and the entry retried ONCE (THE
+/// REVERSE RACE), and a second miss fails with [`unread_entry`].
 fn fold_entry_alone(
     conn: &mut Connection,
     project: &str,
     entry: &Event,
-    batch: &mut dyn FnMut(&Connection) -> Result<BatchAnswer, Error>,
+    batch: &mut dyn FnMut(&Connection) -> Result<Extracted, Error>,
     gather_run_closure: bool,
-    passed_over: &mut usize,
-) -> Result<(), Error> {
-    let mut attempt = || -> Result<bool, Error> {
-        let answer = batch(&*conn)?;
+) -> Result<(), FrameError> {
+    let mut attempt = || -> Result<bool, FrameError> {
+        let Extracted { answer, rejected } = batch(&*conn)?;
         in_transaction(&mut *conn, project, |tx| {
-            let read = fold_in_savepoint(tx, entry, gather_run_closure, passed_over, || {
-                fold_entry(tx, entry, project, || Ok(answer))
-                    .map(|outcome| !matches!(outcome, EntryOutcome::Unread))
-            })?;
+            let read = fold_in_savepoint(
+                tx,
+                entry,
+                gather_run_closure,
+                || {
+                    fold_entry(tx, entry, project, || Ok(answer)).map(|outcome| match outcome {
+                        EntryOutcome::Folded(_) => Decided::Read,
+                        EntryOutcome::Unresolved => {
+                            Decided::PassedOver(RESOLVED_TO_NOTHING.to_string())
+                        }
+                        EntryOutcome::Unread => Decided::Unread,
+                    })
+                },
+                || rejected_payload(entry).or(rejected),
+            )?;
             if read {
                 advance_cursor(tx, entry.position)?;
             }
-            Ok(read)
+            Ok::<_, Error>(read)
         })
     };
     if attempt()? || attempt()? {
         Ok(())
     } else {
-        Err(unread_entry(entry.position))
+        Err(unread_entry(entry.position).into())
     }
+}
+
+/// What a fold pass extracted for a ledger entry before its transaction opens
+/// ([`extracted_batch`]): what the entry's fold is handed when it asks its batch, and the cause
+/// the entry is passed over with should its fold fail on that batch.
+struct Extracted {
+    answer: BatchAnswer,
+    rejected: Option<String>,
 }
 
 /// What a fold pass hands the fold of the ledger entry `entry` (spec 122, EXTRACTION OUTSIDE THE
 /// WRITE TRANSACTION), read from `conn` with no transaction open: the batch `reextract` answers
 /// when the entry's fold will ask it - its position is not in the `applied` ledger
 /// ([`has_applied`]) and it names a generation its identity does not hold ([`is_re_recording`]) -
-/// and otherwise [`BatchAnswer::Unread`], `reextract` never called: an entry the file already
-/// folded, a re-recording, or an entry whose payload does not parse, whose fold fails its parse
-/// before it asks.
+/// beside the cause the entry is passed over with should its fold fail on that batch: the first
+/// event of it whose payload the judge ([`super::check_fold_payload`]) rejects, under
+/// [`FOLD_FAILED`] (spec 124, THE DECIDE STEP), judged here so the judging holds no write lock.
+/// Otherwise [`BatchAnswer::Unread`] and no cause, `reextract` never called: an entry the file
+/// already folded, a re-recording, or an entry whose payload does not parse, whose fold fails its
+/// parse before it asks.
 fn extracted_batch(
     conn: &Connection,
     project: &str,
     entry: &Event,
     reextract: &mut Reextract,
-) -> Result<BatchAnswer, Error> {
+) -> Result<Extracted, Error> {
     let asks = !has_applied(conn, entry.position)?
         && match GenerationIngested::parse(&entry.data) {
             Ok(named) => !is_re_recording(conn, project, &named)?,
             Err(_) => false,
         };
-    if asks {
-        reextract(entry).map(BatchAnswer::Batch)
-    } else {
-        Ok(BatchAnswer::Unread)
+    if !asks {
+        return Ok(Extracted {
+            answer: BatchAnswer::Unread,
+            rejected: None,
+        });
     }
+    let batch = reextract(entry)?;
+    let rejected = batch
+        .iter()
+        .flatten()
+        .find_map(|e| rejection(FOLD_FAILED, &e.type_, &e.data));
+    Ok(Extracted {
+        answer: BatchAnswer::Batch(batch),
+        rejected,
+    })
 }
 
 /// The failure of a ledger entry's fold at `position` that asked a batch it was not handed
@@ -1917,9 +2134,17 @@ impl Projection for Projector {
     /// still durable in the log, and the sink folds best-effort), never a half-applied batch.
     ///
     /// It folds under the two guards of [`Projector::guarded`]: refused on a file that owes its
-    /// rebuild, and a batch that fails to fold marks the file owed.
+    /// rebuild, and a batch that fails to fold marks the file owed. A batch one of whose positions
+    /// the file already recorded passed over (spec 124) still commits its other positions, and
+    /// then answers the first such position's cause ([`FrameError::Recorded`]), which marks
+    /// nothing.
     fn apply_batch(&self, events: &[Event], _access: FoldAccess) -> Result<(), Error> {
-        self.guarded(|| self.transact(|tx| fold_new(tx, events, &self.project)))
+        self.guarded(
+            || match self.transact(|tx| fold_new(tx, events, &self.project))? {
+                Some(cause) => Err(FrameError::Recorded(cause)),
+                None => Ok(()),
+            },
+        )
     }
 
     /// Fold `entry` with its batch in ONE transaction ([`fold_entry`]), under the same two guards
@@ -1927,12 +2152,23 @@ impl Projection for Projector {
     /// batch never asked for, on a file that owes its rebuild, and a fold that fails - an entry
     /// whose payload does not parse, a batch function that fails, a batch event the fold rejects
     /// - rolls back whole, its `applied` row included, and marks the file owed.
+    ///
+    /// A batch function answering no batch folds nothing ([`EntryFold::BatchAsked`]). An entry
+    /// whose position the file already recorded passed over (spec 124) answers that cause
+    /// ([`FrameError::Recorded`]), which marks nothing.
     fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error> {
         self.guarded(|| {
             self.transact(|tx| {
                 match fold_entry(tx, entry, &self.project, || batch().map(BatchAnswer::Batch))? {
+                    EntryOutcome::Folded(EntryFold::AlreadyApplied) => {
+                        match passed_over_cause(tx, entry.position)? {
+                            Some(cause) => Err(FrameError::Recorded(cause)),
+                            None => Ok(EntryFold::AlreadyApplied),
+                        }
+                    }
                     EntryOutcome::Folded(fold) => Ok(fold),
-                    EntryOutcome::Unread => Err(unread_entry(entry.position)),
+                    EntryOutcome::Unresolved => Ok(EntryFold::BatchAsked),
+                    EntryOutcome::Unread => Err(unread_entry(entry.position).into()),
                 }
             })
         })
@@ -2099,10 +2335,13 @@ impl<'e> Asserter<'e> {
 }
 
 /// Fold every event of `events` whose position has not folded yet, in order - the one
-/// per-position idempotency guard (`applied`) every fold path shares. A ledger entry of
-/// perception is refused, whatever its position and before anything is written for it: it folds
-/// only with its batch ([`fold_entry`]).
-fn fold_new(tx: &Transaction, events: &[Event], project: &str) -> Result<(), Error> {
+/// per-position idempotency guard (`applied`) every fold path shares - and answer the cause of the
+/// first of them already recorded passed over ([`passed_over_cause`], spec 124), which a direct
+/// fold answers for its own position and a fold pass, for which every position is foreign,
+/// passes. A ledger entry of perception is refused, whatever its position and before anything is
+/// written for it: it folds only with its batch ([`fold_entry`]).
+fn fold_new(tx: &Transaction, events: &[Event], project: &str) -> Result<Option<String>, Error> {
+    let mut passed_over = None;
     for e in events {
         if is_ledger_entry(&e.type_) {
             return Err(Error(format!(
@@ -2112,9 +2351,12 @@ fn fold_new(tx: &Transaction, events: &[Event], project: &str) -> Result<(), Err
         }
         if record_applied(tx, e.position)? {
             fold(tx, e, project, &Asserter::of(e))?;
+        } else if passed_over.is_none() {
+            passed_over = passed_over_cause(tx, e.position)?;
         }
     }
-    relabel_owed_communities(tx)
+    relabel_owed_communities(tx)?;
+    Ok(passed_over)
 }
 
 /// Whether the file behind `conn` has folded `position`: its `applied` ledger holds it.
@@ -2136,8 +2378,9 @@ fn record_applied(tx: &Transaction, position: Position) -> Result<bool, Error> {
 }
 
 /// Fold the ledger entry `entry` with its batch, in the caller's transaction, and answer which of
-/// the three outcomes happened ([`EntryOutcome::Folded`]) or that it asked a batch it was not
-/// handed ([`EntryOutcome::Unread`]). It begins, as [`fold_new`] does, with the entry's `applied`
+/// the three outcomes happened ([`EntryOutcome::Folded`]), that its batch resolved to nothing
+/// ([`EntryOutcome::Unresolved`]), or that it asked a batch it was not handed
+/// ([`EntryOutcome::Unread`]). It begins, as [`fold_new`] does, with the entry's `applied`
 /// row, so everything after it is read under the write lock: a position already there folds
 /// nothing. An entry naming the generation its identity holds is a re-recording
 /// ([`is_re_recording`]) and writes that row alone. Any other asks `batch` for the entry's batch,
@@ -2145,8 +2388,9 @@ fn record_applied(tx: &Transaction, position: Position) -> Result<bool, Error> {
 /// row, which its caller undoes ([`fold_entry_alone`]). Otherwise it folds each event of it through
 /// [`fold`] at the entry's position and valid-time - which [`fold_event`] reads for every edge it
 /// adds - under the ENTRY's identity and generation, never a key the event carries. The first
-/// event folded installs the generation ([`advance_generation`]), so an entry no source resolves
-/// installs none and leaves the identity's facts as they stood, its `refs` rows included. Any other
+/// event folded installs the generation ([`advance_generation`]), so an entry no source resolves -
+/// answered [`EntryOutcome::Unresolved`], with its `applied` row written - installs none and leaves
+/// the identity's facts as they stood, its `refs` rows included. Any other
 /// batch drops every `refs` row its identity staged - each at an older generation, since an entry
 /// naming the current one is a re-recording - before its first event, and stages each tagged
 /// reference after its event folds ([`stage_reference`]); its end settles every row it staged,
@@ -2175,7 +2419,8 @@ fn fold_entry(
         at: to_nanos(entry.valid_from),
     };
     let events = match batch()? {
-        BatchAnswer::Batch(events) => events.unwrap_or_default(),
+        BatchAnswer::Batch(Some(events)) => events,
+        BatchAnswer::Batch(None) => return Ok(EntryOutcome::Unresolved),
         BatchAnswer::Unread => return Ok(EntryOutcome::Unread),
     };
     if events.is_empty() {
@@ -2208,10 +2453,14 @@ enum BatchAnswer {
 }
 
 /// What became of a ledger entry's fold ([`fold_entry`]): one of the three outcomes of
-/// [`EntryFold`] (`Folded`), or `Unread` - it asked a batch its batch function answered
-/// [`BatchAnswer::Unread`] for, and wrote nothing past its `applied` row.
+/// [`EntryFold`] (`Folded`); `Unresolved` - its batch function answered no batch, no source
+/// resolving the entry, so it wrote nothing past its `applied` row, which the live fold answers as
+/// [`EntryFold::BatchAsked`] and a fold pass passes over with [`RESOLVED_TO_NOTHING`] (spec 124);
+/// or `Unread` - it asked a batch its batch function answered [`BatchAnswer::Unread`] for, and
+/// wrote nothing past its `applied` row.
 enum EntryOutcome {
     Folded(EntryFold),
+    Unresolved,
     Unread,
 }
 
@@ -6102,7 +6351,8 @@ mod tests {
 
     /// Spec 122, THE IMMEDIATE OPEN: the transaction frame takes the write lock at its open, so a
     /// frame meeting a write lock another connection holds fails there once its busy timeout
-    /// passes - its body never run, and nothing written.
+    /// passes - its body never run, and nothing written - as CONTENTION ([`FrameError::Contended`],
+    /// spec 124) carrying SQLite's own text.
     #[test]
     fn a_transaction_meeting_a_held_write_lock_fails_at_its_open_before_its_body_runs() {
         let (_dir, path) = crate::test_support::temp_graph_db();
@@ -6121,9 +6371,13 @@ mod tests {
             .query_row("SELECT count(*) FROM applied", [], |r| r.get(0))
             .unwrap();
         assert_eq!(
-            (opened.map_err(|e| e.0), ran.get(), written),
             (
-                Err(crate::test_support::DATABASE_IS_LOCKED.to_string()),
+                opened.map_err(|e| (matches!(e, FrameError::Contended(_)), e.unframed().0)),
+                ran.get(),
+                written
+            ),
+            (
+                Err((true, crate::test_support::DATABASE_IS_LOCKED.to_string())),
                 false,
                 0
             ),
@@ -6486,7 +6740,6 @@ mod tests {
             ),
             (
                 Ok(Some(Rebuilt {
-                    passed_over: 0,
                     pruned: PruneStats {
                         nodes: 1,
                         superseded_edges: 0
@@ -6579,7 +6832,6 @@ mod tests {
                 Vec::<&str>::new(),
                 vec![5, 6],
                 Some(Rebuilt {
-                    passed_over: 0,
                     pruned: PruneStats {
                         nodes: 1,
                         superseded_edges: 0
@@ -6722,10 +6974,7 @@ mod tests {
             nodes: 2,
             superseded_edges: 1,
         };
-        let report = Some(Rebuilt {
-            passed_over: 0,
-            pruned,
-        });
+        let report = Some(Rebuilt { pruned });
         let dir = tempfile::tempdir().unwrap();
         let fresh = |name: &str| {
             let path = dir.path().join(name).to_str().unwrap().to_string();
@@ -6806,14 +7055,12 @@ mod tests {
                 report,
                 Err(crate::test_support::directory_refusal(format!("{windowed}.owed"))),
                 Some(Rebuilt {
-                    passed_over: 0,
                     pruned: PruneStats {
                         nodes: 3,
                         superseded_edges: 0
                     }
                 }),
                 Some(Rebuilt {
-                    passed_over: 0,
                     pruned: PruneStats {
                         nodes: 3,
                         superseded_edges: 0
@@ -7382,7 +7629,6 @@ mod tests {
                 refused(false),
                 vec![refused(true), refused(false)],
                 Ok(Some(Rebuilt {
-                    passed_over: 0,
                     pruned: PruneStats {
                         nodes: 1,
                         superseded_edges: 0
@@ -14213,7 +14459,7 @@ mod tests {
                     Ok(BatchAnswer::Batch(Some(batch.clone())))
                 })
                 .map(drop),
-                None => fold_new(tx, std::slice::from_ref(e), project),
+                None => fold_new(tx, std::slice::from_ref(e), project).map(drop),
             }
         }
 
@@ -15736,13 +15982,15 @@ mod tests {
                     &h1_at_7(),
                     &mut |_| {
                         asks.push(committed_of(&p));
-                        Ok(answers.remove(0))
+                        Ok(Extracted {
+                            answer: answers.remove(0),
+                            rejected: None,
+                        })
                     },
                     false,
-                    &mut 0,
                 );
                 Answered {
-                    folded: folded.map_err(|e| e.0),
+                    folded: folded.map_err(|e| e.unframed().0),
                     asks,
                     after: committed_of(&p),
                     generation: generation_of_f(&p),

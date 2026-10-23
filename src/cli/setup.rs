@@ -1020,10 +1020,11 @@ fn entry_blobs(root: &Path) -> Option<rigger::worktree::BlobBatch> {
 /// the batch `reextract` answers for it, which also finishes a rebuild's own
 /// unfinished work (a standing shadow, or a swapped-in cursor's tail) with no cause to name, since
 /// the ledger owes none of it; print how far along the rebuild is, what its run-closure prune
-/// removed from the rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own) and how
-/// many events it passed over because the fold rejects their payload, and, read from `log` and the
-/// rebuilt graph once the rebuild ends, how many identities the next ingest records again
-/// ([`rebuild_report_line`]); report whether it rebuilt.
+/// removed from the rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own), and,
+/// read from `log` and the rebuilt graph once the rebuild ends, how many identities the next
+/// ingest records again ([`rebuild_report_line`]); then, rebuilt or not, how many events the file
+/// records passed over, by cause, whenever it records any ([`Projector::passed_over`], spec 124,
+/// CATCH-UP LINES); report whether it rebuilt.
 fn pay_owed_rebuild<'t>(
     held: &contextgraph::sqlite::RebuildLock,
     project: &str,
@@ -1051,15 +1052,18 @@ fn pay_owed_rebuild<'t>(
     if let Some(rebuilt) = rebuilt {
         println!("rebuilt graph.db from the event log");
         println!("{} from the rebuilt graph", pruned_line(&rebuilt.pruned));
-        if rebuilt.passed_over > 0 {
-            println!(
-                "passed over {} event(s) whose payload the fold rejects, recorded as folded",
-                rebuilt.passed_over
-            );
-        }
         println!(
             "{}",
             rebuild_report_line(identities_behind_their_recording(log, &graph, tree)?)
+        );
+    }
+    let passed = graph.passed_over()?;
+    if passed.total() > 0 {
+        println!(
+            "passed over {} event(s) the fold could not fold {}, recorded as folded - {}",
+            passed.total(),
+            passed_over_by_cause(&passed),
+            PASSED_OVER_RETRIED
         );
     }
     Ok(rebuilt.is_some())

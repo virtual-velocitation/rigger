@@ -466,20 +466,45 @@ fn standing_graph(graph_db: &str, project: &str) -> Option<Projector> {
 
 /// What a read-only surface (graph inspection, `rigger validate`, the dashboard) says when this
 /// project's `graph.db` owes its rebuild (spec 101): it answers from the projection as it stands,
-/// and names the command that pays the rebuild. `None` when there is no file (never creating
-/// one), when it owes nothing, or when it cannot be read.
+/// and names the command that pays the rebuild. Beside it, on a line of its own, how many events
+/// the file records passed over, by cause, whenever it records any ([`Projector::passed_over`],
+/// spec 124, CATCH-UP LINES). `None` when there is no file (never creating one), when it owes
+/// nothing and passed nothing over, or when it cannot be read.
 fn graph_rebuild_owed_note(graph_db: &str, project: &str) -> Option<String> {
-    let owed = standing_graph(graph_db, project)?.rebuild_owed().ok()?;
-    owed.then(|| {
+    let graph = standing_graph(graph_db, project)?;
+    let owed = graph.rebuild_owed().ok()?.then(|| {
         format!(
             "note: {} - until then the context graph answers as it stands",
             contextgraph::REBUILD_OWED
         )
-    })
+    });
+    let passed = graph.passed_over().ok()?;
+    let passed = (passed.total() > 0).then(|| {
+        format!(
+            "note: graph.db passed over {} event(s) {}; {PASSED_OVER_RETRIED}",
+            passed.total(),
+            passed_over_by_cause(&passed)
+        )
+    });
+    let notes: Vec<String> = owed.into_iter().chain(passed).collect();
+    (!notes.is_empty()).then(|| notes.join("\n"))
 }
 
+/// How many events a `graph.db` passed over, by cause (spec 124, CATCH-UP LINES), as `rigger
+/// setup`'s passed-over line and the read-only note ([`graph_rebuild_owed_note`]) both spell it.
+fn passed_over_by_cause(passed: &contextgraph::sqlite::PassedOver) -> String {
+    format!(
+        "({} rejected payload(s), {} fold failure(s), {} resolved to nothing)",
+        passed.rejected, passed.failed, passed.unresolved
+    )
+}
+
+/// What `rigger setup`'s passed-over line and the read-only note ([`graph_rebuild_owed_note`])
+/// both end by saying of the events a `graph.db` passed over (spec 124, CATCH-UP LINES).
+const PASSED_OVER_RETRIED: &str = "a rebuild under a later fold rule retries them";
+
 /// Open this project's `graph.db` for a read-only inspection: it answers from the projection as
-/// it stands, saying on stderr first when that projection owes its rebuild
+/// it stands, saying on stderr first when that projection owes its rebuild or passed events over
 /// ([`graph_rebuild_owed_note`]). The open writes nothing to such a file.
 fn open_graph_to_read(
     graph_db: &str,
