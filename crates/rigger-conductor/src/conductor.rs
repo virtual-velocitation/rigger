@@ -45827,16 +45827,8 @@ mod tests {
             root: dir.path().to_string_lossy().into_owned(),
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
             grounder: Some(&grep),
-            graph: None,
-            criteria: vec![criterion.to_string()],
-            log: &|_| {},
-            hash_blob: &|_| Ok(String::new()),
-            check_emit: &crate::contextgraph::check_emit,
+            ..stub_deps(&st, &driver, vec![criterion.to_string()])
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -46049,16 +46041,8 @@ mod tests {
             root: dir.path().to_string_lossy().into_owned(),
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
             grounder: Some(&grep),
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-            log: &|_| {},
-            hash_blob: &|_| Ok(String::new()),
-            check_emit: &crate::contextgraph::check_emit,
+            ..stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()])
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -46092,16 +46076,8 @@ mod tests {
             root: dir.path().to_string_lossy().into_owned(),
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
             grounder: Some(&grep),
-            graph: None,
-            criteria: vec![criterion.to_string()],
-            log: &|_| {},
-            hash_blob: &|_| Ok(String::new()),
-            check_emit: &crate::contextgraph::check_emit,
+            ..stub_deps(&st, &driver, vec![criterion.to_string()])
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
         driver
@@ -47388,16 +47364,8 @@ mod tests {
             ),
         ]);
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
             grounder: Some(&grep),
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-            log: &|_| {},
-            hash_blob: &|_| Ok(String::new()),
-            check_emit: &crate::contextgraph::check_emit,
+            ..stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()])
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -47452,16 +47420,8 @@ mod tests {
             false,
         );
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
             grounder: Some(&grep),
-            graph: None,
-            criteria: vec![criterion.to_string()],
-            log: &|_| {},
-            hash_blob: &|_| Ok(String::new()),
-            check_emit: &crate::contextgraph::check_emit,
+            ..stub_deps(&st, &driver, vec![criterion.to_string()])
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
 
