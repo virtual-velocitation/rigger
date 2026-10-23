@@ -505,8 +505,9 @@ impl Projector {
     /// Pay the rebuild this projector's graph file - the one `held` names - owes (spec 101), and
     /// report whether there was one to pay - `None` when there was not, else what it did
     /// ([`Rebuilt`]): what its run-closure prune removed - owed because its caller found it so
-    /// (`owed`: what [`Projector::owed_against`] read of its ledger against the log), or because the file itself records an older fold rule
-    /// or carries the [`owed_mark`] a failed fold left, both read again here. A rebuild's own
+    /// (`owed`: what [`Projector::owed_against`] read of its ledger against the log), or because
+    /// the file itself records an older fold rule or carries the [`owed_mark`] a failed fold left,
+    /// both read again here. A rebuild's own
     /// unfinished work is paid too, with no owed cause: the shadow a rebuild whose swap stopped
     /// left standing, whose swap it finishes before any tail, and the tail past the cursor a swap
     /// put in place. The mark is dropped once the rebuilt file is in place. The live file is this
@@ -515,12 +516,12 @@ impl Projector {
     ///
     /// The rebuild folds `source` - the log's live selection, whose cost is bounded by the live
     /// projection rather than the log's age - each ledger entry of perception with the batch
-    /// `reextract` answers for it (see `fold_source`), into a fresh SHADOW file beside the graph file, in the
-    /// batches `source` hands it, each folded in the bounded transactions `fold_source` cuts it
-    /// into, each transaction committed with the last position it folded and the run attribution it
-    /// gathered ([`REBUILD_STATE`]), and each batch reported to `progress`; the live file is only
-    /// ever read meanwhile. Once `source` is exhausted, a private copy of the shadow, pruned as
-    /// `rigger reset --runs` prunes the live graph and stamped with the current
+    /// `reextract` answers for it (see `fold_source`), into a fresh SHADOW file beside the graph
+    /// file, in the batches `source` hands it, each folded in the bounded transactions
+    /// `fold_source` cuts it into, each transaction committed with the last position it folded and
+    /// the run attribution it gathered ([`REBUILD_STATE`]), and each batch reported to `progress`;
+    /// the live file is only ever read meanwhile. Once `source` is exhausted, a private copy of the
+    /// shadow, pruned as `rigger reset --runs` prunes the live graph and stamped with the current
     /// [`PROJECTION_VERSION`] ([`prune_a_copy`]), is put in place of the live file's content in ONE
     /// step - one write transaction that copies it page for page, so a racing open sees the old
     /// file, which still owes the rebuild, or the rebuilt one, never half of either - and then
@@ -650,8 +651,9 @@ impl Projector {
     /// How many positions this file records passed over, by the class of their cause (spec 124,
     /// CATCH-UP LINES): its `passed_over` rows as they stand, whoever wrote them, each counted by
     /// the class its cause begins with ([`rejection`]) - [`PAYLOAD_REJECTED`], [`FOLD_FAILED`]
-    /// or [`RESOLVED_TO_NOTHING`], the only classes a fold pass writes ([`decide_step`]). None on a file without the table, such as one that owes its
-    /// rebuild, which is opened as it stands. Reads, and writes nothing.
+    /// or [`RESOLVED_TO_NOTHING`], the only classes a fold pass writes ([`decide_step`]). None on
+    /// a file without the table, such as one that owes its rebuild, which is opened as it stands.
+    /// Reads, and writes nothing.
     pub fn passed_over(&self) -> Result<PassedOver, Error> {
         let conn = self.conn.lock().unwrap();
         let mut counts = PassedOver::default();
