@@ -5899,7 +5899,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
-        let mark = dir.path().join("graph.db.owed");
+        let mark = crate::test_support::owed_mark_in(dir.path());
 
         let p = Projector::open(path, "test").unwrap();
         crate::test_support::folds(&p, &log[..1]);
@@ -6271,7 +6271,7 @@ mod tests {
         );
         assert_eq!(
             (
-                dir.path().join("graph.db.owed").exists(),
+                crate::test_support::owed_mark_in(dir.path()).exists(),
                 p.rebuild_owed().unwrap(),
                 applied(&p, 5),
             ),
@@ -7129,7 +7129,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
-        let mark = dir.path().join("graph.db.owed");
+        let mark = crate::test_support::owed_mark_in(dir.path());
         let log = [decision_at("d1", "a.rs", 1), decision_at("d2", "b.rs", 2)];
         let p = Projector::open(path, "test").unwrap();
         crate::test_support::folds(&p, &log[..1]);
@@ -7196,14 +7196,14 @@ mod tests {
         let log = [decision_at("d1", "a.rs", 1), decision_at("d2", "b.rs", 2)];
         let p = Projector::open(path, "test").unwrap();
         crate::test_support::folds(&p, &log[..1]);
-        std::fs::write(dir.path().join("graph.db.owed"), b"").unwrap();
+        std::fs::write(crate::test_support::owed_mark_in(dir.path()), b"").unwrap();
         assert_eq!(
             p.owed_against(&mut |_| panic!("a marked file reads no positions"))
                 .unwrap(),
             vec![OWED_LOST_FOLD],
             "the mark names the lost fold once"
         );
-        std::fs::remove_file(dir.path().join("graph.db.owed")).unwrap();
+        std::fs::remove_file(crate::test_support::owed_mark_in(dir.path())).unwrap();
         p.conn
             .lock()
             .unwrap()
@@ -7222,7 +7222,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
-        let mark = dir.path().join("graph.db.owed");
+        let mark = crate::test_support::owed_mark_in(dir.path());
         let p = Projector::open(path, "test").unwrap();
         crate::test_support::apply_decision(&p, 1, "d1", "x", &["a.rs"], "");
         assert_eq!(p.owed_because().unwrap(), Vec::<&str>::new());
@@ -7272,7 +7272,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
-        let mark = dir.path().join("graph.db.owed");
+        let mark = crate::test_support::owed_mark_in(dir.path());
         std::fs::write(&mark, b"").unwrap();
         Projector::forget_orphaned_mark(path).unwrap();
         assert!(
@@ -7302,7 +7302,7 @@ mod tests {
     fn an_orphaned_mark_that_cannot_be_removed_fails_naming_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
-        let mark = dir.path().join("graph.db.owed");
+        let mark = crate::test_support::owed_mark_in(dir.path());
         std::fs::create_dir(&mark).unwrap();
         assert_eq!(
             (
@@ -15661,7 +15661,7 @@ mod tests {
             fn graph_file() -> (tempfile::TempDir, Projector, PathBuf) {
                 let (dir, path) = crate::test_support::temp_graph_db();
                 let p = Projector::open(&path, "test").unwrap();
-                let mark = dir.path().join("graph.db.owed");
+                let mark = crate::test_support::owed_mark_in(dir.path());
                 (dir, p, mark)
             }
 

@@ -2033,12 +2033,15 @@ fn a_rebuild_interrupted_and_resumed_reports_the_number_a_single_pass_does() {
             true,
             &mut |after, sink: &mut RebuildSink| {
                 rigger::contextgraph::sqlite::stream_past(&log[..=through], after, 1, sink)?;
-                Err(Error("interrupted".to_string()))
+                Err(Error(common::fixtures::SOURCE_INTERRUPTED.to_string()))
             },
             &mut |entry| rigger::ingest::resolve_entry(root, entry, None),
             &mut no_progress,
         );
-    assert_eq!(interrupted.map_err(|e| e.0), Err("interrupted".to_string()));
+    assert_eq!(
+        interrupted.map_err(|e| e.0),
+        Err(common::fixtures::SOURCE_INTERRUPTED.to_string())
+    );
     let shadow = rigger_file(root, "graph.db.rebuild");
     assert_eq!(
         (

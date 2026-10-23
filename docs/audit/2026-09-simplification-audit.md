@@ -1767,7 +1767,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:12578-12580` `audit_id`
 - `crates/rigger-domain/src/spawn.rs:140-142` `spawn_id`
 - `crates/rigger-driver/src/driver/claude_code.rs:1120-1128` `stop_message`
-- `tests/common/fixtures/fold.rs:622-624` `code_batch_key`
+- `tests/common/fixtures/fold.rs:631-633` `code_batch_key`
 - `tests/common/fixtures/graph.rs:204-206` `spoke_id`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:56-58` `expected_postmerge_dir`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:59-61` `expected_postmerge_branch`
@@ -1790,7 +1790,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:73-75` `what`
 - `tests/common/fixtures/plan_critique.rs:29-34` `spec_defect_halt_text`
-- `tests/compaction_generations_periphery.rs:3502-3507` `closed_unit_line`
+- `tests/compaction_generations_periphery.rs:3503-3508` `closed_unit_line`
 - `tests/new_run_critique_refusal_periphery.rs:138-140` `no_critic_line`
 - `tests/no_os_kill_audit.rs:52-54` `join`
 
@@ -2907,12 +2907,12 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/mod.rs:308-308` `"{}/.rigger-test-scratch"`
 - `tests/common/workflow_probe.rs:15-15` `".rigger"`
 - `tests/common/workflow_probe.rs:16-16` `"create .rigger"`
-- `tests/compaction_generations_periphery.rs:1288-1288` `".rigger"`
-- `tests/compaction_generations_periphery.rs:1373-1373` `".rigger"`
-- `tests/compaction_generations_periphery.rs:2546-2546` `"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
+- `tests/compaction_generations_periphery.rs:1289-1289` `".rigger"`
+- `tests/compaction_generations_periphery.rs:1374-1374` `".rigger"`
+- `tests/compaction_generations_periphery.rs:2547-2547` `"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
          {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \
          decision (position {position}){fold}\n"`
-- `tests/compaction_generations_periphery.rs:3829-3829` `".rigger"`
+- `tests/compaction_generations_periphery.rs:3830-3830` `".rigger"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:138-138` `".rigger"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:139-139` `"write the .rigger/{rel} fixture: {e}"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:149-149` `".rigger"`
@@ -2992,8 +2992,8 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/ledger_rebuild.rs:445-445` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:611-611` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:1196-1196` `"gw/.rigger/workflow.yml"`
-- `tests/ledger_rebuild.rs:2259-2259` `"gw/.rigger/workflow.yml"`
-- `tests/ledger_rebuild.rs:2289-2289` `"gw/.rigger/workflow.yml"`
+- `tests/ledger_rebuild.rs:2262-2262` `"gw/.rigger/workflow.yml"`
+- `tests/ledger_rebuild.rs:2292-2292` `"gw/.rigger/workflow.yml"`
 - `tests/migration_is_deliberate_periphery.rs:490-490` `".rigger"`
 - `tests/migration_is_deliberate_periphery.rs:537-537` `".rigger"`
 - `tests/principle_gates_wiring.rs:50-50` `"the scaffolded .rigger/agents: {missing:#?}"`
@@ -4100,15 +4100,15 @@ mandatory sweep: sqlite Connection::open call sites - 60 site(s), collected mech
 - `tests/common/fixtures/sqlite.rs:31-31` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:60-60` `Connection::open`
 - `tests/common/fixtures/write_lock.rs:11-11` `Connection::open`
-- `tests/compaction_generations_periphery.rs:428-428` `Connection::open`
-- `tests/compaction_generations_periphery.rs:884-884` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1099-1099` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1213-1213` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1269-1269` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1379-1379` `Connection::open`
-- `tests/compaction_generations_periphery.rs:2896-2896` `Connection::open`
-- `tests/compaction_generations_periphery.rs:3148-3148` `Connection::open`
-- `tests/compaction_generations_periphery.rs:4277-4277` `Connection::open`
+- `tests/compaction_generations_periphery.rs:429-429` `Connection::open`
+- `tests/compaction_generations_periphery.rs:885-885` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1100-1100` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1214-1214` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1270-1270` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1380-1380` `Connection::open`
+- `tests/compaction_generations_periphery.rs:2897-2897` `Connection::open`
+- `tests/compaction_generations_periphery.rs:3149-3149` `Connection::open`
+- `tests/compaction_generations_periphery.rs:4278-4278` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:86-86` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:100-100` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:213-213` `Connection::open`
@@ -4531,7 +4531,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/cli.rs:861-868` `migrated_lines`
 - `tests/common/cli.rs:875-880` `derived_menu_line_naming`
 - `tests/common/cli.rs:1502-1507` `bloat_advisory_naming`
-- `tests/compaction_generations_periphery.rs:4937-4942` `runs_prunable`
+- `tests/compaction_generations_periphery.rs:4938-4943` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
 
@@ -4944,7 +4944,7 @@ Proposed home: `fold::support (consolidate these 2 sites into one function in th
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/common/fixtures/fold.rs:277-279` `alias_json`
-- `tests/common/fixtures/fold.rs:882-884` `ref_json`
+- `tests/common/fixtures/fold.rs:891-893` `ref_json`
 
 #### `dup-c3c8358993cf` (near, 2 sites)
 
@@ -4952,8 +4952,8 @@ Proposed home: `fold::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:1090-1092` `apply_ref`
-- `tests/common/fixtures/fold.rs:1120-1122` `apply_call`
+- `tests/common/fixtures/fold.rs:1099-1101` `apply_ref`
+- `tests/common/fixtures/fold.rs:1129-1131` `apply_call`
 
 #### `dup-9c3b5c80063e` (near, 3 sites)
 
@@ -4961,7 +4961,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/common/fixtures/f
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:1440-1449` `live_node_ids`
+- `tests/common/fixtures/fold.rs:1449-1458` `live_node_ids`
 - `tests/community_resolution_knob.rs:139-148` `live_memberships_of`
 - `tests/graph_superseded_prune.rs:32-41` `live_contains`
 
@@ -5017,7 +5017,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/compaction_genera
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/compaction_generations_periphery.rs:2212-2218` `holds_table`
+- `tests/compaction_generations_periphery.rs:2213-2219` `holds_table`
 - `tests/one_shot_reads_periphery.rs:310-312` `poison`
 
 #### `dup-515218e72204` (near, 2 sites)
@@ -5290,7 +5290,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9870 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9871 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4994-5035` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15035-15057` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

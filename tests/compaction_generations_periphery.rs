@@ -52,6 +52,7 @@ use common::fixtures::nanos;
 use common::fixtures::rebuild_owed_note;
 use common::fixtures::wait_until_for;
 use common::fixtures::with_graph_locked;
+use common::fixtures::SOURCE_INTERRUPTED;
 use common::fixtures::{graph_error, lost_fold, not_folded, DATABASE_IS_LOCKED, NOT_A_DATABASE};
 use common::git::temp_git_project_with_commit;
 use rigger::contextgraph::sqlite::{PruneStats, RebuildSink, Rebuilt, PROJECTION_VERSION};
@@ -790,11 +791,11 @@ fn an_interrupted_rebuild_leaves_graph_db_untouched_and_resumes_from_its_last_co
     let before = std::fs::read(&db).unwrap();
     let interrupted = rebuild(&db, &mut |_, sink| {
         sink(&log[..2], log[4].position)?;
-        Err(rigger::contextgraph::Error("interrupted".to_string()))
+        Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()))
     });
     assert_eq!(
         interrupted.unwrap_err().0,
-        "interrupted",
+        SOURCE_INTERRUPTED,
         "the interruption fails the rebuild"
     );
     assert!(
@@ -855,7 +856,7 @@ fn a_rebuild_interrupted_in_its_tail_finishes_the_tail_on_the_next_call() {
         reads += 1;
         match reads {
             1 => sink(&log[..3], log[2].position),
-            _ => Err(rigger::contextgraph::Error("interrupted".to_string())),
+            _ => Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string())),
         }
     });
     assert_eq!(interrupted.unwrap_err().0, "interrupted");
@@ -1559,14 +1560,14 @@ fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_l
             false,
             &mut |_, sink| {
                 sink(&log, head)?;
-                Err(rigger::contextgraph::Error("interrupted".to_string()))
+                Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()))
             },
             &mut |_| Ok(None),
             &mut no_progress,
         );
     assert_eq!(
         (interrupted.unwrap_err().0.as_str(), shadow.exists()),
-        ("interrupted", true),
+        (SOURCE_INTERRUPTED, true),
         "the interrupted rebuild leaves its shadow holding both definitions"
     );
     ReleaseEraStore::as_rule_1_left(&shadow, 0);
@@ -2154,7 +2155,7 @@ fn a_resumed_rebuild_after_the_log_gained_a_generation_is_the_whole_logs(gained:
         first(after, &mut |events, head| {
             batches += 1;
             if batches == 2 {
-                return Err(rigger::contextgraph::Error("interrupted".to_string()));
+                return Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()));
             }
             sink(events, head)
         })

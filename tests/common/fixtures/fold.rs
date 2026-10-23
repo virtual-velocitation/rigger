@@ -359,6 +359,15 @@ pub fn entry_refusal() -> rigger::contextgraph::Fold {
     rigger::contextgraph::Fold::NotFolded(lost_fold(&graph_error(ENTRY_REFUSED)))
 }
 
+/// What a test's rebuild source answers when it stops a rebuild mid-read.
+pub const SOURCE_INTERRUPTED: &str = "interrupted";
+
+/// The owed mark of the graph file `graph.db` in the directory `dir`: the file a fold that fails
+/// writes beside it.
+pub fn owed_mark_in(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join("graph.db.owed")
+}
+
 /// The one note every read-only surface prints while `graph.db` owes its rebuild.
 pub fn rebuild_owed_note() -> String {
     format!(

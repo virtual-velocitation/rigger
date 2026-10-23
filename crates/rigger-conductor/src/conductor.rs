@@ -14381,7 +14381,7 @@ mod tests {
             Vec::<String>::new(),
             "a fold that lands is not reported"
         );
-        std::fs::write(dir.path().join("graph.db.owed"), b"").unwrap();
+        std::fs::write(crate::test_support::owed_mark_in(dir.path()), b"").unwrap();
         ctx.emit_with_actor("", contextgraph::TYPE_DECISION_MADE, json!({"id": "d2"}))
             .unwrap();
         assert_eq!(
