@@ -708,14 +708,7 @@ fn a_rebuild_skips_an_event_whose_fold_fails() {
         ),
         (
             Some(PruneStats::default()),
-            vec![(
-                log[3].position,
-                common::fixtures::judged_cause(
-                    rigger::contextgraph::sqlite::PAYLOAD_REJECTED,
-                    &log[3].type_,
-                    &log[3].data
-                )
-            )]
+            vec![common::fixtures::rejected_row(&log[3])]
         ),
         "the owed rebuild runs, passing over the malformed event with its cause"
     );

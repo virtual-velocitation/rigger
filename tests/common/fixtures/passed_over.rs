@@ -38,6 +38,19 @@ pub fn judged_cause(class: &str, type_: &str, data: &[u8]) -> String {
     format!("{class}: {why}")
 }
 
+/// The `passed_over` row a fold pass records for the event `e`, whose own payload the judge
+/// rejects: its position and its `payload rejected` cause ([`judged_cause`]).
+pub fn rejected_row(e: &rigger::eventstore::Event) -> (u64, String) {
+    (
+        e.position,
+        judged_cause(
+            rigger::contextgraph::sqlite::PAYLOAD_REJECTED,
+            &e.type_,
+            &e.data,
+        ),
+    )
+}
+
 /// Every row of the `passed_over` table of the graph file at `graph_db` (spec 124, PASSED OVER WITH
 /// ITS CAUSE), ascending: each position a fold recorded passed over, with its cause.
 pub fn passed_over_rows(graph_db: &str) -> Vec<(u64, String)> {

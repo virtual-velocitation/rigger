@@ -5990,15 +5990,6 @@ mod tests {
         event_at(TYPE_LESSON_LEARNED, b"[]", position)
     }
 
-    /// The `passed_over` row a fold pass records for the event `e`, whose own payload the judge
-    /// rejects: its position and its `payload rejected` cause.
-    fn rejected_row(e: &Event) -> (u64, String) {
-        (
-            e.position,
-            crate::test_support::judged_cause(PAYLOAD_REJECTED, &e.type_, &e.data),
-        )
-    }
-
     /// What the rebuild source of the tests that stop a rebuild in its tail answers there.
     const TAIL_INTERRUPTED: &str = "interrupted in its tail";
 
@@ -6094,9 +6085,9 @@ mod tests {
                 Some(PruneStats::default()),
                 vec![true; 5],
                 vec![
-                    rejected_row(&log[1]),
-                    rejected_row(&log[2]),
-                    rejected_row(&log[3]),
+                    crate::test_support::rejected_row(&log[1]),
+                    crate::test_support::rejected_row(&log[2]),
+                    crate::test_support::rejected_row(&log[3]),
                 ],
                 vec!["a.rs".to_string(), "b.rs".to_string()]
             ),
@@ -6157,9 +6148,9 @@ mod tests {
                 Some(PruneStats::default()),
                 vec![true; 4],
                 vec![
-                    rejected_row(&before[0]),
-                    rejected_row(&before[2]),
-                    rejected_row(&gained[0])
+                    crate::test_support::rejected_row(&before[0]),
+                    crate::test_support::rejected_row(&before[2]),
+                    crate::test_support::rejected_row(&gained[0])
                 ],
             ),
             "two passed over by the fold and one by the tail, each recorded as folded"
@@ -6308,7 +6299,10 @@ mod tests {
             crate::test_support::clean_rebuild()
         );
         let p = Projector::open(&path, "test").unwrap();
-        let (first, second) = (rejected_row(&log[0]), rejected_row(&log[1]));
+        let (first, second) = (
+            crate::test_support::rejected_row(&log[0]),
+            crate::test_support::rejected_row(&log[1]),
+        );
         let batch = [
             log[0].clone(),
             log[1].clone(),
