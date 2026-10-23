@@ -1647,6 +1647,151 @@ mod tests {
         );
     }
 
+    /// Emit the `typ` record `id` through the one emit core, stamped with `spawn` as its
+    /// `meta.spawn` (unstamped when `None`): the position the store issued it.
+    fn emit_record(
+        store: &Store,
+        typ: &str,
+        id: &str,
+        spawn: Option<&str>,
+    ) -> Result<crate::eventstore::Position, String> {
+        let mut args = json!({"type": typ, "data": {"id": id, "summary": "s"}});
+        if let Some(spawn) = spawn {
+            args["meta"][crate::conductor::META_SPAWN] = json!(spawn);
+        }
+        emit_event(store, "run", || wired(None), &args).map(|emitted| emitted.position)
+    }
+
+    /// The records of the three graph record types `store` holds on `run`.
+    fn records_on_run(store: &Store) -> usize {
+        store
+            .read_stream("run", 0, Direction::Forward)
+            .unwrap()
+            .iter()
+            .filter(|e| crate::run::read::CARRY_OVER_TYPES.contains(&e.type_.as_str()))
+            .count()
+    }
+
+    /// Append a `RunStarted` boundary for run `run` to `store`'s `run` stream.
+    fn start_run(store: &Store, run: &str) {
+        let boundary = Event::new(
+            crate::run::TYPE_RUN_STARTED,
+            json!({"run": run, "spec": "s.md"}).to_string().into_bytes(),
+        );
+        store
+            .append("run", ExpectedRevision::Any, &[boundary])
+            .unwrap();
+    }
+
+    /// TWO AUTHORS, ONE ID: the graph keeps one node per record id, so a record whose id a live
+    /// record of ANOTHER unit or role already holds would hide that record from every reader but
+    /// the log. The one emit core refuses it, whatever the two records' types, lands nothing, and
+    /// names the holder's position and unit/role and the two ways on: a fresh id, or a decision
+    /// that supersedes the holder.
+    #[test]
+    fn a_record_whose_id_another_authors_live_record_holds_is_refused() {
+        for (typ, spawn) in [
+            ("DecisionMade", "u2/implementer#0"),
+            ("ReviewFinding", "u1/lens:sdet#0"),
+            ("LessonLearned", "u1/adjudicator#3~retry1"),
+        ] {
+            let store = Store::open(":memory:").unwrap();
+            let held = emit_record(&store, "DecisionMade", "d-x", Some("u1/implementer#0"))
+                .expect("the first author's record is accepted");
+            let err = emit_record(&store, typ, "d-x", Some(spawn))
+                .expect_err("another author's record under a held id must be refused");
+            for named in [
+                format!("position {held}"),
+                "u1/implementer".to_string(),
+                "new id".to_string(),
+                "supersedes".to_string(),
+            ] {
+                assert!(
+                    err.contains(&named),
+                    "the refusal of {typ} by {spawn} names {named:?}: {err}"
+                );
+            }
+            assert!(
+                !err.contains("u1/implementer#0"),
+                "the holder is named by its unit/role, never its attempt: {err}"
+            );
+            assert_eq!(records_on_run(&store), 1, "a refused emit appends nothing");
+        }
+    }
+
+    /// ONE AUTHOR RE-EMITS: the same unit and role re-emitting its own id is the update path (the
+    /// later record wins), across its remediation attempts and reviewer respawns alike, since the
+    /// author key leaves the attempt out; an unstamped emit - the operator's - is accepted over
+    /// any holder.
+    #[test]
+    fn the_holders_own_unit_and_role_and_an_unstamped_emit_re_emit_its_id() {
+        let store = Store::open(":memory:").unwrap();
+        for spawn in [
+            Some("u1/adjudicator#0"),
+            Some("u1/adjudicator#0"),
+            Some("u1/adjudicator#1"),
+            Some("u1/adjudicator#1~retry2"),
+            None,
+        ] {
+            emit_record(&store, "DecisionMade", "d-x", spawn)
+                .unwrap_or_else(|e| panic!("a re-emit stamped {spawn:?} is accepted: {e}"));
+        }
+        assert_eq!(records_on_run(&store), 5, "every re-emit is appended");
+    }
+
+    /// An UNSTAMPED holder - an operator's record - has no unit or role, so it is another
+    /// author to every stamped emit: an agent taking its id is refused, the refusal saying the
+    /// holder is unstamped.
+    #[test]
+    fn a_stamped_record_is_refused_over_an_unstamped_live_holder() {
+        let store = Store::open(":memory:").unwrap();
+        emit_record(&store, "DecisionMade", "d-x", None).unwrap();
+        let err = emit_record(&store, "DecisionMade", "d-x", Some("u1/implementer#0"))
+            .expect_err("an agent taking an operator record's id is refused");
+        assert!(err.contains("unstamped"), "{err}");
+        assert_eq!(records_on_run(&store), 1, "a refused emit appends nothing");
+    }
+
+    /// LIVE is the run attribution's rule: a decision or finding only a superseded run recorded
+    /// is history and refuses nothing, while the active run's own records do; a lesson is never
+    /// attributed away, so a lesson an earlier run recorded still holds its id.
+    #[test]
+    fn only_a_live_holder_or_a_lesson_refuses_an_id() {
+        let store = Store::open(":memory:").unwrap();
+        start_run(&store, "r1");
+        emit_record(&store, "DecisionMade", "d-x", Some("u1/implementer#0")).unwrap();
+        emit_record(&store, "ReviewFinding", "f-x", Some("u1/adversary#0")).unwrap();
+        emit_record(&store, "LessonLearned", "l-x", Some("u1/implementer#0")).unwrap();
+        start_run(&store, "r2");
+        emit_record(&store, "DecisionMade", "d-x", Some("u2/implementer#0"))
+            .expect("a superseded run's decision holds no id in the active run");
+        emit_record(&store, "ReviewFinding", "f-x", Some("u2/adversary#0"))
+            .expect("a superseded run's finding holds no id in the active run");
+        let err = emit_record(&store, "LessonLearned", "l-x", Some("u2/implementer#0"))
+            .expect_err("a lesson is never history, so it still holds its id");
+        assert!(err.contains("u1/implementer"), "{err}");
+        let err = emit_record(&store, "DecisionMade", "d-x", Some("u3/implementer#0"))
+            .expect_err("the active run's own decision holds its id");
+        assert!(err.contains("u2/implementer"), "{err}");
+    }
+
+    /// The spawn-bound `rigger_emit` tool reaches the same refusal through the one emit core:
+    /// its session is told who holds the id, and nothing is appended.
+    #[test]
+    fn the_emit_tool_refuses_an_id_another_authors_live_record_holds() {
+        let store = Store::open(":memory:").unwrap();
+        emit_record(&store, "DecisionMade", "d-x", Some("u1/implementer#0")).unwrap();
+        let driver = Driver::new();
+        let server = Server::new(&driver, &store, "run").with_spawn("u2/implementer#0");
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d-x","summary":"s"}}}}"#;
+        let resp = call(&server, input);
+        assert!(
+            resp.to_string().contains("u1/implementer"),
+            "the tool's reply names the holder: {resp}"
+        );
+        assert_eq!(records_on_run(&store), 1, "a refused emit appends nothing");
+    }
+
     /// A `LessonLearned` whose `about` is an array of paths passes the shape check, is
     /// appended, and folds into the wired graph as a node reachable from the file it is about.
     #[test]

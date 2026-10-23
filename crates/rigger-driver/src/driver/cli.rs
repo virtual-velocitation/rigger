@@ -569,6 +569,36 @@ thinking out loud, not json\n\
         );
     }
 
+    /// The worker is told the spawn it runs as (`RIGGER_SPAWN`), so its own `rigger emit` is
+    /// stamped with its author on this host as on the headless one.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_exports_the_spawn_id_to_the_worker() {
+        let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/env-echo-agent.sh")
+            .to_string_lossy()
+            .into_owned();
+        let driver = Driver {
+            bin,
+            ..Driver::default()
+        };
+        let emit = |_: &str, _: Value| Ok(());
+        let agent = AgentDef {
+            id: "e".into(),
+            ..Default::default()
+        };
+        let opts = SpawnOpts {
+            id: "u/implementer#2".into(),
+            ..Default::default()
+        };
+        let result = driver.spawn(&agent, "task", &opts, &emit).unwrap();
+        assert!(
+            result.output.contains("RIGGER_SPAWN=u/implementer#2\n"),
+            "the worker sees its spawn id: {:?}",
+            result.output
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_finished_spawn_reclaims_its_own_scratch_and_spares_an_unfinished_siblings() {

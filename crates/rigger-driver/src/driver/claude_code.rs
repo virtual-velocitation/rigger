@@ -1777,6 +1777,32 @@ mod tests {
         );
     }
 
+    /// The worker is told the spawn it runs as (`RIGGER_SPAWN`), so its own `rigger emit` is
+    /// stamped with its author exactly as a `rigger_emit` call through its spawn-bound MCP
+    /// server is.
+    #[test]
+    fn launch_exports_the_spawn_id_to_the_worker() {
+        let driver = Driver {
+            bin: fixture_bin(),
+            rigger_bin: "rigger".to_string(),
+            ..Driver::default()
+        };
+        let store = Store::open(":memory:").unwrap();
+        let mut launch = driver
+            .launch(
+                &AgentDef::default(),
+                "task",
+                &opts("u/implementer#2"),
+                &store,
+            )
+            .unwrap();
+        let lines = read_fixture_lines(&mut launch.child);
+        assert!(
+            lines.iter().any(|l| l == "RIGGER_SPAWN=u/implementer#2"),
+            "the worker sees its spawn id: {lines:?}"
+        );
+    }
+
     #[test]
     fn launch_writes_the_task_as_the_first_stream_json_user_message() {
         let driver = Driver {

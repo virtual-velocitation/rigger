@@ -3521,6 +3521,94 @@ fn emit_spawn_flag_stamps_the_emitting_spawn_id() {
     );
 }
 
+/// A worker's `rigger emit` with no `--spawn` is stamped with the spawn its host exported
+/// (`RIGGER_SPAWN`), and an explicit `--spawn` wins over it. With the emitter known, a record
+/// whose id another unit or role's live record holds is refused with a non-zero exit naming the
+/// holder's position and unit/role - the graph keeps one record per id, so landing it would hide
+/// the holder - while the holder's own next attempt and an unstamped operator emit re-emit it.
+#[test]
+fn emit_stamps_the_exported_spawn_and_refuses_an_id_another_author_holds() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let decision = |id: &str| format!(r#"{{"id":"{id}","summary":"s"}}"#);
+    let emit = |spawn: Option<&str>, args: &[&str]| -> (String, String, bool) {
+        let argv: Vec<&str> = std::iter::once("emit")
+            .chain(args.iter().copied())
+            .collect();
+        match spawn {
+            Some(spawn) => run_rigger_envs(root, &argv, &[("RIGGER_SPAWN", spawn)]),
+            None => run_rigger(root, &argv),
+        }
+    };
+    let stamp_of = |id: &str| -> Vec<Option<String>> {
+        read_run_events(root)
+            .iter()
+            .filter(|e| e.type_ == "DecisionMade")
+            .filter(|e| serde_json::from_slice::<serde_json::Value>(&e.data).unwrap()["id"] == id)
+            .map(|e| e.meta.get(rigger::conductor::META_SPAWN).cloned())
+            .collect()
+    };
+
+    let (held, err, ok) = emit(
+        Some("u1/implementer#0"),
+        &["DecisionMade", &decision("d-x")],
+    );
+    assert!(ok, "the first author's emit lands; stderr: {err}");
+    let (_out, err, ok) = emit(
+        Some("u1/implementer#0"),
+        &[
+            "--spawn",
+            "u9/adjudicator#0",
+            "DecisionMade",
+            &decision("d-y"),
+        ],
+    );
+    assert!(ok, "an explicitly stamped emit lands; stderr: {err}");
+    assert_eq!(stamp_of("d-x"), [Some("u1/implementer#0".to_string())]);
+    assert_eq!(
+        stamp_of("d-y"),
+        [Some("u9/adjudicator#0".to_string())],
+        "--spawn wins over the exported spawn"
+    );
+
+    let position = held
+        .split("(position ")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .unwrap_or_else(|| panic!("the emit names its position: {held:?}"));
+    let (_out, err, ok) = emit(
+        Some("u2/implementer#0"),
+        &["DecisionMade", &decision("d-x")],
+    );
+    assert!(!ok, "another author's record under a held id is refused");
+    for named in [format!("position {position}"), "u1/implementer".to_string()] {
+        assert!(err.contains(&named), "the refusal names {named:?}: {err}");
+    }
+
+    let (_out, err, ok) = emit(
+        Some("u1/implementer#1"),
+        &["DecisionMade", &decision("d-x")],
+    );
+    assert!(
+        ok,
+        "the holder's own next attempt re-emits its id; stderr: {err}"
+    );
+    let (_out, err, ok) = emit(None, &["DecisionMade", &decision("d-x")]);
+    assert!(
+        ok,
+        "an unstamped operator emit re-emits the id; stderr: {err}"
+    );
+    assert_eq!(
+        stamp_of("d-x"),
+        [
+            Some("u1/implementer#0".to_string()),
+            Some("u1/implementer#1".to_string()),
+            None
+        ],
+        "the refused emit landed nothing"
+    );
+}
+
 /// `cmd_step`'s body within `main_rs` (its declaration up to the next top-level `fn`), so a
 /// source-order pin on the `rigger step` lifecycle stays pointed at that seam and is immune to
 /// the same calls made elsewhere in main.rs (`cmd_run`, the workflow entry).
