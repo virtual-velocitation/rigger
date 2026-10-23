@@ -9,9 +9,11 @@
 //!      supersede another's in a shared file.
 //!   3. **A `graph.db` folded before the generation rule.** It owes a rebuild from the log, which
 //!      `rigger setup` pays once; until then the fold-dependent commands refuse, `rigger reset
-//!      --derived` among them, and the read-only surfaces say the rebuild is owed.
+//!      --derived` among them, and the read-only surfaces say the rebuild is owed - and, of any
+//!      `graph.db`, what it passed over, by cause.
 //!   4. **The shadow rebuild's seams.** Its sources (the live selection among them), its tail, an
-//!      emit that meets it, a fold that is lost, the prune it makes, and `graph.db.lock`.
+//!      emit that meets it, a fold that is lost, the prune it makes, what it passes over and the
+//!      counts read back by cause, and `graph.db.lock`.
 
 mod common;
 
@@ -2345,8 +2347,8 @@ fn emit_decision(root: &Path, id: &str) -> (String, String, bool) {
     run_rigger(root, &["emit", "DecisionMade", &args])
 }
 
-/// Emit the decision `d-first` in `root` ([`emit_decision`]), which must succeed: the first emit,
-/// which creates the store and the graph.
+/// Emit the decision `d-first` in `root` ([`emit_decision`]), which must succeed: a test's first
+/// emit, which creates its `graph.db`.
 fn emit_the_first_decision(root: &Path) {
     let (_, err, ok) = emit_decision(root, "d-first");
     assert!(
