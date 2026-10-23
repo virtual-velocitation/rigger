@@ -479,11 +479,10 @@ fn graph_rebuild_owed_note(graph_db: &str, project: &str) -> Option<String> {
         )
     });
     let passed = graph.passed_over().ok()?;
-    let passed = (passed.total() > 0).then(|| {
+    let passed = passed_over_by_cause(&passed).map(|by_cause| {
         format!(
-            "note: graph.db passed over {} event(s) {}; {PASSED_OVER_RETRIED}",
-            passed.total(),
-            passed_over_by_cause(&passed)
+            "note: graph.db passed over {} event(s) {by_cause}; {PASSED_OVER_RETRIED}",
+            passed.total()
         )
     });
     let notes: Vec<String> = owed.into_iter().chain(passed).collect();
@@ -491,12 +490,15 @@ fn graph_rebuild_owed_note(graph_db: &str, project: &str) -> Option<String> {
 }
 
 /// How many events a `graph.db` passed over, by cause (spec 124, CATCH-UP LINES), as `rigger
-/// setup`'s passed-over line and the read-only note ([`graph_rebuild_owed_note`]) both spell it.
-fn passed_over_by_cause(passed: &contextgraph::sqlite::PassedOver) -> String {
-    format!(
-        "({} rejected payload(s), {} fold failure(s), {} resolved to nothing)",
-        passed.rejected, passed.failed, passed.unresolved
-    )
+/// setup`'s passed-over line and the read-only note ([`graph_rebuild_owed_note`]) both spell it;
+/// `None` when it passed none over, so neither line is printed.
+fn passed_over_by_cause(passed: &contextgraph::sqlite::PassedOver) -> Option<String> {
+    (passed.total() > 0).then(|| {
+        format!(
+            "({} rejected payload(s), {} fold failure(s), {} resolved to nothing)",
+            passed.rejected, passed.failed, passed.unresolved
+        )
+    })
 }
 
 /// What `rigger setup`'s passed-over line and the read-only note ([`graph_rebuild_owed_note`])

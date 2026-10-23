@@ -1059,11 +1059,10 @@ fn pay_owed_rebuild<'t>(
         );
     }
     let passed = graph.passed_over()?;
-    if passed.total() > 0 {
+    if let Some(by_cause) = passed_over_by_cause(&passed) {
         println!(
-            "passed over {} event(s) the fold could not fold {}, recorded as folded - {}",
+            "passed over {} event(s) the fold could not fold {by_cause}, recorded as folded - {}",
             passed.total(),
-            passed_over_by_cause(&passed),
             PASSED_OVER_RETRIED
         );
     }
