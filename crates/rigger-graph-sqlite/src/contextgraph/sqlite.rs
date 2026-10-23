@@ -114,13 +114,16 @@ CREATE TABLE IF NOT EXISTS proofs_owed (name TEXT PRIMARY KEY);
 /// the shared node's one kind (spec 116, [`settling_definition`]): a file folded before it gave
 /// a node the definitions of one file share the kind and line of the last one folded. Rule 3 is
 /// the node addressed by its path (spec 119): a file folded before it holds a nested definition
-/// at its flat `<file>::<leaf>` id rather than its path's, with no `CONTAINS` from its parent. A
-/// file at an older version that folded anything owes one cold rebuild from the log
+/// at its flat `<file>::<leaf>` id rather than its path's, with no `CONTAINS` from its parent.
+/// Rule 4 is a record's reference read as the id it names
+/// ([`referenced_id`](super::query::referenced_id)): a file folded before it holds a record citing
+/// lines of a file (`path:line`) ABOUT or GOVERNING an artifact at the citation rather than the
+/// file. A file at an older version that folded anything owes one cold rebuild from the log
 /// ([`Projector::rebuild`], which only `rigger setup` runs) and nothing folds into it
 /// incrementally until then. A rebuild's shadow records the rule it is folded under the same
 /// way, from the moment it is opened, so one a binary of another rule left is never resumed
 /// ([`open_shadow`]).
-pub const PROJECTION_VERSION: i64 = 3;
+pub const PROJECTION_VERSION: i64 = 4;
 
 /// The generation ledgers and their views, dropped from a file at an older [`PROJECTION_VERSION`]
 /// so [`SCHEMA`] recreates them in their current shape.
