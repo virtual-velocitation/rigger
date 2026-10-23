@@ -1795,6 +1795,37 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
     );
 }
 
+/// The read-only surfaces over `graph.db`, each as the operator runs it: `rigger graph --show`,
+/// `rigger validate` and `rigger dash --export`.
+const READ_ONLY_SURFACES: [&[&str]; 3] = [
+    &["graph", "--show", "src/f.rs::gone"],
+    &["validate"],
+    &["dash", "--export", "snapshot.html"],
+];
+
+/// Run the read-only surface `args` ([`READ_ONLY_SURFACES`]) in `root`: its stdout, its stderr,
+/// whether it succeeded, and the notes it printed on its stderr in the order printed - every line
+/// opening `note: `, as the one a `graph.db` owing its rebuild prints and the one a file holding
+/// `passed_over` rows prints do.
+fn run_read_only(root: &Path, args: &[&str]) -> (String, String, bool, Vec<String>) {
+    let (out, err, ok) = run_rigger(root, args);
+    let notes = common::cli::lines_where(&err, |line| line.starts_with("note: "))
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    (out, err, ok, notes)
+}
+
+/// Run `rigger init` in `root`, which must succeed: it scaffolds the config `rigger validate`
+/// reads.
+fn init_for_validate(root: &Path) {
+    let (_, err, ok) = run_rigger(root, &["init"]);
+    assert!(
+        ok,
+        "init scaffolds the config validate reads; stderr: {err}"
+    );
+}
+
 /// Given a `graph.db` still at the old fold rule, every read-only surface - `rigger graph --show`,
 /// `rigger validate` and `rigger dash --export` - says once that the rebuild is owed, naming
 /// `rigger setup`, and writes nothing to the file; once `rigger setup` has paid it, none of them
@@ -1802,20 +1833,12 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
 #[test]
 fn the_read_only_surfaces_say_the_rebuild_is_owed_write_nothing_and_stop_once_setup_pays_it() {
     let store = ReleaseEraStore::new();
-    let (_, err, ok) = run_rigger(store.root(), &["init"]);
-    assert!(
-        ok,
-        "init scaffolds the config validate reads; stderr: {err}"
-    );
-    let surfaces: [&[&str]; 3] = [
-        &["graph", "--show", "src/f.rs::gone"],
-        &["validate"],
-        &["dash", "--export", "snapshot.html"],
-    ];
+    init_for_validate(store.root());
+    let surfaces = READ_ONLY_SURFACES;
     let note = rebuild_owed_note();
     let before = store.graph_bytes();
     for args in surfaces {
-        let (out, err, ok) = run_rigger(store.root(), args);
+        let (out, err, ok, notes) = run_read_only(store.root(), args);
         assert!(
             ok,
             "rigger {} answers as it stands; stdout: {out} stderr: {err}",
@@ -1825,6 +1848,13 @@ fn the_read_only_surfaces_say_the_rebuild_is_owed_write_nothing_and_stop_once_se
             err.matches(note.as_str()).count(),
             1,
             "rigger {} says once that the rebuild is owed; stdout: {out} stderr: {err}",
+            args.join(" ")
+        );
+        assert_eq!(
+            notes,
+            vec![note.clone()],
+            "rigger {} says no more, a file without the passed_over table having passed nothing \
+             over; stderr: {err}",
             args.join(" ")
         );
         assert!(
@@ -2325,6 +2355,16 @@ fn emit_decision(root: &Path, id: &str) -> (String, String, bool) {
     run_rigger(root, &["emit", "DecisionMade", &args])
 }
 
+/// Emit the decision `d-first` in `root` ([`emit_decision`]), which must succeed: the first emit,
+/// which creates the store and the graph.
+fn emit_the_first_decision(root: &Path) {
+    let (_, err, ok) = emit_decision(root, "d-first");
+    assert!(
+        ok,
+        "the first emit creates the store and graph; stderr: {err}"
+    );
+}
+
 /// Given a current `graph.db` another writer holds locked past the busy timeout, when an agent
 /// runs `rigger emit`, then the event is on the log and the emit reports its position, but it does
 /// not claim to have folded an event its fold failed to write: the graph is current, so no
@@ -2374,11 +2414,7 @@ fn an_emit_whose_fold_fails_does_not_claim_it_folded() {
 fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(
-        ok,
-        "the first emit creates the store and graph; stderr: {err}"
-    );
+    emit_the_first_decision(root);
     let decision = |id: &str| {
         serde_json::json!({
             "type": "DecisionMade",
@@ -2435,11 +2471,7 @@ fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
 fn an_emit_into_a_graph_it_cannot_open_is_on_the_log_and_reported_not_folded() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(
-        ok,
-        "the first emit creates the store and graph; stderr: {err}"
-    );
+    emit_the_first_decision(root);
     let graph_db = rigger_file(root, "graph.db");
     let garbage = b"this file is not a sqlite database, only text standing in for one".repeat(64);
     std::fs::write(&graph_db, &garbage).unwrap();
@@ -2706,11 +2738,7 @@ fn an_identity_migration_into_a_graph_that_owes_its_rebuild_says_its_decision_wa
 fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(
-        ok,
-        "the first emit creates the store and graph; stderr: {err}"
-    );
+    emit_the_first_decision(root);
     let graph_db = rigger_file(root, "graph.db");
     let (out, err, _) = with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
     assert!(
@@ -2792,11 +2820,7 @@ fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
 fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_folds() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(
-        ok,
-        "the first emit creates the store and graph; stderr: {err}"
-    );
+    emit_the_first_decision(root);
     let graph_db = rigger_file(root, "graph.db");
     let mark = rigger_file(root, "graph.db.owed");
     with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
@@ -2883,11 +2907,7 @@ fn a_fold_lost_where_its_mark_cannot_be_written_is_paid_by_the_next_setup_from_t
     use std::os::unix::fs::PermissionsExt;
     let dir = temp_store_project();
     let root = dir.path();
-    let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(
-        ok,
-        "the first emit creates the store and graph; stderr: {err}"
-    );
+    emit_the_first_decision(root);
     let graph_db = rigger_file(root, "graph.db");
     let mark = rigger_file(root, "graph.db.owed");
     let rigger_dir = graph_db.parent().unwrap().to_path_buf();
@@ -2937,11 +2957,7 @@ fn a_fold_lost_where_its_mark_cannot_be_written_is_paid_by_the_next_setup_from_t
 fn an_event_appended_but_never_folded_is_paid_by_the_next_setup_from_the_ledger() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(
-        ok,
-        "the first emit creates the store and graph; stderr: {err}"
-    );
+    emit_the_first_decision(root);
     let lost = append_unfolded_decision(
         root,
         br#"{"id":"d-crashed","summary":"s","governs":["src/f.rs"],"supersedes":""}"#,
@@ -3083,11 +3099,7 @@ fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_ser
 fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rejects() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(
-        ok,
-        "the first emit creates the store and graph; stderr: {err}"
-    );
+    emit_the_first_decision(root);
     let rejected = [
         append_unfolded_decision(root, common::fixtures::POISON),
         append_unfolded_decision(
@@ -3115,6 +3127,105 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
     );
 }
 
+/// Given a `graph.db` that passed nothing over, every read-only surface ([`READ_ONLY_SURFACES`])
+/// prints no note. Given one whose rebuild passed two events over - payloads the fold rejects -
+/// when the operator runs each read-only surface, then it answers, says once how many events the
+/// file passed over, by cause, and writes nothing to the file; and once that file also owes its
+/// rebuild, each says so first and what the file passed over after it.
+#[test]
+fn the_read_only_surfaces_say_once_what_graph_db_passed_over_by_cause_and_write_nothing() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    init_for_validate(root);
+    emit_the_first_decision(root);
+    let graph_db = rigger_file(root, "graph.db");
+    let each_surface_notes = |expected: &[String], why: &str| {
+        for args in READ_ONLY_SURFACES {
+            let before = std::fs::read(&graph_db).unwrap();
+            let (out, err, ok, notes) = run_read_only(root, args);
+            assert_eq!(
+                (ok, notes, std::fs::read(&graph_db).unwrap() == before),
+                (true, expected.to_vec(), true),
+                "rigger {} {why}, and writes nothing to graph.db; stdout: {out} stderr: {err}",
+                args.join(" ")
+            );
+        }
+    };
+    each_surface_notes(
+        &[],
+        "prints no note for a graph.db that passed nothing over",
+    );
+
+    for _ in 0..2 {
+        append_unfolded_decision(root, common::fixtures::POISON);
+    }
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let passed_over = common::fixtures::passed_over_note(2, 0, 0);
+    each_surface_notes(
+        std::slice::from_ref(&passed_over),
+        "says once what graph.db passed over, by cause",
+    );
+
+    common::fixtures::stamp_user_version(&graph_db, 0);
+    each_surface_notes(
+        &[rebuild_owed_note(), passed_over],
+        "says first that the rebuild is owed, then what graph.db passed over",
+    );
+}
+
+/// `Projector::passed_over` counts the `passed_over` rows a rebuild wrote by the class of each
+/// cause - one event whose payload the judge rejects, two ledger entries resolving to nothing and
+/// four whose re-extracted batch it rejects - and their total, and counts a row of any other class
+/// under none of them.
+#[test]
+fn passed_over_counts_each_class_a_rebuild_wrote_by_cause_and_no_other_class() {
+    use common::fixtures::{poisoned_decision_at, rejected_batch_entries, unresolved_entry_at};
+    use rigger::contextgraph::sqlite::{PassedOver, Projector};
+    let (_dir, graph_db) = common::fixtures::temp_graph_db();
+    let log = [
+        vec![
+            poisoned_decision_at(1),
+            unresolved_entry_at(2),
+            unresolved_entry_at(3),
+        ],
+        rejected_batch_entries(4..=7),
+    ]
+    .concat();
+    common::fixtures::rebuild_from_the_log(Path::new(&graph_db), &log, 10, &mut |entry| {
+        Ok((entry.position > 3).then(common::fixtures::poisoned_batch))
+    });
+    let counted = || {
+        let passed = Projector::open(&graph_db, "test")
+            .unwrap()
+            .passed_over()
+            .unwrap();
+        (passed, passed.total())
+    };
+    let by_class = PassedOver {
+        rejected: 1,
+        failed: 4,
+        unresolved: 2,
+    };
+    assert_eq!(
+        counted(),
+        (by_class, 7),
+        "each class the rebuild wrote is counted under its own cause"
+    );
+
+    rusqlite::Connection::open(&graph_db)
+        .unwrap()
+        .execute(
+            "INSERT INTO passed_over (position, cause) VALUES (8, 'another class: its text')",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        counted(),
+        (by_class, 7),
+        "a cause of no class a fold pass writes is counted under none"
+    );
+}
+
 /// Given a `graph.db` that misses a well-formed event the log holds, when the operator runs
 /// `rigger setup` and its rebuild meets a storage error folding that event - the store's failure,
 /// not a payload the fold rejects - then setup fails naming the error, passes nothing over, and
@@ -3124,11 +3235,7 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
 fn setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_event() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(
-        ok,
-        "the first emit creates the store and graph; stderr: {err}"
-    );
+    emit_the_first_decision(root);
     let first = read_run_events(root).last().unwrap().position;
     let lost = append_unfolded_decision(
         root,
@@ -3382,11 +3489,7 @@ fn reset_runs_on_a_graph_that_owes_its_rebuild_refuses_naming_setup_and_writes_n
 fn a_graph_build_whose_fold_is_lost_to_a_lock_says_so_and_the_next_build_refuses() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(
-        ok,
-        "the first emit creates the store and graph; stderr: {err}"
-    );
+    emit_the_first_decision(root);
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src").join("lib.rs"), "pub fn alpha() {}\n").unwrap();
     std::fs::write(

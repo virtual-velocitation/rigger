@@ -6165,7 +6165,7 @@ mod tests {
     fn passing_over_log() -> [Event; 4] {
         [
             crate::test_support::unresolved_entry_at(1),
-            crate::test_support::entry_at("gc", "src/b.rs", "g-b", 2, 2),
+            crate::test_support::rejected_batch_entries([2]).remove(0),
             crate::test_support::poisoned_decision_at(3),
             decision_at("d4", "d.rs", 4),
         ]
@@ -6174,13 +6174,7 @@ mod tests {
     /// What the re-extraction of [`passing_over_log`] answers for `entry`: no batch for the entry at
     /// 1, and for the one at 2 a batch whose one event's payload the judge rejects.
     fn batch_of_the_rejected_entry(entry: &Event) -> Result<Option<Vec<Event>>, Error> {
-        Ok((entry.position == 2).then(|| {
-            vec![event_at(
-                TYPE_CODE_ENTITY_EXTRACTED,
-                crate::test_support::POISON,
-                0,
-            )]
-        }))
+        Ok((entry.position == 2).then(crate::test_support::poisoned_batch))
     }
 
     /// The cause a position of [`passing_over_log`] is passed over with when the judge rejects its

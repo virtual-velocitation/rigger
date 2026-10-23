@@ -1293,10 +1293,7 @@ fn a_rebuild_passes_a_re_extracted_batch_the_fold_rejects_over_as_a_fold_failure
     };
 
     assert_eq!(
-        rebuild(vec![Event::new(
-            TYPE_CODE_ENTITY_EXTRACTED,
-            poison.to_vec()
-        )]),
+        rebuild(common::fixtures::poisoned_batch()),
         common::fixtures::clean_rebuild()
     );
     assert_eq!(

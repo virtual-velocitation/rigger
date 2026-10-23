@@ -7047,1195 +7047,1195 @@
     "file": "src/cli/mod.rs",
     "name": "the_passed_over_note_counts_by_cause_the_rows_graph_db_holds",
     "start_line": 5232,
-    "end_line": 5272
+    "end_line": 5270
   },
   {
     "file": "src/cli/mod.rs",
     "name": "test_request",
-    "start_line": 5276,
-    "end_line": 5290
+    "start_line": 5274,
+    "end_line": 5288
   },
   {
     "file": "src/cli/mod.rs",
     "name": "spec_lint_next_step_names_rigger_validate_and_the_given_spec_path",
-    "start_line": 5299,
-    "end_line": 5306
+    "start_line": 5297,
+    "end_line": 5304
   },
   {
     "file": "src/cli/mod.rs",
     "name": "spec_lint_warning_lines_formats_every_advisory_with_the_spec_path",
-    "start_line": 5323,
-    "end_line": 5345
+    "start_line": 5321,
+    "end_line": 5343
   },
   {
     "file": "src/cli/mod.rs",
     "name": "spec_lint_warning_lines_is_empty_on_a_clean_spec",
-    "start_line": 5350,
-    "end_line": 5353
+    "start_line": 5348,
+    "end_line": 5351
   },
   {
     "file": "src/cli/mod.rs",
     "name": "compose_precommit_fresh_install_carries_the_managed_block",
-    "start_line": 5363,
-    "end_line": 5396
+    "start_line": 5361,
+    "end_line": 5394
   },
   {
     "file": "src/cli/mod.rs",
     "name": "precommit_block_refuses_on_drift_instead_of_staging",
-    "start_line": 5406,
-    "end_line": 5433
+    "start_line": 5404,
+    "end_line": 5431
   },
   {
     "file": "src/cli/mod.rs",
     "name": "precommit_block_finds_the_relocated_unit_target_with_the_binary_s_own_path_encoding",
-    "start_line": 5447,
-    "end_line": 5500
+    "start_line": 5445,
+    "end_line": 5498
   },
   {
     "file": "src/cli/mod.rs",
     "name": "shipped_workflow_driver_tells_a_worker_its_units_build_location",
-    "start_line": 5503,
-    "end_line": 5543
+    "start_line": 5501,
+    "end_line": 5541
   },
   {
     "file": "src/cli/mod.rs",
     "name": "precommit_block_resolves_a_tree_built_binary_before_path",
-    "start_line": 5546,
-    "end_line": 5647
+    "start_line": 5544,
+    "end_line": 5645
   },
   {
     "file": "src/cli/mod.rs",
     "name": "compose_precommit_is_idempotent",
-    "start_line": 5654,
-    "end_line": 5666
+    "start_line": 5652,
+    "end_line": 5664
   },
   {
     "file": "src/cli/mod.rs",
     "name": "compose_precommit_chains_without_clobbering_an_existing_hook",
-    "start_line": 5677,
-    "end_line": 5706
+    "start_line": 5675,
+    "end_line": 5704
   },
   {
     "file": "src/cli/mod.rs",
     "name": "compose_precommit_prepends_before_a_terminal_exit_existing_hook",
-    "start_line": 5716,
-    "end_line": 5730
+    "start_line": 5714,
+    "end_line": 5728
   },
   {
     "file": "src/cli/mod.rs",
     "name": "compose_precommit_refreshes_a_stale_block_in_place",
-    "start_line": 5737,
-    "end_line": 5760
+    "start_line": 5735,
+    "end_line": 5758
   },
   {
     "file": "src/cli/mod.rs",
     "name": "version_line_carries_the_derived_version_and_a_non_empty_build_provenance",
-    "start_line": 5770,
-    "end_line": 5788
+    "start_line": 5768,
+    "end_line": 5786
   },
   {
     "file": "src/cli/mod.rs",
     "name": "docs_context_reads_every_fact_from_code",
-    "start_line": 5795,
-    "end_line": 5839
+    "start_line": 5793,
+    "end_line": 5837
   },
   {
     "file": "src/cli/mod.rs",
     "name": "docs_render_surfaces_known_code_facts_verbatim",
-    "start_line": 5846,
-    "end_line": 5887
+    "start_line": 5844,
+    "end_line": 5885
   },
   {
     "file": "src/cli/mod.rs",
     "name": "commands_registry_is_well_formed_and_covers_dispatch",
-    "start_line": 5893,
-    "end_line": 5912
+    "start_line": 5891,
+    "end_line": 5910
   },
   {
     "file": "src/cli/mod.rs",
     "name": "usage_text_lists_the_docs_verb_on_its_own_line",
-    "start_line": 5917,
-    "end_line": 5931
+    "start_line": 5915,
+    "end_line": 5929
   },
   {
     "file": "src/cli/mod.rs",
     "name": "write_docs_writes_every_registry_skill_plus_the_handbook",
-    "start_line": 5939,
-    "end_line": 5969
+    "start_line": 5937,
+    "end_line": 5967
   },
   {
     "file": "src/cli/mod.rs",
     "name": "install_and_docs_each_cover_exactly_the_registry_no_more_no_less",
-    "start_line": 5979,
-    "end_line": 6016
+    "start_line": 5977,
+    "end_line": 6014
   },
   {
     "file": "src/cli/mod.rs",
     "name": "assert_skills_reference_only_real_subcommands",
-    "start_line": 6020,
-    "end_line": 6043
+    "start_line": 6018,
+    "end_line": 6041
   },
   {
     "file": "src/cli/mod.rs",
     "name": "committed_registry_docs_are_in_sync_with_a_fresh_render",
-    "start_line": 6107,
-    "end_line": 6132
+    "start_line": 6105,
+    "end_line": 6130
   },
   {
     "file": "src/cli/mod.rs",
     "name": "status_and_dashboard_render_the_same_current_blocker_lines",
-    "start_line": 6143,
-    "end_line": 6212
+    "start_line": 6141,
+    "end_line": 6210
   },
   {
     "file": "src/cli/mod.rs",
     "name": "install_workflow_records_the_build_provenance_beside_the_workflow",
-    "start_line": 6215,
-    "end_line": 6228
+    "start_line": 6213,
+    "end_line": 6226
   },
   {
     "file": "src/cli/mod.rs",
     "name": "slugs",
-    "start_line": 6234,
-    "end_line": 6236
+    "start_line": 6232,
+    "end_line": 6234
   },
   {
     "file": "src/cli/mod.rs",
     "name": "init_committed_repo",
-    "start_line": 6241,
-    "end_line": 6253
+    "start_line": 6239,
+    "end_line": 6251
   },
   {
     "file": "src/cli/mod.rs",
     "name": "resolve_main_worktree_or_refuse_returns_exactly_git_rev_parse_show_toplevel",
-    "start_line": 6271,
-    "end_line": 6287
+    "start_line": 6269,
+    "end_line": 6285
   },
   {
     "file": "src/cli/mod.rs",
     "name": "refuse_when_base_lacks_spec_paths_refuses_on_total_absence_and_names_a_path",
-    "start_line": 6290,
-    "end_line": 6314
+    "start_line": 6288,
+    "end_line": 6312
   },
   {
     "file": "src/cli/mod.rs",
     "name": "assert_base_path_check_proceeds",
-    "start_line": 6318,
-    "end_line": 6336
+    "start_line": 6316,
+    "end_line": 6334
   },
   {
     "file": "src/cli/mod.rs",
     "name": "refuse_when_base_unreachable_fails_loudly_only_when_no_reachable_base",
-    "start_line": 6376,
-    "end_line": 6449
+    "start_line": 6374,
+    "end_line": 6447
   },
   {
     "file": "src/cli/mod.rs",
     "name": "human_size_formats_bytes_through_gib",
-    "start_line": 6452,
-    "end_line": 6459
+    "start_line": 6450,
+    "end_line": 6457
   },
   {
     "file": "src/cli/mod.rs",
     "name": "is_uuid8_accepts_exactly_eight_hex_digits",
-    "start_line": 6462,
-    "end_line": 6468
+    "start_line": 6460,
+    "end_line": 6466
   },
   {
     "file": "src/cli/mod.rs",
     "name": "worktree_belongs_to_live_matches_both_naming_shapes_without_prefix_false_match",
-    "start_line": 6471,
-    "end_line": 6516
+    "start_line": 6469,
+    "end_line": 6514
   },
   {
     "file": "src/cli/mod.rs",
     "name": "current_run_units_scopes_to_the_current_run_and_splits_live_from_dead",
-    "start_line": 6519,
-    "end_line": 6566
+    "start_line": 6517,
+    "end_line": 6564
   },
   {
     "file": "src/cli/mod.rs",
     "name": "current_run_units_spares_a_terminal_units_branch_whose_latest_spawn_is_still_in_flight",
-    "start_line": 6569,
-    "end_line": 6606
+    "start_line": 6567,
+    "end_line": 6604
   },
   {
     "file": "src/cli/mod.rs",
     "name": "current_run_units_still_retires_a_terminal_unit_once_its_latest_spawn_answers",
-    "start_line": 6609,
-    "end_line": 6635
+    "start_line": 6607,
+    "end_line": 6633
   },
   {
     "file": "src/cli/mod.rs",
     "name": "current_run_units_splits_live_spawns_from_answered_ones_scoped_to_the_current_run",
-    "start_line": 6638,
-    "end_line": 6685
+    "start_line": 6636,
+    "end_line": 6683
   },
   {
     "file": "src/cli/mod.rs",
     "name": "live_branches_for_sweep_fails_closed_on_an_unreadable_stream_but_folds_a_readable_one",
-    "start_line": 6697,
-    "end_line": 6723
+    "start_line": 6695,
+    "end_line": 6721
   },
   {
     "file": "src/cli/mod.rs",
     "name": "find_shadow_stores_finds_nested_events_db_and_prunes_build_caches",
-    "start_line": 6726,
-    "end_line": 6775
+    "start_line": 6724,
+    "end_line": 6773
   },
   {
     "file": "src/cli/mod.rs",
     "name": "dir_size_bytes_sums_files_recursively",
-    "start_line": 6778,
-    "end_line": 6789
+    "start_line": 6776,
+    "end_line": 6787
   },
   {
     "file": "src/cli/mod.rs",
     "name": "reclaim_shared_build_cache_deletes_a_populated_cache_and_reports_its_bytes",
-    "start_line": 6794,
-    "end_line": 6810
+    "start_line": 6792,
+    "end_line": 6808
   },
   {
     "file": "src/cli/mod.rs",
     "name": "reclaim_shared_build_cache_is_idempotent_zero_report_when_absent",
-    "start_line": 6813,
-    "end_line": 6831
+    "start_line": 6811,
+    "end_line": 6829
   },
   {
     "file": "src/cli/mod.rs",
     "name": "reclaim_shared_build_cache_refuses_rather_than_waits_when_a_build_holds_the_guard",
-    "start_line": 6834,
-    "end_line": 6862
+    "start_line": 6832,
+    "end_line": 6860
   },
   {
     "file": "src/cli/mod.rs",
     "name": "reclaim_shared_build_cache_releases_the_guard_promptly_after_a_successful_reclaim",
-    "start_line": 6865,
-    "end_line": 6888
+    "start_line": 6863,
+    "end_line": 6886
   },
   {
     "file": "src/cli/mod.rs",
     "name": "scan_residue_reports_dead_worktrees_caches_shadows_and_branches",
-    "start_line": 6891,
-    "end_line": 6975
+    "start_line": 6889,
+    "end_line": 6973
   },
   {
     "file": "src/cli/mod.rs",
     "name": "scan_residue_is_empty_when_everything_is_live_and_no_shadow_stores",
-    "start_line": 6978,
-    "end_line": 6997
+    "start_line": 6976,
+    "end_line": 6995
   },
   {
     "file": "src/cli/mod.rs",
     "name": "format_residue_renders_a_sized_warning_block",
-    "start_line": 7000,
-    "end_line": 7017
+    "start_line": 6998,
+    "end_line": 7015
   },
   {
     "file": "src/cli/mod.rs",
     "name": "store_and_backup_bytes_splits_live_store_files_from_dot_bak_backups",
-    "start_line": 7022,
-    "end_line": 7041
+    "start_line": 7020,
+    "end_line": 7039
   },
   {
     "file": "src/cli/mod.rs",
     "name": "store_and_backup_bytes_is_zero_on_a_missing_directory",
-    "start_line": 7044,
-    "end_line": 7048
+    "start_line": 7042,
+    "end_line": 7046
   },
   {
     "file": "src/cli/mod.rs",
     "name": "scratch_footprint_totals_every_entry_and_dead_only_the_non_live_share",
-    "start_line": 7051,
-    "end_line": 7121
+    "start_line": 7049,
+    "end_line": 7119
   },
   {
     "file": "src/cli/mod.rs",
     "name": "footprint_report_measures_every_category_on_a_seeded_fixture_tree",
-    "start_line": 7124,
-    "end_line": 7185
+    "start_line": 7122,
+    "end_line": 7183
   },
   {
     "file": "src/cli/mod.rs",
     "name": "seed_agent_scratch_leaf",
-    "start_line": 7191,
-    "end_line": 7207
+    "start_line": 7189,
+    "end_line": 7205
   },
   {
     "file": "src/cli/mod.rs",
     "name": "spawn_scoped_footprint",
-    "start_line": 7211,
-    "end_line": 7225
+    "start_line": 7209,
+    "end_line": 7223
   },
   {
     "file": "src/cli/mod.rs",
     "name": "category",
-    "start_line": 7228,
-    "end_line": 7230
+    "start_line": 7226,
+    "end_line": 7228
   },
   {
     "file": "src/cli/mod.rs",
     "name": "registered_scratch_roots_with",
-    "start_line": 7236,
-    "end_line": 7257
+    "start_line": 7234,
+    "end_line": 7255
   },
   {
     "file": "src/cli/mod.rs",
     "name": "footprint_report_flags_registered_scratch_roots_dead_share_and_spares_a_live_spawn",
-    "start_line": 7260,
-    "end_line": 7287
+    "start_line": 7258,
+    "end_line": 7285
   },
   {
     "file": "src/cli/mod.rs",
     "name": "footprint_report_keys_agent_scratch_liveness_by_run_id_and_leaf_not_leaf_name_alone",
-    "start_line": 7300,
-    "end_line": 7308
+    "start_line": 7298,
+    "end_line": 7306
   },
   {
     "file": "src/cli/mod.rs",
     "name": "looks_like_run_container_true_when_every_direct_child_is_a_directory",
-    "start_line": 7311,
-    "end_line": 7316
+    "start_line": 7309,
+    "end_line": 7314
   },
   {
     "file": "src/cli/mod.rs",
     "name": "looks_like_run_container_false_when_a_direct_child_is_a_bare_file",
-    "start_line": 7319,
-    "end_line": 7327
+    "start_line": 7317,
+    "end_line": 7325
   },
   {
     "file": "src/cli/mod.rs",
     "name": "looks_like_run_container_is_true_on_an_empty_or_missing_dir",
-    "start_line": 7330,
-    "end_line": 7338
+    "start_line": 7328,
+    "end_line": 7336
   },
   {
     "file": "src/cli/mod.rs",
     "name": "classify_agent_scratch_separates_a_bare_top_level_file_from_a_well_formed_container",
-    "start_line": 7341,
-    "end_line": 7358
+    "start_line": 7339,
+    "end_line": 7356
   },
   {
     "file": "src/cli/mod.rs",
     "name": "footprint_report_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_never_folded_into_the_dead_run_bucket",
-    "start_line": 7361,
-    "end_line": 7417
+    "start_line": 7359,
+    "end_line": 7415
   },
   {
     "file": "src/cli/mod.rs",
     "name": "footprint_advisories_flags_a_category_whose_dead_share_reaches_the_threshold",
-    "start_line": 7420,
-    "end_line": 7432
+    "start_line": 7418,
+    "end_line": 7430
   },
   {
     "file": "src/cli/mod.rs",
     "name": "footprint_advisories_name_reset_build_cache_for_every_class_it_reclaims",
-    "start_line": 7438,
-    "end_line": 7475
+    "start_line": 7436,
+    "end_line": 7473
   },
   {
     "file": "src/cli/mod.rs",
     "name": "assert_hinted_category_is_silent",
-    "start_line": 7479,
-    "end_line": 7488
+    "start_line": 7477,
+    "end_line": 7486
   },
   {
     "file": "src/cli/mod.rs",
     "name": "footprint_advisories_flags_a_category_exactly_at_the_threshold_boundary",
-    "start_line": 7496,
-    "end_line": 7514
+    "start_line": 7494,
+    "end_line": 7512
   },
   {
     "file": "src/cli/mod.rs",
     "name": "footprint_advisories_never_flags_a_category_with_no_reclaim_command",
-    "start_line": 7517,
-    "end_line": 7528
+    "start_line": 7515,
+    "end_line": 7526
   },
   {
     "file": "src/cli/mod.rs",
     "name": "owning_repo_root_prefers_the_stores_own_root_over_the_git_toplevel",
-    "start_line": 7535,
-    "end_line": 7557
+    "start_line": 7533,
+    "end_line": 7555
   },
   {
     "file": "src/cli/mod.rs",
     "name": "reclaim_orphan_scratch_removes_non_live_owned_scratch_and_spares_live_and_shared_areas",
-    "start_line": 7562,
-    "end_line": 7712
+    "start_line": 7560,
+    "end_line": 7710
   },
   {
     "file": "src/cli/mod.rs",
     "name": "reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty",
-    "start_line": 7715,
-    "end_line": 7770
+    "start_line": 7713,
+    "end_line": 7768
   },
   {
     "file": "src/cli/mod.rs",
     "name": "reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree",
-    "start_line": 7773,
-    "end_line": 7812
+    "start_line": 7771,
+    "end_line": 7810
   },
   {
     "file": "src/cli/mod.rs",
     "name": "reclaim_orphan_scratch_reaps_a_stray_build_cache_tombstone_unconditionally",
-    "start_line": 7815,
-    "end_line": 7845
+    "start_line": 7813,
+    "end_line": 7843
   },
   {
     "file": "src/cli/mod.rs",
     "name": "find_store_dir_from_returns_the_dir_that_holds_the_store",
-    "start_line": 7850,
-    "end_line": 7855
+    "start_line": 7848,
+    "end_line": 7853
   },
   {
     "file": "src/cli/mod.rs",
     "name": "find_store_dir_from_walks_up_from_a_subdirectory",
-    "start_line": 7858,
-    "end_line": 7869
+    "start_line": 7856,
+    "end_line": 7867
   },
   {
     "file": "src/cli/mod.rs",
     "name": "plant_store",
-    "start_line": 7872,
-    "end_line": 7875
+    "start_line": 7870,
+    "end_line": 7873
   },
   {
     "file": "src/cli/mod.rs",
     "name": "add_worktree",
-    "start_line": 7878,
-    "end_line": 7890
+    "start_line": 7876,
+    "end_line": 7888
   },
   {
     "file": "src/cli/mod.rs",
     "name": "find_store_dir_from_never_escapes_the_repo_into_a_parent_store",
-    "start_line": 7893,
-    "end_line": 7928
+    "start_line": 7891,
+    "end_line": 7926
   },
   {
     "file": "src/cli/mod.rs",
     "name": "reap_then_remove_dir_reaps_processes_rooted_inside_then_removes_the_dir",
-    "start_line": 7931,
-    "end_line": 7959
+    "start_line": 7929,
+    "end_line": 7957
   },
   {
     "file": "src/cli/mod.rs",
     "name": "find_store_dir_from_refuses_the_worktree_shape_with_no_events_db",
-    "start_line": 7962,
-    "end_line": 7973
+    "start_line": 7960,
+    "end_line": 7971
   },
   {
     "file": "src/cli/mod.rs",
     "name": "find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above",
-    "start_line": 7976,
-    "end_line": 8004
+    "start_line": 7974,
+    "end_line": 8002
   },
   {
     "file": "src/cli/mod.rs",
     "name": "find_store_dir_from_resolves_the_owning_repo_even_when_the_worktree_lives_outside_it",
-    "start_line": 8007,
-    "end_line": 8036
+    "start_line": 8005,
+    "end_line": 8034
   },
   {
     "file": "src/cli/mod.rs",
     "name": "find_store_dir_from_never_climbs_a_relocated_worktrees_own_unrelated_ancestors_into_a_foreign_store",
-    "start_line": 8039,
-    "end_line": 8068
+    "start_line": 8037,
+    "end_line": 8066
   },
   {
     "file": "src/cli/mod.rs",
     "name": "walk_stores_from_prefers_the_outermost_store_over_a_nearer_shadow",
-    "start_line": 8071,
-    "end_line": 8096
+    "start_line": 8069,
+    "end_line": 8094
   },
   {
     "file": "src/cli/mod.rs",
     "name": "walk_stores_from_reports_no_shadow_for_a_single_store",
-    "start_line": 8099,
-    "end_line": 8116
+    "start_line": 8097,
+    "end_line": 8114
   },
   {
     "file": "src/cli/mod.rs",
     "name": "drop",
-    "start_line": 8128,
-    "end_line": 8131
+    "start_line": 8126,
+    "end_line": 8129
   },
   {
     "file": "src/cli/mod.rs",
     "name": "require_store_dir_pins_to_the_fence_env_and_never_reaches_the_live_store_above_it",
-    "start_line": 8125,
-    "end_line": 8194
+    "start_line": 8123,
+    "end_line": 8192
   },
   {
     "file": "src/cli/mod.rs",
     "name": "require_store_dir_fence_is_off_by_default",
-    "start_line": 8198,
-    "end_line": 8213
+    "start_line": 8196,
+    "end_line": 8211
   },
   {
     "file": "src/cli/mod.rs",
     "name": "result_advisories_flags_an_orphan_id_with_no_spawn_request",
-    "start_line": 8218,
-    "end_line": 8224
+    "start_line": 8216,
+    "end_line": 8222
   },
   {
     "file": "src/cli/mod.rs",
     "name": "result_advisories_orphan_wording_is_plain_on_record_and_conditional_under_if_absent",
-    "start_line": 8227,
-    "end_line": 8252
+    "start_line": 8225,
+    "end_line": 8250
   },
   {
     "file": "src/cli/mod.rs",
     "name": "result_advisories_is_silent_for_a_parked_unanswered_spawn",
-    "start_line": 8255,
-    "end_line": 8265
+    "start_line": 8253,
+    "end_line": 8263
   },
   {
     "file": "src/cli/mod.rs",
     "name": "result_advisories_flags_a_supersede_with_the_prior_result_position",
-    "start_line": 8268,
-    "end_line": 8279
+    "start_line": 8266,
+    "end_line": 8277
   },
   {
     "file": "src/cli/mod.rs",
     "name": "result_advisories_suppresses_the_supersede_note_when_not_superseding",
-    "start_line": 8282,
-    "end_line": 8295
+    "start_line": 8280,
+    "end_line": 8293
   },
   {
     "file": "src/cli/mod.rs",
     "name": "result_advisories_flags_both_orphan_and_supersede",
-    "start_line": 8298,
-    "end_line": 8310
+    "start_line": 8296,
+    "end_line": 8308
   },
   {
     "file": "src/cli/mod.rs",
     "name": "result_refuses_a_second_result_without_supersede",
-    "start_line": 8318,
-    "end_line": 8337
+    "start_line": 8316,
+    "end_line": 8335
   },
   {
     "file": "src/cli/mod.rs",
     "name": "a_real_result_still_replaces_a_recorded_liveness_fault",
-    "start_line": 8342,
-    "end_line": 8353
+    "start_line": 8340,
+    "end_line": 8351
   },
   {
     "file": "src/cli/mod.rs",
     "name": "shipped_workflows_carry_a_non_zero_spawn_budget",
-    "start_line": 8367,
-    "end_line": 8384
+    "start_line": 8365,
+    "end_line": 8382
   },
   {
     "file": "src/cli/mod.rs",
     "name": "usage_text_gives_the_jobs_flag_its_own_description_line",
-    "start_line": 8387,
-    "end_line": 8416
+    "start_line": 8385,
+    "end_line": 8414
   },
   {
     "file": "src/cli/mod.rs",
     "name": "usage_text_names_the_build_cache_reset_mode",
-    "start_line": 8419,
-    "end_line": 8436
+    "start_line": 8417,
+    "end_line": 8434
   },
   {
     "file": "src/cli/mod.rs",
     "name": "an_unclaimed_argument_is_an_unknown_flag_the_spec_or_a_refused_second_positional",
-    "start_line": 8442,
-    "end_line": 8474
+    "start_line": 8440,
+    "end_line": 8472
   },
   {
     "file": "src/cli/mod.rs",
     "name": "parse_run_args_defaults_to_cli_and_an_unset_store",
-    "start_line": 8477,
-    "end_line": 8487
+    "start_line": 8475,
+    "end_line": 8485
   },
   {
     "file": "src/cli/mod.rs",
     "name": "parse_run_args_reads_fresh_alongside_a_spec",
-    "start_line": 8490,
-    "end_line": 8501
+    "start_line": 8488,
+    "end_line": 8499
   },
   {
     "file": "src/cli/mod.rs",
     "name": "parse_run_args_reads_rebase_definition",
-    "start_line": 8504,
-    "end_line": 8514
+    "start_line": 8502,
+    "end_line": 8512
   },
   {
     "file": "src/cli/mod.rs",
     "name": "parse_run_args_reads_driver_eventstore_conn_and_spec",
-    "start_line": 8517,
-    "end_line": 8532
+    "start_line": 8515,
+    "end_line": 8530
   },
   {
     "file": "src/cli/mod.rs",
     "name": "assert_every_arg_list_refused",
-    "start_line": 8535,
-    "end_line": 8543
+    "start_line": 8533,
+    "end_line": 8541
   },
   {
     "file": "src/cli/mod.rs",
     "name": "parse_run_args_accepts_base_alongside_a_spec",
-    "start_line": 8562,
-    "end_line": 8588
+    "start_line": 8560,
+    "end_line": 8586
   },
   {
     "file": "src/cli/mod.rs",
     "name": "resolve_run_base_precedence_flag_then_env_then_default",
-    "start_line": 8596,
-    "end_line": 8618
+    "start_line": 8594,
+    "end_line": 8616
   },
   {
     "file": "src/cli/mod.rs",
     "name": "definition_hash_is_stable_and_content_sensitive",
-    "start_line": 8624,
-    "end_line": 8690
+    "start_line": 8622,
+    "end_line": 8688
   },
   {
     "file": "src/cli/mod.rs",
     "name": "kurrentdb_is_always_available_and_needs_a_conn",
-    "start_line": 8699,
-    "end_line": 8726
+    "start_line": 8697,
+    "end_line": 8724
   },
   {
     "file": "src/cli/mod.rs",
     "name": "store_selection_preserves_a_credentialed_tls_conn_verbatim",
-    "start_line": 8738,
-    "end_line": 8769
+    "start_line": 8736,
+    "end_line": 8767
   },
   {
     "file": "src/cli/mod.rs",
     "name": "store_selection_precedence_flag_env_secret_file_config_then_default",
-    "start_line": 8780,
-    "end_line": 8957
+    "start_line": 8778,
+    "end_line": 8955
   },
   {
     "file": "src/cli/mod.rs",
     "name": "project_identity_is_never_empty",
-    "start_line": 8960,
-    "end_line": 8962
+    "start_line": 8958,
+    "end_line": 8960
   },
   {
     "file": "src/cli/mod.rs",
     "name": "decide_migration_covers_every_case",
-    "start_line": 8965,
-    "end_line": 8994
+    "start_line": 8963,
+    "end_line": 8992
   },
   {
     "file": "src/cli/mod.rs",
     "name": "migrate_project_identity_renames_legacy_history_and_records_a_decision",
-    "start_line": 8997,
-    "end_line": 9043
+    "start_line": 8995,
+    "end_line": 9041
   },
   {
     "file": "src/cli/mod.rs",
     "name": "migrate_project_identity_refuses_when_both_namespaces_hold_history",
-    "start_line": 9046,
-    "end_line": 9085
+    "start_line": 9044,
+    "end_line": 9083
   },
   {
     "file": "src/cli/mod.rs",
     "name": "pre_mint_deployment",
-    "start_line": 9090,
-    "end_line": 9113
+    "start_line": 9088,
+    "end_line": 9111
   },
   {
     "file": "src/cli/mod.rs",
     "name": "migrates_one_stream_folding_into",
-    "start_line": 9118,
-    "end_line": 9125
+    "start_line": 9116,
+    "end_line": 9123
   },
   {
     "file": "src/cli/mod.rs",
     "name": "migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned",
-    "start_line": 9128,
-    "end_line": 9168
+    "start_line": 9126,
+    "end_line": 9166
   },
   {
     "file": "src/cli/mod.rs",
     "name": "migrate_project_identity_rekeys_the_graph_before_the_irreversible_stream_rename",
-    "start_line": 9171,
-    "end_line": 9251
+    "start_line": 9169,
+    "end_line": 9249
   },
   {
     "file": "src/cli/mod.rs",
     "name": "migrate_project_identity_recovers_from_a_crash_between_the_rekey_and_the_rename",
-    "start_line": 9254,
-    "end_line": 9324
+    "start_line": 9252,
+    "end_line": 9322
   },
   {
     "file": "src/cli/mod.rs",
     "name": "setup_provisions_the_shim_runtime_files",
-    "start_line": 9330,
-    "end_line": 9362
+    "start_line": 9328,
+    "end_line": 9360
   },
   {
     "file": "src/cli/mod.rs",
     "name": "setup_installs_refreshes_and_is_a_noop_on_the_native_rigger_workflow",
-    "start_line": 9371,
-    "end_line": 9430
+    "start_line": 9369,
+    "end_line": 9428
   },
   {
     "file": "src/cli/mod.rs",
     "name": "outcome_for",
-    "start_line": 9435,
-    "end_line": 9444
+    "start_line": 9433,
+    "end_line": 9442
   },
   {
     "file": "src/cli/mod.rs",
     "name": "registry_entry",
-    "start_line": 9448,
-    "end_line": 9453
+    "start_line": 9446,
+    "end_line": 9451
   },
   {
     "file": "src/cli/mod.rs",
     "name": "setup_installs_the_using_rigger_skill_distinct_from_the_workflow",
-    "start_line": 9463,
-    "end_line": 9533
+    "start_line": 9461,
+    "end_line": 9531
   },
   {
     "file": "src/cli/mod.rs",
     "name": "planning_a_spec_installs_and_renders_through_the_registry_with_no_planning_specific_code",
-    "start_line": 9551,
-    "end_line": 9635
+    "start_line": 9549,
+    "end_line": 9633
   },
   {
     "file": "src/cli/mod.rs",
     "name": "setup_skill_install_applies_the_project_overlay",
-    "start_line": 9645,
-    "end_line": 9681
+    "start_line": 9643,
+    "end_line": 9679
   },
   {
     "file": "src/cli/mod.rs",
     "name": "docs_overlay_overrides_only_declared_fields",
-    "start_line": 9687,
-    "end_line": 9717
+    "start_line": 9685,
+    "end_line": 9715
   },
   {
     "file": "src/cli/mod.rs",
     "name": "docs_overlay_malformed_is_a_loud_error",
-    "start_line": 9722,
-    "end_line": 9736
+    "start_line": 9720,
+    "end_line": 9734
   },
   {
     "file": "src/cli/mod.rs",
     "name": "a_group_or_other_readable_secret_file_mode_is_flagged_owner_only_is_not",
-    "start_line": 9745,
-    "end_line": 9759
+    "start_line": 9743,
+    "end_line": 9757
   },
   {
     "file": "src/cli/mod.rs",
     "name": "meta_object_body",
-    "start_line": 9765,
-    "end_line": 9784
+    "start_line": 9763,
+    "end_line": 9782
   },
   {
     "file": "src/cli/mod.rs",
     "name": "meta_description",
-    "start_line": 9793,
-    "end_line": 9807
+    "start_line": 9791,
+    "end_line": 9805
   },
   {
     "file": "src/cli/mod.rs",
     "name": "strip_line_comments",
-    "start_line": 9814,
-    "end_line": 9822
+    "start_line": 9812,
+    "end_line": 9820
   },
   {
     "file": "src/cli/mod.rs",
     "name": "workflow_is_a_thin_courier_driver_with_per_unit_phase_labels",
-    "start_line": 9836,
-    "end_line": 10060
+    "start_line": 9834,
+    "end_line": 10058
   },
   {
     "file": "src/cli/mod.rs",
     "name": "the_step_schema_admits_the_attention_array",
-    "start_line": 10069,
-    "end_line": 10080
+    "start_line": 10067,
+    "end_line": 10078
   },
   {
     "file": "src/cli/mod.rs",
     "name": "phase_of_maps_wave_items_to_the_meta_phase_by_role_and_stage",
-    "start_line": 10096,
-    "end_line": 10152
+    "start_line": 10094,
+    "end_line": 10150
   },
   {
     "file": "src/cli/mod.rs",
     "name": "meta_matches_reality_drops_integrate_and_the_unit_stage_construction",
-    "start_line": 10165,
-    "end_line": 10203
+    "start_line": 10163,
+    "end_line": 10201
   },
   {
     "file": "src/cli/mod.rs",
     "name": "the_driver_relays_each_attention_entry_as_a_narrator_log_line",
-    "start_line": 10223,
-    "end_line": 10316
+    "start_line": 10221,
+    "end_line": 10314
   },
   {
     "file": "src/cli/mod.rs",
     "name": "workflow_step_courier_prompt_is_foreground_and_honest",
-    "start_line": 10334,
-    "end_line": 10382
+    "start_line": 10332,
+    "end_line": 10380
   },
   {
     "file": "src/cli/mod.rs",
     "name": "step_courier_prompt",
-    "start_line": 10392,
-    "end_line": 10401
+    "start_line": 10390,
+    "end_line": 10399
   },
   {
     "file": "src/cli/mod.rs",
     "name": "workflow_step_courier_waits_on_an_auto_backgrounded_step",
-    "start_line": 10419,
-    "end_line": 10486
+    "start_line": 10417,
+    "end_line": 10484
   },
   {
     "file": "src/cli/mod.rs",
     "name": "workflow_driver_guards_a_null_step_before_dereferencing_it",
-    "start_line": 10501,
-    "end_line": 10509
+    "start_line": 10499,
+    "end_line": 10507
   },
   {
     "file": "src/cli/mod.rs",
     "name": "workflow_meta_description_is_a_user_facing_tagline_free_of_plumbing_terms",
-    "start_line": 10522,
-    "end_line": 10579
+    "start_line": 10520,
+    "end_line": 10577
   },
   {
     "file": "src/cli/mod.rs",
     "name": "workflow_locates_the_provisioned_shim_or_tells_you_to_run_setup",
-    "start_line": 10585,
-    "end_line": 10610
+    "start_line": 10583,
+    "end_line": 10608
   },
   {
     "file": "src/cli/mod.rs",
     "name": "format_stats_prints_all_four_metrics",
-    "start_line": 10621,
-    "end_line": 10664
+    "start_line": 10619,
+    "end_line": 10662
   },
   {
     "file": "src/cli/mod.rs",
     "name": "format_stats_handles_zeroed_metrics_without_nan",
-    "start_line": 10670,
-    "end_line": 10686
+    "start_line": 10668,
+    "end_line": 10684
   },
   {
     "file": "src/cli/mod.rs",
     "name": "canary_scorecard",
-    "start_line": 10689,
-    "end_line": 10691
+    "start_line": 10687,
+    "end_line": 10689
   },
   {
     "file": "src/cli/mod.rs",
     "name": "assert_findings_raised_render",
-    "start_line": 10694,
-    "end_line": 10710
+    "start_line": 10692,
+    "end_line": 10708
   },
   {
     "file": "src/cli/mod.rs",
     "name": "assert_empty_scorecard_omits",
-    "start_line": 10725,
-    "end_line": 10730
+    "start_line": 10723,
+    "end_line": 10728
   },
   {
     "file": "src/cli/mod.rs",
     "name": "format_canary_stats_renders_na_for_a_tier_with_unattributed_correct_rejects",
-    "start_line": 10749,
-    "end_line": 10780
+    "start_line": 10747,
+    "end_line": 10778
   },
   {
     "file": "src/cli/mod.rs",
     "name": "format_canary_stats_renders_the_real_zero_when_attribution_was_fully_measured",
-    "start_line": 10787,
-    "end_line": 10806
+    "start_line": 10785,
+    "end_line": 10804
   },
   {
     "file": "src/cli/mod.rs",
     "name": "assert_control_line",
-    "start_line": 10810,
-    "end_line": 10825
+    "start_line": 10808,
+    "end_line": 10823
   },
   {
     "file": "src/cli/mod.rs",
     "name": "format_canary_stats_reports_the_model_pinning_header_when_present",
-    "start_line": 10850,
-    "end_line": 10879
+    "start_line": 10848,
+    "end_line": 10877
   },
   {
     "file": "src/cli/mod.rs",
     "name": "format_stats_surfaces_parallelism_retention_and_warns_below_the_floor",
-    "start_line": 10900,
-    "end_line": 10942
+    "start_line": 10898,
+    "end_line": 10940
   },
   {
     "file": "src/cli/mod.rs",
     "name": "format_stats_surfaces_spawn_timing_and_reports_unpaired_separately",
-    "start_line": 10949,
-    "end_line": 10989
+    "start_line": 10947,
+    "end_line": 10987
   },
   {
     "file": "src/cli/mod.rs",
     "name": "format_stats_spawn_timing_reports_no_spawns_when_none_recorded",
-    "start_line": 10995,
-    "end_line": 11001
+    "start_line": 10993,
+    "end_line": 10999
   },
   {
     "file": "src/cli/mod.rs",
     "name": "format_stats_spawn_timing_no_spawns_line_requires_both_empty_and_zero_unpaired",
-    "start_line": 11008,
-    "end_line": 11035
+    "start_line": 11006,
+    "end_line": 11033
   },
   {
     "file": "src/cli/mod.rs",
     "name": "format_stats_spawn_timing_all_unpaired_is_not_reported_as_no_spawns",
-    "start_line": 11042,
-    "end_line": 11057
+    "start_line": 11040,
+    "end_line": 11055
   },
   {
     "file": "src/cli/mod.rs",
     "name": "parallelism_retention_line_is_single_sourced_and_warns_below_the_floor",
-    "start_line": 11065,
-    "end_line": 11092
+    "start_line": 11063,
+    "end_line": 11090
   },
   {
     "file": "src/cli/mod.rs",
     "name": "parallelism_retention_line_counts_the_units_whose_radius_is_empty",
-    "start_line": 11097,
-    "end_line": 11119
+    "start_line": 11095,
+    "end_line": 11117
   },
   {
     "file": "src/cli/mod.rs",
     "name": "sdet_review",
-    "start_line": 11123,
-    "end_line": 11138
+    "start_line": 11121,
+    "end_line": 11136
   },
   {
     "file": "src/cli/mod.rs",
     "name": "stats_text",
-    "start_line": 11141,
-    "end_line": 11143
+    "start_line": 11139,
+    "end_line": 11141
   },
   {
     "file": "src/cli/mod.rs",
     "name": "stats_discloses_when_no_verdict_was_recorded_on_this_driver",
-    "start_line": 11150,
-    "end_line": 11163
+    "start_line": 11148,
+    "end_line": 11161
   },
   {
     "file": "src/cli/mod.rs",
     "name": "stats_discloses_unfed_numerator_when_verdict_recorded_but_findings_unattributed",
-    "start_line": 11174,
-    "end_line": 11204
+    "start_line": 11172,
+    "end_line": 11202
   },
   {
     "file": "src/cli/mod.rs",
     "name": "stats_discloses_cause_split_remainder_when_fewer_causes_than_rejects",
-    "start_line": 11212,
-    "end_line": 11249
+    "start_line": 11210,
+    "end_line": 11247
   },
   {
     "file": "src/cli/mod.rs",
     "name": "baseline_run_slice_selects_a_run_by_id_including_a_middle_run",
-    "start_line": 11252,
-    "end_line": 11297
+    "start_line": 11250,
+    "end_line": 11295
   },
   {
     "file": "src/cli/mod.rs",
     "name": "format_stats_diff_flags_only_the_changed_rows",
-    "start_line": 11300,
-    "end_line": 11331
+    "start_line": 11298,
+    "end_line": 11329
   },
   {
     "file": "src/cli/mod.rs",
     "name": "defaults_max_parallel_units_is_unbounded_when_the_key_is_absent",
-    "start_line": 11338,
-    "end_line": 11345
+    "start_line": 11336,
+    "end_line": 11343
   },
   {
     "file": "src/cli/mod.rs",
     "name": "parse_replay_args_requires_a_run_and_a_rev_in_either_order",
-    "start_line": 11348,
-    "end_line": 11365
+    "start_line": 11346,
+    "end_line": 11363
   },
   {
     "file": "src/cli/mod.rs",
     "name": "a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release",
-    "start_line": 11373,
-    "end_line": 11407
+    "start_line": 11371,
+    "end_line": 11405
   },
   {
     "file": "src/cli/mod.rs",
     "name": "no_runs_message_points_at_rigger_run",
-    "start_line": 11413,
-    "end_line": 11416
+    "start_line": 11411,
+    "end_line": 11414
   },
   {
     "file": "src/cli/mod.rs",
     "name": "seed_run",
-    "start_line": 11422,
-    "end_line": 11429
+    "start_line": 11420,
+    "end_line": 11427
   },
   {
     "file": "src/cli/mod.rs",
     "name": "assert_absent_db_reads_none",
-    "start_line": 11434,
-    "end_line": 11447
+    "start_line": 11432,
+    "end_line": 11445
   },
   {
     "file": "src/cli/mod.rs",
     "name": "stats_lines_existing_db_with_empty_run_stream_returns_none",
-    "start_line": 11465,
-    "end_line": 11481
+    "start_line": 11463,
+    "end_line": 11479
   },
   {
     "file": "src/cli/mod.rs",
     "name": "stats_lines_does_not_read_another_projects_namespaced_run",
-    "start_line": 11489,
-    "end_line": 11518
+    "start_line": 11487,
+    "end_line": 11516
   },
   {
     "file": "src/cli/mod.rs",
     "name": "stats_lines_existing_run_renders_metric_lines",
-    "start_line": 11525,
-    "end_line": 11556
+    "start_line": 11523,
+    "end_line": 11554
   },
   {
     "file": "src/cli/mod.rs",
     "name": "stats_lines_pairs_recorded_spawn_request_and_result_into_spawn_timing",
-    "start_line": 11579,
-    "end_line": 11648
+    "start_line": 11577,
+    "end_line": 11646
   },
   {
     "file": "src/cli/mod.rs",
     "name": "db_with_one_result",
-    "start_line": 11666,
-    "end_line": 11675
+    "start_line": 11664,
+    "end_line": 11673
   },
   {
     "file": "src/cli/mod.rs",
     "name": "result_of_at_unrecorded_spawn_reads_as_unreported",
-    "start_line": 11681,
-    "end_line": 11690
+    "start_line": 11679,
+    "end_line": 11688
   },
   {
     "file": "src/cli/mod.rs",
     "name": "result_of_at_reads_a_self_reported_result_so_it_is_not_clobbered",
-    "start_line": 11698,
-    "end_line": 11722
+    "start_line": 11696,
+    "end_line": 11720
   },
   {
     "file": "src/cli/mod.rs",
     "name": "result_of_at_is_namespace_scoped",
-    "start_line": 11728,
-    "end_line": 11747
+    "start_line": 11726,
+    "end_line": 11745
   },
   {
     "file": "src/cli/mod.rs",
     "name": "detach_process_group_places_the_child_in_its_own_process_group",
-    "start_line": 11760,
-    "end_line": 11785
+    "start_line": 11758,
+    "end_line": 11783
   },
   {
     "file": "src/cli/mod.rs",
     "name": "a_child_spawned_without_detachment_inherits_the_parent_process_group",
-    "start_line": 11794,
-    "end_line": 11815
+    "start_line": 11792,
+    "end_line": 11813
   },
   {
     "file": "src/cli/mod.rs",
     "name": "watch_test_store",
-    "start_line": 11823,
-    "end_line": 11832
+    "start_line": 11821,
+    "end_line": 11830
   },
   {
     "file": "src/cli/mod.rs",
     "name": "status_progress_and_the_dash_snapshot_read_the_run_from_its_boundary",
-    "start_line": 11842,
-    "end_line": 11864
+    "start_line": 11840,
+    "end_line": 11862
   },
   {
     "file": "src/cli/mod.rs",
     "name": "status_and_the_dash_read_the_runs_progress_from_its_own_stream",
-    "start_line": 11871,
-    "end_line": 11896
+    "start_line": 11869,
+    "end_line": 11894
   },
   {
     "file": "src/cli/mod.rs",
     "name": "check_runs_parse_into_a_ci_probe_by_conclusion",
-    "start_line": 11904,
-    "end_line": 11954
+    "start_line": 11902,
+    "end_line": 11952
   },
   {
     "file": "src/cli/mod.rs",
     "name": "the_run_tip_ci_needs_a_run_branch_and_reads_unknown_when_gh_cannot_read_it",
-    "start_line": 11960,
-    "end_line": 11969
+    "start_line": 11958,
+    "end_line": 11967
   },
   {
     "file": "src/cli/mod.rs",
     "name": "a_watch_poll_reads_the_run_from_its_boundary_and_nothing_else",
-    "start_line": 11975,
-    "end_line": 11987
+    "start_line": 11973,
+    "end_line": 11985
   },
   {
     "file": "src/cli/mod.rs",
     "name": "store_location_repo_root_resolves_the_owning_root_not_the_process_cwd_so_a_real_marker_is_found",
-    "start_line": 12010,
-    "end_line": 12043
+    "start_line": 12008,
+    "end_line": 12041
   },
   {
     "file": "src/cli/mod.rs",
     "name": "scratch_defaults_reads_the_owning_roots_config_with_no_agents_fleet_present",
-    "start_line": 12057,
-    "end_line": 12088
+    "start_line": 12055,
+    "end_line": 12086
   },
   {
     "file": "src/cli/mod.rs",
     "name": "watch_once_on_a_clean_store_reports_no_anomalies",
-    "start_line": 12091,
-    "end_line": 12117
+    "start_line": 12089,
+    "end_line": 12115
   },
   {
     "file": "src/cli/mod.rs",
     "name": "parse_watch_args_defaults_to_streaming_with_the_default_interval",
-    "start_line": 12120,
-    "end_line": 12124
+    "start_line": 12118,
+    "end_line": 12122
   },
   {
     "file": "src/cli/mod.rs",
     "name": "parse_watch_args_accepts_once_and_interval_together_in_either_order",
-    "start_line": 12131,
-    "end_line": 12153
+    "start_line": 12129,
+    "end_line": 12151
   },
   {
     "file": "src/cli/mod.rs",
     "name": "watch_once_on_the_seeded_store_reports_one_line_per_anomaly",
-    "start_line": 12169,
-    "end_line": 12302
+    "start_line": 12167,
+    "end_line": 12300
   },
   {
     "file": "src/cli/mod.rs",
     "name": "the_watchdog_command_signal_set_covers_every_signal_the_watch_skill_names",
-    "start_line": 12309,
-    "end_line": 12328
+    "start_line": 12307,
+    "end_line": 12326
   },
   {
     "file": "src/cli/mod.rs",
     "name": "watch_once_reports_dash_not_serving_when_the_marker_names_a_dead_holder",
-    "start_line": 12336,
-    "end_line": 12365
+    "start_line": 12334,
+    "end_line": 12363
   },
   {
     "file": "src/cli/mod.rs",
     "name": "watch_once_reports_no_anomaly_when_the_dash_marker_names_a_real_serving_holder",
-    "start_line": 12372,
-    "end_line": 12403
+    "start_line": 12370,
+    "end_line": 12401
   },
   {
     "file": "src/cli/mod.rs",
     "name": "tree_root_is_the_top_level_of_the_directory_holding_the_store_else_that_directory",
-    "start_line": 12409,
-    "end_line": 12430
+    "start_line": 12407,
+    "end_line": 12428
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

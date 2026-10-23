@@ -5244,12 +5244,10 @@ mod tests {
             ),
             crate::test_support::clean_rebuild()
         );
-        let passed_over = "note: graph.db passed over 2 event(s) (1 rejected payload(s), 0 fold \
-                           failure(s), 1 resolved to nothing); a rebuild under a later fold rule \
-                           retries them";
+        let passed_over = crate::test_support::passed_over_note(1, 0, 1);
         assert_eq!(
             graph_rebuild_owed_note(&graph_db, "test"),
-            Some(passed_over.to_string())
+            Some(passed_over.clone())
         );
 
         let path = Path::new(&graph_db);

@@ -718,13 +718,13 @@ pub fn rebuilt_passing_over(rejected: usize, failed: usize, unresolved: usize) -
 
 /// The line `rigger setup` prints once its graph step ends while `graph.db` holds `passed_over`
 /// rows (spec 124, CATCH-UP LINES): `rejected` rejected payloads, `failed` fold failures and
-/// `unresolved` entries resolved to nothing, counted by cause and in total.
+/// `unresolved` entries resolved to nothing, counted by cause and in total
+/// ([`super::fixtures::passed_over_counts`]).
 pub fn passed_over_line(rejected: usize, failed: usize, unresolved: usize) -> String {
-    let n = rejected + failed + unresolved;
+    let (n, by_cause) = super::fixtures::passed_over_counts(rejected, failed, unresolved);
     format!(
-        "passed over {n} event(s) the fold could not fold ({rejected} rejected payload(s), \
-         {failed} fold failure(s), {unresolved} resolved to nothing), recorded as folded - a \
-         rebuild under a later fold rule retries them"
+        "passed over {n} event(s) the fold could not fold {by_cause}, recorded as folded - {}",
+        super::fixtures::RETRIED_BY_A_LATER_RULE
     )
 }
 

@@ -7,8 +7,9 @@
 //! are checked against, the module declarations' `CONTAINS` edges it serves, the read-backs
 //! suites take of a folded `Graph`, the two read batches a rebuild source hands with a writer
 //! between them, a rebuild whose extraction a writer meets, the texts a lost or refused fold
-//! answers, the payload no judge accepts and the decision built on it, an entry a test's
-//! re-extraction resolves to nothing, what a test's rebuild source answers when it stops, the owed
+//! answers, the payload no judge accepts with the decision and the re-extracted batch built on it,
+//! an entry a test's re-extraction resolves to nothing and one it answers with that batch, what a
+//! test's rebuild source answers when it stops, the owed
 //! mark's path and the note a read-only surface prints while the file owes its rebuild. `apply`
 //! returns `Err` on a fold failure, so every helper that folds unwraps it - a
 //! successful call is itself evidence the payload folded - but [`fold_entry_result`], which
@@ -121,6 +122,21 @@ pub fn unresolved_entry_at(position: u64) -> Event {
 pub fn poisoned_decision_at(position: u64) -> Event {
     let poisoned = Event::new(rigger::contextgraph::TYPE_DECISION_MADE, POISON.to_vec());
     placed_at(poisoned, position, position)
+}
+
+/// The ledger entries of `gc/src/b.rs` at generation `g-b`, one at each log position of
+/// `positions`, in order, each valid from its position in seconds past the epoch, which a test's
+/// re-extraction answers with [`poisoned_batch`] ([`entry_at`]).
+pub fn rejected_batch_entries(positions: impl IntoIterator<Item = u64>) -> Vec<Event> {
+    positions
+        .into_iter()
+        .map(|at| entry_at("gc", "src/b.rs", "g-b", at, at))
+        .collect()
+}
+
+/// A re-extracted batch whose one event, an extracted code entity, carries [`POISON`].
+pub fn poisoned_batch() -> Vec<Event> {
+    vec![Event::new(TYPE_CODE_ENTITY_EXTRACTED, POISON.to_vec())]
 }
 
 /// The `gc` identity a code file `file` keys its batch under, as its ledger entry names it.
