@@ -1549,7 +1549,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "6cb369ed43696fb0"
+    "content_hash": "0d83d66f42c9b3c1"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1809,11 +1809,19 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "within_budget",
+    "is_test": false,
+    "proposed_module": "conductor::budget",
+    "reason": "name contains \"budget\" (budget accounting); grouped under `conductor::budget`.",
+    "content_hash": "a45638e11a925480"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "render_capped_section",
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "cdcdf6be44a81f64"
+    "content_hash": "fd09326d2f18c463"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1829,7 +1837,7 @@
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"write\" (generic write helper); grouped under `conductor::support`.",
-    "content_hash": "9516da1d0d508172"
+    "content_hash": "5465ca26691e8079"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1917,7 +1925,7 @@
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"write\" (generic write helper); grouped under `conductor::support`.",
-    "content_hash": "d5aa9cfeecc8a144"
+    "content_hash": "0d9c8d224a322dd0"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3221,7 +3229,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "96c16b7a351eb5ba"
+    "content_hash": "7a227c9916b73390"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3301,7 +3309,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4c785fa17f0ecac4"
+    "content_hash": "a06a4e83c590468f"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3309,7 +3317,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c8b99887563e41ab"
+    "content_hash": "c53081c92f671bc2"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -4013,7 +4021,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b0240c7c1a04dd09"
+    "content_hash": "290edede2530d388"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
