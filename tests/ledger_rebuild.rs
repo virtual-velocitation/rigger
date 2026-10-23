@@ -1256,7 +1256,8 @@ fn unparsable_entry_cause() -> String {
 /// the fold rejects passes the entry over as a fold failure, with the judge's text, and completes:
 /// both positions are recorded and the entry installs no generation. An entry whose own payload
 /// does not parse is passed over without the function being asked. A rebuild of the same log with
-/// a function whose batch folds retries the entry, folding it and passing nothing over.
+/// a function whose batch folds retries the entry and folds it, passing over again only the entry
+/// whose own payload does not parse.
 #[test]
 fn a_rebuild_passes_a_re_extracted_batch_the_fold_rejects_over_as_a_fold_failure_and_completes() {
     const PROJECT: &str = "proj-ledger";
