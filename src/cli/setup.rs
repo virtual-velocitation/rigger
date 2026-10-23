@@ -893,8 +893,9 @@ const REBUILD_BATCH: usize = 10_000;
 /// `ingest::resolve_entry`): from the entry's blob in the repository's object database, read
 /// through one batch process ([`entry_blobs`]) started when the rebuild meets its first entry and
 /// kept to its end, else from the tree's file under THE ONE ROOT ([`tree_root`]), asked of git at
-/// that first entry too, else from no bytes; an entry no source resolves folds nothing. A rebuild
-/// that folds no entry starts no batch process. The report that follows a rebuild
+/// that first entry too, else from no bytes; an entry no source resolves folds nothing and is
+/// passed over as resolved to nothing (spec 124, THE DECIDE STEP). A rebuild that folds no entry
+/// starts no batch process. The report that follows a rebuild
 /// ([`identities_behind_their_recording`]) reads the tree under the same root, and is the one to
 /// ask git for it when no entry did and an identity is behind its latest recording: the root is
 /// asked for once, by whichever needs it first, and git is asked nothing when neither does.
