@@ -6066,7 +6066,7 @@ mod tests {
         assert_eq!(
             (
                 rebuilt.map(|r| r.pruned),
-                (1..=5).map(|at| applied(&p, at)).collect::<Vec<_>>(),
+                applied_through(&p, 5),
                 crate::test_support::passed_over_rows(path),
                 live_governs(&p)
                     .into_iter()
@@ -6139,7 +6139,7 @@ mod tests {
         assert_eq!(
             (
                 rebuilt.map(|r| r.pruned),
-                (1..=4).map(|at| applied(&p, at)).collect::<Vec<_>>(),
+                applied_through(&p, 4),
                 crate::test_support::passed_over_rows(path),
             ),
             (
@@ -6218,7 +6218,7 @@ mod tests {
         assert_eq!(
             (
                 crate::test_support::passed_over_rows(&path),
-                (1..=4).map(|at| applied(&p, at)).collect::<Vec<_>>(),
+                applied_through(&p, 4),
                 live_governs(&p)
                     .into_iter()
                     .map(|g| g.1)
@@ -6429,6 +6429,12 @@ mod tests {
             "the rebuild folds the lost position and pays the debt"
         );
         crate::test_support::folds(&p, &[decision_at("d9", "z.rs", 9)]);
+    }
+
+    /// Whether `p`'s applied ledger records each position from 1 through `last`, in order
+    /// ([`applied`]).
+    fn applied_through(p: &Projector, last: u64) -> Vec<bool> {
+        (1..=last).map(|at| applied(p, at)).collect()
     }
 
     /// Whether `p`'s applied ledger records `position`.

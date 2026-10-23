@@ -679,6 +679,11 @@ pub fn applied(db: &Path, position: u64) -> bool {
     )
 }
 
+/// Whether the graph file at `db` records each of `positions` applied ([`applied`]), in order.
+pub fn applied_each(db: &Path, positions: &[u64]) -> Vec<bool> {
+    positions.iter().map(|&at| applied(db, at)).collect()
+}
+
 /// What `rigger setup` prints before it rebuilds a `graph.db` that owes its rebuild only because
 /// it misses an event the log holds.
 pub const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it misses an \

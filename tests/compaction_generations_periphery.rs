@@ -3100,9 +3100,9 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
     assert_eq!(
         (
             common::cli::rebuild_lines(&out),
-            rejected.map(|at| applied(&rigger_file(root, "graph.db"), at)),
+            common::cli::applied_each(&rigger_file(root, "graph.db"), &rejected),
         ),
-        (common::cli::rebuilt_passing_over(2, 0, 0), [true, true]),
+        (common::cli::rebuilt_passing_over(2, 0, 0), vec![true, true]),
         "setup rebuilds, and says the two events it passed over - a malformed payload and one \
          with trailing bytes; stdout: {out}"
     );

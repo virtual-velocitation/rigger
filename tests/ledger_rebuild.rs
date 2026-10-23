@@ -20,9 +20,10 @@ use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
 use common::cli::{
-    applied, graph_identity, init_event_log, no_progress, passed_over_line, read_run_events,
-    rebuild_lines, rebuilt_passing_over, rigger_file, run_stream_identity, setup_ok, temp_project,
-    with_pre_ledger_run_store, with_run_store, LOST_FOLD_REBUILD_LINE, REBUILT_LINE,
+    applied, applied_each, graph_identity, init_event_log, no_progress, passed_over_line,
+    read_run_events, rebuild_lines, rebuilt_passing_over, rigger_file, run_stream_identity,
+    setup_ok, temp_project, with_pre_ledger_run_store, with_run_store, LOST_FOLD_REBUILD_LINE,
+    REBUILT_LINE,
 };
 use common::fixtures::{
     events_of, folds, generation_ingested, held_generations, judged_cause, passed_over_rows,
@@ -1196,10 +1197,7 @@ fn without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
                     "gw/.rigger/workflow.yml",
                 ]
             ),
-            positions
-                .iter()
-                .map(|position| applied(&graph_db, *position))
-                .collect::<Vec<_>>(),
+            applied_each(&graph_db, &positions),
         ),
         (vec![None, None, None, None], vec![true; 4])
     );
@@ -1228,11 +1226,11 @@ fn an_entry_whose_payload_does_not_parse_is_passed_over_by_a_rebuild_that_comple
     let graph_db = rigger_file(root, "graph.db");
     assert_eq!(
         (
-            [unparsable, parsable].map(|position| applied(&graph_db, position)),
+            applied_each(&graph_db, &[unparsable, parsable]),
             passed_over_rows(graph_db.to_str().unwrap()),
         ),
         (
-            [true, true],
+            vec![true, true],
             vec![
                 (unparsable, unparsable_entry_cause()),
                 (parsable, RESOLVED_TO_NOTHING.to_string()),
@@ -1547,10 +1545,7 @@ fn without_an_extraction_a_rebuild_over_entries_starts_no_batch_process() {
     assert_eq!(blob_source_starts_of_setup(root), (0, 0));
     let graph_db = rigger_file(root, "graph.db");
     assert_eq!(
-        positions
-            .iter()
-            .map(|position| applied(&graph_db, *position))
-            .collect::<Vec<_>>(),
+        applied_each(&graph_db, &positions),
         vec![true, true],
         "the rebuild that started no process did fold both entries"
     );
@@ -1658,10 +1653,7 @@ fn an_object_git_does_not_answer_falls_to_the_tree_and_a_name_that_is_no_object_
                 &project,
                 &["gc/src/lib.rs", "gd/docs/architecture.md", "gc/src/gone.rs"]
             ),
-            positions
-                .iter()
-                .map(|position| applied(&graph_db, *position))
-                .collect::<Vec<_>>(),
+            applied_each(&graph_db, &positions),
         ),
         (
             vec![
@@ -1794,10 +1786,7 @@ fn setup_reads_only_the_files_the_walk_visits_and_asks_git_for_its_root_once() {
                     "gw/elsewhere.yml",
                 ]
             ),
-            positions
-                .iter()
-                .map(|position| applied(&graph_db, *position))
-                .collect::<Vec<_>>(),
+            applied_each(&graph_db, &positions),
         ),
         (
             vec![
@@ -1994,10 +1983,7 @@ fn the_rebuild_reports_the_identities_behind_their_latest_recording_whose_file_t
     assert_eq!(
         (
             generations(root, &project, &REPORT_IDENTITIES),
-            positions
-                .iter()
-                .map(|position| applied(&graph_db, *position))
-                .collect::<Vec<_>>(),
+            applied_each(&graph_db, &positions),
         ),
         (report_fixture_generations(), vec![true; 7]),
         "the number is read from the rebuilt graph these generations stand in"
@@ -2059,10 +2045,7 @@ fn a_rebuild_interrupted_and_resumed_reports_the_number_a_single_pass_does() {
             report_lines(&out),
             out.lines().any(|l| l == REBUILT_LINE),
             generations(root, &project, &REPORT_IDENTITIES),
-            positions
-                .iter()
-                .map(|position| applied(&graph_db, *position))
-                .collect::<Vec<_>>(),
+            applied_each(&graph_db, &positions),
         ),
         (
             vec![report_fixture_line().as_str()],
