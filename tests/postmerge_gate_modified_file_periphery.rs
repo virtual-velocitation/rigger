@@ -141,6 +141,7 @@ fn a_locally_modified_tracked_file_in_the_operators_checkout_never_reaches_the_p
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     let rs = run(&cfg, &deps).unwrap();
     for u in ["unit-a", "unit-b"] {

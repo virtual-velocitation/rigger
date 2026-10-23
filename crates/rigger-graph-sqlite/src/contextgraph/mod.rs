@@ -14,7 +14,13 @@ use serde::de::DeserializeOwned;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use serde::Deserialize;
 
+#[cfg(any(feature = "store", not(feature = "core")))]
+use crate::eventstore::{Event, EventStore};
+#[cfg(any(feature = "store", not(feature = "core")))]
+use crate::spawn::{unit_role_of, META_SPAWN};
 pub use rigger_domain::contextgraph::*;
+#[cfg(any(feature = "store", not(feature = "core")))]
+use rigger_domain::run;
 
 #[cfg(any(feature = "store", not(feature = "core")))]
 #[derive(Deserialize)]
@@ -73,12 +79,12 @@ struct ReviewFinding {
 /// Checks that `data` has the payload shape the fold reads for an event of type `type_`, by
 /// deserializing it into the fold's own payload type: the one shape definition, so the check can
 /// never drift from what the fold applies. It answers for every type whose payload the fold reads,
-/// so it is the one judge of a payload the fold deterministically rejects: an emit surface calls it
-/// BEFORE appending, so such an event never reaches the log through it, and a rebuild passes over
-/// exactly the events it rejects - any other fold failure is the store's, not the payload's. The
-/// error names the offending field and the shape expected; a type whose payload the fold does not
-/// read passes unchecked. Only the store-gated emit surfaces call it, so it compiles where they
-/// and the fold do.
+/// so it is the one judge of a payload the fold deterministically rejects: the emit guard every
+/// emit surface runs ([`check_emit`]) calls it BEFORE appending, so such an event never reaches the
+/// log through one, and a rebuild passes over exactly the events it rejects - any other fold
+/// failure is the store's, not the payload's. The error names the offending field and the shape
+/// expected; a type whose payload the fold does not read passes unchecked. Only the store-gated
+/// emit guard and fold call it, so it compiles where they do.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
     // The fold parses with `serde_json::from_slice`, which also refuses bytes trailing the value,
@@ -115,6 +121,65 @@ pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
         }
         _ => Ok(()),
     }
+}
+
+/// THE EMIT GUARD: what every emit surface runs on an event, built with its stamps, before
+/// appending it to `stream` - `rigger emit` and the `rigger_emit` tool, the conductor's
+/// in-process emit that a cli host replays an agent's printed lines through, and the findings
+/// `rigger critique` copies - so no surface lands what another refuses. It refuses a payload the
+/// fold cannot apply ([`check_fold_payload`]), which would sit in the log passed over by every
+/// fold, then a record whose id another author's kept record holds
+/// ([`refuse_another_authors_id`]). The error reads "refusing to emit ..."; each surface prefixes
+/// its own name.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub fn check_emit(store: &dyn EventStore, stream: &str, event: &Event) -> Result<(), String> {
+    check_fold_payload(&event.type_, &event.data).map_err(|e| format!("refusing to emit: {e}"))?;
+    refuse_another_authors_id(store, stream, event)
+}
+
+/// Refuse a record whose id a kept record of ANOTHER author holds ([`run::kept_holder`]): the
+/// graph keeps one node per record id, so landing it would leave the holder reachable only by
+/// reading the log. The author is the `{unit}/{role}` seat of the [`META_SPAWN`] stamp
+/// ([`unit_role_of`]), the attempt left out, so a unit's role re-emitting its own record across
+/// attempts and respawns is the update path, the later record winning. An unstamped emit - the
+/// operator's - is never refused, while an unstamped holder is another author to every stamped
+/// emit. Only the three record types are judged, so no other emit pays the read.
+#[cfg(any(feature = "store", not(feature = "core")))]
+fn refuse_another_authors_id(
+    store: &dyn EventStore,
+    stream: &str,
+    event: &Event,
+) -> Result<(), String> {
+    let seat = |e: &Event| {
+        e.meta
+            .get(META_SPAWN)
+            .filter(|s| !s.is_empty())
+            .map(|s| unit_role_of(s).to_string())
+    };
+    let Some(emitter) = seat(event) else {
+        return Ok(());
+    };
+    let record = run::read::CARRY_OVER_TYPES.contains(&event.type_.as_str());
+    let Some(id) = record.then(|| run::graph_node_id(event)).flatten() else {
+        return Ok(());
+    };
+    let events = run::read::read_run(store, stream).map_err(|e| e.to_string())?;
+    let Some(holder) = run::kept_holder(&events, &id) else {
+        return Ok(());
+    };
+    let author = seat(holder);
+    if author.as_deref() == Some(emitter.as_str()) {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to emit {typ} {id:?} as {emitter}: the {held} at position {pos}, recorded by \
+         {author}, holds that id, and the graph keeps one record per id, so this one would hide \
+         it. Pick a new id; a DecisionMade that replaces that record names it in `supersedes`.",
+        typ = event.type_,
+        held = holder.type_,
+        pos = holder.position,
+        author = author.as_deref().unwrap_or("an unstamped emit"),
+    ))
 }
 
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]

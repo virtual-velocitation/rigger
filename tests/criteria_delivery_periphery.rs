@@ -131,6 +131,7 @@ fn baseline_unit_started_carries_the_full_multiline_criterion_including_its_owns
         criteria: vec![criterion.clone()],
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     let rs = run(&cfg, &deps).unwrap();
 

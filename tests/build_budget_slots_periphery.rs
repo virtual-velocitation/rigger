@@ -357,6 +357,7 @@ fn configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds() 
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     run(&cfg, &deps).expect("the run must complete: two real agents and two real gate builds");
 

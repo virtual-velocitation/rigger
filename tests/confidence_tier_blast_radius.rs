@@ -146,6 +146,7 @@ fn recorded_blast_radius(graph: Option<&Projector>) -> Option<Value> {
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     // The radius is recorded before the spawn, so the run's terminal disposition is irrelevant.
     let _ = run(&cfg, &deps);

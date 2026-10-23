@@ -214,8 +214,9 @@ fn is_emit_type(type_: &str) -> bool {
 /// EMIT_PROTOCOL prints the decision fields at the top level) is tolerated: the
 /// object minus `type` becomes the data.
 ///
-/// The first `emit` error is propagated (the event store is down, etc.); it is not
-/// swallowed, since a lost decision silently corrupts the cross-agent memory.
+/// The first `emit` error is propagated (the event store is down, the emit guard refused the
+/// record, etc.); it is not swallowed, since a lost decision silently corrupts the cross-agent
+/// memory.
 fn bridge_emits(
     stdout: &str,
     emit: &dyn Fn(&str, Value) -> Result<(), Error>,

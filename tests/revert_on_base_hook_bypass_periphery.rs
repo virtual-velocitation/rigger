@@ -140,6 +140,7 @@ fn a_compensation_revert_bypasses_an_installed_refusing_hook() {
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
 
     let rs = run(&cfg, &deps).expect(

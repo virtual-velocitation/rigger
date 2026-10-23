@@ -141,6 +141,11 @@ pub fn spawn_id(unit: &str, role: &str, attempt: u32) -> String {
     format!("{unit}/{role}#{attempt}")
 }
 
+/// The metadata key carrying the id of the spawn that emitted an event - a [`spawn_id`], or its
+/// respawn form. Defined beside the id grammar so every emit surface, and the one emit guard they
+/// all run, read the key the conductor stamps without naming the conductor, which re-exports it.
+pub const META_SPAWN: &str = "spawn";
+
 /// Derive the spawn id for a reviewer RESPAWN (Gap 18, spec 07). A reviewer spawn
 /// (lens, adversary, or adjudicator) whose recorded result is empty or whitespace-only
 /// is an INFRASTRUCTURE fault, not a verdict, so the conductor respawns the SAME

@@ -52,6 +52,10 @@ use rigger_worktree_git::worktree;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod contextgraph {
     pub use rigger_domain::contextgraph::*;
+    /// The one emit guard the tests bind a run's `Deps::check_emit` to, as the composition root
+    /// does.
+    #[cfg(test)]
+    pub use rigger_graph_sqlite::contextgraph::check_emit;
     /// The SQLite projector the tests project the run's events through.
     #[cfg(test)]
     pub use rigger_graph_sqlite::contextgraph::sqlite;

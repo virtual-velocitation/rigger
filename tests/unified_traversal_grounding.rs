@@ -247,6 +247,7 @@ fn run_and_capture_prompts_grounded(
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition
     // (integrate / not) is irrelevant to what this periphery layer observes.
@@ -306,6 +307,7 @@ fn run_and_capture_producer_prompts(graph: &Projector) -> Vec<String> {
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     let _ = run(&cfg, &deps);
     let prompts = driver.prompts.lock().unwrap().clone();
@@ -690,6 +692,7 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition is
     // irrelevant to what this periphery layer observes.
@@ -769,6 +772,7 @@ fn run_and_capture_review_spawns(
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     // Prompts are captured before each spawn returns, so the run's terminal disposition is irrelevant
     // to what this periphery layer observes.

@@ -151,7 +151,7 @@ pub use crate::metrics::META_MODEL_RESOLVED;
 /// identity stamp alone - an UNSTAMPED emit is never attributed, so the backstop FAILS SAFE
 /// to the ordinary reject - and the ambiguous position-window logic is retired entirely (see
 /// [`gating_spawn_emitted_approve`](RunCtx::gating_spawn_emitted_approve)).
-pub const META_SPAWN: &str = "spawn";
+pub use crate::spawn::META_SPAWN;
 
 pub use crate::metrics::META_WORKTREE_SHA;
 
@@ -1854,7 +1854,17 @@ pub struct Deps<'a> {
     /// the run's ingest sink names in each ledger entry it records. Injected so the conductor
     /// spawns no process: the composition root binds it to `git hash-object` in the run's tree.
     pub hash_blob: &'a (dyn Fn(&[u8]) -> Result<String, worktree::Error> + Sync),
+    /// THE ONE EMIT GUARD every emit surface runs: judges an event an agent's spawn emits, built
+    /// with its stamps, against the store BEFORE it is appended, answering why it refuses a
+    /// payload the fold cannot apply or a record whose id another seat holds. Injected because
+    /// its home, the graph adapter's `contextgraph::check_emit`, is a crate the conductor may not
+    /// name (the dependency direction the boundary audit enforces): the composition root binds it.
+    pub check_emit: &'a EmitGuard,
 }
+
+/// The emit guard's shape ([`Deps::check_emit`]): the store an event would land in, the stream,
+/// and the event as built with its stamps, answering why it is refused.
+pub type EmitGuard = dyn Fn(&dyn EventStore, &str, &Event) -> Result<(), String> + Sync;
 
 impl<'a> Deps<'a> {
     /// The store every event the run appends goes through: [`Deps::store`], folding each append
@@ -3173,6 +3183,19 @@ impl<'a> RunCtx<'a> {
     }
 }
 
+/// An event of `type_` carrying `payload`, with each `(key, value)` of `meta` whose value is
+/// non-empty stamped in its metadata: the one build [`RunCtx::emit_meta`] and
+/// [`RunCtx::emit_agent`] share.
+fn event_with_meta(type_: &str, payload: Value, meta: &[(&str, &str)]) -> Result<Event, Error> {
+    let mut ev = Event::new(type_, serde_json::to_vec(&payload)?);
+    for (k, v) in meta {
+        if !v.is_empty() {
+            ev = ev.with_meta(*k, *v);
+        }
+    }
+    Ok(ev)
+}
+
 impl RunCtx<'_> {
     fn emit(&self, type_: &str, payload: Value) -> Result<(), Error> {
         self.emit_with_actor("", type_, payload)
@@ -3267,12 +3290,24 @@ impl RunCtx<'_> {
     /// [`META_WORKTREE_SHA`] can ride an un-keyed lifecycle event without a second event
     /// type, the same way `emit_keyed_meta` rides the model stamps on the keyed ones.
     fn emit_meta(&self, type_: &str, payload: Value, extra: &[(&str, &str)]) -> Result<(), Error> {
-        let mut ev = Event::new(type_, serde_json::to_vec(&payload)?);
-        for (k, v) in extra {
-            if !v.is_empty() {
-                ev = ev.with_meta(*k, *v);
-            }
-        }
+        self.append_and_fold(event_with_meta(type_, payload, extra)?)
+            .map(|_| ())
+    }
+
+    /// THE AGENT EMIT: an event an agent's spawn emits through the driver's in-process emit
+    /// callback - on a cli host, each record line the agent printed, which the driver's bridge
+    /// replays through it - built like [`emit_meta`](RunCtx::emit_meta) with the spawn's `stamps`,
+    /// then judged by the one emit guard every emit surface runs ([`Deps::check_emit`]) before it
+    /// is appended. A payload the fold cannot apply, or a record whose id another seat holds,
+    /// lands nothing, and the refusal is the callback's error, so it is the spawn's.
+    fn emit_agent(
+        &self,
+        type_: &str,
+        payload: Value,
+        stamps: &[(&str, &str)],
+    ) -> Result<(), Error> {
+        let ev = event_with_meta(type_, payload, stamps)?;
+        (self.deps.check_emit)(self.deps.store, STREAM, &ev).map_err(Error)?;
         self.append_and_fold(ev).map(|_| ())
     }
 
@@ -5268,7 +5303,9 @@ impl RunCtx<'_> {
             resume_task.push_str(DOC_ONLY_ROUND);
         }
         let resume_task = Some(resume_task);
-        let sdet_emit = |t: &str, v: Value| self.emit_with_actor(ROLE_SDET_AUTHOR, t, v);
+        let sdet_emit = |t: &str, v: Value| {
+            self.emit_agent(t, v, &[(contextgraph::META_ACTOR, ROLE_SDET_AUTHOR)])
+        };
         let opts = match self.reviewer_spawn_opts(
             &sdet_id,
             ROLE_SDET_AUTHOR,
@@ -5726,7 +5763,7 @@ impl RunCtx<'_> {
                 // `run_reviewer`'s identical pattern) for a plain implementer's own
                 // DecisionMade emits, which carry no episode significance.
                 let emit = |t: &str, v: Value| {
-                    self.emit_meta(
+                    self.emit_agent(
                         t,
                         v,
                         &[
@@ -6376,7 +6413,9 @@ impl RunCtx<'_> {
             // single-lane implementer's, since the lanes differ only in SCHEDULING, not assembly.
             let prompt =
                 self.build_prompt_with_failure(st, &logged, lane, GroundingSlice::Implement)?;
-            let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
+            let emit = |t: &str, v: Value| {
+                self.emit_agent(t, v, &[(contextgraph::META_ACTOR, st.agent.as_str())])
+            };
             let isolation_check = self.assert_isolated_cwd("implementer", &st.agent, &dir);
             match isolation_check.and_then(|()| {
                 self.deps.driver.spawn(
@@ -7415,7 +7454,7 @@ impl RunCtx<'_> {
                 // which a concurrent sibling adjudicator (`run_wave` fan-out) carries too -
                 // the per-spawn correlation the mismatch backstop (`gating_spawn_emitted_approve`)
                 // keys on to exclude a sibling's approve.
-                self.emit_meta(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
+                self.emit_agent(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
             };
             let result = match self.deps.driver.spawn(agent_def, prompt, &opts, &emit) {
                 Ok(result) => {
@@ -7990,7 +8029,7 @@ impl RunCtx<'_> {
         // comment for why. A re-plan is a distinct PLAN-EPISODE from the initial wave
         // (and from any earlier re-plan), so it needs its own stamp here too.
         let emit = |t: &str, v: Value| {
-            self.emit_meta(
+            self.emit_agent(
                 t,
                 v,
                 &[
@@ -10745,7 +10784,7 @@ impl RunCtx<'_> {
         let build_env = self.build_env()?;
         let prompt = conflict_resolution_prompt(&st.name, source);
         let emit = |t: &str, v: Value| {
-            self.emit_meta(
+            self.emit_agent(
                 t,
                 v,
                 &[
@@ -14237,6 +14276,7 @@ mod tests {
                 criteria,
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             }
         }
 
@@ -16376,6 +16416,7 @@ mod tests {
             ],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -16727,6 +16768,7 @@ mod tests {
             criteria: vec![criterion.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
 
@@ -19130,6 +19172,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
         // implement prompt and points the implementer at `rigger_peers` instead), so a REVIEW/planner
@@ -19202,6 +19245,7 @@ mod tests {
             criteria: vec![criterion.trim().to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let verbatim = criterion.trim();
@@ -19332,6 +19376,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let seed = vec!["modifier.rs".to_string()];
@@ -19434,6 +19479,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
         // implement prompt), so this cap behavior is exercised through `GroundingSlice::Full` for the
@@ -19987,6 +20033,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let prompt = ctx.graph_context(&seed, GroundingSlice::Full);
@@ -20167,6 +20214,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20346,6 +20394,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20448,6 +20497,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20552,6 +20602,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20645,6 +20696,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20872,6 +20924,7 @@ mod tests {
                 repo: repo.to_string(),
                 graph: Some(graph),
                 hash_blob,
+                check_emit: &crate::contextgraph::check_emit,
                 ..stub_deps(store, driver, Vec::new())
             }
         }
@@ -21475,6 +21528,7 @@ mod tests {
             let deps = Deps {
                 repo: root.to_string(),
                 hash_blob: &sized_hash,
+                check_emit: &crate::contextgraph::check_emit,
                 ..stub_deps(&st, &driver, Vec::new())
             };
             let cfg = Config::default();
@@ -22657,6 +22711,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -22776,6 +22831,7 @@ mod tests {
             criteria: vec!["first criterion".into()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg1, &deps1).unwrap();
 
@@ -22812,6 +22868,7 @@ mod tests {
             criteria: vec!["second criterion".into()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg2, &deps2).unwrap();
 
@@ -22999,6 +23056,7 @@ mod tests {
             criteria: vec![criterion.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
 
         // Run one records generation A of both files and the design doc.
@@ -23151,6 +23209,7 @@ mod tests {
             criteria: vec![criterion.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let mut campaigns = 0;
         let mut run_over_the_tree = |criterion: &'static str| {
@@ -23453,6 +23512,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -23586,6 +23646,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -25537,6 +25598,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).expect("a verdict-less re-park is a clean unwind");
         };
@@ -25595,6 +25657,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             // The whole point: a recorded review error is a CLEAN re-park, never a run failure.
             run_isolated(&cfg, &deps)
@@ -25715,6 +25778,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).map(|_| ())
         };
@@ -26629,6 +26693,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
         let g = graph.subgraph(&["d1".to_string()], 2).unwrap();
@@ -27128,6 +27193,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         // The caller asserts on the recorded run state + the store (the routing marker and
@@ -27403,6 +27469,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -27802,6 +27869,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
@@ -28067,6 +28135,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -28404,6 +28473,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
@@ -29954,6 +30024,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -32910,6 +32981,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
         assert!(
@@ -33675,6 +33747,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -35831,6 +35904,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -36014,6 +36088,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -36887,6 +36962,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
         let g = graph
@@ -37530,6 +37606,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         for name in ["s1", "s2", "s3"] {
@@ -37650,6 +37727,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
@@ -38062,6 +38140,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -38293,6 +38372,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         // F3: the zero limit bounds the STAGE too - an infra red is never charged, and with no
         // rerun to give, the first one halts the step.
@@ -38374,6 +38454,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             // An infra outage halts the step (F3) and a flaky failure escalates: either way the
             // run ends, and only the gate runs and the ratchet are under test here.
@@ -39229,6 +39310,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
 
         let rs = run_isolated(&cfg, &deps).unwrap();
@@ -39354,6 +39436,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
@@ -39635,6 +39718,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -39683,6 +39767,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -39923,6 +40008,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let base = RunCtx::for_test(&cfg, &base_deps).grounded_blast_radius(&st);
         assert_eq!(
@@ -39944,6 +40030,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let r = RunCtx::for_test(&cfg, &deps).grounded_blast_radius(&st);
 
@@ -40381,6 +40468,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -40848,6 +40936,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let radii = ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
@@ -40883,6 +40972,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let plain_ctx = RunCtx::for_test(&cfg, &plain_deps);
         let plain_radii = plain_ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
@@ -41014,6 +41104,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -41173,6 +41264,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -41837,6 +41929,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -43943,6 +44036,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -43992,6 +44086,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -44024,6 +44119,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -44096,6 +44192,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -44206,6 +44303,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -44343,6 +44441,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).unwrap()
         };
@@ -44381,6 +44480,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -44453,6 +44553,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -44644,6 +44745,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert!(
@@ -45734,6 +45836,7 @@ mod tests {
             criteria: vec![criterion.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -45955,6 +46058,7 @@ mod tests {
             criteria: vec![crit_a.to_string(), crit_b.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -45997,6 +46101,7 @@ mod tests {
             criteria: vec![criterion.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
         driver
@@ -46359,6 +46464,7 @@ mod tests {
             criteria: vec![crit.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs1 = run_isolated(&cfg, &deps1).unwrap();
         assert_eq!(
@@ -46382,6 +46488,7 @@ mod tests {
             criteria: vec![crit.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs2 = run_isolated(&cfg, &deps2).unwrap();
         assert_eq!(
@@ -47290,6 +47397,7 @@ mod tests {
             criteria: vec![crit_a.to_string(), crit_b.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -47353,6 +47461,7 @@ mod tests {
             criteria: vec![criterion.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
 
@@ -47500,6 +47609,7 @@ mod tests {
             criteria: vec![criterion.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
 
