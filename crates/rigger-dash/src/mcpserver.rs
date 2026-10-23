@@ -331,19 +331,37 @@ impl<'a> Server<'a> {
             (Surface::SpawnBound, "rigger_emit") => self.tool_emit_bound(args),
             (Surface::SpawnBound, "rigger_progress") => self.tool_progress(args),
             (Surface::SpawnBound, "rigger_scratch") => self.tool_scratch(),
-            _ => return err(id, -32602, &format!("unknown tool {name}")),
+            _ => Err(ToolError::new(
+                INVALID_PARAMS,
+                format!("unknown tool {name}"),
+            )),
         };
+        // Every reply leaves through [`within_frame`], the server's one bound on a tool reply's
+        // frame: an oversized result drops its structured copy and cuts its text, an oversized
+        // error cuts its message, each with a marked tail.
         match result {
-            Ok(structured) => ok(
-                id,
-                json!({
-                    "content": [{"type": "text", "text": structured.to_string()}],
-                    "structuredContent": structured,
-                }),
-            ),
+            Ok(structured) => {
+                let text = structured.to_string();
+                let whole = ok(
+                    id.clone(),
+                    json!({
+                        "content": [{"type": "text", "text": text}],
+                        "structuredContent": structured,
+                    }),
+                );
+                if whole.len() <= TOOL_REPLY_FRAME_BUDGET_BYTES {
+                    return whole;
+                }
+                within_frame(&text, |text| {
+                    ok(
+                        id.clone(),
+                        json!({"content": [{"type": "text", "text": text}]}),
+                    )
+                })
+            }
             // A tool may request a specific JSON-RPC code (e.g. -32602 for an
             // unknown spawn id); otherwise an internal error is -32603.
-            Err(e) => err(id, e.code, &e.message),
+            Err(e) => within_frame(&e.message, |message| err(id.clone(), e.code, message)),
         }
     }
 
@@ -1073,6 +1091,41 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) as i64 + 2) / 5 + d as i64 - 1; // [0, 365]
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
     era * 146_097 + doe - 719_468
+}
+
+/// The byte bound on one tool reply's JSON-RPC frame: half the 16 MiB a host reads from an MCP
+/// server before it needs a message boundary, past which it closes the transport and the session
+/// loses every tool. Half leaves the frame's envelope and the truncation tail ample room.
+const TOOL_REPLY_FRAME_BUDGET_BYTES: usize = 8 * 1024 * 1024;
+
+/// Frame a tool reply carrying `text` through `frame`, kept under
+/// [`TOOL_REPLY_FRAME_BUDGET_BYTES`]: a frame that fits goes out whole; otherwise `text` is cut at
+/// a character boundary and a marked tail names how many bytes were left out and asks the caller
+/// to narrow the call, the cut shrinking in proportion to the overshoot until the escaped frame
+/// fits.
+fn within_frame(text: &str, frame: impl Fn(&str) -> String) -> String {
+    let whole = frame(text);
+    if whole.len() <= TOOL_REPLY_FRAME_BUDGET_BYTES {
+        return whole;
+    }
+    let mut keep = text.len().min(TOOL_REPLY_FRAME_BUDGET_BYTES);
+    loop {
+        while !text.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        let framed = frame(&format!(
+            "{}\n[rigger: reply truncated - {} of {} bytes left out to stay under the {}-byte \
+             frame cap; narrow the call]",
+            &text[..keep],
+            text.len() - keep,
+            text.len(),
+            TOOL_REPLY_FRAME_BUDGET_BYTES
+        ));
+        if framed.len() <= TOOL_REPLY_FRAME_BUDGET_BYTES || keep == 0 {
+            return framed;
+        }
+        keep = keep * TOOL_REPLY_FRAME_BUDGET_BYTES / framed.len();
+    }
 }
 
 /// The JSON-RPC 2.0 success envelope. Private: both tool surfaces `Server` answers (the
