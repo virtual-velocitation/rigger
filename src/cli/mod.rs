@@ -466,32 +466,36 @@ fn standing_graph(graph_db: &str, project: &str) -> Option<Projector> {
 
 /// What a read-only surface (graph inspection, `rigger validate`, the dashboard) says when this
 /// project's `graph.db` owes its rebuild (spec 101): it answers from the projection as it stands,
-/// and names the command that pays the rebuild. Beside it, on a line of its own, how many events
-/// the file records passed over, by cause, whenever it records any ([`Projector::passed_over`],
-/// spec 124, CATCH-UP LINES). `None` when there is no file (never creating one), when it owes
-/// nothing and passed nothing over, or when it cannot be read.
+/// and names the command that pays the rebuild. `None` when there is no file (never creating
+/// one), when it owes nothing, or when it cannot be read.
 fn graph_rebuild_owed_note(graph_db: &str, project: &str) -> Option<String> {
-    let graph = standing_graph(graph_db, project)?;
-    let owed = graph.rebuild_owed().ok()?.then(|| {
+    let owed = standing_graph(graph_db, project)?.rebuild_owed().ok()?;
+    owed.then(|| {
         format!(
             "note: {} - until then the context graph answers as it stands",
             contextgraph::REBUILD_OWED
         )
-    });
-    let passed = graph.passed_over().ok()?;
-    let passed = passed_over_by_cause(&passed).map(|by_cause| {
+    })
+}
+
+/// What `rigger validate` says, after any owed note ([`graph_rebuild_owed_note`]), when this
+/// project's `graph.db` records events passed over (spec 124, CATCH-UP LINES): how many, by cause
+/// ([`Projector::passed_over`]), and that a rebuild under a later fold rule retries them. `None`
+/// when there is no file (never creating one), when it passed nothing over - a file without the
+/// `passed_over` table included - or when it cannot be read.
+fn graph_passed_over_note(graph_db: &str, project: &str) -> Option<String> {
+    let passed = standing_graph(graph_db, project)?.passed_over().ok()?;
+    passed_over_by_cause(&passed).map(|by_cause| {
         format!(
             "note: graph.db passed over {} event(s) {by_cause}; {PASSED_OVER_RETRIED}",
             passed.total()
         )
-    });
-    let notes: Vec<String> = owed.into_iter().chain(passed).collect();
-    (!notes.is_empty()).then(|| notes.join("\n"))
+    })
 }
 
 /// How many events a `graph.db` passed over, by cause (spec 124, CATCH-UP LINES), as `rigger
-/// setup`'s passed-over line and the read-only note ([`graph_rebuild_owed_note`]) both spell it;
-/// `None` when it passed none over, so neither line is printed.
+/// setup`'s passed-over line and `rigger validate`'s note ([`graph_passed_over_note`]) both spell
+/// it; `None` when it passed none over, so neither line is printed.
 fn passed_over_by_cause(passed: &contextgraph::sqlite::PassedOver) -> Option<String> {
     (passed.total() > 0).then(|| {
         format!(
@@ -504,12 +508,12 @@ fn passed_over_by_cause(passed: &contextgraph::sqlite::PassedOver) -> Option<Str
     })
 }
 
-/// What `rigger setup`'s passed-over line and the read-only note ([`graph_rebuild_owed_note`])
+/// What `rigger setup`'s passed-over line and `rigger validate`'s note ([`graph_passed_over_note`])
 /// both end by saying of the events a `graph.db` passed over (spec 124, CATCH-UP LINES).
 const PASSED_OVER_RETRIED: &str = "a rebuild under a later fold rule retries them";
 
 /// Open this project's `graph.db` for a read-only inspection: it answers from the projection as
-/// it stands, saying on stderr first when that projection owes its rebuild or passed events over
+/// it stands, saying on stderr first when that projection owes its rebuild
 /// ([`graph_rebuild_owed_note`]). The open writes nothing to such a file.
 fn open_graph_to_read(
     graph_db: &str,
@@ -5227,10 +5231,10 @@ mod tests {
         );
     }
 
-    /// Spec 124, CATCH-UP LINES: the note a read-only surface prints says how many events
-    /// `graph.db` passed over, by cause, read from the `passed_over` rows the file holds - beside
-    /// the rebuild note when the file also owes its rebuild, and never from a file without the
-    /// table, which reads as none.
+    /// Spec 124, CATCH-UP LINES: the note `rigger validate` prints says how many events
+    /// `graph.db` passed over, by cause, read from the `passed_over` rows the file holds - a note
+    /// of its own beside the rebuild note when the file also owes its rebuild, which says nothing
+    /// of them - and never from a file without the table, which reads as none.
     #[test]
     fn the_passed_over_note_counts_by_cause_the_rows_graph_db_holds() {
         let (_dir, graph_db) = crate::test_support::temp_graph_db();
@@ -5249,25 +5253,33 @@ mod tests {
         );
         let passed_over = crate::test_support::passed_over_note(1, 0, 1);
         assert_eq!(
-            graph_rebuild_owed_note(&graph_db, "test"),
-            Some(passed_over.clone())
+            (
+                graph_rebuild_owed_note(&graph_db, "test"),
+                graph_passed_over_note(&graph_db, "test")
+            ),
+            (None, Some(passed_over.clone()))
         );
 
         let path = Path::new(&graph_db);
         crate::test_support::stamp_user_version(path, 0);
-        let owed = crate::test_support::rebuild_owed_note();
         assert_eq!(
-            graph_rebuild_owed_note(&graph_db, "test"),
-            Some(format!("{owed}\n{passed_over}")),
-            "a file that owes its rebuild says so first"
+            (
+                graph_rebuild_owed_note(&graph_db, "test"),
+                graph_passed_over_note(&graph_db, "test")
+            ),
+            (
+                Some(crate::test_support::rebuild_owed_note()),
+                Some(passed_over)
+            ),
+            "a file that owes its rebuild still says what it passed over, in a note of its own"
         );
         rusqlite::Connection::open(path)
             .unwrap()
             .execute_batch("DROP TABLE passed_over")
             .unwrap();
         assert_eq!(
-            graph_rebuild_owed_note(&graph_db, "test"),
-            Some(owed),
+            graph_passed_over_note(&graph_db, "test"),
+            None,
             "a file without the table passed nothing over"
         );
     }

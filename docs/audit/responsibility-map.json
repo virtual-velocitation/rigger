@@ -8333,7 +8333,15 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "5f44d0d0696bccfe"
+    "content_hash": "fef6d855ecaf66ae"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "graph_passed_over_note",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "3a9569003093a5ff"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9397,7 +9405,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "0c3a3ec457774f82"
+    "content_hash": "1e3c67f7457049a1"
   },
   {
     "file": "src/cli/mod.rs",

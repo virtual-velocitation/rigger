@@ -51,7 +51,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     let progress_db = db_path("progress.db");
     let identity = project_identity();
     // The dashboard only reads the graph: one that owes its rebuild is served as it stands, and
-    // the dash says so once at start (spec 101), with how many events it passed over (spec 124).
+    // the dash says so once at start (spec 101).
     if let Some(note) = graph_rebuild_owed_note(&graph_db, &identity) {
         eprintln!("{note}");
     }
