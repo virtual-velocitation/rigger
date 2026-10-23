@@ -238,6 +238,58 @@ fn emit_review_finding_shows_in_peers() {
     );
 }
 
+/// A record citing a line of a file (`tests/x.rs:12`) or a span of its lines
+/// (`tests/x.rs:12-20`) is about that file, through the compiled binary: `rigger peers tests/x.rs`
+/// lists the finding, decision and lesson with their citations as recorded, and the graph links
+/// each to the file's node, so `rigger graph --around tests/x.rs` reaches all three.
+#[test]
+fn a_record_citing_lines_of_a_file_is_about_that_file_in_peers_and_the_graph() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    for (type_, payload) in [
+        (
+            "ReviewFinding",
+            r#"{"id":"f1","by":"adversary","summary":"the doc misleads","about":["tests/x.rs:12"]}"#,
+        ),
+        (
+            "DecisionMade",
+            r#"{"id":"d1","summary":"retry twice","governs":["tests/x.rs:12-20"]}"#,
+        ),
+        (
+            "LessonLearned",
+            r#"{"id":"l1","summary":"never sleep in a test","about":["tests/x.rs:7"]}"#,
+        ),
+    ] {
+        run_rigger_ok(root, &["emit", type_, payload]);
+    }
+
+    let out = run_rigger_ok(root, &["peers", "tests/x.rs"]);
+    for line in [
+        "finding f1 | by adversary | the doc misleads | about: tests/x.rs:12",
+        "| retry twice | governs: tests/x.rs:12-20",
+        "lesson l1 | never sleep in a test | about: tests/x.rs:7",
+    ] {
+        assert!(
+            out.contains(line),
+            "peers tests/x.rs must list `{line}`; got: {out:?}"
+        );
+    }
+
+    let (out, err, ok) = run_around(root, "tests/x.rs", 1);
+    assert!(ok, "graph --around must succeed; stderr: {err}");
+    let nodes: Vec<&str> = out
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("node "))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .collect();
+    for id in ["f1", "d1", "l1"] {
+        assert!(
+            nodes.contains(&id),
+            "{id} must be one hop from tests/x.rs; got: {out}"
+        );
+    }
+}
+
 /// Record a LIVENESS fault on `spawn_id`'s behalf in exactly the courier shape the native
 /// driver's outer wall-clock (or the sweep) records a hung agent with - `rigger result <id>
 /// <why> --error --meta '{"liveness_class":"infra"}'` - asserting it lands.

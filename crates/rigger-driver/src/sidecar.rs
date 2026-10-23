@@ -231,8 +231,21 @@ mod tests {
         ids: [&str; 2],
         payload: impl Fn(&str, &str) -> serde_json::Value,
     ) -> Vec<P> {
+        peers_scoped_to(type_, ids, ["a.rs", "b.rs"], "a.rs", payload)
+    }
+
+    /// Appends two `type_` events built by `payload(id, file)`, `ids[i]` naming `files[i]`, reads
+    /// them back as `P`, asserts an empty blast-radius returns both, and returns the peers scoped
+    /// to `blast_radius`.
+    fn peers_scoped_to<P: Peer>(
+        type_: &str,
+        ids: [&str; 2],
+        files: [&str; 2],
+        blast_radius: &str,
+        payload: impl Fn(&str, &str) -> serde_json::Value,
+    ) -> Vec<P> {
         let store = Store::open(":memory:").unwrap();
-        for (id, file) in ids.into_iter().zip(["a.rs", "b.rs"]) {
+        for (id, file) in ids.into_iter().zip(files) {
             let data = serde_json::to_vec(&payload(id, file)).unwrap();
             store
                 .append("run", ExpectedRevision::Any, &[Event::new(type_, data)])
@@ -244,7 +257,61 @@ mod tests {
         let all = sidecar.peers_for::<P>(&[]);
         assert_eq!(all.len(), 2);
 
-        sidecar.peers_for::<P>(&["a.rs".into()])
+        sidecar.peers_for::<P>(&[blast_radius.into()])
+    }
+
+    /// The ids of the `P` records the side-car scopes to `blast_radius`, out of two built by
+    /// `payload(id, file)`: `on-a` citing `a.rs:12` and `on-b` citing `b.rs:12-20`.
+    fn ids_citing_lines_scoped_to<P: Peer>(
+        type_: &str,
+        blast_radius: &str,
+        payload: impl Fn(&str, &str) -> serde_json::Value,
+        id: fn(&P) -> &str,
+    ) -> Vec<String> {
+        peers_scoped_to::<P>(
+            type_,
+            ["on-a", "on-b"],
+            ["a.rs:12", "b.rs:12-20"],
+            blast_radius,
+            payload,
+        )
+        .iter()
+        .map(|p| id(p).to_string())
+        .collect()
+    }
+
+    /// A record citing a line of a file, or a span of its lines, is scoped on that file: the
+    /// decision, finding and lesson citing `a.rs:12` come back for the blast-radius `a.rs` and for
+    /// another line of it, `a.rs:40`, while those citing `b.rs:12-20` do not.
+    #[test]
+    fn a_record_citing_lines_of_a_file_is_scoped_on_that_file() {
+        for blast_radius in ["a.rs", "a.rs:40"] {
+            let scoped = [
+                ids_citing_lines_scoped_to::<PeerDecision>(
+                    contextgraph::TYPE_DECISION_MADE,
+                    blast_radius,
+                    |id, file| serde_json::json!({"id": id, "summary": "x", "governs": [file]}),
+                    |d| &d.id,
+                ),
+                ids_citing_lines_scoped_to::<PeerFinding>(
+                    contextgraph::TYPE_REVIEW_FINDING,
+                    blast_radius,
+                    |id, file| serde_json::json!({"id": id, "by": "lens", "summary": "x", "about": [file]}),
+                    |f| &f.id,
+                ),
+                ids_citing_lines_scoped_to::<PeerLesson>(
+                    contextgraph::TYPE_LESSON_LEARNED,
+                    blast_radius,
+                    |id, file| serde_json::json!({"id": id, "summary": "x", "about": [file]}),
+                    |l| &l.id,
+                ),
+            ];
+            assert_eq!(
+                scoped,
+                [["on-a"], ["on-a"], ["on-a"]],
+                "the decision, finding and lesson scoped to {blast_radius}"
+            );
+        }
     }
 
     crate::test_cases! {
