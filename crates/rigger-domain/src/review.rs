@@ -1264,6 +1264,26 @@ mod tests {
         );
     }
 
+    /// A later resolution whose `governs` cites lines of the spec (`path:line`, `path:from-to`)
+    /// governs the spec, so it closes the ids it names.
+    #[test]
+    fn a_resolution_citing_lines_of_the_spec_closes_the_ids_it_names() {
+        let critique = critique_at_ten(&[("b1", true), ("b2", true), ("b3", true)]);
+        assert_eq!(
+            open_findings(
+                &critique,
+                &[
+                    resolution(11, &["specs/a.md:12"], &["b1"]),
+                    resolution(12, &["/work/repo/specs/a.md:3-9"], &["b2"]),
+                ],
+                "specs/a.md",
+                Path::new("/work/repo"),
+            ),
+            ["b3"],
+            "a resolution citing lines of the spec, relative or absolute, closes its ids"
+        );
+    }
+
     #[test]
     fn the_spec_root_is_the_repository_else_the_project_directory() {
         assert_eq!(
