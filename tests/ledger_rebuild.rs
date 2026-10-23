@@ -1270,7 +1270,7 @@ fn a_rebuild_passes_a_re_extracted_batch_the_fold_rejects_over_as_a_fold_failure
     entry.position = 2;
     let log = [unparsable, entry];
 
-    let poison: &[u8] = b"{ not valid json";
+    let poison = common::fixtures::POISON;
     let asked = std::cell::RefCell::new(Vec::new());
     let rebuild = |batch: Vec<Event>| {
         Projector::open(db.to_str().unwrap(), PROJECT)

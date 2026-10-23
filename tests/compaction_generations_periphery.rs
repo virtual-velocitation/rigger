@@ -40,15 +40,16 @@ use common::cli::run_stream_identity;
 use common::cli::stopping_at_the_grounder;
 use common::cli::temp_store_project;
 use common::cli::write_workflow_fixture;
-use common::cli::LOST_FOLD_REBUILD_LINE;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
 use common::cli::{rebuild_owed, setup_ok, user_version, version_and_owed};
 use common::cli::{LOG_LEFT_AS_IT_STANDS_LINE, NOTHING_TO_SHED_LINE};
+use common::cli::{LOST_FOLD_REBUILD_LINE, REBUILT_LINE};
 use common::fixtures::cleanup;
 use common::fixtures::f_rs_batch_def;
 use common::fixtures::files_open_by;
 use common::fixtures::fresh_test_reference;
 use common::fixtures::nanos;
+use common::fixtures::rebuild_owed_note;
 use common::fixtures::wait_until_for;
 use common::fixtures::with_graph_locked;
 use common::fixtures::{graph_error, lost_fold, not_folded, DATABASE_IS_LOCKED, NOT_A_DATABASE};
@@ -1357,7 +1358,7 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
              the log's live selection is refolded once"
                 .to_string(),
             format!("rebuilt 3 events, through position {head} of {head} (100%)"),
-            "rebuilt graph.db from the event log".to_string(),
+            REBUILT_LINE.to_string(),
             "identities the tree holds a file for whose generation in graph.db is not their \
              latest recording's: 0"
                 .to_string(),
@@ -1510,7 +1511,7 @@ fn rigger_setup_rebuilds_a_rule_1_graph_db_and_its_shared_node_takes_its_precede
              the log's live selection is refolded once"
                 .to_string(),
             format!("rebuilt 2 events, through position {head} of {head} (100%)"),
-            "rebuilt graph.db from the event log".to_string(),
+            REBUILT_LINE.to_string(),
         ],
         "setup names the older rule and refolds both definitions; stdout: {out}"
     );
@@ -1577,7 +1578,7 @@ fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_l
             .collect::<Vec<_>>(),
         vec![
             format!("rebuilt 2 events, through position {head} of {head} (100%)"),
-            "rebuilt graph.db from the event log".to_string(),
+            REBUILT_LINE.to_string(),
         ],
         "setup folds both definitions again, resuming nothing; stdout: {out}"
     );
@@ -1791,14 +1792,6 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
         graph, fresh,
         "the rebuilt ledgers are intact and the raced emit is folded"
     );
-}
-
-/// The one note every read-only surface prints while `graph.db` owes its rebuild.
-fn rebuild_owed_note() -> String {
-    format!(
-        "note: {} - until then the context graph answers as it stands",
-        rigger::contextgraph::REBUILD_OWED
-    )
 }
 
 /// Given a `graph.db` still at the old fold rule, every read-only surface - `rigger graph --show`,
@@ -3058,7 +3051,7 @@ fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_ser
                 vec![
                     LOST_FOLD_REBUILD_LINE.to_string(),
                     format!("rebuilt 2 events, through position {head} of {head} (100%)"),
-                    "rebuilt graph.db from the event log".to_string(),
+                    REBUILT_LINE.to_string(),
                     "pruned 0 dead-run node(s) and reclaimed 0 superseded edge(s) from the \
                      rebuilt graph"
                         .to_string(),
@@ -3095,7 +3088,7 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
         "the first emit creates the store and graph; stderr: {err}"
     );
     let rejected = [
-        append_unfolded_decision(root, b"{ not valid json"),
+        append_unfolded_decision(root, common::fixtures::POISON),
         append_unfolded_decision(
             root,
             br#"{"id":"d-trailing","summary":"s","governs":["src/t.rs"],"supersedes":""} x"#,
@@ -3592,7 +3585,7 @@ fn a_failed_fold_into_an_in_memory_graph_marks_nothing_owed_and_the_next_batch_f
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
     let mark = std::env::current_dir().unwrap().join(":memory:.owed");
-    let mut poison = Event::new("DecisionMade", b"{ not valid json".to_vec());
+    let mut poison = Event::new("DecisionMade", common::fixtures::POISON.to_vec());
     poison.position = 1;
     let graph = Projector::open(":memory:", PROJECT).unwrap();
     let failed = common::fixtures::fold_of(&graph, &[poison]);
@@ -3742,7 +3735,7 @@ fn lose_graph(root: &Path) {
 /// What `rigger setup` printed of `out` right after it said it rebuilt `graph.db`, if it did.
 fn after_rebuilt(out: &str) -> Option<String> {
     out.lines()
-        .skip_while(|l| *l != "rebuilt graph.db from the event log")
+        .skip_while(|l| *l != REBUILT_LINE)
         .nth(1)
         .map(str::to_string)
 }

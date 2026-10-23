@@ -5850,7 +5850,7 @@ mod tests {
             e
         };
         let poison = {
-            let mut e = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
+            let mut e = Event::new(TYPE_DECISION_MADE, crate::test_support::POISON.to_vec());
             e.position = 2;
             e
         };
@@ -5893,7 +5893,7 @@ mod tests {
             e.position = position;
             e
         };
-        let mut poison = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
+        let mut poison = Event::new(TYPE_DECISION_MADE, crate::test_support::POISON.to_vec());
         poison.position = 2;
         let log = [decision("d1", "a.rs", 1), poison, decision("d3", "b.rs", 3)];
         let dir = tempfile::tempdir().unwrap();
@@ -5978,6 +5978,9 @@ mod tests {
         e.position = position;
         e
     }
+
+    /// What the rebuild source of the tests that stop a rebuild in its tail answers there.
+    const TAIL_INTERRUPTED: &str = "interrupted in its tail";
 
     /// The rebuild lock of the graph file at `path`, which no other holder has.
     fn locked(path: &str) -> RebuildLock {
@@ -6102,7 +6105,7 @@ mod tests {
     #[test]
     fn a_rebuild_records_what_its_fold_and_its_tail_each_passed_over() {
         let before = [
-            event_at(TYPE_DECISION_MADE, b"{ not valid json", 1),
+            event_at(TYPE_DECISION_MADE, crate::test_support::POISON, 1),
             decision_at("d2", "a.rs", 2),
             event_at(TYPE_LESSON_LEARNED, b"[]", 3),
         ];
@@ -6777,7 +6780,7 @@ mod tests {
                         reads += 1;
                         match reads {
                             1 => stream_past(&log, after, 10, sink),
-                            _ => Err(Error("interrupted in its tail".to_string())),
+                            _ => Err(Error(TAIL_INTERRUPTED.to_string())),
                         }
                     },
                     &mut |_| Ok(None),
@@ -6819,7 +6822,7 @@ mod tests {
                 rebuild_state(path),
             ),
             (
-                Err(crate::test_support::graph_error("interrupted in its tail")),
+                Err(crate::test_support::graph_error(TAIL_INTERRUPTED)),
                 Vec::<&str>::new(),
                 vec![5, 6],
                 Some(Rebuilt {
@@ -7006,7 +7009,7 @@ mod tests {
                 &mut |after, sink| {
                     reads += 1;
                     if reads == 2 {
-                        return Err(Error("interrupted in its tail".to_string()));
+                        return Err(Error(TAIL_INTERRUPTED.to_string()));
                     }
                     stream_past(&log, after, 10, sink)
                 },
@@ -7042,7 +7045,7 @@ mod tests {
                 report,
                 Err(crate::test_support::directory_refusal(format!("{stopped}.owed"))),
                 report,
-                Err(crate::test_support::graph_error("interrupted in its tail")),
+                Err(crate::test_support::graph_error(TAIL_INTERRUPTED)),
                 report,
                 Err(crate::test_support::directory_refusal(format!("{windowed}.owed"))),
                 Some(Rebuilt {
@@ -16405,7 +16408,8 @@ mod tests {
             ) {
                 let (_dir, p, mark) = graph_file();
                 holding_h1(&p);
-                let mut poison = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
+                let mut poison =
+                    Event::new(TYPE_DECISION_MADE, crate::test_support::POISON.to_vec());
                 poison.position = 8;
                 assert!(matches!(
                     Fold::of(wired(Some(&p)), &poison),
@@ -16475,7 +16479,7 @@ mod tests {
                 );
                 // A batch event's fold fails after an earlier one folded: the whole entry rolls
                 // back, the generation the first event installed included.
-                let poison: &[u8] = b"{ not valid json";
+                let poison = crate::test_support::POISON;
                 let rejected = serde_json::from_slice::<serde_json::Value>(poison)
                     .unwrap_err()
                     .to_string();

@@ -29272,7 +29272,7 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
         (
             true,
             [
-                "rebuilt graph.db from the event log".to_string(),
+                common::cli::REBUILT_LINE.to_string(),
                 format!(
                     "identities the tree holds a file for whose generation in graph.db is not \
                      their latest recording's: {behind}"

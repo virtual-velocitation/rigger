@@ -291,7 +291,7 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
     );
 
     // A batch event's fold fails after an earlier one folded.
-    let poison: &[u8] = b"{ not valid json";
+    let poison = common::fixtures::POISON;
     let rejected = serde_json::from_slice::<serde_json::Value>(poison)
         .unwrap_err()
         .to_string();
@@ -920,7 +920,7 @@ fn the_ledger_form_answers_a_fold_it_could_not_make_beside_an_entry_that_is_on_t
 
     // A batch event the fold rejects: the fold fails, the entry stays on the log, the graph is
     // marked owing and holds no applied row for it.
-    let poison: &[u8] = b"{ not valid json";
+    let poison = common::fixtures::POISON;
     let rejected = serde_json::from_slice::<serde_json::Value>(poison)
         .unwrap_err()
         .to_string();

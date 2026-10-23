@@ -835,11 +835,6 @@
     "reason": "`McpSession::from_command` is the one session constructor; `start_with` is a one-line call to it over the isolated `rigger_command`, and `start` a one-line default-arguments call to `start_with`; seven call sites open a plain `rigger mcp` session through `start`."
   },
   {
-    "id": "dup-e3a49d3d408e",
-    "disposition": "not-a-duplicate",
-    "reason": "Two unrelated one-line `format!` wrappers sharing only their token shape: the rebuild-owed note a read-only surface prints versus the platform's product binary file name."
-  },
-  {
     "id": "dup-e45a2413a3f0",
     "disposition": "not-a-duplicate",
     "reason": "Fold helpers that each build a different event type or payload (inferred edges, doc concepts, doc links, batch refs, unit integration, lang-less refs) over the shared `apply_json`."

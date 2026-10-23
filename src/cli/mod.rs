@@ -5218,10 +5218,7 @@ mod tests {
         crate::test_support::stamp_user_version(&path, 0);
         assert_eq!(
             graph_rebuild_owed_note(graph_db, "p"),
-            Some(format!(
-                "note: {} - until then the context graph answers as it stands",
-                contextgraph::REBUILD_OWED
-            ))
+            Some(crate::test_support::rebuild_owed_note())
         );
     }
 
@@ -5255,10 +5252,7 @@ mod tests {
 
         let path = Path::new(&graph_db);
         crate::test_support::stamp_user_version(path, 0);
-        let owed = format!(
-            "note: {} - until then the context graph answers as it stands",
-            contextgraph::REBUILD_OWED
-        );
+        let owed = crate::test_support::rebuild_owed_note();
         assert_eq!(
             graph_rebuild_owed_note(&graph_db, "test"),
             Some(format!("{owed}\n{passed_over}")),

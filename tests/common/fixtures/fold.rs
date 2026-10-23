@@ -359,6 +359,14 @@ pub fn entry_refusal() -> rigger::contextgraph::Fold {
     rigger::contextgraph::Fold::NotFolded(lost_fold(&graph_error(ENTRY_REFUSED)))
 }
 
+/// The one note every read-only surface prints while `graph.db` owes its rebuild.
+pub fn rebuild_owed_note() -> String {
+    format!(
+        "note: {} - until then the context graph answers as it stands",
+        rigger::contextgraph::REBUILD_OWED
+    )
+}
+
 /// What the public fold answers on a graph that owes its rebuild: refused, naming the debt.
 pub fn owed_refusal() -> rigger::contextgraph::Fold {
     rigger::contextgraph::Fold::NotFolded(graph_error(rigger::contextgraph::REBUILD_OWED))
