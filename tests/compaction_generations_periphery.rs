@@ -2351,10 +2351,7 @@ fn emit_decision(root: &Path, id: &str) -> (String, String, bool) {
 /// emit, which creates its `graph.db`.
 fn emit_the_first_decision(root: &Path) {
     let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(
-        ok,
-        "the first emit creates the store and graph; stderr: {err}"
-    );
+    assert!(ok, "the first emit creates graph.db; stderr: {err}");
 }
 
 /// Given a current `graph.db` another writer holds locked past the busy timeout, when an agent
