@@ -6080,9 +6080,6 @@ mod tests {
 
         let rebuilt = rebuild_in_batches(path, &log, 10, &mut Vec::new()).unwrap();
         let p = Projector::open(path, "test").unwrap();
-        let rejected = |type_: &str, data: &[u8]| {
-            crate::test_support::judged_cause(PAYLOAD_REJECTED, type_, data)
-        };
         assert_eq!(
             (
                 rebuilt.map(|r| r.pruned),
@@ -6097,9 +6094,9 @@ mod tests {
                 Some(PruneStats::default()),
                 vec![true; 5],
                 vec![
-                    (2, rejected(TYPE_DECISION_MADE, malformed)),
-                    (3, rejected(TYPE_UNIT_INTEGRATED, mistyped)),
-                    (4, rejected(TYPE_DECISION_MADE, trailing)),
+                    rejected_row(&log[1]),
+                    rejected_row(&log[2]),
+                    rejected_row(&log[3]),
                 ],
                 vec!["a.rs".to_string(), "b.rs".to_string()]
             ),
