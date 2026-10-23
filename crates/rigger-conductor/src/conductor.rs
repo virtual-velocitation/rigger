@@ -11186,7 +11186,7 @@ impl RunCtx<'_> {
             // sections by Gap 17): the decisions, lessons, and findings sections each render through
             // ONE shared budgeted-section writer (recent-N verbatim under a hard per-section byte
             // budget, the older remainder collapsed into a visible elision note that names the count
-            // and the `rigger peers <file>` recovery). So no single section - not even findings, the
+            // and reading an elided record by id through the graph). So no single section - not even findings, the
             // LARGER contributor on a hot file (measured ~95KiB ABOUT conductor.rs, ~187KiB ABOUT
             // main.rs, 4-8x the 24KiB decisions cap) - can blow the prompt; the store keeps the full
             // history, only the prompt slice narrows. The findings subgraph is seeded on the unit's
@@ -12806,8 +12806,8 @@ fn render_capped_section<'a>(
 /// Render ONE kind-filtered graph section (decisions, lessons, or findings) under the
 /// shared Gap-17 prompt budget: the most-recent `verbatim_n` nodes render verbatim AND
 /// stay under `budget_bytes` (whichever binds first), and the older remainder collapses
-/// into ONE visible elision note naming the elided count and the `rigger peers <file>`
-/// recovery command. This is the SINGLE budgeted-section writer behind all three
+/// into ONE visible elision note naming the elided count and [`RECORD_RECOVERY`], reading an
+/// elided record by id through the graph. This is the SINGLE budgeted-section writer behind all three
 /// `graph_context` sections (the three thin wrappers below name each section's config),
 /// so no section gets a divergent second capping mechanism and the earlier triplicated
 /// node-section render loop (arch-u5) is collapsed into one. The store keeps the FULL
@@ -12939,14 +12939,9 @@ fn write_capped_section<'g>(
     });
 
     // Delegate the count / byte cap and the elision note to the SINGLE budgeted-section core,
-    // supplying the restore closure that keeps THIS section's slice fact-complete and the note in
-    // this section's exact `rigger peers <file>` wording - the honest recovery for a decision /
-    // lesson / finding, all of which `rigger peers` prints.
-    let files = if seed.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", seed.join(" "))
-    };
+    // supplying the restore closure that keeps THIS section's slice fact-complete and the note
+    // naming [`RECORD_RECOVERY`] - reading an elided decision / lesson / finding by id through the
+    // graph, since `rigger peers` keeps only the newest under this same budget.
     render_capped_section(
         b,
         header,
@@ -13001,7 +12996,7 @@ fn write_capped_section<'g>(
         },
         |elided: usize| {
             format!(
-                "- (+{elided} older {noun}(s) elided to keep this prompt under budget - recover the full set with `rigger peers{files}`)\n",
+                "- (+{elided} older {noun}(s) elided to keep this prompt under budget - {RECORD_RECOVERY})\n",
             )
         },
     );

@@ -1074,7 +1074,7 @@ rigger::test_cases! {
     ///
     /// Non-vacuous: the definition note is uniquely identified by "more definition(s)" (the decisions /
     /// lessons / findings notes say "older <noun>(s)"), so the assertions isolate the code section from
-    /// the legitimate `rigger peers` those other notes name. Rendering the recovery command as `rigger
+    /// the by-id graph recovery those other notes name. Rendering the recovery command as `rigger
     /// peers` (the pre-fix behavior) flips BOTH assertions: the positive (honest command absent) and the
     /// negative (dishonest command present).
     the_spawn_prompt_code_neighborhood_elision_note_names_the_honest_graph_around_recovery: {
