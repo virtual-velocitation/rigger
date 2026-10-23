@@ -192,7 +192,9 @@ pub fn sans_line_span(path: &str) -> &str {
 /// about that file; the reference as written otherwise. A reference cites lines of a file only
 /// when [`sans_line_span`] leaves a path [`file_of`] reads as a whole file and holding no other
 /// `:`, so a code-entity path (`a.rs::f`), a record id, a section name or an extensionless name
-/// (`stage:12`) is never cut. The graph's record fold and the side-car's peer scope both read it.
+/// (`stage:12`) is never cut. Every reader matching a record's references against files reads it:
+/// the graph's record fold, the side-car's peer scope, the review metrics, the canary's catch, the
+/// playbook triggers, the dash's graph seeds and a critique resolution's spec.
 pub fn referenced_id(reference: &str) -> &str {
     let path = sans_line_span(reference);
     match file_of(path) {
