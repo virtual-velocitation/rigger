@@ -128,7 +128,7 @@ fn read_order_signatures(
     project: &str,
 ) -> Result<Vec<watch::OrderSignature>, Box<dyn std::error::Error>> {
     let sel = store_selection(None, None)?;
-    if sel.is_sqlite() && !Path::new(path).exists() {
+    if sel.log_absent(path) {
         return Ok(Vec::new());
     }
     let backend = resolve_store(&sel, path)?;
@@ -554,7 +554,7 @@ fn bloat_advisory(counted: &DerivedCount) -> Option<String> {
 /// order-signature advisories above.
 fn bloat_advisory_for(path: &str, project: &str) -> Option<String> {
     let sel = store_selection(None, None).ok()?;
-    if !sel.is_sqlite() || !Path::new(path).exists() {
+    if !sel.is_sqlite() || sel.log_absent(path) {
         return None;
     }
     let store = open_sqlite_store(path).ok()?;

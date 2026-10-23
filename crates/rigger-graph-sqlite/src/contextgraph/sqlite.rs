@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, SystemTime};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
@@ -180,6 +181,18 @@ CREATE TABLE IF NOT EXISTS rebuild_run_closure (
 );
 ";
 
+/// How long a direct fold's writer may wait out another writer's write lock before it gives up on
+/// the position it appended (spec 124, THE CLOCKS): ten minutes. Each wait is one busy timeout of
+/// the fold's connection ([`open_connection`]), and a fold given up leaves its position missing
+/// from the ledger.
+const FOLD_LOCK_CEILING: Duration = Duration::from_secs(600);
+
+/// How old a position missing from the `applied` ledger must be before a seeding of the
+/// `caught_up` cursor ([`Projector::seed_cursor`]) counts it lost (spec 124, THE CLOCKS): the
+/// [`FOLD_LOCK_CEILING`] plus a margin of 60 s. A missing position no older than this may be a
+/// direct fold its writer has not yet given up.
+pub const CATCH_UP_HORIZON: Duration = Duration::from_secs(FOLD_LOCK_CEILING.as_secs() + 60);
+
 /// Drop the [`REBUILD_STATE`] a rebuild kept, both tables in one transaction ([`in_transaction`]).
 const DROP_REBUILD_STATE: &str = "
 DROP TABLE rebuild_cursor;
@@ -222,10 +235,16 @@ pub fn stream_past(
 pub type PositionSink<'s> = dyn FnMut(&[Position]) -> Result<(), Error> + 's;
 
 /// Streams the positions of the log's live selection into a [`PositionSink`], in position order,
-/// in batches - positions alone, never the events: what [`Projector::owed_against`] reads a
-/// graph's ledger against (spec 101). The sqlite event store's `read_live_positions` is the one in
-/// production.
+/// in batches - positions alone, never the events: what [`Projector::seed_cursor`] reads a
+/// graph's ledger against (spec 101, spec 124). The sqlite event store's `read_live_positions` is
+/// the one in production.
 pub type PositionSource<'s> = dyn FnMut(&mut PositionSink) -> Result<(), Error> + 's;
+
+/// The store stamp of the event the log holds at a position, read by one point lookup, or none
+/// where the log answers none: what [`Projector::seed_cursor`] reads a missing position's age
+/// through (spec 124, THE CLOCKS). The sqlite event store's `recorded_at` is the one in production
+/// on the embedded log; the server-backed log answers none, so every position it misses is old.
+pub type StampLookup<'s> = dyn FnMut(Position) -> Result<Option<SystemTime>, Error> + 's;
 
 /// The [`PositionSource`] over `stream` of `store`, for a store with no live selection (a
 /// server-backed log, whose live selection is its stream as it stands): the positions the store
@@ -341,9 +360,9 @@ pub struct Projector {
 /// fold into it failed - a write lost to another writer's lock past the busy timeout leaves the
 /// file current but missing an event no later fold re-derives. The mark is only what lets a
 /// folding open refuse at once without reading the log: the debt itself is the position missing
-/// from the file's `applied` ledger, which `rigger setup` reads against the log
-/// ([`Projector::owed_against`]), so a mark that cannot be written loses nothing. `None` for an
-/// in-memory graph, which no rebuild outlives.
+/// from the file's `applied` ledger, which `rigger setup`'s seeding of a file not yet carrying the
+/// `caught_up` cursor reads against the log below the highest position the ledger records
+/// ([`Projector::seed_cursor`]). `None` for an in-memory graph, which no rebuild outlives.
 fn owed_mark(path: &str) -> Option<PathBuf> {
     (path != ":memory:").then(|| PathBuf::from(format!("{path}.owed")))
 }
@@ -432,6 +451,19 @@ impl PassedOver {
     }
 }
 
+/// What a seeding of a graph file's `caught_up` cursor answered ([`Projector::seed_cursor`], spec
+/// 124, THE CURSOR AND ITS SEEDING).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Seeding {
+    /// Its transaction met another writer's write lock past the busy timeout: it read nothing,
+    /// wrote nothing and issued no verdict, and the next `rigger setup` seeds the file.
+    Skipped,
+    /// It ran under the write lock. `lost` is its prefix-violation verdict, a verdict of this
+    /// seeding alone and no record of the file: the file misses an event of the log that only a
+    /// rebuild can fold in order, so it owes the lost fold ([`Projector::owed_against`]).
+    Ran { lost: bool },
+}
+
 /// What the one transaction frame ([`in_transaction`]) answers when it does not answer its
 /// body's value (spec 124, EXISTING MECHANISMS): CONTENTION is read at the frame's IMMEDIATE open,
 /// before [`be`] stringifies anything, so a caller decides by the variant, never by an error's
@@ -508,7 +540,8 @@ impl Projector {
     /// Pay the rebuild this projector's graph file - the file it was opened on - owes (spec 101),
     /// and report whether there was one to pay - `None` when there was not, else what it did
     /// ([`Rebuilt`]): what its run-closure prune removed - owed because its caller found it so
-    /// (`owed`: what [`Projector::owed_against`] read of its ledger against the log), or because
+    /// (`owed`: what [`Projector::owed_against`] answered once the file's `caught_up` cursor was
+    /// seeded), or because
     /// the file itself records an older fold rule or carries the [`owed_mark`] a failed fold left,
     /// both read again here. A rebuild's own
     /// unfinished work is paid too, with no owed cause: the shadow a rebuild whose swap stopped
@@ -523,7 +556,10 @@ impl Projector {
     /// file, in the batches `source` hands it, each folded in the bounded transactions
     /// `fold_source` cuts it into, each transaction committed with the last position it folded and
     /// the run attribution it gathered ([`REBUILD_STATE`]), and each batch reported to `progress`;
-    /// the live file is only ever read meanwhile. Once `source` is exhausted, a private copy of the
+    /// the live file is only ever read meanwhile. The transaction that opens the shadow's rebuild
+    /// state also creates its `caught_up` cursor at the shadow's rebuild cursor ([`create_cursor`],
+    /// spec 124): zero in a fresh shadow, and where a resumed one stands when a binary from before
+    /// the cursor left it without one. Once `source` is exhausted, a private copy of the
     /// shadow, pruned as `rigger reset --runs` prunes the live graph and stamped with the current
     /// [`PROJECTION_VERSION`] ([`prune_a_copy`]), is put in place of the live file's content in ONE
     /// step - one write transaction that copies it page for page, so a racing open sees the old
@@ -556,10 +592,14 @@ impl Projector {
     /// copy: so after it `source` is read once more from the cursor alone, into the live file and
     /// reported to `progress`, and only then is the cursor dropped - the per-position guard makes
     /// that tail meet an emit that folded its own event exactly once. A rebuild interrupted in that
-    /// tail finishes exactly the tail on the next call, with no owed cause - the ledger owes the
-    /// tail to the swapped-in cursor rather than to a lost fold ([`Projector::owed_against`]) - and
-    /// reports the counts stamped with the swap. Only then is the rebuild state dropped, the cursor
-    /// and the attribution together.
+    /// tail finishes exactly the tail on the next call, with no owed cause - the swapped-in file
+    /// carries the `caught_up` cursor its shadow opened with, so its seeding reads nothing, and the
+    /// seeding of one swapped in without that cursor reads no position past the swapped-in
+    /// rebuild cursor, the tail's own debt rather than a lost fold ([`Projector::seed_cursor`]) -
+    /// and reports the counts stamped with the swap. Only then is the rebuild state dropped, the
+    /// cursor and the attribution together, in the one transaction that sets the `caught_up`
+    /// cursor at the last position the rebuild folded, creating it on a file swapped in without
+    /// one.
     pub fn rebuild(
         &self,
         _held: &RebuildLock,
@@ -578,7 +618,8 @@ impl Projector {
             let mut shadow = open_shadow(&shadow_path)?;
             schema(&shadow, project)?;
             in_transaction(&mut shadow, project, |tx| {
-                tx.execute_batch(REBUILD_STATE).map_err(be)
+                tx.execute_batch(REBUILD_STATE).map_err(be)?;
+                create_cursor(tx, rebuild_cursor(tx)?)
             })
             .map_err(FrameError::unframed)?;
             fold_source(&mut shadow, project, source, reextract, progress, true)?;
@@ -618,6 +659,10 @@ impl Projector {
             )
             .map_err(be)?;
         in_transaction(live, project, |tx| {
+            let through = rebuild_cursor(tx)?;
+            create_cursor(tx, through)?;
+            tx.execute("UPDATE caught_up SET position = ?1", [through as i64])
+                .map_err(be)?;
             tx.execute_batch(DROP_REBUILD_STATE).map_err(be)
         })
         .map_err(FrameError::unframed)?;
@@ -687,36 +732,99 @@ impl Projector {
         Ok(counts)
     }
 
-    /// Why this file owes its rebuild once its `applied` ledger is read against the log (spec
-    /// 101): the causes it says it owes ([`Projector::owed_because`]), and [`OWED_LOST_FOLD`] when
-    /// a position `live` streams - the log's live selection - is missing from the ledger: a fold
-    /// lost where no mark could be written, or a process that died between its append and its
-    /// fold. The ledger is the record of that debt, durable in the very file the fold missed; it is
-    /// not read when the mark already names it. A position past the cursor a
-    /// [`Projector::rebuild`] swapped in is no such debt: it is that rebuild's tail, which the
-    /// rebuild finishes, never a lost fold. Reads, and writes nothing.
-    pub fn owed_against(&self, live: &mut PositionSource) -> Result<Vec<&'static str>, Error> {
+    /// Why this file owes its rebuild once its `caught_up` cursor is seeded (spec 101, spec 124):
+    /// the causes it says it owes ([`Projector::owed_because`]), read from the file with no lock,
+    /// and [`OWED_LOST_FOLD`] when `seeding` ran and found the prefix violated
+    /// ([`Projector::seed_cursor`]) and the file does not already say so - so the lost fold is
+    /// owed once, whether the mark, the seeding or both name it. A skipped seeding adds nothing.
+    /// Reads, and writes nothing.
+    pub fn owed_against(&self, seeding: &Seeding) -> Result<Vec<&'static str>, Error> {
         let mut causes = self.owed_because()?;
-        if !causes.contains(&OWED_LOST_FOLD) && self.misses_any(live)? {
+        if matches!(seeding, Seeding::Ran { lost: true }) && !causes.contains(&OWED_LOST_FOLD) {
             causes.push(OWED_LOST_FOLD);
         }
         Ok(causes)
     }
 
-    /// Whether a position `live` streams is missing from this file's `applied` ledger - one past
-    /// the cursor a [`Projector::rebuild`] swapped in is that rebuild's tail, which it owes and
-    /// finishes, never a lost fold.
-    fn misses_any(&self, live: &mut PositionSource) -> Result<bool, Error> {
-        let conn = self.conn.lock().unwrap();
-        let owed_through = rebuild_tail_from(&conn)?.unwrap_or(Position::MAX);
-        let mut missing = false;
-        live(&mut |positions| {
-            for &position in positions.iter().filter(|&&p| p <= owed_through) {
-                missing = missing || !has_applied(&conn, position)?;
+    /// Seed this file's `caught_up` cursor against the log (spec 124, THE CURSOR AND ITS
+    /// SEEDING), in ONE immediate transaction ([`Projector::transact`]) that takes the write lock
+    /// before it reads anything, and answer its verdict ([`Seeding`]). A transaction that meets
+    /// another writer's lock past the busy timeout is [`Seeding::Skipped`], having read and written
+    /// nothing; any other failure is the error. A file already carrying `caught_up` is read no
+    /// further: nothing at or below its cursor is missing from the ledger, so it keeps the cursor
+    /// and its verdict loses nothing.
+    ///
+    /// On a file without it the ledger is read against the positions `live` streams - the log's
+    /// live selection, whose last position is the log's head - at or below the highest position
+    /// the ledger records and, on a file a rebuild swapped in whose tail is still owed, at or below
+    /// that rebuild's cursor, the tail's own debt lying past it. Each missing position's store
+    /// stamp is read through `stamp_of` once the stream is read: the missing position is old when
+    /// the stamp is more than [`CATCH_UP_HORIZON`] before `now`, or when the log answers no stamp,
+    /// and young otherwise, a stamp after `now` included. A file that owes its rebuild for an older
+    /// fold rule, or still owes a rebuild's tail, gets no cursor - the rebuild seeds it - and an
+    /// old missing position is its verdict. Any other file is seeded at the highest position its
+    /// ledger records, or just below the lowest young missing position, or at 0 for an empty
+    /// ledger beside an empty log; an old missing position, an empty ledger beside a non-empty
+    /// log, or a non-empty one beside an empty log or above its head violates the prefix, which
+    /// only a rebuild repairs in order, so no cursor is created and the verdict is lost.
+    pub fn seed_cursor(
+        &self,
+        live: &mut PositionSource,
+        stamp_of: &mut StampLookup,
+        now: SystemTime,
+    ) -> Result<Seeding, Error> {
+        let seeded = self.transact(|tx| -> Result<Seeding, Error> {
+            if has_table(tx, "caught_up")? {
+                return Ok(Seeding::Ran { lost: false });
             }
-            Ok(())
-        })?;
-        Ok(missing)
+            let highest = highest_applied(tx)?;
+            let through = match rebuild_tail_from(tx)? {
+                Some(cursor) => highest.map(|h| h.min(cursor)),
+                None => highest,
+            };
+            let mut head = None;
+            let mut missing = Vec::new();
+            live(&mut |positions| {
+                for &position in positions
+                    .iter()
+                    .filter(|&&p| through.is_some_and(|t| p <= t))
+                {
+                    if !has_applied(tx, position)? {
+                        missing.push(position);
+                    }
+                }
+                head = positions.last().copied().or(head);
+                Ok(())
+            })?;
+            let mut old_miss = false;
+            for &position in &missing {
+                let stamp = stamp_of(position)?;
+                if stamp.is_none_or(|s| now.duration_since(s).is_ok_and(|a| a > CATCH_UP_HORIZON)) {
+                    old_miss = true;
+                    break;
+                }
+            }
+            if rebuild_owed(tx)? || rebuild_tail_owed(tx)? {
+                return Ok(Seeding::Ran { lost: old_miss });
+            }
+            let cursor = match (highest, head) {
+                (None, None) => Some(0),
+                (Some(h), Some(head)) if h <= head && !old_miss => {
+                    Some(missing.first().map_or(h, |&young| young - 1))
+                }
+                _ => None,
+            };
+            if let Some(at) = cursor {
+                create_cursor(tx, at)?;
+            }
+            Ok(Seeding::Ran {
+                lost: cursor.is_none(),
+            })
+        });
+        match seeded {
+            Err(FrameError::Contended(_)) => Ok(Seeding::Skipped),
+            seeded => seeded.map_err(FrameError::unframed),
+        }
     }
 
     /// Mark this file as missing an event the log holds ([`owed_mark`]), so a folding open refuses
@@ -770,18 +878,19 @@ impl Projector {
         in_transaction(&mut self.conn.lock().unwrap(), &self.project, body)
     }
 
-    /// Run `fold` under the two guards every fold into this file keeps. It refuses before
-    /// folding when the file owes its rebuild ([`REBUILD_OWED`]). And a fold that fails into a
-    /// file that owed nothing leaves that file behind the log for good - nothing folds a position
-    /// twice - and its positions missing from the `applied` ledger are that debt, which the next
-    /// `rigger setup` reads against the log and pays ([`Projector::owed_against`]). The failure
-    /// also marks the file ([`owed_mark`]), so from then on it refuses every fold and every
-    /// answer that depends on the fold with [`REBUILD_OWED`] without reading the log; a mark that
-    /// cannot be written is named beside the fold's error and nothing else is recorded - the
-    /// ledger still carries the debt. Either way the error ends by naming the one command that
-    /// pays it, so every surface that reports the lost fold says who does. A fold that answers its
-    /// own position already recorded passed over ([`FrameError::Recorded`], spec 124) lost nothing:
-    /// it answers that position's cause alone, writing no mark.
+    /// Run `fold` under the two guards every fold into this file keeps. It refuses before folding
+    /// when the file owes its rebuild ([`REBUILD_OWED`]). And a fold that fails into a file that
+    /// owed nothing leaves that file behind the log for good - nothing folds a position twice - and
+    /// its positions missing from the `applied` ledger are that debt, which the next `rigger
+    /// setup`'s seeding of a file not yet carrying the `caught_up` cursor reads against the log
+    /// below the highest position the ledger records ([`Projector::seed_cursor`]), and setup pays.
+    /// The failure also marks the file ([`owed_mark`]), so from then on it refuses every fold and
+    /// every answer that depends on the fold with [`REBUILD_OWED`] without reading the log; a mark
+    /// that cannot be written is named beside the fold's error and nothing else is recorded - the
+    /// ledger still carries the debt. Either way the error ends by naming the one command that pays
+    /// it, so every surface that reports the lost fold says who does. A fold that answers its own
+    /// position already recorded passed over ([`FrameError::Recorded`], spec 124) lost nothing: it
+    /// answers that position's cause alone, writing no mark.
     fn guarded<T>(&self, fold: impl FnOnce() -> Result<T, FrameError>) -> Result<T, Error> {
         if self.rebuild_owed()? {
             return Err(Error(REBUILD_OWED.to_string()));
@@ -1932,6 +2041,28 @@ fn rebuild_cursor(conn: &Connection) -> Result<Position, Error> {
     .map_err(be)
 }
 
+/// Create the `caught_up` cursor in `tx` where its file carries none, seeded at `at` (spec 124, THE
+/// CURSOR AND ITS SEEDING): how far the file's prefix of the log reaches, every live position at
+/// or below it applied or passed over. One row, its id pinned to 0, written by `INSERT OR IGNORE`,
+/// so a file already carrying the cursor keeps where it stands. What the seeding
+/// ([`Projector::seed_cursor`]) and a rebuild's shadow open and drop ([`Projector::rebuild`])
+/// create it through.
+fn create_cursor(tx: &Transaction, at: Position) -> Result<(), Error> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS caught_up (
+            id INTEGER PRIMARY KEY CHECK (id = 0),
+            position INTEGER NOT NULL
+        )",
+    )
+    .map_err(be)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO caught_up (id, position) VALUES (0, ?1)",
+        [at as i64],
+    )
+    .map(drop)
+    .map_err(be)
+}
+
 /// Whether the file behind `conn` holds a table named `name`.
 fn has_table(conn: &Connection, name: &str) -> Result<bool, Error> {
     conn.query_row(
@@ -2371,6 +2502,16 @@ fn has_applied(conn: &Connection, position: Position) -> Result<bool, Error> {
         .map_err(be)?
         .query_row([position as i64], |r| r.get(0))
         .map_err(be)
+}
+
+/// The highest position the `applied` ledger of the file behind `conn` records, or none for an
+/// empty ledger.
+fn highest_applied(conn: &Connection) -> Result<Option<Position>, Error> {
+    conn.query_row("SELECT max(position) FROM applied", [], |r| {
+        r.get::<_, Option<i64>>(0)
+    })
+    .map(|highest| highest.map(|position| position as Position))
+    .map_err(be)
 }
 
 /// Record `position` in the `applied` ledger, answering whether it was not there yet.

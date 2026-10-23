@@ -446,7 +446,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a386b1c4e6df",
+    "id": "dup-06595b708e0b",
     "classification": "semantic",
     "sites": [
       {
@@ -468,11 +468,6 @@
         "file": "crates/rigger-domain/src/ingest.rs",
         "name": "a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error",
         "content_hash": "759be2b81949a05f"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it",
-        "content_hash": "46f7d5ef5b2d100a"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -516,7 +511,7 @@
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 13 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 12 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6153,7 +6148,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b1acc9b115c4",
+    "id": "dup-e67cfcd84a42",
     "classification": "semantic",
     "sites": [
       {
@@ -6209,7 +6204,7 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
-        "content_hash": "1103d16a349001ad"
+        "content_hash": "fab1ba2a543fef66"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -6305,6 +6300,16 @@
         "file": "tests/common/cli.rs",
         "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "tests/common/fixtures/passed_over.rs",
@@ -6463,7 +6468,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 61 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 63 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -7355,13 +7360,23 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ffc17308c029",
+    "id": "dup-db3e199dd312",
     "classification": "near",
     "sites": [
       {
         "file": "src/cli/hygiene.rs",
         "name": "derived_count_phrase",
         "content_hash": "b5bb3e7cbaf9fefe"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "rebuilt_through_the_head",
+        "content_hash": "abc61f9406535fc4"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "pruned_from_the_rebuilt_graph",
+        "content_hash": "abc61f9406535fc4"
       },
       {
         "file": "tests/common/cli.rs",
@@ -8226,12 +8241,17 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-065ac962b8cf",
+    "id": "dup-90e32eb50d95",
     "classification": "exact",
     "sites": [
       {
         "file": "tests/common/cli.rs",
         "name": "derived_menu_lines",
+        "content_hash": "abcb3e0cce3666b0"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "decision_lines",
         "content_hash": "abcb3e0cce3666b0"
       },
       {
@@ -8245,7 +8265,7 @@
         "content_hash": "abcb3e0cce3666b0"
       }
     ],
-    "proposed_home": "cli::support (consolidate these 3 sites into one function in this file)",
+    "proposed_home": "cli::support (consolidate these 4 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

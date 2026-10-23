@@ -286,7 +286,7 @@ pub(crate) fn cmd_playbooks(args: &[String]) -> Res {
         migrate_local_identity()?;
     }
     let db = db_path("events.db");
-    let events = if !selection.is_sqlite() || Path::new(&db).exists() {
+    let events = if !selection.log_absent(&db) {
         let backend = resolve_store(&selection, &db)?;
         let store = Namespaced::new(backend.as_ref(), &project_identity());
         store.read_stream(conductor::STREAM, 0, Direction::Forward)?

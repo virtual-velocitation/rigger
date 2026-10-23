@@ -8281,6 +8281,14 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "log_absent",
+    "is_test": false,
+    "proposed_module": "main::store_selection",
+    "reason": "method inside `impl StoreSelection`; grouped with its other `StoreSelection` methods.",
+    "content_hash": "b18f0020f6370414"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "handed_env",
     "is_test": false,
     "proposed_module": "main::store_selection",
@@ -8773,7 +8781,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "6306ffb8bd1178b5"
+    "content_hash": "70d3b42713210eae"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8869,7 +8877,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "14a8660247330868"
+    "content_hash": "08351a920ed43f41"
   },
   {
     "file": "src/cli/mod.rs",

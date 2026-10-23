@@ -860,9 +860,9 @@
     "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, an id's file half before it, a staged reference row's liveness term, the proof rows' selection by one key column, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper, a planted refusing trigger's text, a built-in instruction entry's checked-in source path); they share only the `format!` shape."
   },
   {
-    "id": "dup-ffc17308c029",
+    "id": "dup-db3e199dd312",
     "disposition": "not-a-duplicate",
-    "reason": "Five different lines spelled for different surfaces (the production phrase naming a log's derived events and file identities, the test-side expected `--derived` menu line and the test-side expected `rigger validate` log-bloat warning, each holding that phrase's text independently of the code it checks, the counts `rigger reset --derived` prints of its migration, and the bare menu's `--runs` line); they share only the `format!` shape."
+    "reason": "Seven different lines spelled for different surfaces (the production phrase naming a log's derived events and file identities, the test-side expected `--derived` menu line and the test-side expected `rigger validate` log-bloat warning, each holding that phrase's text independently of the code it checks, the counts `rigger reset --derived` prints of its migration, the bare menu's `--runs` line counting what is prunable, and the two test-side expected `rigger setup` lines, the rebuild's progress line at the log's head and the counts of what that rebuild pruned from the rebuilt graph, each holding its line's text independently of the setup code it checks); they share only the `format!` shape."
   },
   {
     "id": "dup-0b2669324614",
@@ -1020,9 +1020,9 @@
     "reason": "`f11` renders the plan critique's F11 advisory for one criterion and `graph_build_line` renders the line `rigger graph build` prints for an event count and a fold-loss clause: two test-side spellings of different product lines, each defined once, sharing only the shape of one `format!` over a number and a string."
   },
   {
-    "id": "dup-065ac962b8cf",
+    "id": "dup-90e32eb50d95",
     "disposition": "not-a-duplicate",
-    "reason": "All three already delegate to the one line picker `lines_where`; each names a different command's lines by its own predicate (the bare reset menu's `--derived` lines, the index-lag advisory's and the log-bloat advisory's)."
+    "reason": "All four already delegate to the one line picker `lines_where`; each names a different command's lines by its own predicate (the bare reset menu's `--derived` lines, `rigger peers`' decision rows, the index-lag advisory's and the log-bloat advisory's)."
   },
   {
     "id": "dup-4b714a54ab5e",

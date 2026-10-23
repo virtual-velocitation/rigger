@@ -403,6 +403,13 @@ impl StoreSelection {
         matches!(self, StoreSelection::Sqlite)
     }
 
+    /// Whether this selection is the embedded sqlite backend and its log file at `path` does not
+    /// exist yet: a project with no run recorded, whose file a store open would create. Asked
+    /// before any open, so a read never makes the file.
+    fn log_absent(&self, path: &str) -> bool {
+        self.is_sqlite() && !Path::new(path).exists()
+    }
+
     /// The environment that hands this selection to a child rigger process: a server's
     /// connection string as [`CONN_ENV`], the rung of [`store_selection`] that outranks the
     /// secret file and the configured store, so the child resolves the same server whichever
@@ -1933,7 +1940,7 @@ fn with_project_store<T>(
     sel: &StoreSelection,
     read: impl FnOnce(&dyn EventStore) -> Result<T, rigger::eventstore::Error>,
 ) -> Result<Option<T>, Box<dyn std::error::Error>> {
-    if sel.is_sqlite() && !Path::new(path).exists() {
+    if sel.log_absent(path) {
         return Ok(None);
     }
     let backend = resolve_store(sel, path)?;
@@ -2535,7 +2542,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
     //    requested run. `metrics::project` folds it into the recorded baseline.
     let db = db_path("events.db");
     let selection = store_selection(None, None)?;
-    if selection.is_sqlite() && !Path::new(&db).exists() {
+    if selection.log_absent(&db) {
         return Err(format!(
             "rigger replay: no runs recorded yet for this project (no {db}); run `rigger run` first"
         )

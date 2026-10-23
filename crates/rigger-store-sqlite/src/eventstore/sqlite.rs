@@ -451,6 +451,21 @@ impl Store {
         )
     }
 
+    /// When the event at `position` was recorded - its store stamp - read by one point lookup of
+    /// the position, or none where the store holds no event there: what `rigger setup`'s seeding of
+    /// a graph's `caught_up` cursor reads a missing position's age through (spec 124, THE CLOCKS).
+    pub fn recorded_at(&self, position: Position) -> Result<Option<SystemTime>, Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT recorded_at FROM events WHERE position = ?1",
+            [position as i64],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|stamp| stamp.map(from_nanos))
+        .map_err(be)
+    }
+
     /// The one reader of a live selection: plan it ([`plan_derived_prune`]) for the
     /// `(stream_prefix, stream, identity)` it names, then read the stream's rows past `after` -
     /// the columns `cols`, the position first - in position order, skip every row the plan sheds,
