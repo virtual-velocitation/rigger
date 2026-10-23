@@ -3396,8 +3396,7 @@ fn a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
     let dir = fresh_run_project();
     let root = dir.path();
     common::cli::seed_store(root);
-    let (_, err, ok) = emit_decision(root, "d-first");
-    assert!(ok, "the first emit creates the graph; stderr: {err}");
+    emit_the_first_decision(root);
     let graph_db = rigger_file(root, "graph.db");
     let (out, err, _) = with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
     assert!(
