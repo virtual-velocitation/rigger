@@ -2990,11 +2990,11 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/init_template_sets_periphery.rs:205-205` `".rigger"`
 - `tests/init_template_sets_periphery.rs:284-284` `".rigger/workflow.yml"`
 - `tests/integrate_conflict_merge_periphery.rs:453-453` `"the project's own .rigger/workflow.yml must load through the real loader"`
-- `tests/ledger_rebuild.rs:446-446` `"gw/.rigger/workflow.yml"`
-- `tests/ledger_rebuild.rs:612-612` `"gw/.rigger/workflow.yml"`
-- `tests/ledger_rebuild.rs:1197-1197` `"gw/.rigger/workflow.yml"`
-- `tests/ledger_rebuild.rs:2242-2242` `"gw/.rigger/workflow.yml"`
-- `tests/ledger_rebuild.rs:2272-2272` `"gw/.rigger/workflow.yml"`
+- `tests/ledger_rebuild.rs:447-447` `"gw/.rigger/workflow.yml"`
+- `tests/ledger_rebuild.rs:613-613` `"gw/.rigger/workflow.yml"`
+- `tests/ledger_rebuild.rs:1198-1198` `"gw/.rigger/workflow.yml"`
+- `tests/ledger_rebuild.rs:2243-2243` `"gw/.rigger/workflow.yml"`
+- `tests/ledger_rebuild.rs:2273-2273` `"gw/.rigger/workflow.yml"`
 - `tests/migration_is_deliberate_periphery.rs:490-490` `".rigger"`
 - `tests/migration_is_deliberate_periphery.rs:537-537` `".rigger"`
 - `tests/principle_gates_wiring.rs:50-50` `"the scaffolded .rigger/agents: {missing:#?}"`

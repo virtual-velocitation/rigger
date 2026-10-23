@@ -3569,28 +3569,28 @@
       },
       {
         "file": "tests/ledger_rebuild.rs",
-        "start_line": 446,
-        "end_line": 446
+        "start_line": 447,
+        "end_line": 447
       },
       {
         "file": "tests/ledger_rebuild.rs",
-        "start_line": 612,
-        "end_line": 612
+        "start_line": 613,
+        "end_line": 613
       },
       {
         "file": "tests/ledger_rebuild.rs",
-        "start_line": 1197,
-        "end_line": 1197
+        "start_line": 1198,
+        "end_line": 1198
       },
       {
         "file": "tests/ledger_rebuild.rs",
-        "start_line": 2242,
-        "end_line": 2242
+        "start_line": 2243,
+        "end_line": 2243
       },
       {
         "file": "tests/ledger_rebuild.rs",
-        "start_line": 2272,
-        "end_line": 2272
+        "start_line": 2273,
+        "end_line": 2273
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
