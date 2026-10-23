@@ -4,7 +4,7 @@ The audit report spec 85 derives the follow-up refactoring specs from. Six secti
 
 ## 1. Responsibility Map
 
-Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` and `crates/rigger-dash/src/dash.rs` (1617 functions total), assigned to a proposed module by `tests/simplification_audit.rs`'s deterministic scanner + rule-table classifier (never by hand). Instrument: the brace-matching scanner over the three named files.
+Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` and `crates/rigger-dash/src/dash.rs` (1618 functions total), assigned to a proposed module by `tests/simplification_audit.rs`'s deterministic scanner + rule-table classifier (never by hand). Instrument: the brace-matching scanner over the three named files.
 
 ### Proposed module tree
 
@@ -1041,9 +1041,9 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
   - `crates/rigger-dash/src/dash.rs:2534-2545` `stage_of_role` - name contains "role" (HTML rendering); grouped under `dash::render`.
   - `crates/rigger-dash/src/dash.rs:2553-2574` `role_and_agent` - name contains "role" (HTML rendering); grouped under `dash::render`.
   - `crates/rigger-dash/src/dash.rs:2655-2663` `graph_seeds` - name contains "graph" (HTML rendering); grouped under `dash::render`.
-  - `crates/rigger-dash/src/dash.rs:2854-2860` `field_str` - name contains "field" (HTML rendering); grouped under `dash::render`.
-  - `crates/rigger-dash/src/dash.rs:2864-2875` `field_str_array` - name contains "field" (HTML rendering); grouped under `dash::render`.
-  - `crates/rigger-dash/src/dash.rs:3037-3050` `escape_for_script` - name contains "escape" (HTML rendering); grouped under `dash::render`.
+  - `crates/rigger-dash/src/dash.rs:2857-2863` `field_str` - name contains "field" (HTML rendering); grouped under `dash::render`.
+  - `crates/rigger-dash/src/dash.rs:2867-2878` `field_str_array` - name contains "field" (HTML rendering); grouped under `dash::render`.
+  - `crates/rigger-dash/src/dash.rs:3040-3053` `escape_for_script` - name contains "escape" (HTML rendering); grouped under `dash::render`.
 - `dash::reproject` (5 functions)
   - `crates/rigger-dash/src/dash.rs:1681-1694` `reproject` - name contains "reproject" (graph reprojection); grouped under `dash::reproject`.
   - `crates/rigger-dash/src/dash.rs:1702-1721` `cap_clusters` - name contains "cluster" (graph reprojection); grouped under `dash::reproject`.
@@ -1051,183 +1051,184 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
   - `crates/rigger-dash/src/dash.rs:1756-1799` `reproject_derived` - name contains "reproject" (graph reprojection); grouped under `dash::reproject`.
   - `crates/rigger-dash/src/dash.rs:1821-1907` `reproject_files` - name contains "reproject" (graph reprojection); grouped under `dash::reproject`.
 - `dash::response` (6 functions)
-  - `crates/rigger-dash/src/dash.rs:3072-3078` `new` - method inside `impl Response`; grouped with its other `Response` methods.
-  - `crates/rigger-dash/src/dash.rs:3081-3083` `rendered` - method inside `impl Response`; grouped with its other `Response` methods.
-  - `crates/rigger-dash/src/dash.rs:3084-3090` `text` - method inside `impl Response`; grouped with its other `Response` methods.
-  - `crates/rigger-dash/src/dash.rs:3096-3098` `binary` - method inside `impl Response`; grouped with its other `Response` methods.
-  - `crates/rigger-dash/src/dash.rs:3100-3110` `reason` - method inside `impl Response`; grouped with its other `Response` methods.
-  - `crates/rigger-dash/src/dash.rs:3120-3136` `write_to` - method inside `impl Response`; grouped with its other `Response` methods.
+  - `crates/rigger-dash/src/dash.rs:3075-3081` `new` - method inside `impl Response`; grouped with its other `Response` methods.
+  - `crates/rigger-dash/src/dash.rs:3084-3086` `rendered` - method inside `impl Response`; grouped with its other `Response` methods.
+  - `crates/rigger-dash/src/dash.rs:3087-3093` `text` - method inside `impl Response`; grouped with its other `Response` methods.
+  - `crates/rigger-dash/src/dash.rs:3099-3101` `binary` - method inside `impl Response`; grouped with its other `Response` methods.
+  - `crates/rigger-dash/src/dash.rs:3103-3113` `reason` - method inside `impl Response`; grouped with its other `Response` methods.
+  - `crates/rigger-dash/src/dash.rs:3123-3139` `write_to` - method inside `impl Response`; grouped with its other `Response` methods.
 - `dash::server` (8 functions)
   - `crates/rigger-dash/src/dash.rs:541-553` `bind_singleton` - name contains "bind" (HTTP serving); grouped under `dash::server`.
   - `crates/rigger-dash/src/dash.rs:657-676` `tcp_listen_inode_for_port` - name contains "tcp" (HTTP serving); grouped under `dash::server`.
   - `crates/rigger-dash/src/dash.rs:717-719` `process_state` - name contains "process_" (HTTP serving); grouped under `dash::server`.
   - `crates/rigger-dash/src/dash.rs:2171-2208` `calls_route` - name contains "route" (HTTP serving); grouped under `dash::server`.
-  - `crates/rigger-dash/src/dash.rs:3145-3326` `route` - name contains "route" (HTTP serving); grouped under `dash::server`.
-  - `crates/rigger-dash/src/dash.rs:3402-3444` `serve_on` - name contains "serve" (HTTP serving); grouped under `dash::server`.
-  - `crates/rigger-dash/src/dash.rs:3460-3639` `handle_conn` - name contains "handle" (HTTP serving); grouped under `dash::server`.
-  - `crates/rigger-dash/src/dash.rs:3728-3853` `serve_console_stream` - name contains "serve" (HTTP serving); grouped under `dash::server`.
-- `dash::tests` (109 functions)
-  - `crates/rigger-dash/src/dash.rs:3888-3901` `get_static` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:3905-3911` `assert_console_page_carries` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:3913-3925` `seeded_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:3927-3937` `local_instance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:3945-3996` `instance_views_project_a_sorted_credential_free_landing` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4003-4011` `instance_view_age_floors_at_zero_for_a_future_heartbeat` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4018-4050` `api_instances_route_renders_the_landing_list` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4057-4062` `console_core_wasm_route_serves_the_embedded_artifact_as_application_wasm` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4067-4079` `console_core_wasm_artifact_is_under_the_three_megabyte_budget` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4091-4119` `embedded_artifact_matches_a_fresh_independent_nested_build` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4131-4181` `console_route_serves_the_shell_page_with_mock_regions_and_both_theme_token_blocks` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4187-4196` `console_route_never_references_an_external_url` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4203-4239` `console_fonts_route_serves_each_embedded_font_and_its_license_text` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4255-4267` `console_page_wires_the_theme_toggles_persistence_round_trip` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4270-4284` `root_serves_the_embedded_page_with_the_placeholder_resolved` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4295-4345` `gates_status_never_fabricates_passed_for_an_off_linear_unverdicted_unit` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4352-4388` `free_port_from_returns_the_start_port_when_free_and_the_next_free_one_when_it_is_taken` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4395-4444` `bind_singleton_binds_the_exact_port_and_never_searches` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4455-4528` `bind_singleton_short_circuits_on_an_already_serving_rigger_dash` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4536-4546` `serve_reply` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4550-4568` `serve_dribble` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4573-4583` `timed_dash_probe` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4586-4588` `assert_pid_probe` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4595-4600` `dash_serving_on_is_false_for_a_non_dash_listener` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4611-4628` `dash_serving_on_is_bounded_against_a_byte_dribbling_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4651-4673` `dash_serving_on_recognizes_the_header_fast_even_if_the_holder_never_finishes_the_block` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4765-4768` `dash_serving_pid_on_is_none_when_nothing_answers` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4776-4805` `bind_singleton_cold_race_loser_resolves_across_the_accept_window` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4816-4851` `the_page_layout_cannot_scroll_the_body_horizontally` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4862-4899` `the_landing_view_lists_instances_and_threads_the_attach_selector` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4904-4913` `css_rule` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4924-4969` `the_dashboard_fits_one_screen_with_internal_scroll` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:4983-5017` `cells_fit_or_wrap_and_wide_cells_scroll_in_their_own_container` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5032-5034` `the_decision_history_renders_each_decision_as_a_native_details_with_preview_and_full_body` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5037-5065` `state_endpoint_projects_the_seeded_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5072-5113` `console_event_filter_admits_only_the_named_run_lifecycle_types` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5119-5127` `console_event_wire_matches_console_cores_wire_event_shape` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5135-5141` `console_event_wire_carries_recorded_at` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5147-5154` `console_event_wire_with_a_malformed_body_degrades_to_null_data` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5160-5167` `console_progress_wire_with_a_malformed_body_degrades_to_empty_id_and_activity` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5170-5247` `console_snapshot_endpoint_filters_events_carries_progress_liveness_and_definitions` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5250-5311` `state_carries_the_live_agent_activity` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5314-5380` `state_counts_grep_fallbacks_and_carries_them_in_the_review_outcomes_data` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5389-5575` `run_tree_projects_the_spine_with_collapse_expand_and_driver_lines` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5395-5400` `done` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5580-5609` `review_verdicts_come_straight_from_the_metrics_classification` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5612-5622` `events_endpoint_is_since_exclusive` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5628-5657` `no_mutating_endpoint_exists` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5660-5689` `export_inlines_the_snapshot_as_a_static_page` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5697-5744` `export_neutralizes_a_script_breakout_in_the_inlined_state` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5747-5773` `decision_view_strikes_through_superseded_entries` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5784-5849` `cluster_key_folds_paths_by_directory_and_dev_loop_nodes_by_kind` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5861-5949` `clustered_overview_under_files_lens_admits_only_code_entities_keyed_by_their_own_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:5968-6211` `cluster_detail_drills_a_cluster_to_its_members_and_caps_a_big_one_by_degree` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:6220-6265` `cluster_detail_under_files_lens_is_unconditionally_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:6282-6475` `code_lens_buckets_code_entities_by_community_excludes_other_kinds_and_reports_underived_grain` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:6489-6724` `concepts_lens_buckets_members_by_concept_excludes_membershipless_nodes_and_reports_underived_grain` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:6730-6747` `tiered_chain_graph` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:6750-6814` `the_graph_route_returns_a_tier_tagged_seeded_neighborhood_as_json` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:6817-6868` `the_graph_route_percent_decodes_the_seed_so_select_to_seed_reaches_ids_with_special_chars` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:6871-6902` `the_graph_route_degrades_gracefully_for_an_unknown_seed_and_an_empty_graph` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:6905-6925` `the_graph_route_is_read_only_a_non_get_is_405` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:6934-7036` `the_graph_route_dispatches_cluster_overview_and_seed_by_parameter` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7050-7104` `the_overview_route_degrades_gracefully_on_an_empty_graph` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7107-7161` `neighborhood_bounds_by_depth_follows_both_directions_and_skips_invalidated_edges` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7164-7197` `neighborhood_flags_god_nodes_by_degree_within_the_returned_neighborhood` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7200-7272` `path_is_the_shortest_route_between_two_selected_nodes_over_currently_valid_edges` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7275-7342` `the_graph_route_flags_god_nodes_and_returns_the_query_path_between_two_selected_nodes` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7349-7386` `provenance_graph` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7389-7436` `explain_returns_a_nodes_incident_edges_as_source_and_tier_tagged_provenance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7439-7504` `the_graph_route_carries_the_seed_nodes_explain_provenance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7507-7538` `graph_seeds_enumerate_decisions_findings_and_their_files_never_units` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7541-7583` `a_units_seed_lands_on_the_neighborhood_of_its_decisions_and_files` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7586-7690` `the_run_tree_click_to_seed_route_lands_a_unit_on_a_real_neighborhood` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7693-7746` `unit_seeds_scope_content_to_the_owning_unit` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7749-7785` `repoint_seed_passes_a_known_node_and_re_points_a_unit_id` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7791-7820` `a_unit_view_carries_the_spec_defect_reason_of_a_gate_stopped_on_one` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7826-7845` `the_spec_defect_block_prints_a_stopped_gate_s_reason_before_the_uncovered_text` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7848-7867` `build_state_on_an_empty_run_is_empty_not_a_panic` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7878-7967` `release_ready_is_surfaced_on_the_dash_only_for_a_done_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:7985-8040` `release_ready_pr_command_newline_renders_as_a_real_line_break_not_a_collapsed_run_on` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8043-8050` `request_line_parsing_extracts_method_and_target` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8053-8060` `query_param_reads_since` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8068-8146` `endpoints_serve_over_a_real_socket_against_a_seeded_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8152-8203` `a_post_over_a_real_socket_is_refused_without_touching_the_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8214-8326` `the_graph_provider_is_consulted_only_on_graph_requests_not_the_state_poll` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8331-8341` `dash_marker_round_trips_through_its_on_disk_record` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8344-8363` `dash_marker_parse_rejects_a_malformed_record` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8366-8384` `dash_marker_reads_none_for_an_absent_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8389-8401` `format_held_port_always_names_the_address_even_with_no_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8404-8421` `format_held_port_names_the_pid_and_state_for_a_running_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8424-8432` `format_held_port_names_the_pid_alone_when_its_state_is_not_discoverable` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8435-8450` `format_held_port_gives_the_stopped_listener_diagnosis_naming_resume_or_kill` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8453-8465` `pid_holding_port_finds_the_pid_of_a_listener_bound_in_this_process` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8468-8484` `pid_holding_port_is_none_for_a_port_nothing_is_listening_on` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8492-8505` `assert_names_this_process_as_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8534-8550` `describe_held_port_if_confirmed_is_none_when_nothing_holds_the_port` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8553-8570` `dash_start_needed_is_true_when_none_serving_and_false_when_one_serves` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8575-8581` `dash_answer_on_tells_a_silent_holder_from_an_empty_port` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8589-8611` `an_interrupted_probe_read_is_read_again_inside_the_window` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8620-8652` `a_probe_error_reads_as_the_peer_a_silent_holder_or_the_probe_failing` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8657-8665` `a_failed_probe_answers_neither_serving_nor_gone` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8668-8742` `dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8754-8770` `dash_status_never_names_the_unattributed_pid_sentinel_as_a_dead_process` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8773-8794` `url_port_parses_the_recorded_shape_and_rejects_anything_else` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8810-8850` `dash_status_probes_the_urls_own_port_when_the_marker_names_a_different_dash` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8853-8891` `should_reap_singleton_reaps_only_when_no_registered_instance_is_live` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8894-8927` `should_reap_singleton_never_reaps_while_a_fresh_agent_liveness_signal_is_present` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:8939-9010` `the_page_carries_the_directed_call_layered_render` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:3148-3329` `route` - name contains "route" (HTTP serving); grouped under `dash::server`.
+  - `crates/rigger-dash/src/dash.rs:3405-3447` `serve_on` - name contains "serve" (HTTP serving); grouped under `dash::server`.
+  - `crates/rigger-dash/src/dash.rs:3463-3642` `handle_conn` - name contains "handle" (HTTP serving); grouped under `dash::server`.
+  - `crates/rigger-dash/src/dash.rs:3731-3856` `serve_console_stream` - name contains "serve" (HTTP serving); grouped under `dash::server`.
+- `dash::tests` (110 functions)
+  - `crates/rigger-dash/src/dash.rs:3891-3904` `get_static` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:3908-3914` `assert_console_page_carries` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:3916-3928` `seeded_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:3930-3940` `local_instance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:3948-3999` `instance_views_project_a_sorted_credential_free_landing` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4006-4014` `instance_view_age_floors_at_zero_for_a_future_heartbeat` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4021-4053` `api_instances_route_renders_the_landing_list` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4060-4065` `console_core_wasm_route_serves_the_embedded_artifact_as_application_wasm` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4070-4082` `console_core_wasm_artifact_is_under_the_three_megabyte_budget` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4094-4122` `embedded_artifact_matches_a_fresh_independent_nested_build` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4134-4184` `console_route_serves_the_shell_page_with_mock_regions_and_both_theme_token_blocks` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4190-4199` `console_route_never_references_an_external_url` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4206-4242` `console_fonts_route_serves_each_embedded_font_and_its_license_text` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4258-4270` `console_page_wires_the_theme_toggles_persistence_round_trip` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4273-4287` `root_serves_the_embedded_page_with_the_placeholder_resolved` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4298-4348` `gates_status_never_fabricates_passed_for_an_off_linear_unverdicted_unit` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4355-4391` `free_port_from_returns_the_start_port_when_free_and_the_next_free_one_when_it_is_taken` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4398-4447` `bind_singleton_binds_the_exact_port_and_never_searches` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4458-4531` `bind_singleton_short_circuits_on_an_already_serving_rigger_dash` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4539-4549` `serve_reply` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4553-4571` `serve_dribble` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4576-4586` `timed_dash_probe` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4589-4591` `assert_pid_probe` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4598-4603` `dash_serving_on_is_false_for_a_non_dash_listener` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4614-4631` `dash_serving_on_is_bounded_against_a_byte_dribbling_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4654-4676` `dash_serving_on_recognizes_the_header_fast_even_if_the_holder_never_finishes_the_block` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4768-4771` `dash_serving_pid_on_is_none_when_nothing_answers` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4779-4808` `bind_singleton_cold_race_loser_resolves_across_the_accept_window` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4819-4854` `the_page_layout_cannot_scroll_the_body_horizontally` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4865-4902` `the_landing_view_lists_instances_and_threads_the_attach_selector` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4907-4916` `css_rule` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4927-4972` `the_dashboard_fits_one_screen_with_internal_scroll` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:4986-5020` `cells_fit_or_wrap_and_wide_cells_scroll_in_their_own_container` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5035-5037` `the_decision_history_renders_each_decision_as_a_native_details_with_preview_and_full_body` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5040-5068` `state_endpoint_projects_the_seeded_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5075-5116` `console_event_filter_admits_only_the_named_run_lifecycle_types` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5122-5130` `console_event_wire_matches_console_cores_wire_event_shape` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5138-5144` `console_event_wire_carries_recorded_at` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5150-5157` `console_event_wire_with_a_malformed_body_degrades_to_null_data` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5163-5170` `console_progress_wire_with_a_malformed_body_degrades_to_empty_id_and_activity` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5173-5250` `console_snapshot_endpoint_filters_events_carries_progress_liveness_and_definitions` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5253-5314` `state_carries_the_live_agent_activity` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5317-5383` `state_counts_grep_fallbacks_and_carries_them_in_the_review_outcomes_data` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5392-5578` `run_tree_projects_the_spine_with_collapse_expand_and_driver_lines` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5398-5403` `done` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5583-5612` `review_verdicts_come_straight_from_the_metrics_classification` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5615-5625` `events_endpoint_is_since_exclusive` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5631-5660` `no_mutating_endpoint_exists` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5663-5692` `export_inlines_the_snapshot_as_a_static_page` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5700-5747` `export_neutralizes_a_script_breakout_in_the_inlined_state` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5750-5776` `decision_view_strikes_through_superseded_entries` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5787-5852` `cluster_key_folds_paths_by_directory_and_dev_loop_nodes_by_kind` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5864-5952` `clustered_overview_under_files_lens_admits_only_code_entities_keyed_by_their_own_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:5971-6214` `cluster_detail_drills_a_cluster_to_its_members_and_caps_a_big_one_by_degree` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:6223-6268` `cluster_detail_under_files_lens_is_unconditionally_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:6285-6478` `code_lens_buckets_code_entities_by_community_excludes_other_kinds_and_reports_underived_grain` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:6492-6727` `concepts_lens_buckets_members_by_concept_excludes_membershipless_nodes_and_reports_underived_grain` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:6733-6750` `tiered_chain_graph` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:6753-6817` `the_graph_route_returns_a_tier_tagged_seeded_neighborhood_as_json` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:6820-6871` `the_graph_route_percent_decodes_the_seed_so_select_to_seed_reaches_ids_with_special_chars` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:6874-6905` `the_graph_route_degrades_gracefully_for_an_unknown_seed_and_an_empty_graph` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:6908-6928` `the_graph_route_is_read_only_a_non_get_is_405` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:6937-7039` `the_graph_route_dispatches_cluster_overview_and_seed_by_parameter` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7053-7107` `the_overview_route_degrades_gracefully_on_an_empty_graph` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7110-7164` `neighborhood_bounds_by_depth_follows_both_directions_and_skips_invalidated_edges` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7167-7200` `neighborhood_flags_god_nodes_by_degree_within_the_returned_neighborhood` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7203-7275` `path_is_the_shortest_route_between_two_selected_nodes_over_currently_valid_edges` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7278-7345` `the_graph_route_flags_god_nodes_and_returns_the_query_path_between_two_selected_nodes` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7352-7389` `provenance_graph` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7392-7439` `explain_returns_a_nodes_incident_edges_as_source_and_tier_tagged_provenance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7442-7507` `the_graph_route_carries_the_seed_nodes_explain_provenance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7510-7541` `graph_seeds_enumerate_decisions_findings_and_their_files_never_units` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7546-7562` `graph_seeds_seed_the_file_a_record_citing_its_lines_names` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7565-7607` `a_units_seed_lands_on_the_neighborhood_of_its_decisions_and_files` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7610-7714` `the_run_tree_click_to_seed_route_lands_a_unit_on_a_real_neighborhood` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7717-7770` `unit_seeds_scope_content_to_the_owning_unit` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7773-7809` `repoint_seed_passes_a_known_node_and_re_points_a_unit_id` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7815-7844` `a_unit_view_carries_the_spec_defect_reason_of_a_gate_stopped_on_one` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7850-7869` `the_spec_defect_block_prints_a_stopped_gate_s_reason_before_the_uncovered_text` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7872-7891` `build_state_on_an_empty_run_is_empty_not_a_panic` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:7902-7991` `release_ready_is_surfaced_on_the_dash_only_for_a_done_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8009-8064` `release_ready_pr_command_newline_renders_as_a_real_line_break_not_a_collapsed_run_on` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8067-8074` `request_line_parsing_extracts_method_and_target` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8077-8084` `query_param_reads_since` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8092-8170` `endpoints_serve_over_a_real_socket_against_a_seeded_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8176-8227` `a_post_over_a_real_socket_is_refused_without_touching_the_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8238-8350` `the_graph_provider_is_consulted_only_on_graph_requests_not_the_state_poll` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8355-8365` `dash_marker_round_trips_through_its_on_disk_record` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8368-8387` `dash_marker_parse_rejects_a_malformed_record` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8390-8408` `dash_marker_reads_none_for_an_absent_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8413-8425` `format_held_port_always_names_the_address_even_with_no_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8428-8445` `format_held_port_names_the_pid_and_state_for_a_running_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8448-8456` `format_held_port_names_the_pid_alone_when_its_state_is_not_discoverable` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8459-8474` `format_held_port_gives_the_stopped_listener_diagnosis_naming_resume_or_kill` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8477-8489` `pid_holding_port_finds_the_pid_of_a_listener_bound_in_this_process` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8492-8508` `pid_holding_port_is_none_for_a_port_nothing_is_listening_on` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8516-8529` `assert_names_this_process_as_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8558-8574` `describe_held_port_if_confirmed_is_none_when_nothing_holds_the_port` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8577-8594` `dash_start_needed_is_true_when_none_serving_and_false_when_one_serves` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8599-8605` `dash_answer_on_tells_a_silent_holder_from_an_empty_port` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8613-8635` `an_interrupted_probe_read_is_read_again_inside_the_window` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8644-8676` `a_probe_error_reads_as_the_peer_a_silent_holder_or_the_probe_failing` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8681-8689` `a_failed_probe_answers_neither_serving_nor_gone` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8692-8766` `dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8778-8794` `dash_status_never_names_the_unattributed_pid_sentinel_as_a_dead_process` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8797-8818` `url_port_parses_the_recorded_shape_and_rejects_anything_else` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8834-8874` `dash_status_probes_the_urls_own_port_when_the_marker_names_a_different_dash` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8877-8915` `should_reap_singleton_reaps_only_when_no_registered_instance_is_live` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8918-8951` `should_reap_singleton_never_reaps_while_a_fresh_agent_liveness_signal_is_present` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:8963-9034` `the_page_carries_the_directed_call_layered_render` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
 - `dash::tests::call_target_c4` (1 function)
-  - `crates/rigger-dash/src/dash.rs:10366-10395` `reproject_files_beside_a_member` - defined inside `call_target_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10390-10419` `reproject_files_beside_a_member` - defined inside `call_target_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
 - `dash::tests::calls_route_c4` (10 functions)
-  - `crates/rigger-dash/src/dash.rs:9028-9038` `cnode` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9040-9042` `layer_of` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9043-9045` `ids` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9051-9106` `calls_view_down_signs_callees_positive_and_carries_frontier_and_back` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9111-9150` `calls_view_up_negates_callers_and_carries_the_referenced_sidecar` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9156-9204` `calls_view_both_centers_the_seed_with_callees_right_and_callers_left` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9210-9247` `a_plain_neighborhood_omits_every_additive_call_field` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9254-9308` `calls_route_runs_the_traversal_for_view_calls_and_declines_otherwise` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9314-9342` `calls_route_clamps_depth_and_defaults_the_tier_floor` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9347-9365` `calls_route_walks_both_directions_for_dir_both` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9052-9062` `cnode` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9064-9066` `layer_of` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9067-9069` `ids` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9075-9130` `calls_view_down_signs_callees_positive_and_carries_frontier_and_back` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9135-9174` `calls_view_up_negates_callers_and_carries_the_referenced_sidecar` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9180-9228` `calls_view_both_centers_the_seed_with_callees_right_and_callers_left` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9234-9271` `a_plain_neighborhood_omits_every_additive_call_field` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9278-9332` `calls_route_runs_the_traversal_for_view_calls_and_declines_otherwise` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9338-9366` `calls_route_clamps_depth_and_defaults_the_tier_floor` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9371-9389` `calls_route_walks_both_directions_for_dir_both` - defined inside `calls_route_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
 - `dash::tests::file_half_c13` (1 function)
-  - `crates/rigger-dash/src/dash.rs:10456-10472` `reproject_files_folds_an_extensionless_files_entity_under_its_file` - defined inside `file_half_c13`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10480-10496` `reproject_files_folds_an_extensionless_files_entity_under_its_file` - defined inside `file_half_c13`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
 - `dash::tests::leaf_keys_c1` (1 function)
-  - `crates/rigger-dash/src/dash.rs:10427-10441` `reproject_files_resolves_a_placeholder_onto_the_nested_definition_of_its_leaf` - defined inside `leaf_keys_c1`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10451-10465` `reproject_files_resolves_a_placeholder_onto_the_nested_definition_of_its_leaf` - defined inside `leaf_keys_c1`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
 - `dash::tests::metadata_card_c2` (12 functions)
-  - `crates/rigger-dash/src/dash.rs:9959-10009` `card_graph` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:10012-10055` `card_of_a_code_entity_carries_file_line_degree_community_concepts_and_memory_counts` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:10061-10069` `card_of_a_membership_less_entity_has_no_community_and_no_line` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:10077-10104` `card_of_a_proven_code_entity_carries_proven_by_and_proof_evidence` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:10112-10117` `card_of_an_unproven_code_entity_has_proven_by_zero_and_no_evidence` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:10121-10130` `assert_card_reports_no_proof` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:10157-10194` `card_of_a_file_lists_its_contained_entities_as_top_entities` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:10199-10219` `card_of_a_concept_lists_its_realizing_members_as_top_evidence` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:10228-10253` `card_of_a_concept_carries_each_top_evidence_members_own_kind` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:10260-10274` `card_of_a_file_carries_each_top_entity_members_own_kind` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:10279-10282` `card_of_an_unknown_id_is_none` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:10288-10330` `the_card_route_serves_a_known_subjects_card_and_null_for_an_unknown_one` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9983-10033` `card_graph` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10036-10079` `card_of_a_code_entity_carries_file_line_degree_community_concepts_and_memory_counts` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10085-10093` `card_of_a_membership_less_entity_has_no_community_and_no_line` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10101-10128` `card_of_a_proven_code_entity_carries_proven_by_and_proof_evidence` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10136-10141` `card_of_an_unproven_code_entity_has_proven_by_zero_and_no_evidence` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10145-10154` `assert_card_reports_no_proof` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10181-10218` `card_of_a_file_lists_its_contained_entities_as_top_entities` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10223-10243` `card_of_a_concept_lists_its_realizing_members_as_top_evidence` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10252-10277` `card_of_a_concept_carries_each_top_evidence_members_own_kind` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10284-10298` `card_of_a_file_carries_each_top_entity_members_own_kind` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10303-10306` `card_of_an_unknown_id_is_none` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10312-10354` `the_card_route_serves_a_known_subjects_card_and_null_for_an_unknown_one` - defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
 - `dash::tests::rationale_overlay_c3` (12 functions)
-  - `crates/rigger-dash/src/dash.rs:9387-9397` `finding_node` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9413-9446` `rationale_graph` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9449-9451` `leaf_fields` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9457-9471` `node_rationale_returns_attached_leaves_ordered_by_kind_then_id` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9477-9500` `a_finding_leaf_carries_content_only_never_the_by_or_unit_machinery` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9506-9519` `a_handbook_rule_and_a_supersedes_edge_are_not_rationale` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9524-9532` `an_invalidated_edge_is_not_live_rationale` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9537-9547` `a_node_without_rationale_returns_none` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9553-9578` `the_batch_covers_the_visible_set_and_keeps_only_nodes_with_rationale` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9583-9600` `the_batch_is_deterministic_across_request_order_and_dedups` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9606-9645` `the_explain_route_returns_the_batch_in_one_request` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9651-9675` `an_absent_explain_leaves_the_graph_route_unchanged` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9411-9421` `finding_node` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9437-9470` `rationale_graph` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9473-9475` `leaf_fields` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9481-9495` `node_rationale_returns_attached_leaves_ordered_by_kind_then_id` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9501-9524` `a_finding_leaf_carries_content_only_never_the_by_or_unit_machinery` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9530-9543` `a_handbook_rule_and_a_supersedes_edge_are_not_rationale` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9548-9556` `an_invalidated_edge_is_not_live_rationale` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9561-9571` `a_node_without_rationale_returns_none` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9577-9602` `the_batch_covers_the_visible_set_and_keeps_only_nodes_with_rationale` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9607-9624` `the_batch_is_deterministic_across_request_order_and_dedups` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9630-9669` `the_explain_route_returns_the_batch_in_one_request` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9675-9699` `an_absent_explain_leaves_the_graph_route_unchanged` - defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
 - `dash::tests::reprojection_views` (2 functions)
-  - `crates/rigger-dash/src/dash.rs:10339-10344` `cluster_counts` - defined inside `reprojection_views`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:10347-10352` `unresolved_frontiers` - defined inside `reprojection_views`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10363-10368` `cluster_counts` - defined inside `reprojection_views`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:10371-10376` `unresolved_frontiers` - defined inside `reprojection_views`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
 - `dash::tests::subject_view_c5` (5 functions)
-  - `crates/rigger-dash/src/dash.rs:9696-9739` `memory_rail_lists_decisions_findings_and_concepts_excluding_lessons` - defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9744-9751` `memory_rail_is_empty_for_a_node_with_no_governing_memory` - defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9772-9849` `memory_rail_concepts_are_live_from_node_realizes_edges_to_a_concept_target_deduped_by_id` - defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9857-9907` `the_seeded_route_carries_memory_without_adding_a_single_node_to_the_neighborhood` - defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
-  - `crates/rigger-dash/src/dash.rs:9913-9933` `a_cluster_drill_carries_no_memory_field` - defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9720-9763` `memory_rail_lists_decisions_findings_and_concepts_excluding_lessons` - defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9768-9775` `memory_rail_is_empty_for_a_node_with_no_governing_memory` - defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9796-9873` `memory_rail_concepts_are_live_from_node_realizes_edges_to_a_concept_target_deduped_by_id` - defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9881-9931` `the_seeded_route_carries_memory_without_adding_a_single_node_to_the_neighborhood` - defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
+  - `crates/rigger-dash/src/dash.rs:9937-9957` `a_cluster_drill_carries_no_memory_field` - defined inside `subject_view_c5`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
 - `main::commands` (1 function)
   - `src/cli/mod.rs:2486-2643` `cmd_replay` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
 - `main::dash_glue` (1 function)
@@ -1596,26 +1597,26 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 - `crates/rigger-dash/src/dash.rs:2613-2616` `advanced_past_gates` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `crates/rigger-dash/src/dash.rs:2621-2630` `unit_live_status` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `crates/rigger-dash/src/dash.rs:2635-2643` `spec_of` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:2670-2693` `event_seed_ids` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:2705-2728` `unit_seeds` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:2743-2756` `repoint_seed` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:2798-2800` `is_console_event` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:2812-2821` `console_event_wire` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:2828-2836` `console_progress_wire` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:2840-2851` `event_view` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:2877-2879` `now_unix` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:2888-2907` `state_json` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:2913-2921` `events_json` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:2928-2983` `console_snapshot_json` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:2987-2989` `live_page` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:2995-2997` `console_page` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:3004-3024` `render_export` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:3335-3353` `percent_decode` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:3356-3362` `query_param` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:3366-3371` `parse_request_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:3656-3663` `env_duration_ms` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:3678-3689` `write_sse` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `crates/rigger-dash/src/dash.rs:3698-3704` `write_retained_window_gone` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:2670-2696` `event_seed_ids` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:2708-2731` `unit_seeds` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:2746-2759` `repoint_seed` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:2801-2803` `is_console_event` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:2815-2824` `console_event_wire` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:2831-2839` `console_progress_wire` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:2843-2854` `event_view` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:2880-2882` `now_unix` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:2891-2910` `state_json` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:2916-2924` `events_json` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:2931-2986` `console_snapshot_json` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:2990-2992` `live_page` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:2998-3000` `console_page` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:3007-3027` `render_export` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:3338-3356` `percent_decode` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:3359-3365` `query_param` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:3369-3374` `parse_request_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:3659-3666` `env_duration_ms` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:3681-3692` `write_sse` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `crates/rigger-dash/src/dash.rs:3701-3707` `write_retained_window_gone` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `src/cli/mod.rs:221-223` `version_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `src/cli/mod.rs:283-287` `conn_flag` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `src/cli/mod.rs:419-421` `stderr_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
@@ -1714,18 +1715,18 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:664-666` `deferred_gate_verdict_key`
 - `crates/rigger-conductor/src/conductor.rs:675-677` `deferred_gate_failed_key`
 - `crates/rigger-conductor/src/conductor.rs:12459-12466` `review_protocol`
-- `crates/rigger-domain/src/contextgraph.rs:813-815` `not_folded`
-- `crates/rigger-domain/src/contextgraph.rs:869-871` `rebuild_owed_refusal`
-- `crates/rigger-domain/src/review.rs:387-389` `critique_unit`
+- `crates/rigger-domain/src/contextgraph.rs:814-816` `not_folded`
+- `crates/rigger-domain/src/contextgraph.rs:870-872` `rebuild_owed_refusal`
+- `crates/rigger-domain/src/review.rs:388-390` `critique_unit`
 - `crates/rigger-domain/src/spawn.rs:115-117` `lens_role`
 - `crates/rigger-domain/src/spawn.rs:207-209` `speculation_group_id`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1386-1388` `pruned_copy`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1403-1405` `shadow_of`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:2318-2324` `live_ref_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4165-4167` `edge_text_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4558-4560` `file_half_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4773-4775` `proof_rows_by`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:17968-17972` `refusing`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1389-1391` `pruned_copy`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1406-1408` `shadow_of`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:2321-2327` `live_ref_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4168-4170` `edge_text_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4561-4563` `file_half_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4776-4778` `proof_rows_by`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:17975-17979` `refusing`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:26-28` `stage_id`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:30-32` `gate_id`
@@ -1747,7 +1748,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-conductor
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-conductor/src/canary_store.rs:822-824` `any_finding_is_critical`
+- `crates/rigger-conductor/src/canary_store.rs:828-830` `any_finding_is_critical`
 - `crates/rigger-grounder/src/grounder/design/extract.rs:162-164` `is_handbook_path`
 
 #### `dup-0a7aeeeffe48` (near, 15 sites)
@@ -1780,12 +1781,12 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-conductor/src/conductor.rs:435-437` `adoption_provenance_key`
 - `crates/rigger-conductor/src/conductor.rs:448-450` `quarantine_record_key`
-- `crates/rigger-domain/src/contextgraph/query.rs:239-241` `entity_id`
-- `crates/rigger-domain/src/review.rs:339-344` `spec_critique_prompt`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:2541-2546` `retarget_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4109-4111` `id_range_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4214-4220` `superseded_edges_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5266-5274` `declaration_sql`
+- `crates/rigger-domain/src/contextgraph/query.rs:241-243` `entity_id`
+- `crates/rigger-domain/src/review.rs:340-345` `spec_critique_prompt`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:2544-2549` `retarget_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4112-4114` `id_range_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4217-4223` `superseded_edges_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5269-5277` `declaration_sql`
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:73-75` `what`
 - `tests/common/fixtures/plan_critique.rs:29-34` `spec_defect_halt_text`
@@ -1829,7 +1830,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-conductor
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-conductor/src/conductor.rs:3863-3865` `spawn_is_recorded`
-- `crates/rigger-domain/src/contextgraph/query.rs:587-589` `is_shared`
+- `crates/rigger-domain/src/contextgraph/query.rs:589-591` `is_shared`
 
 #### `dup-a386b1c4e6df` (semantic, 13 sites)
 
@@ -1841,7 +1842,7 @@ mandatory sweep: error-shaping helper functions - 13 site(s), collected mechanic
 - `crates/rigger-conductor/src/conductor.rs:29952-30012` `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker`
 - `crates/rigger-domain/src/agent.rs:363-365` `no_result_error`
 - `crates/rigger-domain/src/ingest.rs:604-649` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5886-5942` `a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5889-5945` `a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-worktree-git/src/worktree.rs:3690-3717` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
 - `crates/rigger-worktree-git/src/worktree.rs:5029-5083` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
@@ -1878,7 +1879,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-conductor
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-conductor/src/conductor.rs:13401-13403` `unit_branch`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4779-4784` `proof_targets_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4782-4787` `proof_targets_sql`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1089-1091` `key_expr`
 
 #### `dup-c6dfc41a628c` (exact, 2 sites)
@@ -2052,8 +2053,8 @@ mandatory sweep: .rigger-path string literals - 603 site(s), collected mechanica
 - `crates/rigger-config-files/src/config_store.rs:2015-2015` `"create .rigger dir"`
 - `crates/rigger-config-files/src/config_store.rs:2036-2036` `".rigger"`
 - `crates/rigger-config-files/src/config_store.rs:2037-2037` `"create .rigger dir"`
-- `crates/rigger-dash/src/dash.rs:3932-3932` `"{root}/.rigger/events.db"`
-- `crates/rigger-dash/src/dash.rs:3983-3983` `"/.rigger/events.db"`
+- `crates/rigger-dash/src/dash.rs:3935-3935` `"{root}/.rigger/events.db"`
+- `crates/rigger-dash/src/dash.rs:3986-3986` `"/.rigger/events.db"`
 - `crates/rigger-domain/src/config.rs:20-20` `".rigger"`
 - `crates/rigger-domain/src/docs.rs:221-221` `"The EVENT LOG keeps knowledge, never the derived index: an ingest records one ledger \
          entry per file generation, and the graph re-derives the code entities, inferred edges, \
@@ -2133,11 +2134,11 @@ mandatory sweep: .rigger-path string literals - 603 site(s), collected mechanica
                      free"`
 - `crates/rigger-domain/src/instructions.rs:153-153` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
 - `crates/rigger-gates-shell/src/gate.rs:336-336` `".rigger-cache-probe-{}"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8722-8722` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8730-8730` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8738-8738` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8746-8746` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8754-8754` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8729-8729` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8737-8737` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8745-8745` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8753-8753` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8761-8761` `".rigger/workflow.yml"`
 - `crates/rigger-grounder/src/grounder/mod.rs:444-444` `".rigger"`
 - `crates/rigger-grounder/src/grounder/mod.rs:961-961` `".rigger/workflow.yml"`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:527-527` `".rigger"`
@@ -2878,12 +2879,12 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:26681-26681` `".rigger"`
 - `tests/cli.rs:26873-26873` `".rigger"`
 - `tests/cli.rs:26906-26906` `".rigger"`
-- `tests/cli.rs:27568-27568` `".rigger"`
-- `tests/cli.rs:28075-28075` `"scaffolded .rigger/instructions/README.md"`
-- `tests/cli.rs:28152-28152` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28190-28190` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28650-28650` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:28668-28668` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:27649-27649` `".rigger"`
+- `tests/cli.rs:28156-28156` `"scaffolded .rigger/instructions/README.md"`
+- `tests/cli.rs:28233-28233` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28271-28271` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28731-28731` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:28749-28749` `"gw/.rigger/workflow.yml"`
 - `tests/common/cli.rs:318-318` `".rigger"`
 - `tests/common/cli.rs:329-329` `".rigger"`
 - `tests/common/cli.rs:350-350` `".rigger"`
@@ -3228,7 +3229,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-conductor
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-conductor/src/conductor.rs:46647-46649` `stop_halt`
-- `crates/rigger-domain/src/metrics.rs:2716-2718` `canary_run_marker`
+- `crates/rigger-domain/src/metrics.rs:2739-2741` `canary_run_marker`
 - `tests/plan_critique_spec_defect_stop_periphery.rs:66-68` `halt`
 
 #### `dup-5c13daf57f07` (near, 2 sites)
@@ -3284,7 +3285,7 @@ Proposed home: `a new shared module (sites span 4 files: crates/rigger-config-fi
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-config-files/src/config_store.rs:944-946` `rejects_missing_frontmatter`
-- `crates/rigger-domain/src/contextgraph/query.rs:2094-2096` `graph_load_rejects_malformed_json_without_panicking`
+- `crates/rigger-domain/src/contextgraph/query.rs:2096-2098` `graph_load_rejects_malformed_json_without_panicking`
 - `crates/rigger-domain/src/spec.rs:1275-1277` `empty_when_no_criteria`
 - `src/cli/validate.rs:1313-1315` `dirty_tracked_paths_on_a_clean_tree_is_empty`
 
@@ -3369,11 +3370,11 @@ mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically
 
 - `crates/rigger-dash/src/dash.rs:658-658` `"/proc/net/tcp"`
 - `crates/rigger-dash/src/dash.rs:689-689` `"/proc"`
-- `crates/rigger-dash/src/dash.rs:8454-8454` `"/proc"`
-- `crates/rigger-dash/src/dash.rs:8462-8462` `"the /proc scan must find THIS process as the holder of its own listener"`
-- `crates/rigger-dash/src/dash.rs:8469-8469` `"/proc"`
+- `crates/rigger-dash/src/dash.rs:8478-8478` `"/proc"`
+- `crates/rigger-dash/src/dash.rs:8486-8486` `"the /proc scan must find THIS process as the holder of its own listener"`
 - `crates/rigger-dash/src/dash.rs:8493-8493` `"/proc"`
-- `crates/rigger-dash/src/dash.rs:8535-8535` `"/proc"`
+- `crates/rigger-dash/src/dash.rs:8517-8517` `"/proc"`
+- `crates/rigger-dash/src/dash.rs:8559-8559` `"/proc"`
 - `crates/rigger-process/src/holders.rs:25-25` `"/proc"`
 - `crates/rigger-process/src/holders.rs:72-72` `"/proc"`
 - `crates/rigger-process/src/reap.rs:133-133` `"/proc"`
@@ -3549,7 +3550,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-dash/src/
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-dash/src/dash.rs:4057-4062` `console_core_wasm_route_serves_the_embedded_artifact_as_application_wasm`
+- `crates/rigger-dash/src/dash.rs:4060-4065` `console_core_wasm_route_serves_the_embedded_artifact_as_application_wasm`
 - `tests/simplification_audit.rs:7061-7068` `a_cfg_test_attribute_directly_on_an_impl_block_is_flagged_test`
 - `tests/simplification_audit.rs:7188-7194` `a_cfg_test_pub_fn_is_still_flagged_test_pub_survives_between_attribute_and_keyword`
 
@@ -3559,8 +3560,8 @@ Proposed home: `a new shared module (sites span 4 files: crates/rigger-dash/src/
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-dash/src/dash.rs:4816-4851` `the_page_layout_cannot_scroll_the_body_horizontally`
-- `crates/rigger-dash/src/dash.rs:4862-4899` `the_landing_view_lists_instances_and_threads_the_attach_selector`
+- `crates/rigger-dash/src/dash.rs:4819-4854` `the_page_layout_cannot_scroll_the_body_horizontally`
+- `crates/rigger-dash/src/dash.rs:4865-4902` `the_landing_view_lists_instances_and_threads_the_attach_selector`
 - `tests/console_palette_periphery.rs:400-415` `the_served_console_page_sends_the_scrub_position_to_palette_commands_when_not_live`
 - `tests/projections_stay_local.rs:82-102` `the_graph_and_progress_projections_open_via_the_local_sqlite_constructors`
 - `tests/store_resolution.rs:98-114` `the_single_resolver_exists_and_the_old_per_command_helper_is_retired`
@@ -3571,7 +3572,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-dash/src/
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-dash/src/dash.rs:9040-9042` `layer_of`
+- `crates/rigger-dash/src/dash.rs:9064-9066` `layer_of`
 - `tests/common/fixtures/graph.rs:276-278` `call_layer`
 
 #### `dup-0e7d0c54553e` (near, 2 sites)
@@ -3580,7 +3581,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-dash/src/
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-dash/src/dash.rs:9043-9045` `ids`
+- `crates/rigger-dash/src/dash.rs:9067-9069` `ids`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:123-128` `light_reviewers_of`
 
 #### `dup-e79afb3298c3` (near, 3 sites)
@@ -3589,8 +3590,8 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-dash/src/
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-dash/src/dash.rs:9651-9675` `an_absent_explain_leaves_the_graph_route_unchanged`
-- `crates/rigger-dash/src/dash.rs:9913-9933` `a_cluster_drill_carries_no_memory_field`
+- `crates/rigger-dash/src/dash.rs:9675-9699` `an_absent_explain_leaves_the_graph_route_unchanged`
+- `crates/rigger-dash/src/dash.rs:9937-9957` `a_cluster_drill_carries_no_memory_field`
 - `tests/metadata_card_periphery.rs:349-366` `the_served_route_degrades_gracefully_for_an_unknown_card_subject`
 
 #### `dup-b3200e581798` (near, 2 sites)
@@ -3599,7 +3600,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-dash/src/
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-dash/src/dash.rs:9959-10009` `card_graph`
+- `crates/rigger-dash/src/dash.rs:9983-10033` `card_graph`
 - `tests/metadata_card_periphery.rs:49-100` `fixture_graph`
 
 #### `dup-fae663db78c7` (near, 4 sites)
@@ -3608,7 +3609,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-dash/src/
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-dash/src/dash.rs:10288-10330` `the_card_route_serves_a_known_subjects_card_and_null_for_an_unknown_one`
+- `crates/rigger-dash/src/dash.rs:10312-10354` `the_card_route_serves_a_known_subjects_card_and_null_for_an_unknown_one`
 - `tests/metadata_card_periphery.rs:119-166` `the_served_route_carries_a_code_subjects_card`
 - `tests/metadata_card_periphery.rs:174-200` `the_served_route_omits_community_and_line_keys_for_a_membership_less_entity`
 - `tests/metadata_card_periphery.rs:373-399` `the_card_param_takes_precedence_over_a_stray_seed_or_lens_param`
@@ -3659,7 +3660,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/community.rs:263-265` `is_empty`
 - `crates/rigger-domain/src/eventstore.rs:254-256` `handed`
 - `crates/rigger-domain/src/failure.rs:227-229` `is_empty`
-- `crates/rigger-domain/src/metrics.rs:555-557` `adversary_precision`
+- `crates/rigger-domain/src/metrics.rs:556-558` `adversary_precision`
 - `crates/rigger-driver/src/reaped_child.rs:42-44` `id`
 
 #### `dup-a9ed3e0e9d47` (exact, 3 sites)
@@ -3769,7 +3770,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/eventstore.rs:485-487` `meta_key`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:305-307` `path`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:308-310` `path`
 
 #### `dup-9a07b087e8f1` (near, 3 sites)
 
@@ -3815,7 +3816,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/metrics.rs:275-277` `total`
+- `crates/rigger-domain/src/metrics.rs:276-278` `total`
 - `tests/common/fixtures/events.rs:855-857` `cost`
 
 #### `dup-6ffa6e5d1f83` (exact, 7 sites)
@@ -3824,13 +3825,13 @@ Proposed home: `metrics::support (consolidate these 7 sites into one function in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/metrics.rs:455-457` `survival`
-- `crates/rigger-domain/src/metrics.rs:549-551` `lens_overlap_rate`
-- `crates/rigger-domain/src/metrics.rs:563-565` `first_pass_yield`
-- `crates/rigger-domain/src/metrics.rs:569-571` `escalation_rate`
-- `crates/rigger-domain/src/metrics.rs:1185-1187` `rate`
-- `crates/rigger-domain/src/metrics.rs:1250-1252` `adjudicator_accuracy`
-- `crates/rigger-domain/src/metrics.rs:1256-1258` `stability_rate`
+- `crates/rigger-domain/src/metrics.rs:456-458` `survival`
+- `crates/rigger-domain/src/metrics.rs:550-552` `lens_overlap_rate`
+- `crates/rigger-domain/src/metrics.rs:564-566` `first_pass_yield`
+- `crates/rigger-domain/src/metrics.rs:570-572` `escalation_rate`
+- `crates/rigger-domain/src/metrics.rs:1190-1192` `rate`
+- `crates/rigger-domain/src/metrics.rs:1255-1257` `adjudicator_accuracy`
+- `crates/rigger-domain/src/metrics.rs:1261-1263` `stability_rate`
 
 #### `dup-c16dbfd88b00` (exact, 2 sites)
 
@@ -3838,7 +3839,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/metrics.rs:1421-1423` `changed`
+- `crates/rigger-domain/src/metrics.rs:1426-1428` `changed`
 - `crates/rigger-domain/src/spawn.rs:621-623` `is_error`
 
 #### `dup-e7182e4e126f` (exact, 3 sites)
@@ -3847,9 +3848,9 @@ Proposed home: `metrics::support (consolidate these 3 sites into one function in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/metrics.rs:1499-1504` `started`
-- `crates/rigger-domain/src/metrics.rs:1506-1511` `status`
-- `crates/rigger-domain/src/metrics.rs:1538-1543` `artifact_verdict`
+- `crates/rigger-domain/src/metrics.rs:1504-1509` `started`
+- `crates/rigger-domain/src/metrics.rs:1511-1516` `status`
+- `crates/rigger-domain/src/metrics.rs:1543-1548` `artifact_verdict`
 
 #### `dup-df893b1b93d7` (near, 6 sites)
 
@@ -3857,9 +3858,9 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/metrics.rs:1513-1518` `failed`
-- `crates/rigger-domain/src/metrics.rs:1520-1525` `integrated`
-- `crates/rigger-domain/src/metrics.rs:1527-1529` `escalated`
+- `crates/rigger-domain/src/metrics.rs:1518-1523` `failed`
+- `crates/rigger-domain/src/metrics.rs:1525-1530` `integrated`
+- `crates/rigger-domain/src/metrics.rs:1532-1534` `escalated`
 - `crates/rigger-domain/src/run.rs:635-637` `decision`
 - `crates/rigger-domain/src/run.rs:638-640` `finding`
 - `crates/rigger-domain/src/run.rs:641-643` `lesson`
@@ -3870,8 +3871,8 @@ Proposed home: `metrics::support (consolidate these 2 sites into one function in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/metrics.rs:2400-2423` `finding_survival_is_upheld_over_raised_per_actor`
-- `crates/rigger-domain/src/metrics.rs:2495-2523` `cost_per_upheld_finding_is_spawns_over_upheld_per_tier`
+- `crates/rigger-domain/src/metrics.rs:2405-2428` `finding_survival_is_upheld_over_raised_per_actor`
+- `crates/rigger-domain/src/metrics.rs:2518-2546` `cost_per_upheld_finding_is_spawns_over_upheld_per_tier`
 
 #### `dup-6a304442d31e` (near, 2 sites)
 
@@ -3879,8 +3880,8 @@ Proposed home: `metrics::support (consolidate these 2 sites into one function in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/metrics.rs:2944-2963` `project_canary_counts_correctly_rejected_items_with_empty_attribution`
-- `crates/rigger-domain/src/metrics.rs:2972-2990` `project_canary_counts_controls_and_false_positives`
+- `crates/rigger-domain/src/metrics.rs:2967-2986` `project_canary_counts_correctly_rejected_items_with_empty_attribution`
+- `crates/rigger-domain/src/metrics.rs:2995-3013` `project_canary_counts_controls_and_false_positives`
 
 #### `dup-4b3a37bb0a60` (exact, 2 sites)
 
@@ -4063,18 +4064,18 @@ Proposed home: `one sqlite-connection-opening adapter function every caller is i
 
 mandatory sweep: sqlite Connection::open call sites - 58 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1431-1431` `Connection::open_with_flags`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1450-1450` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1455-1455` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5898-5898` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5919-5919` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6139-6139` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6464-6464` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6993-6993` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11467-11467` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12216-12216` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:14729-14729` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:16283-16283` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1434-1434` `Connection::open_with_flags`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1453-1453` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1458-1458` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5901-5901` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5922-5922` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6142-6142` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6467-6467` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7000-7000` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11474-11474` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12223-12223` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:14736-14736` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:16290-16290` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1547-1547` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2160-2160` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2182-2182` `Connection::open_with_flags`
@@ -4128,8 +4129,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4367-4379` `calls_out`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4440-4452` `callers_direct`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4370-4382` `calls_out`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4443-4455` `callers_direct`
 
 #### `dup-1cee568104ee` (near, 2 sites)
 
@@ -4137,8 +4138,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5491-5504` `subgraph_finds_the_governing_decision`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13565-13585` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5494-5507` `subgraph_finds_the_governing_decision`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13572-13592` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
 
 #### `dup-e45a2413a3f0` (near, 7 sites)
 
@@ -4146,11 +4147,11 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-graph-sql
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7575-7582` `apply_edge_inferred`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8461-8468` `apply_doc_concept`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8571-8578` `apply_doc_link`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8901-8908` `apply_batch_ref`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10814-10824` `apply_unit_integrated`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7582-7589` `apply_edge_inferred`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8468-8475` `apply_doc_concept`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8578-8585` `apply_doc_link`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8908-8915` `apply_batch_ref`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10821-10831` `apply_unit_integrated`
 - `tests/code_ingest_events.rs:863-870` `apply_ref_json`
 - `tests/code_ingest_events.rs:1000-1007` `apply_ref_fresh`
 
@@ -4160,8 +4161,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7591-7610` `apply_code_entity_partial`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7645-7663` `apply_community`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7598-7617` `apply_code_entity_partial`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7652-7670` `apply_community`
 
 #### `dup-84342f753367` (near, 2 sites)
 
@@ -4169,8 +4170,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8581-8704` `design_intent_link_events_fold_into_the_five_design_intent_edges`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8707-8825` `workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8588-8711` `design_intent_link_events_fold_into_the_five_design_intent_edges`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8714-8832` `workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges`
 
 #### `dup-0b2669324614` (near, 2 sites)
 
@@ -4178,8 +4179,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10547-10580` `decision_fold_projects_no_agent_node_or_decided_edge`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10634-10662` `review_finding_projects_no_raised_edge_even_with_an_event_actor`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10554-10587` `decision_fold_projects_no_agent_node_or_decided_edge`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10641-10669` `review_finding_projects_no_raised_edge_even_with_an_event_actor`
 
 #### `dup-c76c4d91d8a8` (near, 2 sites)
 
@@ -4187,8 +4188,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11355-11357` `edge_projects`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12384-12392` `index_names`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11362-11364` `edge_projects`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12391-12399` `index_names`
 
 #### `dup-554a83a84ac8` (near, 2 sites)
 
@@ -4196,8 +4197,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12119-12160` `the_cross_file_inferred_tier_is_order_independent`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12163-12179` `the_definition_upgrade_never_demotes_a_same_file_extracted_reference`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12126-12167` `the_cross_file_inferred_tier_is_order_independent`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12170-12186` `the_definition_upgrade_never_demotes_a_same_file_extracted_reference`
 
 #### `dup-3cee929a82ba` (near, 3 sites)
 
@@ -4205,7 +4206,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-graph-sql
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12293-12295` `edge_desc`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12300-12302` `edge_desc`
 - `src/cli/hygiene.rs:237-243` `runs_menu_line`
 - `src/cli/hygiene.rs:981-986` `pruned_line`
 
@@ -4215,8 +4216,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13609-13640` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13885-13916` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13616-13647` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13892-13923` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
 
 #### `dup-a34b5b595e15` (near, 2 sites)
 
@@ -4811,7 +4812,7 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:16954-16984` `docs_ships_three_verb_lookup_guidance_to_consumers`
-- `tests/cli.rs:27687-27734` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
+- `tests/cli.rs:27768-27815` `docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook`
 
 #### `dup-21b08556e493` (exact, 2 sites)
 
@@ -5296,7 +5297,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9853 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9858 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4994-5035` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15035-15057` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5304,11 +5305,11 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-conductor/src/conductor.rs:27081-27115` `route_review_tier_fails_safe_to_full_on_an_empty_blast_radius` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:37420-37450` `a_budget_refused_standalone_review_spawn_keeps_its_worktree` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/canary.rs:285-319` `latest_run_scopes_to_the_last_batch_marker` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-domain/src/metrics.rs:1392-1399` `model_id_base` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-domain/src/review.rs:772-809` `a_finding_line_has_five_pipe_fields_with_the_severity_second` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-domain/src/metrics.rs:1397-1404` `model_id_base` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-domain/src/review.rs:775-812` `a_finding_line_has_five_pipe_fields_with_the_severity_second` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/spec.rs:2249-2256` `strip_inline_code_direct_exact_output_pins_a_zero_width_quote_pair` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5729-5731` `locked` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13994-14014` `one_transaction_resolves_an_owed_name_once_where_one_per_reference_resolves_it_each_time` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5732-5734` `locked` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:14001-14021` `one_transaction_resolves_an_owed_name_once_where_one_per_reference_resolves_it_each_time` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:681-693` `normalize_logical_path` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:1280-1285` `class_fields` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:1702-1710` `go_receiver` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5361,7 +5362,7 @@ FOUND, one violation:
 
 Violation 1 (`Grounder`): `crates/rigger-grounder/src/ingest.rs:394-426` (`walk_batches`, called from production `conductor::RunCtx::ingest_project_batches` at `crates/rigger-conductor/src/conductor.rs:11245`, itself called from `crates/rigger-conductor/src/conductor.rs:11227` above the `14169` `#[cfg(test)]` boundary) calls `crate::grounder::symbols::events::project_batches_paced` directly by concrete module path at line 400 to reuse the `symbols` grounder's already-persisted index for a one-time whole-project ingest walk, then at line 406 - same function, same missing-port defect, not a separate third violation - calls `crate::grounder::design::events::project_batches` directly by concrete module path for the design-doc half of the same walk. These two calls are two of the three named sites of section 2's own catalogued duplicate cluster (`dup-f2eee0c78cd6`: `crates/rigger-grounder/src/grounder/design/events.rs:97-99`, `crates/rigger-grounder/src/grounder/symbols/events.rs:66-68`, and `crates/rigger-grounder/src/grounder/workflowdef.rs:233-240` - all three named `project_batches`), so this boundary violation and that duplication finding are two symptoms of one root cause - `ingest.rs` naming each concrete grounder submodule because no port exposes either. The `Grounder` port (`crates/rigger-domain/src/grounder.rs:56`: `ground`, `reindex`, `blast_radius`, `index_stamp`) serves real-time per-query grounding of an agent's prompt; none of its methods exposes "hand me every indexed file's projected events for a whole-project batch ingest," so `ingest.rs` - itself a domain ingest authority, not an adapter and not the composition root - has no port to depend on for either call and reaches the concrete `symbols` module (400) and the concrete `design` module (406) directly. Fix direction for a follow-up spec: add an ingest-shaped port method (e.g. a `Grounder::project_batches` or a standalone `SymbolProjector` trait) covering both concrete modules, so `ingest.rs` depends on one abstraction instead of either concrete grounder module for its whole-project walk.
 
-Also reaching `grounder::symbols::store::content_hash` from `crates/rigger-grounder/src/ingest.rs:649` and `crates/rigger-conductor/src/canary_store.rs:152`: DISPOSITIONED as legitimate shared-primitive reuse, not a third violation. `content_hash` (`crates/rigger-grounder/src/grounder/symbols/store.rs:47-57`) is documented at its own definition as the content-identity primitive the `symbols` grounder's reindex freshening gate keys on, and `canary_store.rs`'s own doc comment (`crates/rigger-conductor/src/canary_store.rs:130`) reuses it by deliberate author intent rather than growing another open-coded FNV-1a copy - a generic hashing utility that happens to live in the `symbols` module, not a grounding operation reached through the port. The broader duplication this primitive is meant to fix (the open-coded FNV-1a copies elsewhere in the crate, per `crates/rigger-domain/src/community.rs:69`'s own comment) is a separately tracked cross-cutting refactor (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's concern.
+Also reaching `grounder::symbols::store::content_hash` from `crates/rigger-grounder/src/ingest.rs:649` and `crates/rigger-conductor/src/canary_store.rs:153`: DISPOSITIONED as legitimate shared-primitive reuse, not a third violation. `content_hash` (`crates/rigger-grounder/src/grounder/symbols/store.rs:47-57`) is documented at its own definition as the content-identity primitive the `symbols` grounder's reindex freshening gate keys on, and `canary_store.rs`'s own doc comment (`crates/rigger-conductor/src/canary_store.rs:131`) reuses it by deliberate author intent rather than growing another open-coded FNV-1a copy - a generic hashing utility that happens to live in the `symbols` module, not a grounding operation reached through the port. The broader duplication this primitive is meant to fix (the open-coded FNV-1a copies elsewhere in the crate, per `crates/rigger-domain/src/community.rs:69`'s own comment) is a separately tracked cross-cutting refactor (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's concern.
 
 CHECKED AND CLEAN (four of five ports fully clean; the fifth, `Grounder`, is this section's violation above - each search recorded so a clean result is not merely assumed):
 - `conductor::AgentDriver` concretion reach (`crate::driver::*`): production `conductor.rs` depends only on the port (`crates/rigger-domain/src/agent.rs:212`), held as `dyn AgentDriver` (`crates/rigger-conductor/src/conductor.rs:1838`); every one of its 16 `crate::driver::` hits sits inside `#[cfg(test)] mod tests`, where the tests construct a concrete driver directly.
@@ -5444,7 +5445,7 @@ Proposed home for each: `tests/common` (the catalog's own `proposed_home` field 
 
 ### 5.3 `tests/cli.rs` split plan
 
-`tests/cli.rs` holds 393 `#[test]` functions. Its existing internal section markers each name the spec and criterion whose tests follow it, not a CLI subcommand or subsystem - ad hoc organization that falls well short of a deliberate, complete per-surface structure. The split proposed below replaces those by-spec markers with a complete, deliberate BY CLI SUBCOMMAND SURFACE organization. A keyword-on-test-name pass (matching each test's dominant CLI verb: `step_`, `run_`, `validate_`, `reset_`, `watch_`/`watchdog_`, `canary_`, `dash_`/`status_`, `store_`/`eventstore_`, `spawn_`/`scratch_`, `review_`/`gate_`, `setup_`/`precommit_`/`hook_`, `courier_`/`registry_`, `spec_`, `replay_`, `worktree_`, `emit_`/`peers_`/`decision_`, `stats_`, `heartbeat_`/`liveness_`, `prime_`/`version_`/`init_`) only cleanly covers 210 of the 393 tests (53%) - disclosed honestly rather than overclaimed, because a real fraction of `cli.rs`'s scenarios are DELIBERATELY end-to-end (a single test legitimately drives `step` + `run` + `validate` + `dash` together to prove a cross-cutting property, e.g. `a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status` or `docs_ships_graph_hygiene_guidance_to_consumers`), which a bare keyword match cannot and should not force into one bucket. The proposed split is BY CLI SUBCOMMAND SURFACE - `cli.rs`'s own natural organizing concept, since the whole file drives the `rigger` binary end to end - into per-surface files (`tests/cli_step.rs`, `tests/cli_run.rs`, `tests/cli_validate.rs`, `tests/cli_reset.rs`, `tests/cli_watch.rs`, `tests/cli_canary.rs`, `tests/cli_dash.rs`, `tests/cli_store.rs`, `tests/cli_review.rs`, `tests/cli_setup.rs`, plus a residual `tests/cli_misc.rs` for the genuinely cross-cutting scenarios), with each test's home decided by its DOMINANT scenario on a human/AI read, not a mechanical keyword match - the same discipline this audit's own responsibility map applied to unassignable functions (named, never silently forced). Cross-referencing the catalog: `cli.rs` also participates in 5 of the catalog's cross-file test-only duplication clusters, several paired against files that WOULD merge with it under this split (`tests/step_attention_periphery.rs`, paired in 1 clusters; `tests/watchdog_cli_periphery.rs`, paired in 1 clusters) - the split is expected to shrink, not grow, the duplication surface.
+`tests/cli.rs` holds 394 `#[test]` functions. Its existing internal section markers each name the spec and criterion whose tests follow it, not a CLI subcommand or subsystem - ad hoc organization that falls well short of a deliberate, complete per-surface structure. The split proposed below replaces those by-spec markers with a complete, deliberate BY CLI SUBCOMMAND SURFACE organization. A keyword-on-test-name pass (matching each test's dominant CLI verb: `step_`, `run_`, `validate_`, `reset_`, `watch_`/`watchdog_`, `canary_`, `dash_`/`status_`, `store_`/`eventstore_`, `spawn_`/`scratch_`, `review_`/`gate_`, `setup_`/`precommit_`/`hook_`, `courier_`/`registry_`, `spec_`, `replay_`, `worktree_`, `emit_`/`peers_`/`decision_`, `stats_`, `heartbeat_`/`liveness_`, `prime_`/`version_`/`init_`) only cleanly covers 210 of the 394 tests (53%) - disclosed honestly rather than overclaimed, because a real fraction of `cli.rs`'s scenarios are DELIBERATELY end-to-end (a single test legitimately drives `step` + `run` + `validate` + `dash` together to prove a cross-cutting property, e.g. `a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status` or `docs_ships_graph_hygiene_guidance_to_consumers`), which a bare keyword match cannot and should not force into one bucket. The proposed split is BY CLI SUBCOMMAND SURFACE - `cli.rs`'s own natural organizing concept, since the whole file drives the `rigger` binary end to end - into per-surface files (`tests/cli_step.rs`, `tests/cli_run.rs`, `tests/cli_validate.rs`, `tests/cli_reset.rs`, `tests/cli_watch.rs`, `tests/cli_canary.rs`, `tests/cli_dash.rs`, `tests/cli_store.rs`, `tests/cli_review.rs`, `tests/cli_setup.rs`, plus a residual `tests/cli_misc.rs` for the genuinely cross-cutting scenarios), with each test's home decided by its DOMINANT scenario on a human/AI read, not a mechanical keyword match - the same discipline this audit's own responsibility map applied to unassignable functions (named, never silently forced). Cross-referencing the catalog: `cli.rs` also participates in 5 of the catalog's cross-file test-only duplication clusters, several paired against files that WOULD merge with it under this split (`tests/step_attention_periphery.rs`, paired in 1 clusters; `tests/watchdog_cli_periphery.rs`, paired in 1 clusters) - the split is expected to shrink, not grow, the duplication surface.
 
 ### 5.4 Duplicated helpers across test files (beyond 5.2's headline cases)
 
@@ -5531,9 +5532,9 @@ Each god file's inline test module is the set of its `is_test: true` entries in 
 
 #### 5. Extract `crates/rigger-dash/src/dash.rs`'s inline test module
 
-- Scope: the file's `#[cfg(test)] mod tests` holds 153 of its 245 mapped functions (62%), roughly 5508 lines of test-function spans. Lower effort than items 3-4: section 1's own classifier already found 8 pre-existing sub-boundaries inside this one test module (`dash::tests::call_target_c4`, `dash::tests::calls_route_c4`, `dash::tests::file_half_c13`, `dash::tests::leaf_keys_c1`, `dash::tests::metadata_card_c2`, `dash::tests::rationale_overlay_c3`, `dash::tests::reprojection_views`, `dash::tests::subject_view_c5`), so the partition points already exist and need only become their own files.
+- Scope: the file's `#[cfg(test)] mod tests` holds 154 of its 246 mapped functions (62%), roughly 5525 lines of test-function spans. Lower effort than items 3-4: section 1's own classifier already found 8 pre-existing sub-boundaries inside this one test module (`dash::tests::call_target_c4`, `dash::tests::calls_route_c4`, `dash::tests::file_half_c13`, `dash::tests::leaf_keys_c1`, `dash::tests::metadata_card_c2`, `dash::tests::rationale_overlay_c3`, `dash::tests::reprojection_views`, `dash::tests::subject_view_c5`), so the partition points already exist and need only become their own files.
 - Files: `crates/rigger-dash/src/dash.rs` -> `crates/rigger-dash/src/dash.rs` (production only) + `src/dash/tests/*.rs`.
-- Expected line delta: 0 net (repo-wide) - roughly 5508 lines relocated out of `crates/rigger-dash/src/dash.rs`.
+- Expected line delta: 0 net (repo-wide) - roughly 5525 lines relocated out of `crates/rigger-dash/src/dash.rs`.
 - Risk: low - the lowest-effort of the three, for the reason above.
 - Unblocks: shrinks `dash.rs` to its production code before tier 3's own dash.rs split.
 
@@ -5560,9 +5561,9 @@ Each entry below applies section 1's own proposed module tree to a god file's pr
 
 #### 8. Split `crates/rigger-dash/src/dash.rs`'s production code into `src/dash/*.rs`
 
-- Scope: 48 mapped functions across 7 proposed modules (roughly 1319 lines of function bodies) plus 44 unassigned functions (825 lines, each individually named in the committed map for manual placement, per section 1's own "unassignable functions are named as such, never omitted" rule). Headline buckets (functions/lines): `dash::server` (8/605), `dash::render` (18/402), `dash::reproject` (5/177), `dash::registry` (6/65), `dash::response` (6/48).
+- Scope: 48 mapped functions across 7 proposed modules (roughly 1319 lines of function bodies) plus 44 unassigned functions (828 lines, each individually named in the committed map for manual placement, per section 1's own "unassignable functions are named as such, never omitted" rule). Headline buckets (functions/lines): `dash::server` (8/605), `dash::render` (18/402), `dash::reproject` (5/177), `dash::registry` (6/65), `dash::response` (6/48).
 - Files: `crates/rigger-dash/src/dash.rs` -> `src/dash/mod.rs` + `src/dash/{server,render,reproject,registry,response,dash_marker,probe_miss}.rs`.
-- Expected line delta: 0 net - pure relocation of roughly 2144 lines of function bodies.
+- Expected line delta: 0 net - pure relocation of roughly 2147 lines of function bodies.
 - Risk: low-medium - the always-on dash's own contract (loopback-only, zero-new-dependency) is unaffected by a pure module split.
 - Unblocks: completes the god-file split trio; the third program-sized file becomes an ordinary module tree.
 
@@ -5616,7 +5617,7 @@ Every entry cites section 5's own already-catalogued test-only duplication; none
 
 #### 14. Split `tests/cli.rs` by CLI subcommand surface (section 5.3's plan)
 
-- Scope: 393 tests, split into `tests/cli_{step,run,validate,reset,watch,canary,dash,store,review,setup}.rs` plus a residual `tests/cli_misc.rs` for the genuinely cross-cutting scenarios section 5.3 names, using each test's dominant scenario (a human/AI read, not the 53%-coverage keyword match section 5.3 already disclosed as insufficient alone).
+- Scope: 394 tests, split into `tests/cli_{step,run,validate,reset,watch,canary,dash,store,review,setup}.rs` plus a residual `tests/cli_misc.rs` for the genuinely cross-cutting scenarios section 5.3 names, using each test's dominant scenario (a human/AI read, not the 53%-coverage keyword match section 5.3 already disclosed as insufficient alone).
 - Files: `tests/cli.rs` and the eleven new files above.
 - Expected line delta: 0 net - pure relocation into eleven files.
 - Risk: low-medium - a mechanical per-test move with `cargo test`'s full pass count as the verification.
