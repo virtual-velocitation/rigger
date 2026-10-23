@@ -1816,16 +1816,6 @@ fn run_read_only(root: &Path, args: &[&str]) -> (String, String, bool, Vec<Strin
     (out, err, ok, notes)
 }
 
-/// Run `rigger init` in `root`, which must succeed: it scaffolds the config `rigger validate`
-/// reads.
-fn init_for_validate(root: &Path) {
-    let (_, err, ok) = run_rigger(root, &["init"]);
-    assert!(
-        ok,
-        "init scaffolds the config validate reads; stderr: {err}"
-    );
-}
-
 /// Given a `graph.db` still at the old fold rule, every read-only surface - `rigger graph --show`,
 /// `rigger validate` and `rigger dash --export` - says once that the rebuild is owed, naming
 /// `rigger setup`, and writes nothing to the file; once `rigger setup` has paid it, none of them
@@ -1833,7 +1823,7 @@ fn init_for_validate(root: &Path) {
 #[test]
 fn the_read_only_surfaces_say_the_rebuild_is_owed_write_nothing_and_stop_once_setup_pays_it() {
     let store = ReleaseEraStore::new();
-    init_for_validate(store.root());
+    common::cli::run_rigger_ok(store.root(), &["init"]);
     let surfaces = READ_ONLY_SURFACES;
     let note = rebuild_owed_note();
     let before = store.graph_bytes();
@@ -3136,7 +3126,7 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
 fn the_read_only_surfaces_say_once_what_graph_db_passed_over_by_cause_and_write_nothing() {
     let dir = temp_store_project();
     let root = dir.path();
-    init_for_validate(root);
+    common::cli::run_rigger_ok(root, &["init"]);
     emit_the_first_decision(root);
     let graph_db = rigger_file(root, "graph.db");
     let each_surface_notes = |expected: &[String], why: &str| {
