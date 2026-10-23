@@ -51,7 +51,7 @@ use crate::contextgraph::{
 // them.
 use crate::contextgraph::query::{
     bucket_label_index, defs_by_entity_suffix, fold_buckets, member_set, memory_rail_of,
-    neighborhood_of, node_file, node_label, node_leaf, node_name, Buckets,
+    neighborhood_of, node_file, node_label, node_leaf, node_name, referenced_id, Buckets,
 };
 pub use crate::contextgraph::query::{
     card, cluster_detail, cluster_key, clustered_overview, explain, memory_rail, neighborhood,
@@ -2681,12 +2681,15 @@ fn event_seed_ids(e: &Event) -> Vec<String> {
             ids.push(id);
         }
     }
-    // The files it concerns - the code the unit produced. A raw path that never became a canonical
-    // node contributes nothing when a consumer filters to real nodes, so it is harmless; the file
-    // is reached anyway via the content node's GOVERNS / ABOUT edge.
+    // The files it concerns - the code the unit produced - each read as the node id it names
+    // ([`referenced_id`]), so a `path:line` citation seeds its file: the citation names no node,
+    // and a seed naming none is dropped where a consumer keeps real nodes (the unit click's
+    // re-point) and leaves the file one hop further from the walk (the run's depth-2 pre-fetch).
+    // A spelling the fold canonicalizes to another id seeds nothing either; its file is still
+    // reached through the content node's GOVERNS / ABOUT edge.
     for f in field_str_array(e, files_key) {
         if !f.is_empty() {
-            ids.push(f);
+            ids.push(referenced_id(&f).to_string());
         }
     }
     ids
