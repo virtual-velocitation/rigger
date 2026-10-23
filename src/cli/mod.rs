@@ -495,8 +495,11 @@ fn graph_rebuild_owed_note(graph_db: &str, project: &str) -> Option<String> {
 fn passed_over_by_cause(passed: &contextgraph::sqlite::PassedOver) -> Option<String> {
     (passed.total() > 0).then(|| {
         format!(
-            "({} rejected payload(s), {} fold failure(s), {} resolved to nothing)",
-            passed.rejected, passed.failed, passed.unresolved
+            "({} rejected payload(s), {} fold failure(s), {} {})",
+            passed.rejected,
+            passed.failed,
+            passed.unresolved,
+            contextgraph::sqlite::RESOLVED_TO_NOTHING
         )
     })
 }
