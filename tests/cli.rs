@@ -44,6 +44,7 @@ use common::cli::{
 use common::fixtures::assert_driver_guards_a_null_step;
 use common::fixtures::file_len;
 use common::fixtures::pgid_of;
+use common::fixtures::wave_lessons;
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;
@@ -6723,28 +6724,45 @@ stages:
     );
 }
 
+/// What one [`run_with_bridged_lines`] left behind.
+#[cfg(unix)]
+struct Bridged {
+    /// Everything the run said: stdout, stderr and every event's payload, one haystack.
+    said: String,
+    /// The run's events.
+    events: Vec<rigger::eventstore::Event>,
+    /// The task each worker spawn read on its stdin, in spawn order.
+    worker_tasks: Vec<String>,
+    /// The task each adjudicator spawn read on its stdin, in spawn order.
+    judge_tasks: Vec<String>,
+    /// Every commit the repository holds afterwards, one `{sha} {subject}` line each.
+    commits: Vec<String>,
+}
+
+/// The tasks the spawns of one fake agent saved in `dir`, one file per spawn named by its
+/// ordinal, in spawn order.
+#[cfg(unix)]
+fn saved_tasks(dir: &Path) -> Vec<String> {
+    let spawned = std::fs::read_dir(dir).unwrap().count();
+    (0..spawned)
+        .map(|n| std::fs::read_to_string(dir.join(n.to_string())).unwrap())
+        .collect()
+}
+
 /// One `rigger run` of a reviewed one-stage unit through the REAL cli host, whose fake `claude`
 /// worker prints `worker_lines` on its first spawn only and whose adjudicator prints
-/// `judge_lines` before approving: the host bridges every emit line on an agent's stdout into
-/// the conductor's in-process emit. Two attempts, so a line refused on the worker's first spawn
-/// can be charged to that attempt and the second, printing nothing, carries the unit on.
-/// Returns everything the run said (stdout, stderr and every event's payload, one haystack),
-/// the run's events, the task each worker spawn read on its stdin, in spawn order, and every
-/// commit the repository holds afterwards, one `{sha} {subject}` line each.
+/// `judge_lines` on its first `judge_prints` spawns, each before approving: the host bridges
+/// every emit line on an agent's stdout into the conductor's in-process emit. Two attempts, so a
+/// line refused on the worker's first spawn can be charged to that attempt and the second,
+/// printing nothing, carries the unit on.
 #[cfg(unix)]
-fn run_with_bridged_lines(
-    worker_lines: &str,
-    judge_lines: &str,
-) -> (
-    String,
-    Vec<rigger::eventstore::Event>,
-    Vec<String>,
-    Vec<String>,
-) {
+fn run_with_bridged_lines(worker_lines: &str, judge_lines: &str, judge_prints: usize) -> Bridged {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     let tasks = tempfile::tempdir().unwrap();
     let task_dir = tasks.path().display();
+    let judged = tempfile::tempdir().unwrap();
+    let judge_dir = judged.path().display();
     write_agent(
         root,
         "worker",
@@ -6792,9 +6810,13 @@ stages:
     echo "tried and failed"
     ;;
   *RIGGERTEST_ADJUDICATOR*)
-    cat <<'LINES'
+    n=$(ls "{judge_dir}" | wc -l | tr -d ' ')
+    cat > "{judge_dir}/$n"
+    if [ "$n" -lt {judge_prints} ]; then
+      cat <<'LINES'
 {judge_lines}
 LINES
+    fi
     echo '{{"verdict":"approve"}}'
     ;;
   *RIGGERTEST_WORKER*)
@@ -6820,14 +6842,16 @@ LINES
         )
         .collect::<Vec<_>>()
         .join("\n");
-    let spawned = std::fs::read_dir(tasks.path()).unwrap().count();
-    let read = (0..spawned)
-        .map(|n| std::fs::read_to_string(tasks.path().join(n.to_string())).unwrap())
-        .collect();
     let commits = git_answer(root, &["log", "--all", "--format=%H %s"])
         .map(|log| log.lines().map(str::to_string).collect())
         .unwrap_or_default();
-    (said, events, read, commits)
+    Bridged {
+        said,
+        events,
+        worker_tasks: saved_tasks(tasks.path()),
+        judge_tasks: saved_tasks(judged.path()),
+        commits,
+    }
 }
 
 /// The `{unit}/{role}` seat stamped on each recorded `DecisionMade` whose id is `id`, in log order.
@@ -6857,9 +6881,16 @@ fn decision_seats(events: &[rigger::eventstore::Event], id: &str) -> Vec<String>
 fn a_cli_host_bridged_record_the_fold_cannot_apply_is_refused_and_charged_to_the_attempt_that_printed_it(
 ) {
     let refusal = "refusing to emit: DecisionMade payload field `governs`";
-    let (said, events, tasks, commits) = run_with_bridged_lines(
+    let Bridged {
+        said,
+        events,
+        worker_tasks: tasks,
+        commits,
+        ..
+    } = run_with_bridged_lines(
         r#"{"type":"DecisionMade","data":{"id":"d-bad","summary":"s","governs":"src/work.rs"}}"#,
         "",
+        0,
     );
     assert_eq!(
         decision_seats(&events, "d-bad"),
@@ -6920,31 +6951,73 @@ fn a_cli_host_bridged_record_the_fold_cannot_apply_is_refused_and_charged_to_the
     );
 }
 
-/// A record a cli-host reviewer prints under an id the unit's implementer already holds is
-/// refused before the append, naming the holder, so the implementer's record stays the one the
-/// graph keeps: the in-process emit stamps each bridged line with its spawn, whose
-/// `{unit}/{role}` seat is the author the guard compares.
+/// The run of [`run_with_bridged_lines`] whose worker prints a record under the id `d-x` and
+/// whose adjudicator prints one under the same id on its first `judge_prints` spawns: the
+/// reviewer's is refused before the append, naming the holder, so the implementer's record stays
+/// the one the graph keeps - the in-process emit stamps each bridged line with its spawn, whose
+/// `{unit}/{role}` seat is the author the guard compares. The adjudicator's verdict rides the
+/// same stdout, so a refused line costs its spawn the verdict: the spawn re-runs once, under its
+/// next retry id, told why, and never again. Returns the run.
 #[cfg(unix)]
-#[test]
-fn a_cli_host_bridged_record_whose_id_another_seat_holds_is_refused_and_lands_nothing() {
-    let (said, events, _tasks, _commits) = run_with_bridged_lines(
+fn assert_a_reviewer_s_refused_record_re_runs_its_spawn_once(judge_prints: usize) -> Bridged {
+    let run = run_with_bridged_lines(
         r#"{"type":"DecisionMade","data":{"id":"d-x","summary":"the worker's"}}"#,
         r#"{"type":"DecisionMade","data":{"id":"d-x","summary":"the judge's"}}"#,
+        judge_prints,
     );
-    let seats = decision_seats(&events, "d-x");
+    let seats = decision_seats(&run.events, "d-x");
     assert!(
         !seats.is_empty() && seats.iter().all(|seat| seat == "solo/implementer"),
         "only the implementer's record holds the id: {seats:?}"
     );
+    assert_eq!(
+        run.judge_tasks.len(),
+        2,
+        "the refused adjudicator re-runs once, never again"
+    );
     for named in [
-        r#"refusing to emit DecisionMade "d-x""#,
+        r#"Your previous run's record was refused: refusing to emit DecisionMade "d-x""#,
         "recorded by solo/implementer",
     ] {
-        assert!(said.contains(named), "the refusal names {named:?}: {said}");
+        assert!(
+            run.judge_tasks[1].contains(named),
+            "the re-run's task names {named:?}: {}",
+            run.judge_tasks[1]
+        );
     }
     assert!(
-        !said.contains('\u{1}'),
-        "no control-character marker reaches what the run said: {said:?}"
+        !run.said.contains('\u{1}'),
+        "no control-character marker reaches what the run said: {}",
+        run.said
+    );
+    run
+}
+
+/// A cli-host reviewer whose record is refused once re-runs, told why, and its re-run's verdict
+/// carries the unit on.
+#[cfg(unix)]
+#[test]
+fn a_cli_host_reviewer_whose_bridged_record_another_seat_holds_re_runs_once_told_why() {
+    let run = assert_a_reviewer_s_refused_record_re_runs_its_spawn_once(1);
+    assert!(
+        run.said.contains(r#""status":"reviewed""#) && wave_lessons(&run.events).is_empty(),
+        "the re-run's approve carries the unit on: {}",
+        run.said
+    );
+}
+
+/// A cli-host reviewer refused again on its re-run fails its stage with the refusal: the
+/// review's own failure handling, its wave lesson naming the refusal.
+#[cfg(unix)]
+#[test]
+fn a_cli_host_reviewer_refused_again_fails_its_stage_with_the_refusal() {
+    let run = assert_a_reviewer_s_refused_record_re_runs_its_spawn_once(2);
+    let lessons = wave_lessons(&run.events);
+    assert!(
+        lessons
+            .iter()
+            .any(|l| l.contains(r#"refusing to emit DecisionMade "d-x""#)),
+        "the stage's wave lesson carries the refusal: {lessons:?}"
     );
 }
 

@@ -70,6 +70,15 @@ pub fn payloads_of_type(events: &[Event], type_: &str) -> Vec<serde_json::Value>
         .collect()
 }
 
+/// The summary of every lesson in `events` that records a stage failed in its wave, in order.
+pub fn wave_lessons(events: &[Event]) -> Vec<String> {
+    payloads_of_type(events, rigger::contextgraph::TYPE_LESSON_LEARNED)
+        .iter()
+        .filter_map(|lesson| lesson["summary"].as_str().map(str::to_string))
+        .filter(|summary| summary.contains("failed in its wave"))
+        .collect()
+}
+
 /// The `(name, ref_kind)` of each of `payloads` that carries a `ref_kind` (spec 117: a tagged
 /// `EdgeInferred`), in order.
 pub fn tagged_payloads(payloads: &[serde_json::Value]) -> Vec<(&str, &str)> {

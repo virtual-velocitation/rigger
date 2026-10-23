@@ -14262,8 +14262,8 @@ mod tests {
     };
     use crate::test_support::{
         critique_reject, keyed_index, keyed_payload, payloads_of_type, run_log,
-        spec_defect_halt_text, stop_records, the_stop_records, DAG_CRITIQUE_VERDICT_PARAGRAPH,
-        STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY,
+        spec_defect_halt_text, stop_records, the_stop_records, wave_lessons,
+        DAG_CRITIQUE_VERDICT_PARAGRAPH, STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -15849,6 +15849,10 @@ mod tests {
         /// single lens a ReviewFinding to emit so the test can assert the finding
         /// reaches a LATER tier through the graph (not through prompt threading).
         emits_by_agent: HashMap<String, Vec<(String, Value)>>,
+        /// Per-SPAWN-ID emits, after the shared and per-agent ones: lets a test have ONE spawn
+        /// of an agent print a record the emit guard refuses while its re-run prints none -
+        /// which `emits_by_agent` (identical on every spawn of the agent) cannot.
+        emits_by_spawn_id: HashMap<String, Vec<(String, Value)>>,
         output: String,
         /// Per-agent canned output, overriding `output` for that agent id. Lets one
         /// test give a lens a distinct finding and the adjudicator a distinct verdict
@@ -15976,6 +15980,7 @@ mod tests {
                 write_files_by_spawn_id: HashMap::new(),
                 emits: Vec::new(),
                 emits_by_agent: HashMap::new(),
+                emits_by_spawn_id: HashMap::new(),
                 output: String::new(),
                 output_by_agent: HashMap::new(),
                 output_by_spawn_id: HashMap::new(),
@@ -16220,7 +16225,13 @@ mod tests {
             for (t, v) in &self.emits {
                 emit(t, v.clone())?;
             }
-            if let Some(per) = self.emits_by_agent.get(&a.id) {
+            for per in [
+                self.emits_by_agent.get(&a.id),
+                self.emits_by_spawn_id.get(&opts.id),
+            ]
+            .into_iter()
+            .flatten()
+            {
                 for (t, v) in per {
                     emit(t, v.clone())?;
                 }
@@ -42457,16 +42468,25 @@ mod tests {
         /// resolve it, so [`RunCtx::integrate_and_emit`]'s conflict-loop bound (`CONFLICT_RESOLVE_BOUND`)
         /// is exhausted for real - the one path that DOES charge a remediation attempt.
         resolve_on_retry: bool,
+        /// The `~retry{n}` re-park that, having resolved and committed, emits
+        /// [`refused_decision`], which the emit guard refuses; `None` in every other test.
+        refused_retry: Option<u32>,
+        /// The prompt each spawn id was launched with.
+        prompts: Mutex<HashMap<String, String>>,
     }
     impl AgentDriver for ConflictDriver {
         fn spawn(
             &self,
             _a: &AgentDef,
-            _prompt: &str,
+            prompt: &str,
             opts: &SpawnOpts,
-            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
         ) -> Result<AgentResult, Error> {
             self.calls.lock().unwrap().push(opts.id.clone());
+            self.prompts
+                .lock()
+                .unwrap()
+                .insert(opts.id.clone(), prompt.to_string());
             let unit = opts.id.split('/').next().unwrap_or_default();
             if opts.id.contains("/implementer#") {
                 if opts.id.contains("~retry") {
@@ -42491,6 +42511,14 @@ mod tests {
                             .args(args)
                             .output()
                             .unwrap();
+                    }
+                    if self
+                        .refused_retry
+                        .is_some_and(|n| opts.id.ends_with(&format!("~retry{n}")))
+                    {
+                        for (t, v) in refused_decision() {
+                            emit(&t, v)?;
+                        }
                     }
                     return Ok(AgentResult::default());
                 }
@@ -43297,6 +43325,8 @@ mod tests {
             repo: repo_path.clone(),
             calls: Mutex::new(Vec::new()),
             resolve_on_retry,
+            refused_retry: None,
+            prompts: Mutex::new(HashMap::new()),
         };
         let _ = regenerate;
         (repo, repo_path, store, driver)
@@ -43307,12 +43337,15 @@ mod tests {
     /// integrate lock merges cleanly and the second's merge CONFLICTS. BOTH units must integrate -
     /// the loser's textual conflict is resolved within the SAME integration call, never escalated -
     /// with no remediation attempt charged to either and no UnitFailed ever recorded (a conflict is
-    /// not a defect). Returns every spawn id the driver was called with and the run branch's
-    /// merged `c.rs`.
+    /// not a defect). The resolver's `~retry{n}` re-park emits a record the emit guard refuses
+    /// when `refused_retry` names it. Returns every spawn id the driver was called with, the run
+    /// branch's merged `c.rs` and the prompt each spawn id was launched with.
     fn assert_both_conflicting_units_land(
         regenerate: Vec<crate::config::RegenerateRule>,
-    ) -> (Vec<String>, String) {
-        let (repo, repo_path, store, driver) = conflict_fixture(regenerate.clone(), true);
+        refused_retry: Option<u32>,
+    ) -> (Vec<String>, String, HashMap<String, String>) {
+        let (repo, repo_path, store, mut driver) = conflict_fixture(regenerate.clone(), true);
+        driver.refused_retry = refused_retry;
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_retries = 3;
         cfg.workflow.regenerate = regenerate;
@@ -43363,7 +43396,7 @@ mod tests {
         let calls = driver.calls.lock().unwrap().clone();
         let merged = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
         drop(repo);
-        (calls, merged)
+        (calls, merged, driver.prompts.into_inner().unwrap())
     }
 
     #[test]
@@ -43374,7 +43407,7 @@ mod tests {
         // to win the integrate lock merges cleanly; the second's merge CONFLICTS, is re-parked
         // (never reset, never charged an attempt), resolves, and lands too - BOTH units
         // integrate, unlike the semantic post-merge-break case where the loser escalates.
-        let (calls, merged) = assert_both_conflicting_units_land(Vec::new());
+        let (calls, merged, _) = assert_both_conflicting_units_land(Vec::new(), None);
         // The re-parked implementer ran under a `~retry` id (spec 07's established free-
         // respawn shape), never a fresh `attempts` bump.
         assert!(
@@ -43390,17 +43423,39 @@ mod tests {
     }
 
     #[test]
+    fn a_conflict_resolver_whose_record_is_refused_re_runs_once_told_why_and_both_units_land() {
+        // A conflict resolver re-park whose record the emit guard refuses re-runs once, under
+        // the episode's next `~retry` id, told why - in the tree it already committed its
+        // resolution to - and the conflict still resolves within the same call, uncharged.
+        let (calls, merged, prompts) = assert_both_conflicting_units_land(Vec::new(), Some(1));
+        let rerun = calls
+            .iter()
+            .find(|id| id.ends_with("/implementer#0~retry2"))
+            .unwrap_or_else(|| panic!("the refused resolver re-runs once: {calls:?}"));
+        assert!(
+            prompts[rerun].contains(&format!(
+                "Your previous run's record was refused: {REFUSAL}"
+            )),
+            "the re-run's prompt names the refusal: {}",
+            prompts[rerun]
+        );
+        assert_eq!(merged, "RESOLVED\n", "the resolution lands");
+    }
+
+    #[test]
     fn integrate_conflict_confined_to_a_regenerable_path_resolves_with_no_spawn() {
         // Spec 88, criterion 1, Done-when: "a conflict confined to a registered regenerable
         // path is resolved by regeneration with no spawn." Same two-batch-mate textual
         // conflict as above, but `c.rs` is registered regenerable: the conductor must resolve
         // it ITSELF (running the registered command and committing) - the loser's implementer
         // is never re-parked a second time at all.
-        let (calls, merged) =
-            assert_both_conflicting_units_land(vec![crate::config::RegenerateRule {
+        let (calls, merged, _) = assert_both_conflicting_units_land(
+            vec![crate::config::RegenerateRule {
                 paths: vec!["c.rs".into()],
                 run: "printf 'REGENERATED\\n' > c.rs".into(),
-            }]);
+            }],
+            None,
+        );
         // NO SPAWN AT ALL for the conflict: no `~retry` implementer id anywhere the driver
         // was ever called with.
         assert!(
@@ -45468,13 +45523,24 @@ mod tests {
         );
     }
 
-    /// Run one merging, gated unit `s` in a real repo whose implementer writes the unit's feature
-    /// (so there is a real diff to commit and gate, the worktree is non-empty and control reaches
-    /// the sdet seam) - with an `sdet-author` agent configured when `with_sdet` (it authors
-    /// NOTHING, and its deterministic spawn CRASHES with a non-parked Err when `crash_sdet`).
-    /// The sdet-author is spawned at the seam exactly when configured (`spawn_why`), and the unit
-    /// still integrates (`why`): the build is never blocked by the sdet seam.
-    fn assert_sdet_seam_integrates(with_sdet: bool, crash_sdet: bool, spawn_why: &str, why: &str) {
+    /// A driver whose implementer writes the unit's feature, so a [`run_sdet_lane`] has a real
+    /// diff to commit and gate, the worktree is non-empty and control reaches the sdet seam.
+    /// `write_file_by_agent` is keyed on the agent id, so leaving the sdet out of it (and
+    /// `write_file: None`) means its spawn returns a normal result having written no periphery
+    /// file at all.
+    fn sdet_lane_driver() -> Stub {
+        Stub {
+            write_file_by_agent: HashMap::from([("worker".to_string(), "feature.rs".to_string())]),
+            ..Stub::new()
+        }
+    }
+
+    /// A run's own result and its whole log.
+    type RunAndLog = (Result<RunState, Error>, Vec<Event>);
+
+    /// Run one merging, gated unit `s` under `driver` in a real repo, with an `sdet-author` agent
+    /// configured when `with_sdet`: the run's own result and the whole log.
+    fn run_sdet_lane(with_sdet: bool, driver: &Stub) -> RunAndLog {
         let repo = temp_git_project_with_commit();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -45494,24 +45560,31 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        // `write_file_by_agent` is keyed on the agent id, so leaving the sdet out of it (and
-        // `write_file: None`) means its spawn returns a normal result having written no
-        // periphery file at all; `fail_spawn_ids` crashes ONLY the sdet spawn.
-        let mut driver = Stub {
-            write_file_by_agent: HashMap::from([("worker".to_string(), "feature.rs".to_string())]),
-            ..Stub::new()
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, driver, Vec::new())
         };
+        (run_isolated(&cfg, &deps), run_log(&st))
+    }
+
+    /// Run a [`run_sdet_lane`] whose sdet-author (configured when `with_sdet`) authors NOTHING,
+    /// and whose deterministic spawn CRASHES with a non-parked Err when `crash_sdet`
+    /// (`fail_spawn_ids` crashes ONLY the sdet spawn). The sdet-author is spawned at the seam
+    /// exactly when configured (`spawn_why`), and the unit still integrates (`why`): the build
+    /// is never blocked by the sdet seam.
+    fn assert_sdet_seam_integrates(with_sdet: bool, crash_sdet: bool, spawn_why: &str, why: &str) {
+        let mut driver = sdet_lane_driver();
         if crash_sdet {
             driver.fail_spawn_ids =
                 std::collections::HashSet::from([spawn_id("s", ROLE_SDET_AUTHOR, 0)]);
         }
-        let deps = Deps {
-            repo: repo.path().to_str().unwrap().to_string(),
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let rs = run_isolated(&cfg, &deps).unwrap();
+        let (rs, _) = run_sdet_lane(with_sdet, &driver);
         assert_eq!(driver.spawned(ROLE_SDET_AUTHOR), with_sdet, "{spawn_why}");
-        assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
+        assert_eq!(
+            rs.unwrap().units["s"].status,
+            ledger::Status::Integrated,
+            "{why}"
+        );
     }
 
     crate::test_cases! {
@@ -46711,6 +46784,171 @@ mod tests {
         );
     }
 
+    // --- A RECORD THE EMIT GUARD REFUSES RE-RUNS ITS SPAWN ONCE, TOLD WHY ---
+
+    /// The emit guard's refusal of [`refused_decision`].
+    const REFUSAL: &str = "refusing to emit: DecisionMade payload field `governs`";
+
+    /// A `DecisionMade` the fold cannot apply - its `governs` is a string, not an array - so the
+    /// emit guard refuses it before the append.
+    fn refused_decision() -> Vec<(String, Value)> {
+        vec![(
+            contextgraph::TYPE_DECISION_MADE.to_string(),
+            json!({"id": "d-bad", "summary": "s", "governs": "src/x.rs"}),
+        )]
+    }
+
+    /// `driver` with the spawns `ids` each emitting [`refused_decision`].
+    fn refusing_at(driver: Stub, ids: &[String]) -> Stub {
+        Stub {
+            emits_by_spawn_id: ids
+                .iter()
+                .map(|id| (id.clone(), refused_decision()))
+                .collect(),
+            ..driver
+        }
+    }
+
+    /// An author other than the implementer whose emitted record the guard refuses: the driver
+    /// its run starts from, the run (its result and its log), the `(unit, role, attempt)` its
+    /// refused spawn runs under, the agent whose prompts it reads, and whether, past its re-run,
+    /// the role's failure is its wave's lesson.
+    struct RefusedAuthor {
+        driver: fn() -> Stub,
+        run: fn(&Stub) -> RunAndLog,
+        seat: (&'static str, &'static str, u32),
+        agent: &'static str,
+        wave_lesson: bool,
+    }
+
+    /// The sdet author of a single-lane unit: past its re-run, its stage fails in its wave.
+    fn sdet_author_refused() -> RefusedAuthor {
+        RefusedAuthor {
+            driver: sdet_lane_driver,
+            run: |driver| run_sdet_lane(true, driver),
+            seat: ("s", ROLE_SDET_AUTHOR, 0),
+            agent: ROLE_SDET_AUTHOR,
+            wave_lesson: true,
+        }
+    }
+
+    /// The re-planner a plan-critique reject drives: past its re-run, the gate's error halts the
+    /// step.
+    fn re_planner_refused() -> RefusedAuthor {
+        RefusedAuthor {
+            driver: || reject_then_approve_critique(false),
+            run: |driver| {
+                let st = Store::open(":memory:").unwrap();
+                let rs = critique_step_under(&critique_cfg(), &st, driver);
+                (rs, run_log(&st))
+            },
+            seat: ("plan", ROLE_REPLAN, 1),
+            agent: "planner",
+            wave_lesson: false,
+        }
+    }
+
+    /// `author`'s spawns refuse a record on their first `refused` runs: the refused spawn re-runs
+    /// once, under its next `~retry` id, with a prompt naming the refusal, and never again. One
+    /// refusal is cleared by that re-run, so the run carries on; a second reaches the role's own
+    /// failure handling with the refusal text, unmarked. The refused record never lands.
+    fn assert_a_refused_record_reruns_its_spawn_once(author: RefusedAuthor, refused: usize) {
+        let (unit, role, attempt) = author.seat;
+        let ids: Vec<String> = (0..=2)
+            .map(|retry| spawn_retry_id(unit, role, attempt, retry))
+            .collect();
+        let driver = refusing_at((author.driver)(), &ids[..refused]);
+        let (rs, events) = (author.run)(&driver);
+        let spawned = driver.spawn_ids();
+        assert!(
+            spawned.contains(&ids[1]) && !spawned.contains(&ids[2]),
+            "the refused spawn re-runs once, under its next retry id: {spawned:?}"
+        );
+        let rerun = driver
+            .prompts_for(author.agent)
+            .last()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            rerun.contains(&format!(
+                "Your previous run's record was refused: {REFUSAL}"
+            )) && !rerun.contains('\u{1}'),
+            "the re-run's prompt names the refusal, unmarked: {rerun}"
+        );
+        assert!(
+            !payloads_of_type(&events, contextgraph::TYPE_DECISION_MADE)
+                .iter()
+                .any(|d| d["id"] == "d-bad"),
+            "the refused record lands nothing"
+        );
+        let lessons = wave_lessons(&events);
+        match rs {
+            Ok(_) => assert!(
+                refused == 1 && lessons.is_empty(),
+                "only a refusal its re-run cleared carries the run on: {lessons:?}"
+            ),
+            Err(e) => {
+                assert!(
+                    refused == 2 && e.0.contains(REFUSAL) && !e.0.contains('\u{1}'),
+                    "past its re-run, the refusal reaches the role's failure, unmarked: {e:?}"
+                );
+                assert_eq!(
+                    lessons.iter().any(|l| l.contains(REFUSAL)),
+                    author.wave_lesson,
+                    "the stage's wave lesson carries the refusal: {lessons:?}"
+                );
+            }
+        }
+    }
+
+    crate::test_cases! {
+        an_sdet_author_whose_record_is_refused_re_runs_once_told_why:
+            assert_a_refused_record_reruns_its_spawn_once(sdet_author_refused(), 1);
+        an_sdet_author_refused_again_fails_its_stage_with_the_refusal:
+            assert_a_refused_record_reruns_its_spawn_once(sdet_author_refused(), 2);
+        a_re_planner_whose_record_is_refused_re_runs_once_told_why:
+            assert_a_refused_record_reruns_its_spawn_once(re_planner_refused(), 1);
+        a_re_planner_refused_again_halts_the_gate_with_the_refusal:
+            assert_a_refused_record_reruns_its_spawn_once(re_planner_refused(), 2);
+    }
+
+    /// A speculation candidate's sdet author refused on its run and on its re-run loses the
+    /// candidate, as a crashed candidate does - a losing candidate has no continuation to carry
+    /// a reason into - and the next candidate races on and wins.
+    #[test]
+    fn a_speculation_candidate_whose_sdet_author_is_refused_again_loses_to_the_next() {
+        let repo = temp_git_project_with_commit();
+        let mut cfg = spec_cfg(2);
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        let st = Store::open(":memory:").unwrap();
+        let driver = refusing_at(
+            Stub {
+                write_file: Some("feature.rs".into()),
+                output: r#"{"verdict":"approve"}"#.into(),
+                ..Stub::new()
+            },
+            &[0, 1].map(|retry| spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, retry)),
+        );
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        let spawned = driver.spawn_ids();
+        assert_eq!(
+            (
+                spawned.contains(&spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, 1)),
+                spawned.contains(&spawn_id("s", ROLE_ADJUDICATOR, 0)),
+                spawned.contains(&spawn_id("s", ROLE_ADJUDICATOR, 1)),
+                rs.units["s"].status,
+            ),
+            (true, false, true, ledger::Status::Integrated),
+            "candidate 0's sdet re-runs once, then the candidate loses and candidate 1 wins: \
+             {spawned:?}"
+        );
+    }
+
     // --- Spec 112, criterion 5: A SPEC DEFECT STOPS THE RUN AT PLAN-CRITIQUE ---
 
     /// The spec the criterion-5 runs are launched with: minted through `start_fresh`, the way
@@ -47191,11 +47429,13 @@ mod tests {
                 .unwrap(),
             run[2].clone(),
         ];
-        let emitted = vec![
-            run[0].clone(),
-            Event::new(TYPE_UNIT_PROPOSED, b"{}".to_vec()).with_meta(META_SPAWN, re_plan_id(1)),
-            run[2].clone(),
-        ];
+        let emitted_by = |id: String| {
+            vec![
+                run[0].clone(),
+                Event::new(TYPE_UNIT_PROPOSED, b"{}".to_vec()).with_meta(META_SPAWN, id),
+                run[2].clone(),
+            ]
+        };
         let mut other_stop_done = run.clone();
         other_stop_done.push(
             Event::new(ledger::TYPE_UNIT_ESCALATED, b"{}".to_vec())
@@ -47205,17 +47445,19 @@ mod tests {
             (
                 stops_at(&run, 2),
                 stops_at(&answered, 2),
-                stops_at(&emitted, 2),
+                stops_at(&emitted_by(re_plan_id(1)), 2),
+                stops_at(&emitted_by(spawn_retry_id("plan", ROLE_REPLAN, 1, 1)), 2),
                 stops_at(&other_stop_done, 2),
             ),
             (
                 stopping.clone(),
                 stopping.clone(),
                 stopping.clone(),
+                stopping.clone(),
                 stopping
             ),
-            "a re-plan is recorded by its request, its result or an event it emitted; another \
-             attempt's completion key does not complete this stop"
+            "a re-plan is recorded by its request, its result or an event it or its re-run after \
+             a refusal emitted; another attempt's completion key does not complete this stop"
         );
     }
 
@@ -47277,6 +47519,14 @@ mod tests {
             (
                 "the re-plan the stopping reject would drive is recorded",
                 with(re_plan_requested(2)),
+                2,
+            ),
+            (
+                "the re-plan the stopping reject would drive re-ran after a refusal",
+                with(
+                    Event::new(TYPE_UNIT_PROPOSED, b"{}".to_vec())
+                        .with_meta(META_SPAWN, spawn_retry_id("plan", ROLE_REPLAN, 2, 1)),
+                ),
                 2,
             ),
             (
