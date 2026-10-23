@@ -1808,7 +1808,7 @@ const READ_ONLY_SURFACES: [&[&str]; 3] = [
 /// Run the read-only surface `args` ([`READ_ONLY_SURFACES`]) in `root`: its stdout, its stderr,
 /// whether it succeeded, and the notes it printed on its stderr in the order printed - every line
 /// opening `note: `, as the one each surface prints while `graph.db` owes its rebuild and the one
-/// `rigger validate` prints while the file holds `passed_over` rows do.
+/// `rigger validate` prints while the file counts events passed over, by cause, do.
 fn run_read_only(root: &Path, args: &[&str]) -> (String, String, bool, Vec<String>) {
     let (out, err, ok) = run_rigger(root, args);
     let notes = common::cli::lines_where(&err, |line| line.starts_with("note: "))

@@ -710,8 +710,8 @@ pub fn rebuild_lines(out: &str) -> Vec<String> {
 }
 
 /// The [`rebuild_lines`] of a `rigger setup` that rebuilt a `graph.db` missing an event the log
-/// holds and that then holds `passed_over` rows: `rejected` rejected payloads, `failed` fold
-/// failures and `unresolved` entries resolved to nothing ([`passed_over_line`]).
+/// holds and that then counts events passed over, by cause: `rejected` rejected payloads, `failed`
+/// fold failures and `unresolved` entries resolved to nothing ([`passed_over_line`]).
 pub fn rebuilt_passing_over(rejected: usize, failed: usize, unresolved: usize) -> Vec<String> {
     vec![
         LOST_FOLD_REBUILD_LINE.to_string(),
@@ -720,9 +720,9 @@ pub fn rebuilt_passing_over(rejected: usize, failed: usize, unresolved: usize) -
     ]
 }
 
-/// The line `rigger setup` prints once its graph step ends while `graph.db` holds `passed_over`
-/// rows (spec 124, CATCH-UP LINES): `rejected` rejected payloads, `failed` fold failures and
-/// `unresolved` entries resolved to nothing, counted by cause and in total
+/// The line `rigger setup` prints once its graph step ends while `graph.db` counts events passed
+/// over, by cause (spec 124, CATCH-UP LINES): `rejected` rejected payloads, `failed` fold failures
+/// and `unresolved` entries resolved to nothing, counted by cause and in total
 /// ([`super::fixtures::passed_over_counts`]).
 pub fn passed_over_line(rejected: usize, failed: usize, unresolved: usize) -> String {
     let (n, by_cause) = super::fixtures::passed_over_counts(rejected, failed, unresolved);

@@ -21,9 +21,9 @@ pub fn passed_over_counts(rejected: usize, failed: usize, unresolved: usize) -> 
 /// What every line reporting what a graph file passed over ends by saying of those events.
 pub const RETRIED_BY_A_LATER_RULE: &str = "a rebuild under a later fold rule retries them";
 
-/// The note `rigger validate` prints while `graph.db` holds `passed_over` rows (spec 124,
-/// CATCH-UP LINES): `rejected` rejected payloads, `failed` fold failures and `unresolved` entries
-/// resolved to nothing ([`passed_over_counts`]).
+/// The note `rigger validate` prints while `graph.db` counts events passed over, by cause (spec
+/// 124, CATCH-UP LINES): `rejected` rejected payloads, `failed` fold failures and `unresolved`
+/// entries resolved to nothing ([`passed_over_counts`]).
 pub fn passed_over_note(rejected: usize, failed: usize, unresolved: usize) -> String {
     let (n, by_cause) = passed_over_counts(rejected, failed, unresolved);
     format!("note: graph.db passed over {n} event(s) {by_cause}; {RETRIED_BY_A_LATER_RULE}")
