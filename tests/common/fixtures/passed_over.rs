@@ -6,8 +6,8 @@
 /// How a line reporting what a graph file passed over counts `rejected` rejected payloads,
 /// `failed` fold failures and `unresolved` entries resolved to nothing (spec 124, CATCH-UP
 /// LINES): their total, and their counts by cause in parentheses - as `rigger setup`'s
-/// passed-over line and the read-only note ([`passed_over_note`]) both spell them, each ending
-/// with [`RETRIED_BY_A_LATER_RULE`].
+/// passed-over line and `rigger validate`'s note ([`passed_over_note`]) both spell them, each
+/// ending with [`RETRIED_BY_A_LATER_RULE`].
 pub fn passed_over_counts(rejected: usize, failed: usize, unresolved: usize) -> (usize, String) {
     (
         rejected + failed + unresolved,
@@ -21,7 +21,7 @@ pub fn passed_over_counts(rejected: usize, failed: usize, unresolved: usize) -> 
 /// What every line reporting what a graph file passed over ends by saying of those events.
 pub const RETRIED_BY_A_LATER_RULE: &str = "a rebuild under a later fold rule retries them";
 
-/// The note a read-only surface prints while `graph.db` holds `passed_over` rows (spec 124,
+/// The note `rigger validate` prints while `graph.db` holds `passed_over` rows (spec 124,
 /// CATCH-UP LINES): `rejected` rejected payloads, `failed` fold failures and `unresolved` entries
 /// resolved to nothing ([`passed_over_counts`]).
 pub fn passed_over_note(rejected: usize, failed: usize, unresolved: usize) -> String {

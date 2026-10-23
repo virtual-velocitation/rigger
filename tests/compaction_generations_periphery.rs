@@ -9,8 +9,8 @@
 //!      supersede another's in a shared file.
 //!   3. **A `graph.db` folded before the generation rule.** It owes a rebuild from the log, which
 //!      `rigger setup` pays once; until then the fold-dependent commands refuse, `rigger reset
-//!      --derived` among them, and the read-only surfaces say the rebuild is owed - and, of a
-//!      `graph.db` that passed events over, how many by cause.
+//!      --derived` among them, and the read-only surfaces say the rebuild is owed - and `rigger
+//!      validate` alone, of a `graph.db` that passed events over, how many by cause.
 //!   4. **The shadow rebuild's seams.** Its sources (the live selection among them), its tail, an
 //!      emit that meets it, a fold that is lost, the prune it makes, what it passes over and the
 //!      counts read back by cause, and `graph.db.lock`.
@@ -1807,8 +1807,8 @@ const READ_ONLY_SURFACES: [&[&str]; 3] = [
 
 /// Run the read-only surface `args` ([`READ_ONLY_SURFACES`]) in `root`: its stdout, its stderr,
 /// whether it succeeded, and the notes it printed on its stderr in the order printed - every line
-/// opening `note: `, as the one a `graph.db` owing its rebuild prints and the one a file holding
-/// `passed_over` rows prints do.
+/// opening `note: `, as the one each surface prints while `graph.db` owes its rebuild and the one
+/// `rigger validate` prints while the file holds `passed_over` rows do.
 fn run_read_only(root: &Path, args: &[&str]) -> (String, String, bool, Vec<String>) {
     let (out, err, ok) = run_rigger(root, args);
     let notes = common::cli::lines_where(&err, |line| line.starts_with("note: "))
@@ -1845,8 +1845,7 @@ fn the_read_only_surfaces_say_the_rebuild_is_owed_write_nothing_and_stop_once_se
         assert_eq!(
             notes,
             vec![note.clone()],
-            "rigger {} says no more, a file without the passed_over table having passed nothing \
-             over; stderr: {err}",
+            "rigger {} says no more of a file without the passed_over table; stderr: {err}",
             args.join(" ")
         );
         assert!(
@@ -3116,20 +3115,26 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
     );
 }
 
-/// Given a `graph.db` that passed nothing over, every read-only surface ([`READ_ONLY_SURFACES`])
-/// prints no note. Given one whose rebuild passed two events over - payloads the fold rejects -
-/// when the operator runs each read-only surface, then it answers, says once how many events the
-/// file passed over, by cause, and writes nothing to the file; and once that file also owes its
-/// rebuild, each says so first and what the file passed over after it.
+/// Given a `graph.db` that passed nothing over, no read-only surface ([`READ_ONLY_SURFACES`])
+/// prints a note. Given one whose rebuild passed two events over - payloads the fold rejects -
+/// when the operator runs each read-only surface, then each answers and writes nothing to the
+/// file, `rigger validate` says once how many events the file passed over, by cause, and `rigger
+/// graph --show` and `rigger dash --export` say nothing of them; once that file also owes its
+/// rebuild, every surface says so first, and only `rigger validate` then says what it passed over.
 #[test]
-fn the_read_only_surfaces_say_once_what_graph_db_passed_over_by_cause_and_write_nothing() {
+fn validate_alone_says_what_graph_db_passed_over_and_no_read_only_surface_writes_to_it() {
     let dir = temp_store_project();
     let root = dir.path();
     common::cli::run_rigger_ok(root, &["init"]);
     emit_the_first_decision(root);
     let graph_db = rigger_file(root, "graph.db");
-    let each_surface_notes = |expected: &[String], why: &str| {
-        for args in READ_ONLY_SURFACES {
+    // The notes each surface of READ_ONLY_SURFACES prints, in its order: graph --show, validate,
+    // dash --export.
+    let each_surface_notes = |elsewhere: &[String], validate: &[String], why: &str| {
+        for (args, expected) in READ_ONLY_SURFACES
+            .into_iter()
+            .zip([elsewhere, validate, elsewhere])
+        {
             let before = std::fs::read(&graph_db).unwrap();
             let (out, err, ok, notes) = run_read_only(root, args);
             assert_eq!(
@@ -3142,6 +3147,7 @@ fn the_read_only_surfaces_say_once_what_graph_db_passed_over_by_cause_and_write_
     };
     each_surface_notes(
         &[],
+        &[],
         "prints no note for a graph.db that passed nothing over",
     );
 
@@ -3151,14 +3157,18 @@ fn the_read_only_surfaces_say_once_what_graph_db_passed_over_by_cause_and_write_
     setup_ok(root, &[("RIGGER_NPM", "true")]);
     let passed_over = common::fixtures::passed_over_note(2, 0, 0);
     each_surface_notes(
+        &[],
         std::slice::from_ref(&passed_over),
-        "says once what graph.db passed over, by cause",
+        "says what graph.db passed over, by cause, only when it is validate",
     );
 
     common::fixtures::stamp_user_version(&graph_db, 0);
+    let owed = rebuild_owed_note();
     each_surface_notes(
-        &[rebuild_owed_note(), passed_over],
-        "says first that the rebuild is owed, then what graph.db passed over",
+        std::slice::from_ref(&owed),
+        &[owed.clone(), passed_over],
+        "says first that the rebuild is owed, then what graph.db passed over only when it is \
+         validate",
     );
 }
 
