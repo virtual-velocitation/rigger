@@ -331,6 +331,8 @@ pub enum StaleCopy {
 pub struct Projector {
     conn: Mutex<Connection>,
     project: String,
+    /// The graph file this projector was opened on, the one [`Projector::rebuild`] rebuilds.
+    path: String,
     /// Where a failed fold marks this file as owing its rebuild ([`owed_mark`]).
     owed_mark: Option<PathBuf>,
 }
@@ -489,6 +491,7 @@ impl Projector {
         Ok(Projector {
             conn: Mutex::new(conn),
             project: project.to_string(),
+            path: path.to_string(),
             owed_mark: owed_mark(path),
         })
     }
@@ -502,8 +505,8 @@ impl Projector {
         take_rebuild_lock(path)?.ok_or_else(|| Error(REBUILD_IN_PROGRESS.to_string()))
     }
 
-    /// Pay the rebuild this projector's graph file - the one `held` names - owes (spec 101), and
-    /// report whether there was one to pay - `None` when there was not, else what it did
+    /// Pay the rebuild this projector's graph file - the file it was opened on - owes (spec 101),
+    /// and report whether there was one to pay - `None` when there was not, else what it did
     /// ([`Rebuilt`]): what its run-closure prune removed - owed because its caller found it so
     /// (`owed`: what [`Projector::owed_against`] read of its ledger against the log), or because
     /// the file itself records an older fold rule or carries the [`owed_mark`] a failed fold left,
@@ -536,9 +539,10 @@ impl Projector {
     /// The shadow is never pruned, because the drop set is not monotone in the log: an id a closed
     /// run recorded moves from drop to keep when the active run records it again, and a prune
     /// cannot be undone. So the shadow stays a pure fold of the live selection. The rebuild runs
-    /// only under `held`, the graph file's rebuild lock ([`Projector::lock_rebuild`]), which its
-    /// caller took before this opened or created anything and holds through the fold, the swap and
-    /// the tail until the cursor is dropped: a second rebuild is refused at its lock, never
+    /// only under `_held`, the graph file's rebuild lock ([`Projector::lock_rebuild`]), whose path
+    /// it never reads - the shadow and the pruned copy sit beside the file this projector was
+    /// opened on - and which its caller took before this opened or created anything and holds
+    /// through the fold, the swap and the tail until the cursor is dropped: a second rebuild is refused at its lock, never
     /// interleaved, whatever phase this one is in, and only this one ever has the shadow open
     /// ([`open_shadow`]), so it ends it by closing and then removing it ([`remove_shadow`]). An
     /// interrupted rebuild leaves the live file untouched, or swapped whole, and no lock - the OS
@@ -558,13 +562,13 @@ impl Projector {
     /// and the attribution together.
     pub fn rebuild(
         &self,
-        held: &RebuildLock,
+        _held: &RebuildLock,
         owed: bool,
         source: &mut RebuildSource,
         reextract: &mut Reextract,
         progress: &mut dyn FnMut(RebuildProgress),
     ) -> Result<Option<Rebuilt>, Error> {
-        let path = held.path();
+        let path = self.path.as_str();
         let project = self.project.as_str();
         let mut live = self.conn.lock().unwrap();
         let live = &mut *live;
