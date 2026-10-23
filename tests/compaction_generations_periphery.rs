@@ -859,7 +859,7 @@ fn a_rebuild_interrupted_in_its_tail_finishes_the_tail_on_the_next_call() {
             _ => Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string())),
         }
     });
-    assert_eq!(interrupted.unwrap_err().0, "interrupted");
+    assert_eq!(interrupted.unwrap_err().0, SOURCE_INTERRUPTED);
     assert_eq!(
         version_and_owed(&db, PROJECT),
         (PROJECTION_VERSION, false),
