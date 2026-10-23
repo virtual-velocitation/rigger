@@ -6057,10 +6057,10 @@ mod tests {
         )
     }
 
-    /// A rebuild passes over exactly the events whose payload the fold rejects - of any type the
-    /// fold reads a payload for - recording each in the `applied` ledger so the rebuilt file owes
-    /// nothing for them, and its cause, the judge's text, in `passed_over`; every other event
-    /// folds.
+    /// Of the events a rebuild folds from their own bytes, it passes over exactly those whose
+    /// payload the fold rejects - of any type the fold reads a payload for - recording each in the
+    /// `applied` ledger so the rebuilt file owes nothing for them, and its cause, the judge's text,
+    /// in `passed_over`; every other such event folds.
     #[test]
     fn a_rebuild_passes_over_only_a_payload_the_fold_rejects_recording_its_cause() {
         let malformed = crate::test_support::POISON;
