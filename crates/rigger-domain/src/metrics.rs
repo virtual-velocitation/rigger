@@ -2491,6 +2491,24 @@ mod tests {
         assert!((m.review_quality.adversary_precision() - 0.5).abs() < 1e-9);
     }
 
+    /// A finding citing lines of a file (`path:line`, `path:from-to`) is about that file: it
+    /// overlaps a lens's finding about the same file, and an adversary finding citing it is not
+    /// adversary-only.
+    #[test]
+    fn a_finding_citing_lines_of_a_file_is_about_that_file_in_the_review_folds() {
+        let events = vec![
+            finding("f1", "architecture-reviewer", &["src/shared.rs:12"]),
+            courier_finding("f2", "lens:sdet", &["src/shared.rs"]),
+            courier_finding("a1", "adversary", &["src/shared.rs:40-44"]),
+        ];
+        let rq = project(&events).review_quality;
+        assert_eq!(
+            (rq.finding_files, rq.overlap_files, rq.adversary_only.raised),
+            (1, 1, 0),
+            "one file, flagged by three actors, and no adversary-only finding"
+        );
+    }
+
     #[test]
     fn cost_per_upheld_finding_is_spawns_over_upheld_per_tier() {
         // Realistic courier shape: the per-tier spawns and the `by`-attributed findings ride
