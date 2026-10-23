@@ -48,11 +48,11 @@ use rigger_domain::wave::{
 pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_out_templates};
 // The agent-host port, moved inward to `rigger-domain` (workspace split) so the driver adapters
 // implement it without naming the conductor; re-exported so every `conductor::` path holds.
-use rigger_domain::agent::PARKED_MARKER;
 pub use rigger_domain::agent::{
     classify_failure, no_result_error, parked_spawn, spawn_request, strip_failure_marker,
     AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
 };
+use rigger_domain::agent::{EMIT_REFUSED_MARKER, PARKED_MARKER};
 #[cfg(test)]
 use rigger_domain::wave::{ready_stages, unit_slug};
 
@@ -1418,6 +1418,18 @@ impl PriorFailure {
     }
 }
 
+/// Commit unit `unit`'s worktree `wt` as its attempt `attempts + 1` checkpoint: the commit an
+/// attempt's edits land in whether it reached its gates (§3.2: they measure exactly the
+/// committed artifact) or the emit guard refused a record it printed, so a failed attempt's
+/// `UnitFailed` carries that sha either way and an escalation's teardown keeps the edits on the
+/// unit's branch. A no-op on the worktree-less path (`None`).
+fn checkpoint_attempt(wt: Option<&Worktree>, unit: &str, attempts: u32) -> Result<(), Error> {
+    if let Some(w) = wt {
+        w.commit_checkpoint(&format!("rigger: {unit} attempt {}", attempts + 1))?;
+    }
+    Ok(())
+}
+
 /// How a unit ENTERS its lifecycle on this run (resume-continuity). A unit that ran
 /// in a prior window CONTINUES from its recorded phase - its deterministic branch is
 /// the durable checkpoint carrying the committed work - instead of restarting from
@@ -1448,11 +1460,12 @@ pub fn is_parked(e: &Error) -> bool {
     carries_marker(e, PARKED_MARKER)
 }
 
-/// Whether `e` carries the halt sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
+/// Whether `e` carries the sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
 /// [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`], [`PLAN_LANDING_MARKER`] or
-/// [`LAND_REFUSED_MARKER`]) - that halt's signal rather than a real spawn or stage failure.
-/// Robust to the conductor's own `format!("... {}", e.0)` wrapping at every call site, since
-/// each marker survives as a substring.
+/// [`LAND_REFUSED_MARKER`], each a halt's signal, or [`EMIT_REFUSED_MARKER`], the emit guard's
+/// refusal of a record the spawn emitted) rather than a plain spawn or stage failure. Robust to
+/// the conductor's own `format!("... {}", e.0)` wrapping at every call site, since each marker
+/// survives as a substring.
 fn carries_marker(e: &Error, marker: &str) -> bool {
     e.0.contains(marker)
 }
@@ -3299,7 +3312,9 @@ impl RunCtx<'_> {
     /// replays through it - built like [`emit_meta`](RunCtx::emit_meta) with the spawn's `stamps`,
     /// then judged by the one emit guard every emit surface runs ([`Deps::check_emit`]) before it
     /// is appended. A payload the fold cannot apply, or a record whose id another seat holds,
-    /// lands nothing, and the refusal is the callback's error, so it is the spawn's.
+    /// lands nothing, and the refusal is the callback's error, so it is the spawn's, marked
+    /// with [`EMIT_REFUSED_MARKER`] so the implementer's attempt is charged with it, never rerun as
+    /// infra.
     fn emit_agent(
         &self,
         type_: &str,
@@ -3307,7 +3322,8 @@ impl RunCtx<'_> {
         stamps: &[(&str, &str)],
     ) -> Result<(), Error> {
         let ev = event_with_meta(type_, payload, stamps)?;
-        (self.deps.check_emit)(self.deps.store, STREAM, &ev).map_err(Error)?;
+        (self.deps.check_emit)(self.deps.store, STREAM, &ev)
+            .map_err(|refusal| Error(format!("{EMIT_REFUSED_MARKER}{refusal}")))?;
         self.append_and_fold(ev).map(|_| ())
     }
 
@@ -5699,6 +5715,13 @@ impl RunCtx<'_> {
             // result is consumed (and on the resume-skip path, which re-uses a prior
             // window's diff without a fresh spawn), so its metadata is then omitted.
             let mut resolved_model = String::new();
+            // A fresh accumulator for THIS attempt's failure specifics (item 3 + 5). The
+            // REQUIRED list stays open until a review round rules on it, so a crash or a red
+            // gate before the review carries it to the next attempt.
+            let mut next = PriorFailure {
+                required: prior.required.clone(),
+                ..PriorFailure::default()
+            };
             if skip_implement {
                 // Reuse the prior window's committed implementation: re-record the
                 // `green` status (the ledger reflects the reused diff) without
@@ -5867,6 +5890,19 @@ impl RunCtx<'_> {
                     // UnitFailed and no remediation, so the step ends once every
                     // in-flight spawn is parked and a later step replays the result.
                     Err(e) if is_parked(&e) => return Err(e),
+                    // A record this spawn emitted that the emit guard refused (a payload the
+                    // fold cannot apply, an id another seat holds) is a defect in what the
+                    // attempt printed, not an outage: an uncharged rerun would reprint it. It is
+                    // charged like a review reject - CAUSE_REJECT already covers "this unit's
+                    // output was refused" - and the refusal rides into the next attempt's
+                    // prompt, so the agent learns why. Its edits are committed as the attempt's
+                    // checkpoint, as a gate failure's are before its gates run, so the UnitFailed
+                    // below carries that sha and an escalation's teardown keeps them.
+                    Err(e) if carries_marker(&e, EMIT_REFUSED_MARKER) => {
+                        checkpoint_attempt(wt, &st.name, attempts)?;
+                        cause = CAUSE_REJECT.to_string();
+                        next.review_reason = strip_failure_marker(&e);
+                    }
                     // A mid-spawn crash (a non-zero exit, a live host's wall-clock stop) is
                     // an infrastructure failure: rerun uncharged at the same attempt (F3)
                     // below, never propagated - it must not abort the whole run (§8).
@@ -5885,21 +5921,15 @@ impl RunCtx<'_> {
                 }
             }
 
-            // A fresh accumulator for THIS attempt's failure specifics (item 3 + 5). The
-            // REQUIRED list stays open until a review round rules on it, so a crash or a red
-            // gate before the review carries it to the next attempt.
-            let mut next = PriorFailure {
-                required: prior.required.clone(),
-                ..PriorFailure::default()
-            };
             // The unit's own lifecycle (§3.2): implement -> the unit's gates -> the
             // three-tier review OF THIS UNIT -> integrate. The gates and the
             // adjudicator's verdict BOTH gate integration: a gate failure OR a reject
             // feeds back into this same loop (re-ground via build_prompt, re-implement
             // WITH THE FEEDBACK, re-review) and escalates after the retry bound. Review
             // runs only once the implementer's own gates are green, so the lenses never
-            // review a red diff.
-            if spawn_err.is_none() {
+            // review a red diff. None of it runs once the spawn itself failed this attempt
+            // (a crash or a refused emit, each setting `cause` above).
+            if cause.is_empty() {
                 // A `produces` (planner) stage emits a DAG, NOT code: its agent has
                 // just proposed the units (UnitProposed events). It wrote no diff, so
                 // there is nothing to gate, nothing for the three-tier review to read
@@ -5994,13 +6024,7 @@ impl RunCtx<'_> {
                     // Committing here collapses gate-green to committed-green. The
                     // worktree-less path (no `wt`, e.g. an `isolation: none` agent or a
                     // repo-less run) has no commit step and is unchanged.
-                    if let Some(w) = wt {
-                        w.commit_checkpoint(&format!(
-                            "rigger: {} attempt {}",
-                            st.name,
-                            attempts + 1
-                        ))?;
-                    }
+                    checkpoint_attempt(wt, &st.name, attempts)?;
                     // Blast-radius gate selection (spec 12, unit 3): the implement/remediate
                     // INNER LOOP runs only the gates whose `inputs:` intersect the unit's grounded
                     // blast radius (its `grounded_seed`, the SAME radius the spawn uses),
@@ -7480,15 +7504,16 @@ impl RunCtx<'_> {
                     // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
                     // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream). And the LIVE
                     // drivers (cli / workflow) never RECORD a spawn result, so `review_spawn_errored`
-                    // is false there and a genuine in-process review failure still propagates to
-                    // remediation exactly as before - only a REPLAYED recorded error re-parks.
+                    // is false there and a genuine in-process review failure still propagates as
+                    // the stage's error exactly as before - only a REPLAYED recorded error re-parks.
                     if !is_parked_or_budget_refused(&e) && self.review_spawn_errored(&id)? {
                         continue;
                     }
-                    // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` only recognizes
-                    // its own `\u{2}` prefix, so a PARKED_MARKER/BUDGET_MARKER error
-                    // (`\u{1}`-prefixed) still passes through byte-for-byte unchanged
-                    // here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream are unaffected.
+                    // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
+                    // `\u{2}`-bracketed class and the emit guard's refusal marker, so a
+                    // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
+                    // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
+                    // are unaffected.
                     return Err(Error(format!(
                         "stage {:?} {tier} {agent_id:?}: {}",
                         st.name,
@@ -8086,10 +8111,10 @@ impl RunCtx<'_> {
                 &emit,
             )
             .map_err(|e| {
-                // adj-u104c5 REQUIRED FIX 2: strip a FAILURE_MARKER-bracketed class
-                // before it reaches this wrapped, operator-visible text - a no-op for
-                // every other marker (park/budget survive, see the review-tier site's
-                // own comment) and every marker-free driver error.
+                // adj-u104c5 REQUIRED FIX 2: strip a FAILURE_MARKER-bracketed class (or
+                // an emit refusal's marker) before it reaches this wrapped,
+                // operator-visible text - a no-op for park/budget (they survive, see the
+                // review-tier site's own comment) and every marker-free driver error.
                 Error(format!(
                     "plan-critique re-plan {:?}: {}",
                     plan_st.agent,
@@ -12389,7 +12414,9 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 ///   proved this one wrong - a deferred reject, since the disqualifying signal is itself
 ///   a review verdict), and a producer's own commit touching a path outside `specs/`
 ///   (spec 88 criterion 4: the conductor's OWN scope check refuses the unit's output,
-///   the same kind of refusal a review verdict is).
+///   the same kind of refusal a review verdict is), and a record the implementer emitted
+///   that the emit guard refused (a payload the fold cannot apply, an id another seat
+///   holds: the guard refuses the unit's output the same way).
 /// - [`CAUSE_INTEGRATE_CONFLICT`]: the merge landed cleanly but the POST-MERGE re-gate
 ///   went red - a batch-mate's already-integrated change combined into a broken tree -
 ///   or a producer's `specs/`-only cherry-pick conflicted with a concurrent operator
