@@ -9,8 +9,8 @@
 //!      supersede another's in a shared file.
 //!   3. **A `graph.db` folded before the generation rule.** It owes a rebuild from the log, which
 //!      `rigger setup` pays once; until then the fold-dependent commands refuse, `rigger reset
-//!      --derived` among them, and the read-only surfaces say the rebuild is owed - and, of any
-//!      `graph.db`, what it passed over, by cause.
+//!      --derived` among them, and the read-only surfaces say the rebuild is owed - and, of a
+//!      `graph.db` that passed events over, how many by cause.
 //!   4. **The shadow rebuild's seams.** Its sources (the live selection among them), its tail, an
 //!      emit that meets it, a fold that is lost, the prune it makes, what it passes over and the
 //!      counts read back by cause, and `graph.db.lock`.
