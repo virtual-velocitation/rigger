@@ -7537,6 +7537,27 @@ mod tests {
         );
     }
 
+    /// A record citing lines of a file (`path:line`, `path:from-to`) seeds that file, the node
+    /// the graph holds, never the citation, which names no node.
+    #[test]
+    fn graph_seeds_seed_the_file_a_record_citing_its_lines_names() {
+        let events = vec![
+            ev(
+                "DecisionMade",
+                r#"{"id":"d1","summary":"x","governs":["a.rs:3-9"]}"#,
+            ),
+            ev(
+                "ReviewFinding",
+                r#"{"id":"f1","by":"sdet","about":["b.rs:12"]}"#,
+            ),
+        ];
+        assert_eq!(
+            graph_seeds(&events),
+            ["a.rs", "b.rs", "d1", "f1"],
+            "the cited files are seeded, never the citations"
+        );
+    }
+
     #[test]
     fn a_units_seed_lands_on_the_neighborhood_of_its_decisions_and_files() {
         // Spec 43 criterion 5 (the click-to-seed re-point): with the KIND_UNIT node gone, seeding
