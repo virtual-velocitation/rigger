@@ -5985,6 +5985,20 @@ mod tests {
         e
     }
 
+    /// A lesson at `position` whose payload, an empty array, the judge rejects.
+    fn rejected_lesson_at(position: u64) -> Event {
+        event_at(TYPE_LESSON_LEARNED, b"[]", position)
+    }
+
+    /// The `passed_over` row a fold pass records for the event `e`, whose own payload the judge
+    /// rejects: its position and its `payload rejected` cause.
+    fn rejected_row(e: &Event) -> (u64, String) {
+        (
+            e.position,
+            crate::test_support::judged_cause(PAYLOAD_REJECTED, &e.type_, &e.data),
+        )
+    }
+
     /// What the rebuild source of the tests that stop a rebuild in its tail answers there.
     const TAIL_INTERRUPTED: &str = "interrupted in its tail";
 
@@ -6113,7 +6127,7 @@ mod tests {
         let before = [
             event_at(TYPE_DECISION_MADE, crate::test_support::POISON, 1),
             decision_at("d2", "a.rs", 2),
-            event_at(TYPE_LESSON_LEARNED, b"[]", 3),
+            rejected_lesson_at(3),
         ];
         let gained = [event_at(TYPE_REVIEW_FINDING, b"7", 4)];
         let dir = tempfile::tempdir().unwrap();
@@ -6136,12 +6150,6 @@ mod tests {
             )
             .unwrap();
         let p = Projector::open(path, "test").unwrap();
-        let rejected = |e: &Event| {
-            (
-                e.position,
-                crate::test_support::judged_cause(PAYLOAD_REJECTED, &e.type_, &e.data),
-            )
-        };
         assert_eq!(
             (
                 rebuilt.map(|r| r.pruned),
@@ -6152,9 +6160,9 @@ mod tests {
                 Some(PruneStats::default()),
                 vec![true; 4],
                 vec![
-                    rejected(&before[0]),
-                    rejected(&before[2]),
-                    rejected(&gained[0])
+                    rejected_row(&before[0]),
+                    rejected_row(&before[2]),
+                    rejected_row(&gained[0])
                 ],
             ),
             "two passed over by the fold and one by the tail, each recorded as folded"
@@ -6279,6 +6287,49 @@ mod tests {
             "no mark is written, the file owes nothing, and the batch's other position committed"
         );
         crate::test_support::folds(&p, &[decision_at("d6", "f.rs", 6)]);
+    }
+
+    /// Spec 124, the direct fold's own-position answer when a batch holds two of its own positions
+    /// already passed over, each with a different cause, beside one that folds: the batch commits
+    /// the position that folds and answers the FIRST passed-over position's cause.
+    #[test]
+    fn a_direct_batch_meeting_two_passed_over_positions_answers_the_first_ones_cause() {
+        use crate::contextgraph::Fold;
+        let (_dir, path) = crate::test_support::temp_graph_db();
+        let log = [
+            crate::test_support::poisoned_decision_at(1),
+            rejected_lesson_at(2),
+            decision_at("d-folds", "g.rs", 3),
+        ];
+        assert_eq!(
+            crate::test_support::rebuild_answer(
+                &path,
+                true,
+                &mut |after, sink| stream_past(&log, after, 10, sink),
+                &mut |_| Ok(None),
+            ),
+            crate::test_support::clean_rebuild()
+        );
+        let p = Projector::open(&path, "test").unwrap();
+        let (first, second) = (rejected_row(&log[0]), rejected_row(&log[1]));
+        let batch = [
+            log[0].clone(),
+            log[1].clone(),
+            decision_at("d-commits", "h.rs", 4),
+        ];
+        assert_eq!(
+            (
+                crate::test_support::passed_over_rows(&path),
+                crate::test_support::fold_of(&p, &batch),
+                applied(&p, 4),
+            ),
+            (
+                vec![first.clone(), second],
+                Fold::NotFolded(crate::test_support::graph_error(&first.1)),
+                true,
+            ),
+            "the batch answers the first of its passed-over positions' causes and commits the rest"
+        );
     }
 
     /// A rebuild that meets a storage error folding an event whose payload the fold reads is not a
