@@ -22,7 +22,7 @@ struct DecisionMade {
     id: String,
     #[serde(default)]
     summary: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "referenced_ids")]
     governs: Vec<String>,
     #[serde(default)]
     supersedes: String,
@@ -53,7 +53,7 @@ struct LessonLearned {
     id: String,
     #[serde(default)]
     summary: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "referenced_ids")]
     about: Vec<String>,
 }
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -66,8 +66,19 @@ struct ReviewFinding {
     unit: String,
     #[serde(default)]
     summary: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "referenced_ids")]
     about: Vec<String>,
+}
+
+/// A record's references - a decision's `governs`, a lesson's or finding's `about` - each read as
+/// the node id it names ([`query::referenced_id`]): a reference citing lines of a file folds onto
+/// that file's node, so every reader seeding by the file reaches the record.
+#[cfg(any(feature = "store", not(feature = "core")))]
+fn referenced_ids<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    Ok(Vec::<String>::deserialize(d)?
+        .iter()
+        .map(|r| query::referenced_id(r).to_string())
+        .collect())
 }
 
 /// Checks that `data` has the payload shape the fold reads for an event of type `type_`, by

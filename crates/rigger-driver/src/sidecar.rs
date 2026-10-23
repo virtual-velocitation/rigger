@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 use crate::contextgraph;
+use crate::contextgraph::query::referenced_id;
 use crate::eventstore::{self, Event, EventStore};
 use crate::run;
 
@@ -33,7 +34,7 @@ pub struct PeerDecision {
 /// This is how concurrent lenses see each other's findings LIVE: a lens emits a
 /// ReviewFinding, the side-car's catch-up subscription picks it up, and a fellow
 /// lens re-checking `rigger_peers` scoped to its files reads it back - the same
-/// channel that surfaces peer decisions, scoped on the finding's `about` files.
+/// channel that surfaces peer decisions, scoped on the files the finding's `about` names.
 #[derive(Clone, Debug, Deserialize)]
 pub struct PeerFinding {
     pub id: String,
@@ -64,7 +65,8 @@ pub struct PeerLesson {
 pub trait Peer: DeserializeOwned {
     /// The event type every record of this kind is decoded from.
     const EVENT_TYPE: &'static str;
-    /// The files a record of this kind is scoped on.
+    /// The references a record of this kind is scoped on, each naming the node id
+    /// [`referenced_id`] reads from it.
     const SCOPE: fn(&Self) -> &[String];
 
     /// Every record of this kind in `seen`, in stream order - each matching event's body
@@ -143,8 +145,10 @@ impl Sidecar {
     }
 
     /// The peer records of kind `T` scoped to an agent's blast-radius (§5.3): a peer record is
-    /// relevant only when its [`Peer::SCOPE`] files (a decision's `governs`, a finding's or
-    /// lesson's `about`) intersect the agent's blast-radius. An empty `blast_radius` means "no
+    /// relevant only when the files its [`Peer::SCOPE`] references name (a decision's `governs`,
+    /// a finding's or lesson's `about`) intersect the files the agent's blast-radius names, each
+    /// side read through [`referenced_id`] - so a record citing `a.rs:12` is scoped on `a.rs`. The
+    /// record comes back with its references as written. An empty `blast_radius` means "no
     /// scope" and returns every record (the unscoped [`Self::peers`] behavior), so a caller that
     /// does not know its files still sees its peers.
     pub fn peers_for<T: Peer>(&self, blast_radius: &[String]) -> Vec<T> {
@@ -153,9 +157,13 @@ impl Sidecar {
             return all;
         }
         let scope: std::collections::HashSet<&str> =
-            blast_radius.iter().map(String::as_str).collect();
+            blast_radius.iter().map(|f| referenced_id(f)).collect();
         all.into_iter()
-            .filter(|p| (T::SCOPE)(p).iter().any(|f| scope.contains(f.as_str())))
+            .filter(|p| {
+                (T::SCOPE)(p)
+                    .iter()
+                    .any(|f| scope.contains(referenced_id(f)))
+            })
             .collect()
     }
 }

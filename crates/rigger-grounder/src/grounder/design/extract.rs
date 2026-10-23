@@ -37,6 +37,7 @@
 
 use std::collections::BTreeSet;
 
+use rigger_domain::contextgraph::query::sans_line_span;
 use rigger_domain::spec::{code_spans, fenced_code_lines};
 
 use crate::grounder::design::model::{ConceptKind, DesignConcept, DesignLink, LinkRel};
@@ -388,21 +389,10 @@ fn sans_anchor(s: &str) -> &str {
 }
 
 /// The path a mention `s` names: `s` without its `#anchor` and without one trailing `:line` or
-/// `:line-line` suffix. A suffix of any other shape is part of the path as written.
+/// `:line-line` suffix ([`sans_line_span`]). A suffix of any other shape is part of the path as
+/// written.
 fn named_path(s: &str) -> &str {
-    let path = sans_anchor(s);
-    match path.rsplit_once(':') {
-        Some((file, span)) if is_line_span(span) => file,
-        _ => path,
-    }
-}
-
-/// Whether `s` is a line or a `from-to` line span: non-empty runs of ASCII digits.
-fn is_line_span(s: &str) -> bool {
-    let (from, to) = s.split_once('-').unwrap_or((s, s));
-    [from, to]
-        .iter()
-        .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    sans_line_span(sans_anchor(s))
 }
 
 /// Whether `p` (a path, ignoring any `#anchor`) is a markdown doc.
