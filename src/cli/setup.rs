@@ -3747,22 +3747,25 @@ mod tests {
     /// walk's generators as commands over the unit's whole range on every round (the merge base
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
     /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
-    /// per item of the walk's hunk list and paired with it in the record, each item the hunks
-    /// add - a SQL conjunct inside a query string included - carrying its one-home line in one
-    /// of the working discipline's three forms, the item list read by shape as well as by name
-    /// with every added predicate under `ADDED PREDICATES` and a set of named members searched
-    /// by each member's name, each FIXED or new line's `file:line` witness, one per case the
-    /// code splits a quantified sentence's subject into with the cases named, the rule-spelling
-    /// search over every tracked text file, one run per pair of short terms - the feature's name
-    /// and the rule's noun phrase, both on one joined line with any words between - for a
-    /// rewritten rule's old statement and each label its cases carried (a term in another case
-    /// or a sentence split by a rewrap still a hit) whose command and hits the walk pastes for
-    /// the `sdet` lens to re-run, each boolean term a production hunk adds to or removes from a
-    /// filter, guard or predicate read as a rewritten rule whose consumer phrases - the notes,
-    /// Returns paragraphs, variant docs and oracles of the function's depth-1 callers - that
-    /// search runs as the function's name and the old answer's noun, and the foreground wait for
-    /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
-    /// line when the host backgrounds one.
+    /// per item of the walk's hunk list, each item the hunks add - a SQL conjunct inside a query
+    /// string included - carrying its one-home line in one of the working discipline's three
+    /// forms, the item list read by shape as well as by name with every added predicate an item,
+    /// a changed condition among them, and a set of named members searched by each member's
+    /// name, the rule-spelling search over every tracked text file, one run per pair of short
+    /// terms - the feature's name and the rule's noun phrase, both on one joined line with any
+    /// words between - for a rewritten rule's old statement and each label its cases carried (a
+    /// term in another case or a sentence split by a rewrap still a hit), each boolean term a
+    /// production hunk adds to or removes from a filter, guard or predicate read as a rewritten
+    /// rule whose consumer phrases - the notes, Returns paragraphs, variant docs and oracles of
+    /// the function's depth-1 callers - that search runs as the function's name and the old
+    /// answer's noun, the walk's record bounded so it is written in one pass - each command with
+    /// its hit count and never its hits, every FIXED sentence with its `file:line` witness, one
+    /// per case the code splits a quantified sentence's subject into, each added doc block with
+    /// its witness, each added item with its one-home line and the CHECKED remainder as one count
+    /// per command, no per-hit disposition, per-item count block or predicate heading owed - that
+    /// satisfies the hand-over while the `sdet` lens re-runs the searches and reads the hits
+    /// itself, and the foreground wait for the long runs (the test binaries on both lanes and a
+    /// lane script), polled to its exit line when the host backgrounds one.
     #[test]
     fn the_author_roles_carry_one_hand_over_block_naming_the_checks_and_the_test_homes() {
         const HEADING: &str = "## Hand-over checks in this project";
@@ -3822,38 +3825,42 @@ mod tests {
             "The count and the caller lookup run once per item of the walk's hunk list - every \
              item the hunks touch, new or pre-existing, its body or its doc changed - each \
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
-             xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
-             and the record pairs each item of the hunk list with its count, the lines read and \
-             its callers.",
+             xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name.",
             "Each item the hunks add - a constant, static, list, closure, predicate - a SQL \
-             conjunct inside a query string included - or fn - carries beside its count its \
-             one-home line in one of the working discipline's three forms: `no other \
-             spelling` with the terms searched (its name count, its caller lookup and the \
-             fact's distinguishing literal - a table name, a kind string - run with the count \
-             above), `derived from <file:line>` or `pinned to <file:line> by <test>`.",
+             conjunct inside a query string included - or fn - carries its one-home line in one \
+             of the working discipline's three forms: `no other spelling` with the terms \
+             searched (its name count, its caller lookup and the fact's distinguishing literal - \
+             a table name, a kind string - run with the count above), `derived from <file:line>` \
+             or `pinned to <file:line> by <test>`.",
             "The item list is read from the hunks by shape as well as by name: every boolean \
              expression they add - an `if`, `else if`, `while` or match-guard condition, each \
              operand of an `&&` or `||` chain inside one, the body of a closure passed to \
              `filter`, `any`, `all`, `retain`, `position` or `find`, a conjunct inside a query, \
-             format or macro string - is quoted with its `file:line` under the record's `ADDED \
-             PREDICATES` heading with its one-home line, a changed condition among them listed \
-             there too, and two of one fact are lifted to one home or `pinned to` each other.",
+             format or macro string - is an item with its `file:line` and its one-home line, a \
+             changed condition among them included, and two of one fact are lifted to one home \
+             or `pinned to` each other.",
             "A set of named members - an array of constants, an `IN (..)` list, a `matches!` or \
              `match` arm per member, an `||` chain of equalities - runs the count above once per \
              member's name, every statement, `match` or macro call holding two or more members \
              read as a second spelling of the set, and its line names the member sites it read.",
-            "The walk is recorded as one `<unit>-sentence-walk` DecisionMade naming what each \
-             generator returned and every sentence FIXED with its location.",
+            "The walk is recorded as one `<unit>-sentence-walk` DecisionMade, bounded so you \
+             write it in one pass.",
+            "It carries each generator and search command as run with its hit count, never its \
+             pasted hits; every sentence FIXED, with its `file:line` and the `file:line` of the \
+             code at head that makes it true, one witness per case for a sentence with a \
+             quantifier (every, all, always, any, a plural subject with a predicate) - each arm, \
+             key component, filter condition or match branch the code splits its subject into, \
+             the cases named; each doc block the unit added, by `file:line`, with its witness; \
+             each item the unit adds with its one-home line; and the CHECKED remainder as one \
+             count per command.",
+            "It owes no per-hit or per-line disposition, no count block beside each item and no \
+             section of its own for added or changed conditions.",
+            "This bounded record satisfies the hand-over; the `sdet` lens re-runs the generators \
+             and searches on the review tree and reads the hits itself.",
             "On every round, the first and each later one alike, `<base>` is the unit's merge \
              base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
              `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the \
              round's delta your prompt carries.",
-            "Each FIXED or new line of the record carries its witness beside that location: the \
-             `file:line` of the code at head that makes the sentence true.",
-            "A sentence with a quantifier (every, all, always, any, a plural subject with a \
-             predicate) carries one witness per case the code splits its subject into - each \
-             arm, key component, filter condition or match branch - the cases named in the \
-             record.",
             "END { print n + 0 \" hits\" }'`",
             "Each rule the change rewrites is searched by two short terms for its old statement \
              and for each label its cases carried (a name a doc, test or comment gives a case \
@@ -3871,10 +3878,6 @@ mod tests {
              name>' b='<noun phrase>' xargs awk",
             "index(s, a) && index(s, b) || index(j, a) && index(j, b) && !(index(p, a) && \
              index(p, b))",
-            "The `<unit>-sentence-walk` record pastes each command as run, its hit count and \
-             every hit it printed, each FIXED or CHECKED with its reason, or names the \
-             rewritten-rule set empty; the `sdet` lens re-derives the generators' sets and \
-             re-runs each search on the review tree.",
             "A changed condition rewrites a rule too: every boolean term your production hunks \
              in `crates/` and `src/` add to or remove from a filter, guard or predicate, listed \
              from `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src` with the test \
@@ -3882,9 +3885,9 @@ mod tests {
             "Its old statement is what the function's callers from `rigger graph --around \
              <file>::<fn> --depth 1` spell - the notes they print, their Returns paragraphs, the \
              docs of the variants the answer maps to and the oracles asserting them - and each \
-             such consumer phrase runs as a pair of the search above, the function's name as \
-             the code spells it and the old answer's noun, one run per pair, every hit FIXED \
-             with the new qualifier or CHECKED with the reason it does not reach it.",
+             such consumer phrase runs as a pair of the search above, the function's name as the \
+             code spells it and the old answer's noun, one run per pair, every hit FIXED with \
+             the new qualifier or CHECKED where it does not reach it.",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
@@ -3910,6 +3913,12 @@ mod tests {
             !block.contains("test-shape-audit"),
             "the hand-over block owes no per-statement test-shape record"
         );
+        for retired in ["ADDED PREDICATES", "every hit it printed"] {
+            assert!(
+                !block.contains(retired),
+                "the bounded walk record owes no {retired:?}"
+            );
+        }
     }
 
     /// The author block's rule-spelling search runs as the block spells it: a line, joined with
