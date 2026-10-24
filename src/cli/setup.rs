@@ -697,8 +697,8 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // criterion 4).
     let scaffold = init_project(root, TEMPLATE_SETS)?;
     // Pay the one cold rebuild a `graph.db` owes (spec 101) - folded under an older fold rule, or
-    // missing an event the log holds: the only command that rebuilds it, because it is the verb
-    // every install already runs.
+    // missing an event the log holds, in the cases `rebuild_owed_graph` names: the only command
+    // that rebuilds it, because it is the verb every install already runs.
     let graph_rebuilt = rebuild_owed_graph()?;
     let workflow = install_workflow(root)?;
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
@@ -875,19 +875,19 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
 const REBUILD_BATCH: usize = 10_000;
 
 /// Rebuild this project's `graph.db` from the event log when it owes that rebuild (spec 101) - it
-/// was folded under an older fold rule, or it misses an event the log holds, which setup finds by
-/// seeding the file's `caught_up` cursor (spec 124, [`Projector::seed_cursor`]): on a file not yet
-/// carrying it, the seeding reads the file's ledger of folded positions against the log's live
-/// selection whether or not a mark says so, and the prefix it finds violated is owed - a position
-/// missing up to the bound the seeding names and older than the catch-up horizon (every one, on a
-/// server-backed log, which answers no age), an empty ledger beside a non-empty log, or a non-empty
-/// one beside an empty log or past its head - saying so, naming the cause, reporting how far along
-/// it is, and report whether it did. A rebuild's own unfinished work - the shadow a stopped swap
-/// left standing, or the tail past the cursor a swap put in place - is no owed cause: it is
-/// finished with no `rebuilding graph.db ...: <cause>` line, still reporting how far along it is,
-/// and so rewrites a `graph.db` that owes nothing. Only a `graph.db` that owes nothing and holds no
-/// unfinished rebuild is not rebuilt. With no `graph.db` - a cold start - the owed mark a removed
-/// one left behind is dropped first, so the file made in its place starts owing nothing it
+/// was folded under an older fold rule, or it misses an event the log holds, which its owed mark
+/// says or setup finds by seeding the file's `caught_up` cursor ([`Projector::seed_cursor`]): on a
+/// file not yet carrying it, the seeding reads the file's ledger of folded positions against the
+/// log's live selection whether or not a mark says so, and the prefix it finds violated is owed - a
+/// position missing up to the bound the seeding names and older than the catch-up horizon (every
+/// one, on a server-backed log, which answers no age), an empty ledger beside a non-empty log, or a
+/// non-empty one beside an empty log or past its head - saying so, naming the cause, reporting how
+/// far along it is, and report whether it did. A rebuild's own unfinished work - the shadow a
+/// stopped swap left standing, or the tail past the cursor a swap put in place - is no owed cause:
+/// it is finished with no `rebuilding graph.db ...: <cause>` line, still reporting how far along it
+/// is, and so rewrites a `graph.db` that owes nothing. Only a `graph.db` that owes nothing and
+/// holds no unfinished rebuild is not rebuilt. With no `graph.db` - a cold start - the owed mark a
+/// removed one left behind is dropped first, so the file made in its place starts owing nothing it
 /// recorded, and setup makes that file: seeded at 0 beside an empty log, whose `events.db` it never
 /// makes, and rebuilt beside a non-empty one. The rebuild folds the log's live selection - the rows
 /// `rigger reset --derived` keeps - into a shadow file whose pruned copy replaces `graph.db` in one
