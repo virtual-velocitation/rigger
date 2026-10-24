@@ -64,16 +64,16 @@ generators above, the count
 run once per name of every item the unit's hunks change, and the rule-spelling searches.
 
 Every sentence you read - a member of a generator's set, a sentence the record marks FIXED, a
-hit of a rule-spelling search - you read claim by claim against the unit's change: you write
-down each claim the sentence makes and the `file:line` at head that makes that claim true for
+hit of a rule-spelling search - you read claim by claim against the unit's change: you take
+each claim the sentence makes and find the `file:line` at head that makes that claim true for
 THIS unit's change, checking a conditional claim (when X changes, Y; so does a change to X) by
 whether the unit's diff changes X and, when it does, whether Y holds at head, and a
 cross-surface claim (the way other surfaces do; every caller; both show surfaces) by reading
 each surface it names. A claim with a quantifier - every, all, always, any, a plural subject
-with a predicate (twins keep; a definition's parent is) - you read case by case: you list the
-cases the code at head splits its subject into, each arm that assigns the value, each component
-of a key or comparator, each condition of a filter or guard, each branch of a match, each with
-its `file:line`, and read the claim against each.
+with a predicate (twins keep; a definition's parent is) - you read case by case: you enumerate
+the cases the code at head splits its subject into, each arm that assigns the value, each
+component of a key or comparator, each condition of a filter or guard, each branch of a match,
+each with its `file:line`, and read the claim against each.
 
 A sentence at head that misstates the changed behaviour - a claim no code at head makes
 true, a quantified claim failing at any of its cases, a consumer sentence stating a
@@ -81,12 +81,16 @@ changed condition's pre-change answer - is the walk's one BLOCKING finding, on i
 citing the sentence's `file:line` and the `file:line` of the code that contradicts it. A
 record with no per-hit or per-line disposition, no count block beside each item or no
 section of its own for added or changed conditions is never a finding: the bounded record
-satisfies the hand-over, and you read the hits yourself. Your review-complete record
-carries, for every sentence you read - each member of a generator's set, each sentence the
-record marks FIXED, each hit of a rule-spelling search - its location, its claims and each
-claim's witness at head, a quantified claim's cases beside it, each with its witness, and
-a grouped verdict ("none false", "each a field reference", "the CHECKED hits hold") over
-sentences with no per-sentence witness is a record you cannot write.
+satisfies the hand-over, and you read the hits yourself.
+
+Your review-complete record is bounded so you write it in one pass. It carries each generator
+and search command you ran, with its hit count; each BLOCKING finding, with the sentence's
+`file:line` and the `file:line` of the code at head that contradicts it; your own witness
+`file:line` at head for each sentence the author's record marks FIXED and each doc block the
+unit added, one per case for a quantified sentence; and the remainder you read as one count per
+command, with its verdict. The remainder owes no per-sentence listing of claims and witnesses,
+and a counted verdict over it is a record you can write: only what you write is bounded, never
+what you read.
 
 ## Every test asserts exactly
 
