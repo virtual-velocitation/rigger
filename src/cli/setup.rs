@@ -3955,18 +3955,12 @@ mod tests {
         );
     }
 
-    /// The `sdet` lens is the enforcement of two built-in rules. Of the shape rule: it re-runs
-    /// every search the author's shape record carries on the review tree and compares the hit
-    /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
-    /// command is BLOCKING; it derives the expression set itself from the unit's test hunks -
-    /// the string literals in full and the outside calls with their first argument of every
-    /// statement of an added body and of the changed statements of an edited one, a literal of
-    /// an untouched statement named to the operator as debt and never BLOCKING -
-    /// runs each with the authors' search, every literal alone, and an uncarried hit, a record of
-    /// names only for a body that spells either, a literal the record never searched alone or a
-    /// statement or format string searched in a literal's place is BLOCKING; it reads the record
-    /// statement by statement, and a term a statement spells that the record lacks under it, or
-    /// a statement the hunks add or edit that the record does not list, is BLOCKING. Of the
+    /// The `sdet` lens is the enforcement of two built-in rules. Of the shape rule: it reads
+    /// the unit's test hunks over its whole range; cases of one behaviour that differ only in
+    /// their values written as copies of a test function are BLOCKING, and so is a table,
+    /// fixture, helper or oracle the unit added that duplicates one in the shared home or another
+    /// test home, with both sites cited, while duplication the unit did not write, a statement
+    /// touched only in a lift's call-site rewrite included, is never a finding. Of the
     /// sentence rule: it re-derives each generator's set from the
     /// diff over the unit's whole range and the graph and compares it with the walk record,
     /// re-runs every rule-spelling search the record carries and re-reads every hit and every
@@ -4005,39 +3999,17 @@ mod tests {
         }
         let flat = rigger::wave::normalize_ws(&committed_persona("sdet.md"));
         for wanted in [
-            "A recorded search is the author's instrument, not a gate",
-            "you re-run every search the record carries, on the review tree, and compare the \
-             hit sets",
-            "A hit the record does not carry is BLOCKING",
-            "a CHECKED hit whose reason does not hold - its shape does not differ in the way \
-             the record names - is a twin and BLOCKING",
-            "a record with no command is BLOCKING",
-            "You also derive the expression set yourself: list the unit's added or edited \
-             test-side bodies from `git diff $(git merge-base rigger-run HEAD)..HEAD -- tests \
-             crates src`",
-            "the hunks inside the test homes the authors' search reads, and the statements each \
-             body owes: every statement of an added body, and of an edited body the statements \
-             those hunks change.",
-            "Take every string literal those statements spell, in full, and every call they \
-             make outside the shared home with its first argument token, and run each with the \
-             authors' search, `git ls-files tests crates src | t='<expression>' xargs awk",
-            "A literal of a statement the unit did not touch is the tree's duplication debt, \
-             never a BLOCKING finding: you name it to the operator in your review as debt, with \
-             its hit count.",
-            "A hit the record does not carry is BLOCKING, and so is a record whose expressions \
-             are names only - a fn name, the callee a helper wraps - for a body that spells a \
-             literal or an outside call.",
-            "You run every literal of each derived body ALONE - its text in full with its \
-             quotes, `t='\"src/f.rs\"'`, nothing around it, however short - and compare the \
-             record's terms with that list: a literal the record never searched alone, or a \
-             record whose terms for a body are statements, bracketed expressions or format \
-             strings in place of its literals, is BLOCKING on its own, citing the literal, its \
-             hit count and the first hits the record does not carry.",
-            "You read the record statement by statement: for each statement the hunks add or \
-             edit you derive its terms yourself and match them against the terms the record \
-             lists under that statement's `file:line`; a term the statement spells that the \
-             record lacks there, or a statement the hunks add or edit that the record does not \
-             list, is BLOCKING on its own, citing the statement's `file:line` and the term.",
+            "You are the enforcement of the built-in rule that tests are table-driven and a \
+             test-side shape the unit adds exists once.",
+            "Read the unit's test hunks over its whole range, `git diff $(git merge-base \
+             rigger-run HEAD)..HEAD -- tests crates src`",
+            "Cases of one behaviour that differ only in their values, written as copies of a \
+             test function instead of rows of one table, are BLOCKING.",
+            "A table, fixture, helper or oracle the unit added that duplicates one already in \
+             the shared home or in another test home is BLOCKING, citing both sites' \
+             `file:line`.",
+            "Duplication the unit did not write is never a finding, a statement the unit \
+             touched only in a lift's call-site rewrite included.",
             "You are also the enforcement of the built-in rule that every sentence about the \
              changed behaviour is true at head.",
             "The author's `<unit>-sentence-walk` record names what each generator returned and \
@@ -4125,6 +4097,10 @@ mod tests {
         assert!(
             !flat.contains("mutant-probes"),
             "the sdet lens applies no hand mutations and reads no record of them"
+        );
+        assert!(
+            !flat.contains("test-shape-audit"),
+            "the sdet lens re-runs no per-statement test-shape record"
         );
         assert!(
             !flat.contains("ENVIRON[\"b\"]"),
