@@ -3974,24 +3974,25 @@ mod tests {
     /// every FIXED sentence and added doc block with its witness, each added item with its
     /// one-home line and the CHECKED remainder as one count per command - and the lens
     /// re-derives each generator's set from the diff over the unit's whole range and the graph,
-    /// re-runs every rule-spelling search and reads the hits itself, reads every witness against
-    /// head, derives the changed-condition set itself and reads every consumer sentence of that
-    /// function against it, and runs the feature's name AND the rule's noun phrase itself for
-    /// each rewritten rule, the function's name AND the old answer's noun for each changed
-    /// condition, with the authors' command and carrying no copy of its awk; every sentence it
-    /// reads it reads claim by claim against the unit's change with a `file:line` witness per
-    /// claim at head, a conditional claim against whether the diff changes its condition, a
-    /// cross-surface claim against each surface it names and a quantified claim against each
-    /// case the code splits its subject into. The walk blocks on one finding only, a sentence
-    /// at head the built-in rule counts as misstating the changed behaviour, cited with the
-    /// code that contradicts it, the persona pointing at the built-in's cases instead of
+    /// re-runs every rule-spelling search and reads the hits itself, derives search terms of its
+    /// own from the audited shape rather than only from the author's command list, reads every
+    /// witness against head, derives the changed-condition set itself and reads every consumer
+    /// sentence of that function against it, and runs the feature's name AND the rule's noun
+    /// phrase itself for each rewritten rule, the function's name AND the old answer's noun for
+    /// each changed condition, with the authors' command and carrying no copy of its awk; every
+    /// sentence it reads it reads claim by claim against the unit's change with a `file:line`
+    /// witness per claim at head, a conditional claim against whether the diff changes its
+    /// condition, a cross-surface claim against each surface it names and a quantified claim
+    /// against each case the code splits its subject into. The walk blocks on one finding only, a
+    /// sentence at head the built-in rule counts as misstating the changed behaviour, cited with
+    /// the code that contradicts it, the persona pointing at the built-in's cases instead of
     /// restating them and an added item's second spelling being the architecture lens's finding
     /// alone; a record with no per-hit disposition, per-item count block or section for added
     /// conditions is never a finding, and the retired requirements are spelled nowhere in the
     /// persona. The lens's own review-complete record is bounded the same way - each command it
-    /// ran with its hit count, each BLOCKING finding with its citations, its own witness for
-    /// each FIXED sentence and added doc block, and the remainder as one count per command with
-    /// its verdict - so a counted verdict over the remainder is a record it can write and no
+    /// ran with its hit count, each BLOCKING finding with its citations, its own witness for each
+    /// FIXED sentence and added doc block, and the remainder as one count per command with its
+    /// verdict - so a counted verdict over the remainder is a record it can write and no
     /// per-sentence listing is owed. The records are the author's instruments, never a gate, so
     /// the lens's rule against re-running a green gate does not reach them.
     #[test]
@@ -4036,6 +4037,9 @@ mod tests {
              code at head",
             "you read every witness the record carries - the `file:line` beside each FIXED \
              sentence and added doc block - against the code at head.",
+            "You derive search terms of your own from the audited shape itself, never only from \
+             the author's command list, because a re-run of the author's own term pairs repeats \
+             the author's blind spot.",
             "You also derive the changed-condition set yourself: list every boolean term the \
              unit's production hunks add to or remove from a filter, guard, match-arm guard or \
              predicate from `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src`, \
