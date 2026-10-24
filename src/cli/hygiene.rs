@@ -1086,7 +1086,7 @@ fn landed_units(
 mod tests {
     use super::*;
     use crate::test_support::ev;
-    use rigger::registry::{Instance, StoreIdentity, Writer, DEFAULT_IDLE_MS};
+    use rigger::registry::{Writer, DEFAULT_IDLE_MS};
 
     /// Spec 21, unit 2: the drop-set derivation `rigger reset --runs` hands to the prune. It
     /// reuses the SINGLE run-attribution authority (`run_attribution` + `current_run_id`), so a
@@ -1662,7 +1662,7 @@ mod tests {
         }
     }
 
-    use crate::test_support::STEP_LOCK_REASON;
+    use crate::test_support::{seed_registry, STEP_LOCK_REASON};
 
     /// The pure core: all three facts quiet is the only quiet state, and each fact alone draws
     /// exactly its own reason.
@@ -1779,19 +1779,10 @@ mod tests {
         heartbeat_ms: u64,
         now_ms: u64,
     ) -> LiveWriterFacts {
-        let state = tempfile::tempdir().unwrap();
+        let root = "/home/dev/proj";
+        let (state, _entry) = seed_registry("proj", root, heartbeat_ms, writer);
         let dir = rigger::registry::instances_dir(state.path());
-        let store = StoreIdentity::Local {
-            path: "/home/dev/proj/.rigger/events.db".to_string(),
-        };
-        let entry = Instance {
-            project: "proj".to_string(),
-            root: "/home/dev/proj".to_string(),
-            store: store.clone(),
-            heartbeat_ms,
-            writer,
-        };
-        rigger::registry::write(&dir, &entry).unwrap();
+        let store = registry_store_identity(&StoreSelection::Sqlite, Path::new(root));
         LiveWriterFacts {
             step_lock_held: false,
             live_spawns: Vec::new(),
@@ -1848,6 +1839,55 @@ mod tests {
         );
     }
 
+    /// The `.rigger` directory made under `dir`, holding no log yet, and the [`ResetEnv`] a
+    /// live-writer probe of it judges by: no registry, a scratch root of its own under `dir`, and
+    /// now.
+    fn probed_store(dir: &Path) -> (StoreLocation, ResetEnv) {
+        let rigger_dir = dir.join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        let env = ResetEnv {
+            workdir: String::new(),
+            scratch_root: dir.join("scratch").to_string_lossy().into_owned(),
+            registry_dir: None,
+            now_ms: rigger::registry::now_ms(),
+        };
+        (StoreLocation { dir: rigger_dir }, env)
+    }
+
+    /// The live-run refusal names every live reason at once, in the order the probe lists them
+    /// and joined with "; ": with a `rigger step` holding the lock and a driver of this store
+    /// fresh in the registry, the text the refusal words is handed both reasons as one.
+    #[test]
+    fn the_live_run_refusal_joins_every_live_reason_in_the_order_the_probe_lists_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let (loc, env) = probed_store(dir.path());
+        let (state, _entry) = seed_registry(
+            "proj",
+            dir.path().to_str().unwrap(),
+            env.now_ms,
+            Writer::Driver,
+        );
+        let env = ResetEnv {
+            registry_dir: Some(rigger::registry::instances_dir(state.path())),
+            ..env
+        };
+        let log = rigger::eventstore::sqlite::Store::open(&loc.file("events.db")).unwrap();
+        let _step = acquire_step_lock(&loc.dir).unwrap();
+
+        let Err(err) = refuse_if_live(&loc, &StoreSelection::Sqlite, &env, &log, |reasons| {
+            reasons.to_string()
+        }) else {
+            panic!("a held step lock and a fresh driver registration must refuse");
+        };
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{STEP_LOCK_REASON}; {}",
+                live_writer_reasons(false, &[], 1)[0]
+            )
+        );
+    }
+
     /// The step lock the live-writer probe takes is held for as long as the probe lives - through
     /// the close and the compaction its caller runs under it - so a `rigger step` started
     /// meanwhile refuses with the busy token its courier retries on, and never runs against the
@@ -1855,15 +1895,7 @@ mod tests {
     #[test]
     fn the_live_writer_probe_holds_the_step_lock_until_it_drops() {
         let dir = tempfile::tempdir().unwrap();
-        let rigger_dir = dir.path().join(RIGGER_DIR);
-        std::fs::create_dir_all(&rigger_dir).unwrap();
-        let loc = StoreLocation { dir: rigger_dir };
-        let env = ResetEnv {
-            workdir: String::new(),
-            scratch_root: dir.path().join("scratch").to_string_lossy().into_owned(),
-            registry_dir: None,
-            now_ms: rigger::registry::now_ms(),
-        };
+        let (loc, env) = probed_store(dir.path());
 
         let probe = live_writer_facts(&loc, &StoreSelection::Sqlite, &env, &[]).unwrap();
         let racing = acquire_step_lock(&loc.dir).map(drop);
@@ -1882,14 +1914,9 @@ mod tests {
     #[test]
     fn refuse_derived_reset_if_live_fails_safe_on_a_malformed_spawn_event() {
         let dir = tempfile::tempdir().unwrap();
-        let rigger_dir = dir.path().join(RIGGER_DIR);
-        std::fs::create_dir_all(&rigger_dir).unwrap();
-        let loc = StoreLocation {
-            dir: rigger_dir.clone(),
-        };
+        let (loc, env) = probed_store(dir.path());
         let identity = loc.identity();
-        let db = rigger_dir.join("events.db").to_string_lossy().into_owned();
-        let backend = rigger::eventstore::sqlite::Store::open(&db).unwrap();
+        let backend = rigger::eventstore::sqlite::Store::open(&loc.file("events.db")).unwrap();
         let store = Namespaced::new(&backend, &identity);
         // A malformed SpawnRequested body: valid JSON but missing the fields `spawn::recorded`
         // needs, so decoding it fails and `spawn::recorded` returns `Err`.
@@ -1903,12 +1930,6 @@ mod tests {
         drop(store);
         drop(backend);
 
-        let env = ResetEnv {
-            workdir: String::new(),
-            scratch_root: dir.path().join("scratch").to_string_lossy().into_owned(),
-            registry_dir: None,
-            now_ms: rigger::registry::now_ms(),
-        };
         let err = refuse_derived_reset_if_live(&loc, &StoreSelection::Sqlite, &env)
             .expect_err("a malformed spawn event must refuse, never read as quiet");
         assert!(

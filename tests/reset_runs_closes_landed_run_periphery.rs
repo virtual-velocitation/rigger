@@ -23,11 +23,12 @@ mod common;
 
 use common::cli::{
     configure_workdir, hold_step_lock, init_event_log, liveness_fault_body, plant_marker,
-    read_run_events, real_result_body, rigger_file, run_rigger_envs, run_rigger_ok, seed_registry,
+    read_run_events, real_result_body, rigger_file, run_rigger_envs, run_rigger_ok,
     seed_run_events,
 };
 use common::fixtures::{
-    git_ok, git_ok_with_identity, git_out, registry_entries, temp_git_project_with_commit,
+    git_ok, git_ok_with_identity, git_out, registry_entries, seed_registry,
+    temp_git_project_with_commit,
 };
 use rigger::registry::{self, Writer};
 use std::path::Path;
@@ -133,7 +134,7 @@ fn reset_runs_over(
     let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
     let driver_heartbeat_ms = around.heartbeat_ms_ago.map(|ago| registry::now_ms() - ago);
     let state = driver_heartbeat_ms
-        .map(|hb| seed_registry("proj", &toplevel, hb).0)
+        .map(|hb| seed_registry("proj", &toplevel, hb, Writer::Driver).0)
         .unwrap_or_else(|| tempfile::tempdir().expect("a test-private XDG_STATE_HOME"));
     let state_home = state.path().to_str().unwrap();
     if around.courier {

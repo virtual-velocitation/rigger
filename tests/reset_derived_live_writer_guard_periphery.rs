@@ -43,7 +43,6 @@ use common::cli::real_result_body;
 use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
-use common::cli::seed_registry;
 use common::cli::seed_run_events;
 use common::cli::seed_store;
 use common::cli::temp_store_project;
@@ -51,6 +50,7 @@ use common::cli::write_workflow_fixture;
 use common::cli::WorkflowFixture;
 use common::cli::UNISOLATED_WORKER;
 use common::fixtures::registry_entries;
+use common::fixtures::seed_registry;
 use common::git::git_out;
 use common::git::nested_worktree;
 use common::git::temp_git_project_with_commit;
@@ -257,7 +257,8 @@ fn reset_over_a_dead_drivers_run(fresh: &[Signal], args: &[&str]) -> Outcome {
         now_ms - registry::DEFAULT_IDLE_MS - 60_000
     };
     let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
-    let (state_home, _entry) = seed_registry("proj", &toplevel, heartbeat_ms);
+    let (state_home, _entry) =
+        seed_registry("proj", &toplevel, heartbeat_ms, registry::Writer::Driver);
 
     let lock = fresh.contains(&STEP_LOCK).then(|| hold_step_lock(root));
 
@@ -396,8 +397,15 @@ fn reset_derived_around(
         );
     }
     let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
-    let seeded =
-        heartbeat_ms_ago.map(|ago| seed_registry("proj", &toplevel, registry::now_ms() - ago).0);
+    let seeded = heartbeat_ms_ago.map(|ago| {
+        seed_registry(
+            "proj",
+            &toplevel,
+            registry::now_ms() - ago,
+            registry::Writer::Driver,
+        )
+        .0
+    });
     let mut envs = vec![("RIGGER_TMPDIR", scratch_root)];
     // With no entry to seed, the binary's own fresh state home holds no registration at all.
     if let Some(home) = &seeded {
@@ -1540,7 +1548,12 @@ fn reset_derived_refuses_a_live_driver_registration_naming_it() {
     let root = dir.path();
     let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
 
-    let (state_home, _entry) = seed_registry("proj", &toplevel, registry::now_ms());
+    let (state_home, _entry) = seed_registry(
+        "proj",
+        &toplevel,
+        registry::now_ms(),
+        registry::Writer::Driver,
+    );
 
     let (out, err, ok) = run_rigger_envs(
         root,
@@ -1590,8 +1603,12 @@ fn reset_derived_ignores_a_registration_for_a_different_store() {
     let dir = temp_store_project();
     let root = dir.path();
 
-    let (state_home, _entry) =
-        seed_registry("other-proj", "/tmp/some-other-project", registry::now_ms());
+    let (state_home, _entry) = seed_registry(
+        "other-proj",
+        "/tmp/some-other-project",
+        registry::now_ms(),
+        registry::Writer::Driver,
+    );
 
     assert_prunes(
         root,
@@ -1624,7 +1641,12 @@ fn reset_derived_never_deletes_a_stale_foreign_registry_entrys_file() {
 
     // Well past `DEFAULT_IDLE_MS`: the pre-fix `read_live` would have pruned this outright as
     // a side effect of the guard's own liveness probe.
-    let (state_home, entry_path) = seed_registry("other-proj", "/tmp/some-other-project", 0);
+    let (state_home, entry_path) = seed_registry(
+        "other-proj",
+        "/tmp/some-other-project",
+        0,
+        registry::Writer::Driver,
+    );
     assert!(
         entry_path.exists(),
         "the entry must exist before the command runs"

@@ -1207,7 +1207,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-aa7467aca43c",
+    "id": "dup-9e2455a395b7",
     "classification": "semantic",
     "sites": [
       {
@@ -1594,11 +1594,6 @@
         "file": "src/cli/hygiene.rs",
         "name": "\"a `rigger step` is running right now (it holds .rigger/step.lock)\"",
         "content_hash": "052897e17aced00a"
-      },
-      {
-        "file": "src/cli/hygiene.rs",
-        "name": "\"/home/dev/proj/.rigger/events.db\"",
-        "content_hash": "c4bc3aea22d42434"
       },
       {
         "file": "src/cli/mod.rs",
@@ -4227,7 +4222,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 603 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 602 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

@@ -1189,25 +1189,6 @@ pub fn configure_workdir(root: &Path, extra: &str) -> (tempfile::TempDir, String
     (relocated, scratch_root)
 }
 
-/// A machine-global instance registry under a fresh `XDG_STATE_HOME` holding one entry for
-/// `project` at `root` (its local store under `root/.rigger/events.db`) last heard from at
-/// `heartbeat_ms`; returns the state home and the entry's file.
-pub fn seed_registry(project: &str, root: &str, heartbeat_ms: u64) -> (tempfile::TempDir, PathBuf) {
-    let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
-    let inst = rigger::registry::Instance {
-        project: project.to_string(),
-        root: root.to_string(),
-        store: rigger::registry::StoreIdentity::Local {
-            path: format!("{root}/{RIGGER_DIR}/events.db"),
-        },
-        heartbeat_ms,
-        writer: rigger::registry::Writer::Driver,
-    };
-    let entry = rigger::registry::write(&rigger::registry::instances_dir(state_home.path()), &inst)
-        .expect("seed a registry entry");
-    (state_home, entry)
-}
-
 /// The current time as nanoseconds since the Unix epoch.
 pub fn now_nanos() -> i64 {
     SystemTime::now()
