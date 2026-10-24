@@ -47,7 +47,9 @@ worktree, never the round's delta your prompt carries. You re-run every rule-spe
 the record carries - the built-in's two-term form, the feature's name AND the rule's noun
 phrase on one joined line, one per term pair of each rule the change rewrites - and read the
 hits yourself against the code at head, and you read every witness the record carries - the
-`file:line` beside each FIXED sentence and added doc block - against the code at head.
+`file:line` beside each FIXED sentence and added doc block - against the code at head. You
+derive search terms of your own from the audited shape itself, never only from the author's
+command list, because a re-run of the author's own term pairs repeats the author's blind spot.
 
 You also derive the changed-condition set yourself: list every boolean term the unit's
 production hunks add to or remove from a filter, guard, match-arm guard or predicate from
