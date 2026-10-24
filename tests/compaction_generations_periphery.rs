@@ -14,6 +14,10 @@
 //!   4. **The shadow rebuild's seams.** Its sources (the live selection among them), its tail, an
 //!      emit that meets it, a fold that is lost, the prune it makes, what it passes over and the
 //!      counts read back by cause, and `graph.db.lock`.
+//!   5. **The catch-up cursor's seeding.** `rigger setup` creates the missing `graph.db` of an
+//!      empty log with its `caught_up` cursor at 0, and gives a file folded without one its cursor,
+//!      seeded or set by the rebuild the seeding finds owed; a seeding that meets another writer's
+//!      write lock is skipped, setup exiting zero, and the next setup starts it.
 
 mod common;
 
