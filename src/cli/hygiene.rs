@@ -1938,9 +1938,10 @@ mod tests {
         );
     }
 
-    /// A store whose owning root has no UTF-8 path resolves no scratch root, and `reset` refuses
-    /// rather than reading that as "no spawn marker, so nothing is live" (the guard may only
-    /// refuse) or reclaiming a build cache under a root it never resolved.
+    /// A store whose owning root has no UTF-8 path resolves no scratch root, and the env refuses
+    /// it, naming no command since `rigger reset` and `rigger setup` both resolve it, rather than
+    /// reading that as "no spawn marker, so nothing is live" (the guard may only refuse) or
+    /// reclaiming a build cache under a root it never resolved.
     #[cfg(unix)]
     #[test]
     fn reset_env_refuses_a_store_whose_owning_root_has_no_utf8_path() {
@@ -1953,12 +1954,7 @@ mod tests {
         };
         assert_eq!(
             err.to_string(),
-            format!(
-                "reset: the store at {} has no UTF-8 owning root, so the scratch root its runs \
-                 write their liveness markers and build caches under cannot be resolved; \
-                 refusing rather than reading that as no live spawn",
-                dir.display()
-            )
+            crate::test_support::unresolved_scratch_root_refusal(&dir)
         );
     }
 

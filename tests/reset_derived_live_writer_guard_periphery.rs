@@ -633,9 +633,9 @@ fn reset_derived_fails_closed_on_an_unparsable_defaults_block_beside_a_configure
 /// A store whose OWNING root has no UTF-8 path resolves no scratch root to read its spawns'
 /// markers or its build caches under, and every reset mode that reads that root refuses it rather
 /// than reading the unresolved root as "no spawn marker, so nothing is live": `reset --derived`,
-/// `reset --runs` and `reset --build-cache` each exit non-zero naming why, and none so much as
-/// opens the store first - its `events.db` is still the empty file it was seeded as, never given
-/// a schema, migrated or pruned.
+/// `reset --runs` and `reset --build-cache` each exit non-zero naming why, in words that name no
+/// command, as its last line of stderr, and none so much as opens the store first - its
+/// `events.db` is still the empty file it was seeded as, never given a schema, migrated or pruned.
 #[cfg(unix)]
 #[test]
 fn reset_refuses_a_store_whose_owning_root_has_no_utf8_path_and_opens_nothing() {
@@ -653,13 +653,14 @@ fn reset_refuses_a_store_whose_owning_root_has_no_utf8_path_and_opens_nothing() 
             "reset {mode} must refuse a store whose scratch root it cannot resolve; stdout: \
              {out:?}"
         );
-        assert!(
-            err.contains(&format!(
-                "reset: the store at {} has no UTF-8 owning root, so the scratch root its runs \
-                 write their liveness markers and build caches under cannot be resolved; \
-                 refusing rather than reading that as no live spawn",
-                root.join(RIGGER_DIR).display()
-            )),
+        assert_eq!(
+            err.lines().last(),
+            Some(
+                common::cli::refusal_line(&common::fixtures::unresolved_scratch_root_refusal(
+                    &root.join(RIGGER_DIR)
+                ))
+                .as_str()
+            ),
             "reset {mode} must name the unresolvable owning root; stderr: {err:?}"
         );
         assert_eq!(

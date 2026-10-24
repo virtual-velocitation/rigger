@@ -3834,13 +3834,13 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1340,
-        "end_line": 1340
+        "start_line": 1341,
+        "end_line": 1341
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1447,
-        "end_line": 1447
+        "start_line": 1448,
+        "end_line": 1448
       },
       {
         "file": "tests/review_round_lenses_only_log_derived_resume_periphery.rs",
@@ -6879,13 +6879,13 @@
     "sites": [
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1984,
-        "end_line": 2004
+        "start_line": 1980,
+        "end_line": 2000
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 2058,
-        "end_line": 2079
+        "start_line": 2054,
+        "end_line": 2075
       }
     ]
   },
@@ -6894,8 +6894,8 @@
     "sites": [
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 2120,
-        "end_line": 2129
+        "start_line": 2116,
+        "end_line": 2125
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -7329,8 +7329,8 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1683,
-        "end_line": 1693
+        "start_line": 1684,
+        "end_line": 1694
       },
       {
         "file": "tests/statusline_command_periphery.rs",
