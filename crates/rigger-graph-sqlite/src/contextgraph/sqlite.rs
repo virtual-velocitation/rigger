@@ -8036,6 +8036,11 @@ mod tests {
         fn a_resumable_shadow(path: &str) {
             rebuild_interrupted_after_its_first_batch(path, &decisions_through(4)).unwrap_err();
         }
+        // That shadow as a binary folding under the fold rule `rule` leaves it.
+        fn a_shadow_folded_under(path: &str, rule: i64) {
+            a_resumable_shadow(path);
+            crate::test_support::stamp_user_version(Path::new(&shadow_of(path)), rule)
+        }
         // The graph file at `path` with nothing standing beside it.
         fn nothing_stands(_: &str) {}
         // The graph file at `path` holding the cursor a swapped-in rebuild's tail is owed past.
@@ -8088,25 +8093,13 @@ mod tests {
             ),
             (
                 "a shadow an older-rule binary left",
-                |path| {
-                    a_resumable_shadow(path);
-                    crate::test_support::stamp_user_version(
-                        Path::new(&shadow_of(path)),
-                        PROJECTION_VERSION - 1,
-                    )
-                },
+                |path| a_shadow_folded_under(path, PROJECTION_VERSION - 1),
                 false,
                 true,
             ),
             (
                 "a shadow a newer-rule binary left",
-                |path| {
-                    a_resumable_shadow(path);
-                    crate::test_support::stamp_user_version(
-                        Path::new(&shadow_of(path)),
-                        PROJECTION_VERSION + 1,
-                    )
-                },
+                |path| a_shadow_folded_under(path, PROJECTION_VERSION + 1),
                 false,
                 true,
             ),
