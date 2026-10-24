@@ -1960,7 +1960,7 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `src/cli/run.rs:3331-3331` `Command::new`
 - `src/cli/run.rs:3400-3400` `Command::new`
 - `src/cli/setup.rs:3948-3948` `Command::new`
-- `src/cli/setup.rs:4218-4218` `Command::new`
+- `src/cli/setup.rs:4238-4238` `Command::new`
 - `src/cli/validate.rs:1452-1452` `Command::new`
 - `src/cli/validate.rs:1731-1731` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2421,7 +2421,7 @@ __END__
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name."`
 - `src/cli/setup.rs:3891-3891` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:4061-4061` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:4065-4065` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
