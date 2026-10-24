@@ -779,7 +779,8 @@ impl Projector {
                 return Ok(Seeding::Ran { lost: false });
             }
             let highest = highest_applied(tx)?;
-            let through = match rebuild_tail_from(tx)? {
+            let tail = rebuild_tail_from(tx)?;
+            let through = match tail {
                 Some(cursor) => highest.map(|h| h.min(cursor)),
                 None => highest,
             };
@@ -805,7 +806,7 @@ impl Projector {
                     break;
                 }
             }
-            if rebuild_owed(tx)? || rebuild_tail_owed(tx)? {
+            if rebuild_owed(tx)? || tail.is_some() {
                 return Ok(Seeding::Ran { lost: old_miss });
             }
             let cursor = match (highest, head) {
