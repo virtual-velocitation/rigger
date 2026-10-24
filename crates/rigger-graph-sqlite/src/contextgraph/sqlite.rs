@@ -6763,8 +6763,9 @@ mod tests {
     }
 
     /// The seeding runs once per file: a file already carrying `caught_up` is not read - neither
-    /// its log's positions nor a stamp - and keeps its cursor, a hole the log gains below it
-    /// included; its verdict adds no cause.
+    /// its log's positions nor a stamp - and keeps its cursor at 2, the hole at position 3 above
+    /// the cursor and below the highest position its ledger records included; its verdict adds no
+    /// cause.
     #[test]
     fn a_file_carrying_caught_up_is_never_read_again_and_keeps_its_cursor() {
         let log = decisions_through(4);
