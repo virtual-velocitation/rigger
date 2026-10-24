@@ -880,16 +880,17 @@ const REBUILD_BATCH: usize = 10_000;
 /// file not yet carrying it, the seeding reads the file's ledger of folded positions against the
 /// log's live selection whether or not a mark says so, and the prefix it finds violated is owed - a
 /// position missing up to the bound the seeding names and older than the catch-up horizon (every
-/// one, on a server-backed log, which answers no age), an empty ledger beside a non-empty log, or a
-/// non-empty one beside an empty log or past its head - saying so, naming the cause, reporting how
-/// far along it is, and report whether it did. A rebuild's own unfinished work - the shadow a
-/// stopped swap left standing, or the tail past the cursor a swap put in place - is no owed cause:
-/// it is finished with no `rebuilding graph.db ...: <cause>` line, still reporting how far along it
-/// is, and so rewrites a `graph.db` that owes nothing. Only a `graph.db` that owes nothing and
-/// holds no unfinished rebuild is not rebuilt. With no `graph.db` - a cold start - the owed mark a
-/// removed one left behind is dropped first, so the file made in its place starts owing nothing it
-/// recorded, and setup makes that file: seeded at 0 beside an empty log, whose `events.db` it never
-/// makes, and rebuilt beside a non-empty one. The rebuild folds the log's live selection - the rows
+/// one on a server-backed log, whose stamps are taken on another host's clock, so their skew moves
+/// nothing), an empty ledger beside a non-empty log, or a non-empty one beside an empty log or past
+/// its head - saying so, naming the cause, reporting how far along it is, and report whether it
+/// did. A rebuild's own unfinished work - the shadow a stopped swap left standing, or the tail
+/// past the cursor a swap put in place - is no owed cause: it is finished with no
+/// `rebuilding graph.db ...: <cause>` line, still reporting how far along it is, and so rewrites a
+/// `graph.db` that owes nothing. Only a `graph.db` that owes nothing and holds no unfinished
+/// rebuild is not rebuilt. With no `graph.db` - a cold start - the owed mark a removed one left
+/// behind is dropped first, so the file made in its place starts owing nothing it recorded, and
+/// setup makes that file: seeded at 0 beside an empty log, whose `events.db` it never makes, and
+/// rebuilt beside a non-empty one. The rebuild folds the log's live selection - the rows
 /// `rigger reset --derived` keeps - into a shadow file whose pruned copy replaces `graph.db` in one
 /// step ([`Projector::rebuild`]), streaming the log once, resuming an interrupted rebuild from its
 /// last committed transaction and finishing exactly the tail of one interrupted after its swap.
@@ -997,8 +998,9 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
         }
         // A server-backed log has no compaction plan (`rigger reset --derived` is sqlite-only), so
         // its live selection is its run stream as it stands: its positions are read through the
-        // store port alone, and a rebuild reads each of its events once. The port reads no store
-        // stamp, so the seeding counts every position the file misses old.
+        // store port alone, and a rebuild reads each of its events once. Its store stamps are
+        // taken on the server's clock, not this host's, so the seeding is handed none: the
+        // server's skew moves nothing, and every position the file misses counts old.
         selection => {
             let backend = resolve_store(&selection, &db_path("events.db"))?;
             let store = Namespaced::new(backend.as_ref(), &project);

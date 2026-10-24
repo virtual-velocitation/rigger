@@ -607,10 +607,11 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
 
 /// Given a log with no live selection - a server-backed log, whose live selection is its run stream
 /// as it stands - and a `graph.db` that misses one of its events below the last one it applied,
-/// when setup seeds the graph's cursor against it - the server-backed log answering no stamp, so
-/// the hole reads as old - and pays the rebuild, then the seeding reads the stream's positions
-/// alone in one ordered pass, materializing no event, and the rebuild reads each event once: its
-/// fold reads the stream, and its tail reads only the event the stream gained meanwhile.
+/// when setup seeds the graph's cursor against it - handed no stamp, as setup is for the
+/// server-backed log, whose stamps are taken on another host's clock, so the hole reads as old -
+/// and pays the rebuild, then the seeding reads the stream's positions alone in one ordered pass,
+/// materializing no event, and the rebuild reads each event once: its fold reads the stream, and
+/// its tail reads only the event the stream gained meanwhile.
 #[test]
 fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_each_event_once() {
     use common::fixtures::{CountedRead, ReadCountingStore};
@@ -3216,12 +3217,13 @@ fn an_event_appended_but_never_folded_is_paid_by_the_next_setup_from_the_ledger(
 /// this machine without `caught_up` - as a fold made it before the cursor existed - that misses an
 /// event another writer of that server appended (a second machine sharing the log) below one this
 /// machine folded, when the operator runs `rigger setup`, then setup's seeding reads the server's
-/// positions against the graph's ledger - the server answers no stamp, so the missing event counts
-/// as older than the catch-up horizon - names it as the cause, rebuilds `graph.db` from the
-/// server's whole run stream (a server-backed log has no compaction plan, so its live selection is
-/// the stream as it stands), reports its progress and its prune, leaves the graph a fold of that
-/// stream with its cursor at the stream's head, and a second setup owes nothing. Gracefully
-/// skipped when no container runtime is reachable.
+/// positions against the graph's ledger - the server's stamps are taken on another host's clock,
+/// so setup hands the seeding none and the missing event counts as older than the catch-up
+/// horizon - names it as the cause, rebuilds `graph.db` from the server's whole run stream (a
+/// server-backed log has no compaction plan, so its live selection is the stream as it stands),
+/// reports its progress and its prune, leaves the graph a fold of that stream with its cursor at
+/// the stream's head, and a second setup owes nothing. Gracefully skipped when no container
+/// runtime is reachable.
 #[test]
 fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_server_log() {
     common::fixtures::with_kurrentdb(|conn| {

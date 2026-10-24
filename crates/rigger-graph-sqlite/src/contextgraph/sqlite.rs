@@ -241,10 +241,13 @@ pub type PositionSink<'s> = dyn FnMut(&[Position]) -> Result<(), Error> + 's;
 /// the one in production.
 pub type PositionSource<'s> = dyn FnMut(&mut PositionSink) -> Result<(), Error> + 's;
 
-/// The store stamp of the event the log holds at a position, read by one point lookup, or none
-/// where the log answers none: what [`Projector::seed_cursor`] reads a missing position's age
-/// through (spec 124, THE CLOCKS). The sqlite event store's `recorded_at` is the one in production
-/// on the embedded log; the server-backed log answers none, so every position it misses is old.
+/// The store stamp of the event the log holds at a position, read by one point lookup: what
+/// [`Projector::seed_cursor`] reads a missing position's age through (spec 124, THE CLOCKS). None
+/// is no event at that position, or no stamp on the folding host's clock. The sqlite event store's
+/// `recorded_at` is the one in production on the embedded log, whose stamp and the folding host's
+/// clock are one clock; the server-backed log's stamp is taken on another host's clock, so
+/// `rigger setup` hands the seeding one answering none there: the server's skew moves nothing, and
+/// every position the file misses counts old.
 pub type StampLookup<'s> = dyn FnMut(Position) -> Result<Option<SystemTime>, Error> + 's;
 
 /// The [`PositionSource`] over `stream` of `store`, for a store with no live selection (a
@@ -760,7 +763,7 @@ impl Projector {
     /// the ledger records and, on a file a rebuild swapped in whose tail is still owed, at or below
     /// that rebuild's cursor, the tail's own debt lying past it. Each missing position's store
     /// stamp is read through `stamp_of` once the stream is read: the missing position is old when
-    /// the stamp is more than [`CATCH_UP_HORIZON`] before `now`, or when the log answers no stamp,
+    /// the stamp is more than [`CATCH_UP_HORIZON`] before `now`, or when `stamp_of` answers none,
     /// and young otherwise, a stamp after `now` included. A file that owes its rebuild for an older
     /// fold rule, or still owes a rebuild's tail, gets no cursor - the rebuild seeds it - and an
     /// old missing position is its verdict. Any other file is seeded at the highest position its
@@ -6694,11 +6697,12 @@ mod tests {
     /// log at 0; a position missing above it is no hole of the prefix, however old. Holes below it
     /// no older than the catch-up horizon - at the horizon exactly, or stamped after the seeding's
     /// clock - seed the cursor just below the lowest of them. One older than the horizon by a
-    /// nanosecond, beside a young one too, or one the log answers no stamp for, as the
-    /// server-backed log answers none, violates the prefix, as an empty ledger beside a non-empty
-    /// log does, even one recorded at the seeding's own clock, a non-empty ledger beside an empty
-    /// log, and a highest applied position above the log's head, as when the log is replaced under
-    /// a standing graph file: no cursor is created and the seeding says the file is lost.
+    /// nanosecond, beside a young one too, or one the lookup answers no stamp for, as setup's
+    /// lookup does on the server-backed log, whose stamps are taken on another host's clock,
+    /// violates the prefix, as an empty ledger beside a non-empty log does, even one recorded at
+    /// the seeding's own clock, a non-empty ledger beside an empty log, and a highest applied
+    /// position above the log's head, as when the log is replaced under a standing graph file: no
+    /// cursor is created and the seeding says the file is lost.
     #[test]
     fn a_file_without_caught_up_is_seeded_at_its_ledger_s_prefix_and_never_over_an_old_hole() {
         let log = decisions_through(4);

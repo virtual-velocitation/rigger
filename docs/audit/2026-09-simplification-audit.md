@@ -1722,13 +1722,13 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/review.rs:387-389` `critique_unit`
 - `crates/rigger-domain/src/spawn.rs:115-117` `lens_role`
 - `crates/rigger-domain/src/spawn.rs:207-209` `speculation_group_id`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1635-1637` `pruned_copy`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1652-1654` `shadow_of`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:2725-2731` `live_ref_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4572-4574` `edge_text_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4965-4967` `file_half_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5180-5182` `proof_rows_by`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:18864-18868` `refusing`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1638-1640` `pruned_copy`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1655-1657` `shadow_of`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:2728-2734` `live_ref_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4575-4577` `edge_text_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4968-4970` `file_half_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5183-5185` `proof_rows_by`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:18868-18872` `refusing`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:26-28` `stage_id`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:30-32` `gate_id`
@@ -1785,14 +1785,14 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:448-450` `quarantine_record_key`
 - `crates/rigger-domain/src/contextgraph/query.rs:207-209` `entity_id`
 - `crates/rigger-domain/src/review.rs:339-344` `spec_critique_prompt`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:2948-2953` `retarget_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4516-4518` `id_range_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4621-4627` `superseded_edges_sql`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5673-5681` `declaration_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:2951-2956` `retarget_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4519-4521` `id_range_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4624-4630` `superseded_edges_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5676-5684` `declaration_sql`
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:73-75` `what`
 - `tests/common/fixtures/plan_critique.rs:29-34` `spec_defect_halt_text`
-- `tests/compaction_generations_periphery.rs:3871-3876` `closed_unit_line`
+- `tests/compaction_generations_periphery.rs:3873-3878` `closed_unit_line`
 - `tests/new_run_critique_refusal_periphery.rs:138-140` `no_critic_line`
 - `tests/no_os_kill_audit.rs:52-54` `join`
 
@@ -1880,7 +1880,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-conductor
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-conductor/src/conductor.rs:13401-13403` `unit_branch`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5186-5191` `proof_targets_sql`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5189-5194` `proof_targets_sql`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1104-1106` `key_expr`
 
 #### `dup-c6dfc41a628c` (exact, 2 sites)
@@ -1962,8 +1962,8 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `src/cli/run.rs:3289-3289` `Command::new`
 - `src/cli/run.rs:3333-3333` `Command::new`
 - `src/cli/run.rs:3402-3402` `Command::new`
-- `src/cli/setup.rs:4003-4003` `Command::new`
-- `src/cli/setup.rs:4294-4294` `Command::new`
+- `src/cli/setup.rs:4005-4005` `Command::new`
+- `src/cli/setup.rs:4296-4296` `Command::new`
 - `src/cli/validate.rs:1456-1456` `Command::new`
 - `src/cli/validate.rs:1735-1735` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2135,11 +2135,11 @@ mandatory sweep: .rigger-path string literals - 603 site(s), collected mechanica
                      free"`
 - `crates/rigger-domain/src/instructions.rs:153-153` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
 - `crates/rigger-gates-shell/src/gate.rs:336-336` `".rigger-cache-probe-{}"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9615-9615` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9623-9623` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9631-9631` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9639-9639` `".rigger/workflow.yml"`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9647-9647` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9619-9619` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9627-9627` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9635-9635` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9643-9643` `".rigger/workflow.yml"`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9651-9651` `".rigger/workflow.yml"`
 - `crates/rigger-grounder/src/grounder/mod.rs:444-444` `".rigger"`
 - `crates/rigger-grounder/src/grounder/mod.rs:961-961` `".rigger/workflow.yml"`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:527-527` `".rigger"`
@@ -2376,57 +2376,57 @@ __END__
 - `src/cli/setup.rs:734-734` `"imported {} agent {} from {} into .rigger/agents/ ({} kept - already present)"`
 - `src/cli/setup.rs:785-785` `"provisioned the JS driver in .rigger/shim/ (wrote shim.mjs + package.json + \
              package-lock.json and ran npm install)"`
-- `src/cli/setup.rs:1351-1351` `"kept existing .rigger/agents/{name} (import never overwrites)"`
-- `src/cli/setup.rs:1379-1379` `"imported .rigger/agents/{name} (id: {id})"`
-- `src/cli/setup.rs:2161-2161` `"nothing is written - no .rigger, no .claude, no .gitignore"`
-- `src/cli/setup.rs:2228-2228` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2233-2233` `"no gate template set matches this project (rust: Cargo.toml at the project \
+- `src/cli/setup.rs:1353-1353` `"kept existing .rigger/agents/{name} (import never overwrites)"`
+- `src/cli/setup.rs:1381-1381` `"imported .rigger/agents/{name} (id: {id})"`
+- `src/cli/setup.rs:2163-2163` `"nothing is written - no .rigger, no .claude, no .gitignore"`
+- `src/cli/setup.rs:2230-2230` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2235-2235` `"no gate template set matches this project (rust: Cargo.toml at the project \
                   root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2259-2259` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
-- `src/cli/setup.rs:2287-2287` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2288-2288` `"no gate template set matches this project (demo: a or b; other: c at the project \
+- `src/cli/setup.rs:2261-2261` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
+- `src/cli/setup.rs:2289-2289` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2290-2290` `"no gate template set matches this project (demo: a or b; other: c at the project \
                  root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2305-2305` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:2625-2625` `".rigger/agents/"`
-- `src/cli/setup.rs:2679-2679` `".rigger/dash.url"`
-- `src/cli/setup.rs:2680-2680` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2681-2681` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2690-2690` `".rigger/store.conn"`
-- `src/cli/setup.rs:2707-2707` `".rigger/\n"`
-- `src/cli/setup.rs:2713-2713` `".rigger/dash.url"`
-- `src/cli/setup.rs:2716-2716` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2719-2719` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2720-2720` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
+- `src/cli/setup.rs:2307-2307` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:2627-2627` `".rigger/agents/"`
+- `src/cli/setup.rs:2681-2681` `".rigger/dash.url"`
+- `src/cli/setup.rs:2682-2682` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2683-2683` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2692-2692` `".rigger/store.conn"`
+- `src/cli/setup.rs:2709-2709` `".rigger/\n"`
+- `src/cli/setup.rs:2715-2715` `".rigger/dash.url"`
+- `src/cli/setup.rs:2718-2718` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2721-2721` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2722-2722` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
              even when .rigger/ broadly covers them, so the committed .gitignore stays \
              self-contained, got: {:?}"`
-- `src/cli/setup.rs:2728-2728` `".rigger/dash.url"`
-- `src/cli/setup.rs:2729-2729` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2730-2730` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2731-2731` `"all three explicit per-file dash ignore lines are present in the committed \
+- `src/cli/setup.rs:2730-2730` `".rigger/dash.url"`
+- `src/cli/setup.rs:2731-2731` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2732-2732` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2733-2733` `"all three explicit per-file dash ignore lines are present in the committed \
              .gitignore even though .rigger/ already covers them, got:\n{content}"`
-- `src/cli/setup.rs:2741-2741` `".rigger/dash.url"`
-- `src/cli/setup.rs:2744-2744` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2747-2747` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3100-3100` `".rigger/agents/researcher.md"`
-- `src/cli/setup.rs:3129-3129` `".rigger/agents/planner.md"`
-- `src/cli/setup.rs:3159-3159` `".rigger/agents/newcomer.md"`
-- `src/cli/setup.rs:3237-3237` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:3467-3467` `".rigger"`
-- `src/cli/setup.rs:3632-3632` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:3835-3835` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:3837-3837` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:3838-3838` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:3839-3839` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:3849-3849` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:3852-3852` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:3866-3866` `"The count and the caller lookup run once per item of the walk's hunk list - every \
+- `src/cli/setup.rs:2743-2743` `".rigger/dash.url"`
+- `src/cli/setup.rs:2746-2746` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2749-2749` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3102-3102` `".rigger/agents/researcher.md"`
+- `src/cli/setup.rs:3131-3131` `".rigger/agents/planner.md"`
+- `src/cli/setup.rs:3161-3161` `".rigger/agents/newcomer.md"`
+- `src/cli/setup.rs:3239-3239` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:3469-3469` `".rigger"`
+- `src/cli/setup.rs:3634-3634` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:3837-3837` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:3839-3839` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:3840-3840` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:3841-3841` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:3851-3851` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:3854-3854` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:3868-3868` `"The count and the caller lookup run once per item of the walk's hunk list - every \
              item the hunks touch, new or pre-existing, its body or its doc changed - each \
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers."`
-- `src/cli/setup.rs:3956-3956` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:4165-4165` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:3958-3958` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:4167-4167` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
@@ -2908,12 +2908,12 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/mod.rs:308-308` `"{}/.rigger-test-scratch"`
 - `tests/common/workflow_probe.rs:15-15` `".rigger"`
 - `tests/common/workflow_probe.rs:16-16` `"create .rigger"`
-- `tests/compaction_generations_periphery.rs:1308-1308` `".rigger"`
-- `tests/compaction_generations_periphery.rs:1391-1391` `".rigger"`
-- `tests/compaction_generations_periphery.rs:2818-2818` `"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
+- `tests/compaction_generations_periphery.rs:1309-1309` `".rigger"`
+- `tests/compaction_generations_periphery.rs:1392-1392` `".rigger"`
+- `tests/compaction_generations_periphery.rs:2819-2819` `"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
          {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \
          decision (position {position}){fold}\n"`
-- `tests/compaction_generations_periphery.rs:4194-4194` `".rigger"`
+- `tests/compaction_generations_periphery.rs:4196-4196` `".rigger"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:138-138` `".rigger"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:139-139` `"write the .rigger/{rel} fixture: {e}"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:149-149` `".rigger"`
@@ -3771,7 +3771,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/eventstore.rs:485-487` `meta_key`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:327-329` `path`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:330-332` `path`
 
 #### `dup-9a07b087e8f1` (near, 3 sites)
 
@@ -4048,7 +4048,7 @@ Proposed home: `one shared `install_status_line` helper (e.g. relocated into `te
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-driver/src/hooks.rs:255-272` `install_status_line`
-- `src/cli/setup.rs:1234-1238` `install_status_line`
+- `src/cli/setup.rs:1236-1240` `install_status_line`
 
 #### `dup-a5bfac770233` (near, 2 sites)
 
@@ -4057,7 +4057,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/liveness.rs:924-938` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
-- `src/cli/setup.rs:2450-2464` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
+- `src/cli/setup.rs:2452-2466` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-e67cfcd84a42` (semantic, 63 sites)
 
@@ -4065,18 +4065,18 @@ Proposed home: `one sqlite-connection-opening adapter function every caller is i
 
 mandatory sweep: sqlite Connection::open call sites - 63 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1680-1680` `Connection::open_with_flags`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1699-1699` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1704-1704` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6494-6494` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6515-6515` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6993-6993` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7341-7341` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7886-7886` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12361-12361` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13110-13110` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:15623-15623` `Connection::open`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:17179-17179` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1683-1683` `Connection::open_with_flags`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1702-1702` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1707-1707` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6497-6497` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6518-6518` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6997-6997` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7345-7345` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:7890-7890` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12365-12365` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13114-13114` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:15627-15627` `Connection::open`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:17183-17183` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1562-1562` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2175-2175` `Connection::open`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2197-2197` `Connection::open_with_flags`
@@ -4104,15 +4104,15 @@ mandatory sweep: sqlite Connection::open call sites - 63 site(s), collected mech
 - `tests/common/fixtures/sqlite.rs:60-60` `Connection::open`
 - `tests/common/fixtures/write_lock.rs:11-11` `Connection::open`
 - `tests/compaction_generations_periphery.rs:453-453` `Connection::open`
-- `tests/compaction_generations_periphery.rs:904-904` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1119-1119` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1233-1233` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1289-1289` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1397-1397` `Connection::open`
-- `tests/compaction_generations_periphery.rs:3155-3155` `Connection::open`
-- `tests/compaction_generations_periphery.rs:3481-3481` `Connection::open`
-- `tests/compaction_generations_periphery.rs:3524-3524` `Connection::open`
-- `tests/compaction_generations_periphery.rs:4637-4637` `Connection::open`
+- `tests/compaction_generations_periphery.rs:905-905` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1120-1120` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1234-1234` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1290-1290` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1398-1398` `Connection::open`
+- `tests/compaction_generations_periphery.rs:3156-3156` `Connection::open`
+- `tests/compaction_generations_periphery.rs:3483-3483` `Connection::open`
+- `tests/compaction_generations_periphery.rs:3526-3526` `Connection::open`
+- `tests/compaction_generations_periphery.rs:4639-4639` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:86-86` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:100-100` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:213-213` `Connection::open`
@@ -4135,8 +4135,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4774-4786` `calls_out`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4847-4859` `callers_direct`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4777-4789` `calls_out`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4850-4862` `callers_direct`
 
 #### `dup-1cee568104ee` (near, 2 sites)
 
@@ -4144,8 +4144,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5898-5911` `subgraph_finds_the_governing_decision`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:14459-14479` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5901-5914` `subgraph_finds_the_governing_decision`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:14463-14483` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
 
 #### `dup-e45a2413a3f0` (near, 7 sites)
 
@@ -4153,11 +4153,11 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-graph-sql
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8468-8475` `apply_edge_inferred`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9354-9361` `apply_doc_concept`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9464-9471` `apply_doc_link`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9794-9801` `apply_batch_ref`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11708-11718` `apply_unit_integrated`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8472-8479` `apply_edge_inferred`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9358-9365` `apply_doc_concept`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9468-9475` `apply_doc_link`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9798-9805` `apply_batch_ref`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11712-11722` `apply_unit_integrated`
 - `tests/code_ingest_events.rs:863-870` `apply_ref_json`
 - `tests/code_ingest_events.rs:1000-1007` `apply_ref_fresh`
 
@@ -4167,8 +4167,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8484-8503` `apply_code_entity_partial`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8538-8556` `apply_community`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8488-8507` `apply_code_entity_partial`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8542-8560` `apply_community`
 
 #### `dup-84342f753367` (near, 2 sites)
 
@@ -4176,8 +4176,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9474-9597` `design_intent_link_events_fold_into_the_five_design_intent_edges`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9600-9718` `workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9478-9601` `design_intent_link_events_fold_into_the_five_design_intent_edges`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9604-9722` `workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges`
 
 #### `dup-0b2669324614` (near, 2 sites)
 
@@ -4185,8 +4185,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11441-11474` `decision_fold_projects_no_agent_node_or_decided_edge`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11528-11556` `review_finding_projects_no_raised_edge_even_with_an_event_actor`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11445-11478` `decision_fold_projects_no_agent_node_or_decided_edge`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:11532-11560` `review_finding_projects_no_raised_edge_even_with_an_event_actor`
 
 #### `dup-c76c4d91d8a8` (near, 2 sites)
 
@@ -4194,8 +4194,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12249-12251` `edge_projects`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13278-13286` `index_names`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:12253-12255` `edge_projects`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13282-13290` `index_names`
 
 #### `dup-554a83a84ac8` (near, 2 sites)
 
@@ -4203,8 +4203,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13013-13054` `the_cross_file_inferred_tier_is_order_independent`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13057-13073` `the_definition_upgrade_never_demotes_a_same_file_extracted_reference`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13017-13058` `the_cross_file_inferred_tier_is_order_independent`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13061-13077` `the_definition_upgrade_never_demotes_a_same_file_extracted_reference`
 
 #### `dup-3cee929a82ba` (near, 3 sites)
 
@@ -4212,7 +4212,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-graph-sql
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13187-13189` `edge_desc`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13191-13193` `edge_desc`
 - `src/cli/hygiene.rs:237-243` `runs_menu_line`
 - `src/cli/hygiene.rs:981-986` `pruned_line`
 
@@ -4222,8 +4222,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:14503-14534` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:14779-14810` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:14507-14538` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:14783-14814` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
 
 #### `dup-a34b5b595e15` (near, 2 sites)
 
@@ -4537,7 +4537,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/cli.rs:941-948` `migrated_lines`
 - `tests/common/cli.rs:955-960` `derived_menu_line_naming`
 - `tests/common/cli.rs:1587-1592` `bloat_advisory_naming`
-- `tests/compaction_generations_periphery.rs:5284-5289` `runs_prunable`
+- `tests/compaction_generations_periphery.rs:5286-5291` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
 
@@ -4645,8 +4645,8 @@ Proposed home: `setup::support (consolidate these 2 sites into one function in t
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/setup.rs:1182-1190` `install_lookup_hook`
-- `src/cli/setup.rs:1234-1238` `install_status_line`
+- `src/cli/setup.rs:1184-1192` `install_lookup_hook`
+- `src/cli/setup.rs:1236-1240` `install_status_line`
 
 #### `dup-2cd309ca2b08` (near, 2 sites)
 
@@ -5024,7 +5024,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/compaction_genera
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/compaction_generations_periphery.rs:2467-2473` `holds_table`
+- `tests/compaction_generations_periphery.rs:2468-2474` `holds_table`
 - `tests/one_shot_reads_periphery.rs:310-312` `poison`
 
 #### `dup-515218e72204` (near, 2 sites)
@@ -5308,8 +5308,8 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-domain/src/metrics.rs:1392-1399` `model_id_base` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/review.rs:772-809` `a_finding_line_has_five_pipe_fields_with_the_severity_second` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/spec.rs:2249-2256` `strip_inline_code_direct_exact_output_pins_a_zero_width_quote_pair` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6149-6151` `locked` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:14888-14908` `one_transaction_resolves_an_owed_name_once_where_one_per_reference_resolves_it_each_time` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6152-6154` `locked` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:14892-14912` `one_transaction_resolves_an_owed_name_once_where_one_per_reference_resolves_it_each_time` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:681-693` `normalize_logical_path` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:1280-1285` `class_fields` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:1702-1710` `go_receiver` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
