@@ -7651,8 +7651,9 @@ mod tests {
     }
 
     /// A file whose mark already names the lost fold, and whose seeding finds an old hole below
-    /// its highest applied position, owes the lost fold once, seeding no cursor; one at an older
-    /// fold rule whose ledger misses an old position is not seeded and owes both causes.
+    /// its highest applied position, owes the lost fold once, seeding no cursor. One at an older
+    /// fold rule is not seeded, whatever its ledger misses: one whose ledger misses an old
+    /// position owes both causes, and one whose ledger misses nothing owes the older rule alone.
     #[test]
     fn the_lost_fold_is_owed_once_whether_the_mark_or_the_seeding_names_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -7669,19 +7670,31 @@ mod tests {
             (vec![OWED_LOST_FOLD], None),
             "the mark and the seeding name the lost fold once"
         );
-        std::fs::remove_file(crate::test_support::owed_mark_in(dir.path())).unwrap();
-        p.conn
-            .lock()
-            .unwrap()
-            .pragma_update(None, "user_version", PROJECTION_VERSION - 1)
-            .unwrap();
-        assert_eq!(
+        let at_an_older_rule = |folded: &[Event]| {
+            let (_dir, file) = crate::test_support::temp_graph_db();
+            let p = Projector::open(&file, "test").unwrap();
+            crate::test_support::folds(&p, folded);
+            p.conn
+                .lock()
+                .unwrap()
+                .pragma_update(None, "user_version", PROJECTION_VERSION - 1)
+                .unwrap();
             (
                 owed_against_the_log(&p, &log),
-                crate::test_support::caught_up_at(&path)
-            ),
-            (vec![OWED_OLDER_RULE, OWED_LOST_FOLD], None),
-            "a file at an older rule owes both causes and is not seeded"
+                crate::test_support::caught_up_at(Path::new(&file)),
+            )
+        };
+        assert_eq!(
+            [
+                at_an_older_rule(&[log[0].clone(), log[2].clone()]),
+                at_an_older_rule(&log),
+            ],
+            [
+                (vec![OWED_OLDER_RULE, OWED_LOST_FOLD], None),
+                (vec![OWED_OLDER_RULE], None),
+            ],
+            "a file at an older rule is not seeded, and owes the lost fold beside it only for an \
+             old miss"
         );
     }
 
