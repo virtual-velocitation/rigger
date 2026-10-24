@@ -139,6 +139,19 @@ macro_rules! delegate_event_store_reads {
         ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
             self.inner.read_all(from, dir, filter)
         }
+        fn read_all_page(
+            &self,
+            from: rigger::eventstore::Position,
+            filter: &rigger::eventstore::Filter,
+            max: usize,
+        ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
+            self.inner.read_all_page(from, filter, max)
+        }
+        fn log_head(
+            &self,
+        ) -> Result<Option<rigger::eventstore::Position>, rigger::eventstore::Error> {
+            self.inner.log_head()
+        }
         fn subscribe_all(
             &self,
             from: rigger::eventstore::Position,
@@ -229,6 +242,17 @@ impl EventStore for SilentStore {
     ) -> Result<Vec<Event>, Error> {
         Ok(Vec::new())
     }
+    fn read_all_page(
+        &self,
+        _from: Position,
+        _filter: &Filter,
+        _max: usize,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
+    fn log_head(&self) -> Result<Option<Position>, Error> {
+        Ok(None)
+    }
     fn subscribe_all(&self, _from: Position, _filter: &Filter) -> Result<Subscription, Error> {
         Err(Error::Backend(
             "the silent double answers appends only".into(),
@@ -291,6 +315,16 @@ macro_rules! refuse_event_store_calls {
     (@ $why:literal read_all) => {
         fn read_all(&self, _: Position, _: Direction, _: &Filter) -> Result<Vec<Event>, Error> {
             panic!(concat!($why, ": nothing reads the log"))
+        }
+    };
+    (@ $why:literal read_all_page) => {
+        fn read_all_page(&self, _: Position, _: &Filter, _: usize) -> Result<Vec<Event>, Error> {
+            panic!(concat!($why, ": nothing reads a page of the log"))
+        }
+    };
+    (@ $why:literal log_head) => {
+        fn log_head(&self) -> Result<Option<Position>, Error> {
+            panic!(concat!($why, ": nothing reads the log's head"))
         }
     };
     (@ $why:literal subscribe_all) => {
@@ -377,6 +411,8 @@ impl EventStore for GroupLookupOnly {
         append,
         read_stream,
         read_all,
+        read_all_page,
+        log_head,
         subscribe_all,
         subscribe_stream,
         last_position,
@@ -433,6 +469,8 @@ impl EventStore for HandBuiltLog {
         append,
         read_stream,
         read_all,
+        read_all_page,
+        log_head,
         subscribe_all,
         subscribe_stream,
         read_stream_positions,
@@ -515,6 +553,15 @@ pub enum CountedRead {
         forward: bool,
         materialized: usize,
     },
+    /// A page read of the log: `max` is the bound the caller asked for, `materialized` how many
+    /// events the page handed back.
+    AllPage {
+        from: Position,
+        max: usize,
+        materialized: usize,
+    },
+    /// A read of the log's head: it hands back no event, only a position.
+    LogHead,
     SubscribeStream {
         stream: String,
         from: Revision,
@@ -576,11 +623,13 @@ impl CountedRead {
         match self {
             CountedRead::Stream { materialized, .. }
             | CountedRead::All { materialized, .. }
+            | CountedRead::AllPage { materialized, .. }
             | CountedRead::Typed { materialized, .. } => *materialized,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered,
             CountedRead::StreamBatched { batches, .. } => batches.iter().sum(),
             CountedRead::LastPosition { .. }
+            | CountedRead::LogHead
             | CountedRead::StreamPositions { .. }
             | CountedRead::LatestInGroup { .. } => 0,
         }
@@ -592,10 +641,13 @@ impl CountedRead {
         match &mut read {
             CountedRead::Stream { materialized, .. }
             | CountedRead::All { materialized, .. }
+            | CountedRead::AllPage { materialized, .. }
             | CountedRead::Typed { materialized, .. } => *materialized = 0,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered = 0,
-            CountedRead::LastPosition { .. } | CountedRead::LatestInGroup { .. } => {}
+            CountedRead::LastPosition { .. }
+            | CountedRead::LogHead
+            | CountedRead::LatestInGroup { .. } => {}
             CountedRead::StreamPositions { handed, .. } => *handed = 0,
             CountedRead::StreamBatched { batches, .. } => batches.clear(),
         }
@@ -608,12 +660,15 @@ impl CountedRead {
         match self {
             CountedRead::Stream { materialized, .. }
             | CountedRead::All { materialized, .. }
+            | CountedRead::AllPage { materialized, .. }
             | CountedRead::Typed { materialized, .. } => *materialized += n,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered += n,
             CountedRead::StreamPositions { handed, .. } => *handed += n,
             CountedRead::StreamBatched { batches, .. } => batches.push(n),
-            CountedRead::LastPosition { .. } | CountedRead::LatestInGroup { .. } => {}
+            CountedRead::LastPosition { .. }
+            | CountedRead::LogHead
+            | CountedRead::LatestInGroup { .. } => {}
         }
     }
 }
@@ -733,6 +788,26 @@ impl EventStore for ReadCountingStore<'_> {
         });
         let events = self.inner.read_all(from, dir, filter)?;
         Ok(self.handed_back(at, events))
+    }
+    fn read_all_page(
+        &self,
+        from: Position,
+        filter: &Filter,
+        max: usize,
+    ) -> Result<Vec<Event>, Error> {
+        let at = self.record(CountedRead::AllPage {
+            from,
+            max,
+            materialized: 0,
+        });
+        let events = self.inner.read_all_page(from, filter, max)?;
+        Ok(self.handed_back(at, events))
+    }
+    fn log_head(&self) -> Result<Option<Position>, Error> {
+        let at = self.record(CountedRead::LogHead);
+        let head = self.inner.log_head();
+        self.land_interleaved(at);
+        head
     }
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
         let at = self.record(CountedRead::SubscribeAll { from, delivered: 0 });

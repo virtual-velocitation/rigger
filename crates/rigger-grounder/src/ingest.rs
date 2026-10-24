@@ -255,6 +255,19 @@ where
         self.store.read_all(from, dir, filter)
     }
 
+    fn read_all_page(
+        &self,
+        _from: Position,
+        _filter: &Filter,
+        _max: usize,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
+
+    fn log_head(&self) -> Result<Option<Position>, Error> {
+        Ok(None)
+    }
+
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
         self.store.subscribe_all(from, filter)
     }

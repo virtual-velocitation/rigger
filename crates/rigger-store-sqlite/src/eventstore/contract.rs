@@ -24,6 +24,8 @@ pub fn assert_contract(store: &dyn EventStore) {
     forward_stream_read_honors_nonzero_from(store);
     backward_all_read_reverses_set(store);
     all_position_round_trips_into_read_and_subscribe(store);
+    a_page_reads_at_most_max_events_past_from_and_pages_resume_without_a_gap(store);
+    the_log_head_is_the_newest_position_issued_and_every_later_append_lands_above_it(store);
     nonexistent_stream_reads_empty(store);
     concurrent_appends_to_distinct_streams_get_distinct_positions(store);
     append_reports_every_event_at_the_position_the_store_holds_it(store);
@@ -1219,6 +1221,119 @@ fn all_position_round_trips_into_read_and_subscribe(store: &dyn EventStore) {
         "P4",
         "a position-resumed subscription must still go live",
     );
+}
+
+/// THE PAGE (spec 124): `read_all_page` reads forward from `from` (exclusive) at most `max` of the
+/// filter's events, so a page over single-event appends - which hold distinct positions on every
+/// backend - holds exactly `max`. A batch append may hold one position for all its events (the
+/// server's commit), so a page over it is held to the property the page exists for: pages, each
+/// resumed from the last one's final position, hand back the forward read exactly, in order and
+/// once each, whatever the bound.
+fn a_page_reads_at_most_max_events_past_from_and_pages_resume_without_a_gap(
+    store: &dyn EventStore,
+) {
+    use crate::test_support::{ev, types_of};
+    let filter = Filter {
+        stream_prefix: Some("c-page-".to_string()),
+    };
+    for (stream, events) in [
+        ("c-page-0", vec![ev("Q0", "{}")]),
+        ("c-page-1", vec![ev("Q1", "{}")]),
+        // An event outside the filter's slice, between two inside it.
+        ("c-pagex", vec![ev("X", "{}")]),
+        ("c-page-2", vec![ev("Q2", "{}")]),
+        (
+            "c-page-batch",
+            vec![ev("Q3", "{}"), ev("Q4", "{}"), ev("Q5", "{}")],
+        ),
+        ("c-page-3", vec![ev("Q6", "{}")]),
+    ] {
+        store
+            .append(stream, ExpectedRevision::Any, &events)
+            .expect("the page fixture appends");
+    }
+
+    let all = store.read_all(0, Direction::Forward, &filter).unwrap();
+    assert_eq!(
+        types_of(&all),
+        ["Q0", "Q1", "Q2", "Q3", "Q4", "Q5", "Q6"],
+        "the forward read of the slice"
+    );
+    let page = |from, max| {
+        store
+            .read_all_page(from, &filter, max)
+            .unwrap_or_else(|e| panic!("the page from {from} bounded at {max} must read: {e}"))
+    };
+    for (from, max, expected, why) in [
+        (
+            0,
+            2,
+            &["Q0", "Q1"][..],
+            "a page from the log's start holds the first `max` events of the slice",
+        ),
+        (
+            all[0].position,
+            2,
+            &["Q1", "Q2"][..],
+            "a page's `from` is exclusive and an event outside the slice is never handed back",
+        ),
+        (0, 0, &[][..], "a page bounded at 0 reads nothing"),
+        (
+            all[6].position,
+            2,
+            &[][..],
+            "a page from the slice's last event is empty",
+        ),
+    ] {
+        assert_eq!(types_of(&page(from, max)), expected, "{why}");
+    }
+    for max in [1, 2, 4] {
+        let mut resumed = Vec::new();
+        let mut from = 0;
+        loop {
+            let next = page(from, max);
+            let Some(last) = next.last() else { break };
+            from = last.position;
+            resumed.extend(next);
+        }
+        assert_eq!(
+            types_of(&resumed),
+            types_of(&all),
+            "pages bounded at {max}, each resumed from the last one's final position, read the \
+             slice exactly once each, in order"
+        );
+    }
+}
+
+/// THE HEAD (spec 124): `log_head` answers the highest position the log has issued, whatever the
+/// stream: at or above the position of the newest append, and below the position of any append
+/// after it. A backend may issue positions to records of its own (the server's system records),
+/// so the head is held between the two appends rather than to one of them.
+fn the_log_head_is_the_newest_position_issued_and_every_later_append_lands_above_it(
+    store: &dyn EventStore,
+) {
+    use crate::test_support::ev;
+    let append = |stream: &str, events: &[Event]| {
+        store
+            .append(stream, ExpectedRevision::Any, events)
+            .expect("the head fixture appends")
+            .last()
+            .expect("an append that wrote events reports where")
+    };
+    let mut newest = append("c-head", &[ev("HD0", "{}"), ev("HD1", "{}")]);
+    for stream in ["c-head-sibling", "c-head"] {
+        let head = store
+            .log_head()
+            .expect("the head read must succeed")
+            .expect("a log holding events has a head");
+        let later = append(stream, &[ev("HD2", "{}")]);
+        assert!(
+            (newest..later).contains(&head),
+            "the head ({head}) is at or above the newest append ({newest}) and below the next \
+             one ({later}), whatever its stream"
+        );
+        newest = later;
+    }
 }
 
 /// `ExpectedRevision::Exact` is the everyday optimistic-concurrency guard (append

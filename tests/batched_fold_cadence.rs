@@ -750,6 +750,8 @@ fn a_folding_store_reads_exactly_what_the_store_it_wraps_holds() {
         (
             ids(folding.read_stream("run", 1, Direction::Forward).unwrap()),
             ids(folding.read_all(1, Direction::Forward, &filter).unwrap()),
+            ids(folding.read_all_page(1, &filter, 1).unwrap()),
+            folding.log_head().unwrap(),
             ids(folding
                 .read_stream_typed("run", 0, rigger::eventstore::TypeSelection::Only(&["A"]))
                 .unwrap()),
@@ -760,6 +762,8 @@ fn a_folding_store_reads_exactly_what_the_store_it_wraps_holds() {
         (
             vec![2, 3],
             vec![2, 3],
+            vec![2],
+            Some(3),
             vec![1, 3],
             Some(2),
             Some(3),

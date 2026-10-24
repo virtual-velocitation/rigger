@@ -201,6 +201,17 @@ impl EventStore for PortDouble {
     ) -> Result<Vec<Event>, StoreError> {
         Err(unreadable())
     }
+    fn read_all_page(
+        &self,
+        _from: Position,
+        _filter: &Filter,
+        _max: usize,
+    ) -> Result<Vec<Event>, StoreError> {
+        Err(unreadable())
+    }
+    fn log_head(&self) -> Result<Option<Position>, StoreError> {
+        Err(unreadable())
+    }
     fn subscribe_all(&self, _from: Position, _filter: &Filter) -> Result<Subscription, StoreError> {
         Err(unreadable())
     }

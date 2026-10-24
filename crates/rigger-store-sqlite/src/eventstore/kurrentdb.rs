@@ -441,6 +441,16 @@ fn first_match<X, T>(
     Ok(None)
 }
 
+/// THE PAGE over a forward `$all` pull that starts at `from` (the server's start is inclusive),
+/// each record as its commit position and the event it delivers, if any.
+fn page_of(
+    _records: impl IntoIterator<Item = Result<(Position, Option<Event>), kurrentdb::Error>>,
+    _from: Position,
+    _max: usize,
+) -> Result<Vec<Event>, Error> {
+    Ok(Vec::new())
+}
+
 /// The group lookup's scan over a group stream's newest-first links, each as the id it reserved
 /// and the event its revision holds: the first link whose revision holds exactly the event it
 /// reserved. A link holding nothing or another write is skipped; a group stream the server does
@@ -850,6 +860,19 @@ impl EventStore for Store {
             out.reverse();
         }
         Ok(out)
+    }
+
+    fn read_all_page(
+        &self,
+        _from: Position,
+        _filter: &Filter,
+        _max: usize,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
+
+    fn log_head(&self) -> Result<Option<Position>, Error> {
+        Ok(None)
     }
 
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
@@ -1429,6 +1452,118 @@ mod tests {
         }
     }
 
+    /// The records a forward `$all` read hands back, oldest first, as `(commit, the type of the
+    /// event it delivers)` - `None` for a record no caller is delivered - each delivered event
+    /// stamped at its record's commit.
+    fn oldest_first<'a>(
+        records: &'a [(u64, Option<&'a str>)],
+    ) -> impl Iterator<Item = Result<(Position, Option<Event>), kurrentdb::Error>> + 'a {
+        records.iter().map(|(commit, t)| {
+            let event = t.map(|t| {
+                let mut event = Event::new(t, Vec::new());
+                event.position = *commit;
+                event
+            });
+            Ok((*commit, event))
+        })
+    }
+
+    /// A log of single-event commits at 10 and 30 around the one commit (20) the server issued to
+    /// a three-event append, then a record no caller is delivered (25).
+    const PAGED_LOG: &[(u64, Option<&str>)] = &[
+        (10, Some("A")),
+        (20, Some("B0")),
+        (20, Some("B1")),
+        (20, Some("B2")),
+        (25, None),
+        (30, Some("C")),
+    ];
+
+    /// Spec 124, the server half of the page: from `from` (exclusive) at most `max` delivered
+    /// events, except that a page never splits a commit - its `max`-th event's commit is read to
+    /// its last event - and the read pulls no record past the one that ends the page.
+    #[test]
+    fn a_page_holds_max_events_past_from_and_never_splits_a_commit() {
+        type Row<'a> = (
+            &'a [(u64, Option<&'a str>)],
+            Position,
+            usize,
+            &'a [(&'a str, Position)],
+            usize,
+        );
+        let rows: &[Row] = &[
+            // A bound of 0 reads nothing, pulling only the record that ends the page.
+            (PAGED_LOG, 0, 0, &[], 1),
+            (PAGED_LOG, 0, 1, &[("A", 10)], 2),
+            // A bound that falls inside the commit at 20 - at its first event, at one before its
+            // last - is read to its last event; one at its last ends there; one past it reaches
+            // the next commit across the undelivered record.
+            (
+                PAGED_LOG,
+                0,
+                2,
+                &[("A", 10), ("B0", 20), ("B1", 20), ("B2", 20)],
+                5,
+            ),
+            (
+                PAGED_LOG,
+                0,
+                3,
+                &[("A", 10), ("B0", 20), ("B1", 20), ("B2", 20)],
+                5,
+            ),
+            (
+                PAGED_LOG,
+                0,
+                4,
+                &[("A", 10), ("B0", 20), ("B1", 20), ("B2", 20)],
+                5,
+            ),
+            (
+                PAGED_LOG,
+                0,
+                5,
+                &[("A", 10), ("B0", 20), ("B1", 20), ("B2", 20), ("C", 30)],
+                6,
+            ),
+            // `from` is exclusive: the record at it and every record before it are passed over,
+            // the whole commit at 20 when `from` is 20.
+            (PAGED_LOG, 10, 1, &[("B0", 20), ("B1", 20), ("B2", 20)], 5),
+            (PAGED_LOG, 20, 1, &[("C", 30)], 6),
+            (PAGED_LOG, 30, 1, &[], 6),
+            // A `from` of 0 is the log's start, so a record the server issued at commit 0 is read.
+            (&[(0, Some("Z"))], 0, 1, &[("Z", 0)], 1),
+        ];
+        for (log, from, max, page, pulls) in rows {
+            let pulled = std::cell::Cell::new(0);
+            let read = oldest_first(log).inspect(|_| pulled.set(pulled.get() + 1));
+            let got: Vec<(String, Position)> = page_of(read, *from, *max)
+                .unwrap()
+                .into_iter()
+                .map(|e| (e.type_, e.position))
+                .collect();
+            let want: Vec<(String, Position)> =
+                page.iter().map(|(t, p)| (t.to_string(), *p)).collect();
+            assert_eq!(
+                (got, pulled.get()),
+                (want, *pulls),
+                "the page of {log:?} from {from} bounded at {max}, and the records it pulled"
+            );
+        }
+    }
+
+    /// A server failure mid-read ends the page in an error naming the read, never a short page.
+    #[test]
+    fn a_page_whose_read_fails_is_an_error_naming_the_read() {
+        let failed = oldest_first(&[(10, Some("A"))]).chain([Err(kurrentdb::Error::AccessDenied)]);
+        match page_of(failed, 0, 4) {
+            Err(Error::Backend(msg)) => {
+                assert_eq!(msg, "kurrentdb: read all page: Access denied error")
+            }
+            other => panic!("a server failure must be a backend error, got {other:?}"),
+        }
+    }
+
     /// A store over a server that never answers.
     fn unreachable_store() -> Store {
         // One thread, not a worker per core: the test runner caps the address space.
@@ -1467,6 +1602,19 @@ mod tests {
             unreachable_store().last_position("run", "RunStarted"),
             "kurrentdb: last position: ",
         );
+    }
+
+    /// Spec 124: the page read and the head read reach the server and report its failure, each
+    /// naming its step - never an empty page or an absent head that would read as an empty log.
+    #[test]
+    fn the_page_and_head_reads_report_an_unreachable_server_as_an_error_naming_their_step() {
+        let store = unreachable_store();
+        assert_names_step(
+            "the page read",
+            store.read_all_page(0, &Filter::default(), 4),
+            "kurrentdb: read all page: ",
+        );
+        assert_names_step("the head read", store.log_head(), "kurrentdb: log head: ");
     }
 
     /// Spec 101: every group-lookup shell reaches the server through its own step. An append with

@@ -1332,9 +1332,9 @@ mod tests {
     /// nothing exercised `classify_no_result`'s own `.ok()` degrade-on-error branch until
     /// this double existed. Mirrors `conductor::tests::FailingStore`'s shape (a store
     /// double that fails on demand) narrowed to this module's one call
-    /// (`read_stream` only); `append`/`read_all`/`subscribe_*` are never reached by
-    /// `classify_no_result`'s read-only path, so they degrade the same inert way
-    /// `SilentStore`'s own unused arms do.
+    /// (`read_stream` only); `append`/`read_all`/`read_all_page`/`log_head`/`subscribe_*` are
+    /// never reached by `classify_no_result`'s read-only path, so they degrade the same inert
+    /// way `SilentStore`'s own unused arms do.
     struct FailingReadStore;
     impl FailingReadStore {
         /// The one failure every read of this double answers.
@@ -1370,6 +1370,19 @@ mod tests {
             _filter: &crate::eventstore::Filter,
         ) -> Result<Vec<crate::eventstore::Event>, crate::eventstore::Error> {
             Ok(Vec::new())
+        }
+        fn read_all_page(
+            &self,
+            _from: crate::eventstore::Position,
+            _filter: &crate::eventstore::Filter,
+            _max: usize,
+        ) -> Result<Vec<crate::eventstore::Event>, crate::eventstore::Error> {
+            Ok(Vec::new())
+        }
+        fn log_head(
+            &self,
+        ) -> Result<Option<crate::eventstore::Position>, crate::eventstore::Error> {
+            Ok(None)
         }
         fn subscribe_all(
             &self,

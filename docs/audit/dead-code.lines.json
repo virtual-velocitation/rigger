@@ -1,1 +1,28 @@
-[]
+[
+  {
+    "file": "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
+    "name": "page_of",
+    "line": 446,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
+        "line": 1540
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
+        "line": 1559
+      }
+    ]
+  },
+  {
+    "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+    "name": "page_sql",
+    "line": 91,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+        "line": 1566
+      }
+    ]
+  }
+]

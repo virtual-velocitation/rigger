@@ -733,6 +733,27 @@ pub trait EventStore: Send + Sync {
         filter: &Filter,
     ) -> Result<Vec<Event>, Error>;
 
+    /// Read one page of the global log forward from a global position (**exclusive**), filtered:
+    /// the events [`read_all`](EventStore::read_all) reads forward from `from`, up to `max` of
+    /// them and no further, except that a page never splits the events that share one
+    /// [`Position`] - a page whose `max`-th event shares its position with the next ends with
+    /// every event of that position - so a read resumed from the page's last position misses
+    /// none of them. A `max` of 0 reads nothing. A backend pulls no event past the page, so a
+    /// read over a long gap reads one page and never the gap.
+    fn read_all_page(
+        &self,
+        from: Position,
+        filter: &Filter,
+        max: usize,
+    ) -> Result<Vec<Event>, Error>;
+
+    /// The log's head: the highest [`Position`] the log has issued, whatever stream or event it
+    /// was issued to, so every later append lands above it - or `None` for a log that has issued
+    /// none. A position issued to an event the log no longer holds still counts. A backend
+    /// answers from its own index, or from one backward read of its last record - never by a
+    /// forward read.
+    fn log_head(&self) -> Result<Option<Position>, Error>;
+
     /// Open a catch-up subscription over the global log from a position
     /// (**exclusive**): it replays the matching events after `from` in order,
     /// then delivers new ones live.

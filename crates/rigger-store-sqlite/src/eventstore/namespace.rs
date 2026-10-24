@@ -121,6 +121,19 @@ impl EventStore for Namespaced<'_> {
         Ok(self.strip(events))
     }
 
+    fn read_all_page(
+        &self,
+        _from: Position,
+        _filter: &Filter,
+        _max: usize,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
+
+    fn log_head(&self) -> Result<Option<Position>, Error> {
+        Ok(None)
+    }
+
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
         let inner = self.inner.subscribe_all(from, &self.scope_filter(filter))?;
         Ok(strip_subscription(inner, self.prefix.clone()))
@@ -263,6 +276,52 @@ mod tests {
             "the decorator asks the backend for the prefixed stream"
         );
         assert_eq!(backend.last_position("run", "RunStarted").unwrap(), None);
+    }
+
+    /// The page is scoped and stripped as every global read of the wrapper is, and its positions
+    /// are the log's; the head is the whole log's, so a sibling project's append moves it.
+    #[test]
+    fn the_page_reads_within_the_namespace_and_the_head_is_the_whole_logs() {
+        use crate::test_support::ev;
+        let backend = Store::open(":memory:").unwrap();
+        let alpha = Namespaced::new(&backend, "alpha");
+        let beta = Namespaced::new(&backend, "beta");
+        alpha
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[ev("A0", "{}"), ev("A1", "{}")],
+            )
+            .unwrap();
+        beta.append("run", ExpectedRevision::Any, &[ev("B0", "{}")])
+            .unwrap();
+        alpha
+            .append("run", ExpectedRevision::Any, &[ev("A2", "{}")])
+            .unwrap();
+        for (from, max, expected) in [
+            (1, 1, vec![("run", "A1", 2)]),
+            (2, 1, vec![("run", "A2", 4)]),
+            (
+                0,
+                3,
+                vec![("run", "A0", 1), ("run", "A1", 2), ("run", "A2", 4)],
+            ),
+            (4, 1, vec![]),
+        ] {
+            let page = alpha.read_all_page(from, &Filter::default(), max).unwrap();
+            assert_eq!(
+                page.iter()
+                    .map(|e| (e.stream.as_str(), e.type_.as_str(), e.position))
+                    .collect::<Vec<_>>(),
+                expected,
+                "the page from {from} bounded at {max} holds alpha's events alone, unprefixed"
+            );
+        }
+        assert_eq!(
+            (alpha.log_head().unwrap(), beta.log_head().unwrap()),
+            (Some(4), Some(4)),
+            "each namespace answers the whole log's head"
+        );
     }
 
     #[test]

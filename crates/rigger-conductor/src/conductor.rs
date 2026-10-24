@@ -36758,6 +36758,19 @@ mod tests {
             ) -> Result<Vec<Event>, crate::eventstore::Error> {
                 self.inner.read_all(from, dir, filter)
             }
+            fn read_all_page(
+                &self,
+                from: crate::eventstore::Position,
+                filter: &crate::eventstore::Filter,
+                max: usize,
+            ) -> Result<Vec<Event>, crate::eventstore::Error> {
+                self.inner.read_all_page(from, filter, max)
+            }
+            fn log_head(
+                &self,
+            ) -> Result<Option<crate::eventstore::Position>, crate::eventstore::Error> {
+                self.inner.log_head()
+            }
             fn subscribe_all(
                 &self,
                 from: crate::eventstore::Position,
