@@ -3742,16 +3742,8 @@ mod tests {
     /// commands the author runs before it reports (clippy on both lanes, the audit gate with a
     /// clean `git status`, the boundary audit, the content gates and red-before-green), the whole
     /// suite left to the gates, the audit's closing rule, the test homes with the tool that
-    /// searches them, the counted checks: the roots a retired spelling is counted over with the
-    /// command that counts it, and the audit record owed for every added test-side shape with the
-    /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
-    /// the root crate's `src/` test modules included), run once per term of the statements of
-    /// each added test-side body and of the changed statements of each edited one over the
-    /// unit's whole range, a twin among untouched statements named as the tree's debt - each
-    /// string literal alone and in full, quotes
-    /// inside the term and one run per literal however short, and each outside call with its
-    /// first argument token, never the body's name, the record organised by statement, each
-    /// added or edited statement quoted with its `file:line` above its terms - and the sentence
+    /// searches them, the counted check: the roots a retired spelling is counted over with the
+    /// command that counts it, no per-statement test-shape record, and the sentence
     /// walk's generators as commands over the unit's whole range on every round (the merge base
     /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
     /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
@@ -3816,8 +3808,6 @@ mod tests {
             "the `tests/*.rs` doc comments, `//!` module docs, comments and assertion messages \
              included",
             "`git ls-files src crates tests docs skills scaffold .rigger | xargs awk",
-            "Every test-side shape you add, merged or not, is recorded as one \
-             `<unit>-test-shape-audit` DecisionMade naming each site FIXED or CHECKED",
             "`git diff --name-only <base>..HEAD`",
             "`rigger-run` when it names none",
             "the `impl` header above a changed fn and above each of its callers names the trait \
@@ -3852,7 +3842,8 @@ mod tests {
              `match` arm per member, an `||` chain of equalities - runs the count above once per \
              member's name, every statement, `match` or macro call holding two or more members \
              read as a second spelling of the set, and its line names the member sites it read.",
-            "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
+            "The walk is recorded as one `<unit>-sentence-walk` DecisionMade naming what each \
+             generator returned and every sentence FIXED with its location.",
             "On every round, the first and each later one alike, `<base>` is the unit's merge \
              base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
              `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the \
@@ -3863,32 +3854,7 @@ mod tests {
              predicate) carries one witness per case the code splits its subject into - each \
              arm, key component, filter condition or match branch - the cases named in the \
              record.",
-            "The search is this command, one run per distinguishing expression, the expression \
-             its one argument",
-            "`git ls-files tests crates src | t='<expression>' xargs awk",
-            "and the root crate's `src/` test modules the same way",
-            "The expressions are the statements' own terms, never a body's name: every string \
-             literal each test-side body you add or edit spells, in full, and every call it \
-             makes outside the shared home with its first argument token \
-             (`create_dir_all(root.join(`, `for_extension(\"rs\")`), the command run once per \
-             term.",
-            "The bodies are read over the unit's whole range: a body you add whole, every \
-             statement, and a body you edit in the statements `git diff $(git merge-base \
-             rigger-run HEAD)..HEAD -- tests crates src` shows changed, a twin found only among \
-             statements you did not touch named in your hand-over as the tree's debt.",
-            "A literal's term is the literal alone, its quotes inside the term \
-             (`t='\"src/f.rs\"'`) and nothing around it - never the call, format string or \
-             statement that spells it - one run per literal, none set aside as short or \
-             conventional (`\"x\"`, `\":memory:\"`, a fixture path), and every hit the run \
-             prints listed under its disposition.",
-            "index($0, ENVIRON[\"t\"])",
             "END { print n + 0 \" hits\" }'`",
-            "The record pastes each command as run, its hit count and every hit it printed, each \
-             FIXED or CHECKED, and the `sdet` lens re-runs each on the review tree.",
-            "The record is organised by statement: each statement you add or edit is quoted with \
-             its `file:line` and followed by its terms and their searches, a single call into the \
-             shared home marked so with its callee named; a term the statement spells that the \
-             record lacks under it is a record defect the `sdet` lens blocks on.",
             "Each rule the change rewrites is searched by two short terms for its old statement \
              and for each label its cases carried (a name a doc, test or comment gives a case \
              the old rule decided): the feature's name as the code spells it (`--around`, the \
@@ -3939,6 +3905,10 @@ mod tests {
         assert!(
             !block.contains("mutant-probes"),
             "the hand-over block owes no record of hand-applied mutations"
+        );
+        assert!(
+            !block.contains("test-shape-audit"),
+            "the hand-over block owes no per-statement test-shape record"
         );
     }
 
