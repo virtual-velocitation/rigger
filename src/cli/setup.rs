@@ -3983,14 +3983,15 @@ mod tests {
     /// claim at head, a conditional claim against whether the diff changes its condition, a
     /// cross-surface claim against each surface it names and a quantified claim against each
     /// case the code splits its subject into. The walk blocks on one finding only, a sentence
-    /// at head that misstates the changed behaviour, cited with the code that contradicts it,
-    /// an added item's second spelling being the architecture lens's finding alone; a record
-    /// with no per-hit disposition, per-item count block or section for added conditions is
-    /// never a finding, and the retired requirements are spelled nowhere in the persona. The
-    /// lens's own review-complete record is bounded the same way - each command it ran with its
-    /// hit count, each BLOCKING finding with its citations, its own witness for each FIXED
-    /// sentence and added doc block, and the remainder as one count per command with its
-    /// verdict - so a counted verdict over the remainder is a record it can write and no
+    /// at head the built-in rule counts as misstating the changed behaviour, cited with the
+    /// code that contradicts it, the persona pointing at the built-in's cases instead of
+    /// restating them and an added item's second spelling being the architecture lens's finding
+    /// alone; a record with no per-hit disposition, per-item count block or section for added
+    /// conditions is never a finding, and the retired requirements are spelled nowhere in the
+    /// persona. The lens's own review-complete record is bounded the same way - each command it
+    /// ran with its hit count, each BLOCKING finding with its citations, its own witness for
+    /// each FIXED sentence and added doc block, and the remainder as one count per command with
+    /// its verdict - so a counted verdict over the remainder is a record it can write and no
     /// per-sentence listing is owed. The records are the author's instruments, never a gate, so
     /// the lens's rule against re-running a green gate does not reach them.
     #[test]
@@ -4066,11 +4067,10 @@ mod tests {
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches",
-            "A sentence at head that misstates the changed behaviour - a claim no code at head \
-             makes true, a quantified claim failing at any of its cases, a consumer sentence \
-             stating a changed condition's pre-change answer - is the walk's one BLOCKING \
-             finding, on its own, citing the sentence's `file:line` and the `file:line` of the \
-             code that contradicts it.",
+            "You read each hit against the code at head, and a sentence the built-in rule counts \
+             as misstating the changed behaviour is the walk's one BLOCKING finding, on its own, \
+             citing the sentence's `file:line` and the `file:line` of the code at head that \
+             contradicts it.",
             "A record with no per-hit or per-line disposition, no count block beside each item or \
              no section of its own for added or changed conditions is never a finding: the \
              bounded record satisfies the hand-over, and you read the hits yourself.",
@@ -4119,6 +4119,14 @@ mod tests {
             assert!(
                 !flat.contains(copied),
                 "sdet.md leaves the one-home rule to the architecture lens: {copied:?}"
+            );
+        }
+        // What misstating the changed behaviour means is the built-in rule's own case list; the
+        // persona points at it and carries no copy.
+        for case in ["quantified claim failing", "pre-change answer"] {
+            assert!(
+                !flat.contains(case),
+                "sdet.md points at the built-in's cases of a misstating sentence: {case:?}"
             );
         }
         assert!(
