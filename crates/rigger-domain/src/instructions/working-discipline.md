@@ -148,7 +148,12 @@ tool that searches them.
   quantified sentence; and the remainder it read as one count per command, with its verdict.
   The remainder owes no per-sentence listing of claims and witnesses, and a counted verdict
   over it is a record the lens can write; the lens still re-derives every set, re-runs every
-  search and reads every hit at head.
+  search and reads every hit at head. A record a reviewer requires, such as a pattern audit
+  among a rejection's required items, is bounded the same way: each search command with its hit
+  count; each hit that states the audited shape, FIXED, with its witness at head; and the
+  remainder as one count per command, with its verdict. A required item never asks for every
+  hit to be listed or dispositioned, and a search term found inside a longer identifier is not
+  a hit.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
   code reads after your change, under any build configuration, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
