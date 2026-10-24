@@ -129,35 +129,12 @@ reach) and `tests/common/cli.rs` (root tests only); and the root integration fil
 `tests/*.rs`. The graph carries no test-helper node yet, so search all three with Read, awk or
 python3 before you write a helper, fixture, builder, expected line or oracle.
 
-The two counted checks. A renamed or retired name's old spelling is counted over the tracked
+The counted check. A renamed or retired name's old spelling is counted over the tracked
 files of `src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`, the
 `tests/*.rs` doc comments, `//!` module docs, comments and assertion messages included; the
 hook blocks grep and rg, so count with
 `git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<old>' 'index($0, t) { print FILENAME ":" FNR }'`.
-It prints nothing, or your hand-over names each line it prints with its reason. Every
-test-side shape you add, merged or not, is recorded as one `<unit>-test-shape-audit`
-DecisionMade naming each site FIXED or CHECKED, after a search of the three test homes above.
-The search is this command, one run per distinguishing expression, the expression its one
-argument; it reads every `.rs` file under a `tests/` directory whole, the contract module whole
-and each other file under `crates/*/src/` from its first `#[cfg(test)]` on, and the root crate's
-`src/` test modules the same way, and ends with the hit count:
-`git ls-files tests crates src | t='<expression>' xargs awk 'FNR == 1 { s = FILENAME ~ /(^|\/)tests\/.*\.rs$|\/contract\.rs$/ } FILENAME ~ /\.rs$/ && /^[[:space:]]*#\[cfg\((all\()?test/ { s = 1 } s && index($0, ENVIRON["t"]) { n++; print FILENAME ":" FNR ": " $0 } END { print n + 0 " hits" }'`.
-The expressions are the statements' own terms, never a body's name: every string literal each
-test-side body you add or edit spells, in full, and every call it makes outside the shared home
-with its first argument token (`create_dir_all(root.join(`, `for_extension("rs")`), the command
-run once per term. The bodies are read over the unit's whole range: a body you add whole, every
-statement, and a body you edit in the statements
-`git diff $(git merge-base rigger-run HEAD)..HEAD -- tests crates src` shows changed, a twin
-found only among statements you did not touch named in your hand-over as the tree's debt. A
-literal's term is the literal alone, its quotes inside the term
-(`t='"src/f.rs"'`) and nothing around it - never the call, format string or statement that
-spells it - one run per literal, none set aside as short or conventional (`"x"`, `":memory:"`, a
-fixture path), and every hit the run prints listed under its disposition. A `'` in the expression is written `'\''`. The record pastes each command as run, its hit
-count and every hit it printed, each FIXED or CHECKED, and the `sdet` lens re-runs each on the
-review tree. The record is organised by statement: each statement you add or edit is quoted
-with its `file:line` and followed by its terms and their searches, a single call into the
-shared home marked so with its callee named; a term the statement spells that the record lacks
-under it is a record defect the `sdet` lens blocks on.
+It prints nothing, or your hand-over names each line it prints with its reason.
 
 The sentence walk's generators, run at head against the base your prompt names (`rigger-run`
 when it names none): `git diff --name-only <base>..HEAD` lists the changed files, the `//!`
@@ -190,13 +167,12 @@ call holding two or more members read as a second spelling of the set, and its l
 member sites it read. On every round, the first and each later one alike, `<base>` is the
 unit's merge base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is
 `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the round's delta your
-prompt carries. The walk is recorded as one `<unit>-sentence-walk` DecisionMade
-beside the `<unit>-test-shape-audit` one, naming what each generator returned and every
-sentence FIXED with its location. Each FIXED or new line of the record carries its witness
-beside that location: the `file:line` of the code at head that makes the sentence true. A
-sentence with a quantifier (every, all, always, any, a plural subject with a predicate) carries
-one witness per case the code splits its subject into - each arm, key component, filter
-condition or match branch - the cases named in the record.
+prompt carries. The walk is recorded as one `<unit>-sentence-walk` DecisionMade naming what
+each generator returned and every sentence FIXED with its location. Each FIXED or new line of
+the record carries its witness beside that location: the `file:line` of the code at head that
+makes the sentence true. A sentence with a quantifier (every, all, always, any, a plural
+subject with a predicate) carries one witness per case the code splits its subject into - each
+arm, key component, filter condition or match branch - the cases named in the record.
 
 Each rule the change rewrites is searched by two short terms for its old statement and for
 each label its cases carried (a name a doc, test or comment gives a case the old rule
