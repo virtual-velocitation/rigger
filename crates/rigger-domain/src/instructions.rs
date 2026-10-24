@@ -575,13 +575,14 @@ mod tests {
     /// reading as one table, with no per-literal search and no per-statement record owed, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators (an item's callers read from the graph at depth 1) over the unit's
-    /// whole range on every round, never a round's delta, and records on every change, the name
-    /// count and the depth-1 caller read paired with every item of the hunk list, each new
-    /// or FIXED sentence with the `file:line` witness that makes it true, a claim quantified over
-    /// a set witnessed once per case the code splits it into, a failing case making it false, a
-    /// sentence CHECKED as a
-    /// different rule shown to answer that rule's question and one answering a rewritten rule's
-    /// question a spelling of it, each spelling of a rule the change rewrites found by a
+    /// whole range on every round, never a round's delta, and recorded on every change in one
+    /// bounded pass that satisfies the hand-over - each generator and search command with its
+    /// hit count, never its hits, every FIXED sentence and added doc block with the `file:line`
+    /// witness that makes it true, each added item with its one-home line and the CHECKED
+    /// remainder as one count per command - the name count and the depth-1 caller read run for
+    /// every item the hunks touch, a claim quantified over a set witnessed once per case the
+    /// code splits it into, a failing case making it false, a sentence answering a rewritten
+    /// rule's question a spelling of it, each spelling of a rule the change rewrites found by a
     /// recorded search per pair of short terms - the feature's name as the code spells it and
     /// the rule's noun phrase, both on one joined line, a sentence fragment as one term a record
     /// the author cannot write - for its old statement and each label its cases carried, a
@@ -589,32 +590,30 @@ mod tests {
     /// rewriting the rule its function answers, whose old statement its depth-1 callers' notes,
     /// Returns paragraphs, variant docs and oracles spell and are searched by in the same pair
     /// form (the function's name and the old answer's noun), the reviewing lens whose persona
-    /// assigns the duty re-deriving each
-    /// generator's set over that range, reading every witness, re-running each search and
-    /// re-reading every hit against head, deriving the changed-condition set itself and reading
-    /// every consumer sentence against it, running the two-term search itself for each
-    /// rewritten rule and changed condition, and reading every sentence it
-    /// re-reads claim by claim against the unit's change with a witness per claim at head, a
-    /// sentence it cannot witness blocking on its own, a quantified claim's cases enumerated by
-    /// the lens and listed each with its witness, one witnessed case or a failing case blocking
-    /// on its own, its record listing every sentence it
-    /// reads, the CHECKED members included, never a grouped verdict, with a renamed name's old
-    /// spelling counted to zero, nothing added that nothing reads, the red test's body untouched
-    /// by the green commit, every constant, static, list, closure or predicate the delta adds - a
-    /// SQL conjunct inside a query string included - naming its one home in the sentence-walk
-    /// record - no other spelling, its distinguishing literal searched over the whole tree, derived
-    /// from or pinned to the existing one, a fact spelled twice lifted at all three sites - every
-    /// boolean expression the hunks add listed by shape under `ADDED PREDICATES` with its line, a
-    /// changed condition among them in both lists, two predicates of one fact lifted to one home
-    /// or pinned to each other, an added set of named members searched by each member's name,
-    /// with the reviewing lens whose persona assigns the duty deriving the added set itself by
-    /// the same shapes from the
-    /// production hunks, query strings included, running the member search itself, and blocking
-    /// on a missing or false line, and a probe that edits the tree - the
-    /// sharpest case of a turn's end being the session's end - run to completion and restored
-    /// before the turn ends; the gates'
-    /// check names each gate command run to completion inside the turn. Read by its words, so
-    /// a rewrap never moves a verdict.
+    /// assigns the duty re-deriving each generator's set over that range, re-running each
+    /// search and reading the hits itself against head, deriving the changed-condition set
+    /// itself and reading every consumer sentence against it, running the two-term search
+    /// itself for each rewritten rule and changed condition, and reading every sentence it finds
+    /// claim by claim against the unit's change with a witness per claim at head, a quantified
+    /// claim's cases enumerated by the lens and listed each with its witness, a sentence at
+    /// head that misstates the changed behaviour blocking on its own with the code that
+    /// contradicts it and a missing per-hit disposition, count block or heading never a
+    /// finding, its record listing every sentence it reads, never a grouped verdict, with a
+    /// renamed name's old spelling counted to zero, nothing added that nothing reads, the red
+    /// test's body untouched by the green commit, every constant, static, list, closure or
+    /// predicate the delta adds - a SQL conjunct inside a query string included - naming its one
+    /// home in the sentence-walk record - no other spelling, its distinguishing literal searched
+    /// over the whole tree, derived from or pinned to the existing one, a fact spelled twice
+    /// lifted at all three sites - every boolean expression the hunks add an item by shape with
+    /// its line, a changed condition among them both searched and given its line, two
+    /// predicates of one fact lifted to one home or pinned to each other, an added set of named
+    /// members searched by each member's name, with the reviewing lens whose persona assigns the
+    /// duty deriving the added set itself by the same shapes from the production hunks, query
+    /// strings included, running the member search itself, and blocking on a missing or false
+    /// line, and a probe that edits the tree - the sharpest case of a turn's end being the
+    /// session's end - run to completion and restored before the turn ends; the gates' check
+    /// names each gate command run to completion inside the turn. Read by its words, so a rewrap
+    /// never moves a verdict.
     #[test]
     fn the_working_discipline_states_each_hand_over_outcome_and_its_check() {
         let body = working_discipline();
@@ -657,24 +656,22 @@ mod tests {
              set), or your persona's fallback",
             "every tracked line outside the hunks that spells a changed item's name",
             "read each against the code at head, leaving it true or fixing it",
-            "The record is owed on every change: one whole-tree DecisionMade naming the set \
-             walked by its generators",
-            "every sentence FIXED with its location",
-            "a member whose generator returned nothing is named as empty",
-            "The name count and the depth-1 caller read run once per item the hunks touch, new or \
-             pre-existing, its body or its doc changed, and the record pairs each item of its \
-             hunk list with its count, the lines read and its callers or the named fallback; an \
-             item the hunk list names without its count, or without its callers or the named \
-             fallback, is a record you cannot write.",
-            "each sentence the change writes marked new with its location",
+            "The record is owed on every change and is bounded, so you write it in one pass: one \
+             whole-tree DecisionMade carrying each generator and search command as run with its \
+             hit count, never its pasted hits; every sentence FIXED, with its location and its \
+             witness; each doc block the change adds, by location, with its witness; each item \
+             the change adds with its one-home line; and the CHECKED remainder as one count per \
+             command, no per-line disposition, per-item count block or heading owed.",
+            "That record satisfies the hand-over. The name count and the depth-1 caller read run \
+             once per item the hunks touch, new or pre-existing, its body or its doc changed.",
             "The walk's range is the unit's whole range, the merge base with the run branch to \
              head, on every round, never a round's delta alone",
             "a sentence you wrote in an earlier round is a member again whenever a later round \
              changes the behaviour it states",
             "a record, or a round's addendum, whose sets are re-derived over a round's delta is \
              a record you cannot write",
-            "Every sentence the record marks new or FIXED carries its witness, the `file:line` \
-             of the code at head that makes it true",
+            "Every sentence the record marks FIXED, and every doc block it names as added, \
+             carries its witness, the `file:line` of the code at head that makes it true",
             "the arm, the guard, the call, the constant; two witnesses when one would not make \
              the whole sentence true",
             "a sentence with no witness is a claim, not a record",
@@ -685,12 +682,10 @@ mod tests {
              per case",
             "a case the claim does not hold for makes the sentence false, to be narrowed or \
              FIXED, never witnessed at the case it does hold for",
-            "a CHECKED sentence whose truth rests on code names its witness the same way, and \
-             one CHECKED as a different rule sharing the words names that rule instead",
-            "names that rule instead and shows the sentence's claim is that rule's question, \
-             the question the sentence answers read claim by claim as the lens reads it; a \
-             sentence whose claim is the question a rule the change rewrites answers is a \
-             spelling of that rule, whatever other rule its words also fit.",
+            "never witnessed at the case it does hold for. A sentence you leave CHECKED is read \
+             the same way, claim by claim, and counted, not listed; a sentence whose claim is \
+             the question a rule the change rewrites answers is a spelling of that rule, \
+             whatever other rule its words also fit.",
             "has spellings no generator above reaches: prose that states it without naming a \
              changed item",
             "every spelling of each rewritten rule is walked too",
@@ -708,12 +703,11 @@ mod tests {
             "A term is a name or a noun phrase of at most three words: a search whose one term is \
              a sentence fragment of more than three words misses the sentence that puts the \
              feature's name or a qualifier between its words, and is a record you cannot write.",
-            "The record carries each search's command, its hit count and every hit",
-            "CHECKED with the named way it is not a spelling of the retired rule (a spec's \
-             account of the pre-change state, a history note, a different rule sharing the \
-             words)",
-            "A rewritten rule with no search is a record you cannot write; a change that \
-             rewrites no rule names the set empty.",
+            "Every hit is read: one that spells the retired rule is FIXED, and one that does not \
+             - a spec's account of the pre-change state, a history note, a different rule \
+             sharing the words - is CHECKED and counted.",
+            "A rewritten rule with no search is a walk not done; a change that rewrites no rule \
+             runs no rule search.",
             "A rule is rewritten whenever a condition of it changes - a boolean term your \
              production hunks add to or remove from a filter, guard, case-arm guard or \
              predicate a function applies - even when no sentence of yours moves",
@@ -726,45 +720,37 @@ mod tests {
              function answers - and, for each phrase of the old answer as the consumers spell \
              it, the pair of the function's name as the code spells it and the old answer's \
              noun, and run the rule search for each pair",
-            "every hit is FIXED, carrying the new qualifier, or CHECKED with the named reason \
-             the qualifier does not reach it (a call that passes no path, say)",
+            "every hit is FIXED, carrying the new qualifier, or CHECKED where the qualifier does \
+             not reach it (a call that passes no path, say)",
             "The reviewing lens whose persona assigns the duty re-derives each generator's set on \
              the review tree from the diff and the graph",
             "each hunk's identifiers, cross-references and constants included",
             "the body comments of each changed item",
             "the depth-1 callers",
             "the tracked lines spelling a changed item's name",
-            "compares it with the walk record, and re-runs each recorded rule-spelling search \
-             and re-reads every hit, CHECKED ones included, against the code at head: a member \
-             the record omits, a hit the record does not carry, or a CHECKED hit whose reason \
-             does not hold at head, is a BLOCKING finding on its own.",
-            "The lens derives every set over the unit's whole range, as the record does, never \
-             the round's delta its prompt carries, and reads every witness the record carries \
-             against the code at head: a sentence whose witness no longer makes it true, a new \
-             or FIXED sentence with no witness, or a record whose sets are re-derived over a \
-             round's delta, is a BLOCKING finding on its own.",
+            "over the unit's whole range, never the round's delta its prompt carries, re-runs \
+             each recorded rule-spelling search and reads the hits itself against the code at \
+             head.",
             "The lens derives the changed-condition set itself from the unit's production hunks \
              over the whole range - every added or removed boolean term inside a filter, guard \
              or predicate - names the rule each changes, and reads every consumer sentence of \
              that function - its depth-1 callers' notes, Returns paragraphs, variant docs and \
-             oracles - against the condition at head: a consumer sentence stating the \
-             pre-change answer that the record does not carry FIXED or CHECKED is a BLOCKING \
-             finding on its own.",
+             oracles - against the condition at head.",
             "The lens runs the two-term search itself - the feature's name AND the rule's noun \
              phrase for each rule the change rewrites, the function's name AND the old answer's \
              noun for each changed condition it derives, both terms on one joined line with any \
-             words between them: a hit the record lacks, or a hit CHECKED with a reason that does \
-             not hold at head, is a BLOCKING finding on its own.",
-            "The lens reads every sentence it re-reads claim by claim against the unit's \
-             change, with a witness per claim at head, and a sentence it cannot witness is a \
-             BLOCKING finding on its own.",
-            "For a quantified claim the lens enumerates the cases itself from the code at head \
-             and its record lists them beside the claim, each with its witness",
-            "a quantified claim witnessed at one case, or a case the claim does not hold for, is \
-             a BLOCKING finding on its own.",
-            "The lens's record lists every sentence it reads, the record's CHECKED members \
-             included, each with its claims and a witness per claim; a grouped verdict over any \
-             of them is a record the lens cannot write.",
+             words between them.",
+            "The lens reads each sentence it finds claim by claim against the unit's change, with \
+             a witness per claim at head; for a quantified claim it enumerates the cases itself \
+             from the code at head and its record lists them beside the claim, each with its \
+             witness.",
+            "A sentence at head that misstates the changed behaviour - a claim the code at head \
+             does not make true, a quantified claim failing at any of its cases, a consumer \
+             sentence stating a changed condition's pre-change answer - is a BLOCKING finding on \
+             its own, citing its location and the code that contradicts it; a missing per-hit \
+             disposition, per-item count block or heading in the record is never one.",
+            "The lens's record lists every sentence it reads, each with its claims and a witness \
+             per claim; a grouped verdict over any of them is a record the lens cannot write.",
             "when you rename or retire a name, walk every spelling of the old term through the \
              tree",
             "The old spelling occurs zero times in the tree outside git history, counted over \
@@ -778,13 +764,13 @@ mod tests {
             "A predicate is a boolean expression or a SQL conjunct, one inside a query string, a \
              format string or a macro argument the production code executes included, read as \
              the code's own expression, each operator and literal of it.",
-            "The `<unit>-sentence-walk` record carries, beside the count of each constant, \
-             static, list, closure or predicate your production hunks add, its one-home line in \
-             one of three forms: `no other spelling` with the terms searched - the name count and \
-             the graph lookup the walk already runs, and the fact's distinguishing literal (a \
-             table name, a kind string); `derived from <file:line>`, the hunk reading the \
-             existing spelling; or `pinned to <file:line> by <test>`, where a derivation is \
-             impossible and a test holds the two spellings equal.",
+            "The `<unit>-sentence-walk` record carries, for each constant, static, list, closure \
+             or predicate your production hunks add, its one-home line in one of three forms: \
+             `no other spelling` with the terms searched - the name count and the graph lookup \
+             the walk already runs, and the fact's distinguishing literal (a table name, a kind \
+             string); `derived from <file:line>`, the hunk reading the existing spelling; or \
+             `pinned to <file:line> by <test>`, where a derivation is impossible and a test \
+             holds the two spellings equal.",
             "The `no other spelling` search runs the fragment's distinguishing literal (the column \
              with its operator, the subquery's table) over the whole tree, pre-existing spellings \
              included; a fact the tree already spells is `derived from` that spelling, the hunk \
@@ -797,11 +783,9 @@ mod tests {
              operand of an `&&` or `||` chain inside one, the body of a closure passed to \
              `filter`, `any`, `all`, `retain`, `position` or `find`, and every conjunct inside a \
              query string, format string or macro argument the production code executes - is an \
-             item, quoted with its `file:line` under the record's `ADDED PREDICATES` heading with \
-             its one-home line.",
-            "A predicate that is also a changed condition appears in both lists, its rule search \
-             in one and its one-home line in the other, and neither entry stands in for the \
-             other.",
+             item, named by its `file:line`, with its one-home line.",
+            "A predicate that is also a changed condition is both: its rule search runs and its \
+             one-home line is carried, and neither stands in for the other.",
             "Two added predicates stating one fact - the same condition at two sites, or one \
              condition and its negation - are one fact spelled twice: lifted to one home both \
              sites read (a function or a value) or `pinned to` each other by a test that holds \
@@ -824,11 +808,10 @@ mod tests {
              or pin does not exist - is a BLOCKING finding on its own (DRY, single \
              responsibility).",
             "The reviewing lens whose persona assigns the duty derives the added set by the same \
-             shapes, the `ADDED \
-             PREDICATES` list and every added set of named members included, and runs the member \
-             search itself for every added set: an added predicate with no line, two added \
-             predicates of one fact with two lines, or a second spelling of a set the line does \
-             not name, is a BLOCKING finding on its own.",
+             shapes, every added predicate and every added set of named members included, and \
+             runs the member search itself for every added set: an added predicate with no line, \
+             two added predicates of one fact with two lines, or a second spelling of a set the \
+             line does not name, is a BLOCKING finding on its own.",
             "A probe that edits your tree is over before your turn is.",
             "runs to completion and restores the tree before your turn ends, never as a \
              detached or background job",
@@ -865,6 +848,14 @@ mod tests {
         assert!(
             !words.contains("two phrases when one would miss a spelling"),
             "the rule search runs a term pair, not one phrase or two"
+        );
+        // The sentence-walk record is bounded so it is written in one pass: it pastes no hit,
+        // pairs no count block with an item and keeps no heading of its own for predicates.
+        assert!(
+            !words.contains("its hit count and every hit")
+                && !words.contains("the record pairs each item")
+                && !words.contains("ADDED PREDICATES"),
+            "the sentence-walk record pastes no hit, pairs no count block and keeps no heading"
         );
     }
 
