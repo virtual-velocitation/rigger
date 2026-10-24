@@ -6758,7 +6758,7 @@ mod tests {
                 crate::test_support::caught_up_at(Path::new(&path)),
             ),
             lost,
-            "a hole the log answers no stamp for is old"
+            "a hole the lookup answers no stamp for is old"
         );
     }
 
