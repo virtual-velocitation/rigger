@@ -8029,12 +8029,18 @@ mod tests {
         fn a_resumable_shadow(path: &str) {
             rebuild_interrupted_after_its_first_batch(path, &decisions_through(4)).unwrap_err();
         }
+        // The graph file at `path` with nothing standing beside it.
+        fn nothing_stands(_: &str) {}
+        // The graph file at `path` holding the cursor a swapped-in rebuild's tail is owed past.
+        fn a_standing_tail(path: &str) {
+            connection_to(path).execute_batch(REBUILD_STATE).unwrap();
+        }
         // What stands beside the graph file at `path` before it is asked.
         type Stand = fn(&str);
         // Each case: what stands, the `owed` it is asked with, and whether the pay starts fresh.
         let cases: [(&str, Stand, bool, bool); 12] = [
-            ("nothing owed", |_| {}, false, false),
-            ("a cause the caller owes", |_| {}, true, true),
+            ("nothing owed", nothing_stands, false, false),
+            ("a cause the caller owes", nothing_stands, true, true),
             (
                 "an older fold rule the file records",
                 |path| {
@@ -8056,13 +8062,13 @@ mod tests {
             ),
             (
                 "a tail no cause is owed beside",
-                |path| connection_to(path).execute_batch(REBUILD_STATE).unwrap(),
+                a_standing_tail,
                 false,
                 false,
             ),
             (
                 "a tail beside a cause the caller owes",
-                |path| connection_to(path).execute_batch(REBUILD_STATE).unwrap(),
+                a_standing_tail,
                 true,
                 true,
             ),
