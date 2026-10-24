@@ -1470,6 +1470,57 @@ fn carries_marker(e: &Error, marker: &str) -> bool {
     e.0.contains(marker)
 }
 
+/// The note a spawn re-run after the emit guard refused a record it emitted carries: the
+/// refusal its previous run's error named, kept by [`RefusedRecord::reruns`] and put after the
+/// role's prompt by [`RefusedRecord::task`], so the author reads why its record did not land.
+/// Empty until a refusal, and set once: a second refusal reaches the role's own failure
+/// handling instead of a further re-run.
+#[derive(Default)]
+struct RefusedRecord(Option<String>);
+
+impl RefusedRecord {
+    /// Whether the spawn that failed with `e` re-runs once: `e` is the emit guard's refusal
+    /// ([`EMIT_REFUSED_MARKER`]), none came before it in this spawn's runs, and `retry_left` says
+    /// the caller's retry window holds an id for the re-run. A `true` keeps the refusal for the
+    /// re-run's prompt.
+    fn reruns(&mut self, e: &Error, retry_left: bool) -> bool {
+        let rerun = self.0.is_none() && retry_left && carries_marker(e, EMIT_REFUSED_MARKER);
+        if rerun {
+            self.0 = Some(format!(
+                "Your previous run's record was refused: {}; emit it again correctly.",
+                strip_failure_marker(e).trim_end_matches('.')
+            ));
+        }
+        rerun
+    }
+
+    /// `prompt`, followed by the refusal note once a refusal is kept.
+    fn task<'p>(&self, prompt: &'p str) -> std::borrow::Cow<'p, str> {
+        match &self.0 {
+            Some(note) => format!("{prompt}\n\n{note}").into(),
+            None => prompt.into(),
+        }
+    }
+}
+
+/// Run `spawn` at the first id of `retries`, and once more at the next when the emit guard
+/// refused a record it emitted ([`RefusedRecord::reruns`]), handing each run the note its
+/// prompt carries. Every other outcome, and a refusal past that one re-run or past the window,
+/// returns as the spawn gave it, still marked, to the caller's own failure handling.
+fn rerun_once_on_refusal<T>(
+    retries: std::ops::RangeInclusive<u32>,
+    mut spawn: impl FnMut(u32, &RefusedRecord) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let (mut retry, last) = (*retries.start(), *retries.end());
+    let mut refused = RefusedRecord::default();
+    loop {
+        match spawn(retry, &refused) {
+            Err(e) if refused.reruns(&e, retry < last) => retry += 1,
+            outcome => return outcome,
+        }
+    }
+}
+
 /// The sentinel a REVIEW-TIER spawn (lens/adversary/adjudicator) embeds in its refusal
 /// error when [`reserve_spawn`](RunCtx::reserve_spawn) denies it because the CUMULATIVE
 /// spawn budget is spent (§4.4, §8). Like [`PARKED_MARKER`] it uses control characters no
@@ -1558,7 +1609,9 @@ fn is_parked_or_budget_refused(e: &Error) -> bool {
 /// under a fresh deterministic id ([`spawn_retry_id`]); bounded here so a persistently
 /// broken reviewer agent/driver cannot loop the conductor forever. The reviewer runs at
 /// most `1 + REVIEWER_RESPAWN_BOUND` times (its original spawn plus this many respawns)
-/// before [`degenerate_reviewer`] halts the run.
+/// before [`degenerate_reviewer`] halts the run. A reviewer, sdet author or re-planner whose
+/// record the emit guard refused re-runs once inside the same window
+/// ([`rerun_once_on_refusal`]).
 const REVIEWER_RESPAWN_BOUND: u32 = 2;
 
 /// The reviewer retry ids one review round spans: the round a unit's stage runs under infra
@@ -2829,8 +2882,9 @@ fn has_producer(stages: &BTreeMap<String, Stage>) -> bool {
 /// event carries the stop's completion key ([`spec_defect_escalated_key`] at `s - 1`). A re-plan
 /// is recorded by its `SpawnRequested` or `SpawnResult` (the stepwise driver records both) or by
 /// an event it emitted, stamped with its id as [`META_SPAWN`] (a blocking driver records no spawn
-/// event). So a first `spec-ambiguity` reject re-plans as before, and the stop fires on one that
-/// follows a re-plan which did not clear the previous one.
+/// event), under its own id or the `~retry` id it re-ran as after a refused record
+/// ([`RunCtx::re_plan`]). So a first `spec-ambiguity` reject re-plans as before, and the stop
+/// fires on one that follows a re-plan which did not clear the previous one.
 fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spawn::Adjudication> {
     let earlier = s.checked_sub(2)?;
     let stopping = s - 1;
@@ -2845,10 +2899,12 @@ fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spa
             .filter(spawn::Adjudication::is_spec_ambiguity)
     };
     let re_planned = |attempt: u32| {
-        let id = spawn_id(plan, ROLE_REPLAN, attempt);
-        spawn::is_recorded(run, &id)
-            || matches!(spawn::result_of(run, &id), Ok(Some(_)))
-            || run.iter().any(|e| e.meta.get(META_SPAWN) == Some(&id))
+        review_retry_window(0).any(|retry| {
+            let id = spawn_retry_id(plan, ROLE_REPLAN, attempt, retry);
+            spawn::is_recorded(run, &id)
+                || matches!(spawn::result_of(run, &id), Ok(Some(_)))
+                || run.iter().any(|e| e.meta.get(META_SPAWN) == Some(&id))
+        })
     };
     spec_ambiguity(earlier)?;
     let adjudication = spec_ambiguity(stopping)?;
@@ -3313,8 +3369,9 @@ impl RunCtx<'_> {
     /// then judged by the one emit guard every emit surface runs ([`Deps::check_emit`]) before it
     /// is appended. A payload the fold cannot apply, or a record whose id another seat holds,
     /// lands nothing, and the refusal is the callback's error, so it is the spawn's, marked
-    /// with [`EMIT_REFUSED_MARKER`] so the implementer's attempt is charged with it, never rerun as
-    /// infra.
+    /// with [`EMIT_REFUSED_MARKER`]: the implementer's attempt is charged with it, and every
+    /// other author's spawn re-runs once told why ([`rerun_once_on_refusal`]); neither is rerun
+    /// as infra.
     fn emit_agent(
         &self,
         type_: &str,
@@ -5236,7 +5293,9 @@ impl RunCtx<'_> {
     /// `workflow.yml` change, which would drift the pinned definition). The deterministic
     /// spawn id (`spawn_id(stage, ROLE_SDET_AUTHOR, attempt)` - `attempt` is the single-lane
     /// remediation attempt or the speculation lane) lets a stepwise/replay driver answer or
-    /// park it exactly like the implementer. The spawn is gated on a real worktree (an empty
+    /// park it exactly like the implementer; a spawn whose record the emit guard refused re-runs
+    /// once under the next [`review_retry_window`] id with the refusal after its prompt
+    /// ([`rerun_once_on_refusal`]). The spawn is gated on a real worktree (an empty
     /// `dir` is a repo-less or `isolation: none` unit with no tree to author into, and an
     /// Edit/Write agent must never run in the live main checkout) and on the agent being
     /// configured (absent-agent tolerance: a clean no-op when the operator has not installed
@@ -5253,6 +5312,9 @@ impl RunCtx<'_> {
     /// frontier); the caller unwinds per its own discipline - the single lane propagates it
     /// (holding the unit, no commit), a speculation lane collects it into `any_parked` and does
     /// NOT commit that candidate, so a later step replays the sdet and its periphery tests land.
+    /// Returns the stage error naming the refusal when the emit guard refused the re-run's record
+    /// too: a refusal is a defect in what the sdet printed, never a crash to proceed past, so the
+    /// single lane fails its stage with it and a speculation candidate loses.
     ///
     /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
     /// appends [`DOC_ONLY_ROUND`] to the prompt, so a wording round moves an existing pin's
@@ -5281,17 +5343,6 @@ impl RunCtx<'_> {
         let Some(sdet_def) = self.cfg.agents.get(ROLE_SDET_AUTHOR) else {
             return Ok(());
         };
-        let sdet_id = spawn_id(&st.name, ROLE_SDET_AUTHOR, attempt);
-        // Budget breaker at spawn granularity: reserve the sdet spawn against the run budget
-        // FIRST, exactly like the implementer and every reviewer tier, so it funnels through the
-        // single spawn-budget mutation authority - it respects/trips the breaker instead of
-        // spawning past it, and the cross-step budget symmetry d-budget-folds-from-log
-        // guarantees (cumulative = base_spawns + admitted-this-process) holds. Keyed on the
-        // deterministic id so a REPLAY of an already-recorded sdet spawn is admitted free
-        // (spawn_is_recorded). Refused at a spent budget => do not spawn (proceed author-less).
-        if !self.reserve_spawn(&sdet_id) {
-            return Ok(());
-        }
         // The SDET-author spawn is part of the IMPLEMENT lifecycle stage (the build seam), reached
         // only for a non-producer unit (after the producer early-return in `run_single_stage`), so it
         // gets the trimmed implement slice like the implementer it authors periphery tests alongside.
@@ -5322,42 +5373,73 @@ impl RunCtx<'_> {
         let sdet_emit = |t: &str, v: Value| {
             self.emit_agent(t, v, &[(contextgraph::META_ACTOR, ROLE_SDET_AUTHOR)])
         };
-        let opts = match self.reviewer_spawn_opts(
-            &sdet_id,
-            ROLE_SDET_AUTHOR,
-            ROLE_SDET_AUTHOR,
-            dir,
-            attempt,
-            false,
-            st,
-            // The sdet-author writes periphery tests - it is not a review tier judging
-            // another agent's output, so it carries no roster (spec 67, criterion 4).
-            &[],
-        ) {
-            // A log that cannot be read is a fault, propagated - never a cold start.
-            Ok(opts) => self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task)?,
-            // An opts-guard error takes the crash disposition below: the unit proceeds to
-            // the commit.
-            Err(_) => return Ok(()),
-        };
-        match self
-            .deps
-            .driver
-            .spawn(sdet_def, &sdet_prompt, &opts, &sdet_emit)
-        {
-            // A normal result: its authored files are already in the worktree, so the caller
-            // falls through to the commit that sweeps them in. The session it ran as is
-            // recorded for its next attempt to continue.
-            Ok(result) => self.record_session(&opts, &result),
-            // A PARKED spawn (the stepwise/replay driver reached an unrecorded frontier):
-            // surface the park so the caller unwinds cleanly - no UnitFailed, no remediation -
-            // and a later step replays the result.
-            Err(e) if is_parked(&e) => Err(e),
-            // The crash disposition (a non-parked spawn/opts-guard error) is the next unit's to
-            // decide; this unit places the spawn and its parked arm, so a crash proceeds to the
-            // commit rather than propagating past the unit.
-            Err(_) => Ok(()),
-        }
+        rerun_once_on_refusal(review_retry_window(0), |retry, refused| {
+            let sdet_id = spawn_retry_id(&st.name, ROLE_SDET_AUTHOR, attempt, retry);
+            // Budget breaker at spawn granularity: reserve the sdet spawn against the run budget
+            // FIRST, exactly like the implementer and every reviewer tier, so it funnels through
+            // the single spawn-budget mutation authority - it respects/trips the breaker instead
+            // of spawning past it, and the cross-step budget symmetry d-budget-folds-from-log
+            // guarantees (cumulative = base_spawns + admitted-this-process) holds. Keyed on the
+            // deterministic id so a REPLAY of an already-recorded sdet spawn is admitted free
+            // (spawn_is_recorded). Refused at a spent budget => do not spawn (proceed
+            // author-less).
+            if !self.reserve_spawn(&sdet_id) {
+                return Ok(());
+            }
+            let opts = match self.reviewer_spawn_opts(
+                &sdet_id,
+                ROLE_SDET_AUTHOR,
+                ROLE_SDET_AUTHOR,
+                dir,
+                attempt,
+                false,
+                st,
+                // The sdet-author writes periphery tests - it is not a review tier judging
+                // another agent's output, so it carries no roster (spec 67, criterion 4).
+                &[],
+            ) {
+                // A log that cannot be read is a fault, propagated - never a cold start. A
+                // re-run after a refusal starts fresh rather than continuing the session that
+                // printed the refused record.
+                Ok(opts) if retry == 0 => {
+                    self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task.clone())?
+                }
+                Ok(opts) => opts,
+                // An opts-guard error takes the crash disposition below: the unit proceeds to
+                // the commit.
+                Err(_) => return Ok(()),
+            };
+            match self
+                .deps
+                .driver
+                .spawn(sdet_def, &refused.task(&sdet_prompt), &opts, &sdet_emit)
+            {
+                // A normal result: its authored files are already in the worktree, so the
+                // caller falls through to the commit that sweeps them in. The session it ran as
+                // is recorded for its next attempt to continue.
+                Ok(result) => self.record_session(&opts, &result),
+                // A PARKED spawn (the stepwise/replay driver reached an unrecorded frontier):
+                // surface the park so the caller unwinds cleanly - no UnitFailed, no
+                // remediation - and a later step replays the result. A refused record surfaces
+                // too: the first re-runs above, a second fails the stage below.
+                Err(e) if is_parked(&e) || carries_marker(&e, EMIT_REFUSED_MARKER) => Err(e),
+                // The crash disposition (a non-parked spawn/opts-guard error) is the next
+                // unit's to decide; this unit places the spawn and its parked arm, so a crash
+                // proceeds to the commit rather than propagating past the unit.
+                Err(_) => Ok(()),
+            }
+        })
+        .map_err(|e| {
+            if carries_marker(&e, EMIT_REFUSED_MARKER) {
+                Error(format!(
+                    "stage {:?} sdet author: {}",
+                    st.name,
+                    strip_failure_marker(&e)
+                ))
+            } else {
+                e
+            }
+        })
     }
 
     /// THE HALTED-SPAWN CHECKPOINT's guard (spec 103): whether `named_spawn_id` (the
@@ -6441,66 +6523,71 @@ impl RunCtx<'_> {
                 self.emit_agent(t, v, &[(contextgraph::META_ACTOR, st.agent.as_str())])
             };
             let isolation_check = self.assert_isolated_cwd("implementer", &st.agent, &dir);
-            match isolation_check.and_then(|()| {
-                self.deps.driver.spawn(
-                    &agent_def,
-                    &prompt,
-                    &SpawnOpts {
-                        system_prompt: self.build_system_prompt(&agent_def),
-                        dir: dir.clone(),
-                        isolation: true,
-                        parallel: true,
-                        blast_radius: blast_radius.clone(),
-                        id: impl_id.clone(),
-                        unit: st.name.clone(),
-                        stage: st.name.clone(),
-                        // The live work-line: the unit's criterion, so each speculation
-                        // candidate narrates the WORK, not just `{unit}:{stage}` (spec 19a, c4).
-                        title: st.coverage.trim().to_string(),
-                        attempt: lane,
-                        run_id: self.run_id.clone(),
-                        // The ONE build-environment authority (spec 65) PLUS this lane's
-                        // own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION):
-                        // every speculation candidate's own `cargo` invocations share the
-                        // same wrapper cache AND land in its own lane's per-unit cache,
-                        // never a `target/` dir embedded in its own lane worktree.
-                        env: Self::spawn_env(&build_env, &dir, crate::worktree::UNIT_CACHE_PREFIX),
-                        // A speculation candidate is an implementer lane, never a review
-                        // tier: no roster to render (spec 67, criterion 4).
-                        reviews: Vec::new(),
-                        // The existing blocking drivers (cli/workflow) ignore these;
-                        // spec 104's host is not wired in here yet.
-                        settings_json: String::new(),
-                        launch: 0,
-                        resumed_from: String::new(),
-                        resume_task: String::new(),
-                    },
-                    &emit,
-                )
-            }) {
+            match isolation_check
+                .and_then(|()| {
+                    self.deps.driver.spawn(
+                        &agent_def,
+                        &prompt,
+                        &SpawnOpts {
+                            system_prompt: self.build_system_prompt(&agent_def),
+                            dir: dir.clone(),
+                            isolation: true,
+                            parallel: true,
+                            blast_radius: blast_radius.clone(),
+                            id: impl_id.clone(),
+                            unit: st.name.clone(),
+                            stage: st.name.clone(),
+                            // The live work-line: the unit's criterion, so each speculation
+                            // candidate narrates the WORK, not just `{unit}:{stage}` (spec 19a, c4).
+                            title: st.coverage.trim().to_string(),
+                            attempt: lane,
+                            run_id: self.run_id.clone(),
+                            // The ONE build-environment authority (spec 65) PLUS this lane's
+                            // own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION):
+                            // every speculation candidate's own `cargo` invocations share the
+                            // same wrapper cache AND land in its own lane's per-unit cache,
+                            // never a `target/` dir embedded in its own lane worktree.
+                            env: Self::spawn_env(
+                                &build_env,
+                                &dir,
+                                crate::worktree::UNIT_CACHE_PREFIX,
+                            ),
+                            // A speculation candidate is an implementer lane, never a review
+                            // tier: no roster to render (spec 67, criterion 4).
+                            reviews: Vec::new(),
+                            // The existing blocking drivers (cli/workflow) ignore these;
+                            // spec 104's host is not wired in here yet.
+                            settings_json: String::new(),
+                            launch: 0,
+                            resumed_from: String::new(),
+                            resume_task: String::new(),
+                        },
+                        &emit,
+                    )
+                })
+                // The SDET-author spawn (spec 33): author periphery tests into THIS candidate's
+                // worktree at the same build seam the single-lane path uses - AFTER the implementer
+                // produced its diff and BEFORE this candidate's commit below - through the ONE shared
+                // seam authority. So the committed tree PHASE B's gates judge (and the winner
+                // integrates) carries the periphery tests for WHICHEVER candidate wins - a
+                // speculation-built unit is not a silent hole in the "no boundary surface lands
+                // untested" guarantee. Each lane reserves its OWN sdet id (keyed on the `lane`
+                // attempt), so the budget breaker counts every candidate's sdet exactly as it counts
+                // every candidate's implementer.
+                //
+                // A PARKED sdet (an unrecorded stepwise/replay frontier) takes the park arm below -
+                // like the implementer park - and this candidate is NOT committed, so all K park
+                // together this step and a later step replays the sdet and commits the candidate
+                // WITH its periphery. The lane dir persists across the park (dropping `wt` does not
+                // remove it - `Worktree` has no `Drop`), so the worker finds it. An sdet whose record
+                // the emit guard refused again after its one re-run takes the crash arm: the
+                // candidate loses, as a losing candidate has no later attempt to carry the refusal
+                // into.
+                .and_then(|result| {
+                    self.spawn_sdet_author(st, Some(&wt), &dir, lane, &[])
+                        .map(|()| result)
+                }) {
                 Ok(result) => {
-                    // The SDET-author spawn (spec 33): author periphery tests into THIS
-                    // candidate's worktree at the same build seam the single-lane path uses -
-                    // AFTER the implementer produced its diff and BEFORE this candidate's
-                    // commit below - through the ONE shared seam authority. So the committed
-                    // tree PHASE B's gates judge (and the winner integrates) carries the
-                    // periphery tests for WHICHEVER candidate wins - a speculation-built unit
-                    // is not a silent hole in the "no boundary surface lands untested"
-                    // guarantee. Each lane reserves its OWN sdet id (keyed on the `lane`
-                    // attempt), so the budget breaker counts every candidate's sdet exactly as
-                    // it counts every candidate's implementer.
-                    //
-                    // A PARKED sdet (an unrecorded stepwise/replay frontier) is COLLECTED into
-                    // `any_parked` - like the implementer park above - and this candidate is
-                    // NOT committed: control skips to the next lane, so all K park together
-                    // this step and a later step replays the sdet and commits the candidate
-                    // WITH its periphery. The lane dir persists across the park (dropping `wt`
-                    // does not remove it - `Worktree` has no `Drop`), so the worker finds it.
-                    if let Err(e) = self.spawn_sdet_author(st, Some(&wt), &dir, lane, &[]) {
-                        debug_assert!(is_parked(&e), "spawn_sdet_author only errors on a park");
-                        any_parked = true;
-                        continue;
-                    }
                     // The candidate produced a diff: commit its worktree so the gates measure
                     // exactly the committed artifact. Its `green` status is DEFERRED until it is
                     // chosen the winner below - emitting a routing status (Green/Verified) per
@@ -6523,8 +6610,9 @@ impl RunCtx<'_> {
                 // A candidate parked (stepwise/replay frontier): collect it and keep going so
                 // ALL K candidates park this step. The dir persists for the worker.
                 Err(e) if is_parked(&e) => any_parked = true,
-                // A candidate CRASHED (usage limit, non-zero exit): it is simply absent from
-                // the group - a losing candidate that produced no diff. The remaining
+                // A candidate CRASHED (usage limit, non-zero exit, or an sdet record refused
+                // past its re-run): it is simply absent from the group - a losing candidate
+                // whose diff never commits. The remaining
                 // candidates still race; if none survives, the escalation tail fires. Its lane
                 // worktree AND branch were already created (above), and NO terminal path below
                 // tears them down - winner cleanup, `cancel_speculation_candidates`, and the
@@ -7371,6 +7459,12 @@ impl RunCtx<'_> {
     /// a substantive result for a retry id lets the next step replay it and fold normally
     /// (see [`degenerate_reviewer`]).
     ///
+    /// A spawn whose record the emit guard refused (a line the fold cannot apply, or an id
+    /// another seat holds) is the reviewer's own defect, not infra: it re-runs once at the
+    /// window's next id with the refusal after its prompt ([`RefusedRecord`]), so the reviewer
+    /// reads why; a second refusal, or one at the window's last id, takes the stage error below,
+    /// its text unmarked.
+    ///
     /// `tier` is the human label the audit trail/`reviewer_spawn_opts` use; `role` is the
     /// deterministic-id role token (`lens_role(agent)` / [`ROLE_ADVERSARY`] /
     /// [`ROLE_ADJUDICATOR`]); `parallel` sets the reviewer's isolation-opt (§6, lenses run
@@ -7425,6 +7519,7 @@ impl RunCtx<'_> {
         // Whether a gating result of this round already came back with no verdict line: the
         // first re-drives the review, a second halts (one bounded re-drive, never a loop).
         let mut verdictless = false;
+        let mut refused = RefusedRecord::default();
         for retry in window {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
             let opts =
@@ -7480,47 +7575,53 @@ impl RunCtx<'_> {
                 // keys on to exclude a sibling's approve.
                 self.emit_agent(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
             };
-            let result = match self.deps.driver.spawn(agent_def, prompt, &opts, &emit) {
-                Ok(result) => {
-                    self.record_session(&opts, &result)?;
-                    result
-                }
-                Err(e) => {
-                    // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
-                    // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
-                    // exhaustion, a crash) whose error the death courier (or the operator) recorded
-                    // on its id - is an INFRASTRUCTURE fault, NOT a verdict. An error is not a
-                    // verdict: review must COMPLETE. So the conductor does NOT adopt the error as
-                    // the review outcome and does NOT fail the step; it charges the unit no attempt
-                    // (the work was never judged) and RE-PARKS a FRESH attempt of the SAME review by
-                    // looping to the next `spawn_retry_id`. That id is unrecorded, so the replay
-                    // driver parks it and the next `rigger step` returns it in the wave; a completed
-                    // real verdict then folds through the NORMAL adjudication path below. This is
-                    // bounded by `REVIEWER_RESPAWN_BOUND` exactly like the degenerate loop, so a
-                    // persistently-erroring review spawn escalates through the halt below rather
-                    // than re-parking forever (spec 51, criterion 2 owns that bound).
-                    //
-                    // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
-                    // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
-                    // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream). And the LIVE
-                    // drivers (cli / workflow) never RECORD a spawn result, so `review_spawn_errored`
-                    // is false there and a genuine in-process review failure still propagates as
-                    // the stage's error exactly as before - only a REPLAYED recorded error re-parks.
-                    if !is_parked_or_budget_refused(&e) && self.review_spawn_errored(&id)? {
-                        continue;
+            let result =
+                match self
+                    .deps
+                    .driver
+                    .spawn(agent_def, &refused.task(prompt), &opts, &emit)
+                {
+                    Ok(result) => {
+                        self.record_session(&opts, &result)?;
+                        result
                     }
-                    // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
-                    // `\u{2}`-bracketed class and the emit guard's refusal marker, so a
-                    // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
-                    // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
-                    // are unaffected.
-                    return Err(Error(format!(
-                        "stage {:?} {tier} {agent_id:?}: {}",
-                        st.name,
-                        strip_failure_marker(&e)
-                    )));
-                }
-            };
+                    Err(e) if refused.reruns(&e, retry < last_retry) => continue,
+                    Err(e) => {
+                        // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
+                        // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
+                        // exhaustion, a crash) whose error the death courier (or the operator) recorded
+                        // on its id - is an INFRASTRUCTURE fault, NOT a verdict. An error is not a
+                        // verdict: review must COMPLETE. So the conductor does NOT adopt the error as
+                        // the review outcome and does NOT fail the step; it charges the unit no attempt
+                        // (the work was never judged) and RE-PARKS a FRESH attempt of the SAME review by
+                        // looping to the next `spawn_retry_id`. That id is unrecorded, so the replay
+                        // driver parks it and the next `rigger step` returns it in the wave; a completed
+                        // real verdict then folds through the NORMAL adjudication path below. This is
+                        // bounded by `REVIEWER_RESPAWN_BOUND` exactly like the degenerate loop, so a
+                        // persistently-erroring review spawn escalates through the halt below rather
+                        // than re-parking forever (spec 51, criterion 2 owns that bound).
+                        //
+                        // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
+                        // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
+                        // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream). And the LIVE
+                        // drivers (cli / workflow) never RECORD a spawn result, so `review_spawn_errored`
+                        // is false there and a genuine in-process review failure still propagates as
+                        // the stage's error exactly as before - only a REPLAYED recorded error re-parks.
+                        if !is_parked_or_budget_refused(&e) && self.review_spawn_errored(&id)? {
+                            continue;
+                        }
+                        // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
+                        // `\u{2}`-bracketed class and the emit guard's refusal marker, so a
+                        // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
+                        // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
+                        // are unaffected.
+                        return Err(Error(format!(
+                            "stage {:?} {tier} {agent_id:?}: {}",
+                            st.name,
+                            strip_failure_marker(&e)
+                        )));
+                    }
+                };
             // A substantive result folds into the review; a degenerate one loops to respawn
             // the SAME reviewer under the next retry id.
             if !self.reviewer_result_is_degenerate(output, &id, &result, findings.get())? {
@@ -8012,8 +8113,10 @@ impl RunCtx<'_> {
     /// DAG (Unit 1, spec 10: "a reject feeds back to the planner"). The re-plan spawn id
     /// is deterministic (`plan/replan#<critique-attempt>`), distinct from the plan stage's
     /// own `plan/implementer#0`, so a stepwise/replay driver parks and replays it exactly
-    /// like any other spawn; its budget is reserved through the same breaker. The planner
-    /// (`isolation: none`) runs in the project cwd like its first-wave spawn. Its revised
+    /// like any other spawn; its budget is reserved through the same breaker. A re-plan whose
+    /// record the emit guard refused re-runs once as `plan/replan#<critique-attempt>~retry1`,
+    /// told why ([`rerun_once_on_refusal`]); a second refusal is the gate's error, unmarked. The
+    /// planner (`isolation: none`) runs in the project cwd like its first-wave spawn. Its revised
     /// `UnitProposed` emits land in the log; the caller re-harvests them into the DAG.
     fn re_plan(
         &self,
@@ -8028,15 +8131,6 @@ impl RunCtx<'_> {
                 plan_st.agent
             ))
         })?;
-        let id = spawn_id(plan_name, ROLE_REPLAN, critique_attempt);
-        if !self.reserve_spawn(&id) {
-            return Err(spawn_halt(
-                SpawnHalt::BudgetRefused,
-                plan_name,
-                "planner",
-                &plan_st.agent,
-            ));
-        }
         let prompt = format!(
             "The plan-critique gate REJECTED your previous decomposition:\n{}\n\nRevise \
              the unit DAG to resolve it, then re-emit your UnitProposed refinements. To \
@@ -8048,80 +8142,92 @@ impl RunCtx<'_> {
             feedback.trim(),
             self.build_prompt(plan_st)?
         );
-        // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-undercosted):
-        // stamp META_SPAWN with THIS re-plan spawn's own deterministic id, mirroring the
-        // matching fix at the initial planner spawn site (`run_single_stage`) - see its
-        // comment for why. A re-plan is a distinct PLAN-EPISODE from the initial wave
-        // (and from any earlier re-plan), so it needs its own stamp here too.
-        let emit = |t: &str, v: Value| {
-            self.emit_agent(
-                t,
-                v,
-                &[
-                    (contextgraph::META_ACTOR, plan_st.agent.as_str()),
-                    (META_SPAWN, id.as_str()),
-                ],
-            )
-        };
         let build_env = self.build_env()?;
-        // The planner opts out of isolation (`isolation: none`), so - like its first-wave
-        // spawn in `run_single_stage` - it runs in the project cwd; only an ISOLATED agent
-        // must carry a worktree dir (asserted there, not here). An isolated planner would
-        // be a misconfiguration the first-wave spawn already rejects.
-        self.deps
-            .driver
-            .spawn(
-                agent_def,
-                &prompt,
-                &SpawnOpts {
-                    system_prompt: self.build_system_prompt(agent_def),
-                    dir: String::new(),
-                    isolation: false,
-                    parallel: false,
-                    blast_radius: self.grounded_seed(plan_st),
-                    id: id.clone(),
-                    unit: plan_name.to_string(),
-                    stage: plan_name.to_string(),
-                    // The live work-line: the plan stage's criterion, so a re-plan spawn
-                    // narrates what it is decomposing, not just `{unit}:{stage}` (spec 19a, c4).
-                    title: plan_st.coverage.trim().to_string(),
-                    run_id: self.run_id.clone(),
-                    // The re-plan is remediation of the DECOMPOSITION: the critique
-                    // attempt drives the planner's ladder rung exactly as a unit's
-                    // remediation attempt drives its implementer's (spec 10 unit 4).
-                    attempt: critique_attempt,
-                    // The ONE build-environment authority (spec 65): a planner is not
-                    // guaranteed to build, but carries the same resolved env uniformly
-                    // like every other spawn, so a planner that does explore via cargo
-                    // shares the cache too. Routed through `spawn_env` for uniformity with
-                    // every other call site (spec 77 c1); the planner's own `dir` is
-                    // always empty (no worktree, `isolation: none`), so `unit_cache_sibling`
-                    // yields `None` and no `CARGO_TARGET_DIR` is added here.
-                    env: Self::spawn_env(&build_env, "", crate::worktree::UNIT_CACHE_PREFIX),
-                    // The planner/re-planner is never a review tier: no roster to render
-                    // (spec 67, criterion 4).
-                    reviews: Vec::new(),
-                    // The existing blocking drivers (cli/workflow) ignore these; spec
-                    // 104's host is not wired in here yet.
-                    settings_json: String::new(),
-                    launch: 0,
-                    resumed_from: String::new(),
-                    resume_task: String::new(),
-                },
-                &emit,
-            )
-            .map_err(|e| {
-                // adj-u104c5 REQUIRED FIX 2: strip a FAILURE_MARKER-bracketed class (or
-                // an emit refusal's marker) before it reaches this wrapped,
-                // operator-visible text - a no-op for park/budget (they survive, see the
-                // review-tier site's own comment) and every marker-free driver error.
-                Error(format!(
-                    "plan-critique re-plan {:?}: {}",
-                    plan_st.agent,
-                    strip_failure_marker(&e)
-                ))
-            })?;
-        Ok(())
+        rerun_once_on_refusal(review_retry_window(0), |retry, refused| {
+            let id = spawn_retry_id(plan_name, ROLE_REPLAN, critique_attempt, retry);
+            if !self.reserve_spawn(&id) {
+                return Err(spawn_halt(
+                    SpawnHalt::BudgetRefused,
+                    plan_name,
+                    "planner",
+                    &plan_st.agent,
+                ));
+            }
+            // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-undercosted):
+            // stamp META_SPAWN with THIS re-plan spawn's own deterministic id, mirroring the
+            // matching fix at the initial planner spawn site (`run_single_stage`) - see its
+            // comment for why. A re-plan is a distinct PLAN-EPISODE from the initial wave
+            // (and from any earlier re-plan), so it needs its own stamp here too.
+            let emit = |t: &str, v: Value| {
+                self.emit_agent(
+                    t,
+                    v,
+                    &[
+                        (contextgraph::META_ACTOR, plan_st.agent.as_str()),
+                        (META_SPAWN, id.as_str()),
+                    ],
+                )
+            };
+            // The planner opts out of isolation (`isolation: none`), so - like its first-wave
+            // spawn in `run_single_stage` - it runs in the project cwd; only an ISOLATED agent
+            // must carry a worktree dir (asserted there, not here). An isolated planner would
+            // be a misconfiguration the first-wave spawn already rejects.
+            self.deps
+                .driver
+                .spawn(
+                    agent_def,
+                    &refused.task(&prompt),
+                    &SpawnOpts {
+                        system_prompt: self.build_system_prompt(agent_def),
+                        dir: String::new(),
+                        isolation: false,
+                        parallel: false,
+                        blast_radius: self.grounded_seed(plan_st),
+                        id: id.clone(),
+                        unit: plan_name.to_string(),
+                        stage: plan_name.to_string(),
+                        // The live work-line: the plan stage's criterion, so a re-plan spawn
+                        // narrates what it is decomposing, not just `{unit}:{stage}` (spec 19a,
+                        // c4).
+                        title: plan_st.coverage.trim().to_string(),
+                        run_id: self.run_id.clone(),
+                        // The re-plan is remediation of the DECOMPOSITION: the critique
+                        // attempt drives the planner's ladder rung exactly as a unit's
+                        // remediation attempt drives its implementer's (spec 10 unit 4).
+                        attempt: critique_attempt,
+                        // The ONE build-environment authority (spec 65): a planner is not
+                        // guaranteed to build, but carries the same resolved env uniformly
+                        // like every other spawn, so a planner that does explore via cargo
+                        // shares the cache too. Routed through `spawn_env` for uniformity with
+                        // every other call site (spec 77 c1); the planner's own `dir` is
+                        // always empty (no worktree, `isolation: none`), so `unit_cache_sibling`
+                        // yields `None` and no `CARGO_TARGET_DIR` is added here.
+                        env: Self::spawn_env(&build_env, "", crate::worktree::UNIT_CACHE_PREFIX),
+                        // The planner/re-planner is never a review tier: no roster to render
+                        // (spec 67, criterion 4).
+                        reviews: Vec::new(),
+                        // The existing blocking drivers (cli/workflow) ignore these; spec
+                        // 104's host is not wired in here yet.
+                        settings_json: String::new(),
+                        launch: 0,
+                        resumed_from: String::new(),
+                        resume_task: String::new(),
+                    },
+                    &emit,
+                )
+                .map(|_| ())
+        })
+        .map_err(|e| {
+            // adj-u104c5 REQUIRED FIX 2: strip a FAILURE_MARKER-bracketed class (or an emit
+            // refusal's marker) before it reaches this wrapped, operator-visible text - a no-op
+            // for park/budget (they survive, see the review-tier site's own comment) and every
+            // marker-free driver error.
+            Error(format!(
+                "plan-critique re-plan {:?}: {}",
+                plan_st.agent,
+                strip_failure_marker(&e)
+            ))
+        })
     }
 
     /// Run the adversarial plan-critique gate (Unit 1, spec 10): the existing adversary +
@@ -9683,6 +9789,11 @@ impl RunCtx<'_> {
             (unit_tip, run_tip)
         } else {
             let mut retry = 0u32;
+            // The `retry` the last mixed-conflict round recorded its regenerate-pending set
+            // under: the episode tag the owed regeneration's commit record pairs with, kept
+            // apart from `retry` because a resolver re-run after a refused record advances
+            // `retry` past it.
+            let mut staged = 0u32;
             // Counts EVERY loop iteration (spec 88, criterion 1 round 4 TABLE rows 1 and 4):
             // unlike `retry`, which counts only mixed-conflict-episode ROUNDS, `pass`
             // advances on every single attempt at the merge - a confined-regenerate loop-back
@@ -9788,10 +9899,10 @@ impl RunCtx<'_> {
                         drop(lock);
                         // TABLE row 3's mutation - its before-record (the regenerate-pending set)
                         // is the SAME durable marker `record_regenerate_pending` already wrote
-                        // below, keyed by this same mixed-conflict episode's `retry` (unchanged
-                        // since that write - no new conflict has been detected in between).
+                        // below, keyed by this same mixed-conflict episode's `staged` round (no
+                        // new conflict has been detected since that write).
                         self.regenerate_and_record(wt, &st.name, attempt, &owed, |_| {
-                            retry.to_string()
+                            staged.to_string()
                         })?;
                         lock = self.integrate_mu.lock().unwrap();
                         // Loop back: the next pass's `merge_into_worktree` picks up the follow-up
@@ -9885,10 +9996,11 @@ impl RunCtx<'_> {
                         // resolution commit, unchanged) - this ordering is a narrower guarantee,
                         // for the LOG WRITE that must survive a crash purely to unblock `git
                         // commit`, which refuses while ANY path is still unmerged.
+                        staged = retry;
                         self.record_regenerate_pending(
                             &st.name,
                             attempt,
-                            &retry.to_string(),
+                            &staged.to_string(),
                             &regenerable,
                         )?;
                         for p in &regenerable {
@@ -9902,11 +10014,16 @@ impl RunCtx<'_> {
                         // no lock held at all; a real (non-parked) result - a replay hit, or a
                         // synchronous/blocking driver - re-acquires `lock` and loops back to
                         // re-attempt the merge from scratch, never trusting anything this
-                        // iteration observed before the spawn.
+                        // iteration observed before the spawn. A resolver whose record the emit
+                        // guard refused re-runs once at the next round's id, told why, so the
+                        // re-run spends one of the episode's `CONFLICT_RESOLVE_BOUND` rounds.
                         drop(lock);
-                        self.spawn_conflict_resolution_implementer(
-                            st, wt, attempt, retry, &source,
-                        )?;
+                        rerun_once_on_refusal(retry..=CONFLICT_RESOLVE_BOUND, |round, refused| {
+                            retry = round;
+                            self.spawn_conflict_resolution_implementer(
+                                st, wt, attempt, round, &source, refused,
+                            )
+                        })?;
                         // Defense in depth (spec 64 criterion 3): the spawn just above is real
                         // wall-clock time, the window in which an out-of-band actor could
                         // delete the worktree before the next iteration's read consumes it.
@@ -10773,7 +10890,8 @@ impl RunCtx<'_> {
     /// [`spawn_retry_id`] `~retry{n}` suffix, never [`safety::remediate`]'s bump - mirroring
     /// [`Self::run_reviewer`]'s identical free-respawn pattern for a degenerate reviewer
     /// result (spec 07), the established precedent for "infrastructure, not a defect" in
-    /// this loop.
+    /// this loop. `refused` carries the refusal a re-run after the emit guard refused the
+    /// previous round's record puts after the prompt ([`rerun_once_on_refusal`]).
     ///
     /// Operator ruling op-u88c1-round-1-conflict-resolution-is-a-parked-spawn-not-an-inline-
     /// loop (round 1 REJECT): the caller ([`Self::integrate_and_emit`]) drops `integrate_mu`
@@ -10787,6 +10905,7 @@ impl RunCtx<'_> {
         attempt: u32,
         retry: u32,
         source: &[String],
+        refused: &RefusedRecord,
     ) -> Result<(), Error> {
         let id = spawn_retry_id(&st.name, ROLE_IMPLEMENTER, attempt, retry);
         if !self.reserve_spawn(&id) {
@@ -10808,6 +10927,7 @@ impl RunCtx<'_> {
         }
         let build_env = self.build_env()?;
         let prompt = conflict_resolution_prompt(&st.name, source);
+        let prompt = refused.task(&prompt);
         let emit = |t: &str, v: Value| {
             self.emit_agent(
                 t,
