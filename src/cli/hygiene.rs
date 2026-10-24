@@ -148,15 +148,17 @@ impl ResetEnv {
     /// `defaults` block [`config_store::read_scratch_workdir`] cannot parse fails the command with
     /// the config's own error, and a store whose owning root has no UTF-8 path - which resolves
     /// no scratch root at all - is refused, because the live-writer guard may only refuse: a root
-    /// it cannot resolve must never read as "no spawn marker, so nothing is live".
+    /// it cannot resolve must never read as "no spawn marker, so nothing is live". The refusal
+    /// names no command, since `rigger reset`'s modes and `rigger setup`'s new rebuild both reach
+    /// it.
     pub(super) fn resolve(loc: &StoreLocation) -> Result<Self, Box<dyn std::error::Error>> {
         let workdir = config_store::read_scratch_workdir(&loc.dir)?;
         let scratch_root = marker_root(&loc.repo_root(), &workdir);
         if scratch_root.is_empty() {
             return Err(format!(
-                "reset: the store at {} has no UTF-8 owning root, so the scratch root its runs \
-                 write their liveness markers and build caches under cannot be resolved; \
-                 refusing rather than reading that as no live spawn",
+                "the store at {} has no UTF-8 owning root, so the scratch root its runs write \
+                 their liveness markers and build caches under cannot be resolved; refusing \
+                 rather than reading that as no live spawn",
                 loc.dir.display()
             )
             .into());

@@ -1736,7 +1736,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-grounder/src/ingest.rs:596-598` `code_identity`
 - `crates/rigger-store-sqlite/src/eventstore/namespace.rs:65-67` `prefix_for`
 - `crates/rigger-worktree-git/src/worktree.rs:1746-1748` `shared_build_cache_guard_path`
-- `src/cli/hygiene.rs:718-730` `live_writer_refusal`
+- `src/cli/hygiene.rs:720-732` `live_writer_refusal`
 - `src/cli/mod.rs:4606-4608` `skill_source_rel`
 - `src/cli/mod.rs:5112-5118` `spec_lint_next_step`
 - `src/cli/setup.rs:1101-1106` `live_run_rebuild_refusal`
@@ -2188,7 +2188,7 @@ mandatory sweep: .rigger-path string literals - 602 site(s), collected mechanica
 - `crates/rigger-worktree-git/src/worktree.rs:7108-7108` `".rigger"`
 - `src/cli/critique.rs:168-168` `"{COMMAND}: the critic {:?} the workflow names has no definition under \
                  .rigger/agents"`
-- `src/cli/hygiene.rs:670-670` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
+- `src/cli/hygiene.rs:672-672` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
 - `src/cli/mod.rs:679-679` `"the server event store is selected but no connection string is set - provide one via \
          --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \
          secret file"`
@@ -4216,8 +4216,8 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-graph-sql
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13403-13405` `edge_desc`
-- `src/cli/hygiene.rs:239-245` `runs_menu_line`
-- `src/cli/hygiene.rs:997-1002` `pruned_line`
+- `src/cli/hygiene.rs:241-247` `runs_menu_line`
+- `src/cli/hygiene.rs:999-1004` `pruned_line`
 
 #### `dup-233d5e6363a7` (near, 2 sites)
 
@@ -4534,7 +4534,7 @@ Proposed home: `a new shared module (sites span 3 files: src/cli/hygiene.rs, tes
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/hygiene.rs:254-256` `derived_count_phrase`
+- `src/cli/hygiene.rs:256-258` `derived_count_phrase`
 - `tests/common/cli.rs:815-817` `rebuilt_through_the_head`
 - `tests/common/cli.rs:821-826` `pruned_from_the_rebuilt_graph`
 - `tests/common/cli.rs:1054-1061` `migrated_lines`
@@ -4548,8 +4548,8 @@ Proposed home: `hygiene::support (consolidate these 2 sites into one function in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/hygiene.rs:1980-2000` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
-- `src/cli/hygiene.rs:2054-2075` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
+- `src/cli/hygiene.rs:1982-2002` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
+- `src/cli/hygiene.rs:2056-2077` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
 
 #### `dup-4b714a54ab5e` (near, 2 sites)
 
@@ -4557,7 +4557,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/hygiene.rs, tes
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/hygiene.rs:2116-2125` `derived_count_phrase_names_the_events_first_and_the_file_identities_second`
+- `src/cli/hygiene.rs:2118-2127` `derived_count_phrase_names_the_events_first_and_the_file_identities_second`
 - `tests/simplification_audit.rs:7458-7462` `pluralize_uses_singular_only_at_exactly_one`
 
 #### `dup-e9f78fd7efcc` (exact, 2 sites)
