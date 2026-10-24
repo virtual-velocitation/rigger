@@ -2012,7 +2012,7 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "name": "\"The count and the caller lookup run once per item of the walk's hunk list - every \\\n             item the hunks touch, new or pre-existing, its body or its doc changed - each \\\n             item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \\\n             xargs awk -v t='<name>' 'index($0, t) { print FILENAME \\\":\\\" FNR }'` with its name, \\\n             and the record pairs each item of the hunk list with its count, the lines read and \\\n             its callers.\"",
+        "name": "\"The count and the caller lookup run once per item of the walk's hunk list - every \\\n             item the hunks touch, new or pre-existing, its body or its doc changed - each \\\n             item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \\\n             xargs awk -v t='<name>' 'index($0, t) { print FILENAME \\\":\\\" FNR }'` with its name.\"",
         "content_hash": "25597419b8dbb616"
       },
       {
