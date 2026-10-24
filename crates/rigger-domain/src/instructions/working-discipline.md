@@ -135,14 +135,20 @@ tool that searches them.
   the old answer's noun for each changed condition it derives, both terms on one joined line
   with any words between them. The lens reads each sentence it finds claim by claim against
   the unit's change, with a witness per claim at head; for a quantified claim it enumerates
-  the cases itself from the code at head and its record lists them beside the claim, each
-  with its witness. A sentence at head that misstates the changed behaviour - a claim the code
-  at head does not make true, a quantified claim failing at any of its cases, a consumer
-  sentence stating a changed condition's pre-change answer - is a BLOCKING finding on its
-  own, citing its location and the code that contradicts it; a missing per-hit disposition,
-  per-item count block or heading in the record is never one. The lens's record lists every
-  sentence it reads, each with its claims and a witness per claim; a grouped verdict over any
-  of them is a record the lens cannot write.
+  the cases itself from the code at head and reads the claim against each. A sentence at head
+  that misstates the changed behaviour - a claim the code at head does not make true, a
+  quantified claim failing at any of its cases, a consumer sentence stating a changed
+  condition's pre-change answer - is a BLOCKING finding on its own, citing its location and
+  the code that contradicts it; a missing per-hit disposition, per-item count block or
+  heading in the record is never one. The lens's review-complete record is bounded the same
+  way, so it is written in one pass: each generator and search command the lens ran, with its
+  hit count; each BLOCKING finding, citing the sentence's location and the location of the
+  code at head that contradicts it; the lens's own witness at head for each sentence the
+  author's record marks FIXED and each doc block the change adds, one per case for a
+  quantified sentence; and the remainder it read as one count per command, with its verdict.
+  The remainder owes no per-sentence listing of claims and witnesses, and a counted verdict
+  over it is a record the lens can write; the lens still re-derives every set, re-runs every
+  search and reads every hit at head.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
   code reads after your change, under any build configuration, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
