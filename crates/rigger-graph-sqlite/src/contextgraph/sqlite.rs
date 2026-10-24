@@ -662,8 +662,7 @@ impl Projector {
         in_transaction(live, project, |tx| {
             let through = rebuild_cursor(tx)?;
             create_cursor(tx, through)?;
-            tx.execute("UPDATE caught_up SET position = ?1", [through as i64])
-                .map_err(be)?;
+            set_cursor(tx, "caught_up", through)?;
             tx.execute_batch(DROP_REBUILD_STATE).map_err(be)
         })
         .map_err(FrameError::unframed)?;
@@ -1763,7 +1762,7 @@ fn fold_source(
 /// THE DECIDE STEP (spec 124): fold the one transaction cut `part` of a fold pass
 /// ([`fold_transactions`]) - one ledger entry of perception alone, or a run of other events - into
 /// `conn`, deciding each position in order, and advance the cursor to `through`, the cut's last
-/// position ([`advance_cursor`]), in the transaction that folds it. A position already in the `applied`
+/// position ([`set_cursor`]), in the transaction that folds it. A position already in the `applied`
 /// ledger, passed over or folded, is passed by the fold's per-position guard. An event other than
 /// an entry folds as [`Projection::apply`] folds it, from its own bytes, under a savepoint of its
 /// own ([`fold_in_savepoint`]); one whose own payload the judge ([`super::check_fold_payload`] -
@@ -1806,7 +1805,7 @@ fn decide_step(
                     || rejected_payload(e),
                 )?;
             }
-            advance_cursor(tx, through)
+            set_cursor(tx, "rebuild_cursor", through)
         }),
     }
 }
@@ -1892,17 +1891,9 @@ fn passed_over_cause(conn: &Connection, position: Position) -> Result<Option<Str
     .map_err(be)
 }
 
-/// Record `through` as the cursor of the rebuild state in `tx` ([`REBUILD_STATE`]): the last
-/// position a fold pass ([`fold_source`]) folded, committed with the transaction that folded it.
-fn advance_cursor(tx: &Transaction, through: Position) -> Result<(), Error> {
-    tx.execute("UPDATE rebuild_cursor SET position = ?1", [through as i64])
-        .map(drop)
-        .map_err(be)
-}
-
 /// The entry's body of a fold pass ([`decide_step`], spec 122, EXTRACTION OUTSIDE THE WRITE
 /// TRANSACTION): fold the ledger entry `entry` alone, in a transaction on `conn` of its own that
-/// advances the cursor to it ([`advance_cursor`]), its fold ([`fold_entry`]) handed what `batch`
+/// advances the cursor to it ([`set_cursor`]), its fold ([`fold_entry`]) handed what `batch`
 /// answers - asked, with no transaction open on `conn`, before that transaction opens. An entry
 /// whose re-extraction resolves to nothing ([`EntryOutcome::Unresolved`]) is passed over with
 /// [`RESOLVED_TO_NOTHING`]; one whose fold fails is passed over with the cause the judge rejects
@@ -1937,7 +1928,7 @@ fn fold_entry_alone(
                 || rejected_payload(entry).or(rejected),
             )?;
             if read {
-                advance_cursor(tx, entry.position)?;
+                set_cursor(tx, "rebuild_cursor", entry.position)?;
             }
             Ok::<_, Error>(read)
         })
@@ -2064,6 +2055,18 @@ fn create_cursor(tx: &Transaction, at: Position) -> Result<(), Error> {
     )
     .map(drop)
     .map_err(be)
+}
+
+/// Set the one-row cursor table `cursor` of the file in `tx` at `at`: the one statement that moves
+/// where a cursor stands. The rebuild state's `rebuild_cursor` ([`REBUILD_STATE`]) is set at the
+/// last position a fold pass ([`fold_source`]) folded, committed with the transaction that folded
+/// it ([`decide_step`], [`fold_entry_alone`]); the `caught_up` cursor, on a file carrying it
+/// ([`create_cursor`]), is set by a rebuild's drop ([`Projector::rebuild`]) at the last position
+/// the rebuild folded (spec 124, THE CURSOR AND ITS SEEDING).
+fn set_cursor(tx: &Transaction, cursor: &str, at: Position) -> Result<(), Error> {
+    tx.execute(&format!("UPDATE {cursor} SET position = ?1"), [at as i64])
+        .map(drop)
+        .map_err(be)
 }
 
 /// Whether the file behind `conn` holds a table named `name`.
