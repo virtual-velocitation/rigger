@@ -121,12 +121,14 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
     Ok(())
 }
 
-/// What `rigger reset`'s modes read from outside the store: resolved ONCE by [`cmd_reset`], the
-/// composition root, when a selected mode reads it ([`ResetModes::reads_env`]), and handed to the
-/// live-writer probe (`--derived` without `--force-live`, and `--runs`) and to `--build-cache`'s
-/// shared-cache reclaim, so the probe reads no configuration, environment or clock of its own and
-/// judges every signal at one instant under one scratch root.
-struct ResetEnv {
+/// What `rigger reset`'s modes and `rigger setup`'s new rebuild read from outside the store:
+/// resolved ONCE by its composition root - [`cmd_reset`] when a selected mode reads it
+/// ([`ResetModes::reads_env`]), setup's `rebuild_owed_graph` only once a new rebuild is owed - and
+/// handed to the live-writer probe (`--derived` without `--force-live`, `--runs`, and setup's
+/// live-run refusal) and to `--build-cache`'s shared-cache reclaim, so the probe reads no
+/// configuration, environment or clock of its own and judges every signal at one instant under
+/// one scratch root.
+pub(super) struct ResetEnv {
     /// The store's configured `defaults.workdir` (empty when unset).
     workdir: String,
     /// The scratch root this store's runs write under ([`marker_root`]), resolved from this
@@ -147,7 +149,7 @@ impl ResetEnv {
     /// the config's own error, and a store whose owning root has no UTF-8 path - which resolves
     /// no scratch root at all - is refused, because the live-writer guard may only refuse: a root
     /// it cannot resolve must never read as "no spawn marker, so nothing is live".
-    fn resolve(loc: &StoreLocation) -> Result<Self, Box<dyn std::error::Error>> {
+    pub(super) fn resolve(loc: &StoreLocation) -> Result<Self, Box<dyn std::error::Error>> {
         let workdir = config_store::read_scratch_workdir(&loc.dir)?;
         let scratch_root = marker_root(&loc.repo_root(), &workdir);
         if scratch_root.is_empty() {
@@ -708,13 +710,14 @@ fn live_spawn_named(s: &rigger::liveness::LiveSpawn) -> String {
     }
 }
 
-/// The loud refusal `rigger reset --derived` prints for a non-empty [`live_writer_reasons`]:
-/// names every reason, the concrete risk, and the override. `--force-live` is named here and in
-/// its own help text (spec 71: "an explicit override flag whose help text owns the risk") so an
-/// operator reads the same risk-owning sentence wherever they meet the flag.
-fn live_writer_refusal(reasons: &[String]) -> String {
+/// The loud refusal `rigger reset --derived` prints for a non-empty [`live_writer_reasons`],
+/// `reasons` being them as [`refuse_if_live`] joins them: names every reason, the concrete risk,
+/// and the override. `--force-live` is named here and in its own help text (spec 71: "an explicit
+/// override flag whose help text owns the risk") so an operator reads the same risk-owning
+/// sentence wherever they meet the flag.
+fn live_writer_refusal(reasons: &str) -> String {
     format!(
-        "reset --derived: refusing to migrate the event log while the run is live - {}. The \
+        "reset --derived: refusing to migrate the event log while the run is live - {reasons}. The \
          migration rewrites each file's latest derived batch into a ledger entry and deletes \
          every other derived event, which leaves REVISION GAPS by design; a writer whose append \
          cursor was built before this migration ran can reissue one of those gap revisions, and \
@@ -722,45 +725,14 @@ fn live_writer_refusal(reasons: &[String]) -> String {
          exists to prevent, and the corruption forcing past a genuinely live writer would risk. \
          Stop the run machinery named above and retry, or pass \
          --force-live to migrate anyway if you are certain no writer is using this store \
-         (--force-live checks nothing; it trusts you with that risk).",
-        reasons.join("; "),
+         (--force-live checks nothing; it trusts you with that risk)."
     )
 }
 
-/// Gather [`live_writer_reasons`]'s three facts and refuse `rigger reset --derived` (spec 71,
-/// criterion 2) when any applies. IMPURE (a lock probe, a store read, marker reads, an optional
-/// registry read) so the decision composition itself stays pure and unit-tested without any of
-/// the three. When nothing is live it returns the step lock its probe took, still held, for the
-/// caller to hold until the compaction returns ([`LiveWriterProbe`]).
-///
-/// The registry directory, the marker root and the instant are INJECTED through `env` (mirrors
-/// [`dash_resolve_attach`]'s existing DI shape) rather than read ambiently in here: the
-/// composition root (`cmd_reset`) resolves them once ([`ResetEnv::resolve`], the marker root
-/// fail-closed), exactly as every other ambient-environment read in this crate is pushed to a
-/// caller rather than repeated inside a callee. A `None` registry directory (a homeless
-/// environment) degrades to zero registrations - the same degrade `register_run_instance` itself
-/// takes for the identical reason: the registry's loss is harmless discovery metadata, never a
-/// signal this guard can invent.
-///
-/// This probe is read-only in effect, not just in name: it reads via
-/// [`rigger::registry::read_live_no_prune`], never [`rigger::registry::read_live`], so checking
-/// for live writers here never deletes a stale registry entry as a side effect - `reset
-/// --derived` performs no registry hygiene of its own; deletion stays reserved exclusively to
-/// the dashboard's self-reap watcher tick (see `read_live_no_prune`'s doc for why a prune here
-/// would be unsafe).
-///
-/// FAIL-SAFE in two different ways for two different faults:
-///   - a run-stream read failure (a malformed spawn request, or a malformed result where a
-///     marker inside its bound needs it read) propagates as a command error rather than folding
-///     into "no in-flight spawns" - this guard may only REFUSE a prune, never approve one it
-///     could not actually verify was safe (mirrors
-///     [`rigger::liveness::terminal_and_no_live_worker`]'s convention on the opposite rail: an
-///     unreadable stream is never read as "nobody is here").
-///   - a step-lock probe error that is NOT the lock actually being held (e.g. a permission
-///     fault) also propagates as a command error rather than being misread as "a step is
-///     running": only [`STEP_BUSY_TOKEN`] in the probe's own error names a genuinely held lock,
-///     so an operator troubleshooting an unrelated IO fault gets that fault's own message
-///     instead of a misdiagnosis pointing them at a `rigger step` that is not actually running.
+/// Refuse `rigger reset --derived` (spec 71, criterion 2) while the run is live: [`refuse_if_live`]
+/// over this store's log, in the words of [`live_writer_refusal`]. When nothing is live it returns
+/// the step lock its probe took, still held, for the caller to hold until the compaction returns
+/// ([`LiveWriterProbe`]).
 fn refuse_derived_reset_if_live(
     loc: &StoreLocation,
     selection: &StoreSelection,
@@ -768,18 +740,62 @@ fn refuse_derived_reset_if_live(
 ) -> Result<Option<HeldLock>, Box<dyn std::error::Error>> {
     let backend = resolve_store(selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    refuse_if_live(loc, selection, env, &store, live_writer_refusal)
+}
+
+/// Gather [`live_writer_reasons`]'s three facts over `log`'s run stream and refuse when any
+/// applies, failing with the text `refusal` words for the reasons joined with "; ": the one
+/// live-run refusal, of `rigger reset --derived` ([`refuse_derived_reset_if_live`]) and of the new
+/// rebuild of `graph.db` `rigger setup` pays (`pay_owed_rebuild`, spec 124). IMPURE (a lock probe,
+/// a store read, marker reads, an optional registry read) so the decision composition itself stays
+/// pure and unit-tested without any of the three. When nothing is live it returns the step lock
+/// its probe took, still held, for the caller to hold while it acts ([`LiveWriterProbe`]).
+///
+/// The registry directory, the marker root and the instant are INJECTED through `env` (mirrors
+/// [`dash_resolve_attach`]'s existing DI shape) rather than read ambiently in here: each
+/// composition root (`cmd_reset`, and setup's `rebuild_owed_graph`) resolves them once
+/// ([`ResetEnv::resolve`], the marker root fail-closed), exactly as every other
+/// ambient-environment read in this crate is pushed to a caller rather than repeated inside a
+/// callee. A `None` registry directory (a homeless environment) degrades to zero registrations -
+/// the same degrade `register_run_instance` itself takes for the identical reason: the registry's
+/// loss is harmless discovery metadata, never a signal this guard can invent.
+///
+/// This probe is read-only in effect, not just in name: it reads via
+/// [`rigger::registry::read_live_no_prune`], never [`rigger::registry::read_live`], so checking
+/// for live writers here never deletes a stale registry entry as a side effect - neither command
+/// performs registry hygiene of its own; deletion stays reserved exclusively to the dashboard's
+/// self-reap watcher tick (see `read_live_no_prune`'s doc for why a prune here would be unsafe).
+///
+/// FAIL-SAFE in two different ways for two different faults:
+///   - a run-stream read failure (a malformed spawn request, or a malformed result where a
+///     marker inside its bound needs it read) propagates as a command error rather than folding
+///     into "no in-flight spawns" - this guard may only REFUSE, never approve an act it could not
+///     actually verify was safe (mirrors [`rigger::liveness::terminal_and_no_live_worker`]'s
+///     convention on the opposite rail: an unreadable stream is never read as "nobody is here").
+///   - a step-lock probe error that is NOT the lock actually being held (e.g. a permission
+///     fault) also propagates as a command error rather than being misread as "a step is
+///     running": only [`STEP_BUSY_TOKEN`] in the probe's own error names a genuinely held lock,
+///     so an operator troubleshooting an unrelated IO fault gets that fault's own message
+///     instead of a misdiagnosis pointing them at a `rigger step` that is not actually running.
+pub(super) fn refuse_if_live(
+    loc: &StoreLocation,
+    selection: &StoreSelection,
+    env: &ResetEnv,
+    log: &dyn EventStore,
+    refusal: fn(&str) -> String,
+) -> Result<Option<HeldLock>, Box<dyn std::error::Error>> {
+    let events = log.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     let probe = live_writer_facts(loc, selection, env, &events)?;
     let reasons = probe.facts.reasons();
     if reasons.is_empty() {
         return Ok(probe.step_lock);
     }
-    Err(live_writer_refusal(&reasons).into())
+    Err(refusal(&reasons.join("; ")).into())
 }
 
-/// The three facts [`live_writer_reasons`] composes, gathered once so both consumers read the
-/// same liveness: `reset --derived`'s refusal ([`refuse_derived_reset_if_live`]) and `reset
-/// --runs`'s dead-driver test ([`close_landed_units`]).
+/// The three facts [`live_writer_reasons`] composes, gathered once so every consumer reads the
+/// same liveness: the live-run refusal ([`refuse_if_live`]) of `reset --derived` and of `rigger
+/// setup`'s new rebuild, and `reset --runs`'s dead-driver test ([`close_landed_units`]).
 struct LiveWriterFacts {
     step_lock_held: bool,
     live_spawns: Vec<rigger::liveness::LiveSpawn>,
@@ -807,8 +823,8 @@ impl LiveWriterFacts {
 /// [`LiveWriterFacts`] as [`live_writer_facts`] probed them, with the step lock the probe took.
 /// The lock is HELD for as long as the probe lives, so the probe's verdict that no `rigger step`
 /// is running stays true while the caller acts on it: a step started meanwhile refuses with
-/// [`STEP_BUSY_TOKEN`] and its courier retries, never running against the close or the compaction
-/// the caller makes under the probe.
+/// [`STEP_BUSY_TOKEN`] and its courier retries, never running against the close, the compaction or
+/// the rebuild the caller makes under the probe.
 struct LiveWriterProbe {
     facts: LiveWriterFacts,
     /// The step lock this probe holds; `None` exactly when a `rigger step` already held it
@@ -832,7 +848,7 @@ fn live_writer_facts(
     // from a nested worktree just as every other courier is (see `require_store_dir`), and a
     // cwd-relative probe would open a `.rigger/step.lock` under the WRONG (or nonexistent)
     // directory there. Acquiring it proves nobody else holds it, and the probe keeps holding it
-    // so that stays true while the reset acts. A failure whose message names the busy token
+    // so that stays true while the caller acts. A failure whose message names the busy token
     // proves a step IS running; any OTHER failure (a permission fault, a read-only filesystem) is
     // a real fault this command cannot silently misdiagnose as "held", so it propagates instead.
     let step_lock = match acquire_step_lock(&loc.dir) {
@@ -1666,24 +1682,15 @@ mod tests {
     /// override flag whose help text owns the risk").
     #[test]
     fn refusal_names_a_held_step_lock_and_the_force_live_override_owning_the_risk() {
-        let reasons = live_writer_reasons(true, &[], 0);
-        let out = live_writer_refusal(&reasons);
-        assert!(
-            out.contains("step.lock"),
-            "must name the held lock; got {out:?}"
-        );
-        assert!(
-            out.contains("--force-live"),
-            "must name the override; got {out:?}"
-        );
-        assert!(
-            out.contains("reset --derived"),
-            "must name the refused command; got {out:?}"
-        );
-        assert!(
-            out.contains("corruption"),
-            "must OWN the risk, not just name the flag; got {out:?}"
-        );
+        let out = live_writer_refusal(STEP_LOCK_REASON);
+        for (phrase, why) in [
+            ("step.lock", "must name the held lock"),
+            ("--force-live", "must name the override"),
+            ("reset --derived", "must name the refused command"),
+            ("corruption", "must OWN the risk, not just name the flag"),
+        ] {
+            assert!(out.contains(phrase), "{why}; got {out:?}");
+        }
     }
 
     /// Every live spawn is named by id with its marker's age and the bound keeping it live, in

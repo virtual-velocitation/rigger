@@ -889,13 +889,23 @@ const REBUILD_BATCH: usize = 10_000;
 /// cursor a swap put in place - is no owed cause: it is finished with no
 /// `rebuilding graph.db ...: <cause>` line, still reporting how far along it is, and so rewrites a
 /// `graph.db` that owes nothing. Only a `graph.db` that owes nothing and holds no unfinished
-/// rebuild is not rebuilt. With no `graph.db` - a cold start - the owed mark a removed one left
+/// rebuild is not rebuilt, beside one whose new rebuild is refused while the run is live (below).
+/// With no `graph.db` - a cold start - the owed mark a removed one left
 /// behind is dropped first, so the file made in its place starts owing nothing it recorded, and
 /// setup makes that file: seeded at 0 beside an empty log, whose `events.db` it never makes, and
 /// rebuilt beside a non-empty one. The rebuild folds the log's live selection - the rows
 /// `rigger reset --derived` keeps - into a shadow file whose pruned copy replaces `graph.db` in one
 /// step ([`Projector::rebuild`]), streaming the log once, resuming an interrupted rebuild from its
 /// last committed transaction and finishing exactly the tail of one interrupted after its swap.
+///
+/// A NEW rebuild - one a cause owes while no shadow or tail stands - is refused while the run is
+/// live (spec 124): through `refuse_if_live`, the live-run refusal `rigger reset --derived` has,
+/// over the log the rebuild reads, this project's `.rigger` and its store selection, with the
+/// scratch configuration, registry and clock [`ResetEnv::resolve`] reads only once such a rebuild
+/// is owed. Setup then fails with [`live_run_rebuild_refusal`]'s text, offering no override, and
+/// otherwise holds the step lock the probe took, making `.rigger/step.lock` where none stands,
+/// until the rebuild returns. Finishing a standing shadow or tail is exempt and runs beside a live
+/// run, and a `graph.db` that owes no rebuild reads no liveness.
 ///
 /// A ledger entry of perception folds with the batch re-extracted for it (spec 107,
 /// `ingest::resolve_entry`): from the entry's blob in the repository's object database, read
@@ -946,7 +956,23 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                 .map(|source| source as &mut rigger::ingest::BlobSource),
         )
     };
-    match store_selection(None, None)? {
+    // A NEW rebuild is refused while the run is live (spec 124): the live-run refusal `rigger reset
+    // --derived` has, over this store's log, its scratch configuration and clock read only once a
+    // new rebuild is owed, so a setup that owes none reads neither.
+    let selection = store_selection(None, None)?;
+    let loc = StoreLocation {
+        dir: cwd().join(RIGGER_DIR),
+    };
+    let refuse = |log: &dyn EventStore| {
+        refuse_if_live(
+            &loc,
+            &selection,
+            &ResetEnv::resolve(&loc)?,
+            log,
+            live_run_rebuild_refusal,
+        )
+    };
+    match &selection {
         sqlite @ StoreSelection::Sqlite => {
             // A project with no run recorded has no log file: its log is read as the empty one it
             // is, so setup never makes `events.db`.
@@ -980,22 +1006,25 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                     },
                     stamp_of: &mut |at| store.recorded_at(at).map_err(graph_error),
                 },
-                &mut |after, sink| {
-                    store
-                        .read_live_selection(
-                            &prefix,
-                            conductor::STREAM,
-                            &identity,
-                            after,
-                            REBUILD_BATCH,
-                            &mut |events, head| {
-                                sink(events, head)
-                                    .map_err(|e| rigger::eventstore::Error::Backend(e.0))
-                            },
-                        )
-                        .map_err(graph_error)
+                RebuildReads {
+                    source: &mut |after, sink| {
+                        store
+                            .read_live_selection(
+                                &prefix,
+                                conductor::STREAM,
+                                &identity,
+                                after,
+                                REBUILD_BATCH,
+                                &mut |events, head| {
+                                    sink(events, head)
+                                        .map_err(|e| rigger::eventstore::Error::Backend(e.0))
+                                },
+                            )
+                            .map_err(graph_error)
+                    },
+                    reextract: &mut reextract,
                 },
-                &mut reextract,
+                &refuse,
             )
         }
         // A server-backed log has no compaction plan (`rigger reset --derived` is sqlite-only), so
@@ -1004,7 +1033,7 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
         // taken on the server's clock, not this host's, so the seeding is handed none: the
         // server's skew moves nothing, and every position the file misses counts old.
         selection => {
-            let backend = resolve_store(&selection, &db_path("events.db"))?;
+            let backend = resolve_store(selection, &db_path("events.db"))?;
             let store = Namespaced::new(backend.as_ref(), &project);
             let mut positions =
                 contextgraph::sqlite::stream_positions(&store, conductor::STREAM, REBUILD_BATCH);
@@ -1019,8 +1048,11 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                     live: &mut positions,
                     stamp_of: &mut |_| Ok(None),
                 },
-                &mut source,
-                &mut reextract,
+                RebuildReads {
+                    source: &mut source,
+                    reextract: &mut reextract,
+                },
+                &refuse,
             )
         }
     }
@@ -1045,14 +1077,40 @@ struct SeedingReads<'r, 's> {
     stamp_of: &'r mut contextgraph::sqlite::StampLookup<'s>,
 }
 
+/// The two reads a rebuild of `graph.db` folds through ([`Projector::rebuild`]): the log's live
+/// selection past a position, and the batch re-extracted for a ledger entry of perception.
+struct RebuildReads<'r, 's> {
+    source: &'r mut contextgraph::sqlite::RebuildSource<'s>,
+    reextract: &'r mut contextgraph::sqlite::Reextract<'s>,
+}
+
+/// The live-run refusal a new rebuild of `graph.db` meets: [`refuse_if_live`] over the log it is
+/// handed, answering the step lock its probe took, still held, or the refusal.
+type LiveRunRefusal<'a> =
+    dyn Fn(&dyn EventStore) -> Result<Option<HeldLock>, Box<dyn std::error::Error>> + 'a;
+
+/// The refusal `rigger setup` fails with when a new rebuild of `graph.db` is owed while the run is
+/// live (spec 124, CATCH-UP LINES), `reasons` being what the live-writer probe names, joined: no
+/// override is offered, since only a stopped run lets the rebuild's tail be the one in-order folder.
+fn live_run_rebuild_refusal(reasons: &str) -> String {
+    format!(
+        "rigger setup: refusing to rebuild graph.db while the run is live - {reasons}; stop the \
+         run's driver, run rigger setup, then relaunch the run by adoption"
+    )
+}
+
 /// Open the `graph.db` whose rebuild lock is `held`, making it where none stands, and seed its
 /// `caught_up` cursor against the log through `seeding`, its missing positions aged against the
 /// clock read once here ([`Projector::seed_cursor`]); read why the file owes its rebuild - its own
-/// records, and the seeding's verdict ([`Projector::owed_against`]) - say so naming each cause, and
-/// pay it by rebuilding from `source`, each ledger entry of perception folded with the batch
-/// `reextract` answers for it, which also finishes a rebuild's own unfinished work (a standing
-/// shadow, or a swapped-in cursor's tail) with no cause to name, since neither the file's records
-/// nor the seeding names it; print how far along the rebuild is, what its run-closure prune removed
+/// records, and the seeding's verdict ([`Projector::owed_against`]); when a cause owes a NEW
+/// rebuild, one beside no standing shadow or tail ([`Projector::rebuild_unfinished`]), ask
+/// `refuse_if_live` of `log` and fail with its refusal while the run is live, before any line is
+/// printed or the file rewritten, else hold the step lock its probe took until the rebuild returns;
+/// say so naming each cause, and pay it by rebuilding from `reads`' source, each ledger entry of
+/// perception folded with the batch its re-extraction answers for it, which also finishes a
+/// rebuild's own unfinished work (a standing shadow, or a swapped-in cursor's tail) with no cause to
+/// name, since neither the file's records nor the seeding names it, and beside a live run, since
+/// every appender call is inert on rebuild state; print how far along the rebuild is, what its run-closure prune removed
 /// from the rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own), and, read from
 /// `log` and the rebuilt graph once the rebuild ends, how many identities the next ingest records
 /// again ([`rebuild_report_line`]); then, when the seeding met another writer's write lock
@@ -1066,12 +1124,20 @@ fn pay_owed_rebuild<'t>(
     log: &dyn EventStore,
     tree: &dyn Fn() -> &'t Path,
     seeding: SeedingReads,
-    source: &mut contextgraph::sqlite::RebuildSource,
-    reextract: &mut contextgraph::sqlite::Reextract,
+    reads: RebuildReads,
+    refuse_if_live: &LiveRunRefusal,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let graph = Projector::open(held.path(), project)?;
     let seeded = graph.seed_cursor(seeding.live, seeding.stamp_of, std::time::SystemTime::now())?;
     let causes = graph.owed_against(&seeded)?;
+    // A NEW rebuild - one a cause owes beside no standing shadow or tail - is refused while the run
+    // is live, and the step lock the probe took is held until the rebuild returns. Finishing a
+    // standing one is exempt: every appender call is inert on rebuild state.
+    let _step_lock = if !causes.is_empty() && !Projector::rebuild_unfinished(held)? {
+        refuse_if_live(log)?
+    } else {
+        None
+    };
     if !causes.is_empty() {
         println!(
             "rebuilding graph.db from the event log: {}, so the log's live selection is refolded \
@@ -1080,11 +1146,17 @@ fn pay_owed_rebuild<'t>(
         );
     }
     let mut printed = 0;
-    let rebuilt = graph.rebuild(held, !causes.is_empty(), source, reextract, &mut |at| {
-        if let Some(line) = rebuild_progress_line(at, &mut printed) {
-            println!("{line}");
-        }
-    })?;
+    let rebuilt = graph.rebuild(
+        held,
+        !causes.is_empty(),
+        reads.source,
+        reads.reextract,
+        &mut |at| {
+            if let Some(line) = rebuild_progress_line(at, &mut printed) {
+                println!("{line}");
+            }
+        },
+    )?;
     if let Some(rebuilt) = rebuilt {
         println!("rebuilt graph.db from the event log");
         println!("{} from the rebuilt graph", pruned_line(&rebuilt.pruned));

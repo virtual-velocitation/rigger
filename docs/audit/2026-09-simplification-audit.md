@@ -1686,7 +1686,7 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 
 ## 2. Duplication Catalog
 
-212 clusters (1460 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+212 clusters (1462 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
@@ -1707,9 +1707,9 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/blast_radius_eval.rs:181-194` `width_threshold_is_the_tier_width_nearest_rank_percentile`
 - `crates/rigger-conductor/src/blast_radius_eval.rs:197-205` `full_fraction_spans_all_light_to_collapse`
 
-#### `dup-01a83c269af6` (near, 30 sites)
+#### `dup-92f656a3dd07` (near, 32 sites)
 
-Proposed home: `a new shared module (sites span 17 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/mod.rs, tests/canary_model_drift_periphery.rs, tests/common/fixtures/instructions.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)`
+Proposed home: `a new shared module (sites span 19 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/hygiene.rs, src/cli/mod.rs, src/cli/setup.rs, tests/canary_model_drift_periphery.rs, tests/common/fixtures/instructions.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
@@ -1736,8 +1736,10 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-grounder/src/ingest.rs:596-598` `code_identity`
 - `crates/rigger-store-sqlite/src/eventstore/namespace.rs:65-67` `prefix_for`
 - `crates/rigger-worktree-git/src/worktree.rs:1746-1748` `shared_build_cache_guard_path`
+- `src/cli/hygiene.rs:718-730` `live_writer_refusal`
 - `src/cli/mod.rs:4606-4608` `skill_source_rel`
 - `src/cli/mod.rs:5112-5118` `spec_lint_next_step`
+- `src/cli/setup.rs:1095-1100` `live_run_rebuild_refusal`
 - `tests/canary_model_drift_periphery.rs:112-114` `prose_claiming`
 - `tests/common/fixtures/instructions.rs:81-83` `builtin_instruction_source`
 - `tests/halted_spawn_wip_recovery_periphery.rs:128-130` `unit_branch`
@@ -1962,8 +1964,8 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `src/cli/run.rs:3289-3289` `Command::new`
 - `src/cli/run.rs:3333-3333` `Command::new`
 - `src/cli/run.rs:3402-3402` `Command::new`
-- `src/cli/setup.rs:4007-4007` `Command::new`
-- `src/cli/setup.rs:4298-4298` `Command::new`
+- `src/cli/setup.rs:4079-4079` `Command::new`
+- `src/cli/setup.rs:4370-4370` `Command::new`
 - `src/cli/validate.rs:1456-1456` `Command::new`
 - `src/cli/validate.rs:1735-1735` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2185,8 +2187,8 @@ mandatory sweep: .rigger-path string literals - 603 site(s), collected mechanica
 - `crates/rigger-worktree-git/src/worktree.rs:7108-7108` `".rigger"`
 - `src/cli/critique.rs:168-168` `"{COMMAND}: the critic {:?} the workflow names has no definition under \
                  .rigger/agents"`
-- `src/cli/hygiene.rs:668-668` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
-- `src/cli/hygiene.rs:1778-1778` `"/home/dev/proj/.rigger/events.db"`
+- `src/cli/hygiene.rs:670-670` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
+- `src/cli/hygiene.rs:1785-1785` `"/home/dev/proj/.rigger/events.db"`
 - `src/cli/mod.rs:679-679` `"the server event store is selected but no connection string is set - provide one via \
          --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \
          secret file"`
@@ -2375,57 +2377,57 @@ __END__
 - `src/cli/setup.rs:734-734` `"imported {} agent {} from {} into .rigger/agents/ ({} kept - already present)"`
 - `src/cli/setup.rs:785-785` `"provisioned the JS driver in .rigger/shim/ (wrote shim.mjs + package.json + \
              package-lock.json and ran npm install)"`
-- `src/cli/setup.rs:1355-1355` `"kept existing .rigger/agents/{name} (import never overwrites)"`
-- `src/cli/setup.rs:1383-1383` `"imported .rigger/agents/{name} (id: {id})"`
-- `src/cli/setup.rs:2165-2165` `"nothing is written - no .rigger, no .claude, no .gitignore"`
-- `src/cli/setup.rs:2232-2232` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2237-2237` `"no gate template set matches this project (rust: Cargo.toml at the project \
+- `src/cli/setup.rs:1427-1427` `"kept existing .rigger/agents/{name} (import never overwrites)"`
+- `src/cli/setup.rs:1455-1455` `"imported .rigger/agents/{name} (id: {id})"`
+- `src/cli/setup.rs:2237-2237` `"nothing is written - no .rigger, no .claude, no .gitignore"`
+- `src/cli/setup.rs:2304-2304` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2309-2309` `"no gate template set matches this project (rust: Cargo.toml at the project \
                   root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2263-2263` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
-- `src/cli/setup.rs:2291-2291` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2292-2292` `"no gate template set matches this project (demo: a or b; other: c at the project \
+- `src/cli/setup.rs:2335-2335` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
+- `src/cli/setup.rs:2363-2363` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2364-2364` `"no gate template set matches this project (demo: a or b; other: c at the project \
                  root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2309-2309` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:2629-2629` `".rigger/agents/"`
-- `src/cli/setup.rs:2683-2683` `".rigger/dash.url"`
-- `src/cli/setup.rs:2684-2684` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2685-2685` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2694-2694` `".rigger/store.conn"`
-- `src/cli/setup.rs:2711-2711` `".rigger/\n"`
-- `src/cli/setup.rs:2717-2717` `".rigger/dash.url"`
-- `src/cli/setup.rs:2720-2720` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2723-2723` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2724-2724` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
+- `src/cli/setup.rs:2381-2381` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:2701-2701` `".rigger/agents/"`
+- `src/cli/setup.rs:2755-2755` `".rigger/dash.url"`
+- `src/cli/setup.rs:2756-2756` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2757-2757` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2766-2766` `".rigger/store.conn"`
+- `src/cli/setup.rs:2783-2783` `".rigger/\n"`
+- `src/cli/setup.rs:2789-2789` `".rigger/dash.url"`
+- `src/cli/setup.rs:2792-2792` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2795-2795` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2796-2796` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
              even when .rigger/ broadly covers them, so the committed .gitignore stays \
              self-contained, got: {:?}"`
-- `src/cli/setup.rs:2732-2732` `".rigger/dash.url"`
-- `src/cli/setup.rs:2733-2733` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2734-2734` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2735-2735` `"all three explicit per-file dash ignore lines are present in the committed \
+- `src/cli/setup.rs:2804-2804` `".rigger/dash.url"`
+- `src/cli/setup.rs:2805-2805` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2806-2806` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2807-2807` `"all three explicit per-file dash ignore lines are present in the committed \
              .gitignore even though .rigger/ already covers them, got:\n{content}"`
-- `src/cli/setup.rs:2745-2745` `".rigger/dash.url"`
-- `src/cli/setup.rs:2748-2748` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2751-2751` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3104-3104` `".rigger/agents/researcher.md"`
-- `src/cli/setup.rs:3133-3133` `".rigger/agents/planner.md"`
-- `src/cli/setup.rs:3163-3163` `".rigger/agents/newcomer.md"`
-- `src/cli/setup.rs:3241-3241` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:3471-3471` `".rigger"`
-- `src/cli/setup.rs:3636-3636` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:3839-3839` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:3841-3841` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:3842-3842` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:3843-3843` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:3853-3853` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:3856-3856` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:3870-3870` `"The count and the caller lookup run once per item of the walk's hunk list - every \
+- `src/cli/setup.rs:2817-2817` `".rigger/dash.url"`
+- `src/cli/setup.rs:2820-2820` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2823-2823` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3176-3176` `".rigger/agents/researcher.md"`
+- `src/cli/setup.rs:3205-3205` `".rigger/agents/planner.md"`
+- `src/cli/setup.rs:3235-3235` `".rigger/agents/newcomer.md"`
+- `src/cli/setup.rs:3313-3313` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:3543-3543` `".rigger"`
+- `src/cli/setup.rs:3708-3708` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:3911-3911` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:3913-3913` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:3914-3914` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:3915-3915` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:3925-3925` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:3928-3928` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:3942-3942` `"The count and the caller lookup run once per item of the walk's hunk list - every \
              item the hunks touch, new or pre-existing, its body or its doc changed - each \
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers."`
-- `src/cli/setup.rs:3960-3960` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:4169-4169` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:4032-4032` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:4241-4241` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
@@ -4048,7 +4050,7 @@ Proposed home: `one shared `install_status_line` helper (e.g. relocated into `te
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-driver/src/hooks.rs:255-272` `install_status_line`
-- `src/cli/setup.rs:1238-1242` `install_status_line`
+- `src/cli/setup.rs:1310-1314` `install_status_line`
 
 #### `dup-a5bfac770233` (near, 2 sites)
 
@@ -4057,7 +4059,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/liveness.rs:924-938` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
-- `src/cli/setup.rs:2454-2468` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
+- `src/cli/setup.rs:2526-2540` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-e67cfcd84a42` (semantic, 63 sites)
 
@@ -4213,8 +4215,8 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-graph-sql
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:13192-13194` `edge_desc`
-- `src/cli/hygiene.rs:237-243` `runs_menu_line`
-- `src/cli/hygiene.rs:981-986` `pruned_line`
+- `src/cli/hygiene.rs:239-245` `runs_menu_line`
+- `src/cli/hygiene.rs:997-1002` `pruned_line`
 
 #### `dup-233d5e6363a7` (near, 2 sites)
 
@@ -4531,7 +4533,7 @@ Proposed home: `a new shared module (sites span 3 files: src/cli/hygiene.rs, tes
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/hygiene.rs:252-254` `derived_count_phrase`
+- `src/cli/hygiene.rs:254-256` `derived_count_phrase`
 - `tests/common/cli.rs:714-716` `rebuilt_through_the_head`
 - `tests/common/cli.rs:720-725` `pruned_from_the_rebuilt_graph`
 - `tests/common/cli.rs:953-960` `migrated_lines`
@@ -4545,8 +4547,8 @@ Proposed home: `hygiene::support (consolidate these 2 sites into one function in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/hygiene.rs:1956-1976` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
-- `src/cli/hygiene.rs:2030-2051` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
+- `src/cli/hygiene.rs:1963-1983` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
+- `src/cli/hygiene.rs:2037-2058` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
 
 #### `dup-4b714a54ab5e` (near, 2 sites)
 
@@ -4554,7 +4556,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/hygiene.rs, tes
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/hygiene.rs:2092-2101` `derived_count_phrase_names_the_events_first_and_the_file_identities_second`
+- `src/cli/hygiene.rs:2099-2108` `derived_count_phrase_names_the_events_first_and_the_file_identities_second`
 - `tests/simplification_audit.rs:7458-7462` `pluralize_uses_singular_only_at_exactly_one`
 
 #### `dup-e9f78fd7efcc` (exact, 2 sites)
@@ -4645,8 +4647,8 @@ Proposed home: `setup::support (consolidate these 2 sites into one function in t
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/setup.rs:1186-1194` `install_lookup_hook`
-- `src/cli/setup.rs:1238-1242` `install_status_line`
+- `src/cli/setup.rs:1258-1266` `install_lookup_hook`
+- `src/cli/setup.rs:1310-1314` `install_status_line`
 
 #### `dup-2cd309ca2b08` (near, 2 sites)
 
@@ -5297,7 +5299,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9928 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9930 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4994-5035` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15035-15057` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5654,7 +5656,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 18. Sweep the remaining 142 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 212 clusters, 63 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-2b3843316743`, `dup-aa7467aca43c`, `dup-e67cfcd84a42`, `dup-38e1ee983333`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-06595b708e0b`); the remaining 142 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-01a83c269af6`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 212 clusters, 63 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-2b3843316743`, `dup-aa7467aca43c`, `dup-e67cfcd84a42`, `dup-38e1ee983333`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-06595b708e0b`); the remaining 142 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-92f656a3dd07`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.
