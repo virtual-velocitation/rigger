@@ -324,8 +324,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3678,
-        "end_line": 3683
+        "start_line": 3871,
+        "end_line": 3876
       },
       {
         "file": "tests/new_run_critique_refusal_periphery.rs",
@@ -3134,33 +3134,33 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 976,
-        "end_line": 976
+        "start_line": 1004,
+        "end_line": 1004
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1067,
-        "end_line": 1067
+        "start_line": 1095,
+        "end_line": 1095
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1284,
-        "end_line": 1284
+        "start_line": 1312,
+        "end_line": 1312
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1285,
-        "end_line": 1285
+        "start_line": 1313,
+        "end_line": 1313
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1398,
-        "end_line": 1398
+        "start_line": 1426,
+        "end_line": 1426
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1495,
-        "end_line": 1495
+        "start_line": 1523,
+        "end_line": 1523
       },
       {
         "file": "tests/common/fixtures/config.rs",
@@ -3204,23 +3204,23 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1298,
-        "end_line": 1298
+        "start_line": 1308,
+        "end_line": 1308
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1381,
-        "end_line": 1381
+        "start_line": 1391,
+        "end_line": 1391
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2620,
-        "end_line": 2620
+        "start_line": 2818,
+        "end_line": 2818
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4001,
-        "end_line": 4001
+        "start_line": 4194,
+        "end_line": 4194
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
@@ -3569,23 +3569,23 @@
       },
       {
         "file": "tests/ledger_rebuild.rs",
-        "start_line": 617,
-        "end_line": 617
+        "start_line": 614,
+        "end_line": 614
       },
       {
         "file": "tests/ledger_rebuild.rs",
-        "start_line": 1202,
-        "end_line": 1202
+        "start_line": 1192,
+        "end_line": 1192
       },
       {
         "file": "tests/ledger_rebuild.rs",
-        "start_line": 2248,
-        "end_line": 2248
+        "start_line": 2238,
+        "end_line": 2238
       },
       {
         "file": "tests/ledger_rebuild.rs",
-        "start_line": 2278,
-        "end_line": 2278
+        "start_line": 2268,
+        "end_line": 2268
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
@@ -5584,8 +5584,8 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1066,
-        "end_line": 1068
+        "start_line": 1094,
+        "end_line": 1096
       }
     ]
   },
@@ -5919,18 +5919,18 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 780,
-        "end_line": 780
+        "start_line": 808,
+        "end_line": 808
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 790,
-        "end_line": 790
+        "start_line": 818,
+        "end_line": 818
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1506,
-        "end_line": 1506
+        "start_line": 1534,
+        "end_line": 1534
       },
       {
         "file": "tests/common/fixtures/cursor.rs",
@@ -5974,53 +5974,53 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 443,
-        "end_line": 443
+        "start_line": 453,
+        "end_line": 453
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 894,
-        "end_line": 894
+        "start_line": 904,
+        "end_line": 904
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1109,
-        "end_line": 1109
+        "start_line": 1119,
+        "end_line": 1119
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1223,
-        "end_line": 1223
+        "start_line": 1233,
+        "end_line": 1233
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1279,
-        "end_line": 1279
+        "start_line": 1289,
+        "end_line": 1289
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 1387,
-        "end_line": 1387
+        "start_line": 1397,
+        "end_line": 1397
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2962,
-        "end_line": 2962
+        "start_line": 3155,
+        "end_line": 3155
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3288,
-        "end_line": 3288
+        "start_line": 3481,
+        "end_line": 3481
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3331,
-        "end_line": 3331
+        "start_line": 3524,
+        "end_line": 3524
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4444,
-        "end_line": 4444
+        "start_line": 4637,
+        "end_line": 4637
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
@@ -6839,23 +6839,23 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 913,
-        "end_line": 920
+        "start_line": 941,
+        "end_line": 948
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 927,
-        "end_line": 932
+        "start_line": 955,
+        "end_line": 960
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1559,
-        "end_line": 1564
+        "start_line": 1587,
+        "end_line": 1592
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5091,
-        "end_line": 5096
+        "start_line": 5284,
+        "end_line": 5289
       }
     ]
   },
@@ -7569,23 +7569,23 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 938,
-        "end_line": 940
+        "start_line": 966,
+        "end_line": 968
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 943,
-        "end_line": 945
+        "start_line": 971,
+        "end_line": 973
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1553,
-        "end_line": 1555
+        "start_line": 1581,
+        "end_line": 1583
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1568,
-        "end_line": 1570
+        "start_line": 1596,
+        "end_line": 1598
       }
     ]
   },
@@ -7594,8 +7594,8 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1344,
-        "end_line": 1351
+        "start_line": 1372,
+        "end_line": 1379
       },
       {
         "file": "tests/common/workflow_probe.rs",
@@ -7609,13 +7609,13 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1380,
-        "end_line": 1400
+        "start_line": 1408,
+        "end_line": 1428
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1404,
-        "end_line": 1420
+        "start_line": 1432,
+        "end_line": 1448
       },
       {
         "file": "tests/store_secrets.rs",
@@ -7819,8 +7819,8 @@
     "sites": [
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2269,
-        "end_line": 2275
+        "start_line": 2467,
+        "end_line": 2473
       },
       {
         "file": "tests/one_shot_reads_periphery.rs",

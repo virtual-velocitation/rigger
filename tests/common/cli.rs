@@ -727,16 +727,39 @@ pub const SEEDING_SKIPPED_LINE: &str = "graph.db catch-up was not started: anoth
      the write lock - the next rigger setup starts it";
 
 /// Backdate every event `root`'s `.rigger/events.db` holds past the catch-up horizon
-/// ([`super::fixtures::past_the_horizon`]), through a connection of its own (spec 124, HORIZON IN
+/// ([`super::fixtures::past_the_horizon`]), through [`backdate_the_log_by`] (spec 124, HORIZON IN
 /// TESTS): what a binary test whose `rigger setup` must rebuild over a hole below an applied
 /// position calls before that setup.
 pub fn backdate_the_log(root: &Path) {
+    backdate_the_log_by(root, super::fixtures::past_the_horizon());
+}
+
+/// Record every event `root`'s `.rigger/events.db` holds `age` earlier than it was, through a
+/// connection of its own (spec 124, HORIZON IN TESTS): how a binary test ages the events whose
+/// store stamps `rigger setup`'s seeding reads.
+pub fn backdate_the_log_by(root: &Path, age: Duration) {
     rigger_db(root, "events.db")
         .execute(
             "UPDATE events SET recorded_at = recorded_at - ?1",
-            [super::fixtures::past_the_horizon().as_nanos() as i64],
+            [age.as_nanos() as i64],
         )
         .unwrap();
+}
+
+/// Remove the store file `name` under `root`'s `.rigger` and the `-wal` and `-shm` files sqlite
+/// keeps beside it, each where it exists: a store file an operator deletes before the next `rigger
+/// setup`.
+pub fn remove_the_store_file(root: &Path, name: &str) {
+    for file in [
+        name.to_string(),
+        format!("{name}-wal"),
+        format!("{name}-shm"),
+    ] {
+        let path = rigger_file(root, &file);
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
 }
 
 /// The lines of `rigger setup`'s stdout `out` that report its rebuild of `graph.db`: the cause it
@@ -753,14 +776,19 @@ pub fn rebuild_lines(out: &str) -> Vec<String> {
 }
 
 /// The [`rebuild_lines`] of a `rigger setup` that rebuilt a `graph.db` missing an event the log
-/// holds and that then counts events passed over, by cause: `rejected` rejected payloads, `failed`
-/// fold failures and `unresolved` entries resolved to nothing ([`passed_over_line`]).
+/// holds and passed nothing over: the lost-fold cause, then that it rebuilt.
+pub fn rebuilt_for_a_lost_fold() -> Vec<String> {
+    vec![LOST_FOLD_REBUILD_LINE.to_string(), REBUILT_LINE.to_string()]
+}
+
+/// The [`rebuild_lines`] of a `rigger setup` that rebuilt a `graph.db` missing an event the log
+/// holds ([`rebuilt_for_a_lost_fold`]) and that then counts events passed over, by cause:
+/// `rejected` rejected payloads, `failed` fold failures and `unresolved` entries resolved to nothing
+/// ([`passed_over_line`]).
 pub fn rebuilt_passing_over(rejected: usize, failed: usize, unresolved: usize) -> Vec<String> {
-    vec![
-        LOST_FOLD_REBUILD_LINE.to_string(),
-        REBUILT_LINE.to_string(),
-        passed_over_line(rejected, failed, unresolved),
-    ]
+    let mut lines = rebuilt_for_a_lost_fold();
+    lines.push(passed_over_line(rejected, failed, unresolved));
+    lines
 }
 
 /// The line `rigger setup` prints once its graph step ends while `graph.db` counts events passed

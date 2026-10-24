@@ -21,8 +21,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use common::cli::{
     applied, applied_each, graph_identity, init_event_log, no_progress, passed_over_line,
-    read_run_events, rebuild_lines, rebuilt_passing_over, rigger_file, run_stream_identity,
-    setup_ok, temp_project, with_pre_ledger_run_store, with_run_store, LOST_FOLD_REBUILD_LINE,
+    read_run_events, rebuild_lines, rebuilt_for_a_lost_fold, rebuilt_passing_over, rigger_file,
+    run_stream_identity, setup_ok, temp_project, with_pre_ledger_run_store, with_run_store,
     REBUILT_LINE,
 };
 use common::fixtures::{
@@ -429,7 +429,7 @@ fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_f
 
     assert_eq!(
         setup_rebuild_lines(root),
-        vec![LOST_FOLD_REBUILD_LINE, REBUILT_LINE],
+        rebuilt_for_a_lost_fold(),
         "the rebuild folds every entry and passes none over"
     );
 
@@ -598,10 +598,7 @@ fn setup_outside_a_repository_resolves_every_entry_from_the_trees_files() {
     );
     stand_graph(root, &project);
 
-    assert_eq!(
-        setup_rebuild_lines(root),
-        vec![LOST_FOLD_REBUILD_LINE, REBUILT_LINE]
-    );
+    assert_eq!(setup_rebuild_lines(root), rebuilt_for_a_lost_fold());
     assert_eq!(
         graph_identity(&rigger_file(root, "graph.db"), &project),
         graph_identity(&incremental, &project)
@@ -1061,10 +1058,7 @@ fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equ
         graph_identity(&single, &project),
         "the pass resumed once the object is restored equals a single pass"
     );
-    assert_eq!(
-        setup_rebuild_lines(root),
-        vec![LOST_FOLD_REBUILD_LINE, REBUILT_LINE]
-    );
+    assert_eq!(setup_rebuild_lines(root), rebuilt_for_a_lost_fold());
     assert_eq!(
         graph_identity(&graph_db, &project),
         graph_identity(&single, &project),
@@ -1126,11 +1120,7 @@ fn an_entry_the_generic_fold_refused_is_paid_by_setup_through_the_ledger_fold() 
     let (held, passed_over) = (None, vec![passed_over_line(0, 0, 1)]);
     assert_eq!(
         setup_rebuild_lines(root),
-        [
-            vec![LOST_FOLD_REBUILD_LINE.to_string(), REBUILT_LINE.to_string()],
-            passed_over.clone()
-        ]
-        .concat()
+        [rebuilt_for_a_lost_fold(), passed_over.clone()].concat()
     );
     assert_eq!(
         (

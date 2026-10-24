@@ -15,15 +15,20 @@
 //!      emit that meets it, a fold that is lost, the prune it makes, what it passes over and the
 //!      counts read back by cause, and `graph.db.lock`.
 //!   5. **The catch-up cursor's seeding.** `rigger setup` creates the missing `graph.db` of an
-//!      empty log with its `caught_up` cursor at 0, and gives a file folded without one its cursor,
-//!      seeded or set by the rebuild the seeding finds owed; a seeding that meets another writer's
-//!      write lock is skipped, setup exiting zero, and the next setup starts it.
+//!      empty log with its `caught_up` cursor at 0, an absent log read as that empty log and never
+//!      created, and gives a file folded without one its cursor, seeded or set by the rebuild the
+//!      seeding finds owed: a hole below an applied event is young or old by the store stamp the
+//!      seeding reads for it against the catch-up horizon, and a `graph.db` removed beside a
+//!      non-empty log, or the log removed beside a file without a cursor, owes the rebuild of a
+//!      lost fold; a seeding that meets another writer's write lock is skipped, setup exiting
+//!      zero, and the next setup starts it.
 
 mod common;
 
 use common::cli::applied;
 use common::cli::assert_stopped_at_the_grounder;
 use common::cli::backdate_the_log;
+use common::cli::backdate_the_log_by;
 use common::cli::decision_lines;
 use common::cli::escalate_solo_unit;
 use common::cli::exists;
@@ -37,7 +42,9 @@ use common::cli::log_and_graph_files;
 use common::cli::migrated_lines;
 use common::cli::no_progress;
 use common::cli::read_run_events;
+use common::cli::rebuilt_for_a_lost_fold;
 use common::cli::refused_derived_reset;
+use common::cli::remove_the_store_file;
 use common::cli::rigger_command;
 use common::cli::rigger_db;
 use common::cli::rigger_file;
@@ -63,13 +70,16 @@ use common::fixtures::files_open_by;
 use common::fixtures::fresh_test_reference;
 use common::fixtures::nanos;
 use common::fixtures::owned_ids;
+use common::fixtures::past_the_horizon;
 use common::fixtures::rebuild_owed_note;
 use common::fixtures::wait_until_for;
 use common::fixtures::with_graph_locked;
 use common::fixtures::SOURCE_INTERRUPTED;
 use common::fixtures::{graph_error, lost_fold, not_folded, DATABASE_IS_LOCKED, NOT_A_DATABASE};
 use common::git::temp_git_project_with_commit;
-use rigger::contextgraph::sqlite::{PruneStats, RebuildSink, Rebuilt, PROJECTION_VERSION};
+use rigger::contextgraph::sqlite::{
+    PruneStats, RebuildSink, Rebuilt, CATCH_UP_HORIZON, PROJECTION_VERSION,
+};
 use rigger::contextgraph::Fold;
 use rigger::contextgraph::{
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
@@ -1649,6 +1659,194 @@ fn a_seeding_that_meets_another_writer_s_lock_is_skipped_and_the_next_setup_seed
     );
 }
 
+/// Given an embedded event log whose run stream holds three events, each appended by a store
+/// opened for it, when the seeding of a graph's cursor reads a position's age through
+/// `Store::recorded_at`, then each position the log holds answers the store stamp its event reads
+/// back with, and position 0 and the position past the head, where it holds none, answer none
+/// (spec 124, THE CLOCKS).
+#[test]
+fn the_store_answers_each_held_position_s_stamp_and_none_where_it_holds_no_event() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    for _ in 0..3 {
+        append_unfolded_decision(root, b"{}");
+    }
+    let head = run_log_head(root);
+    let expected: Vec<_> = std::iter::once((0, None))
+        .chain(
+            read_run_events(root)
+                .into_iter()
+                .map(|e| (e.position, Some(e.recorded_at))),
+        )
+        .chain([(head + 1, None)])
+        .collect();
+    let store = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    assert_eq!(
+        expected
+            .iter()
+            .map(|&(at, _)| (at, store.recorded_at(at).unwrap()))
+            .collect::<Vec<_>>(),
+        expected,
+        "each held position answers its event's stamp; an empty one answers none"
+    );
+}
+
+/// Given a `graph.db` without the `caught_up` cursor, on a project whose identity is minted,
+/// missing the event at log position `lost` below an applied one, when the operator runs `rigger
+/// setup` with every event of the log recorded `age` earlier than it was, then setup reads the
+/// missing event's age from its store stamp and prints `rebuilt` of `graph.db`, `lost` folded
+/// exactly when `folded`: a hole within the catch-up horizon is young, so setup rebuilds nothing,
+/// leaves the event to its fold and seeds the cursor just below it; a hole past the horizon is old,
+/// so setup rebuilds the file and the rebuild's drop sets the cursor at the log's head. Either way
+/// a later `rigger setup`, every event by then older than the horizon, reads the cursor the file
+/// carries and nothing else, rebuilding nothing and leaving the cursor where it stands.
+fn setup_reads_the_age_of_a_hole_below_an_applied_event(
+    age: std::time::Duration,
+    rebuilt: Vec<String>,
+    folded: bool,
+) {
+    let dir = temp_store_project();
+    let root = dir.path();
+    emit_the_first_decision_after_setup(root);
+    let graph_db = rigger_file(root, "graph.db");
+    drop_the_cursor(&graph_db);
+    let hole = common::fixtures::decision_json("d-hole", "s", &["src/f.rs"], "");
+    let lost = append_unfolded_decision(root, hole.to_string().as_bytes());
+    emit_folding(root, "d-above");
+    backdate_the_log_by(root, age);
+
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let cursor = Some(if folded { run_log_head(root) } else { lost - 1 });
+    assert_eq!(
+        (
+            common::cli::rebuild_lines(&out),
+            applied(&graph_db, lost),
+            caught_up_at(&graph_db)
+        ),
+        (rebuilt, folded, cursor),
+        "setup reads the hole's age from its stamp; stdout: {out}"
+    );
+    backdate_the_log(root);
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (
+            out.contains("graph.db"),
+            applied(&graph_db, lost),
+            caught_up_at(&graph_db)
+        ),
+        (false, folded, cursor),
+        "a file carrying its cursor is never seeded again; stdout: {out}"
+    );
+}
+
+rigger::test_cases! {
+    /// An event recorded just now.
+    a_hole_recorded_just_now_is_young_and_setup_seeds_the_cursor_just_below_it:
+        setup_reads_the_age_of_a_hole_below_an_applied_event(
+            std::time::Duration::ZERO,
+            Vec::new(),
+            false,
+        );
+    /// An event older than the fold-lock ceiling (600 s) by 10 s, 50 s inside the horizon.
+    a_hole_past_the_fold_lock_ceiling_within_the_horizon_is_still_young:
+        setup_reads_the_age_of_a_hole_below_an_applied_event(
+            CATCH_UP_HORIZON - std::time::Duration::from_secs(50),
+            Vec::new(),
+            false,
+        );
+    /// An event older than the catch-up horizon.
+    a_hole_past_the_catch_up_horizon_is_old_and_setup_rebuilds_over_it:
+        setup_reads_the_age_of_a_hole_below_an_applied_event(
+            past_the_horizon(),
+            rebuilt_for_a_lost_fold(),
+            true,
+        );
+}
+
+/// Given a project with neither `.rigger/events.db` nor `graph.db`, when the operator runs `rigger
+/// setup` twice, then neither setup creates the event log - the seeding reads the absent log as an
+/// empty one - and the first creates `graph.db` with its cursor at 0, which the second leaves
+/// where it stands, neither saying anything of `graph.db`.
+#[test]
+fn a_cold_start_setup_creates_graph_db_and_never_the_event_log() {
+    let dir = common::cli::temp_project();
+    let root = dir.path();
+    for _ in 0..2 {
+        let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+        assert_eq!(
+            (
+                rigger_file(root, "events.db").exists(),
+                caught_up_at(&rigger_file(root, "graph.db")),
+                out.contains("graph.db")
+            ),
+            (false, Some(0), false),
+            "setup creates graph.db with its cursor at 0 and never the log; stdout: {out}"
+        );
+    }
+}
+
+/// Given a project whose identity is minted and whose `graph.db` folded the log, when the operator
+/// removes `graph.db` and runs `rigger setup`, then setup creates the file afresh, finds its empty
+/// ledger beside the log's events a lost fold and rebuilds it from the log into the graph it held,
+/// the rebuild's drop setting its cursor at the log's head; the next `rigger setup` says nothing of
+/// `graph.db`.
+#[test]
+fn setup_rebuilds_a_graph_db_removed_beside_a_non_empty_log_into_the_graph_it_held() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    emit_the_first_decision_after_setup(root);
+    emit_folding(root, "d-second");
+    let before = whole_graph(root);
+    remove_the_store_file(root, "graph.db");
+
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (
+            common::cli::rebuild_lines(&out),
+            whole_graph(root),
+            caught_up_at(&rigger_file(root, "graph.db"))
+        ),
+        (rebuilt_for_a_lost_fold(), before, Some(run_log_head(root))),
+        "setup rebuilds the removed file from the log; stdout: {out}"
+    );
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    assert!(
+        !out.contains("graph.db"),
+        "the rebuilt file owes nothing; stdout: {out}"
+    );
+}
+
+/// Given a `graph.db` without the `caught_up` cursor that folded the log, on a project whose
+/// identity is minted, when the operator removes `.rigger/events.db` and runs `rigger setup`, then
+/// setup reads the absent log as an empty one without creating it, finds the file's ledger beside
+/// the empty log a lost fold and rebuilds the file from that log, leaving it empty with its cursor
+/// at 0.
+#[test]
+fn setup_rebuilds_a_cursorless_graph_db_whose_event_log_was_removed_and_creates_no_log() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    emit_the_first_decision_after_setup(root);
+    drop_the_cursor(&rigger_file(root, "graph.db"));
+    remove_the_store_file(root, "events.db");
+
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (
+            common::cli::rebuild_lines(&out),
+            rigger_file(root, "events.db").exists(),
+            whole_graph(root),
+            caught_up_at(&rigger_file(root, "graph.db"))
+        ),
+        (
+            rebuilt_for_a_lost_fold(),
+            false,
+            serde_json::to_string(&rigger::contextgraph::Graph::default()).unwrap(),
+            Some(0)
+        ),
+        "setup rebuilds the file from the absent log and creates no log; stdout: {out}"
+    );
+}
+
 /// Given a `graph.db` still at the old fold rule, when an agent runs `rigger emit`, then the event
 /// is appended to the log and the emit says it was not folded, naming `rigger setup`, and
 /// `graph.db` is left byte for byte as it was; `rigger setup` then folds the event with the rest.
@@ -2866,12 +3064,7 @@ fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_fol
     with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
     let locked = run_log_head(root);
     assert!(mark.exists(), "the lost fold marks the graph owed");
-    for file in ["graph.db", "graph.db-wal", "graph.db-shm"] {
-        let path = rigger_file(root, file);
-        if path.exists() {
-            std::fs::remove_file(path).unwrap();
-        }
-    }
+    remove_the_store_file(root, "graph.db");
 
     setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
