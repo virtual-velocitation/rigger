@@ -78,15 +78,19 @@ impl Dock {
 /// - **halted** - the run's spawn budget is currently spent
 ///   ([`blocker::budget_halt`], the same durable fact [`blocker::classify`]'s
 ///   run-level [`blocker::Kind::Budget`] line already surfaces).
-/// - **worker-death-recurred** - a unit currently [`Status::Failed`] (mid-remediation,
-///   still parked awaiting its next attempt) with two or more recorded
-///   attempts AND no in-effect resume grant ([`ledger::Unit::resumed`] is
-///   `None`) - the same threshold, and the same resumed guard,
-///   [`blocker::classify`]'s `RejectRecurrence`/`Resumed` arms use, so a unit
-///   on the "needs you" list is always also visible on the current-blocker
-///   list as `reject-recurrence` (never a surprise entry with nothing else to
-///   point at), and a unit an operator has just resumed reads as "the
-///   operator already acted", never as still needing one.
+/// - **worker-death-recurred** - a unit currently [`Status::Failed`] (mid-remediation: the
+///   status holds from its failure until its next green, whether or not its next attempt is
+///   already running) with recorded attempts at or past
+///   [`blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD`] AND no in-effect resume grant
+///   ([`ledger::Unit::resumed`] is `None`). The dock and `rigger watch`'s
+///   reject-recurrence-trend signal read that one constant, so the dock taps an operator at
+///   the count the diagnose-churn procedure starts from, never while the loop is still
+///   remediating on its own. [`blocker::classify`] lists every failed, unresumed unit as
+///   `reject-recurrence`, with no threshold, and a resumed one as `resumed` (the same guard),
+///   so a unit on the "needs you" list is always also visible on the current-blocker list as
+///   `reject-recurrence` (never a surprise entry with nothing else to point at), and a unit an
+///   operator has just resumed reads as "the operator already acted", never as still needing
+///   one.
 ///
 /// Deterministically ordered by [`ledger::attention_kind_rank`], lexical by
 /// unit within a kind (both `run.units` and the resulting `Vec` walk are
@@ -108,7 +112,10 @@ pub fn dock(run: &RunState, events: &[Event]) -> Dock {
     }
 
     for (id, u) in &run.units {
-        if u.status == Status::Failed && u.attempts >= 2 && u.resumed.is_none() {
+        if u.status == Status::Failed
+            && u.attempts >= blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD
+            && u.resumed.is_none()
+        {
             needs_you.push(AttentionEntry::unit_scoped(
                 ledger::ATTENTION_WORKER_DEATH_RECURRED,
                 id.clone(),

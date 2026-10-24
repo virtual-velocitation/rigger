@@ -87,15 +87,14 @@ fn rigger_status_first_line_and_needs_you_section_are_the_consoles_own_fold() {
 fn rigger_status_needs_you_covers_budget_halt_and_worker_death_recurred_arms() {
     let proj = temp_store_project();
     let root = proj.path();
+    let threshold = rigger::blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD;
+    let failed = format!(r#"{{"id":"u-fail","attempts":{threshold},"cause":"reject"}}"#);
     seed_run_events(
         root,
         &[
-            // A unit past the recurrence threshold, never resumed: must appear.
+            // A unit at the reject-recurrence diagnose threshold, never resumed: must appear.
             ("UnitStarted", r#"{"id":"u-fail"}"#),
-            (
-                "UnitFailed",
-                r#"{"id":"u-fail","attempts":2,"cause":"reject"}"#,
-            ),
+            ("UnitFailed", failed.as_str()),
             // A unit an operator has since resumed: must NOT appear - the resumed guard
             // dock's worker-death-recurred arm now shares with blocker::classify.
             ("UnitStarted", r#"{"id":"u-resumed"}"#),
@@ -147,7 +146,7 @@ fn rigger_status_needs_you_covers_budget_halt_and_worker_death_recurred_arms() {
         "expected the budget-halt line; got:\n{out}"
     );
     assert!(
-        out.contains("u-fail: 2 attempts, still parked"),
+        out.contains(&format!("u-fail: {threshold} attempts, still parked")),
         "expected the worker-death-recurred line for u-fail; got:\n{out}"
     );
 
