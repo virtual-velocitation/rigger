@@ -1,4 +1,5 @@
-//! Fixtures over the sqlite-backed event log.
+//! Fixtures over the `store`-gated surfaces: the sqlite-backed event log's minted events and replay
+//! keys, the machine-global instance registry, and git worktrees and their hooks.
 
 use rigger::config::RIGGER_DIR;
 use rigger::eventstore::Event;
