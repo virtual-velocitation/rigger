@@ -883,8 +883,10 @@ const REBUILD_BATCH: usize = 10_000;
 /// one on a server-backed log, whose stamps are taken on another host's clock, so their skew moves
 /// nothing), an empty ledger beside a non-empty log, or a non-empty one beside an empty log or past
 /// its head - saying so, naming the cause, reporting how far along it is, and report whether it
-/// did. A rebuild's own unfinished work - the shadow a stopped swap left standing, or the tail
-/// past the cursor a swap put in place - is no owed cause: it is finished with no
+/// did. On a file that owes its rebuild for an older fold rule, or whose rebuild's tail is
+/// unfinished, the seeding seeds no cursor and reads only an old missing position as lost. A
+/// rebuild's own unfinished work - the shadow a stopped swap left standing, or the tail past the
+/// cursor a swap put in place - is no owed cause: it is finished with no
 /// `rebuilding graph.db ...: <cause>` line, still reporting how far along it is, and so rewrites a
 /// `graph.db` that owes nothing. Only a `graph.db` that owes nothing and holds no unfinished
 /// rebuild is not rebuilt. With no `graph.db` - a cold start - the owed mark a removed one left
