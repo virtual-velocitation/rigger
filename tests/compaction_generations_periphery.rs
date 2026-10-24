@@ -20,8 +20,8 @@
 //!      `.rigger/step.lock`, an unanswered spawn's liveness marker on the log setup selects is
 //!      inside its bound or a driver registration of the store heartbeats inside the idle window,
 //!      leaving the rebuild owed and its standing state as it stood, and beside a held step lock
-//!      resumes a standing shadow folded under the current rule and finishes a tail no cause is
-//!      owed beside.
+//!      resumes a resumable standing shadow - one folded under the current rule with the run
+//!      attribution it gathered - and finishes a tail no cause is owed beside.
 //!   5. **The catch-up cursor's seeding.** `rigger setup` creates the missing `graph.db` beside an
 //!      absent event log with its `caught_up` cursor at 0, reading the absent log as an empty one
 //!      and never creating it, and gives a file folded without one its cursor, seeded or set by the
