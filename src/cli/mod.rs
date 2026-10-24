@@ -2960,13 +2960,14 @@ fn liveness_ages_for_wave(
 /// The scratch root a store's runs stamp their spawns' liveness markers under, for `repo` - the
 /// store's resolved OWNING root ([`StoreLocation::repo_root`], see [`liveness_ages_for_wave`] for
 /// why never the process cwd) - and its configured `workdir`: the ONE resolution every marker
-/// reader outside `rigger step` (status, watch, the `reset` liveness probe) shares, as the
+/// reader outside `rigger step` (status, watch, the liveness probe of `rigger reset` and of
+/// `rigger setup`'s new rebuild) shares, as the
 /// fallback for a spawn whose request recorded no root of its own
 /// ([`rigger::liveness::MarkerRoots`]). Read-only: it
 /// resolves the root without creating it, so a report never conjures a scratch root nor runs the
 /// orphan-root reclaim that creating one does. An empty `repo` (no owning root resolved) yields
-/// an empty root, which status and watch degrade to "no marker" and `rigger reset` refuses
-/// ([`hygiene::ResetEnv`]).
+/// an empty root, which status and watch degrade to "no marker" and `rigger reset` and `rigger
+/// setup`'s new rebuild refuse ([`hygiene::ResetEnv`]).
 fn marker_root(repo: &str, workdir: &str) -> String {
     if repo.is_empty() {
         return String::new();
