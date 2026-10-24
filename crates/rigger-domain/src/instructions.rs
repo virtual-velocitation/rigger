@@ -601,8 +601,10 @@ mod tests {
     /// review-complete record bounded the same way - each command it ran with its hit count,
     /// each BLOCKING finding with its citations, its own witness for each FIXED sentence and
     /// added doc block and the remainder as one count per command with its verdict, no
-    /// per-sentence listing owed - with a renamed name's old spelling counted to zero, nothing
-    /// added that nothing reads, the red
+    /// per-sentence listing owed - and a record a reviewer requires, such as a pattern audit in
+    /// a rejection's required items, bounded the same way, never every hit listed or
+    /// dispositioned, a search term found inside a longer identifier no hit, with a renamed
+    /// name's old spelling counted to zero, nothing added that nothing reads, the red
     /// test's body untouched by the green commit, every constant, static, list, closure or
     /// predicate the delta adds - a SQL conjunct inside a query string included - naming its one
     /// home in the sentence-walk record - no other spelling, its distinguishing literal searched
@@ -761,6 +763,12 @@ mod tests {
             "The remainder owes no per-sentence listing of claims and witnesses, and a counted \
              verdict over it is a record the lens can write; the lens still re-derives every \
              set, re-runs every search and reads every hit at head.",
+            "A record a reviewer requires, such as a pattern audit among a rejection's required \
+             items, is bounded the same way: each search command with its hit count; each hit \
+             that states the audited shape, FIXED, with its witness at head; and the remainder \
+             as one count per command, with its verdict.",
+            "A required item never asks for every hit to be listed or dispositioned, and a search \
+             term found inside a longer identifier is not a hit.",
             "when you rename or retire a name, walk every spelling of the old term through the \
              tree",
             "The old spelling occurs zero times in the tree outside git history, counted over \
