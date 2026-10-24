@@ -1927,11 +1927,11 @@ rigger::test_cases! {
             false,
             false,
         );
-    /// An earlier setup rebuilt the file, so it owes nothing, and a rebuild a binary of a newer
-    /// fold rule stopped before its swap left its shadow standing, its rebuild state whole: the
-    /// shadow was not folded under the current rule, so the pay names no cause, discards it and
-    /// starts a fresh shadow, and with a `rigger step` holding its lock the refusal names the held
-    /// lock alone.
+    /// An earlier setup rebuilt the file, so it owes nothing and the pay names no cause, and a
+    /// rebuild a binary of a newer fold rule stopped before its swap left its shadow standing, its
+    /// rebuild state whole: the shadow was not folded under the current rule, so the pay discards
+    /// it and starts a fresh shadow, and with a `rigger step` holding its lock the refusal names
+    /// the held lock alone.
     rigger_setup_refuses_to_refold_a_newer_rule_shadow_beside_a_file_owing_nothing_while_a_step_holds_its_lock:
         rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
             |store| {
