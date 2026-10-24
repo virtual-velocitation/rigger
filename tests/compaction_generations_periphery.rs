@@ -14,13 +14,13 @@
 //!   4. **The shadow rebuild's seams.** Its sources (the live selection among them), its tail, an
 //!      emit that meets it, a fold that is lost, the prune it makes, what it passes over and the
 //!      counts read back by cause, and `graph.db.lock`.
-//!   5. **The catch-up cursor's seeding.** `rigger setup` creates the missing `graph.db` of an
-//!      empty log with its `caught_up` cursor at 0, an absent log read as that empty log and never
-//!      created, and gives a file folded without one its cursor, seeded or set by the rebuild the
-//!      seeding finds owed: a hole below an applied event is young or old by the store stamp the
-//!      seeding reads for it against the catch-up horizon, and a `graph.db` removed beside a
-//!      non-empty log, or the log removed beside a file without a cursor, owes the rebuild of a
-//!      lost fold; a seeding that meets another writer's write lock is skipped, setup exiting
+//!   5. **The catch-up cursor's seeding.** `rigger setup` creates the missing `graph.db` beside an
+//!      absent event log with its `caught_up` cursor at 0, reading the absent log as an empty one
+//!      and never creating it, and gives a file folded without one its cursor, seeded or set by the
+//!      rebuild the seeding finds owed: a hole below an applied event is young or old by the store
+//!      stamp the seeding reads for it against the catch-up horizon, and a `graph.db` removed
+//!      beside a non-empty log, or the log removed beside a file without a cursor, owes the rebuild
+//!      of a lost fold; a seeding that meets another writer's write lock is skipped, setup exiting
 //!      zero, and the next setup starts it.
 
 mod common;
@@ -1610,20 +1610,27 @@ fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_l
     );
 }
 
-/// Given a project with no `graph.db` and an empty log, when the operator runs `rigger setup`, then
-/// setup creates `graph.db` and seeds its `caught_up` cursor at 0, and owes and reports no rebuild.
+/// Given a cold start - a project with neither `graph.db` nor `.rigger/events.db`, its event log
+/// absent - when the operator runs `rigger setup` twice, then neither setup creates the event log,
+/// the seeding reading the absent log as an empty one, and the first creates `graph.db` with its
+/// `caught_up` cursor at 0, which the second leaves where it stands; neither reports a rebuild or
+/// says anything of `graph.db`.
 #[test]
 fn rigger_setup_on_a_project_without_a_graph_db_creates_it_and_seeds_its_cursor_at_zero() {
     let dir = common::cli::temp_project();
-    let out = setup_ok(dir.path(), &[("RIGGER_NPM", "true")]);
-    assert_eq!(
-        (
-            caught_up_at(&rigger_file(dir.path(), "graph.db")),
-            out.contains("graph.db")
-        ),
-        (Some(0), false),
-        "setup creates graph.db with its cursor at 0 and reports no rebuild; stdout: {out}"
-    );
+    let root = dir.path();
+    for _ in 0..2 {
+        let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+        assert_eq!(
+            (
+                rigger_file(root, "events.db").exists(),
+                caught_up_at(&rigger_file(root, "graph.db")),
+                out.contains("graph.db")
+            ),
+            (false, Some(0), false),
+            "setup creates graph.db with its cursor at 0 and never the log; stdout: {out}"
+        );
+    }
 }
 
 /// Given a `graph.db` without the `caught_up` cursor - folded before any setup seeded it - on a
@@ -1762,28 +1769,6 @@ rigger::test_cases! {
             rebuilt_for_a_lost_fold(),
             true,
         );
-}
-
-/// Given a project with neither `.rigger/events.db` nor `graph.db`, when the operator runs `rigger
-/// setup` twice, then neither setup creates the event log - the seeding reads the absent log as an
-/// empty one - and the first creates `graph.db` with its cursor at 0, which the second leaves
-/// where it stands, neither saying anything of `graph.db`.
-#[test]
-fn a_cold_start_setup_creates_graph_db_and_never_the_event_log() {
-    let dir = common::cli::temp_project();
-    let root = dir.path();
-    for _ in 0..2 {
-        let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
-        assert_eq!(
-            (
-                rigger_file(root, "events.db").exists(),
-                caught_up_at(&rigger_file(root, "graph.db")),
-                out.contains("graph.db")
-            ),
-            (false, Some(0), false),
-            "setup creates graph.db with its cursor at 0 and never the log; stdout: {out}"
-        );
-    }
 }
 
 /// Given a project whose identity is minted and whose `graph.db` folded the log, when the operator

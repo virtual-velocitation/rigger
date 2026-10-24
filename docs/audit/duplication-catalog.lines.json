@@ -324,8 +324,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3873,
-        "end_line": 3878
+        "start_line": 3858,
+        "end_line": 3863
       },
       {
         "file": "tests/new_run_critique_refusal_periphery.rs",
@@ -3214,13 +3214,13 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2819,
-        "end_line": 2819
+        "start_line": 2804,
+        "end_line": 2804
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4196,
-        "end_line": 4196
+        "start_line": 4181,
+        "end_line": 4181
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
@@ -6004,23 +6004,23 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3156,
-        "end_line": 3156
+        "start_line": 3141,
+        "end_line": 3141
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3483,
-        "end_line": 3483
+        "start_line": 3468,
+        "end_line": 3468
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3526,
-        "end_line": 3526
+        "start_line": 3511,
+        "end_line": 3511
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4639,
-        "end_line": 4639
+        "start_line": 4624,
+        "end_line": 4624
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
@@ -6854,8 +6854,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5286,
-        "end_line": 5291
+        "start_line": 5271,
+        "end_line": 5276
       }
     ]
   },
@@ -7819,8 +7819,8 @@
     "sites": [
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2468,
-        "end_line": 2474
+        "start_line": 2453,
+        "end_line": 2459
       },
       {
         "file": "tests/one_shot_reads_periphery.rs",
