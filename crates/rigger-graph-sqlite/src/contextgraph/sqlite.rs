@@ -630,7 +630,7 @@ impl Projector {
                 }
             }
             pay => {
-                let mut shadow = open_shadow(&shadow_path, pay == ShadowPay::Fresh)?;
+                let mut shadow = open_shadow(&shadow_path, pay.starts_fresh())?;
                 schema(&shadow, project)?;
                 in_transaction(&mut shadow, project, |tx| {
                     tx.execute_batch(REBUILD_STATE).map_err(be)?;
@@ -715,7 +715,7 @@ impl Projector {
     /// as any read of it does.
     pub fn rebuild_starts_fresh(&self, _held: &RebuildLock, owed: bool) -> Result<bool, Error> {
         let live = self.conn.lock().unwrap();
-        Ok(shadow_pay(&self.path, &live, &self.owed_mark, owed)? == ShadowPay::Fresh)
+        Ok(shadow_pay(&self.path, &live, &self.owed_mark, owed)?.starts_fresh())
     }
 
     /// Why this file says it owes its rebuild (spec 101), each cause it carries in order - it
@@ -1706,6 +1706,13 @@ enum ShadowPay {
     Resume,
     /// No shadow: the pay finishes a standing tail, or owes nothing.
     Skip,
+}
+
+impl ShadowPay {
+    /// Whether this pay starts a fresh shadow and folds the log into it from its start.
+    fn starts_fresh(self) -> bool {
+        self == ShadowPay::Fresh
+    }
 }
 
 /// What a rebuild of the graph file at `path`, live on `live` and owed by its caller when `owed`,
