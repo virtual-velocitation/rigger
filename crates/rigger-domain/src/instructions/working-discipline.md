@@ -40,69 +40,16 @@ tool that searches them.
 - **Generated files are committed with their inputs.** A file a tool generates from the tree is
   regenerated and committed in the same commit that changed its inputs. Check: `git status
   --porcelain` is empty at head.
-- **A test-side shape is spelled once.** A table, fixture, helper, builder, seeder, expected
-  value or oracle you add exists once across every test home, as production code does; the
-  list is open - a shape is any test-side token two tests could spell, a const or id literal, a
-  hand-built event or fixture row, a closure or a query string among them. Naming a shape adds
-  it: a builder, fixture or helper that gives an existing inline spelling a name exists once
-  across every test home afterwards - every site that already spelled it inline calls it, the
-  shared home itself and any file you edit included. Check: look it up where the project's
-  test helpers live before you write it; when a second home needs one the first already
-  spells, move it to the shared home and have both call it, changing no assertion or expected
-  value. The search is an instrument, not a claim: its unit is the statement, never the
-  body's name. Walk every test-side body you add or edit - a test function, a helper, a fixture
-  builder, a table row's closure - statement by statement; each statement that is not a single
-  call into the shared test home is a shape of its own, and its distinguishing expressions are
-  mechanical: every string literal it spells, in full (an assertion, expect or panic message, a
-  fixture path, a query text), and every call it makes outside the shared home with its first
-  argument token (a path built from a root and a name, a file-extension argument). A body you add is walked
-  whole, every statement; a body you edit is walked in its edited statements, the hunks of the
-  unit's whole range inside it - the merge base with the run branch to head, the range the
-  sentence walk uses - since a statement you did not touch carries no
-  shape you added. A twin the search surfaces only among statements you did not touch,
-  spelling no literal or call of yours, is the tree's duplication debt: your hand-over names it
-  to the operator, and you do not lift it. A literal's term is the
-  literal alone - its text complete, quotes included, and nothing around it - never the call
-  that passes it, a format string that embeds it, the statement that spells it or two literals
-  joined; an expression wrapping a literal is a term of its own only where this rule names it,
-  the outside call with its first argument token. One search per literal, however short or
-  conventional it reads - a one-letter name, `":memory:"`, a fixture path - and every hit
-  dispositioned; hits may share one named reason, each hit still listed. A statement searched
-  whole finds only a twin spelled identically, while the literal finds the twin spelled
-  differently around the same value, which is the twin this rule exists for. A literal set aside
-  as a convention, a fixture name or an argument style, with no search of its own and no hit
-  list, is a search you did not run. Write each down and run
-  one search for each over every test home; a hit in another home - an existing helper's body
-  or another test's inline statement - is a twin, lifted to the shared home and called from
-  both. The record is owed for every test-side shape you add, merged or not: one whole-tree
-  audit DecisionMade naming every site of its shape FIXED or CHECKED, carrying each search's
-  command, its hit count and every hit - FIXED when moved to the shared home with both calling
-  it and no assertion or expected value changed, CHECKED when kept apart, with the reason: the
-  named way its shape differs. A CHECKED hit whose shape does not differ is a twin. A search
-  you did not run is a record you cannot write. A record whose expressions are names only - a
-  function name, the callee a helper wraps - for a body that spells a literal or an outside call is a
-  record you cannot write either. The record is organised by statement: each statement of a
-  body you add and each edited statement of a body you edit is quoted with its `file:line`,
-  followed by its terms - every string literal it spells, alone, and every call it makes outside
-  the shared home with its first argument token - each term with its search, or the statement is
-  marked as a single call into the shared home with the callee named. A statement listed with a
-  literal or call it spells absent from its terms is a record you cannot write. The reviewing lens whose persona
-  assigns the duty re-runs each recorded search on the review tree: a hit the record does not carry, or a CHECKED hit whose reason does not hold, is a
-  BLOCKING finding on its own. The lens derives the expression set itself from the unit's test
-  hunks at head - every string literal and every outside call with its first argument in every
-  statement of each test-side body the unit adds and in the edited statements of each body it
-  edits, over the unit's whole range - and runs each over every test home: a hit the record
-  does not carry, or a record whose expressions are names only for a body that spells either,
-  is a BLOCKING finding on its own. The lens derives each statement's terms itself and compares
-  the record statement by statement: a statement whose record terms lack a literal or call the
-  statement spells, or a statement the hunks touch that the record does not list, is a BLOCKING
-  finding on its own, citing the statement and the term. A literal of a statement the unit did
-  not touch is the
-  tree's duplication debt, which the lens names to the operator, never a BLOCKING finding. The
-  lens compares the record's terms with the literals of
-  the bodies it derives, one search per literal alone: a literal with no search of its own, or a
-  term that is an expression wrapping a literal where the literal's own search is owed, is a
-  BLOCKING finding on its own.
+- **Tests are table-driven, and a test-side shape you add exists once.** Cases that check one
+  behaviour over different values are rows of one table run by one body, never copies of a test
+  function that differ only in their values; a case for a behaviour an existing table covers is a
+  row added to that table. A table, fixture, helper, builder or oracle you add is looked up first
+  where the project's test helpers live and reused when it exists; when a second test home needs
+  one the first already spells, it moves to the shared home and both call it, no assertion or
+  expected value changed. Duplication you did not write is the tree's debt: your hand-over names
+  it and you do not lift it, and a lift's call-site rewrite does not make a statement yours.
+  Check: the project's duplication gate is green, and each behaviour your tests check over
+  several values reads as one table.
 - **Every sentence about the changed behaviour is true at head.** The doc comments of each item
   you changed and of its callers, module docs, test names, test docs, assertion messages and
   operator docs say what the code at head does. Check: enumerate the walked set, each member
