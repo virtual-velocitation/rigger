@@ -31,7 +31,7 @@ use serde::Deserialize;
 
 use crate::eventstore::{Event, Position, Revision, NO_STREAM};
 use crate::spawn::SpawnEvent;
-use crate::{ledger, spawn};
+use crate::{blocker, ledger, spawn};
 
 /// The doc location a STORE INTEGRITY anomaly names for the documented repair
 /// procedure (spec 71: "repair stays a documented operator procedure, not a
@@ -120,12 +120,6 @@ pub fn order_signatures(events: &[Event]) -> Vec<OrderSignature> {
         })
         .collect()
 }
-
-/// The diagnose-churn threshold (spec 69 Design: "reject-recurrence at the diagnose
-/// threshold (>= 3 ...")). Fixed by the spec text, independent of the run's
-/// configured `defaults.max_retries` (a different bound, for a different purpose -
-/// when the conductor escalates, not when an operator should look).
-pub const REJECT_RECURRENCE_DIAGNOSE_THRESHOLD: u32 = 3;
 
 /// The frontier-stall threshold (spec 69 Design: "a spawn id with >= 3 unconsumed
 /// results").
@@ -504,7 +498,7 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
             continue;
         }
         let (cause, streak) = reject_recurrence_streak(inputs.run_events, id);
-        if streak >= REJECT_RECURRENCE_DIAGNOSE_THRESHOLD {
+        if streak >= blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD {
             out.push(Anomaly {
                 signal: Signal::RejectRecurrence,
                 subject: id.clone(),

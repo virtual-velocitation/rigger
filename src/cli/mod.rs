@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use rigger::blocker;
 use rigger::budget::BuildBudget;
 use rigger::canary;
 use rigger::canary_store;
@@ -5010,7 +5011,7 @@ fn docs_context() -> rigger::docs::DocsContext {
             response: signal.response().to_string(),
         }),
         watch_poll_interval_secs: watch::DEFAULT_INTERVAL_SECS,
-        reject_recurrence_diagnose_threshold: watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD,
+        reject_recurrence_diagnose_threshold: blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD,
         // Spec 92, criterion 4 (IN EVERY SESSION'S HAND): the discipline docs' "Looking
         // things up" section states the graph-first rule for a human reader by
         // interpolating the SAME message `rigger grep-guard` (the installed hook's
@@ -5760,7 +5761,7 @@ mod tests {
         assert_eq!(ctx.watch_poll_interval_secs, watch::DEFAULT_INTERVAL_SECS);
         assert_eq!(
             ctx.reject_recurrence_diagnose_threshold,
-            watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD
+            blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD
         );
         // Spec 92, criterion 4: the discipline docs' lookup-hook message is read from the
         // SAME const `rigger grep-guard` decides against, not a hand copy.

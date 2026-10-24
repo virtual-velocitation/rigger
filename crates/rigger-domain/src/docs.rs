@@ -65,7 +65,7 @@ pub struct DocsContext {
     /// (`crate::watch::DEFAULT_INTERVAL_SECS`).
     pub watch_poll_interval_secs: u64,
     /// The reject-recurrence diagnose threshold `rigger-diagnose-churn` pins its own
-    /// procedure text against (`crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD`).
+    /// procedure text against (`crate::blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD`).
     pub reject_recurrence_diagnose_threshold: u32,
     /// The graph-first lookup hook's stated bounce message (spec 92, criterion 4: IN
     /// EVERY SESSION'S HAND), read from the SAME constant `rigger grep-guard` denies
@@ -1201,10 +1201,10 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
 /// Render the `rigger-diagnose-churn` skill (spec 69, criterion 1): acting on a unit stuck
 /// in reject-recurrence. The diagnose threshold is interpolated from
 /// `ctx.reject_recurrence_diagnose_threshold`, populated by the composition root straight
-/// from `crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD` - the same bound `rigger watch`
+/// from `crate::blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD` - the same bound `rigger watch`
 /// alerts on - so this skill can never quote a stale number, and reads it through the same
-/// injected channel every other drift-prone fact in this file uses rather than importing
-/// `crate::watch` directly.
+/// injected channel every other drift-prone fact in this file uses rather than importing the
+/// constant directly.
 fn render_diagnose_churn_skill(ctx: &DocsContext) -> String {
     render_operation_skill(
         "rigger-diagnose-churn",
@@ -1411,7 +1411,7 @@ mod tests {
             }),
             watch_poll_interval_secs: crate::watch::DEFAULT_INTERVAL_SECS,
             reject_recurrence_diagnose_threshold:
-                crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD,
+                crate::blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD,
             ..sentinel_ctx()
         }
     }
@@ -2233,7 +2233,7 @@ mod tests {
     fn diagnose_churn_carries_the_finding_audit_and_infra_separation() {
         let out = render_diagnose_churn_skill(&real_watch_facts_ctx());
         assert!(
-            out.contains(&crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD.to_string()),
+            out.contains(&crate::blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD.to_string()),
             "must pin the real diagnose threshold, not a hand-typed number"
         );
         assert!(out.contains("FINDING AUDIT"), "must name the finding audit");
