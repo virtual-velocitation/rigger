@@ -6158,9 +6158,14 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-da74a545212e",
+    "id": "dup-d7229824fb12",
     "classification": "semantic",
     "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open_with_flags",
+        "content_hash": "c9fe8bd11b5e51a4"
+      },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open_with_flags",
@@ -6169,12 +6174,7 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
-        "content_hash": "35f31d57463e4054"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "Connection::open",
-        "content_hash": "c2fafa28e98b7a5d"
+        "content_hash": "fd7ee6cf1afd2aa1"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",

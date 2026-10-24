@@ -549,9 +549,13 @@ impl Projector {
     /// seeded), or because
     /// the file itself records an older fold rule or carries the [`owed_mark`] a failed fold left,
     /// both read again here. A rebuild's own
-    /// unfinished work is paid too, with no owed cause: the shadow a rebuild whose swap stopped
-    /// left standing, whose swap it finishes before any tail, and the tail past the cursor a swap
-    /// put in place. The mark is dropped once the rebuilt file is in place. The live file is this
+    /// unfinished work is paid too, with no owed cause: the shadow a stopped rebuild left
+    /// standing, whose swap it finishes before any tail, and the tail past the cursor a swap
+    /// put in place. What the pay does with its shadow is one classification ([`shadow_pay`],
+    /// which [`Projector::rebuild_starts_fresh`] answers): a standing shadow is resumed when it is
+    /// resumable ([`shadow_resumable`]) and replaced by a fresh one otherwise, and with none
+    /// standing a cause owed starts a fresh one, a swapped-in tail standing or not, while no cause
+    /// starts none. The mark is dropped once the rebuilt file is in place. The live file is this
     /// projector's own: its connection, held under its mutex for the whole rebuild, is the one the
     /// swap copies into and the tail folds through, under this projector's project.
     ///
@@ -590,8 +594,9 @@ impl Projector {
     /// releases it with the process - and the next one resumes from the shadow's last committed
     /// transaction without refolding it and prunes a fresh copy from the whole run attribution the
     /// shadow gathered - the same graph and the same counts a cold rebuild reaches, however far the
-    /// pass before it got. A shadow folded under another fold rule holds what that rule gave, so it
-    /// is discarded and the log folded from its start ([`open_shadow`]).
+    /// pass before it got. A shadow that is not resumable - folded under another fold rule, so it
+    /// holds what that rule gave, or without the run attribution it gathered - is discarded and the
+    /// log folded from its start ([`shadow_resumable`], [`open_shadow`]).
     ///
     /// An emit that found the old file owing appended without folding, and did so before the
     /// copy: so after it `source` is read once more from the cursor alone, into the live file and
@@ -618,37 +623,41 @@ impl Projector {
         let mut live = self.conn.lock().unwrap();
         let live = &mut *live;
         let shadow_path = shadow_of(path);
-        let swap_unfinished = Path::new(&shadow_path).exists();
-        if owed || swap_unfinished || !owed_by_file(live, &self.owed_mark)?.is_empty() {
-            let mut shadow = open_shadow(&shadow_path)?;
-            schema(&shadow, project)?;
-            in_transaction(&mut shadow, project, |tx| {
-                tx.execute_batch(REBUILD_STATE).map_err(be)?;
-                create_cursor(tx, rebuild_cursor(tx)?)
-            })
-            .map_err(FrameError::unframed)?;
-            fold_source(&mut shadow, project, source, reextract, progress, true)?;
-            // The graph the live one would hold, never a larger one: the prune `rigger reset
-            // --runs` applies, derived from what the fold gathered, on a copy of the shadow.
-            let copy = pruned_copy(path);
-            let pruned = prune_a_copy(&shadow, &copy, project)?;
-            // Every page in one step: one write transaction on the live file.
-            rusqlite::backup::Backup::new(&pruned, live)
-                .map_err(be)?
-                .run_to_completion(i32::MAX, std::time::Duration::from_millis(50), None)
-                .map_err(be)?;
-            drop(pruned);
-            remove_if_present(&copy)?;
-            // Paid: the swapped-in file holds every event the source held. Dropped before the
-            // tail, so a fold lost while the tail runs marks the file owed again.
-            if let Some(mark) = &self.owed_mark {
-                remove_if_present(mark)?;
+        match shadow_pay(path, live, &self.owed_mark, owed)? {
+            ShadowPay::Skip => {
+                if !rebuild_tail_owed(live)? {
+                    return Ok(None);
+                }
             }
-            // The swap ends with its shadow: until it is gone a rerun resumes it, and from then on
-            // only the tail is owed.
-            remove_shadow(shadow, &shadow_path)?;
-        } else if !rebuild_tail_owed(live)? {
-            return Ok(None);
+            pay => {
+                let mut shadow = open_shadow(&shadow_path, pay == ShadowPay::Fresh)?;
+                schema(&shadow, project)?;
+                in_transaction(&mut shadow, project, |tx| {
+                    tx.execute_batch(REBUILD_STATE).map_err(be)?;
+                    create_cursor(tx, rebuild_cursor(tx)?)
+                })
+                .map_err(FrameError::unframed)?;
+                fold_source(&mut shadow, project, source, reextract, progress, true)?;
+                // The graph the live one would hold, never a larger one: the prune `rigger reset
+                // --runs` applies, derived from what the fold gathered, on a copy of the shadow.
+                let copy = pruned_copy(path);
+                let pruned = prune_a_copy(&shadow, &copy, project)?;
+                // Every page in one step: one write transaction on the live file.
+                rusqlite::backup::Backup::new(&pruned, live)
+                    .map_err(be)?
+                    .run_to_completion(i32::MAX, std::time::Duration::from_millis(50), None)
+                    .map_err(be)?;
+                drop(pruned);
+                remove_if_present(&copy)?;
+                // Paid: the swapped-in file holds every event the source held. Dropped before the
+                // tail, so a fold lost while the tail runs marks the file owed again.
+                if let Some(mark) = &self.owed_mark {
+                    remove_if_present(mark)?;
+                }
+                // The swap ends with its shadow: until it is gone a rerun resumes it, and from then
+                // on only the tail is owed.
+                remove_shadow(shadow, &shadow_path)?;
+            }
         }
         fold_source(live, project, source, reextract, progress, false)?;
         let pruned = live
@@ -674,22 +683,39 @@ impl Projector {
     }
 
     /// Whether a rebuild of the graph file `held` names was left unfinished (spec 107): the file
-    /// stands and has beside it the shadow a [`Projector::rebuild`] resumes, or holds the cursor
-    /// whose tail it finishes. False when no graph file stands, whatever stands beside where it
-    /// would be, and answered then, as over a standing shadow, without opening anything - so asking
-    /// never makes a graph file. It takes the held rebuild lock, so no caller asks while a rebuild
-    /// could be moving either sign. It writes no row, table or projection; a standing graph file
-    /// with no shadow beside it is opened through the one opener [`Projector::rebuild`] opens it
-    /// through, which checkpoints a write-ahead log a dead process left, as any open does.
+    /// stands and has beside it a shadow a stopped rebuild left ([`shadow_stands`]), which the next
+    /// [`Projector::rebuild`] resumes or, when it is not resumable, starts afresh, or holds the
+    /// cursor whose tail it finishes. False when no graph file stands, whatever stands beside where
+    /// it would be, and answered then, as over a standing shadow, without opening anything - so
+    /// asking never makes a graph file. It takes the held rebuild lock, so no caller asks while a
+    /// rebuild could be moving either sign. It writes no row, table or projection; a standing graph
+    /// file with no shadow beside it is opened through the one opener [`Projector::rebuild`] opens
+    /// it through, which checkpoints a write-ahead log a dead process left, as any open does.
     pub fn rebuild_unfinished(held: &RebuildLock) -> Result<bool, Error> {
         let path = held.path();
         if !Path::new(path).exists() {
             return Ok(false);
         }
-        if Path::new(&shadow_of(path)).exists() {
+        if shadow_stands(path) {
             return Ok(true);
         }
         rebuild_tail_owed(&open_connection(path).map_err(be)?)
+    }
+
+    /// Whether paying this file's rebuild ([`Projector::rebuild`], handed the same `owed`) starts
+    /// a fresh shadow and folds the log from its start (spec 124): when no shadow stands, a cause
+    /// is owed - `owed`, or one the file itself records ([`owed_by_file`]) - whether or not a
+    /// swapped-in tail stands; when one stands, it is not resumable ([`shadow_resumable`]). False
+    /// when the pay resumes a standing shadow, cause or not, finishes a tail no cause is owed
+    /// beside, or owes nothing. The one answer the pay picks its shadow by ([`shadow_pay`]). It
+    /// takes the held rebuild lock, so between this answer and the pay nothing moves the shadow,
+    /// its fold rule or the tail, and only a fold another process loses can add a cause, by marking
+    /// the file ([`owed_mark`]). It makes no shadow and folds nothing: a standing one is opened
+    /// without being created and only read, which rolls back a journal a killed rebuild left hot,
+    /// as any read of it does.
+    pub fn rebuild_starts_fresh(&self, _held: &RebuildLock, owed: bool) -> Result<bool, Error> {
+        let live = self.conn.lock().unwrap();
+        Ok(shadow_pay(&self.path, &live, &self.owed_mark, owed)? == ShadowPay::Fresh)
     }
 
     /// Why this file says it owes its rebuild (spec 101), each cause it carries in order - it
@@ -1656,6 +1682,64 @@ fn shadow_of(path: &str) -> String {
     format!("{path}.rebuild")
 }
 
+/// Whether the shadow of a rebuild of the graph file at `path` stands beside it ([`shadow_of`]):
+/// read without opening it.
+fn shadow_stands(path: &str) -> bool {
+    Path::new(&shadow_of(path)).exists()
+}
+
+/// Whether the standing shadow behind `shadow` can be resumed: it holds the run attribution the
+/// rebuild gathered, from which the prune is derived whole, and records the current fold rule
+/// ([`PROJECTION_VERSION`]), under which it was folded. A shadow without that attribution - one
+/// whose rebuild state was never opened, or was torn - or folded under another rule (a rule-1
+/// binary recorded none) is not.
+fn shadow_resumable(shadow: &Connection) -> Result<bool, Error> {
+    Ok(has_table(shadow, "rebuild_run_closure")? && fold_rule(shadow)? == PROJECTION_VERSION)
+}
+
+/// What a [`Projector::rebuild`] of a graph file pays with its shadow (spec 124).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShadowPay {
+    /// A fresh shadow, the log folded into it from its start.
+    Fresh,
+    /// The standing shadow, resumed from its last committed transaction.
+    Resume,
+    /// No shadow: the pay finishes a standing tail, or owes nothing.
+    Skip,
+}
+
+/// What a rebuild of the graph file at `path`, live on `live` and owed by its caller when `owed`,
+/// pays with its shadow: a standing shadow ([`shadow_stands`]) is resumed when it is resumable
+/// ([`shadow_resumable`]) and replaced by a fresh one otherwise; with none standing, a fresh one is
+/// started when a cause is owed - `owed`, or one the file records through its [`owed_mark`] `mark`
+/// or its fold rule ([`owed_by_file`]) - whether or not a swapped-in tail stands, and none
+/// otherwise. A standing shadow is opened without being created and only read. The one
+/// classification [`Projector::rebuild`] pays by and [`Projector::rebuild_starts_fresh`] answers.
+fn shadow_pay(
+    path: &str,
+    live: &Connection,
+    mark: &Option<PathBuf>,
+    owed: bool,
+) -> Result<ShadowPay, Error> {
+    if shadow_stands(path) {
+        let shadow = Connection::open_with_flags(
+            shadow_of(path),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )
+        .map_err(be)?;
+        return Ok(if shadow_resumable(&shadow)? {
+            ShadowPay::Resume
+        } else {
+            ShadowPay::Fresh
+        });
+    }
+    Ok(if owed || !owed_by_file(live, mark)?.is_empty() {
+        ShadowPay::Fresh
+    } else {
+        ShadowPay::Skip
+    })
+}
+
 /// Remove the file at `path`, if there is one: a file already gone is what removing it asks for,
 /// and any other failure is reported naming the file ([`failed_at`]).
 fn remove_if_present(path: impl AsRef<Path>) -> Result<(), Error> {
@@ -1689,23 +1773,23 @@ fn prune_a_copy(shadow: &Connection, copy: &str, project: &str) -> Result<Connec
     Ok(pruned)
 }
 
-/// Open the rebuild's shadow file at `path`, creating it when there is none. Only the holder of the
-/// rebuild lock ([`RebuildLock`]) calls this, so the shadow it opens is its own: no other rebuild
-/// has it open, waits on it or removes it, and none can take its name while this one holds it. A
-/// shadow is resumed only together with the run attribution it gathered, and only under the fold
-/// rule it was folded under: one holding a cursor without that attribution could derive the prune
-/// from part of it alone, and one holding a cursor of another [`PROJECTION_VERSION`] (a rule-1
-/// binary recorded none) holds what that rule folded, so either is discarded ([`remove_shadow`])
-/// and opened again empty, to be folded from the start - under the lock, like every other end of
-/// a shadow. The shadow handed back records the current rule.
-fn open_shadow(path: &str) -> Result<Connection, Error> {
-    let mut shadow = Connection::open(path).map_err(be)?;
-    let resumable =
-        has_table(&shadow, "rebuild_run_closure")? && fold_rule(&shadow)? == PROJECTION_VERSION;
-    if has_table(&shadow, "rebuild_cursor")? && !resumable {
-        remove_shadow(shadow, path)?;
-        shadow = Connection::open(path).map_err(be)?;
+/// Open the rebuild's shadow file at `path`, creating it when there is none, and start it afresh
+/// when `fresh` says the pay starts a fresh shadow ([`shadow_pay`]). Only the holder of the rebuild
+/// lock ([`RebuildLock`]) calls this, so the shadow it opens is its own: no other rebuild has it
+/// open, waits on it or removes it, and none can take its name while this one holds it. A shadow is
+/// resumed only together with the run attribution it gathered, and only under the fold rule it was
+/// folded under ([`shadow_resumable`]): one without that attribution could derive the prune from
+/// part of it alone, and one of another [`PROJECTION_VERSION`] holds what that rule folded, so a
+/// fresh pay removes a standing one ([`remove_if_present`]) before it opens the shadow empty, to be
+/// folded from the start - under the lock, like every other end of a shadow. Its caller's
+/// classification read the standing shadow first, which rolls back a journal a killed rebuild left
+/// hot, so the discarded one leaves none for the next shadow of its name to pair with. The shadow
+/// handed back records the current rule.
+fn open_shadow(path: &str, fresh: bool) -> Result<Connection, Error> {
+    if fresh {
+        remove_if_present(path)?;
     }
+    let shadow = Connection::open(path).map_err(be)?;
     shadow
         .pragma_update(None, "user_version", PROJECTION_VERSION)
         .map_err(be)?;

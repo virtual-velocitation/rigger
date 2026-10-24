@@ -885,11 +885,13 @@ const REBUILD_BATCH: usize = 10_000;
 /// its head - saying so, naming the cause, reporting how far along it is, and report whether it
 /// did. On a file that owes its rebuild for an older fold rule, or whose rebuild's tail is
 /// unfinished, the seeding seeds no cursor and reads only an old missing position as lost. A
-/// rebuild's own unfinished work - the shadow a stopped swap left standing, or the tail past the
-/// cursor a swap put in place - is no owed cause: it is finished with no
+/// rebuild's own unfinished work - the shadow a stopped rebuild left standing, or the tail past the
+/// cursor a swap put in place - is no owed cause: it is paid with no
 /// `rebuilding graph.db ...: <cause>` line, still reporting how far along it is, and so rewrites a
-/// `graph.db` that owes nothing. Only a `graph.db` that owes nothing and holds no unfinished
-/// rebuild is not rebuilt, beside one whose new rebuild is refused while the run is live (below).
+/// `graph.db` that owes nothing - a resumable shadow resumed, one that is not resumable refolded
+/// from the start, a tail finished ([`Projector::rebuild`]). Only a `graph.db` that owes nothing
+/// and holds no unfinished rebuild is not rebuilt; a NEW rebuild is refused while the run is live
+/// (below).
 /// With no `graph.db` - a cold start - the owed mark a removed one left
 /// behind is dropped first, so the file made in its place starts owing nothing it recorded, and
 /// setup makes that file: seeded at 0 beside an empty log, whose `events.db` it never makes, and
@@ -898,14 +900,17 @@ const REBUILD_BATCH: usize = 10_000;
 /// step ([`Projector::rebuild`]), streaming the log once, resuming an interrupted rebuild from its
 /// last committed transaction and finishing exactly the tail of one interrupted after its swap.
 ///
-/// A NEW rebuild - one a cause owes while no shadow or tail stands - is refused while the run is
-/// live (spec 124): through `refuse_if_live`, the live-run refusal `rigger reset --derived` has,
-/// over the log the rebuild reads, this project's `.rigger` and its store selection, with the
-/// scratch configuration, registry and clock [`ResetEnv::resolve`] reads only once such a rebuild
-/// is owed. Setup then fails with [`live_run_rebuild_refusal`]'s text, offering no override, and
-/// otherwise holds the step lock the probe took, making `.rigger/step.lock` where none stands,
-/// until the rebuild returns. Finishing a standing shadow or tail is exempt and runs beside a live
-/// run, and a `graph.db` that owes no rebuild reads no liveness.
+/// A NEW rebuild - one whose pay starts a fresh shadow and folds the log from its start
+/// ([`Projector::rebuild_starts_fresh`]): a cause owed beside no standing shadow, a swapped-in
+/// tail standing or not, or a standing shadow that is not resumable, an older-rule binary's among
+/// them - is refused while the run is live (spec 124): through `refuse_if_live`, the live-run
+/// refusal `rigger reset --derived` has, over the log the rebuild reads, this project's `.rigger`
+/// and its store selection, with the scratch configuration, registry and clock
+/// [`ResetEnv::resolve`] reads only once such a rebuild is owed. Setup then fails with
+/// [`live_run_rebuild_refusal`]'s text, offering no override, and otherwise holds the step lock the
+/// probe took, making `.rigger/step.lock` where none stands, until the rebuild returns. Resuming a
+/// resumable shadow, cause or not, and finishing a tail no cause is owed beside are exempt and run
+/// beside a live run, and a `graph.db` whose pay starts no fresh shadow reads no liveness.
 ///
 /// A ledger entry of perception folds with the batch re-extracted for it (spec 107,
 /// `ingest::resolve_entry`): from the entry's blob in the repository's object database, read
@@ -956,9 +961,10 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                 .map(|source| source as &mut rigger::ingest::BlobSource),
         )
     };
-    // A NEW rebuild is refused while the run is live (spec 124): the live-run refusal `rigger reset
-    // --derived` has, over this store's log, its scratch configuration, registry and clock read only
-    // once a new rebuild is owed, so a setup that owes none reads none of them.
+    // A NEW rebuild - one whose pay starts a fresh shadow - is refused while the run is live (spec
+    // 124): the live-run refusal `rigger reset --derived` has, over this store's log, its scratch
+    // configuration, registry and clock read only once the pay would start one, so a setup whose
+    // pay starts none reads none of them.
     let selection = store_selection(None, None)?;
     let loc = StoreLocation {
         dir: cwd().join(RIGGER_DIR),
@@ -1102,18 +1108,21 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// Open the `graph.db` whose rebuild lock is `held`, making it where none stands, and seed its
 /// `caught_up` cursor against the log through `seeding`, its missing positions aged against the
 /// clock read once here ([`Projector::seed_cursor`]); read why the file owes its rebuild - its own
-/// records, and the seeding's verdict ([`Projector::owed_against`]); when a cause owes a NEW
-/// rebuild, one beside no standing shadow or tail ([`Projector::rebuild_unfinished`]), ask
-/// `refuse_if_live` of `log` and fail with its refusal while the run is live, before any line is
-/// printed or the file rewritten, else hold the step lock its probe took until the rebuild returns;
-/// say so naming each cause, and pay it by rebuilding from `reads`' source, each ledger entry of
-/// perception folded with the batch its re-extraction answers for it, which also finishes a
-/// rebuild's own unfinished work (a standing shadow, or a swapped-in cursor's tail) with no cause
-/// to name, since neither the file's records nor the seeding names it, and with no liveness asked,
-/// so beside a live run too; print how far along the rebuild is, what its run-closure prune removed
-/// from the rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own), and, read from
-/// `log` and the rebuilt graph once the rebuild ends, how many identities the next ingest records
-/// again ([`rebuild_report_line`]); then, when the seeding met another writer's write lock
+/// records, and the seeding's verdict ([`Projector::owed_against`]); when the pay starts a NEW
+/// rebuild, a fresh shadow the log is folded into from its start
+/// ([`Projector::rebuild_starts_fresh`]) - a cause owed beside no standing shadow, a swapped-in
+/// tail standing or not, or a standing shadow that is not resumable - ask `refuse_if_live` of `log`
+/// and fail with its refusal while the run is live, before any line is printed or the file
+/// rewritten, else hold the step lock its probe took until the rebuild returns; say so naming each
+/// cause, and pay it by rebuilding from `reads`' source, each ledger entry of perception folded
+/// with the batch its re-extraction answers for it, which also pays a rebuild's own unfinished work
+/// with no cause to name, since neither the file's records nor the seeding names it: a standing
+/// shadow, resumed when it is resumable and else refolded from the start, or a swapped-in cursor's
+/// tail, finished - the resume and the tail with no liveness asked, so beside a live run too; print
+/// how far along the rebuild is, what its run-closure prune removed from the rebuilt graph
+/// ([`pruned_line`], as `rigger reset --runs` words its own), and, read from `log` and the rebuilt
+/// graph once the rebuild ends, how many identities the next ingest records again
+/// ([`rebuild_report_line`]); then, when the seeding met another writer's write lock
 /// ([`contextgraph::sqlite::Seeding::Skipped`]), that the catch-up was not started, the next setup
 /// seeding the file (spec 124, CATCH-UP LINES); then, rebuilt or not, how many events the file
 /// records passed over, by cause, whenever it records any ([`Projector::passed_over`], spec 124,
@@ -1131,10 +1140,11 @@ fn pay_owed_rebuild<'t>(
     let seeded = graph.seed_cursor(seeding.live, seeding.stamp_of, std::time::SystemTime::now())?;
     let causes = graph.owed_against(&seeded)?;
     let owed = !causes.is_empty();
-    // A NEW rebuild - one a cause owes beside no standing shadow or tail - is refused while the run
-    // is live, and the step lock the probe took is held until the rebuild returns. Finishing a
-    // standing one is exempt and asks no liveness, so it runs beside a live run.
-    let _step_lock = if owed && !Projector::rebuild_unfinished(held)? {
+    // A NEW rebuild - one whose pay starts a fresh shadow and folds the log from its start - is
+    // refused while the run is live, and the step lock the probe took is held until the rebuild
+    // returns. Resuming a resumable shadow, or finishing a tail no cause is owed beside, is exempt
+    // and asks no liveness, so it runs beside a live run.
+    let _step_lock = if graph.rebuild_starts_fresh(held, owed)? {
         refuse_if_live(log)?
     } else {
         None
