@@ -696,6 +696,12 @@ pub const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log
 pub const OLDER_RULE_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it was folded \
      under an older fold rule, so the log's live selection is refolded once";
 
+/// What `rigger setup` prints before it rebuilds a `graph.db` that owes its rebuild for both
+/// causes: it was folded under an older fold rule, and it misses an event the log holds.
+pub const BOTH_CAUSES_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it was folded \
+     under an older fold rule, and it misses an event the log holds, so the log's live selection \
+     is refolded once";
+
 /// The arguments of `rigger dash --export` writing its snapshot to `snapshot.html` in the
 /// project root.
 pub const DASH_SNAPSHOT_ARGS: [&str; 3] = ["dash", "--export", "snapshot.html"];
@@ -775,10 +781,16 @@ pub fn rebuild_lines(out: &str) -> Vec<String> {
         .collect()
 }
 
-/// The [`rebuild_lines`] of a `rigger setup` that rebuilt a `graph.db` missing an event the log
-/// holds and passed nothing over: the lost-fold cause, then that it rebuilt.
+/// The [`rebuild_lines`] of a `rigger setup` that printed `cause` before it rebuilt a `graph.db`
+/// and passed nothing over: that line, then that it rebuilt.
+pub fn rebuilt_for(cause: &str) -> Vec<String> {
+    vec![cause.to_string(), REBUILT_LINE.to_string()]
+}
+
+/// The [`rebuilt_for`] lines of a `rigger setup` that rebuilt a `graph.db` missing an event the
+/// log holds: the lost-fold cause, then that it rebuilt.
 pub fn rebuilt_for_a_lost_fold() -> Vec<String> {
-    vec![LOST_FOLD_REBUILD_LINE.to_string(), REBUILT_LINE.to_string()]
+    rebuilt_for(LOST_FOLD_REBUILD_LINE)
 }
 
 /// The [`rebuild_lines`] of a `rigger setup` that rebuilt a `graph.db` missing an event the log
