@@ -20,10 +20,10 @@
 //!      rebuild the file owes: a hole below an applied event is young or old by the store stamp the
 //!      seeding reads for it against the catch-up horizon; a `graph.db` removed beside a non-empty
 //!      log owes the rebuild of a lost fold, as does the log removed beside a file without a cursor
-//!      at the current fold rule; a file at an older fold rule owes that rule's rebuild, and the
-//!      lost fold beside it only for an old hole, never for the removed log; and a seeding that
-//!      meets another writer's write lock is skipped, setup exiting zero, and the next setup starts
-//!      it.
+//!      at the current fold rule; a file that folded the log at an older fold rule owes that rule's
+//!      rebuild, and the lost fold beside it only for an old hole, never for the removed log; and a
+//!      seeding that meets another writer's write lock is skipped, setup exiting zero, and the next
+//!      setup starts it.
 
 mod common;
 
