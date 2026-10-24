@@ -595,11 +595,14 @@ mod tests {
     /// itself and reading every consumer sentence against it, running the two-term search
     /// itself for each rewritten rule and changed condition, and reading every sentence it finds
     /// claim by claim against the unit's change with a witness per claim at head, a quantified
-    /// claim's cases enumerated by the lens and listed each with its witness, a sentence at
-    /// head that misstates the changed behaviour blocking on its own with the code that
-    /// contradicts it and a missing per-hit disposition, count block or heading never a
-    /// finding, its record listing every sentence it reads, never a grouped verdict, with a
-    /// renamed name's old spelling counted to zero, nothing added that nothing reads, the red
+    /// claim's cases enumerated by the lens and the claim read against each, a sentence at head
+    /// that misstates the changed behaviour blocking on its own with the code that contradicts
+    /// it and a missing per-hit disposition, count block or heading never a finding, its
+    /// review-complete record bounded the same way - each command it ran with its hit count,
+    /// each BLOCKING finding with its citations, its own witness for each FIXED sentence and
+    /// added doc block and the remainder as one count per command with its verdict, no
+    /// per-sentence listing owed - with a renamed name's old spelling counted to zero, nothing
+    /// added that nothing reads, the red
     /// test's body untouched by the green commit, every constant, static, list, closure or
     /// predicate the delta adds - a SQL conjunct inside a query string included - naming its one
     /// home in the sentence-walk record - no other spelling, its distinguishing literal searched
@@ -742,15 +745,22 @@ mod tests {
              words between them.",
             "The lens reads each sentence it finds claim by claim against the unit's change, with \
              a witness per claim at head; for a quantified claim it enumerates the cases itself \
-             from the code at head and its record lists them beside the claim, each with its \
-             witness.",
+             from the code at head and reads the claim against each.",
             "A sentence at head that misstates the changed behaviour - a claim the code at head \
              does not make true, a quantified claim failing at any of its cases, a consumer \
              sentence stating a changed condition's pre-change answer - is a BLOCKING finding on \
              its own, citing its location and the code that contradicts it; a missing per-hit \
              disposition, per-item count block or heading in the record is never one.",
-            "The lens's record lists every sentence it reads, each with its claims and a witness \
-             per claim; a grouped verdict over any of them is a record the lens cannot write.",
+            "The lens's review-complete record is bounded the same way, so it is written in one \
+             pass: each generator and search command the lens ran, with its hit count; each \
+             BLOCKING finding, citing the sentence's location and the location of the code at \
+             head that contradicts it; the lens's own witness at head for each sentence the \
+             author's record marks FIXED and each doc block the change adds, one per case for a \
+             quantified sentence; and the remainder it read as one count per command, with its \
+             verdict.",
+            "The remainder owes no per-sentence listing of claims and witnesses, and a counted \
+             verdict over it is a record the lens can write; the lens still re-derives every \
+             set, re-runs every search and reads every hit at head.",
             "when you rename or retire a name, walk every spelling of the old term through the \
              tree",
             "The old spelling occurs zero times in the tree outside git history, counted over \
@@ -856,6 +866,14 @@ mod tests {
                 && !words.contains("the record pairs each item")
                 && !words.contains("ADDED PREDICATES"),
             "the sentence-walk record pastes no hit, pairs no count block and keeps no heading"
+        );
+        // The lens's review-complete record is bounded too: it counts the remainder it read with
+        // a verdict instead of listing every sentence with its claims and witnesses.
+        assert!(
+            !words.contains("grouped verdict")
+                && !words.contains("a record the lens cannot write")
+                && !words.contains("its record lists them beside the claim"),
+            "the lens's record counts its remainder with a verdict and lists no sentence"
         );
     }
 
