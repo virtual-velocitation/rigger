@@ -75,20 +75,18 @@ cases the code at head splits its subject into, each arm that assigns the value,
 of a key or comparator, each condition of a filter or guard, each branch of a match, each with
 its `file:line`, and read the claim against each.
 
-Two findings of the walk are BLOCKING, each on its own. A sentence at head that misstates the
-changed behaviour - a claim no code at head makes true, a quantified claim failing at any of
-its cases, a consumer sentence stating a changed condition's pre-change answer - is BLOCKING,
-citing the sentence's `file:line` and the `file:line` of the code that contradicts it. An item
-the unit adds that is spelled twice - the fact it states has a second spelling its one-home
-line does not name - is BLOCKING, citing both spellings' `file:line`. A record with no per-hit
-or per-line disposition, no count block beside each item or no section of its own for added or
-changed conditions is never a finding: the bounded record satisfies the hand-over, and you read
-the hits yourself. Your review-complete record carries, for every sentence you read - each
-member of a generator's set, each sentence the record marks FIXED, each hit of a rule-spelling
-search - its location, its claims and each claim's witness at head, a quantified claim's cases
-beside it, each with its witness, and a grouped verdict ("none false", "each a field
-reference", "the CHECKED hits hold") over sentences with no per-sentence witness is a record
-you cannot write.
+A sentence at head that misstates the changed behaviour - a claim no code at head makes
+true, a quantified claim failing at any of its cases, a consumer sentence stating a
+changed condition's pre-change answer - is the walk's one BLOCKING finding, on its own,
+citing the sentence's `file:line` and the `file:line` of the code that contradicts it. A
+record with no per-hit or per-line disposition, no count block beside each item or no
+section of its own for added or changed conditions is never a finding: the bounded record
+satisfies the hand-over, and you read the hits yourself. Your review-complete record
+carries, for every sentence you read - each member of a generator's set, each sentence the
+record marks FIXED, each hit of a rule-spelling search - its location, its claims and each
+claim's witness at head, a quantified claim's cases beside it, each with its witness, and
+a grouped verdict ("none false", "each a field reference", "the CHECKED hits hold") over
+sentences with no per-sentence witness is a record you cannot write.
 
 ## Every test asserts exactly
 
