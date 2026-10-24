@@ -1646,8 +1646,7 @@ mod tests {
         }
     }
 
-    const STEP_LOCK_REASON: &str =
-        "a `rigger step` is running right now (it holds .rigger/step.lock)";
+    use crate::test_support::STEP_LOCK_REASON;
 
     /// The pure core: all three facts quiet is the only quiet state, and each fact alone draws
     /// exactly its own reason.

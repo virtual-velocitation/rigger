@@ -1197,7 +1197,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-00e6b2db0e6e",
+    "id": "dup-aa7467aca43c",
     "classification": "semantic",
     "sites": [
       {
@@ -1584,11 +1584,6 @@
         "file": "src/cli/hygiene.rs",
         "name": "\"a `rigger step` is running right now (it holds .rigger/step.lock)\"",
         "content_hash": "052897e17aced00a"
-      },
-      {
-        "file": "src/cli/hygiene.rs",
-        "name": "\"a `rigger step` is running right now (it holds .rigger/step.lock)\"",
-        "content_hash": "e24c1bc0d9d4b92a"
       },
       {
         "file": "src/cli/hygiene.rs",
@@ -3244,6 +3239,11 @@
         "file": "tests/common/fixtures/extraction_tree.rs",
         "name": "\".rigger/workflow.yml\"",
         "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/common/fixtures/liveness.rs",
+        "name": "\"a `rigger step` is running right now (it holds .rigger/step.lock)\"",
+        "content_hash": "e24c1bc0d9d4b92a"
       },
       {
         "file": "tests/common/layer_cli.rs",

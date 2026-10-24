@@ -13,7 +13,9 @@
 //!      validate` alone, of a `graph.db` that passed events over, how many by cause.
 //!   4. **The shadow rebuild's seams.** Its sources (the live selection among them), its tail, an
 //!      emit that meets it, a fold that is lost, the prune it makes, what it passes over and the
-//!      counts read back by cause, and `graph.db.lock`.
+//!      counts read back by cause, `graph.db.lock`, and a run live beside it: `rigger setup`
+//!      refuses a new rebuild while a `rigger step` holds `.rigger/step.lock`, and finishes a
+//!      standing shadow or tail beside it.
 //!   5. **The catch-up cursor's seeding.** `rigger setup` creates the missing `graph.db` beside an
 //!      absent event log with its `caught_up` cursor at 0, reading the absent log as an empty one
 //!      and never creating it, and gives a file folded without one its cursor, seeded or set by the
@@ -37,6 +39,7 @@ use common::cli::exists;
 use common::cli::fold_state;
 use common::cli::graph_files;
 use common::cli::graph_identity;
+use common::cli::hold_step_lock;
 use common::cli::hold_the_rebuild;
 use common::cli::insert_node;
 use common::cli::keyed;
@@ -44,6 +47,7 @@ use common::cli::log_and_graph_files;
 use common::cli::migrated_lines;
 use common::cli::no_progress;
 use common::cli::read_run_events;
+use common::cli::refusal_line;
 use common::cli::refused_derived_reset;
 use common::cli::remove_the_store_file;
 use common::cli::rigger_command;
@@ -77,6 +81,7 @@ use common::fixtures::rebuild_owed_note;
 use common::fixtures::wait_until_for;
 use common::fixtures::with_graph_locked;
 use common::fixtures::SOURCE_INTERRUPTED;
+use common::fixtures::STEP_LOCK_REASON;
 use common::fixtures::{graph_error, lost_fold, not_folded, DATABASE_IS_LOCKED, NOT_A_DATABASE};
 use common::git::temp_git_project_with_commit;
 use rigger::contextgraph::sqlite::{
@@ -1302,6 +1307,34 @@ impl ReleaseEraStore {
             .unwrap();
     }
 
+    /// A rebuild of this store's `graph.db` that its source stops at its `read`th read of the
+    /// log, each read handing the log's events past where the rebuild asks from, in one batch,
+    /// before the `read`th fails: the first read is the shadow's fold, so `1` leaves the shadow
+    /// standing beside the untouched file, and the second is the tail past the swap, so `2`
+    /// leaves the swapped-in file owing its tail.
+    fn interrupt_a_rebuild_at_read(
+        &self,
+        read: usize,
+    ) -> Result<Option<Rebuilt>, rigger::contextgraph::Error> {
+        use rigger::contextgraph::sqlite::{stream_past, Projector};
+        let (log, path) = (self.log(), self.graph_db.to_str().unwrap());
+        let mut reads = 0;
+        Projector::open(path, &self.project()).unwrap().rebuild(
+            &Projector::lock_rebuild(path).unwrap(),
+            false,
+            &mut |after, sink: &mut RebuildSink| {
+                reads += 1;
+                stream_past(&log, after, log.len(), sink)?;
+                if reads == read {
+                    return Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()));
+                }
+                Ok(())
+            },
+            &mut |_| Ok(None),
+            &mut no_progress,
+        )
+    }
+
     /// The store whose log holds `log` and that has no `graph.db` yet, its durable identity
     /// `minted` already or still named after its directory.
     fn logging(minted: bool, log: &[Event]) -> Self {
@@ -1566,18 +1599,7 @@ fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_l
     let store = ReleaseEraStore::folded_at_rule_1();
     let (log, shadow) = (store.log(), rigger_file(store.root(), "graph.db.rebuild"));
     let head = log.last().unwrap().position;
-    let interrupted = Projector::open(store.graph_db.to_str().unwrap(), &store.project())
-        .unwrap()
-        .rebuild(
-            &Projector::lock_rebuild(store.graph_db.to_str().unwrap()).unwrap(),
-            false,
-            &mut |_, sink| {
-                sink(&log, head)?;
-                Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()))
-            },
-            &mut |_| Ok(None),
-            &mut no_progress,
-        );
+    let interrupted = store.interrupt_a_rebuild_at_read(1);
     assert_eq!(
         (interrupted.unwrap_err().0.as_str(), shadow.exists()),
         (SOURCE_INTERRUPTED, true),
@@ -1607,6 +1629,133 @@ fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_l
         graph, fresh,
         "the rebuilt graph.db is the whole log's, fold state included"
     );
+}
+
+/// Given an operator store whose `graph.db` owes a NEW rebuild - a release at fold rule 1 folded
+/// it, and no rebuild of it stands - when the operator runs `rigger setup` while a `rigger step`
+/// holds `.rigger/step.lock`, then setup refuses the rebuild beside the live run: it exits
+/// non-zero with the refusal naming the held lock and the way past it, says nothing of rebuilding,
+/// writes nothing to `graph.db` and leaves no shadow beside it; and once the step releases the
+/// lock, `rigger setup` pays the rebuild, and the file is exactly the graph a fresh fold of the
+/// log reaches.
+#[test]
+fn rigger_setup_refuses_a_new_rebuild_while_a_step_holds_its_lock_and_pays_it_once_released() {
+    let store = ReleaseEraStore::folded_at_rule_1();
+    let (before, step) = (store.graph_bytes(), hold_step_lock(store.root()));
+    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
+    let refusal = format!(
+        "rigger setup: refusing to rebuild graph.db while the run is live - {STEP_LOCK_REASON}; \
+         stop the run's driver, run rigger setup, then relaunch the run by adoption"
+    );
+    assert_eq!(
+        (
+            ok,
+            err.lines().last(),
+            rebuilding_and_rebuilt_lines(&out),
+            store.graph_bytes() == before,
+            rigger_file(store.root(), "graph.db.rebuild").exists(),
+        ),
+        (
+            false,
+            Some(refusal_line(&refusal).as_str()),
+            vec![],
+            true,
+            false
+        ),
+        "setup refuses the new rebuild beside the held step lock and rebuilds nothing; stdout: \
+         {out} stderr: {err}"
+    );
+
+    fs2::FileExt::unlock(&step).unwrap();
+    drop(step);
+    let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        common::cli::lines_where(&out, |l| l.starts_with("rebuilding graph.db")),
+        vec![OLDER_RULE_REBUILD_LINE],
+        "once the step releases its lock, setup pays the rebuild; stdout: {out}"
+    );
+    let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
+    assert_eq!(graph, fresh, "the rebuilt graph.db is the whole log's");
+}
+
+/// Given an operator store whose `graph.db` a release at fold rule 1 folded, in the state `stand`
+/// leaves it - its rebuild state, a shadow beside the file and a rebuild cursor in it, as
+/// `standing` says - when the operator runs `rigger setup` while a `rigger step` holds
+/// `.rigger/step.lock`, then setup is not refused: it says it rebuilds and that it rebuilt exactly
+/// as `lines` says, and leaves the file holding no rebuild state, under the current fold rule,
+/// its `caught_up` cursor at the log's head and exactly the graph a fresh fold of the log reaches.
+fn rigger_setup_runs_beside_a_held_step_lock(
+    stand: fn(&ReleaseEraStore),
+    standing: (bool, bool),
+    lines: &[&str],
+) {
+    let store = ReleaseEraStore::folded_at_rule_1();
+    stand(&store);
+    let shadow = rigger_file(store.root(), "graph.db.rebuild");
+    let rebuild_state = || {
+        (
+            shadow.exists(),
+            holds_table(&store.graph_db, "rebuild_cursor"),
+        )
+    };
+    assert_eq!(
+        rebuild_state(),
+        standing,
+        "the rebuild state the case stands"
+    );
+    let _step = hold_step_lock(store.root());
+    let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        rebuilding_and_rebuilt_lines(&out),
+        lines,
+        "setup runs beside the held step lock; stdout: {out}"
+    );
+    let head = store.log().last().unwrap().position;
+    assert_eq!(
+        (
+            rebuild_state(),
+            user_version(&store.graph_db),
+            caught_up_at(&store.graph_db)
+        ),
+        ((false, false), PROJECTION_VERSION, Some(head)),
+        "the file holds no rebuild state, records the current rule and is caught up to the head"
+    );
+    let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
+    assert_eq!(graph, fresh, "the graph.db is the whole log's");
+}
+
+rigger::test_cases! {
+    /// A rebuild stopped before its swap: its shadow stands beside the file that still owes it,
+    /// so setup names the older rule and finishes the shadow, the shadow already holding the
+    /// whole log.
+    rigger_setup_finishes_a_standing_shadow_beside_a_held_step_lock:
+        rigger_setup_runs_beside_a_held_step_lock(
+            |store| {
+                store.interrupt_a_rebuild_at_read(1).unwrap_err();
+            },
+            (true, false),
+            &[OLDER_RULE_REBUILD_LINE, REBUILT_LINE],
+        );
+    /// A rebuild stopped after its swap: the swapped-in file owes nothing and its tail stands, so
+    /// setup names no cause and finishes the tail.
+    rigger_setup_finishes_a_standing_tail_beside_a_held_step_lock:
+        rigger_setup_runs_beside_a_held_step_lock(
+            |store| {
+                store.interrupt_a_rebuild_at_read(2).unwrap_err();
+            },
+            (false, true),
+            &[REBUILT_LINE],
+        );
+    /// A file an earlier setup rebuilt: it owes nothing and no rebuild stands, so setup rebuilds
+    /// nothing.
+    rigger_setup_owing_no_rebuild_runs_beside_a_held_step_lock:
+        rigger_setup_runs_beside_a_held_step_lock(
+            |store| {
+                setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
+            },
+            (false, false),
+            &[],
+        );
 }
 
 /// Given a cold start - a project with neither `graph.db` nor `.rigger/events.db`, its event log
