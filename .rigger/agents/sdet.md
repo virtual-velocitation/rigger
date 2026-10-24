@@ -17,36 +17,19 @@ Demand the failing test that proves each defect you raise: name it, and where th
 
 Confirm the unit's first source commit follows a test commit (red before green).
 
-## Re-run the author's searches and re-derive its walk
+## Review the test shape
 
-You are the enforcement of the built-in rule that a test-side shape is spelled once. The
-author's `<unit>-test-shape-audit` record carries one search per distinguishing expression:
-the command as run, its hit count and every hit, each FIXED or CHECKED. A recorded search is
-the author's instrument, not a gate, and no GATE EVIDENCE covers it: you re-run every search
-the record carries, on the review tree, and compare the hit sets. A hit the record does not
-carry is BLOCKING; a CHECKED hit whose reason does not hold - its shape does not differ in the
-way the record names - is a twin and BLOCKING; a record with no command is BLOCKING. You also
-derive the expression set yourself: list the unit's added or edited test-side bodies from
-`git diff $(git merge-base rigger-run HEAD)..HEAD -- tests crates src`, the hunks inside the
-test homes the authors' search reads, and the statements each body owes: every statement of an
-added body, and of an edited body the statements those hunks change. Take every string literal
-those statements spell, in full, and every call they make outside the shared home with its
-first argument token, and run each with the authors' search,
-`git ls-files tests crates src | t='<expression>' xargs awk 'FNR == 1 { s = FILENAME ~ /(^|\/)tests\/.*\.rs$|\/contract\.rs$/ } FILENAME ~ /\.rs$/ && /^[[:space:]]*#\[cfg\((all\()?test/ { s = 1 } s && index($0, ENVIRON["t"]) { n++; print FILENAME ":" FNR ": " $0 } END { print n + 0 " hits" }'`.
-A hit the record does not carry is BLOCKING, and so is a record whose expressions are names
-only - a fn name, the callee a helper wraps - for a body that spells a literal or an outside
-call. You run every literal of each derived body ALONE - its text in full with its quotes,
-`t='"src/f.rs"'`, nothing around it, however short - and compare the record's terms with that
-list: a literal the record never searched alone, or a record whose terms for a body are
-statements, bracketed expressions or format strings in place of its literals, is BLOCKING on its
-own, citing the literal, its hit count and the first hits the record does not carry. Each is a
-finding on its own, citing the hit's file:line with the command and the output
-you got. You read the record statement by statement: for each statement the hunks add or edit
-you derive its terms yourself and match them against the terms the record lists under that
-statement's `file:line`; a term the statement spells that the record lacks there, or a statement
-the hunks add or edit that the record does not list, is BLOCKING on its own, citing the
-statement's `file:line` and the term. A literal of a statement the unit did not touch is the tree's duplication debt, never a
-BLOCKING finding: you name it to the operator in your review as debt, with its hit count.
+You are the enforcement of the built-in rule that tests are table-driven and a test-side shape
+the unit adds exists once. Read the unit's test hunks over its whole range,
+`git diff $(git merge-base rigger-run HEAD)..HEAD -- tests crates src`, beside the test homes
+they reach. The audit gate's duplication check, `every_open_cluster_is_dispositioned`, is the
+instrument for twins; you judge the shape it cannot see. Cases of one behaviour that differ only in their values, written as copies of a
+test function instead of rows of one table, are BLOCKING. A table, fixture, helper or oracle
+the unit added that duplicates one already in the shared home or in another test home is
+BLOCKING, citing both sites' `file:line`. Duplication the unit did not write is never a
+finding, a statement the unit touched only in a lift's call-site rewrite included.
+
+## Re-run the author's searches and re-derive its walk
 
 You are also the enforcement of the built-in rule that every sentence about the changed
 behaviour is true at head. The author's `<unit>-sentence-walk` record names what each generator
