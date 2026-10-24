@@ -75,13 +75,12 @@ the cases the code at head splits its subject into, each arm that assigns the va
 component of a key or comparator, each condition of a filter or guard, each branch of a match,
 each with its `file:line`, and read the claim against each.
 
-A sentence at head that misstates the changed behaviour - a claim no code at head makes
-true, a quantified claim failing at any of its cases, a consumer sentence stating a
-changed condition's pre-change answer - is the walk's one BLOCKING finding, on its own,
-citing the sentence's `file:line` and the `file:line` of the code that contradicts it. A
-record with no per-hit or per-line disposition, no count block beside each item or no
-section of its own for added or changed conditions is never a finding: the bounded record
-satisfies the hand-over, and you read the hits yourself.
+You read each hit against the code at head, and a sentence the built-in rule counts as
+misstating the changed behaviour is the walk's one BLOCKING finding, on its own, citing the
+sentence's `file:line` and the `file:line` of the code at head that contradicts it. A record
+with no per-hit or per-line disposition, no count block beside each item or no section of its
+own for added or changed conditions is never a finding: the bounded record satisfies the
+hand-over, and you read the hits yourself.
 
 Your review-complete record is bounded so you write it in one pass. It carries each generator
 and search command you ran, with its hit count; each BLOCKING finding, with the sentence's
