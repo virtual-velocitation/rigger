@@ -1966,6 +1966,52 @@ mod tests {
         );
     }
 
+    /// A new rebuild of `graph.db` - a file made beside a log that holds a position, whose
+    /// seeding finds its empty ledger a lost fold, so its pay starts a fresh shadow - holds the
+    /// step lock its live-run probe took until the rebuild returns: a `rigger step` started at
+    /// either read of the log the rebuild folds, the shadow's and the tail's, refuses with the
+    /// busy token its courier retries on, and the next step acquires the lock once it returns.
+    #[test]
+    fn a_new_rebuild_holds_the_step_lock_its_probe_took_until_the_rebuild_returns() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph_db = dir.path().join("graph.db");
+        let held = Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap();
+        let log = open_sqlite_store(":memory:").unwrap();
+        let mut racing = Vec::new();
+        let rebuilt = pay_owed_rebuild(
+            &held,
+            "proj",
+            &log,
+            &|| dir.path(),
+            SeedingReads {
+                live: &mut |sink| sink(&[1]),
+                stamp_of: &mut |_| Ok(None),
+            },
+            RebuildReads {
+                source: &mut |_, _| {
+                    racing.push(
+                        acquire_step_lock(dir.path())
+                            .map(drop)
+                            .map_err(|e| e.to_string().contains(STEP_BUSY_TOKEN)),
+                    );
+                    Ok(())
+                },
+                reextract: &mut |_| Ok(None),
+            },
+            &|_: &dyn EventStore| Ok(Some(acquire_step_lock(dir.path())?)),
+        )
+        .unwrap();
+        let next = acquire_step_lock(dir.path())
+            .map(drop)
+            .map_err(|e| e.to_string());
+        assert_eq!(
+            (rebuilt, racing, next),
+            (true, vec![Err(true), Err(true)], Ok(())),
+            "a step started at the shadow's read or the tail's refuses with the busy token, and \
+             the next one acquires the lock once the rebuild returns"
+        );
+    }
+
     /// spec 24, crit 2 (idempotency + non-clobbering, byte level): a pre-existing pre-commit
     /// hook that is NOT valid UTF-8 (e.g. a compiled/binary hook, or one carrying non-UTF-8
     /// bytes) must NEVER be clobbered by a fresh script (sdet-u24-1r-nonutf8-clobber-persists /

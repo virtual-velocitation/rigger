@@ -14,10 +14,13 @@
 //!   4. **The shadow rebuild's seams.** Its sources (the live selection among them), its tail, an
 //!      emit that meets it, a fold that is lost, the prune it makes, what it passes over and the
 //!      counts read back by cause, `graph.db.lock`, and a run live beside it: `rigger setup`
-//!      refuses a new rebuild while a `rigger step` holds `.rigger/step.lock`, an unanswered
+//!      refuses a new rebuild - one whose pay starts a fresh shadow and folds the log from its
+//!      start: a cause owed beside no shadow, a tail standing or not, or a standing shadow an
+//!      older-rule binary left - while a `rigger step` holds `.rigger/step.lock`, an unanswered
 //!      spawn's liveness marker on the log setup selects is inside its bound or a driver
-//!      registration of the store heartbeats inside the idle window, leaving the rebuild owed, and
-//!      finishes a standing shadow or tail beside a held step lock.
+//!      registration of the store heartbeats inside the idle window, leaving the rebuild owed and
+//!      its standing state as it stood, and beside a held step lock resumes a standing shadow
+//!      folded under the current rule and finishes a tail no cause is owed beside.
 //!   5. **The catch-up cursor's seeding.** `rigger setup` creates the missing `graph.db` beside an
 //!      absent event log with its `caught_up` cursor at 0, reading the absent log as an empty one
 //!      and never creating it, and gives a file folded without one its cursor, seeded or set by the
@@ -1298,6 +1301,26 @@ impl ReleaseEraStore {
         store
     }
 
+    /// [`Self::folded_at_rule_1`]'s store in the state `stand` leaves it, which holds the rebuild
+    /// state `standing` names ([`Self::rebuild_state`]).
+    fn folded_at_rule_1_standing(stand: fn(&Self), standing: (bool, bool)) -> Self {
+        let store = Self::folded_at_rule_1();
+        stand(&store);
+        assert_eq!(
+            store.rebuild_state(),
+            standing,
+            "the rebuild state the case stands"
+        );
+        store
+    }
+
+    /// Stop a rebuild of this store's `graph.db` at its `read`th read of the log
+    /// ([`Self::interrupt_a_rebuild_at_read`]): `1` leaves its shadow, holding the whole log,
+    /// standing beside the untouched file, and `2` leaves the swapped-in file owing its tail.
+    fn stop_a_rebuild_at_read(&self, read: usize) {
+        self.interrupt_a_rebuild_at_read(read).unwrap_err();
+    }
+
     /// Put the folded file at `db` in the state fold rule 1 left one holding
     /// [`Self::folded_at_rule_1`]'s log: the node the two definitions of `x` share, with its
     /// file's assertion of it, holds the one folded last, the field, and the file records
@@ -1383,6 +1406,27 @@ impl ReleaseEraStore {
     /// The `graph.db` file's bytes: equal before and after a command that wrote nothing to it.
     fn graph_bytes(&self) -> Vec<u8> {
         std::fs::read(&self.graph_db).unwrap()
+    }
+
+    /// The shadow a rebuild of this store's `graph.db` folds into, beside the file.
+    fn shadow(&self) -> std::path::PathBuf {
+        rigger_file(self.root(), "graph.db.rebuild")
+    }
+
+    /// The bytes of the shadow beside this store's `graph.db`, or `None` when none can be read, as
+    /// when none stands: equal before and after a command that wrote nothing to it.
+    fn shadow_bytes(&self) -> Option<Vec<u8>> {
+        std::fs::read(self.shadow()).ok()
+    }
+
+    /// The rebuild state standing for this store's `graph.db`: whether a rebuild's shadow stands
+    /// beside the file, and whether the file holds the cursor a swapped-in rebuild's tail is owed
+    /// past.
+    fn rebuild_state(&self) -> (bool, bool) {
+        (
+            self.shadow().exists(),
+            holds_table(&self.graph_db, "rebuild_cursor"),
+        )
     }
 
     /// The live projection and fold state of the project's `graph.db`, beside those of a fresh
@@ -1702,28 +1746,33 @@ fn driver_traces(root: &Path, spawn: bool, registered: bool) -> DriverTraces {
 }
 
 /// Given an operator store whose `graph.db` owes a NEW rebuild - a release at fold rule 1 folded
-/// it, and no rebuild of it stands - and whose run [`RUN`] left [`SPAWN`] unanswered, when the
+/// it and it stands in the state `stand` leaves it, its rebuild state, a shadow beside the file
+/// and a rebuild cursor in it, as `standing` says, which its pay starts a fresh shadow over and
+/// folds the log from its start - and whose run [`RUN`] left [`SPAWN`] unanswered, when the
 /// operator runs `rigger setup` while the run is live by the signals a case names - a `rigger
 /// step` holding `.rigger/step.lock` when `step`, the spawn's liveness marker touched just now
 /// when `spawn` and the store's driver registration heard from just now when `registered`, each
 /// other trace [`driver_traces`] leaves dead - then setup refuses the rebuild beside the live run:
 /// it exits non-zero with the refusal naming exactly the live signals and the way past it, says
-/// nothing of rebuilding, writes nothing to `graph.db` and leaves no shadow beside it; and once
-/// the step releases the lock and every trace the driver left is dead, `rigger setup` pays the
-/// rebuild, and the file is exactly the graph a fresh fold of the log reaches.
+/// nothing of rebuilding, and writes nothing to `graph.db` or to the shadow beside it, the rebuild
+/// state standing as it stood; and once the step releases the lock and every trace the driver
+/// left is dead, `rigger setup` pays the rebuild, and the file is exactly the graph a fresh fold
+/// of the log reaches.
 fn rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
+    stand: fn(&ReleaseEraStore),
+    standing: (bool, bool),
     step: bool,
     spawn: bool,
     registered: bool,
 ) {
-    let store = ReleaseEraStore::folded_at_rule_1();
+    let store = ReleaseEraStore::folded_at_rule_1_standing(stand, standing);
     seed_owned(
         store.root(),
         &one_unanswered_spawn(RUN, Some(SPAWN_BOUND_SECS)),
     );
     let live = driver_traces(store.root(), spawn, registered);
     let (before, step_lock) = (
-        store.graph_bytes(),
+        (store.graph_bytes(), store.shadow_bytes()),
         step.then(|| hold_step_lock(store.root())),
     );
     let (out, err, ok) = run_rigger_envs(
@@ -1736,26 +1785,26 @@ fn rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
             ok,
             err.lines().last(),
             rebuilding_and_rebuilt_lines(&out),
-            store.graph_bytes() == before,
-            rigger_file(store.root(), "graph.db.rebuild").exists(),
+            (store.graph_bytes(), store.shadow_bytes()) == before,
+            store.rebuild_state(),
         ),
         (
             false,
             Some(live_run_refusal_line(&live_reasons(&err, step, spawn, registered)).as_str()),
             vec![],
             true,
-            false
+            standing
         ),
-        "setup refuses the new rebuild beside the live run and rebuilds nothing; stdout: {out} \
-         stderr: {err}"
+        "setup refuses the new rebuild beside the live run and writes nothing to graph.db or its \
+         shadow; stdout: {out} stderr: {err}"
     );
 
     drop(step_lock);
     let dead = driver_traces(store.root(), false, false);
     let out = setup_ok(store.root(), &dead.envs(&[("RIGGER_NPM", "true")]));
     assert_eq!(
-        common::cli::lines_where(&out, |l| l.starts_with("rebuilding graph.db")),
-        vec![OLDER_RULE_REBUILD_LINE],
+        common::cli::rebuild_lines(&out),
+        common::cli::rebuilt_for(OLDER_RULE_REBUILD_LINE),
         "once the run's driver is dead, setup pays the rebuild; stdout: {out}"
     );
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
@@ -1766,27 +1815,81 @@ rigger::test_cases! {
     /// A `rigger step` holds its lock, the spawn's marker and the registration dead: the refusal
     /// names the held lock alone.
     rigger_setup_refuses_a_new_rebuild_while_a_step_holds_its_lock_and_pays_it_once_released:
-        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(true, false, false);
+        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
+            |_| {},
+            (false, false),
+            true,
+            false,
+            false,
+        );
     /// The spawn's worker touched its marker just now, under the scratch root `RIGGER_TMPDIR`
     /// names, with the lock free and the registration dead: the refusal names the spawn alone,
     /// read from the store's own run stream.
     rigger_setup_refuses_a_new_rebuild_beside_a_fresh_spawn_marker_and_pays_it_once_stale:
-        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(false, true, false);
+        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
+            |_| {},
+            (false, false),
+            false,
+            true,
+            false,
+        );
     /// A driver registration of the store heartbeats just now in the registry `XDG_STATE_HOME`
     /// holds, with the lock free and the spawn's marker dead: the refusal names the registration
     /// alone.
     rigger_setup_refuses_a_new_rebuild_beside_a_driver_registration_and_pays_it_once_idle:
-        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(false, false, true);
+        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
+            |_| {},
+            (false, false),
+            false,
+            false,
+            true,
+        );
     /// Every signal live at once: the refusal names all three, the lock, the spawn and the
     /// registration, in that order.
     rigger_setup_refuses_a_new_rebuild_naming_every_live_signal_and_pays_it_once_all_are_dead:
-        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(true, true, true);
+        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
+            |_| {},
+            (false, false),
+            true,
+            true,
+            true,
+        );
+    /// A rebuild stopped after its swap left its tail standing, and the swapped-in file records
+    /// the fold rule before the current one, so it owes that rule's rebuild: the pay starts a
+    /// fresh shadow rather than finishing the tail, and with a `rigger step` holding its lock the
+    /// refusal names the held lock alone.
+    rigger_setup_refuses_an_older_rule_cause_over_a_standing_tail_while_a_step_holds_its_lock:
+        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
+            |store| {
+                store.stop_a_rebuild_at_read(2);
+                common::fixtures::stamp_user_version(&store.graph_db, PROJECTION_VERSION - 1);
+            },
+            (false, true),
+            true,
+            false,
+            false,
+        );
+    /// A rebuild stopped before its swap left its shadow standing as a rule-1 binary leaves one,
+    /// recording no fold rule, so the pay discards it and starts a fresh shadow, and with a
+    /// `rigger step` holding its lock the refusal names the held lock alone.
+    rigger_setup_refuses_to_refold_a_shadow_an_older_rule_binary_left_while_a_step_holds_its_lock:
+        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
+            |store| {
+                store.stop_a_rebuild_at_read(1);
+                ReleaseEraStore::as_rule_1_left(&store.shadow(), 0);
+            },
+            (true, false),
+            true,
+            false,
+            false,
+        );
 }
 
 /// Given an operator store whose `graph.db` a release at fold rule 1 folded, in the state `stand`
 /// leaves it - its rebuild state, a shadow beside the file and a rebuild cursor in it, as
-/// `standing` says - when the operator runs `rigger setup` while a `rigger step` holds
-/// `.rigger/step.lock`, then setup is not refused: it says it rebuilds and that it rebuilt exactly
+/// `standing` says, standing work its pay finishes without starting a fresh shadow, or none -
+/// when the operator runs `rigger setup` while a `rigger step` holds `.rigger/step.lock`, then
+/// setup is not refused: it says it rebuilds and that it rebuilt exactly
 /// as `lines` says, and leaves the file holding no rebuild state, under the current fold rule,
 /// its `caught_up` cursor at the log's head and exactly the graph a fresh fold of the log reaches.
 fn rigger_setup_runs_beside_a_held_step_lock(
@@ -1794,20 +1897,7 @@ fn rigger_setup_runs_beside_a_held_step_lock(
     standing: (bool, bool),
     lines: &[&str],
 ) {
-    let store = ReleaseEraStore::folded_at_rule_1();
-    stand(&store);
-    let shadow = rigger_file(store.root(), "graph.db.rebuild");
-    let rebuild_state = || {
-        (
-            shadow.exists(),
-            holds_table(&store.graph_db, "rebuild_cursor"),
-        )
-    };
-    assert_eq!(
-        rebuild_state(),
-        standing,
-        "the rebuild state the case stands"
-    );
+    let store = ReleaseEraStore::folded_at_rule_1_standing(stand, standing);
     let _step = hold_step_lock(store.root());
     let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     assert_eq!(
@@ -1818,7 +1908,7 @@ fn rigger_setup_runs_beside_a_held_step_lock(
     let head = store.log().last().unwrap().position;
     assert_eq!(
         (
-            rebuild_state(),
+            store.rebuild_state(),
             user_version(&store.graph_db),
             caught_up_at(&store.graph_db)
         ),
@@ -1830,14 +1920,13 @@ fn rigger_setup_runs_beside_a_held_step_lock(
 }
 
 rigger::test_cases! {
-    /// A rebuild stopped before its swap: its shadow stands beside the file that still owes it,
-    /// so setup names the older rule and finishes the shadow, the shadow already holding the
-    /// whole log.
+    /// A rebuild stopped before its swap: its shadow, folded under the current rule with the run
+    /// attribution it gathered, stands beside the file that still owes it, so setup names the
+    /// older rule and resumes the shadow rather than starting a fresh one, the shadow already
+    /// holding the whole log.
     rigger_setup_finishes_a_standing_shadow_beside_a_held_step_lock:
         rigger_setup_runs_beside_a_held_step_lock(
-            |store| {
-                store.interrupt_a_rebuild_at_read(1).unwrap_err();
-            },
+            |store| store.stop_a_rebuild_at_read(1),
             (true, false),
             &[OLDER_RULE_REBUILD_LINE, REBUILT_LINE],
         );
@@ -1845,9 +1934,7 @@ rigger::test_cases! {
     /// setup names no cause and finishes the tail.
     rigger_setup_finishes_a_standing_tail_beside_a_held_step_lock:
         rigger_setup_runs_beside_a_held_step_lock(
-            |store| {
-                store.interrupt_a_rebuild_at_read(2).unwrap_err();
-            },
+            |store| store.stop_a_rebuild_at_read(2),
             (false, true),
             &[REBUILT_LINE],
         );
@@ -1916,8 +2003,8 @@ fn rigger_setup_refuses_a_lost_fold_s_rebuild_beside_a_live_spawn_on_the_log_it_
     let dead = driver_traces(root, false, false);
     let out = setup_ok(root, &dead.envs(&lane));
     assert_eq!(
-        common::cli::lines_where(&out, |l| l.starts_with("rebuilding graph.db")),
-        vec![LOST_FOLD_REBUILD_LINE],
+        common::cli::rebuild_lines(&out),
+        common::cli::rebuilt_for_a_lost_fold(),
         "the refused setup left the lost fold owed, and once the marker is stale setup pays it; \
          stdout: {out}"
     );
