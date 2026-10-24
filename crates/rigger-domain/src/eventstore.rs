@@ -738,8 +738,8 @@ pub trait EventStore: Send + Sync {
     /// them and no further, except that a page never splits the events that share one
     /// [`Position`] - a page whose `max`-th event shares its position with the next ends with
     /// every event of that position - so a read resumed from the page's last position misses
-    /// none of them. A `max` of 0 reads nothing. A backend pulls no event past the page, so a
-    /// read over a long gap reads one page and never the gap.
+    /// none of them. A `max` of 0 reads nothing. A backend reads no further than the record that
+    /// ends the page, so a read past a long run of events reads one page and never the run.
     fn read_all_page(
         &self,
         from: Position,

@@ -123,15 +123,20 @@ impl EventStore for Namespaced<'_> {
 
     fn read_all_page(
         &self,
-        _from: Position,
-        _filter: &Filter,
-        _max: usize,
+        from: Position,
+        filter: &Filter,
+        max: usize,
     ) -> Result<Vec<Event>, Error> {
-        Ok(Vec::new())
+        let events = self
+            .inner
+            .read_all_page(from, &self.scope_filter(filter), max)?;
+        Ok(self.strip(events))
     }
 
+    /// The whole log's head, never the namespace's: every append lands above it, whatever
+    /// namespace it writes.
     fn log_head(&self) -> Result<Option<Position>, Error> {
-        Ok(None)
+        self.inner.log_head()
     }
 
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {

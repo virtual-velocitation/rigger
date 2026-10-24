@@ -257,15 +257,15 @@ where
 
     fn read_all_page(
         &self,
-        _from: Position,
-        _filter: &Filter,
-        _max: usize,
+        from: Position,
+        filter: &Filter,
+        max: usize,
     ) -> Result<Vec<Event>, Error> {
-        Ok(Vec::new())
+        self.store.read_all_page(from, filter, max)
     }
 
     fn log_head(&self) -> Result<Option<Position>, Error> {
-        Ok(None)
+        self.store.log_head()
     }
 
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {

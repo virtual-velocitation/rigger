@@ -92,6 +92,11 @@ fn page_sql() -> String {
     format!("{} LIMIT ?3", all_sql(Direction::Forward))
 }
 
+/// The head behind [`EventStore::log_head`]: the AUTOINCREMENT sequence's row for `events`, the
+/// highest position the table has issued. Deleting the top event leaves the row standing, and a
+/// table that has issued no position has no row.
+const LOG_HEAD_SQL: &str = "SELECT seq FROM sqlite_sequence WHERE name = 'events'";
+
 /// Where a typed read from revision `?2` starts in the log: the position of the stream's first
 /// event at or above that revision - one seek of the `(stream, revision)` index.
 const TYPED_READ_START_SQL: &str =
@@ -1316,24 +1321,29 @@ impl EventStore for Store {
     ) -> Result<Vec<Event>, Error> {
         let like = like_of(filter);
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(&all_sql(dir)).map_err(be)?;
-        let rows = stmt
-            .query_map(params![from as i64, like], row_to_event)
-            .map_err(be)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(be)
+        global_events(&conn, &all_sql(dir), params![from as i64, like]).map_err(be)
     }
 
+    /// One seek of the position key cut at `max` rows ([`page_sql`]): every event holds a position
+    /// of its own here, so no cut can split one.
     fn read_all_page(
         &self,
-        _from: Position,
-        _filter: &Filter,
-        _max: usize,
+        from: Position,
+        filter: &Filter,
+        max: usize,
     ) -> Result<Vec<Event>, Error> {
-        Ok(Vec::new())
+        let like = like_of(filter);
+        let conn = self.conn.lock().unwrap();
+        global_events(&conn, &page_sql(), params![from as i64, like, max as i64]).map_err(be)
     }
 
     fn log_head(&self) -> Result<Option<Position>, Error> {
-        Ok(None)
+        let conn = self.conn.lock().unwrap();
+        let seq: Option<i64> = conn
+            .query_row(LOG_HEAD_SQL, [], |r| r.get(0))
+            .optional()
+            .map_err(be)?;
+        Ok(seq.map(|seq| seq as Position))
     }
 
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
@@ -1509,10 +1519,23 @@ where
 }
 
 fn poll_all(conn: &Connection, after: Position, like: &str) -> rusqlite::Result<Vec<Event>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {COLS} FROM events WHERE position > ?1 AND stream LIKE ?2 ORDER BY position ASC"
-    ))?;
-    let rows = stmt.query_map(params![after as i64, like], row_to_event)?;
+    global_events(
+        conn,
+        &all_sql(Direction::Forward),
+        params![after as i64, like],
+    )
+}
+
+/// The events one global read answers: `sql` over `binds`, each row as an [`Event`], in the order
+/// the query hands them back. The read behind [`EventStore::read_all`], its page and the global
+/// subscription's poll.
+fn global_events(
+    conn: &Connection,
+    sql: &str,
+    binds: impl rusqlite::Params,
+) -> rusqlite::Result<Vec<Event>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(binds, row_to_event)?;
     rows.collect()
 }
 

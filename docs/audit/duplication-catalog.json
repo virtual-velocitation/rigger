@@ -7012,70 +7012,23 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-25a06ccc4f27",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-grounder/src/ingest.rs",
-        "name": "read_all_page",
-        "content_hash": "a7dcd19d22978baa"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
-        "name": "read_all_page",
-        "content_hash": "a7dcd19d22978baa"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/namespace.rs",
-        "name": "read_all_page",
-        "content_hash": "a7dcd19d22978baa"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "read_all_page",
-        "content_hash": "a7dcd19d22978baa"
-      },
-      {
-        "file": "tests/common/fixtures/events.rs",
-        "name": "read_all_page",
-        "content_hash": "a7dcd19d22978baa"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 5 files: crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs, tests/common/fixtures/events.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-cc1f2d3032e0",
+    "id": "dup-e22da6af6331",
     "classification": "exact",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
         "name": "log_head",
-        "content_hash": "bb13bbea99b237cc"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
-        "name": "log_head",
-        "content_hash": "bb13bbea99b237cc"
+        "content_hash": "754cbfeff6037d7f"
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/namespace.rs",
         "name": "log_head",
-        "content_hash": "bb13bbea99b237cc"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "log_head",
-        "content_hash": "bb13bbea99b237cc"
-      },
-      {
-        "file": "tests/common/fixtures/events.rs",
-        "name": "log_head",
-        "content_hash": "bb13bbea99b237cc"
+        "content_hash": "754cbfeff6037d7f"
       }
     ],
-    "proposed_home": "a new shared module (sites span 5 files: crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs, tests/common/fixtures/events.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-e10b6988960c",

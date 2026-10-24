@@ -1224,11 +1224,10 @@ fn all_position_round_trips_into_read_and_subscribe(store: &dyn EventStore) {
 }
 
 /// THE PAGE (spec 124): `read_all_page` reads forward from `from` (exclusive) at most `max` of the
-/// filter's events, so a page over single-event appends - which hold distinct positions on every
-/// backend - holds exactly `max`. A batch append may hold one position for all its events (the
-/// server's commit), so a page over it is held to the property the page exists for: pages, each
-/// resumed from the last one's final position, hand back the forward read exactly, in order and
-/// once each, whatever the bound.
+/// filter's events, so a page over single-event appends holds exactly `max`. Over a batch append
+/// the page is held to the property it exists for, whether or not a backend issues the batch's
+/// events one position each: pages, each resumed from the last one's final position, hand back the
+/// forward read exactly, in order and once each, whatever the bound.
 fn a_page_reads_at_most_max_events_past_from_and_pages_resume_without_a_gap(
     store: &dyn EventStore,
 ) {

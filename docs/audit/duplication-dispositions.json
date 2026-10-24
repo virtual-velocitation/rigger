@@ -920,6 +920,11 @@
     "reason": "The folding store forwards two different port methods (the boundary lookup and the group lookup) to the store it wraps; each is a one-line delegation the port's signature makes look alike."
   },
   {
+    "id": "dup-e22da6af6331",
+    "disposition": "not-a-duplicate",
+    "reason": "The folding store and the `Namespaced` decorator each owe the port's `log_head`, which has no default (spec 124), and each body is the one call to the store it wraps: the head is the whole log's for both, so neither scopes nor records anything, and no shared work exists to lift."
+  },
+  {
     "id": "dup-033af83f765c",
     "disposition": "not-a-duplicate",
     "reason": "Two port doubles' positions reads, each answering its own double's contract - the silent double reads nothing, the append-only port double refuses every read; the port method's signature is what makes them look alike."
