@@ -3987,9 +3987,12 @@ mod tests {
     /// an added item's second spelling being the architecture lens's finding alone; a record
     /// with no per-hit disposition, per-item count block or section for added conditions is
     /// never a finding, and the retired requirements are spelled nowhere in the persona. The
-    /// lens's own record lists every sentence it reads with its claims and witnesses, a grouped
-    /// verdict being a record it cannot write. The records are the author's instruments, never
-    /// a gate, so the lens's rule against re-running a green gate does not reach them.
+    /// lens's own review-complete record is bounded the same way - each command it ran with its
+    /// hit count, each BLOCKING finding with its citations, its own witness for each FIXED
+    /// sentence and added doc block, and the remainder as one count per command with its
+    /// verdict - so a counted verdict over the remainder is a record it can write and no
+    /// per-sentence listing is owed. The records are the author's instruments, never a gate, so
+    /// the lens's rule against re-running a green gate does not reach them.
     #[test]
     fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
         const HEADING: &str = "## Re-run the author's searches and re-derive its walk";
@@ -4047,17 +4050,18 @@ mod tests {
              condition you derive.",
             "Every sentence you read - a member of a generator's set, a sentence the record marks \
              FIXED, a hit of a rule-spelling search - you read claim by claim against the unit's \
-             change: you write down each claim the sentence makes and the `file:line` at head \
+             change: you take each claim the sentence makes and find the `file:line` at head \
              that makes that claim true for THIS unit's change",
             "checking a conditional claim (when X changes, Y; so does a change to X) by whether \
              the unit's diff changes X and, when it does, whether Y holds at head, and a \
              cross-surface claim (the way other surfaces do; every caller; both show surfaces) \
              by reading each surface it names.",
             "A claim with a quantifier - every, all, always, any, a plural subject with a \
-             predicate (twins keep; a definition's parent is) - you read case by case: you list \
-             the cases the code at head splits its subject into, each arm that assigns the \
-             value, each component of a key or comparator, each condition of a filter or guard, \
-             each branch of a match, each with its `file:line`, and read the claim against each",
+             predicate (twins keep; a definition's parent is) - you read case by case: you \
+             enumerate the cases the code at head splits its subject into, each arm that assigns \
+             the value, each component of a key or comparator, each condition of a filter or \
+             guard, each branch of a match, each with its `file:line`, and read the claim \
+             against each",
             "You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
@@ -4070,21 +4074,32 @@ mod tests {
             "A record with no per-hit or per-line disposition, no count block beside each item or \
              no section of its own for added or changed conditions is never a finding: the \
              bounded record satisfies the hand-over, and you read the hits yourself.",
-            "Your review-complete record carries, for every sentence you read - each member of a \
-             generator's set, each sentence the record marks FIXED, each hit of a rule-spelling \
-             search - its location, its claims and each claim's witness at head, a quantified \
-             claim's cases beside it, each with its witness, and a grouped verdict (\"none \
-             false\", \"each a field reference\", \"the CHECKED hits hold\") over sentences with \
-             no per-sentence witness is a record you cannot write.",
+            "Your review-complete record is bounded so you write it in one pass.",
+            "It carries each generator and search command you ran, with its hit count; each \
+             BLOCKING finding, with the sentence's `file:line` and the `file:line` of the code \
+             at head that contradicts it; your own witness `file:line` at head for each sentence \
+             the author's record marks FIXED and each doc block the unit added, one per case for \
+             a quantified sentence; and the remainder you read as one count per command, with \
+             its verdict.",
+            "The remainder owes no per-sentence listing of claims and witnesses, and a counted \
+             verdict over it is a record you can write: only what you write is bounded, never \
+             what you read.",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
-        // The lens's per-sentence list covers every sentence it reads, the ones the author's
-        // record marks FIXED included, so no clause narrows it to sentences beyond that record.
-        assert!(
-            !flat.contains("beyond the author's record"),
-            "the lens's per-sentence list covers the sentences the author's record names too"
-        );
+        // The lens's review-complete record is bounded too: it counts the remainder it read with
+        // a verdict and lists no sentence with its claims and witnesses.
+        for listed in [
+            "grouped verdict",
+            "a record you cannot write",
+            "you write down each claim",
+            "you list the cases",
+        ] {
+            assert!(
+                !flat.contains(listed),
+                "sdet.md bounds the lens's own record to counts and findings: {listed:?}"
+            );
+        }
         // The author's walk record is bounded, so the lens blocks on no per-hit disposition, no
         // per-item count block and no section of its own for added predicates.
         for retired in [
