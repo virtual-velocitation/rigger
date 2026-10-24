@@ -853,7 +853,9 @@ macro_rules! owed_lost_fold {
 pub const OWED_OLDER_RULE: &str = owed_older_rule!();
 
 /// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it does not hold an event the log
-/// does - a fold into it failed, or its process died between the append and the fold.
+/// does - a fold into it failed, or its process died between the append and the fold - or its
+/// record of what it folded runs past the log's end, as when the log is replaced beneath it
+/// (spec 124).
 pub const OWED_LOST_FOLD: &str = owed_lost_fold!();
 
 /// What a projection that owes its rebuild ([`Projection::rebuild_owed`]) answers in place of a
@@ -926,8 +928,10 @@ pub trait Projection: Send + Sync {
     /// (spec 101) - it was folded under an older fold rule, or a fold into it failed and marked it
     /// as missing an event the log holds: until `rigger setup` pays it nothing folds into it, and
     /// nothing whose answer depends on the fold may answer from it - it refuses with
-    /// [`REBUILD_OWED`]. An event it misses that nothing marked is found by `rigger setup`, which
-    /// reads the projection's record of what it folded against the log.
+    /// [`REBUILD_OWED`]. An event it misses that nothing marked, below the highest one it folded,
+    /// is found by `rigger setup` while the projection does not yet carry its catch-up cursor
+    /// (spec 124): setup reads the projection's record of what it folded against the log as it
+    /// seeds that cursor.
     fn rebuild_owed(&self) -> Result<bool, Error>;
 
     /// The connected subgraph reachable from any seed within depth hops (the FEED arc / an

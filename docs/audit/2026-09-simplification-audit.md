@@ -1718,7 +1718,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:675-677` `deferred_gate_failed_key`
 - `crates/rigger-conductor/src/conductor.rs:12459-12466` `review_protocol`
 - `crates/rigger-domain/src/contextgraph.rs:816-818` `not_folded`
-- `crates/rigger-domain/src/contextgraph.rs:872-874` `rebuild_owed_refusal`
+- `crates/rigger-domain/src/contextgraph.rs:874-876` `rebuild_owed_refusal`
 - `crates/rigger-domain/src/review.rs:387-389` `critique_unit`
 - `crates/rigger-domain/src/spawn.rs:115-117` `lens_role`
 - `crates/rigger-domain/src/spawn.rs:207-209` `speculation_group_id`
@@ -1958,10 +1958,10 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `src/cli/mod.rs:10069-10069` `Command::new`
 - `src/cli/mod.rs:11783-11783` `Command::new`
 - `src/cli/mod.rs:11817-11817` `Command::new`
-- `src/cli/run.rs:3254-3254` `Command::new`
-- `src/cli/run.rs:3287-3287` `Command::new`
-- `src/cli/run.rs:3331-3331` `Command::new`
-- `src/cli/run.rs:3400-3400` `Command::new`
+- `src/cli/run.rs:3257-3257` `Command::new`
+- `src/cli/run.rs:3290-3290` `Command::new`
+- `src/cli/run.rs:3334-3334` `Command::new`
+- `src/cli/run.rs:3403-3403` `Command::new`
 - `src/cli/setup.rs:4003-4003` `Command::new`
 - `src/cli/setup.rs:4294-4294` `Command::new`
 - `src/cli/validate.rs:1456-1456` `Command::new`
@@ -3386,8 +3386,8 @@ mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically
 - `crates/rigger-worktree-git/src/worktree.rs:2949-2949` `"/proc"`
 - `crates/rigger-worktree-git/src/worktree.rs:2953-2953` `"/proc/{pid}/cmdline"`
 - `crates/rigger-worktree-git/src/worktree.rs:2977-2977` `"/proc/{}"`
-- `src/cli/run.rs:3392-3392` `"/proc"`
-- `src/cli/run.rs:3496-3496` `"/proc"`
+- `src/cli/run.rs:3395-3395` `"/proc"`
+- `src/cli/run.rs:3499-3499` `"/proc"`
 - `tests/cli.rs:20677-20677` `"/proc"`
 - `tests/cli.rs:24892-24892` `"/proc"`
 - `tests/cli.rs:25000-25000` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`

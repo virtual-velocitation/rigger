@@ -44,8 +44,8 @@
       },
       {
         "file": "crates/rigger-domain/src/contextgraph.rs",
-        "start_line": 872,
-        "end_line": 874
+        "start_line": 874,
+        "end_line": 876
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
@@ -764,23 +764,23 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3254,
-        "end_line": 3254
+        "start_line": 3257,
+        "end_line": 3257
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3287,
-        "end_line": 3287
+        "start_line": 3290,
+        "end_line": 3290
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3331,
-        "end_line": 3331
+        "start_line": 3334,
+        "end_line": 3334
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3400,
-        "end_line": 3400
+        "start_line": 3403,
+        "end_line": 3403
       },
       {
         "file": "src/cli/setup.rs",
@@ -4599,13 +4599,13 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3392,
-        "end_line": 3392
+        "start_line": 3395,
+        "end_line": 3395
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3496,
-        "end_line": 3496
+        "start_line": 3499,
+        "end_line": 3499
       },
       {
         "file": "tests/cli.rs",
