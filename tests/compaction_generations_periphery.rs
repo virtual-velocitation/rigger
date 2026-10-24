@@ -19,11 +19,11 @@
 //!      and never creating it, and gives a file folded without one its cursor, seeded or set by the
 //!      rebuild the file owes: a hole below an applied event is young or old by the store stamp the
 //!      seeding reads for it against the catch-up horizon; a `graph.db` removed beside a non-empty
-//!      log owes the rebuild of a lost fold, as does the log removed beside a file without a cursor
-//!      at the current fold rule; a file that folded the log at an older fold rule owes that rule's
-//!      rebuild, and the lost fold beside it only for an old hole, never for the removed log; and a
-//!      seeding that meets another writer's write lock is skipped, setup exiting zero, and the next
-//!      setup starts it.
+//!      log owes the rebuild of a lost fold, as does the log, removed or cut below the highest
+//!      position the file applied, beside a file without a cursor at the current fold rule; a file
+//!      that folded the log at an older fold rule owes that rule's rebuild, and the lost fold beside
+//!      it only for an old hole, never for the removed log; and a seeding that meets another
+//!      writer's write lock is skipped, setup exiting zero, and the next setup starts it.
 
 mod common;
 
@@ -1794,19 +1794,18 @@ rigger::test_cases! {
         );
 }
 
-/// Given a project whose identity is minted and whose `graph.db` folded the log, when the operator
-/// removes `graph.db` and runs `rigger setup`, then setup creates the file afresh, finds its empty
-/// ledger beside the log's events a lost fold and rebuilds it from the log into the graph it held,
-/// the rebuild's drop setting its cursor at the log's head; the next `rigger setup` says nothing of
-/// `graph.db`.
-#[test]
-fn setup_rebuilds_a_graph_db_removed_beside_a_non_empty_log_into_the_graph_it_held() {
+/// Given a project whose identity is minted and whose `graph.db` folded the log, when `lose` loses
+/// a fold of the file and the operator runs `rigger setup`, then setup finds the file's ledger
+/// beside the log's events a lost fold and rebuilds it from the log into the graph it held before
+/// the loss, the rebuild's drop setting its cursor at the log's head; the next `rigger setup` says
+/// nothing of `graph.db`.
+fn setup_rebuilds_a_lost_fold_into_the_graph_the_log_holds(lose: fn(&Path)) {
     let dir = temp_store_project();
     let root = dir.path();
     emit_the_first_decision_after_setup(root);
     emit_folding(root, "d-second");
     let before = whole_graph(root);
-    remove_the_store_file(root, "graph.db");
+    lose(root);
 
     let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
@@ -1816,13 +1815,43 @@ fn setup_rebuilds_a_graph_db_removed_beside_a_non_empty_log_into_the_graph_it_he
             caught_up_at(&rigger_file(root, "graph.db"))
         ),
         (rebuilt_for_a_lost_fold(), before, Some(run_log_head(root))),
-        "setup rebuilds the removed file from the log; stdout: {out}"
+        "setup rebuilds the file from the log; stdout: {out}"
     );
     let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert!(
         !out.contains("graph.db"),
         "the rebuilt file owes nothing; stdout: {out}"
     );
+}
+
+/// Fold the decision `d-third` in `root` ([`emit_folding`]), drop the `caught_up` cursor of its
+/// `graph.db` and delete that decision's event from `.rigger/events.db`: a file without a cursor
+/// whose highest applied position stands above the log's head, as when the log is replaced under
+/// a standing graph file.
+fn cut_the_log_below_a_cursorless_graph_db(root: &Path) {
+    emit_folding(root, "d-third");
+    drop_the_cursor(&rigger_file(root, "graph.db"));
+    rigger_db(root, "events.db")
+        .execute(
+            "DELETE FROM events WHERE position = ?1",
+            [run_log_head(root) as i64],
+        )
+        .unwrap();
+}
+
+rigger::test_cases! {
+    /// The operator removes `graph.db`: setup creates the file afresh, its empty ledger beside the
+    /// log's events.
+    setup_rebuilds_a_graph_db_removed_beside_a_non_empty_log_into_the_graph_it_held:
+        setup_rebuilds_a_lost_fold_into_the_graph_the_log_holds(|root| {
+            remove_the_store_file(root, "graph.db")
+        });
+    /// The log loses the newest event a file without a cursor folded, the file's ledger standing
+    /// above the log's head.
+    setup_rebuilds_a_cursorless_graph_db_that_applied_past_the_log_s_head_into_the_graph_the_log_holds:
+        setup_rebuilds_a_lost_fold_into_the_graph_the_log_holds(
+            cut_the_log_below_a_cursorless_graph_db
+        );
 }
 
 /// Given a `graph.db` without the `caught_up` cursor that folded the log, on a project whose
