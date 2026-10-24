@@ -7583,8 +7583,8 @@ mod tests {
     /// where the owed mark cannot be written (its directory is not writable) records nothing
     /// else: the fold's error comes back naming the unwritten mark, no process holds the debt,
     /// and the file itself carries it in its ledger, which misses the lost position below the
-    /// next batch's - so once the hole is older than the catch-up horizon it outlives the process,
-    /// and the rebuild `rigger setup` seeds the file for and reads it for pays it.
+    /// next batch's - so it outlives the process, and once the hole is older than the catch-up
+    /// horizon the seeding `rigger setup` runs finds the prefix violated and its rebuild pays it.
     #[test]
     fn a_lost_fold_whose_mark_cannot_be_written_is_owed_by_the_ledger_alone() {
         use crate::contextgraph::Fold;
