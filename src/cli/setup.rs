@@ -957,8 +957,8 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
         )
     };
     // A NEW rebuild is refused while the run is live (spec 124): the live-run refusal `rigger reset
-    // --derived` has, over this store's log, its scratch configuration and clock read only once a
-    // new rebuild is owed, so a setup that owes none reads neither.
+    // --derived` has, over this store's log, its scratch configuration, registry and clock read only
+    // once a new rebuild is owed, so a setup that owes none reads none of them.
     let selection = store_selection(None, None)?;
     let loc = StoreLocation {
         dir: cwd().join(RIGGER_DIR),
@@ -1090,8 +1090,8 @@ type LiveRunRefusal<'a> =
     dyn Fn(&dyn EventStore) -> Result<Option<HeldLock>, Box<dyn std::error::Error>> + 'a;
 
 /// The refusal `rigger setup` fails with when a new rebuild of `graph.db` is owed while the run is
-/// live (spec 124, CATCH-UP LINES), `reasons` being what the live-writer probe names, joined: no
-/// override is offered, since only a stopped run lets the rebuild's tail be the one in-order folder.
+/// live (spec 124, CATCH-UP LINES), `reasons` being what the live-writer probe names, joined. It
+/// offers no override: `--force-live` is `rigger reset --derived`'s alone.
 fn live_run_rebuild_refusal(reasons: &str) -> String {
     format!(
         "rigger setup: refusing to rebuild graph.db while the run is live - {reasons}; stop the \
@@ -1108,9 +1108,9 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// printed or the file rewritten, else hold the step lock its probe took until the rebuild returns;
 /// say so naming each cause, and pay it by rebuilding from `reads`' source, each ledger entry of
 /// perception folded with the batch its re-extraction answers for it, which also finishes a
-/// rebuild's own unfinished work (a standing shadow, or a swapped-in cursor's tail) with no cause to
-/// name, since neither the file's records nor the seeding names it, and beside a live run, since
-/// every appender call is inert on rebuild state; print how far along the rebuild is, what its run-closure prune removed
+/// rebuild's own unfinished work (a standing shadow, or a swapped-in cursor's tail) with no cause
+/// to name, since neither the file's records nor the seeding names it, and with no liveness asked,
+/// so beside a live run too; print how far along the rebuild is, what its run-closure prune removed
 /// from the rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own), and, read from
 /// `log` and the rebuilt graph once the rebuild ends, how many identities the next ingest records
 /// again ([`rebuild_report_line`]); then, when the seeding met another writer's write lock
@@ -1132,7 +1132,7 @@ fn pay_owed_rebuild<'t>(
     let causes = graph.owed_against(&seeded)?;
     // A NEW rebuild - one a cause owes beside no standing shadow or tail - is refused while the run
     // is live, and the step lock the probe took is held until the rebuild returns. Finishing a
-    // standing one is exempt: every appender call is inert on rebuild state.
+    // standing one is exempt and asks no liveness, so it runs beside a live run.
     let _step_lock = if !causes.is_empty() && !Projector::rebuild_unfinished(held)? {
         refuse_if_live(log)?
     } else {
