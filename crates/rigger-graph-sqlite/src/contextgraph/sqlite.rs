@@ -181,16 +181,17 @@ CREATE TABLE IF NOT EXISTS rebuild_run_closure (
 );
 ";
 
-/// How long a direct fold's writer may wait out another writer's write lock before it gives up on
-/// the position it appended (spec 124, THE CLOCKS): ten minutes. Each wait is one busy timeout of
-/// the fold's connection ([`open_connection`]), and a fold given up leaves its position missing
-/// from the ledger.
+/// The bound [`CATCH_UP_HORIZON`] adds its margin to (spec 124, THE CLOCKS): ten minutes, the
+/// longest a direct fold's writer is to wait out another writer's write lock once criterion 2's
+/// appender holds it. At this tree a direct fold waits one busy timeout of its connection
+/// ([`open_connection`]) and gives up, leaving its position missing from the ledger.
 const FOLD_LOCK_CEILING: Duration = Duration::from_secs(600);
 
 /// How old a position missing from the `applied` ledger must be before a seeding of the
 /// `caught_up` cursor ([`Projector::seed_cursor`]) counts it lost (spec 124, THE CLOCKS): the
-/// [`FOLD_LOCK_CEILING`] plus a margin of 60 s. A missing position no older than this may be a
-/// direct fold its writer has not yet given up.
+/// [`FOLD_LOCK_CEILING`] plus a margin of 60 s. The ceiling is the longest a direct fold's writer
+/// is to wait out another writer's write lock once criterion 2's appender holds it; at this tree a
+/// direct fold waits one busy timeout of its connection and gives up.
 pub const CATCH_UP_HORIZON: Duration = Duration::from_secs(FOLD_LOCK_CEILING.as_secs() + 60);
 
 /// Drop the [`REBUILD_STATE`] a rebuild kept, both tables in one transaction ([`in_transaction`]).
