@@ -331,6 +331,19 @@ pub fn seed_store(root: &Path) {
     std::fs::File::create(rigger.join("events.db")).unwrap();
 }
 
+/// A store seeded under an owning root that has no UTF-8 path ([`seed_store`]), and that root,
+/// beside the temporary directory it was made in, which removes both when dropped.
+#[cfg(unix)]
+pub fn store_at_a_non_utf8_root() -> (tempfile::TempDir, PathBuf) {
+    use std::os::unix::ffi::OsStrExt;
+    let parent = tempfile::tempdir().expect("create the parent of the non-UTF-8 root");
+    let root = parent
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"owning-\xff-root"));
+    seed_store(&root);
+    (parent, root)
+}
+
 /// The project identity the binary resolves for `root`, mirrored here for seeding: the
 /// tracked `.rigger/project.id` at the git top-level when present, else the git top-level
 /// basename, else `root`'s own basename (never empty) - the precedence
@@ -1101,6 +1114,15 @@ pub fn refusal_line(error: &str) -> String {
     let mut line = String::from("rigger: ");
     line.push_str(error);
     line
+}
+
+/// The [`refusal_line`] a command ends its stderr with when it refuses the store at `root` for
+/// the scratch root it cannot resolve, the store's owning root having no UTF-8 path
+/// ([`super::fixtures::unresolved_scratch_root_refusal`]).
+pub fn unresolved_scratch_root_refusal_line(root: &Path) -> String {
+    refusal_line(&super::fixtures::unresolved_scratch_root_refusal(
+        &root.join(RIGGER_DIR),
+    ))
 }
 
 /// The [`refusal_line`] a command refused at `graph.db.lock` ends its stderr with, whoever holds

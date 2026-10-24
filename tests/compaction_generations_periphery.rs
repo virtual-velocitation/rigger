@@ -1351,31 +1351,30 @@ impl ReleaseEraStore {
             .unwrap();
     }
 
-    /// A rebuild of this store's `graph.db` that its source stops at its `read`th read of the
-    /// log, each read handing the log's events past where the rebuild asks from, in one batch,
-    /// before the `read`th fails: the first read is the shadow's fold, so `1` leaves the shadow
-    /// standing beside the untouched file, and the second is the tail past the swap, so `2`
-    /// leaves the swapped-in file owing its tail.
+    /// A rebuild of this store's `graph.db`, owed by its caller, that its source stops at its
+    /// `read`th read of the log, each read handing the log's events past where the rebuild asks
+    /// from, in one batch, before the `read`th fails: with no shadow standing the owed rebuild
+    /// starts a fresh one, whether or not the file owes a cause of its own, and the first read is
+    /// the shadow's fold, so `1` leaves the shadow standing beside the untouched file, and the
+    /// second is the tail past the swap, so `2` leaves the swapped-in file owing its tail.
     fn interrupt_a_rebuild_at_read(
         &self,
         read: usize,
     ) -> Result<Option<Rebuilt>, rigger::contextgraph::Error> {
-        use rigger::contextgraph::sqlite::{stream_past, Projector};
-        let (log, path) = (self.log(), self.graph_db.to_str().unwrap());
+        let log = self.log();
         let mut reads = 0;
-        Projector::open(path, &self.project()).unwrap().rebuild(
-            &Projector::lock_rebuild(path).unwrap(),
-            false,
+        rebuild_under(
+            &self.graph_db,
+            &self.project(),
+            true,
             &mut |after, sink: &mut RebuildSink| {
                 reads += 1;
-                stream_past(&log, after, log.len(), sink)?;
+                rigger::contextgraph::sqlite::stream_past(&log, after, log.len(), sink)?;
                 if reads == read {
                     return source_interrupted();
                 }
                 Ok(())
             },
-            &mut |_| Ok(None),
-            &mut no_progress,
         )
     }
 
@@ -1422,7 +1421,7 @@ impl ReleaseEraStore {
 
     /// The shadow a rebuild of this store's `graph.db` folds into, beside the file.
     fn shadow(&self) -> std::path::PathBuf {
-        rigger_file(self.root(), "graph.db.rebuild")
+        rebuild_shadow(self.root())
     }
 
     /// The bytes of the shadow beside this store's `graph.db`, or `None` when none can be read, as
@@ -1453,6 +1452,18 @@ impl ReleaseEraStore {
             ),
         )
     }
+}
+
+/// The shadow a rebuild of the `graph.db` of the store at `root` folds into, beside the file.
+fn rebuild_shadow(root: &Path) -> std::path::PathBuf {
+    rigger_file(root, "graph.db.rebuild")
+}
+
+/// Leave beside the `graph.db` of the store at `root` the shadow a rebuild stopped as it opened
+/// it leaves, before it opened its rebuild state there: a file recording the current fold rule
+/// that holds no run attribution to resume from.
+fn leave_a_shadow_with_no_rebuild_state(root: &Path) {
+    common::fixtures::stamp_user_version(&rebuild_shadow(root), PROJECTION_VERSION);
 }
 
 /// Given an operator store whose `graph.db` the release before the generation rule folded, when
@@ -1757,22 +1768,24 @@ fn driver_traces(root: &Path, spawn: bool, registered: bool) -> DriverTraces {
     DriverTraces::left(root, &[(RUN, marker_secs_ago)], Some(heartbeat_ms_ago))
 }
 
-/// Given an operator store whose `graph.db` owes a NEW rebuild - a release at fold rule 1 folded
-/// it and it stands in the state `stand` leaves it, its rebuild state, a shadow beside the file
-/// and a rebuild cursor in it, as `standing` says, which its pay starts a fresh shadow over and
-/// folds the log from its start - and whose run [`RUN`] left [`SPAWN`] unanswered, when the
-/// operator runs `rigger setup` while the run is live by the signals a case names - a `rigger
-/// step` holding `.rigger/step.lock` when `step`, the spawn's liveness marker touched just now
-/// when `spawn` and the store's driver registration heard from just now when `registered`, each
-/// other trace [`driver_traces`] leaves dead - then setup refuses the rebuild beside the live run:
-/// it exits non-zero with the refusal naming exactly the live signals and the way past it, says
-/// nothing of rebuilding, and writes nothing to `graph.db` or to the shadow beside it, the rebuild
-/// state standing as it stood; and once the step releases the lock and every trace the driver
-/// left is dead, `rigger setup` pays the rebuild, and the file is exactly the graph a fresh fold
-/// of the log reaches.
+/// Given an operator store whose `graph.db` a release at fold rule 1 folded, standing in the state
+/// `stand` leaves it - its rebuild state, a shadow beside the file and a rebuild cursor in it, as
+/// `standing` says - whose rebuild pay is NEW, starting a fresh shadow and folding the log from
+/// its start, for the cause the line `cause` names, or for none the file owes when `cause` is
+/// none, and whose run [`RUN`] left [`SPAWN`] unanswered, when the operator runs `rigger setup`
+/// while the run is live by the signals a case names - a `rigger step` holding
+/// `.rigger/step.lock` when `step`, the spawn's liveness marker touched just now when `spawn` and
+/// the store's driver registration heard from just now when `registered`, each other trace
+/// [`driver_traces`] leaves dead - then setup refuses the rebuild beside the live run: it exits
+/// non-zero with the refusal naming exactly the live signals and the way past it, says nothing of
+/// rebuilding, and writes nothing to `graph.db` or to the shadow beside it, the rebuild state
+/// standing as it stood; and once the step releases the lock and every trace the driver left is
+/// dead, `rigger setup` pays the rebuild, printing the `cause` line, when there is one, before it
+/// says it rebuilt, and the file is exactly the graph a fresh fold of the log reaches.
 fn rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
     stand: fn(&ReleaseEraStore),
     standing: (bool, bool),
+    cause: Option<&str>,
     step: bool,
     spawn: bool,
     registered: bool,
@@ -1816,7 +1829,7 @@ fn rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
     let out = setup_ok(store.root(), &dead.envs(&[("RIGGER_NPM", "true")]));
     assert_eq!(
         common::cli::rebuild_lines(&out),
-        common::cli::rebuilt_for(OLDER_RULE_REBUILD_LINE),
+        cause.map_or_else(|| vec![REBUILT_LINE.to_string()], common::cli::rebuilt_for),
         "once the run's driver is dead, setup pays the rebuild; stdout: {out}"
     );
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
@@ -1830,6 +1843,7 @@ rigger::test_cases! {
         rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
             |_| {},
             (false, false),
+            Some(OLDER_RULE_REBUILD_LINE),
             true,
             false,
             false,
@@ -1841,6 +1855,7 @@ rigger::test_cases! {
         rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
             |_| {},
             (false, false),
+            Some(OLDER_RULE_REBUILD_LINE),
             false,
             true,
             false,
@@ -1852,6 +1867,7 @@ rigger::test_cases! {
         rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
             |_| {},
             (false, false),
+            Some(OLDER_RULE_REBUILD_LINE),
             false,
             false,
             true,
@@ -1862,6 +1878,7 @@ rigger::test_cases! {
         rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
             |_| {},
             (false, false),
+            Some(OLDER_RULE_REBUILD_LINE),
             true,
             true,
             true,
@@ -1877,6 +1894,7 @@ rigger::test_cases! {
                 common::fixtures::stamp_user_version(&store.graph_db, PROJECTION_VERSION - 1);
             },
             (false, true),
+            Some(OLDER_RULE_REBUILD_LINE),
             true,
             false,
             false,
@@ -1891,10 +1909,76 @@ rigger::test_cases! {
                 ReleaseEraStore::as_rule_1_left(&store.shadow(), 0);
             },
             (true, false),
+            Some(OLDER_RULE_REBUILD_LINE),
             true,
             false,
             false,
         );
+    /// A rebuild stopped as it opened its shadow, before it opened its rebuild state there, left
+    /// the shadow recording the current fold rule with no run attribution to resume from, beside
+    /// the file that owes the older rule's rebuild: the pay discards it and starts a fresh shadow,
+    /// and with a `rigger step` holding its lock the refusal names the held lock alone.
+    rigger_setup_refuses_to_refold_a_shadow_holding_no_rebuild_state_while_a_step_holds_its_lock:
+        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
+            |store| leave_a_shadow_with_no_rebuild_state(store.root()),
+            (true, false),
+            Some(OLDER_RULE_REBUILD_LINE),
+            true,
+            false,
+            false,
+        );
+    /// An earlier setup rebuilt the file, so it owes nothing, and a rebuild a binary of a newer
+    /// fold rule stopped before its swap left its shadow standing, its rebuild state whole: the
+    /// shadow was not folded under the current rule, so the pay names no cause, discards it and
+    /// starts a fresh shadow, and with a `rigger step` holding its lock the refusal names the held
+    /// lock alone.
+    rigger_setup_refuses_to_refold_a_newer_rule_shadow_beside_a_file_owing_nothing_while_a_step_holds_its_lock:
+        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
+            |store| {
+                setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
+                store.stop_a_rebuild_at_read(1);
+                common::fixtures::stamp_user_version(&store.shadow(), PROJECTION_VERSION + 1);
+            },
+            (true, false),
+            None,
+            true,
+            false,
+            false,
+        );
+}
+
+/// Given an operator store whose owning root has no UTF-8 path, so the scratch root its runs write
+/// their liveness markers under cannot be resolved, whose `graph.db` a setup made and beside which
+/// a rebuild stopped as it opened its shadow left it standing with no rebuild state
+/// ([`leave_a_shadow_with_no_rebuild_state`]), so its pay is NEW, when the operator runs `rigger
+/// setup`, then setup refuses the rebuild rather than reading the unresolved root as no live
+/// spawn: it exits non-zero naming the unresolvable owning root, in words that name no command,
+/// as its last line of stderr, says nothing of rebuilding and writes nothing to `graph.db` or to
+/// the shadow beside it.
+#[cfg(unix)]
+#[test]
+fn rigger_setup_refuses_a_new_rebuild_in_a_store_whose_owning_root_has_no_utf8_path() {
+    let (_parent, root) = common::cli::store_at_a_non_utf8_root();
+    setup_ok(&root, &[("RIGGER_NPM", "true")]);
+    leave_a_shadow_with_no_rebuild_state(&root);
+    let before = graph_files(&root);
+    let (out, err, ok) = run_rigger_envs(&root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (
+            ok,
+            err.lines().last(),
+            rebuilding_and_rebuilt_lines(&out),
+            graph_files(&root) == before,
+        ),
+        (
+            false,
+            Some(common::cli::unresolved_scratch_root_refusal_line(&root).as_str()),
+            vec![],
+            true,
+        ),
+        "setup refuses the new rebuild over the unresolvable scratch root and writes nothing to \
+         graph.db or its shadow; stdout: {out} stderr: {err}"
+    );
 }
 
 /// Given an operator store whose `graph.db` a release at fold rule 1 folded, in the state `stand`

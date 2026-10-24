@@ -61,7 +61,6 @@ use common::git::git_out;
 use common::git::nested_worktree;
 use common::git::temp_git_project_with_commit;
 use rigger::conductor::normalize_ws;
-use rigger::config::RIGGER_DIR;
 use rigger::registry;
 use std::path::{Path, PathBuf};
 
@@ -639,12 +638,7 @@ fn reset_derived_fails_closed_on_an_unparsable_defaults_block_beside_a_configure
 #[cfg(unix)]
 #[test]
 fn reset_refuses_a_store_whose_owning_root_has_no_utf8_path_and_opens_nothing() {
-    use std::os::unix::ffi::OsStrExt;
-    let parent = tempfile::tempdir().expect("create the parent of the non-UTF-8 root");
-    let root = parent
-        .path()
-        .join(std::ffi::OsStr::from_bytes(b"owning-\xff-root"));
-    seed_store(&root);
+    let (_parent, root) = common::cli::store_at_a_non_utf8_root();
     let events_db = rigger_file(&root, "events.db");
     for mode in ["--derived", "--runs", "--build-cache"] {
         let (out, err, ok) = run_rigger_envs(&root, &["reset", mode], &[]);
@@ -655,12 +649,7 @@ fn reset_refuses_a_store_whose_owning_root_has_no_utf8_path_and_opens_nothing() 
         );
         assert_eq!(
             err.lines().last(),
-            Some(
-                common::cli::refusal_line(&common::fixtures::unresolved_scratch_root_refusal(
-                    &root.join(RIGGER_DIR)
-                ))
-                .as_str()
-            ),
+            Some(common::cli::unresolved_scratch_root_refusal_line(&root).as_str()),
             "reset {mode} must name the unresolvable owning root; stderr: {err:?}"
         );
         assert_eq!(
@@ -739,12 +728,7 @@ fn reset_scratch_orphans_sweeps_over_an_unparsable_defaults_block() {
 #[cfg(unix)]
 #[test]
 fn reset_scratch_orphans_sweeps_over_a_store_whose_owning_root_has_no_utf8_path() {
-    use std::os::unix::ffi::OsStrExt;
-    let parent = tempfile::tempdir().expect("create the parent of the non-UTF-8 root");
-    let root = parent
-        .path()
-        .join(std::ffi::OsStr::from_bytes(b"owning-\xff-root"));
-    seed_store(&root);
+    let (_parent, root) = common::cli::store_at_a_non_utf8_root();
     assert_sweeps_the_orphan_root(
         &root,
         &["reset", "--scratch-orphans"],
