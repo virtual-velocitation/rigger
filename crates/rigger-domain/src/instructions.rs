@@ -566,20 +566,13 @@ mod tests {
 
     /// The hand-over section states each outcome an author's tree must meet before it reports,
     /// with the check that proves it: the gates green in the author's worktree, generated files
-    /// committed with their inputs, a test-side shape spelled once - any token two tests could
-    /// spell, a named inline spelling included - with every added or named shape recorded in a
-    /// whole-tree audit whether merged or not, the audit one search per distinguishing
-    /// expression of each statement of every test-side body added and of each edited statement
-    /// of a body edited, the hunks of the unit's whole range inside it, a twin among untouched
-    /// statements named to the operator as the tree's debt - each string
-    /// literal alone and in full, however short, and each outside call with its first argument,
-    /// never the body's name nor an expression wrapping a literal, the record organised by
-    /// statement, each added or edited statement quoted with its `file:line` above its terms -
-    /// whose command and hits the record carries and the reviewing lens whose persona assigns the
-    /// duty re-runs and re-derives from
-    /// the test hunks over the same statements, comparing the record statement by statement, a
-    /// missing term or an unlisted statement blocking, one search per literal alone, a literal of an
-    /// untouched statement named to the operator as debt and never blocking, every
+    /// committed with their inputs, tests table-driven - the cases of one behaviour over
+    /// different values rows of one table, never copies of a test function - and each table,
+    /// fixture, helper, builder or oracle added existing once, looked up where the test helpers
+    /// live and moved to the shared home when a second test home needs it, duplication the author
+    /// did not write named as the tree's debt and never lifted, a lift's call-site rewrite never
+    /// making a statement the author's, checked by the duplication gate and each behaviour
+    /// reading as one table, with no per-literal search and no per-statement record owed, every
     /// sentence about the changed behaviour true at head over a walked set the author enumerates
     /// from its generators (an item's callers read from the graph at depth 1) over the unit's
     /// whole range on every round, never a round's delta, and records on every change, the name
@@ -636,86 +629,18 @@ mod tests {
             "Every gate the stage names is green on your committed tree before you report.",
             "regenerated and committed in the same commit that changed its inputs",
             "`git status --porcelain` is empty at head",
-            "exists once across every test home, as production code does",
-            "look it up where the project's test helpers live before you write it",
-            "move it to the shared home and have both call it, changing no assertion or \
-             expected value",
-            "A table, fixture, helper, builder, seeder, expected value or oracle you add",
-            "the list is open - a shape is any test-side token two tests could spell",
-            "a const or id literal, a hand-built event or fixture row, a closure or a query \
-             string",
-            "The record is owed for every test-side shape you add, merged or not:",
-            "one whole-tree audit DecisionMade naming every site of its shape FIXED or CHECKED",
-            "FIXED when moved to the shared home with both calling it and no assertion or \
-             expected value changed, CHECKED when kept apart, with the reason",
-            "Naming a shape adds it: a builder, fixture or helper that gives an existing inline \
-             spelling a name exists once across every test home afterwards",
-            "every site that already spelled it inline calls it, the shared home itself and any \
-             file you edit included",
-            "The search is an instrument, not a claim:",
-            "its unit is the statement, never the body's name",
-            "Walk every test-side body you add or edit - a test function, a helper, a fixture \
-             builder, a table row's closure - statement by statement",
-            "each statement that is not a single call into the shared test home is a shape of \
-             its own",
-            "A body you add is walked whole, every statement; a body you edit is walked in its \
-             edited statements, the hunks of the unit's whole range inside it - the merge base \
-             with the run branch to head, the range the sentence walk uses - since a statement you did not touch carries no shape you added.",
-            "A twin the search surfaces only among statements you did not touch, spelling no \
-             literal or call of yours, is the tree's duplication debt: your hand-over names it to \
-             the operator, and you do not lift it.",
-            "every string literal it spells, in full (an assertion, expect or panic message, a \
-             fixture path, a query text)",
-            "every call it makes outside the shared home with its first argument token",
-            "A literal's term is the literal alone - its text complete, quotes included, and \
-             nothing around it - never the call that passes it, a format string that embeds it, \
-             the statement that spells it or two literals joined; an expression wrapping a \
-             literal is a term of its own only where this rule names it, the outside call with \
-             its first argument token.",
-            "One search per literal, however short or conventional it reads - a one-letter \
-             name, `\":memory:\"`, a fixture path - and every hit dispositioned; hits may share \
-             one named reason, each hit still listed.",
-            "A statement searched whole finds only a twin spelled identically, while the literal \
-             finds the twin spelled differently around the same value, which is the twin this \
-             rule exists for.",
-            "A literal set aside as a convention, a fixture name or an argument style, with no \
-             search of its own and no hit list, is a search you did not run.",
-            "The lens compares the record's terms with the literals of the bodies it derives, \
-             one search per literal alone: a literal with no search of its own, or a term that \
-             is an expression wrapping a literal where the literal's own search is owed, is a \
-             BLOCKING finding on its own.",
-            "run one search for each over every test home",
-            "a hit in another home - an existing helper's body or another test's inline \
-             statement - is a twin, lifted to the shared home and called from both",
-            "A record whose expressions are names only - a function name, the callee a helper \
-             wraps - for a body that spells a literal or an outside call is a record you cannot \
-             write either.",
-            "A statement listed with a literal or call it spells absent from its terms is a \
-             record you cannot write.",
-            "The record is organised by statement: each statement of a body you add and each \
-             edited statement of a body you edit is quoted with its `file:line`, followed by its \
-             terms - every string literal it spells, alone, and every call it makes outside the \
-             shared home with its first argument token - each term with its search, or the \
-             statement is marked as a single call into the shared home with the callee named.",
-            "The lens derives the expression set itself from the unit's test hunks at head - \
-             every string literal and every outside call with its first argument in every \
-             statement of each test-side body the unit adds and in the edited statements of each \
-             body it edits, over the unit's whole range - and runs each over every test home: a \
-             hit the record does not carry, or a record whose expressions are names only for a \
-             body that spells either, is a BLOCKING finding on its own.",
-            "The lens derives each statement's terms itself and compares the record statement by \
-             statement: a statement whose record terms lack a literal or call the statement \
-             spells, or a statement the hunks touch that the record does not list, is a BLOCKING \
-             finding on its own, citing the statement and the term.",
-            "A literal of a statement the unit did not touch is the tree's duplication debt, \
-             which the lens names to the operator, never a BLOCKING finding.",
-            "carrying each search's command, its hit count and every hit",
-            "CHECKED when kept apart, with the reason: the named way its shape differs",
-            "A CHECKED hit whose shape does not differ is a twin.",
-            "A search you did not run is a record you cannot write.",
-            "The reviewing lens whose persona assigns the duty re-runs each recorded search on the \
-             review tree: a hit the record does not carry, or a CHECKED hit whose reason does not \
-             hold, is a BLOCKING finding on its own.",
+            "Tests are table-driven, and a test-side shape you add exists once.",
+            "Cases that check one behaviour over different values are rows of one table run by \
+             one body, never copies of a test function that differ only in their values; a case \
+             for a behaviour an existing table covers is a row added to that table.",
+            "A table, fixture, helper, builder or oracle you add is looked up first where the \
+             project's test helpers live and reused when it exists; when a second test home \
+             needs one the first already spells, it moves to the shared home and both call it, \
+             no assertion or expected value changed.",
+            "Duplication you did not write is the tree's debt: your hand-over names it and you \
+             do not lift it, and a lift's call-site rewrite does not make a statement yours.",
+            "Check: the project's duplication gate is green, and each behaviour your tests check \
+             over several values reads as one table.",
             "module docs, test names, test docs, assertion messages and operator docs say what \
              the code at head does",
             "enumerate the walked set, each member from what generates it",
@@ -928,11 +853,12 @@ mod tests {
             !words.contains("(the project's graph, or your persona's fallback)"),
             "the caller generator must name the graph's depth"
         );
-        // A shape's search terms are its statements' literals and outside calls, never the
-        // body's name, so the rule no longer sends the author to a whole-body token sequence.
+        // Tests are table-driven and the duplication gate is the instrument for twins, so the
+        // hand-over owes no per-literal shape search and no per-statement shape record.
         assert!(
-            !words.contains("the token sequence its body cannot be written without"),
-            "the shape search's unit is the statement, not the whole body"
+            !words.contains("One search per literal")
+                && !words.contains("The record is owed for every test-side shape"),
+            "the hand-over owes no per-literal shape search and no per-statement shape record"
         );
         // A rule-spelling search conjoins the feature's name with the rule's noun phrase, so
         // the rule no longer offers a single phrase as the search's one term.
