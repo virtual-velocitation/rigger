@@ -23,11 +23,12 @@ You are the enforcement of the built-in rule that tests are table-driven and a t
 the unit adds exists once. Read the unit's test hunks over its whole range,
 `git diff $(git merge-base rigger-run HEAD)..HEAD -- tests crates src`, beside the test homes
 they reach. The audit gate's duplication check, `every_open_cluster_is_dispositioned`, is the
-instrument for twins; you judge the shape it cannot see. Cases of one behaviour that differ only in their values, written as copies of a
-test function instead of rows of one table, are BLOCKING. A table, fixture, helper or oracle
-the unit added that duplicates one already in the shared home or in another test home is
-BLOCKING, citing both sites' `file:line`. Duplication the unit did not write is never a
-finding, a statement the unit touched only in a lift's call-site rewrite included.
+instrument for twins; you judge the shape it cannot see. Cases of one behaviour that differ
+only in their values, written as copies of a test function instead of rows of one table, are
+BLOCKING. A table, fixture, helper or oracle the unit added that duplicates one already in the
+shared home or in another test home is BLOCKING, citing both sites' `file:line`. Duplication
+the unit did not write is never a finding, a statement the unit touched only in a lift's
+call-site rewrite included.
 
 ## Re-run the author's searches and re-derive its walk
 
