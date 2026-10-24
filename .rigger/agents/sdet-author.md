@@ -149,30 +149,24 @@ item's name, each read. The count and the caller lookup run once per item of the
 list - every item the hunks touch, new or pre-existing, its body or its doc changed - each
 item's count run as
 `git ls-files src crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) { print FILENAME ":" FNR }'`
-with its name, and the record pairs each item of the hunk list with its count, the lines read
-and its callers. Each item the hunks add - a constant, static, list, closure, predicate - a SQL
-conjunct inside a query string included - or fn - carries beside its count its one-home line in one of the working discipline's three forms: `no
-other spelling` with the terms searched (its name count, its caller lookup and the fact's
-distinguishing literal - a table name, a kind string - run with the count above), `derived from
-<file:line>` or `pinned to <file:line> by <test>`. The item list is read from the hunks by shape as well as
-by name: every boolean expression they add - an `if`, `else if`, `while` or match-guard
-condition, each operand of an `&&` or `||` chain inside one, the body of a closure passed to
-`filter`, `any`, `all`, `retain`, `position` or `find`, a conjunct inside a query, format or
-macro string - is quoted with its `file:line` under the record's `ADDED PREDICATES` heading
-with its one-home line, a changed condition among them listed there too, and two of one fact
-are lifted to one home or `pinned to` each other. A set of named members - an array of
+with its name. Each item the hunks add - a constant, static, list, closure, predicate - a SQL
+conjunct inside a query string included - or fn - carries its one-home line in one of the
+working discipline's three forms: `no other spelling` with the terms searched (its name count,
+its caller lookup and the fact's distinguishing literal - a table name, a kind string - run
+with the count above), `derived from <file:line>` or `pinned to <file:line> by <test>`. The
+item list is read from the hunks by shape as well as by name: every boolean expression they
+add - an `if`, `else if`, `while` or match-guard condition, each operand of an `&&` or `||`
+chain inside one, the body of a closure passed to `filter`, `any`, `all`, `retain`,
+`position` or `find`, a conjunct inside a query, format or macro string - is an item with its
+`file:line` and its one-home line, a changed condition among them included, and two of one
+fact are lifted to one home or `pinned to` each other. A set of named members - an array of
 constants, an `IN (..)` list, a `matches!` or `match` arm per member, an `||` chain of
 equalities - runs the count above once per member's name, every statement, `match` or macro
 call holding two or more members read as a second spelling of the set, and its line names the
 member sites it read. On every round, the first and each later one alike, `<base>` is the
 unit's merge base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is
 `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the round's delta your
-prompt carries. The walk is recorded as one `<unit>-sentence-walk` DecisionMade naming what
-each generator returned and every sentence FIXED with its location. Each FIXED or new line of
-the record carries its witness beside that location: the `file:line` of the code at head that
-makes the sentence true. A sentence with a quantifier (every, all, always, any, a plural
-subject with a predicate) carries one witness per case the code splits its subject into - each
-arm, key component, filter condition or match branch - the cases named in the record.
+prompt carries.
 
 Each rule the change rewrites is searched by two short terms for its old statement and for
 each label its cases carried (a name a doc, test or comment gives a case the old rule
@@ -186,9 +180,6 @@ when the joined text holds both terms, in either order and with any words, names
 between them, so a term in another case, or a sentence a rewrap splits across two lines, is
 still a hit, and ends with the hit count:
 `git ls-files | awk '/\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | a='<feature name>' b='<noun phrase>' xargs awk 'BEGIN { a = tolower(ENVIRON["a"]); b = tolower(ENVIRON["b"]) } FNR == 1 { p = "" } { s = tolower($0); sub(/^[[:space:]]*(\/\/[\/!]?|#+|\*)?[[:space:]]*/, "", s); j = p " " s } index(s, a) && index(s, b) || index(j, a) && index(j, b) && !(index(p, a) && index(p, b)) { n++; print FILENAME ":" FNR ": " $0 } { p = s } END { print n + 0 " hits" }'`.
-The `<unit>-sentence-walk` record pastes each command as run, its hit count and every hit it
-printed, each FIXED or CHECKED with its reason, or names the rewritten-rule set empty; the
-`sdet` lens re-derives the generators' sets and re-runs each search on the review tree.
 
 A changed condition rewrites a rule too: every boolean term your production hunks in `crates/`
 and `src/` add to or remove from a filter, guard or predicate, listed from
@@ -198,7 +189,19 @@ changes the rule its function answers. Its old statement is what the function's 
 paragraphs, the docs of the variants the answer maps to and the oracles asserting them - and
 each such consumer phrase runs as a pair of the search above, the function's name as the code
 spells it and the old answer's noun, one run per pair, every hit FIXED with the new qualifier
-or CHECKED with the reason it does not reach it.
+or CHECKED where it does not reach it.
+
+The walk is recorded as one `<unit>-sentence-walk` DecisionMade, bounded so you write it in one
+pass. It carries each generator and search command as run with its hit count, never its pasted
+hits; every sentence FIXED, with its `file:line` and the `file:line` of the code at head that
+makes it true, one witness per case for a sentence with a quantifier (every, all, always, any,
+a plural subject with a predicate) - each arm, key component, filter condition or match branch
+the code splits its subject into, the cases named; each doc block the unit added, by
+`file:line`, with its witness; each item the unit adds with its one-home line; and the CHECKED
+remainder as one count per command. It owes no per-hit or per-line disposition, no count block
+beside each item and no section of its own for added or changed conditions. This bounded record
+satisfies the hand-over; the `sdet` lens re-runs the generators and searches on the review tree
+and reads the hits itself.
 
 ## Every test asserts exactly
 
