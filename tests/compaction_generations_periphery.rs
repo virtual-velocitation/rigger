@@ -15,12 +15,13 @@
 //!      emit that meets it, a fold that is lost, the prune it makes, what it passes over and the
 //!      counts read back by cause, `graph.db.lock`, and a run live beside it: `rigger setup`
 //!      refuses a new rebuild - one whose pay starts a fresh shadow and folds the log from its
-//!      start: a cause owed beside no shadow, a tail standing or not, or a standing shadow an
-//!      older-rule binary left - while a `rigger step` holds `.rigger/step.lock`, an unanswered
-//!      spawn's liveness marker on the log setup selects is inside its bound or a driver
-//!      registration of the store heartbeats inside the idle window, leaving the rebuild owed and
-//!      its standing state as it stood, and beside a held step lock resumes a standing shadow
-//!      folded under the current rule and finishes a tail no cause is owed beside.
+//!      start: a cause owed beside no shadow, a tail standing or not, or a standing shadow that is
+//!      not resumable, an older-rule binary's among them - while a `rigger step` holds
+//!      `.rigger/step.lock`, an unanswered spawn's liveness marker on the log setup selects is
+//!      inside its bound or a driver registration of the store heartbeats inside the idle window,
+//!      leaving the rebuild owed and its standing state as it stood, and beside a held step lock
+//!      resumes a standing shadow folded under the current rule and finishes a tail no cause is
+//!      owed beside.
 //!   5. **The catch-up cursor's seeding.** `rigger setup` creates the missing `graph.db` beside an
 //!      absent event log with its `caught_up` cursor at 0, reading the absent log as an empty one
 //!      and never creating it, and gives a file folded without one its cursor, seeded or set by the
