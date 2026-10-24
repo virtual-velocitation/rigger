@@ -929,9 +929,9 @@ pub trait Projection: Send + Sync {
     /// as missing an event the log holds: until `rigger setup` pays it nothing folds into it, and
     /// nothing whose answer depends on the fold may answer from it - it refuses with
     /// [`REBUILD_OWED`]. An event it misses that nothing marked, below the highest one it folded,
-    /// is found by `rigger setup` while the projection does not yet carry its catch-up cursor
-    /// (spec 124): setup reads the projection's record of what it folded against the log as it
-    /// seeds that cursor.
+    /// is found by `rigger setup` while the projection does not yet carry its catch-up cursor and
+    /// owes no rebuild's tail (spec 124): setup reads the projection's record of what it folded
+    /// against the log as it seeds that cursor.
     fn rebuild_owed(&self) -> Result<bool, Error>;
 
     /// The connected subgraph reachable from any seed within depth hops (the FEED arc / an

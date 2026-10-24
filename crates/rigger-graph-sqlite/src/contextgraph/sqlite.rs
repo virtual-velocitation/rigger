@@ -361,8 +361,8 @@ pub struct Projector {
 /// file current but missing an event no later fold re-derives. The mark is only what lets a
 /// folding open refuse at once without reading the log: the debt itself is the position missing
 /// from the file's `applied` ledger, which `rigger setup`'s seeding of a file not yet carrying the
-/// `caught_up` cursor reads against the log below the highest position the ledger records
-/// ([`Projector::seed_cursor`]). `None` for an in-memory graph, which no rebuild outlives.
+/// `caught_up` cursor reads against the log up to the bound [`Projector::seed_cursor`] names.
+/// `None` for an in-memory graph, which no rebuild outlives.
 fn owed_mark(path: &str) -> Option<PathBuf> {
     (path != ":memory:").then(|| PathBuf::from(format!("{path}.owed")))
 }
@@ -456,11 +456,12 @@ impl PassedOver {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Seeding {
     /// Its transaction met another writer's write lock past the busy timeout: it read nothing,
-    /// wrote nothing and issued no verdict, and the next `rigger setup` seeds the file.
+    /// wrote nothing and issued no verdict, leaving the file to the next `rigger setup`'s seeding.
     Skipped,
     /// It ran under the write lock. `lost` is its prefix-violation verdict, a verdict of this
-    /// seeding alone and no record of the file: the file misses an event of the log that only a
-    /// rebuild can fold in order, so it owes the lost fold ([`Projector::owed_against`]).
+    /// seeding alone and no record of the file: the file misses an event of the log, or records
+    /// one past the log's end, that only a rebuild repairs in order, so it owes the lost fold
+    /// ([`Projector::owed_against`]).
     Ran { lost: bool },
 }
 
@@ -881,16 +882,17 @@ impl Projector {
     /// Run `fold` under the two guards every fold into this file keeps. It refuses before folding
     /// when the file owes its rebuild ([`REBUILD_OWED`]). And a fold that fails into a file that
     /// owed nothing leaves that file behind the log for good - nothing folds a position twice - and
-    /// its positions missing from the `applied` ledger are that debt, which the next `rigger
-    /// setup`'s seeding of a file not yet carrying the `caught_up` cursor reads against the log
-    /// below the highest position the ledger records ([`Projector::seed_cursor`]), and setup pays.
-    /// The failure also marks the file ([`owed_mark`]), so from then on it refuses every fold and
-    /// every answer that depends on the fold with [`REBUILD_OWED`] without reading the log; a mark
-    /// that cannot be written is named beside the fold's error and nothing else is recorded - the
-    /// ledger still carries the debt. Either way the error ends by naming the one command that pays
-    /// it, so every surface that reports the lost fold says who does. A fold that answers its own
-    /// position already recorded passed over ([`FrameError::Recorded`], spec 124) lost nothing: it
-    /// answers that position's cause alone, writing no mark.
+    /// its positions missing from the `applied` ledger are that debt. The failure also marks the
+    /// file ([`owed_mark`]), so from then on it refuses every fold and every answer that depends on
+    /// the fold with [`REBUILD_OWED`] without reading the log, and `rigger setup` rebuilds it; a
+    /// mark that cannot be written is named beside the fold's error and nothing else is recorded -
+    /// the ledger still carries the debt, which `rigger setup`'s seeding of a file not yet carrying
+    /// the `caught_up` cursor reads against the log up to the bound [`Projector::seed_cursor`]
+    /// names, rebuilding the file for a missing position there it finds old. Either way the error
+    /// ends by naming `rigger setup`, so every surface that reports the lost fold names that
+    /// command. A fold that answers its own position already recorded passed over
+    /// ([`FrameError::Recorded`], spec 124) lost nothing: it answers that position's cause alone,
+    /// writing no mark.
     fn guarded<T>(&self, fold: impl FnOnce() -> Result<T, FrameError>) -> Result<T, Error> {
         if self.rebuild_owed()? {
             return Err(Error(REBUILD_OWED.to_string()));

@@ -2917,11 +2917,10 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
 /// that just serialized to append) is answered as [`contextgraph::Fold::NotFolded`], with the
 /// reason, for the caller to report. A graph that owes its rebuild re-derives the result from the
 /// log when `rigger setup` rebuilds it, and a current graph that missed it is left with a hole in
-/// its applied ledger at the result's position (a `SpawnResult` is in the live selection): the
-/// next setup's seeding of a file not yet carrying the `caught_up` cursor reads that ledger
-/// against the log ([`contextgraph::sqlite::Projector::seed_cursor`]), and rebuilds the file for a
-/// hole below the highest position the ledger records that is older than the catch-up horizon
-/// (spec 124).
+/// its applied ledger at the result's position (a `SpawnResult` is in the live selection): setup's
+/// seeding of a file not yet carrying the `caught_up` cursor reads that ledger against the log up
+/// to the bound [`contextgraph::sqlite::Projector::seed_cursor`] names, and rebuilds the file for
+/// a hole there it finds old (spec 124).
 fn fold_recorded_result(
     loc: &StoreLocation,
     res: &spawn::SpawnResult,

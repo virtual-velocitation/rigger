@@ -879,7 +879,7 @@ const REBUILD_BATCH: usize = 10_000;
 /// seeding the file's `caught_up` cursor (spec 124, [`Projector::seed_cursor`]): on a file not yet
 /// carrying it, the seeding reads the file's ledger of folded positions against the log's live
 /// selection whether or not a mark says so, and the prefix it finds violated is owed - a position
-/// missing below the highest one folded and older than the catch-up horizon (every one, on a
+/// missing up to the bound the seeding names and older than the catch-up horizon (every one, on a
 /// server-backed log, which answers no age), an empty ledger beside a non-empty log, or a non-empty
 /// one beside an empty log or past its head - saying so, naming the cause, reporting how far along
 /// it is, and report whether it did. A rebuild's own unfinished work - the shadow a stopped swap
