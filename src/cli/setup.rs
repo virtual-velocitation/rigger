@@ -1130,15 +1130,16 @@ fn pay_owed_rebuild<'t>(
     let graph = Projector::open(held.path(), project)?;
     let seeded = graph.seed_cursor(seeding.live, seeding.stamp_of, std::time::SystemTime::now())?;
     let causes = graph.owed_against(&seeded)?;
+    let owed = !causes.is_empty();
     // A NEW rebuild - one a cause owes beside no standing shadow or tail - is refused while the run
     // is live, and the step lock the probe took is held until the rebuild returns. Finishing a
     // standing one is exempt and asks no liveness, so it runs beside a live run.
-    let _step_lock = if !causes.is_empty() && !Projector::rebuild_unfinished(held)? {
+    let _step_lock = if owed && !Projector::rebuild_unfinished(held)? {
         refuse_if_live(log)?
     } else {
         None
     };
-    if !causes.is_empty() {
+    if owed {
         println!(
             "rebuilding graph.db from the event log: {}, so the log's live selection is refolded \
              once",
@@ -1146,17 +1147,11 @@ fn pay_owed_rebuild<'t>(
         );
     }
     let mut printed = 0;
-    let rebuilt = graph.rebuild(
-        held,
-        !causes.is_empty(),
-        reads.source,
-        reads.reextract,
-        &mut |at| {
-            if let Some(line) = rebuild_progress_line(at, &mut printed) {
-                println!("{line}");
-            }
-        },
-    )?;
+    let rebuilt = graph.rebuild(held, owed, reads.source, reads.reextract, &mut |at| {
+        if let Some(line) = rebuild_progress_line(at, &mut printed) {
+            println!("{line}");
+        }
+    })?;
     if let Some(rebuilt) = rebuilt {
         println!("rebuilt graph.db from the event log");
         println!("{} from the rebuilt graph", pruned_line(&rebuilt.pruned));

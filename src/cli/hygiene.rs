@@ -786,11 +786,10 @@ pub(super) fn refuse_if_live(
 ) -> Result<Option<HeldLock>, Box<dyn std::error::Error>> {
     let events = log.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     let probe = live_writer_facts(loc, selection, env, &events)?;
-    let reasons = probe.facts.reasons();
-    if reasons.is_empty() {
+    if probe.facts.driver_dead() {
         return Ok(probe.step_lock);
     }
-    Err(refusal(&reasons.join("; ")).into())
+    Err(refusal(&probe.facts.reasons().join("; ")).into())
 }
 
 /// The three facts [`live_writer_reasons`] composes, gathered once so every consumer reads the
@@ -812,7 +811,8 @@ impl LiveWriterFacts {
     }
 
     /// Nothing is driving the run: none of the facts that make it live holds - the one
-    /// definition `reset --derived` refuses on. A non-terminal unit, a spawn with no marker, or a
+    /// definition the live-run refusal ([`refuse_if_live`]) passes on and `reset --runs` closes
+    /// by ([`close_landed_units`]). A non-terminal unit, a spawn with no marker, or a
     /// spawn whose marker has outlived its bound (whether it has no result or only the step's
     /// liveness fault) is not a driver - it is exactly what a dead driver leaves behind.
     fn driver_dead(&self) -> bool {
