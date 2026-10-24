@@ -4118,24 +4118,23 @@ mod tests {
     /// The architecture lens is the enforcement of the built-in rule that every fact the
     /// production delta states has one home: it derives the added items itself from the
     /// production hunks by shape as well as by name, a SQL conjunct inside a query string
-    /// included, reads the walk record's one-home line for each, its `ADDED PREDICATES` list
-    /// included, and a missing line, two lines for two predicates of one fact or one false at
-    /// head is BLOCKING; for every added set of named members it runs the member search itself,
-    /// and a second spelling the line does not name is BLOCKING.
+    /// included, reads the walk record's one-home line for each, the record keeping no heading
+    /// of its own for predicates, and a missing line, two lines for two predicates of one fact
+    /// or one false at head is BLOCKING; for every added set of named members it runs the
+    /// member search itself, and a second spelling the line does not name is BLOCKING.
     #[test]
     fn the_architecture_lens_reads_the_one_home_line_of_every_added_item() {
         let flat = rigger::wave::normalize_ws(&committed_persona("architecture-reviewer.md"));
         for wanted in [
             "you derive the set of constants, statics, lists, closures and predicates the unit \
              adds yourself from its production hunks by shape as well as by name - every \
-             boolean expression of the shapes the built-in rule lists for its `ADDED PREDICATES`, \
-             a boolean expression or SQL conjunct inside a query string, format string or macro \
-             argument included - and read the `<unit>-sentence-walk` record's one-home lines for \
-             every item of it, its `ADDED PREDICATES` list included, and an added item with no \
-             line, two added predicates of one fact with two lines, or a line false at head (the \
-             fact has another spelling the line does not name, or the named derivation or pin \
-             does not exist), is BLOCKING (DRY, single responsibility), cited with both \
-             spellings' `file:line`.",
+             boolean expression of the shapes the built-in rule lists, a boolean expression or \
+             SQL conjunct inside a query string, format string or macro argument included - and \
+             read the `<unit>-sentence-walk` record's one-home lines for every item of it, and an \
+             added item with no line, two added predicates of one fact with two lines, or a line \
+             false at head (the fact has another spelling the line does not name, or the named \
+             derivation or pin does not exist), is BLOCKING (DRY, single responsibility), cited \
+             with both spellings' `file:line`.",
             "For every added set of named members, of the forms the built-in rule names, you run \
              the member search yourself, the count of each member's name, every statement, \
              `match` or macro call holding two or more of them read as a second spelling of the \
@@ -4154,6 +4153,12 @@ mod tests {
                 "architecture-reviewer.md names the built-in's list instead of copying {copied:?}"
             );
         }
+        // The walk record carries each added item's one-home line with no heading of its own
+        // for predicates, so the lens reads no such list.
+        assert!(
+            !flat.contains("ADDED PREDICATES"),
+            "architecture-reviewer.md reads no predicate heading the bounded record does not keep"
+        );
     }
 
     /// The adjudicator's tools carry no MCP tool, so its persona sends its reasoning record
