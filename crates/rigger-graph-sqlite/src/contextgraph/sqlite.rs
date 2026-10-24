@@ -6494,12 +6494,15 @@ mod tests {
         drop(Projector::open(path, "test").unwrap());
         let shadow = shadow_of(path);
         drop(Projector::open(&shadow, "test").unwrap());
+        // The shadow a rebuild opened its rebuild state in and folded nothing into yet, which the
+        // next rebuild resumes, with a storage error waiting at d-boom's node.
         Connection::open(&shadow)
             .unwrap()
-            .execute_batch(
-                "CREATE TRIGGER boom BEFORE INSERT ON nodes WHEN NEW.id = 'd-boom'
-                 BEGIN SELECT RAISE(ABORT, 'disk gave out'); END;",
-            )
+            .execute_batch(&format!(
+                "{REBUILD_STATE}
+                 CREATE TRIGGER boom BEFORE INSERT ON nodes WHEN NEW.id = 'd-boom'
+                 BEGIN SELECT RAISE(ABORT, 'disk gave out'); END;"
+            ))
             .unwrap();
 
         let mut reads_from = Vec::new();
@@ -6992,6 +6995,15 @@ mod tests {
         crate::test_support::whole_json(&live)
     }
 
+    /// Tear the rebuild state of the shadow file at `shadow`: drop the run attribution its rebuild
+    /// gathered, leaving its cursor.
+    fn drop_the_gathered_attribution(shadow: &str) {
+        Connection::open(shadow)
+            .unwrap()
+            .execute_batch("DROP TABLE rebuild_run_closure;")
+            .unwrap();
+    }
+
     /// Whether the graph file at `path` holds the rebuild's cursor and the run attribution the
     /// rebuild gathered.
     fn rebuild_state(path: &str) -> (bool, bool) {
@@ -7343,10 +7355,7 @@ mod tests {
         drop(Projector::open(path, "test").unwrap());
         let interrupted = rebuild_interrupted_after_its_first_batch(path, &log);
         let shadow = shadow_of(path);
-        Connection::open(&shadow)
-            .unwrap()
-            .execute_batch("DROP TABLE rebuild_run_closure;")
-            .unwrap();
+        drop_the_gathered_attribution(&shadow);
         // While another holds the rebuild, the torn shadow is refused to a rebuild, which reads no
         // log and leaves it byte for byte; its holder discards it.
         let torn = std::fs::read(&shadow).unwrap();
@@ -7920,6 +7929,124 @@ mod tests {
              left unfinished, and asking makes no graph file; beside the lock alone stood \
              {lock_only:?}"
         );
+    }
+
+    /// Whether paying a graph file's rebuild starts a fresh shadow (spec 124) is answered by what
+    /// stands. With no shadow, a cause owed - the caller's, or the file's own: an older fold rule
+    /// over what it folded, or an owed mark - starts one, a swapped-in tail standing or not, and no
+    /// cause starts none. A standing shadow is resumed, cause or not, when it holds the run
+    /// attribution it gathered under the current fold rule, and replaced otherwise: one folded
+    /// under an older or a newer rule, one without that attribution, or one whose rebuild state
+    /// was never opened. Asking makes no shadow and leaves a standing one byte for byte.
+    #[test]
+    fn a_rebuild_starts_a_fresh_shadow_for_a_cause_beside_none_or_a_shadow_it_cannot_resume() {
+        // A rebuild of the graph file at `path` stopped past its first batch: the resumable
+        // shadow it leaves.
+        fn a_resumable_shadow(path: &str) {
+            rebuild_interrupted_after_its_first_batch(path, &decisions_through(4)).unwrap_err();
+        }
+        // What stands beside the graph file at `path` before it is asked.
+        type Stand = fn(&str);
+        // Each case: what stands, the `owed` it is asked with, and whether the pay starts fresh.
+        let cases: [(&str, Stand, bool, bool); 12] = [
+            ("nothing owed", |_| {}, false, false),
+            ("a cause the caller owes", |_| {}, true, true),
+            (
+                "an older fold rule the file records",
+                |path| {
+                    // A file at an older rule that folded nothing takes the current one on open.
+                    crate::test_support::folds(
+                        &Projector::open(path, "test").unwrap(),
+                        &decisions_through(1),
+                    );
+                    crate::test_support::stamp_user_version(Path::new(path), PROJECTION_VERSION - 1)
+                },
+                false,
+                true,
+            ),
+            (
+                "an owed mark the file carries",
+                |path| std::fs::write(owed_mark(path).unwrap(), b"").unwrap(),
+                false,
+                true,
+            ),
+            (
+                "a tail no cause is owed beside",
+                |path| connection_to(path).execute_batch(REBUILD_STATE).unwrap(),
+                false,
+                false,
+            ),
+            (
+                "a tail beside a cause the caller owes",
+                |path| connection_to(path).execute_batch(REBUILD_STATE).unwrap(),
+                true,
+                true,
+            ),
+            ("a resumable shadow", a_resumable_shadow, false, false),
+            (
+                "a resumable shadow beside a cause the caller owes",
+                a_resumable_shadow,
+                true,
+                false,
+            ),
+            (
+                "a shadow an older-rule binary left",
+                |path| {
+                    a_resumable_shadow(path);
+                    crate::test_support::stamp_user_version(
+                        Path::new(&shadow_of(path)),
+                        PROJECTION_VERSION - 1,
+                    )
+                },
+                false,
+                true,
+            ),
+            (
+                "a shadow a newer-rule binary left",
+                |path| {
+                    a_resumable_shadow(path);
+                    crate::test_support::stamp_user_version(
+                        Path::new(&shadow_of(path)),
+                        PROJECTION_VERSION + 1,
+                    )
+                },
+                false,
+                true,
+            ),
+            (
+                "a shadow without the run attribution it gathered",
+                |path| {
+                    a_resumable_shadow(path);
+                    drop_the_gathered_attribution(&shadow_of(path))
+                },
+                false,
+                true,
+            ),
+            (
+                "a shadow whose rebuild state was never opened",
+                |path| schema(&Connection::open(shadow_of(path)).unwrap(), "test").unwrap(),
+                false,
+                true,
+            ),
+        ];
+        for (case, stand, owed, fresh) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("graph.db");
+            let path = path.to_str().unwrap();
+            drop(Projector::open(path, "test").unwrap());
+            stand(path);
+            let shadow = || dir_snapshot(dir.path(), &shadow_of("graph.db"));
+            let standing = shadow();
+            let starts_fresh = Projector::open(path, "test")
+                .unwrap()
+                .rebuild_starts_fresh(&locked(path), owed)
+                .map_err(|e| e.to_string());
+            assert_eq!(
+                (starts_fresh, shadow()),
+                (Ok(fresh), standing),
+                "{case}: the pay's fresh-shadow answer, and the shadow left as it stood"
+            );
+        }
     }
 
     /// The rebuild lock of a graph file is the OS lock on the zero-byte `<path>.lock` beside it,

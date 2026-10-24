@@ -2012,7 +2012,7 @@ fn a_rebuild_interrupted_and_resumed_reports_the_number_a_single_pass_does() {
             true,
             &mut |after, sink: &mut RebuildSink| {
                 rigger::contextgraph::sqlite::stream_past(&log[..=through], after, 1, sink)?;
-                Err(Error(common::fixtures::SOURCE_INTERRUPTED.to_string()))
+                common::fixtures::source_interrupted()
             },
             &mut |entry| rigger::ingest::resolve_entry(root, entry, None),
             &mut no_progress,

@@ -386,6 +386,12 @@ pub fn entry_refusal() -> rigger::contextgraph::Fold {
 /// What a test's rebuild source answers when it stops a rebuild mid-read.
 pub const SOURCE_INTERRUPTED: &str = "interrupted";
 
+/// A test's rebuild source, or the sink a source hands to, stopping a rebuild mid-read
+/// ([`SOURCE_INTERRUPTED`]).
+pub fn source_interrupted<T>() -> Result<T, rigger::contextgraph::Error> {
+    Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()))
+}
+
 /// The owed mark of the graph file `graph.db` in the directory `dir`: the file a fold that fails
 /// writes beside it.
 pub fn owed_mark_in(dir: &std::path::Path) -> std::path::PathBuf {

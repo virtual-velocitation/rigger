@@ -65,6 +65,10 @@ use rigger_process::{holders, reap};
 mod passed_over_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/sqlite.rs"]
+mod sqlite_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/write_lock.rs"]
 mod write_lock_fixtures;
 #[cfg(test)]
@@ -80,6 +84,8 @@ mod test_support {
     pub use crate::host_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::passed_over_fixtures::*;
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    pub use crate::sqlite_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::write_lock_fixtures::*;
 }

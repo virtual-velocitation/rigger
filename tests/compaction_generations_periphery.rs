@@ -92,9 +92,9 @@ use common::fixtures::past_the_horizon;
 use common::fixtures::rebuild_owed_note;
 use common::fixtures::wait_until_for;
 use common::fixtures::with_graph_locked;
-use common::fixtures::SOURCE_INTERRUPTED;
 use common::fixtures::STEP_LOCK_REASON;
 use common::fixtures::{graph_error, lost_fold, not_folded, DATABASE_IS_LOCKED, NOT_A_DATABASE};
+use common::fixtures::{source_interrupted, SOURCE_INTERRUPTED};
 use common::git::temp_git_project_with_commit;
 use rigger::contextgraph::sqlite::{
     PruneStats, RebuildSink, Rebuilt, CATCH_UP_HORIZON, PROJECTION_VERSION,
@@ -518,17 +518,28 @@ fn live_selection_of<'a>(
 }
 
 /// Rebuild the `graph.db` at `db` from `source`, reporting nothing: whether there was one to pay,
-/// and what it did.
+/// and what it did ([`rebuild_under`] the test project, owing no cause).
 fn rebuild(
     db: &Path,
     source: &mut rigger::contextgraph::sqlite::RebuildSource,
 ) -> Result<Option<Rebuilt>, rigger::contextgraph::Error> {
+    rebuild_under(db, PROJECT, false, source)
+}
+
+/// Rebuild the `graph.db` at `db`, folded under `project`, from `source`, owed when `owed` says
+/// so, reporting nothing: whether there was one to pay, and what it did.
+fn rebuild_under(
+    db: &Path,
+    project: &str,
+    owed: bool,
+    source: &mut rigger::contextgraph::sqlite::RebuildSource,
+) -> Result<Option<Rebuilt>, rigger::contextgraph::Error> {
     use rigger::contextgraph::sqlite::Projector;
-    Projector::open(db.to_str().unwrap(), PROJECT)
+    Projector::open(db.to_str().unwrap(), project)
         .unwrap()
         .rebuild(
             &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
-            false,
+            owed,
             source,
             &mut |_| Ok(None),
             &mut no_progress,
@@ -830,7 +841,7 @@ fn an_interrupted_rebuild_leaves_graph_db_untouched_and_resumes_from_its_last_co
     let before = std::fs::read(&db).unwrap();
     let interrupted = rebuild(&db, &mut |_, sink| {
         sink(&log[..2], log[4].position)?;
-        Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()))
+        source_interrupted()
     });
     assert_eq!(
         interrupted.unwrap_err().0,
@@ -895,7 +906,7 @@ fn a_rebuild_interrupted_in_its_tail_finishes_the_tail_on_the_next_call() {
         reads += 1;
         match reads {
             1 => sink(&log[..3], log[2].position),
-            _ => Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string())),
+            _ => source_interrupted(),
         }
     });
     assert_eq!(interrupted.unwrap_err().0, SOURCE_INTERRUPTED);
@@ -1358,7 +1369,7 @@ impl ReleaseEraStore {
                 reads += 1;
                 stream_past(&log, after, log.len(), sink)?;
                 if reads == read {
-                    return Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()));
+                    return source_interrupted();
                 }
                 Ok(())
             },
@@ -2879,7 +2890,7 @@ fn a_resumed_rebuild_after_the_log_gained_a_generation_is_the_whole_logs(gained:
         first(after, &mut |events, head| {
             batches += 1;
             if batches == 2 {
-                return Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()));
+                return source_interrupted();
             }
             sink(events, head)
         })
@@ -3964,8 +3975,9 @@ fn passed_over_counts_each_class_a_rebuild_wrote_by_cause_and_no_other_class() {
 }
 
 /// Given a `graph.db` that misses a well-formed event the log holds below an event it folded, older
-/// than the catch-up horizon ([`bury_below_an_applied_event`]), when the operator runs
-/// `rigger setup` and its rebuild meets a storage error folding that event - the store's failure,
+/// than the catch-up horizon ([`bury_below_an_applied_event`]), beside the shadow a rebuild of it
+/// left, stopped before it folded an event, when the operator runs `rigger setup` and the rebuild
+/// it resumes meets a storage error folding that event - the store's failure,
 /// not a payload the fold rejects - then setup fails naming the error, passes nothing over, and
 /// leaves `graph.db` untouched with the event still missing from its ledger; once the storage
 /// recovers, the next `rigger setup` resumes the rebuild and folds the event.
@@ -3982,13 +3994,12 @@ fn setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_
     bury_below_an_applied_event(root);
     let graph_db = rigger_file(root, "graph.db");
     let shadow = rigger_file(root, "graph.db.rebuild");
-    drop(
-        rigger::contextgraph::sqlite::Projector::open(
-            shadow.to_str().unwrap(),
-            &run_stream_identity(root),
-        )
-        .unwrap(),
-    );
+    // The rebuild setup owes, stopped at its first read before it folded an event: the shadow it
+    // leaves holds its rebuild state, which the next rebuild resumes, and no node yet.
+    rebuild_under(&graph_db, &run_stream_identity(root), true, &mut |_, _| {
+        source_interrupted()
+    })
+    .unwrap_err();
     // Opened per statement and closed at once: a rebuild owns its shadow alone, so the test holds
     // no connection to it while `rigger setup` rebuilds.
     let on_shadow = |sql: &str| {
