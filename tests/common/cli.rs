@@ -387,17 +387,118 @@ pub fn version_and_owed(db: &Path, project: &str) -> (i64, bool) {
 pub fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
     let rigger_dir = root.join(".rigger");
     std::fs::create_dir_all(&rigger_dir).unwrap();
-    with_run_store(root, |store| {
-        for &(ty, body) in events {
-            store
-                .append(
-                    rigger::conductor::STREAM,
-                    ExpectedRevision::Any,
-                    &[Event::new(ty, body.as_bytes().to_vec())],
-                )
-                .unwrap();
+    with_run_store(root, |store| append_run_events(store, events));
+}
+
+/// Append `(type, json body)` run events to `store`'s run stream, in order, one append each.
+pub fn append_run_events<B: AsRef<str>>(store: &dyn EventStore, events: &[(&str, B)]) {
+    for (ty, body) in events {
+        store
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(*ty, body.as_ref().as_bytes().to_vec())],
+            )
+            .unwrap();
+    }
+}
+
+/// The spawn [`one_unanswered_spawn`] requests and never answers.
+pub const SPAWN: &str = "a/implementer#0";
+
+/// Run `run`, whose one unit `a` is mid-spawn: [`SPAWN`] requested with the wall-clock bound
+/// `bound` (`None`: unbounded) and never answered - what a driver that died mid-spawn leaves
+/// behind.
+pub fn one_unanswered_spawn(run: &str, bound: Option<u64>) -> Vec<(&'static str, String)> {
+    let bound = bound.map_or(String::new(), |secs| format!(r#","max_wall_clock":{secs}"#));
+    vec![
+        (
+            "RunStarted",
+            format!(r#"{{"run":"{run}","criteria":["crit"]}}"#),
+        ),
+        (
+            "UnitStarted",
+            r#"{"id":"a","branch":"rigger/u/a"}"#.to_string(),
+        ),
+        (
+            "SpawnRequested",
+            format!(r#"{{"id":"{SPAWN}","unit":"a","stage":"implement","prompt":"go"{bound}}}"#),
+        ),
+    ]
+}
+
+/// Seeds `events` into `root`'s run stream, in order.
+pub fn seed_owned(root: &Path, events: &[(&str, String)]) {
+    let borrowed: Vec<(&str, &str)> = events.iter().map(|(t, b)| (*t, b.as_str())).collect();
+    seed_run_events(root, &borrowed);
+}
+
+/// The traces a run's driver leaves where a liveness reader looks for them: [`SPAWN`]'s liveness
+/// marker for each `(run id, secs ago)` planted under a fresh `RIGGER_TMPDIR` scratch root, and,
+/// given a heartbeat age, the driver registration of the store at a root last heard from that many
+/// ms back, in a fresh `XDG_STATE_HOME`'s registry.
+pub struct DriverTraces {
+    scratch: tempfile::TempDir,
+    state_home: Option<tempfile::TempDir>,
+}
+
+impl DriverTraces {
+    /// The traces `markers` and `heartbeat_ms_ago` (`None`: no registration) leave for the store
+    /// at `root`.
+    pub fn left(root: &Path, markers: &[(&str, u64)], heartbeat_ms_ago: Option<u64>) -> Self {
+        let scratch = tempfile::tempdir().expect("create the scratch root the markers live under");
+        let scratch_root = scratch.path().to_str().unwrap();
+        for (run, secs_ago) in markers {
+            plant_marker(
+                &rigger::liveness::marker_path(scratch_root, run, SPAWN).unwrap(),
+                *secs_ago,
+            );
         }
-    });
+        let toplevel = super::git::git_out(root, &["rev-parse", "--show-toplevel"]);
+        let state_home = heartbeat_ms_ago.map(|ago| {
+            super::fixtures::seed_registry(
+                "proj",
+                &toplevel,
+                rigger::registry::now_ms() - ago,
+                rigger::registry::Writer::Driver,
+            )
+            .0
+        });
+        Self {
+            scratch,
+            state_home,
+        }
+    }
+
+    /// The env a `rigger` run reads these traces through, followed by `extra`.
+    pub fn envs<'a>(&'a self, extra: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+        let mut envs = vec![("RIGGER_TMPDIR", self.scratch.path().to_str().unwrap())];
+        // With no entry to seed, the binary's own fresh state home holds no registration at all.
+        if let Some(home) = &self.state_home {
+            envs.push(("XDG_STATE_HOME", home.path().to_str().unwrap()));
+        }
+        envs.extend_from_slice(extra);
+        envs
+    }
+}
+
+/// The age, in whole seconds, a refusal names for [`SPAWN`]'s liveness marker: the digits that
+/// follow `<SPAWN> (marker touched `.
+pub fn named_marker_age(err: &str) -> u64 {
+    let lead = format!("{SPAWN} (marker touched ");
+    let at = err
+        .find(&lead)
+        .unwrap_or_else(|| panic!("the refusal must name {SPAWN}'s marker age; stderr: {err:?}"))
+        + lead.len();
+    let digits: String = err[at..].chars().take_while(char::is_ascii_digit).collect();
+    digits
+        .parse()
+        .unwrap_or_else(|e| panic!("{SPAWN}'s marker age {digits:?} must be whole seconds: {e}"))
+}
+
+/// The idle window, in whole seconds, as the refusal states it.
+pub fn idle_window_secs() -> u64 {
+    rigger::registry::DEFAULT_IDLE_MS / 1000
 }
 
 /// `f` over `root`'s own project namespace of its on-disk `.rigger/events.db` - the store the

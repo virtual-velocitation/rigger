@@ -36,18 +36,24 @@ mod common;
 
 use common::cli::configure_workdir;
 use common::cli::hold_step_lock;
+use common::cli::idle_window_secs;
 use common::cli::liveness_fault_body;
+use common::cli::named_marker_age;
+use common::cli::one_unanswered_spawn;
 use common::cli::plant_marker;
 use common::cli::read_run_events;
 use common::cli::real_result_body;
 use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::cli::seed_owned;
 use common::cli::seed_run_events;
 use common::cli::seed_store;
 use common::cli::temp_store_project;
 use common::cli::write_workflow_fixture;
+use common::cli::DriverTraces;
 use common::cli::WorkflowFixture;
+use common::cli::SPAWN;
 use common::cli::UNISOLATED_WORKER;
 use common::fixtures::registry_entries;
 use common::fixtures::seed_registry;
@@ -346,36 +352,6 @@ fn reset_derived_force_live_compacts_while_every_signal_is_live() {
 // Each signal read where the run writes it, judged against its own window
 // ---------------------------------------------------------------------------------------
 
-/// The spawn every case below leaves unanswered.
-const SPAWN: &str = "a/implementer#0";
-
-/// Run `run`, whose one unit `a` is mid-spawn: [`SPAWN`] requested with the wall-clock bound
-/// `bound` (`None`: unbounded) and never answered - what a driver that died mid-spawn leaves
-/// behind.
-fn one_unanswered_spawn(run: &str, bound: Option<u64>) -> Vec<(&'static str, String)> {
-    let bound = bound.map_or(String::new(), |secs| format!(r#","max_wall_clock":{secs}"#));
-    vec![
-        (
-            "RunStarted",
-            format!(r#"{{"run":"{run}","criteria":["crit"]}}"#),
-        ),
-        (
-            "UnitStarted",
-            r#"{"id":"a","branch":"rigger/u/a"}"#.to_string(),
-        ),
-        (
-            "SpawnRequested",
-            format!(r#"{{"id":"{SPAWN}","unit":"a","stage":"implement","prompt":"go"{bound}}}"#),
-        ),
-    ]
-}
-
-/// Seeds `events` into `root`'s run stream, in order.
-fn seed_owned(root: &Path, events: &[(&str, String)]) {
-    let borrowed: Vec<(&str, &str)> = events.iter().map(|(t, b)| (*t, b.as_str())).collect();
-    seed_run_events(root, &borrowed);
-}
-
 /// Runs `rigger reset --derived` over `events` with the step lock free, [`SPAWN`]'s liveness
 /// marker for each `(run id, secs ago)` in `markers` planted under the `RIGGER_TMPDIR` scratch
 /// root, and this store's registry entry last heard from `heartbeat_ms_ago` ms back (`None`: no
@@ -388,44 +364,8 @@ fn reset_derived_around(
     let dir = temp_store_project();
     let root = dir.path();
     seed_owned(root, events);
-    let scratch = tempfile::tempdir().expect("create the scratch root the markers live under");
-    let scratch_root = scratch.path().to_str().unwrap();
-    for (run, secs_ago) in markers {
-        plant_marker(
-            &rigger::liveness::marker_path(scratch_root, run, SPAWN).unwrap(),
-            *secs_ago,
-        );
-    }
-    let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
-    let seeded = heartbeat_ms_ago.map(|ago| {
-        seed_registry(
-            "proj",
-            &toplevel,
-            registry::now_ms() - ago,
-            registry::Writer::Driver,
-        )
-        .0
-    });
-    let mut envs = vec![("RIGGER_TMPDIR", scratch_root)];
-    // With no entry to seed, the binary's own fresh state home holds no registration at all.
-    if let Some(home) = &seeded {
-        envs.push(("XDG_STATE_HOME", home.path().to_str().unwrap()));
-    }
-    counted(root, root, &["reset", "--derived"], &envs)
-}
-
-/// The age, in whole seconds, a refusal names for [`SPAWN`]'s liveness marker: the digits that
-/// follow `<SPAWN> (marker touched `.
-fn named_marker_age(err: &str) -> u64 {
-    let lead = format!("{SPAWN} (marker touched ");
-    let at = err
-        .find(&lead)
-        .unwrap_or_else(|| panic!("the refusal must name {SPAWN}'s marker age; stderr: {err:?}"))
-        + lead.len();
-    let digits: String = err[at..].chars().take_while(char::is_ascii_digit).collect();
-    digits
-        .parse()
-        .unwrap_or_else(|e| panic!("{SPAWN}'s marker age {digits:?} must be whole seconds: {e}"))
+    let traces = DriverTraces::left(root, markers, heartbeat_ms_ago);
+    counted(root, root, &["reset", "--derived"], &traces.envs(&[]))
 }
 
 /// The refusal's one reason for a live [`SPAWN`] - its marker's age, which must lie in `age` (a
@@ -467,11 +407,6 @@ fn assert_refused_naming_the_spawn(
         o.rows_after, o.rows_before,
         "a refused compaction must prune NOTHING - the guard may only refuse, never partially act"
     );
-}
-
-/// The idle window, in whole seconds, as the refusal states it.
-fn idle_window_secs() -> u64 {
-    registry::DEFAULT_IDLE_MS / 1000
 }
 
 rigger::test_cases! {

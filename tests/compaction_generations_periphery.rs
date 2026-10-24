@@ -14,8 +14,10 @@
 //!   4. **The shadow rebuild's seams.** Its sources (the live selection among them), its tail, an
 //!      emit that meets it, a fold that is lost, the prune it makes, what it passes over and the
 //!      counts read back by cause, `graph.db.lock`, and a run live beside it: `rigger setup`
-//!      refuses a new rebuild while a `rigger step` holds `.rigger/step.lock`, and finishes a
-//!      standing shadow or tail beside it.
+//!      refuses a new rebuild while a `rigger step` holds `.rigger/step.lock`, an unanswered
+//!      spawn's liveness marker on the log setup selects is inside its bound or a driver
+//!      registration of the store heartbeats inside the idle window, leaving the rebuild owed, and
+//!      finishes a standing shadow or tail beside a held step lock.
 //!   5. **The catch-up cursor's seeding.** `rigger setup` creates the missing `graph.db` beside an
 //!      absent event log with its `caught_up` cursor at 0, reading the absent log as an empty one
 //!      and never creating it, and gives a file folded without one its cursor, seeded or set by the
@@ -29,6 +31,7 @@
 
 mod common;
 
+use common::cli::append_run_events;
 use common::cli::applied;
 use common::cli::assert_stopped_at_the_grounder;
 use common::cli::backdate_the_log;
@@ -41,11 +44,14 @@ use common::cli::graph_files;
 use common::cli::graph_identity;
 use common::cli::hold_step_lock;
 use common::cli::hold_the_rebuild;
+use common::cli::idle_window_secs;
 use common::cli::insert_node;
 use common::cli::keyed;
 use common::cli::log_and_graph_files;
 use common::cli::migrated_lines;
+use common::cli::named_marker_age;
 use common::cli::no_progress;
+use common::cli::one_unanswered_spawn;
 use common::cli::read_run_events;
 use common::cli::refusal_line;
 use common::cli::refused_derived_reset;
@@ -58,10 +64,13 @@ use common::cli::run_log_head;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
+use common::cli::seed_owned;
 use common::cli::stopping_at_the_grounder;
 use common::cli::temp_store_project;
 use common::cli::write_workflow_fixture;
+use common::cli::DriverTraces;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
+use common::cli::SPAWN;
 use common::cli::{pruned_from_the_rebuilt_graph, rebuilt_through_the_head};
 use common::cli::{rebuild_owed, setup_ok, user_version, version_and_owed};
 use common::cli::{rebuilt_for, rebuilt_for_a_lost_fold};
@@ -1631,21 +1640,96 @@ fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_l
     );
 }
 
-/// Given an operator store whose `graph.db` owes a NEW rebuild - a release at fold rule 1 folded
-/// it, and no rebuild of it stands - when the operator runs `rigger setup` while a `rigger step`
-/// holds `.rigger/step.lock`, then setup refuses the rebuild beside the live run: it exits
-/// non-zero with the refusal naming the held lock and the way past it, says nothing of rebuilding,
-/// writes nothing to `graph.db` and leaves no shadow beside it; and once the step releases the
-/// lock, `rigger setup` pays the rebuild, and the file is exactly the graph a fresh fold of the
-/// log reaches.
-#[test]
-fn rigger_setup_refuses_a_new_rebuild_while_a_step_holds_its_lock_and_pays_it_once_released() {
-    let store = ReleaseEraStore::folded_at_rule_1();
-    let (before, step) = (store.graph_bytes(), hold_step_lock(store.root()));
-    let (out, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
-    let refusal = format!(
-        "rigger setup: refusing to rebuild graph.db while the run is live - {STEP_LOCK_REASON}; \
+/// The run a live-run refusal case leaves [`SPAWN`] unanswered in.
+const RUN: &str = "r1";
+
+/// The wall-clock bound, in seconds, of the spawn a live-run refusal case leaves unanswered.
+const SPAWN_BOUND_SECS: u64 = 300;
+
+/// The reasons a refusal's stderr `err` names a run live by, joined as the live-writer probe joins
+/// them: the held step lock when `step`, [`SPAWN`]'s marker when `spawn` - at the age `err` names
+/// it with, which lies inside its [`SPAWN_BOUND_SECS`] bound since the marker was touched just
+/// before the binary started - and the store's one driver registration, heartbeating inside the
+/// idle window, when `registered`.
+fn live_reasons(err: &str, step: bool, spawn: bool, registered: bool) -> String {
+    let mut reasons = Vec::new();
+    if step {
+        reasons.push(STEP_LOCK_REASON.to_string());
+    }
+    if spawn {
+        let age = named_marker_age(err);
+        assert!(
+            age < SPAWN_BOUND_SECS,
+            "the marker touched just now is {age}s old, inside its {SPAWN_BOUND_SECS}s bound; \
+             stderr: {err}"
+        );
+        reasons.push(format!(
+            "1 in-flight spawn(s) in the current run touched their liveness marker within their \
+             wall-clock bound: {SPAWN} (marker touched {age}s ago, bound {SPAWN_BOUND_SECS}s)"
+        ));
+    }
+    if registered {
+        reasons.push(format!(
+            "1 driver registration(s) for this project's store in the machine-global instance \
+             registry (spec 50) heartbeat within the last {}s - a `run`/`serve`/`step` may be \
+             advancing this run elsewhere on this machine",
+            idle_window_secs()
+        ));
+    }
+    reasons.join("; ")
+}
+
+/// The line `rigger setup` ends its stderr with when it refuses a new rebuild beside a run live
+/// for `reasons`.
+fn live_run_refusal_line(reasons: &str) -> String {
+    refusal_line(&format!(
+        "rigger setup: refusing to rebuild graph.db while the run is live - {reasons}; \
          stop the run's driver, run rigger setup, then relaunch the run by adoption"
+    ))
+}
+
+/// The traces a run's driver leaves for the store at `root`: [`SPAWN`]'s marker in [`RUN`]
+/// touched just now when `spawn`, else a second past its bound, and the store's driver
+/// registration heard from just now when `registered`, else a minute past the idle window.
+fn driver_traces(root: &Path, spawn: bool, registered: bool) -> DriverTraces {
+    let marker_secs_ago = if spawn { 0 } else { SPAWN_BOUND_SECS + 1 };
+    let heartbeat_ms_ago = if registered {
+        0
+    } else {
+        rigger::registry::DEFAULT_IDLE_MS + 60_000
+    };
+    DriverTraces::left(root, &[(RUN, marker_secs_ago)], Some(heartbeat_ms_ago))
+}
+
+/// Given an operator store whose `graph.db` owes a NEW rebuild - a release at fold rule 1 folded
+/// it, and no rebuild of it stands - and whose run [`RUN`] left [`SPAWN`] unanswered, when the
+/// operator runs `rigger setup` while the run is live by the signals a case names - a `rigger
+/// step` holding `.rigger/step.lock` when `step`, the spawn's liveness marker touched just now
+/// when `spawn` and the store's driver registration heard from just now when `registered`, each
+/// other trace [`driver_traces`] leaves dead - then setup refuses the rebuild beside the live run:
+/// it exits non-zero with the refusal naming exactly the live signals and the way past it, says
+/// nothing of rebuilding, writes nothing to `graph.db` and leaves no shadow beside it; and once
+/// the step releases the lock and every trace the driver left is dead, `rigger setup` pays the
+/// rebuild, and the file is exactly the graph a fresh fold of the log reaches.
+fn rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
+    step: bool,
+    spawn: bool,
+    registered: bool,
+) {
+    let store = ReleaseEraStore::folded_at_rule_1();
+    seed_owned(
+        store.root(),
+        &one_unanswered_spawn(RUN, Some(SPAWN_BOUND_SECS)),
+    );
+    let live = driver_traces(store.root(), spawn, registered);
+    let (before, step_lock) = (
+        store.graph_bytes(),
+        step.then(|| hold_step_lock(store.root())),
+    );
+    let (out, err, ok) = run_rigger_envs(
+        store.root(),
+        &["setup"],
+        &live.envs(&[("RIGGER_NPM", "true")]),
     );
     assert_eq!(
         (
@@ -1657,25 +1741,46 @@ fn rigger_setup_refuses_a_new_rebuild_while_a_step_holds_its_lock_and_pays_it_on
         ),
         (
             false,
-            Some(refusal_line(&refusal).as_str()),
+            Some(live_run_refusal_line(&live_reasons(&err, step, spawn, registered)).as_str()),
             vec![],
             true,
             false
         ),
-        "setup refuses the new rebuild beside the held step lock and rebuilds nothing; stdout: \
-         {out} stderr: {err}"
+        "setup refuses the new rebuild beside the live run and rebuilds nothing; stdout: {out} \
+         stderr: {err}"
     );
 
-    fs2::FileExt::unlock(&step).unwrap();
-    drop(step);
-    let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
+    drop(step_lock);
+    let dead = driver_traces(store.root(), false, false);
+    let out = setup_ok(store.root(), &dead.envs(&[("RIGGER_NPM", "true")]));
     assert_eq!(
         common::cli::lines_where(&out, |l| l.starts_with("rebuilding graph.db")),
         vec![OLDER_RULE_REBUILD_LINE],
-        "once the step releases its lock, setup pays the rebuild; stdout: {out}"
+        "once the run's driver is dead, setup pays the rebuild; stdout: {out}"
     );
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
     assert_eq!(graph, fresh, "the rebuilt graph.db is the whole log's");
+}
+
+rigger::test_cases! {
+    /// A `rigger step` holds its lock, the spawn's marker and the registration dead: the refusal
+    /// names the held lock alone.
+    rigger_setup_refuses_a_new_rebuild_while_a_step_holds_its_lock_and_pays_it_once_released:
+        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(true, false, false);
+    /// The spawn's worker touched its marker just now, under the scratch root `RIGGER_TMPDIR`
+    /// names, with the lock free and the registration dead: the refusal names the spawn alone,
+    /// read from the store's own run stream.
+    rigger_setup_refuses_a_new_rebuild_beside_a_fresh_spawn_marker_and_pays_it_once_stale:
+        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(false, true, false);
+    /// A driver registration of the store heartbeats just now in the registry `XDG_STATE_HOME`
+    /// holds, with the lock free and the spawn's marker dead: the refusal names the registration
+    /// alone.
+    rigger_setup_refuses_a_new_rebuild_beside_a_driver_registration_and_pays_it_once_idle:
+        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(false, false, true);
+    /// Every signal live at once: the refusal names all three, the lock, the spawn and the
+    /// registration, in that order.
+    rigger_setup_refuses_a_new_rebuild_naming_every_live_signal_and_pays_it_once_all_are_dead:
+        rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(true, true, true);
 }
 
 /// Given an operator store whose `graph.db` a release at fold rule 1 folded, in the state `stand`
@@ -1756,6 +1861,80 @@ rigger::test_cases! {
             (false, false),
             &[],
         );
+}
+
+/// Given a project whose `graph.db` setup created beside the empty log the store selects - the
+/// local `.rigger/events.db`, or the KurrentDB server at `conn` - whose run [`RUN`] then left
+/// [`SPAWN`] unanswered on that log, and whose `graph.db` stands as a fold made it before the
+/// cursor existed, its empty ledger beside the log's events owing the rebuild of a lost fold, when
+/// the operator runs `rigger setup` while the spawn's liveness marker is fresh, then setup reads
+/// the spawn from the log it selected and refuses the rebuild: it exits non-zero with the refusal
+/// naming the spawn, says nothing of rebuilding and writes nothing to `graph.db`; and once the
+/// marker is stale the file still owes the lost fold, which setup pays.
+fn rigger_setup_refuses_a_lost_fold_s_rebuild_beside_a_live_spawn_on_the_log_it_selects(
+    conn: Option<&str>,
+) {
+    let dir = common::cli::temp_project();
+    let root = dir.path();
+    let mut lane = vec![("RIGGER_NPM", "true")];
+    lane.extend(conn.map(|conn| ("KURRENTDB_CONN", conn)));
+    setup_ok(root, &lane);
+    let spawn = one_unanswered_spawn(RUN, Some(SPAWN_BOUND_SECS));
+    match conn {
+        None => seed_owned(root, &spawn),
+        Some(conn) => append_run_events(
+            &Namespaced::new(
+                &rigger::eventstore::kurrentdb::Store::open(conn).unwrap(),
+                &run_stream_identity(root),
+            ),
+            &spawn,
+        ),
+    }
+    let graph_db = rigger_file(root, "graph.db");
+    drop_the_cursor(&graph_db);
+    let before = std::fs::read(&graph_db).unwrap();
+
+    let live = driver_traces(root, true, false);
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &live.envs(&lane));
+    assert_eq!(
+        (
+            ok,
+            err.lines().last(),
+            rebuilding_and_rebuilt_lines(&out),
+            std::fs::read(&graph_db).unwrap() == before,
+        ),
+        (
+            false,
+            Some(live_run_refusal_line(&live_reasons(&err, false, true, false)).as_str()),
+            vec![],
+            true
+        ),
+        "setup refuses the lost fold's rebuild beside the spawn its log holds and writes nothing; \
+         stdout: {out} stderr: {err}"
+    );
+
+    let dead = driver_traces(root, false, false);
+    let out = setup_ok(root, &dead.envs(&lane));
+    assert_eq!(
+        common::cli::lines_where(&out, |l| l.starts_with("rebuilding graph.db")),
+        vec![LOST_FOLD_REBUILD_LINE],
+        "the refused setup left the lost fold owed, and once the marker is stale setup pays it; \
+         stdout: {out}"
+    );
+}
+
+rigger::test_cases! {
+    /// The local `.rigger/events.db`: setup reads the spawn from the store's own namespace of it.
+    rigger_setup_refuses_a_lost_fold_s_rebuild_beside_a_live_spawn_on_the_sqlite_log:
+        rigger_setup_refuses_a_lost_fold_s_rebuild_beside_a_live_spawn_on_the_log_it_selects(None);
+    /// The KurrentDB server `KURRENTDB_CONN` names: setup reads the spawn from the store's own
+    /// namespace of the server's log. Gracefully skipped when no container runtime is reachable.
+    rigger_setup_refuses_a_lost_fold_s_rebuild_beside_a_live_spawn_on_the_server_log:
+        common::fixtures::with_kurrentdb(|conn| {
+            rigger_setup_refuses_a_lost_fold_s_rebuild_beside_a_live_spawn_on_the_log_it_selects(
+                Some(conn),
+            )
+        });
 }
 
 /// Given a cold start - a project with neither `graph.db` nor `.rigger/events.db`, its event log
