@@ -3982,14 +3982,14 @@ mod tests {
     /// reads it reads claim by claim against the unit's change with a `file:line` witness per
     /// claim at head, a conditional claim against whether the diff changes its condition, a
     /// cross-surface claim against each surface it names and a quantified claim against each
-    /// case the code splits its subject into. The walk blocks on two findings only: a sentence
+    /// case the code splits its subject into. The walk blocks on one finding only, a sentence
     /// at head that misstates the changed behaviour, cited with the code that contradicts it,
-    /// and an added item spelled twice, cited with both spellings; a record with no per-hit
-    /// disposition, per-item count block or section for added conditions is never a finding,
-    /// and the retired requirements are spelled nowhere in the persona. The lens's own record
-    /// lists every sentence it reads with its claims and witnesses, a grouped verdict being a
-    /// record it cannot write. The records are the author's instruments, never a gate, so the
-    /// lens's rule against re-running a green gate does not reach them.
+    /// an added item's second spelling being the architecture lens's finding alone; a record
+    /// with no per-hit disposition, per-item count block or section for added conditions is
+    /// never a finding, and the retired requirements are spelled nowhere in the persona. The
+    /// lens's own record lists every sentence it reads with its claims and witnesses, a grouped
+    /// verdict being a record it cannot write. The records are the author's instruments, never
+    /// a gate, so the lens's rule against re-running a green gate does not reach them.
     #[test]
     fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
         const HEADING: &str = "## Re-run the author's searches and re-derive its walk";
@@ -4062,14 +4062,11 @@ mod tests {
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches",
-            "Two findings of the walk are BLOCKING, each on its own.",
             "A sentence at head that misstates the changed behaviour - a claim no code at head \
              makes true, a quantified claim failing at any of its cases, a consumer sentence \
-             stating a changed condition's pre-change answer - is BLOCKING, citing the \
-             sentence's `file:line` and the `file:line` of the code that contradicts it.",
-            "An item the unit adds that is spelled twice - the fact it states has a second \
-             spelling its one-home line does not name - is BLOCKING, citing both spellings' \
-             `file:line`.",
+             stating a changed condition's pre-change answer - is the walk's one BLOCKING \
+             finding, on its own, citing the sentence's `file:line` and the `file:line` of the \
+             code that contradicts it.",
             "A record with no per-hit or per-line disposition, no count block beside each item or \
              no section of its own for added or changed conditions is never a finding: the \
              bounded record satisfies the hand-over, and you read the hits yourself.",
@@ -4099,6 +4096,14 @@ mod tests {
             assert!(
                 !flat.contains(retired),
                 "sdet.md blocks on no part of the bounded record's retired form: {retired:?}"
+            );
+        }
+        // An added item's second spelling is the architecture lens's finding, the one-home rule's
+        // declared enforcement, so the sdet lens's walk carries no copy of that rule.
+        for copied in ["spelled twice", "Two findings of the walk"] {
+            assert!(
+                !flat.contains(copied),
+                "sdet.md leaves the one-home rule to the architecture lens: {copied:?}"
             );
         }
         assert!(
