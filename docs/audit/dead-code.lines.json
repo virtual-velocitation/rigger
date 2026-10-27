@@ -2,77 +2,77 @@
   {
     "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
     "name": "with_log",
-    "line": 895,
+    "line": 953,
     "test_only_references": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7088
+        "line": 7428
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7142
+        "line": 7482
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7415
+        "line": 7755
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7651
+        "line": 7992
       }
     ]
   },
   {
     "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
     "name": "with_reextraction",
-    "line": 903,
+    "line": 967,
     "test_only_references": [
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7337
-      },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "line": 7677
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 17236
+        "line": 8018
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "line": 17577
       }
     ]
   },
   {
     "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
     "name": "catch_up",
-    "line": 912,
+    "line": 1017,
     "test_only_references": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7112
+        "line": 7452
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7421
+        "line": 7761
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7458
+        "line": 7798
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7481
+        "line": 7821
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7494
+        "line": 7834
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7619
+        "line": 7960
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7659
+        "line": 8000
       }
     ]
   }

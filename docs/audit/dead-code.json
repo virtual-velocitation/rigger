@@ -2,7 +2,7 @@
   {
     "name": "with_log",
     "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-    "content_hash": "0b41a124c28a9334",
+    "content_hash": "12dcc1aeb5778a2b",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
@@ -27,7 +27,7 @@
   {
     "name": "with_reextraction",
     "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-    "content_hash": "d1efb957ff34ea75",
+    "content_hash": "2e2f90fa1157f85f",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
@@ -48,7 +48,7 @@
   {
     "name": "catch_up",
     "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-    "content_hash": "743f61dcebd01815",
+    "content_hash": "2c38b2b31a3f2fcc",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [

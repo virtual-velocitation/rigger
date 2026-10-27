@@ -28,11 +28,12 @@ use super::{
     TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
-use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Position, Revision};
+use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Filter, Position, Revision};
 use crate::lockfile::HeldLock;
 use crate::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT};
 use crate::sqlite::open_connection;
 use rigger_domain::retention::{is_ledger_entry, GenerationIngested, TYPE_GENERATION_INGESTED};
+use rigger_store_sqlite::eventstore::namespace::Namespaced;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS nodes (
@@ -358,7 +359,40 @@ pub struct Projector {
     path: String,
     /// Where a failed fold marks this file as owing its rebuild ([`owed_mark`]).
     owed_mark: Option<PathBuf>,
+    /// The event log [`Projector::catch_up`] folds this file forward from, once installed
+    /// ([`Projector::with_log`]): none folds nothing forward.
+    log: Option<CatchUpLog>,
+    /// What each [`Projector::catch_up`] call builds its re-extraction from, once installed
+    /// ([`Projector::with_reextraction`]): with none a call re-extracts nothing.
+    reextraction: Option<ReextractionFactory>,
 }
+
+/// The event log a [`Projector::catch_up`] folds forward from: the opener installed
+/// ([`Projector::with_log`]) and the log it opened, kept once an open succeeds so it is opened
+/// once for the projector's life; a failed open keeps nothing, so the next call opens again.
+struct CatchUpLog {
+    open: Box<dyn Fn() -> Result<Arc<dyn EventStore>, Error> + Send + Sync>,
+    opened: Mutex<Option<Arc<dyn EventStore>>>,
+}
+
+impl CatchUpLog {
+    /// The log, opened by the first call that asks it and kept: the kept one when an open has
+    /// succeeded, else what the opener answers now, kept when it is the log. The cache's lock is
+    /// released as this returns, so no lock of it is held across a read of the log.
+    fn opened(&self) -> Result<Arc<dyn EventStore>, Error> {
+        let mut opened = self.opened.lock().unwrap();
+        if let Some(log) = &*opened {
+            return Ok(Arc::clone(log));
+        }
+        let log = (self.open)()?;
+        *opened = Some(Arc::clone(&log));
+        Ok(log)
+    }
+}
+
+/// What builds the re-extraction of one [`Projector::catch_up`] call
+/// ([`Projector::with_reextraction`]).
+type ReextractionFactory = Box<dyn Fn() -> Box<Reextract<'static>> + Send + Sync>;
 
 /// The file beside the graph file at `path` whose presence marks it as owing its rebuild because a
 /// fold into it failed - a write lost to another writer's lock past the busy timeout leaves the
@@ -515,6 +549,14 @@ enum FrameError {
     /// A direct fold met its own position already passed over: that position's `passed_over`
     /// cause, a recorded outcome rather than a lost fold.
     Recorded(String),
+    /// A catch-up cut ([`CatchUpCut`]) found the `caught_up` cursor, read again under its write
+    /// lock, at the position named outside the call's read - at or past the cut's last position,
+    /// another writer having folded it, or below the position the page read from, a swap having
+    /// lowered it - and folded nothing: the call reads one page again from there.
+    Reread(Position),
+    /// A catch-up cut found, under its write lock, that the file folds no catch-up of its own, for
+    /// the cause named, and folded nothing.
+    Inert(Inert),
 }
 
 impl From<Error> for FrameError {
@@ -526,12 +568,17 @@ impl From<Error> for FrameError {
 impl FrameError {
     /// The domain's error for this frame error, for a caller that is not a fold, and for a rebuild
     /// pass, which fails on CONTENTION as on any failure: the text the open's error gives as
-    /// [`be`] gives it, the failure's own error, or the recorded cause.
+    /// [`be`] gives it, the failure's own error, or the recorded cause. A catch-up cut's decline
+    /// ([`FrameError::Reread`], [`FrameError::Inert`]) is never unframed: only a catch-up cut
+    /// declines, and its call answers each decline itself ([`Projector::catch_up`]).
     fn unframed(self) -> Error {
         match self {
             FrameError::Contended(e) => be(e),
             FrameError::Failed(e) => e,
             FrameError::Recorded(cause) => Error(cause),
+            FrameError::Reread(_) | FrameError::Inert(_) => {
+                unreachable!("a catch-up cut's decline is answered by its call, never unframed")
+            }
         }
     }
 }
@@ -562,6 +609,8 @@ impl Projector {
             project: project.to_string(),
             path: path.to_string(),
             owed_mark: owed_mark(path),
+            log: None,
+            reextraction: None,
         })
     }
 
@@ -812,9 +861,12 @@ impl Projector {
     /// SEEDING), in ONE immediate transaction ([`Projector::transact`]) that takes the write lock
     /// before it reads anything, and answer its verdict ([`Seeding`]). A transaction that meets
     /// another writer's lock past the busy timeout is [`Seeding::Skipped`], having read and written
-    /// nothing; any other failure is the error. A file already carrying `caught_up` is read no
-    /// further: nothing at or below its cursor is missing from the ledger, so it keeps the cursor
-    /// and its verdict loses nothing.
+    /// nothing; any other failure is the error. A file already carrying `caught_up` keeps its
+    /// cursor and its ledger is read no further: nothing at or below the cursor is missing from
+    /// it. Its verdict is lost only against `log_head`, the log's head its caller read once
+    /// ([`EventStore::log_head`]): a head below the cursor, or no head beside a cursor above 0 - a
+    /// log shorter than the prefix the cursor claims, as when the log is replaced under the file;
+    /// beside a head at or above the cursor, or no head beside a cursor at 0, it loses nothing.
     ///
     /// On a file without it the ledger is read against the positions `live` streams - the log's
     /// live selection, whose last position is the log's head - at or below the highest position
@@ -833,12 +885,14 @@ impl Projector {
         &self,
         live: &mut PositionSource,
         stamp_of: &mut StampLookup,
-        _head: Option<Position>,
+        log_head: Option<Position>,
         now: SystemTime,
     ) -> Result<Seeding, Error> {
         let seeded = self.transact(|tx| -> Result<Seeding, Error> {
-            if has_table(tx, "caught_up")? {
-                return Ok(Seeding::Ran { lost: false });
+            if let Some(cursor) = cursor_at(tx, "caught_up")? {
+                return Ok(Seeding::Ran {
+                    lost: log_head.map_or(cursor > 0, |head| head < cursor),
+                });
             }
             let highest = highest_applied(tx)?;
             let tail = rebuild_tail_from(tx)?;
@@ -891,26 +945,157 @@ impl Projector {
         }
     }
 
-    /// Install the opener of the event log this file folds forward from ([`Projector::catch_up`]).
+    /// This projector, folding forward from the event log `open` opens ([`Projector::catch_up`],
+    /// spec 124, WIRING): the store holding the log this file folds, unscoped - each call scopes it
+    /// to this projector's project. `open` is called by the first call that reads the log, never
+    /// here, and the log it opens is kept for the projector's life; an open that fails keeps
+    /// nothing, so the next call opens again.
     pub fn with_log(
-        self,
-        _open: impl Fn() -> Result<Arc<dyn EventStore>, Error> + Send + Sync + 'static,
+        mut self,
+        open: impl Fn() -> Result<Arc<dyn EventStore>, Error> + Send + Sync + 'static,
     ) -> Self {
+        self.log = Some(CatchUpLog {
+            open: Box::new(open),
+            opened: Mutex::new(None),
+        });
         self
     }
 
-    /// Install the factory each [`Projector::catch_up`] call builds its re-extraction from.
+    /// This projector, each [`Projector::catch_up`] call re-extracting the ledger entries it folds
+    /// through a re-extraction `factory` builds for that call alone (spec 124, WIRING), dropped as
+    /// the call returns.
     pub fn with_reextraction(
-        self,
-        _factory: impl Fn() -> Box<Reextract<'static>> + Send + Sync + 'static,
+        mut self,
+        factory: impl Fn() -> Box<Reextract<'static>> + Send + Sync + 'static,
     ) -> Self {
+        self.reextraction = Some(Box::new(factory));
         self
     }
 
-    /// Fold this file forward from its `caught_up` cursor by one cut of the log (spec 124, ONE
-    /// PROCEDURE).
+    /// FOLD FORWARD FROM THE CURSOR (spec 124, ONE PROCEDURE): fold this file forward from its
+    /// `caught_up` cursor by one cut of the log ([`Projector::with_log`]), in ONE immediate
+    /// transaction, and answer what the call did ([`CatchUp`]); a caller that needs the file at the
+    /// log's head loops calls until one answers [`CatchUp::AtHead`] or stops.
+    ///
+    /// The call first reads, with no transaction open, whether the file folds no catch-up of its
+    /// own, each cause in order: it holds a rebuild's state, records an older fold rule over what
+    /// it folded, carries its [`owed_mark`], or carries no cursor ([`Inert`]); the first standing
+    /// is the answer, read without opening the log. A projector handed no log answers
+    /// [`CatchUp::AtHead`]. Otherwise the call reads one page of the log past the cursor, of at
+    /// most [`FOLD_BATCH`] events of this projector's project ([`Namespaced`]), with no lock of the
+    /// file held: a page without an event is [`CatchUp::AtHead`]. The page's events of the
+    /// project's run stream are its positions to decide; its first transaction cut
+    /// ([`fold_transactions`]) - one ledger entry alone, or a run of other events - is decided and
+    /// folded by THE DECIDE STEP ([`decide_step`]), the step a rebuild's fold pass shares, each
+    /// entry with the batch the call's re-extraction answers ([`Projector::with_reextraction`];
+    /// with none installed it resolves nothing, so the entry is passed over
+    /// [`RESOLVED_TO_NOTHING`]). The cut's transaction reads the cursor again under the write lock
+    /// and ends by moving it to the cut's last position, or to the page's last position when the
+    /// cut holds every run-stream event of the page - a page of other streams' events alone moves
+    /// it there folding nothing - and the call answers [`CatchUp::Advanced`], counting the
+    /// positions that transaction itself recorded in the `applied` ledger.
+    ///
+    /// Under the write lock the cut answers a rebuild's state, an older fold rule or a dropped
+    /// cursor that another writer brought about after the first read as [`CatchUp::Inert`],
+    /// folding nothing. A cursor that another writer moved to or past the position the cut would
+    /// move it to, or that a swap lowered below where the page was read from, rolls the cut back
+    /// and the call reads one page again from that cursor; the second such page answers
+    /// [`CatchUp::Skipped`] at the position it was read from. A cursor moved inside the cut is no
+    /// outrun: the positions it passed are in the ledger, and the cut passes them. A cut that
+    /// meets another writer's write lock past the busy timeout answers [`CatchUp::Skipped`] at the
+    /// position its page was read from; a log that fails to open, a page read that fails, and a
+    /// cut whose fold fails - a re-extraction that fails included - answer [`CatchUp::Failed`] at
+    /// the position the call reads, or would read, its page from, with the failure's text. Each
+    /// of those writes nothing. The connection's lock is held for the cut's transaction
+    /// and, briefly, for the reads that decide whether an entry asks its re-extraction, and
+    /// released for the page read and the re-extraction itself. Only a failure to read the file's
+    /// own standing is an error.
+    ///
+    /// An accepted cost of the light lane, whose re-extraction resolves no entry: a call on one
+    /// host may pass over a concurrent writer's young own entry as resolved to nothing before that
+    /// writer's own fold folds it.
     pub fn catch_up(&self) -> Result<CatchUp, Error> {
-        Err(Error("catch_up is not built yet".into()))
+        let mut from = match standing_cursor(&self.conn.lock().unwrap(), &self.owed_mark)? {
+            Ok(at) => at,
+            Err(inert) => return Ok(CatchUp::Inert(inert)),
+        };
+        let Some(log) = &self.log else {
+            return Ok(CatchUp::AtHead);
+        };
+        let log = match log.opened() {
+            Ok(log) => log,
+            Err(e) => {
+                return Ok(CatchUp::Failed {
+                    at: from,
+                    error: e.0,
+                })
+            }
+        };
+        let mut reextract: Box<Reextract<'static>> = match &self.reextraction {
+            Some(build) => build(),
+            None => Box::new(|_: &Event| Ok(None)),
+        };
+        let scoped = Namespaced::new(&*log, &self.project);
+        let mut outrun = false;
+        loop {
+            let page = match scoped.read_all_page(from, &Filter::default(), FOLD_BATCH) {
+                Ok(page) => page,
+                Err(e) => {
+                    return Ok(CatchUp::Failed {
+                        at: from,
+                        error: e.to_string(),
+                    })
+                }
+            };
+            let Some(last) = page.last().map(|e| e.position) else {
+                return Ok(CatchUp::AtHead);
+            };
+            let run: Vec<Event> = page
+                .into_iter()
+                .filter(|e| e.stream == rigger_domain::run::STREAM)
+                .collect();
+            let part = fold_transactions(&run).next().unwrap_or_default();
+            let through = match part.last() {
+                Some(cut_last) if part.len() < run.len() => cut_last.position,
+                _ => last,
+            };
+            let mut cut = CatchUpCut {
+                from,
+                lock_at: from,
+                before: 0,
+                recorded: 0,
+            };
+            let decided = decide_step(
+                &mut &self.conn,
+                &self.project,
+                part,
+                through,
+                &mut cut,
+                &mut *reextract,
+                false,
+            );
+            match decided {
+                Ok(()) => {
+                    return Ok(CatchUp::Advanced {
+                        recorded: cut.recorded,
+                    })
+                }
+                Err(FrameError::Reread(at)) if !outrun => {
+                    outrun = true;
+                    from = at;
+                }
+                Err(FrameError::Reread(_) | FrameError::Contended(_)) => {
+                    return Ok(CatchUp::Skipped { at: from })
+                }
+                Err(FrameError::Inert(inert)) => return Ok(CatchUp::Inert(inert)),
+                Err(failed) => {
+                    return Ok(CatchUp::Failed {
+                        at: from,
+                        error: failed.unframed().0,
+                    })
+                }
+            }
+        }
     }
 
     /// Mark this file as missing an event the log holds ([`owed_mark`]), so a folding open refuses
@@ -1895,8 +2080,16 @@ fn fold_source(
         let mut through = start;
         for part in fold_transactions(events) {
             through = part.last().map_or(start, |e| e.position);
-            decide_step(conn, project, part, through, reextract, gather_run_closure)
-                .map_err(FrameError::unframed)?;
+            decide_step(
+                conn,
+                project,
+                part,
+                through,
+                &mut RebuildCursor,
+                reextract,
+                gather_run_closure,
+            )
+            .map_err(FrameError::unframed)?;
         }
         folded += events.len();
         progress(RebuildProgress {
@@ -1910,30 +2103,36 @@ fn fold_source(
 }
 
 /// THE DECIDE STEP (spec 124): fold the one transaction cut `part` of a fold pass
-/// ([`fold_transactions`]) - one ledger entry of perception alone, or a run of other events - into
-/// `conn`, deciding each position in order, and advance the cursor to `through`, the cut's last
-/// position ([`set_cursor`]), in the transaction that folds it. A position already in the `applied`
-/// ledger, passed over or folded, is passed by the fold's per-position guard. An event other than
-/// an entry folds as [`Projection::apply`] folds it, from its own bytes, under a savepoint of its
-/// own ([`fold_in_savepoint`]); one whose own payload the judge ([`super::check_fold_payload`] -
-/// deterministic, so no fold will ever hold it) rejects is passed over with the class
-/// [`PAYLOAD_REJECTED`]. An entry folds as [`Projection::apply_generation`] folds it
-/// ([`fold_entry`]), in its own transaction ([`fold_entry_alone`]), with the batch `reextract`
-/// answers for it before that transaction opens ([`extracted_batch`], spec 122, EXTRACTION
-/// OUTSIDE THE WRITE TRANSACTION), so no extraction holds the write lock: one whose own payload
-/// the judge rejects is passed over with [`PAYLOAD_REJECTED`], one whose re-extracted batch holds
-/// an event the judge rejects with [`FOLD_FAILED`], and one whose re-extraction resolves to
-/// nothing with [`RESOLVED_TO_NOTHING`] (CONTENT). Any other failure (ENVIRONMENT) - a
-/// `reextract` that fails, before the entry's transaction opens; an entry that asks a batch it
-/// was not handed on its retry too ([`unread_entry`]); a fold's own error over a payload and a
-/// batch the judge accepts; a statement outside every fold - propagates with the cut's
-/// transaction rolled back, and an open meeting another writer's lock past the busy timeout
-/// answers [`FrameError::Contended`] (CONTENTION), so nothing is passed over but CONTENT.
-fn decide_step(
-    conn: &mut Connection,
+/// ([`fold_transactions`]) - one ledger entry of perception alone, or a run of other events, none
+/// for a catch-up page of other streams' events alone - into the connection `conn` lends, deciding
+/// each position in order, in a transaction that `cursor` opens before any position folds and,
+/// once they are folded, closes at `through` ([`FoldCursor`]): a rebuild's fold pass
+/// ([`fold_source`]) advancing its `rebuild_cursor` to the cut's last position ([`RebuildCursor`]),
+/// a catch-up ([`Projector::catch_up`]) reading its `caught_up` cursor again under the write lock
+/// and advancing it ([`CatchUpCut`]); a cursor that declines its open folds nothing, answering
+/// its decline. A position already in the `applied` ledger, passed over or folded, is passed by
+/// the fold's per-position guard. An event other than an entry folds as [`Projection::apply`]
+/// folds it, from its own bytes, under a savepoint of its own ([`fold_in_savepoint`]); one whose
+/// own payload the judge ([`super::check_fold_payload`] - deterministic, so no fold will ever hold
+/// it) rejects is passed over with the class [`PAYLOAD_REJECTED`]. An entry folds as
+/// [`Projection::apply_generation`] folds it ([`fold_entry`]), in its own transaction
+/// ([`fold_entry_alone`]), with the batch `reextract` answers for it before that transaction opens
+/// ([`extracted_batch`], spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION), so no extraction
+/// holds the write lock: one whose own payload the judge rejects is passed over with
+/// [`PAYLOAD_REJECTED`], one whose re-extracted batch holds an event the judge rejects with
+/// [`FOLD_FAILED`], and one whose re-extraction resolves to nothing with [`RESOLVED_TO_NOTHING`]
+/// (CONTENT). Any other failure (ENVIRONMENT) - a `reextract` that fails, before the entry's
+/// transaction opens; an entry that asks a batch it was not handed on its retry too
+/// ([`unread_entry`]); a fold's own error over a payload and a batch the judge accepts; a statement
+/// outside every fold - propagates with the cut's transaction rolled back, and an open meeting
+/// another writer's lock past the busy timeout answers [`FrameError::Contended`] (CONTENTION), so
+/// nothing is passed over but CONTENT.
+fn decide_step<L: Lend>(
+    conn: &mut L,
     project: &str,
     part: &[Event],
     through: Position,
+    cursor: &mut impl FoldCursor,
     reextract: &mut Reextract,
     gather_run_closure: bool,
 ) -> Result<(), FrameError> {
@@ -1942,20 +2141,25 @@ fn decide_step(
             conn,
             project,
             entry,
-            &mut |read| extracted_batch(read, project, entry, reextract),
+            through,
+            cursor,
+            &mut |lent| extracted_batch(lent, project, entry, reextract),
             gather_run_closure,
         ),
-        _ => in_transaction(conn, project, |tx| {
-            for e in part {
-                fold_in_savepoint(
-                    tx,
-                    e,
-                    gather_run_closure,
-                    || fold_new(tx, std::slice::from_ref(e), project).map(|_| Decided::Read),
-                    || rejected_payload(e),
-                )?;
-            }
-            set_cursor(tx, "rebuild_cursor", through)
+        _ => conn.lend(|conn| {
+            in_transaction(conn, project, |tx| {
+                cursor.open(tx, through)?;
+                for e in part {
+                    fold_in_savepoint(
+                        tx,
+                        e,
+                        gather_run_closure,
+                        || fold_new(tx, std::slice::from_ref(e), project).map(|_| Decided::Read),
+                        || rejected_payload(e),
+                    )?;
+                }
+                cursor.close(tx, through)
+            })
         }),
     }
 }
@@ -2042,45 +2246,51 @@ fn passed_over_cause(conn: &Connection, position: Position) -> Result<Option<Str
 }
 
 /// The entry's body of a fold pass ([`decide_step`], spec 122, EXTRACTION OUTSIDE THE WRITE
-/// TRANSACTION): fold the ledger entry `entry` alone, in a transaction on `conn` of its own that
-/// advances the cursor to it ([`set_cursor`]), its fold ([`fold_entry`]) handed what `batch`
-/// answers - asked, with no transaction open on `conn`, before that transaction opens. An entry
-/// whose re-extraction resolves to nothing ([`EntryOutcome::Unresolved`]) is passed over with
+/// TRANSACTION): fold the ledger entry `entry` alone, in a transaction of its own on the
+/// connection `conn` lends, that `cursor` opens before the entry folds and closes at `through`
+/// once it is read ([`FoldCursor`]), its fold ([`fold_entry`]) handed what `batch` answers -
+/// asked, with no transaction open, before that transaction opens. An entry whose re-extraction
+/// resolves to nothing ([`EntryOutcome::Unresolved`]) is passed over with
 /// [`RESOLVED_TO_NOTHING`]; one whose fold fails is passed over with the cause the judge rejects
 /// its own payload for, else the one `batch` named for its batch, else the failure propagates
 /// ([`fold_in_savepoint`]). An entry whose fold asks a batch `batch` did not extract
 /// ([`BatchAnswer::Unread`]) is undone with its savepoint, so its transaction commits no write
 /// and leaves the cursor where it stood; `batch` is asked again and the entry retried ONCE (THE
 /// REVERSE RACE), and a second miss fails with [`unread_entry`].
-fn fold_entry_alone(
-    conn: &mut Connection,
+fn fold_entry_alone<L: Lend>(
+    conn: &mut L,
     project: &str,
     entry: &Event,
-    batch: &mut dyn FnMut(&Connection) -> Result<Extracted, Error>,
+    through: Position,
+    cursor: &mut impl FoldCursor,
+    batch: &mut dyn FnMut(&mut L) -> Result<Extracted, Error>,
     gather_run_closure: bool,
 ) -> Result<(), FrameError> {
     let mut attempt = || -> Result<bool, FrameError> {
-        let Extracted { answer, rejected } = batch(&*conn)?;
-        in_transaction(&mut *conn, project, |tx| {
-            let read = fold_in_savepoint(
-                tx,
-                entry,
-                gather_run_closure,
-                || {
-                    fold_entry(tx, entry, project, || Ok(answer)).map(|outcome| match outcome {
-                        EntryOutcome::Folded(_) => Decided::Read,
-                        EntryOutcome::Unresolved => {
-                            Decided::PassedOver(RESOLVED_TO_NOTHING.to_string())
-                        }
-                        EntryOutcome::Unread => Decided::Unread,
-                    })
-                },
-                || rejected_payload(entry).or(rejected),
-            )?;
-            if read {
-                set_cursor(tx, "rebuild_cursor", entry.position)?;
-            }
-            Ok::<_, Error>(read)
+        let Extracted { answer, rejected } = batch(conn)?;
+        conn.lend(|conn| {
+            in_transaction(conn, project, |tx| {
+                cursor.open(tx, through)?;
+                let read = fold_in_savepoint(
+                    tx,
+                    entry,
+                    gather_run_closure,
+                    || {
+                        fold_entry(tx, entry, project, || Ok(answer)).map(|outcome| match outcome {
+                            EntryOutcome::Folded(_) => Decided::Read,
+                            EntryOutcome::Unresolved => {
+                                Decided::PassedOver(RESOLVED_TO_NOTHING.to_string())
+                            }
+                            EntryOutcome::Unread => Decided::Unread,
+                        })
+                    },
+                    || rejected_payload(entry).or(rejected),
+                )?;
+                if read {
+                    cursor.close(tx, through)?;
+                }
+                Ok::<_, FrameError>(read)
+            })
         })
     };
     if attempt()? || attempt()? {
@@ -2099,8 +2309,9 @@ struct Extracted {
 }
 
 /// What a fold pass hands the fold of the ledger entry `entry` (spec 122, EXTRACTION OUTSIDE THE
-/// WRITE TRANSACTION), read from `conn` with no transaction open: the batch `reextract` answers
-/// when the entry's fold will ask it - its position is not in the `applied` ledger
+/// WRITE TRANSACTION), read with no transaction open from the connection `conn` lends for those
+/// reads alone, so neither the re-extraction nor the judging holds its lock: the batch `reextract`
+/// answers when the entry's fold will ask it - its position is not in the `applied` ledger
 /// ([`has_applied`]) and it names a generation its identity does not hold ([`is_re_recording`]) -
 /// beside the cause the entry is passed over with should its fold fail on that batch: the first
 /// event of it whose payload the judge ([`super::check_fold_payload`]) rejects, under
@@ -2109,16 +2320,18 @@ struct Extracted {
 /// already folded, a re-recording, or an entry whose payload does not parse, whose fold fails its
 /// parse before it asks.
 fn extracted_batch(
-    conn: &Connection,
+    conn: &mut impl Lend,
     project: &str,
     entry: &Event,
     reextract: &mut Reextract,
 ) -> Result<Extracted, Error> {
-    let asks = !has_applied(conn, entry.position)?
-        && match GenerationIngested::parse(&entry.data) {
-            Ok(named) => !is_re_recording(conn, project, &named)?,
-            Err(_) => false,
-        };
+    let asks = conn.lend(|conn| -> Result<bool, Error> {
+        Ok(!has_applied(conn, entry.position)?
+            && match GenerationIngested::parse(&entry.data) {
+                Ok(named) => !is_re_recording(conn, project, &named)?,
+                Err(_) => false,
+            })
+    })?;
     if !asks {
         return Ok(Extracted {
             answer: BatchAnswer::Unread,
@@ -2147,6 +2360,118 @@ fn unread_entry(position: Position) -> Error {
     ))
 }
 
+/// A connection THE DECIDE STEP ([`decide_step`]) folds into, lent for one use at a time: a
+/// rebuild's fold pass lends the connection it holds for the whole pass ([`Connection`]), and a
+/// catch-up its projector's, locking the projector's mutex for that use alone
+/// (`&Mutex<Connection>`), so between two uses - the page read, the re-extraction - the call holds
+/// no lock of the file (spec 124, ONE PROCEDURE).
+trait Lend {
+    /// Answer what `use_` answers, handed the connection for its length.
+    fn lend<T>(&mut self, use_: impl FnOnce(&mut Connection) -> T) -> T;
+}
+
+impl Lend for Connection {
+    fn lend<T>(&mut self, use_: impl FnOnce(&mut Connection) -> T) -> T {
+        use_(self)
+    }
+}
+
+impl Lend for &Mutex<Connection> {
+    fn lend<T>(&mut self, use_: impl FnOnce(&mut Connection) -> T) -> T {
+        use_(&mut self.lock().unwrap())
+    }
+}
+
+/// The cursor one transaction cut of THE DECIDE STEP ([`decide_step`]) answers to, handed the
+/// cut's last position: asked in the cut's transaction before any position folds, and again once
+/// they are folded.
+trait FoldCursor {
+    /// Before any position of the cut folds: an error declines the cut, which folds nothing.
+    fn open(&mut self, tx: &Transaction, through: Position) -> Result<(), FrameError>;
+    /// Once the cut's positions are folded: advance the cursor to `through`.
+    fn close(&mut self, tx: &Transaction, through: Position) -> Result<(), FrameError>;
+}
+
+/// The cursor of a rebuild's fold pass ([`fold_source`]): the `rebuild_cursor` of its
+/// [`REBUILD_STATE`], opened with no check and set at the cut's last position ([`set_cursor`]),
+/// committed with the transaction that folded it.
+struct RebuildCursor;
+
+impl FoldCursor for RebuildCursor {
+    fn open(&mut self, _: &Transaction, _: Position) -> Result<(), FrameError> {
+        Ok(())
+    }
+
+    fn close(&mut self, tx: &Transaction, through: Position) -> Result<(), FrameError> {
+        Ok(set_cursor(tx, "rebuild_cursor", through)?)
+    }
+}
+
+/// The cut of one [`Projector::catch_up`] call, its page read from `from` (spec 124, ONE
+/// PROCEDURE). It opens by reading the file's standing again under the write lock
+/// ([`standing_cursor`]): a rebuild's state, an older fold rule or no `caught_up` cursor declines
+/// it as [`FrameError::Inert`], and a cursor at or past the cut's last position, or below `from`,
+/// as [`FrameError::Reread`] at that cursor; otherwise `lock_at` is that cursor and `before` the
+/// positions the `applied` ledger records past it through the cut's last ([`applied_between`]).
+/// It closes by setting `caught_up` at the cut's last position ([`set_cursor`]) and counting in
+/// `recorded` the positions that ledger gained there in the cut's own transaction.
+struct CatchUpCut {
+    from: Position,
+    lock_at: Position,
+    before: usize,
+    recorded: usize,
+}
+
+impl FoldCursor for CatchUpCut {
+    fn open(&mut self, tx: &Transaction, through: Position) -> Result<(), FrameError> {
+        let at = standing_cursor(tx, &None)?.map_err(FrameError::Inert)?;
+        if !(self.from <= at && at < through) {
+            return Err(FrameError::Reread(at));
+        }
+        self.lock_at = at;
+        self.before = applied_between(tx, at, through)?;
+        Ok(())
+    }
+
+    fn close(&mut self, tx: &Transaction, through: Position) -> Result<(), FrameError> {
+        set_cursor(tx, "caught_up", through)?;
+        self.recorded = applied_between(tx, self.lock_at, through)? - self.before;
+        Ok(())
+    }
+}
+
+/// Where the `caught_up` cursor of the file behind `conn` stands for a catch-up of its own
+/// ([`Projector::catch_up`]), or the first cause, in this order, that it folds none ([`Inert`]):
+/// it holds a rebuild's state ([`rebuild_tail_owed`]), it records an older fold rule over what it
+/// folded ([`rebuild_owed`]), it carries `mark` ([`marked`]), or it carries no cursor.
+fn standing_cursor(
+    conn: &Connection,
+    mark: &Option<PathBuf>,
+) -> Result<Result<Position, Inert>, Error> {
+    if rebuild_tail_owed(conn)? {
+        return Ok(Err(Inert::RebuildState));
+    }
+    if rebuild_owed(conn)? {
+        return Ok(Err(Inert::OlderRule));
+    }
+    if marked(mark) {
+        return Ok(Err(Inert::Marked));
+    }
+    Ok(cursor_at(conn, "caught_up")?.ok_or(Inert::NoCursor))
+}
+
+/// How many positions the `applied` ledger of the file behind `conn` records past `after`, up to
+/// and including `through`.
+fn applied_between(conn: &Connection, after: Position, through: Position) -> Result<usize, Error> {
+    conn.query_row(
+        "SELECT count(*) FROM applied WHERE position > ?1 AND position <= ?2",
+        [after as i64, through as i64],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n as usize)
+    .map_err(be)
+}
+
 /// The most events other than ledger entries of perception that one transaction of a fold pass
 /// ([`fold_source`]) folds before it commits (spec 122, ONE BATCHING RULE): a writer meeting the
 /// pass waits at most this many events' fold, or one entry's alone.
@@ -2170,10 +2495,20 @@ fn rebuild_tail_owed(conn: &Connection) -> Result<bool, Error> {
 /// The cursor a [`Projector::rebuild`] swapped into the file behind `conn` - the last position it
 /// folded, past which the file owes that rebuild's tail - or `None` for a file that owes no tail.
 fn rebuild_tail_from(conn: &Connection) -> Result<Option<Position>, Error> {
-    if !rebuild_tail_owed(conn)? {
+    cursor_at(conn, "rebuild_cursor")
+}
+
+/// Where the one-row cursor table `cursor` of the file behind `conn` stands, or `None` on a file
+/// without it.
+fn cursor_at(conn: &Connection, cursor: &str) -> Result<Option<Position>, Error> {
+    if !has_table(conn, cursor)? {
         return Ok(None);
     }
-    rebuild_cursor(conn).map(Some)
+    conn.query_row(&format!("SELECT position FROM {cursor}"), [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map(|position| Some(position as Position))
+    .map_err(be)
 }
 
 /// The last position the rebuild whose [`REBUILD_STATE`] the file behind `conn` holds folded.
@@ -2207,16 +2542,21 @@ fn create_cursor(tx: &Transaction, at: Position) -> Result<(), Error> {
     .map_err(be)
 }
 
-/// Set the one-row cursor table `cursor` of the file in `tx` at `at`: the one statement that moves
-/// where a cursor stands. The rebuild state's `rebuild_cursor` ([`REBUILD_STATE`]) is set at the
-/// last position a fold pass ([`fold_source`]) folded, committed with the transaction that folded
-/// it ([`decide_step`], [`fold_entry_alone`]); the `caught_up` cursor, on a file carrying it
-/// ([`create_cursor`]), is set by a rebuild's drop ([`Projector::rebuild`]) at the last position
-/// the rebuild folded (spec 124, THE CURSOR AND ITS SEEDING).
+/// Set the one-row cursor table `cursor` of the file in `tx` at `at` where it stands below `at`:
+/// the one statement that moves where a cursor stands, never backward - a cursor at or above `at`
+/// keeps where it stands (spec 124, ONE PROCEDURE). The rebuild state's `rebuild_cursor`
+/// ([`REBUILD_STATE`]) is set at the last position a fold pass ([`fold_source`]) folded, committed
+/// with the transaction that folded it ([`RebuildCursor`]); the `caught_up` cursor, on a file
+/// carrying it ([`create_cursor`]), is set by a rebuild's drop ([`Projector::rebuild`]) at the last
+/// position the rebuild folded (spec 124, THE CURSOR AND ITS SEEDING), and by a catch-up's cut at
+/// the last position it read up to ([`CatchUpCut`]).
 fn set_cursor(tx: &Transaction, cursor: &str, at: Position) -> Result<(), Error> {
-    tx.execute(&format!("UPDATE {cursor} SET position = ?1"), [at as i64])
-        .map(drop)
-        .map_err(be)
+    tx.execute(
+        &format!("UPDATE {cursor} SET position = max(position, ?1)"),
+        [at as i64],
+    )
+    .map(drop)
+    .map_err(be)
 }
 
 /// Whether the file behind `conn` holds a table named `name`.
@@ -7507,8 +7847,9 @@ mod tests {
 
     /// Spec 124, ONE PROCEDURE: a call's cut reads the cursor again under its write lock. Another
     /// writer's catch-up past the cut, or a swap lowering the cursor below the call's page, sends
-    /// the call to read one page again from where the cursor then stands, and a second such page
-    /// answers [`CatchUp::Skipped`] at the first one's start, writing nothing. Another writer's
+    /// the call to read one page again from where the cursor then stands, and when that page's cut
+    /// is outrun too the call answers [`CatchUp::Skipped`] at the position it read that page from,
+    /// writing nothing. Another writer's
     /// direct fold of a position of the cut, or a cursor moved inside the cut, is no outrun: the
     /// call folds the rest, counting only the positions its own transaction recorded.
     #[test]
@@ -17503,10 +17844,13 @@ mod tests {
                 let (_dir, path, p) = owing_its_tail();
                 let mut conn = connection_to(&path);
                 let mut asks = Vec::new();
+                let entry = h1_at_7();
                 let folded = fold_entry_alone(
                     &mut conn,
                     "test",
-                    &h1_at_7(),
+                    &entry,
+                    entry.position,
+                    &mut RebuildCursor,
                     &mut |_| {
                         asks.push(committed_of(&p));
                         Ok(Extracted {
