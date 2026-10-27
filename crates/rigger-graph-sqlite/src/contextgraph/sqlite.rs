@@ -513,8 +513,9 @@ pub enum CatchUp {
     /// The call folded one cut of the log past the cursor and advanced the cursor to its end;
     /// `recorded` counts the positions the cut's transaction itself wrote to the `applied` ledger.
     Advanced { recorded: usize },
-    /// The call's cut met another writer - its write lock past the busy timeout, or a cursor moved
-    /// past the call's read twice - and wrote nothing; `at` is the position its last page read from.
+    /// The call's cut met another writer - its write lock past the busy timeout, or, on both of its
+    /// page reads, a cursor at or past the cut's last position or below where the page read from -
+    /// and wrote nothing; `at` is the position its last page read from.
     Skipped { at: Position },
     /// The call failed - the log's open, its page read or the cut's fold - and wrote nothing; `at`
     /// is the position its last page read from, `error` the failure's text.
