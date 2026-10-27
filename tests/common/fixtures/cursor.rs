@@ -88,3 +88,33 @@ pub fn drop_the_cursor(graph_db: &Path) {
         .execute_batch("DROP TABLE caught_up")
         .unwrap();
 }
+
+/// The line `rigger setup` prints once its catch-up of `graph.db` reached the log's head with `n`
+/// positions recorded by its calls (spec 124, CATCH-UP LINES).
+pub fn caught_up_line(n: usize) -> String {
+    format!("caught graph.db up with the event log: folded {n} event(s) it missed")
+}
+
+/// The line `rigger setup` prints, exiting zero, when another writer stopped its catch-up at the
+/// position `at` its last call read from (spec 124, CATCH-UP LINES).
+pub fn catch_up_skipped_line(at: u64) -> String {
+    catch_up_stopped(
+        at,
+        "another writer holds the write lock or advanced the cursor past this call's read - the \
+         next rigger setup continues it",
+    )
+}
+
+/// The line `rigger setup` fails with when its catch-up stopped at the position `at` its last call
+/// read from, on `error` (spec 124, CATCH-UP LINES).
+pub fn catch_up_failed_line(at: u64, error: &str) -> String {
+    catch_up_stopped(
+        at,
+        &format!("{error} - rerun rigger setup once the cause is fixed"),
+    )
+}
+
+/// The head both catch-up stop lines share: where the catch-up stopped, and why.
+fn catch_up_stopped(at: u64, why: &str) -> String {
+    format!("graph.db catch-up stopped at position {at}: {why}")
+}

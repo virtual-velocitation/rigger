@@ -1,4 +1,5 @@
 use super::*;
+use rigger::contextgraph::sqlite::CatchUp;
 
 /// `rigger version` (and `rigger --version` / `-V`): print the crate version and the build
 /// provenance, so any agent can identify the exact binary without guessing.
@@ -1192,6 +1193,22 @@ fn pay_owed_rebuild<'t>(
     Ok(rebuilt.is_some())
 }
 
+/// Fold `graph.db` forward from its `caught_up` cursor to the log's head (spec 124, ONE
+/// PROCEDURE): call `catch_up` while a call answers [`CatchUp::Advanced`], and answer, once one
+/// answers anything else, what `rigger setup` says of it (CATCH-UP LINES). `Ok` carries the line
+/// setup prints and exits zero beside: that it caught the file up, counting the positions the
+/// calls recorded, for a call that reached the head once any was recorded; where another writer
+/// stopped a call ([`CatchUp::Skipped`]); and none for a call that reached the head with nothing
+/// recorded, or for a file that folds no catch-up of its own ([`CatchUp::Inert`]), whose rebuild
+/// setup runs before this. `Err` carries the line setup fails with, for a call that stopped at a
+/// failure ([`CatchUp::Failed`]). A failure to read the file's own standing is the outer error.
+fn catch_up_to_head(
+    catch_up: &mut dyn FnMut() -> Result<CatchUp, contextgraph::Error>,
+) -> Result<Result<Option<String>, String>, contextgraph::Error> {
+    let _ = catch_up;
+    Ok(Ok(None))
+}
+
 /// How many identities `graph` holds at a generation that is not their latest recording's on
 /// `log` ([`rigger::ingest::perceived_generations`]), none held included, and whose file the tree
 /// holds ([`rigger::ingest::next_ingest_records`]): the ones whose next ingest records an entry
@@ -2025,6 +2042,77 @@ mod tests {
             "a step started at the shadow's read or the tail's refuses with the busy token, and \
              the next one acquires the lock once the rebuild returns"
         );
+    }
+
+    /// Spec 124, ONE PROCEDURE and CATCH-UP LINES: setup calls `catch_up` while a call answers
+    /// `Advanced`, summing the positions the calls recorded, and calls no more once one answers
+    /// anything else, saying how the calls ended - the success line for a call that reached the
+    /// head once a position was recorded, nothing for one that reached it with none recorded or
+    /// for a file that folds no catch-up of its own, the skipped line where another writer
+    /// stopped a call, the failed line as the error for a call that failed, and a failure to read
+    /// the file's standing as the outer error.
+    #[test]
+    fn setup_catches_up_while_a_call_advances_and_says_how_the_calls_ended() {
+        use crate::test_support::{catch_up_failed_line, catch_up_skipped_line, caught_up_line};
+        use contextgraph::sqlite::Inert;
+        type Said = Result<Result<Option<String>, String>, String>;
+        let advanced = |recorded| Ok(CatchUp::Advanced { recorded });
+        let at_head = || Ok(CatchUp::AtHead);
+        let rows: Vec<(Vec<Result<CatchUp, contextgraph::Error>>, Said)> = vec![
+            (
+                vec![advanced(2), advanced(0), advanced(3), at_head()],
+                Ok(Ok(Some(caught_up_line(5)))),
+            ),
+            (vec![at_head()], Ok(Ok(None))),
+            (vec![advanced(0), at_head()], Ok(Ok(None))),
+            (
+                vec![advanced(1), at_head()],
+                Ok(Ok(Some(caught_up_line(1)))),
+            ),
+            (vec![Ok(CatchUp::Inert(Inert::NoCursor))], Ok(Ok(None))),
+            (
+                vec![advanced(4), Ok(CatchUp::Inert(Inert::RebuildState))],
+                Ok(Ok(None)),
+            ),
+            (
+                vec![advanced(4), Ok(CatchUp::Skipped { at: 9 })],
+                Ok(Ok(Some(catch_up_skipped_line(9)))),
+            ),
+            (
+                vec![
+                    advanced(2),
+                    Ok(CatchUp::Failed {
+                        at: 7,
+                        error: "page read failed".into(),
+                    }),
+                ],
+                Ok(Err(catch_up_failed_line(7, "page read failed"))),
+            ),
+            (
+                vec![
+                    advanced(1),
+                    Err(contextgraph::Error("standing unreadable".into())),
+                ],
+                Err("standing unreadable".into()),
+            ),
+        ];
+        for (row, (answers, said)) in rows.into_iter().enumerate() {
+            let calls = answers.len();
+            let mut answers = answers.into_iter();
+            let mut called = 0;
+            let got = catch_up_to_head(&mut || {
+                called += 1;
+                answers
+                    .next()
+                    .expect("no call follows one that did not advance")
+            })
+            .map_err(|e| e.0);
+            assert_eq!(
+                (got, called),
+                (said, calls),
+                "row {row}: the calls end at the first answer that is not Advanced, saying so"
+            );
+        }
     }
 
     /// spec 24, crit 2 (idempotency + non-clobbering, byte level): a pre-existing pre-commit

@@ -882,13 +882,16 @@ pub fn remove_the_store_file(root: &Path, name: &str) {
     }
 }
 
-/// The lines of `rigger setup`'s stdout `out` that report its rebuild of `graph.db`: the cause it
-/// rebuilds for, that it rebuilt, and what the file passed over, in the order printed.
+/// The lines of `rigger setup`'s stdout `out` that report how it brought `graph.db` up to the log:
+/// the cause it rebuilds for, that it rebuilt, how its catch-up ended or that it was not started,
+/// and what the file passed over, in the order printed.
 pub fn rebuild_lines(out: &str) -> Vec<String> {
     out.lines()
         .filter(|l| {
             l.starts_with("rebuilding graph.db")
                 || l.starts_with("rebuilt graph.db")
+                || l.starts_with("caught graph.db up")
+                || l.starts_with("graph.db catch-up")
                 || l.starts_with("passed over ")
         })
         .map(str::to_string)

@@ -2474,8 +2474,9 @@ fn applied_between(conn: &Connection, after: Position, through: Position) -> Res
 
 /// The most events other than ledger entries of perception that one transaction of a fold pass
 /// ([`fold_source`]) folds before it commits (spec 122, ONE BATCHING RULE): a writer meeting the
-/// pass waits at most this many events' fold, or one entry's alone.
-const FOLD_BATCH: usize = 256;
+/// pass waits at most this many events' fold, or one entry's alone. It is also the most events one
+/// [`Projector::catch_up`] call reads in its page of the log.
+pub const FOLD_BATCH: usize = 256;
 
 /// The transactions a fold pass ([`fold_source`]) folds `events` in, in order: every ledger entry
 /// of perception alone, and every run of other events - before, between or after the entries -
@@ -6983,12 +6984,9 @@ mod tests {
         // next rebuild resumes, with a storage error waiting at d-boom's node.
         Connection::open(&shadow)
             .unwrap()
-            .execute_batch(&format!(
-                "{REBUILD_STATE}
-                 CREATE TRIGGER boom BEFORE INSERT ON nodes WHEN NEW.id = 'd-boom'
-                 BEGIN SELECT RAISE(ABORT, 'disk gave out'); END;"
-            ))
+            .execute_batch(REBUILD_STATE)
             .unwrap();
+        crate::test_support::the_disk_gives_out_at_d_boom(Path::new(&shadow));
 
         let mut reads_from = Vec::new();
         let failed = rebuild_in_batches(path, &log, 1, &mut reads_from);
@@ -6998,15 +6996,14 @@ mod tests {
                 applied(&Projector::open(path, "test").unwrap(), 1),
             ),
             (
-                Err(crate::test_support::graph_error("disk gave out")),
+                Err(crate::test_support::graph_error(
+                    crate::test_support::DISK_GAVE_OUT
+                )),
                 false
             ),
             "the storage error propagates and the live file is untouched"
         );
-        Connection::open(&shadow)
-            .unwrap()
-            .execute_batch("DROP TRIGGER boom;")
-            .unwrap();
+        crate::test_support::the_disk_recovers(Path::new(&shadow));
         let rebuilt = rebuild_in_batches(path, &log, 1, &mut reads_from).unwrap();
         let p = Projector::open(path, "test").unwrap();
         assert_eq!(

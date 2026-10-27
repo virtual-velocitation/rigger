@@ -922,7 +922,7 @@
   {
     "id": "dup-e22da6af6331",
     "disposition": "not-a-duplicate",
-    "reason": "The folding store and the `Namespaced` decorator each owe the port's `log_head`, which has no default (spec 124), and each body is the one call to the store it wraps: the head is the whole log's for both, so neither scopes nor records anything, and no shared work exists to lift."
+    "reason": "The folding store and the `Namespaced` decorator each owe the port's `log_head`, which has no default (spec 124), and each body is the one call to the store it wraps: the head is the whole log's for both, so neither scopes nor records anything, and no shared work exists to lift. The one forwarding helper the tree has, `delegate_event_store_reads!`, is the test doubles' (`tests/common/fixtures/events.rs`), which no production decorator reaches, and `Namespaced` scopes every other read it forwards, so neither could expand it."
   },
   {
     "id": "dup-033af83f765c",
@@ -1020,9 +1020,14 @@
     "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker, `unit_of` splits a spawn id at its last `/`, and `digest_address` takes the commit after a gate digest's `:` separator: three key grammars with different delimiters, each parsed in exactly one place."
   },
   {
-    "id": "dup-cc1f48bd7d99",
+    "id": "dup-3dc74f749a1a",
     "disposition": "not-a-duplicate",
-    "reason": "`f11` renders the plan critique's F11 advisory for one criterion and `graph_build_line` renders the line `rigger graph build` prints for an event count and a fold-loss clause: two test-side spellings of different product lines, each defined once, sharing only the shape of one `format!` over a number and a string."
+    "reason": "`f11` renders the plan critique's F11 advisory for one criterion, `graph_build_line` renders the line `rigger graph build` prints for an event count and a fold-loss clause, and the cursor fixtures' `catch_up_stopped` renders the head both of `rigger setup`'s catch-up stop lines share for a position and a reason: three test-side spellings of different product lines, each defined once, sharing only the shape of one `format!` over a number and a string."
+  },
+  {
+    "id": "dup-a7957a9941e4",
+    "disposition": "not-a-duplicate",
+    "reason": "`reclaimed_line` is the line `rigger reset --derived` prints for the bytes its compaction reclaimed and `caught_up_line` the line `rigger setup` prints for the events its catch-up folded: two test-side expected lines of different commands, each defined once, sharing only the shape of one `format!` over one count."
   },
   {
     "id": "dup-90e32eb50d95",

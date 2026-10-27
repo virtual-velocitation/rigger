@@ -6,19 +6,19 @@
     "test_only_references": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7428
+        "line": 7425
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7482
+        "line": 7479
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7755
+        "line": 7752
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7992
+        "line": 7989
       }
     ]
   },
@@ -29,50 +29,26 @@
     "test_only_references": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7677
+        "line": 7674
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 8018
+        "line": 8015
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 17577
+        "line": 17574
       }
     ]
   },
   {
-    "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-    "name": "catch_up",
-    "line": 1017,
+    "file": "src/cli/setup.rs",
+    "name": "catch_up_to_head",
+    "line": 1205,
     "test_only_references": [
       {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7452
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7761
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7798
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7821
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7834
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 7960
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "line": 8000
+        "file": "src/cli/setup.rs",
+        "line": 2103
       }
     ]
   }

@@ -26,9 +26,9 @@ use common::cli::{
     REBUILT_LINE,
 };
 use common::fixtures::{
-    drop_the_cursor, events_of, folds, generation_ingested, held_generations, judged_cause,
-    passed_over_rows, rejected_row, walked_generation, write_text, DOCUMENT_PATH, SOURCE_PATH,
-    TEST_MODULE_PATH, WORKFLOW_PATH,
+    caught_up_line, drop_the_cursor, events_of, folds, generation_ingested, held_generations,
+    judged_cause, passed_over_rows, rejected_row, walked_generation, write_text, DOCUMENT_PATH,
+    SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
 };
 use rigger::contextgraph::sqlite::{
     Projector, RebuildSink, FOLD_FAILED, PAYLOAD_REJECTED, RESOLVED_TO_NOTHING,
@@ -38,7 +38,7 @@ use rigger::eventstore::{Event, ExpectedRevision};
 use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
 
 #[cfg(feature = "symbols")]
-use common::cli::{run_rigger_envs, temp_repoless_project};
+use common::cli::{backdate_the_log, run_rigger_envs, temp_repoless_project};
 #[cfg(feature = "symbols")]
 use common::fixtures::{
     git_hash_object, git_ok, git_ok_with_identity, git_out, live_edges, loose_object, nanos,
@@ -312,13 +312,16 @@ fn commit_sources(root: &Path) {
 /// Given a repository whose history holds the first generation of a source file and a design
 /// document and a source file since deleted, whose tree holds their second generations, an
 /// out-of-line test module and the workflow definition, and a log of entries one process recorded
-/// that all resolve, when the operator runs `rigger setup`, then the rebuilt `graph.db` equals the
-/// one the incremental folds built: the superseded generations resolved from their blobs, the
-/// entry whose blob git does not hold from the tree's file, the workflow definition's from the
-/// tree's `.rigger/workflow.yml`, and the deleted file's entry with no blob from no bytes.
+/// that all resolve, when `stand` leaves `graph.db` as the route under test finds it and the
+/// operator runs `rigger setup`, then setup says `said` of `graph.db`, and the `graph.db` it folds
+/// equals the one the incremental folds built: the superseded generations resolved from their
+/// blobs, the entry whose blob git does not hold from the tree's file, the workflow definition's
+/// from the tree's `.rigger/workflow.yml`, and the deleted file's entry with no blob from no bytes.
 #[cfg(feature = "symbols")]
-#[test]
-fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built() {
+fn setup_folds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built(
+    stand: fn(&Path, &str),
+    said: Vec<String>,
+) {
     let dir = temp_project();
     let root = dir.path();
     write_text(root, SOURCE_PATH, SOURCE_BODY);
@@ -425,19 +428,19 @@ fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_f
         fold_incrementally(&incremental, &project, root, &recordings),
         vec![EntryFold::BatchAsked; 9]
     );
-    stand_graph(root, &project);
+    stand(root, &project);
 
     assert_eq!(
         setup_rebuild_lines(root),
-        rebuilt_for_a_lost_fold(),
-        "the rebuild folds every entry and passes none over"
+        said,
+        "setup folds every entry and passes none over"
     );
 
     let graph_db = rigger_file(root, "graph.db");
     assert_eq!(
         graph_identity(&graph_db, &project),
         graph_identity(&incremental, &project),
-        "the rebuilt graph.db is the incremental one, fold state included"
+        "the graph.db setup folded is the incremental one, fold state included"
     );
     assert_eq!(
         generations(
@@ -535,8 +538,36 @@ fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_f
     assert_eq!(
         setup_rebuild_lines(root),
         Vec::<String>::new(),
-        "a paid rebuild is not owed again"
+        "a graph.db folded to the log's head owes nothing again"
     );
+}
+
+rigger::test_cases! {
+    /// The file stands as a fold made it before the cursor existed ([`stand_graph`]): its empty
+    /// ledger beside the log is a lost fold, which setup's rebuild pays.
+    #[cfg(feature = "symbols")]
+    setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built:
+        setup_folds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built(
+            stand_graph,
+            rebuilt_for_a_lost_fold(),
+        );
+    /// The file keeps the cursor its cold start seeded at 0, and every entry was recorded just
+    /// now: setup folds the file forward from that cursor, re-extracting each entry.
+    #[cfg(feature = "symbols")]
+    setup_catches_up_over_young_entries_from_blobs_tree_files_and_no_bytes:
+        setup_folds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built(
+            |_, _| (),
+            vec![caught_up_line(9)],
+        );
+    /// The file keeps the cursor its cold start seeded at 0, and every entry was recorded longer
+    /// ago than the catch-up horizon ([`backdate_the_log`]): setup still folds the file forward
+    /// from that cursor, re-extracting each entry, rather than rebuilding over them.
+    #[cfg(feature = "symbols")]
+    setup_catches_up_over_entries_older_than_the_horizon_from_blobs_tree_files_and_no_bytes:
+        setup_folds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built(
+            |root, _| backdate_the_log(root),
+            vec![caught_up_line(9)],
+        );
 }
 
 /// Given a tree that is not a git repository, whose entries name blobs no object database holds,
@@ -1139,12 +1170,15 @@ fn an_entry_the_generic_fold_refused_is_paid_by_setup_through_the_ledger_fold() 
 }
 
 /// Given entries on the log that no fold reached, in the lane that compiles no extraction, when
-/// the operator runs `rigger setup`, then each entry folds nothing - no generation, no fact - and
-/// is passed over as resolved to nothing, its position recorded all the same, and a second setup
-/// owes nothing and still says what the file passed over.
+/// `stand` leaves `graph.db` as the route under test finds it and the operator runs `rigger
+/// setup`, then setup says `said` of `graph.db`: each entry folds nothing, no generation and no
+/// fact, and is passed over as resolved to nothing, its position recorded all the same, and a
+/// second setup owes nothing and still says what the file passed over.
 #[cfg(not(feature = "symbols"))]
-#[test]
-fn without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded() {
+fn without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
+    stand: fn(&Path, &str),
+    said: Vec<String>,
+) {
     use common::fixtures::{planted_extraction_tree, write_file};
 
     let dir = planted_extraction_tree(write_file);
@@ -1169,9 +1203,9 @@ fn without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
         fold_incrementally(&nothing_folded, &project, root, &recordings),
         vec![EntryFold::BatchAsked; 4]
     );
-    stand_graph(root, &project);
+    stand(root, &project);
 
-    assert_eq!(setup_rebuild_lines(root), rebuilt_passing_over(0, 0, 4));
+    assert_eq!(setup_rebuild_lines(root), said);
     let graph_db = rigger_file(root, "graph.db");
     assert_eq!(
         passed_over_rows(graph_db.to_str().unwrap()),
@@ -1199,9 +1233,27 @@ fn without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
     assert_eq!(
         graph_identity(&graph_db, &project),
         graph_identity(&nothing_folded, &project),
-        "the rebuilt graph holds what a graph every entry folded nothing into holds"
+        "the graph setup folded holds what a graph every entry folded nothing into holds"
     );
     assert_eq!(setup_rebuild_lines(root), vec![passed_over_line(0, 0, 4)]);
+}
+
+rigger::test_cases! {
+    /// The file stands as a fold made it before the cursor existed ([`stand_graph`]): setup's
+    /// rebuild folds the entries.
+    #[cfg(not(feature = "symbols"))]
+    a_rebuild_without_an_extraction_folds_nothing_for_each_entry_and_records_its_position:
+        without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
+            stand_graph,
+            rebuilt_passing_over(0, 0, 4),
+        );
+    /// The file keeps the cursor its cold start seeded at 0: setup's catch-up folds the entries.
+    #[cfg(not(feature = "symbols"))]
+    a_catch_up_without_an_extraction_folds_nothing_for_each_entry_and_records_its_position:
+        without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
+            |_, _| (),
+            vec![caught_up_line(4), passed_over_line(0, 0, 4)],
+        );
 }
 
 /// Given an entry on the log whose payload does not parse, beside one whose payload does but

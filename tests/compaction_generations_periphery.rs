@@ -32,11 +32,19 @@
 //!      that folded the log at an older fold rule owes that rule's rebuild, and the lost fold beside
 //!      it only for an old hole, never for the removed log; and a seeding that meets another
 //!      writer's write lock is skipped, setup exiting zero, and the next setup starts it.
+//!   6. **The catch-up from the cursor.** `rigger setup` folds a file carrying its cursor forward
+//!      from it to the log's head, one page of the log per call, and says how many events it folded:
+//!      over a young hole below an applied event, over more events than a page holds and over what
+//!      another writer of a server log appended. It rebuilds a file whose cursor stands above the
+//!      head of a log replaced by a shorter one, and fails, naming the position its catch-up
+//!      stopped at, when a fold meets a storage error, the next setup folding on once the storage
+//!      recovers.
 
 mod common;
 
 use common::cli::append_run_events;
 use common::cli::applied;
+use common::cli::applied_each;
 use common::cli::assert_stopped_at_the_grounder;
 use common::cli::backdate_the_log;
 use common::cli::backdate_the_log_by;
@@ -82,7 +90,9 @@ use common::cli::{BOTH_CAUSES_REBUILD_LINE, OLDER_RULE_REBUILD_LINE};
 use common::cli::{EMIT_FOLDED_ENDING, LOST_FOLD_REBUILD_LINE, REBUILT_LINE, SEEDING_SKIPPED_LINE};
 use common::cli::{LOG_LEFT_AS_IT_STANDS_LINE, NOTHING_TO_SHED_LINE};
 use common::fixtures::caught_up_at;
+use common::fixtures::caught_up_line;
 use common::fixtures::cleanup;
+use common::fixtures::decision_json;
 use common::fixtures::drop_the_cursor;
 use common::fixtures::f_rs_batch_def;
 use common::fixtures::files_open_by;
@@ -93,12 +103,14 @@ use common::fixtures::past_the_horizon;
 use common::fixtures::rebuild_owed_note;
 use common::fixtures::wait_until_for;
 use common::fixtures::with_graph_locked;
+use common::fixtures::DISK_GAVE_OUT;
 use common::fixtures::STEP_LOCK_REASON;
+use common::fixtures::{catch_up_failed_line, the_disk_gives_out_at_d_boom, the_disk_recovers};
 use common::fixtures::{graph_error, lost_fold, not_folded, DATABASE_IS_LOCKED, NOT_A_DATABASE};
 use common::fixtures::{source_interrupted, SOURCE_INTERRUPTED};
 use common::git::temp_git_project_with_commit;
 use rigger::contextgraph::sqlite::{
-    PruneStats, RebuildSink, Rebuilt, CATCH_UP_HORIZON, PROJECTION_VERSION,
+    PruneStats, RebuildSink, Rebuilt, CATCH_UP_HORIZON, FOLD_BATCH, PROJECTION_VERSION,
 };
 use rigger::contextgraph::Fold;
 use rigger::contextgraph::{
@@ -2213,20 +2225,20 @@ fn the_store_answers_each_held_position_s_stamp_and_none_where_it_holds_no_event
 /// Given a `graph.db` without the `caught_up` cursor, on a project whose identity is minted,
 /// recording fold rule `rule` and missing the event at log position `lost` below an applied one,
 /// when the operator runs `rigger setup` with every event of the log recorded `age` earlier than it
-/// was, then setup reads the missing event's age from its store stamp and prints `rebuilt` of
-/// `graph.db`, `lost` folded exactly when `folded`. At the current rule a hole within the catch-up
-/// horizon is young, so setup rebuilds nothing, leaves the event to its fold and seeds the cursor
-/// just below it; a hole past the horizon is old, so setup rebuilds the file and the rebuild's drop
-/// sets the cursor at the log's head. A file at an older rule is rebuilt for that rule whatever the
-/// hole's age, owing the lost fold beside it only for an old hole, and the rebuild's drop sets the
-/// cursor at the log's head. Either way a later `rigger setup`, every event by then older than the
-/// horizon, reads the cursor the file carries and nothing else, rebuilding nothing and leaving the
-/// cursor where it stands.
+/// was, then setup reads the missing event's age from its store stamp, prints `said` of
+/// `graph.db`, and leaves `lost` folded and the cursor at the log's head. At the current rule a
+/// hole within the catch-up horizon is young, so setup rebuilds nothing: it seeds the cursor just
+/// below the hole and folds the log forward from there, saying it caught the file up with the one
+/// event it missed; a hole past the horizon is old, so setup rebuilds the file and the rebuild's
+/// drop sets the cursor at the log's head, leaving the catch-up nothing to fold. A file at an older
+/// rule is rebuilt for that rule whatever the hole's age, owing the lost fold beside it only for an
+/// old hole. Either way a later `rigger setup`, every event by then older than the horizon, reads
+/// the cursor the file carries and nothing else, rebuilding nothing and leaving the cursor where it
+/// stands.
 fn setup_reads_the_age_of_a_hole_below_an_applied_event(
     rule: i64,
     age: std::time::Duration,
-    rebuilt: Vec<String>,
-    folded: bool,
+    said: Vec<String>,
 ) {
     let dir = temp_store_project();
     let root = dir.path();
@@ -2240,14 +2252,14 @@ fn setup_reads_the_age_of_a_hole_below_an_applied_event(
     backdate_the_log_by(root, age);
 
     let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
-    let cursor = Some(if folded { run_log_head(root) } else { lost - 1 });
+    let cursor = Some(run_log_head(root));
     assert_eq!(
         (
             common::cli::rebuild_lines(&out),
             applied(&graph_db, lost),
             caught_up_at(&graph_db)
         ),
-        (rebuilt, folded, cursor),
+        (said, true, cursor),
         "setup reads the hole's age from its stamp; stdout: {out}"
     );
     backdate_the_log(root);
@@ -2258,27 +2270,25 @@ fn setup_reads_the_age_of_a_hole_below_an_applied_event(
             applied(&graph_db, lost),
             caught_up_at(&graph_db)
         ),
-        (false, folded, cursor),
+        (false, true, cursor),
         "a file carrying its cursor is never seeded again; stdout: {out}"
     );
 }
 
 rigger::test_cases! {
     /// An event recorded just now.
-    a_hole_recorded_just_now_is_young_and_setup_seeds_the_cursor_just_below_it:
+    a_hole_recorded_just_now_is_young_and_setup_catches_up_over_it:
         setup_reads_the_age_of_a_hole_below_an_applied_event(
             PROJECTION_VERSION,
             std::time::Duration::ZERO,
-            Vec::new(),
-            false,
+            vec![caught_up_line(1)],
         );
     /// An event older than the fold-lock ceiling (600 s) by 10 s, 50 s inside the horizon.
     a_hole_past_the_fold_lock_ceiling_within_the_horizon_is_still_young:
         setup_reads_the_age_of_a_hole_below_an_applied_event(
             PROJECTION_VERSION,
             CATCH_UP_HORIZON - std::time::Duration::from_secs(50),
-            Vec::new(),
-            false,
+            vec![caught_up_line(1)],
         );
     /// An event older than the catch-up horizon.
     a_hole_past_the_catch_up_horizon_is_old_and_setup_rebuilds_over_it:
@@ -2286,7 +2296,6 @@ rigger::test_cases! {
             PROJECTION_VERSION,
             past_the_horizon(),
             rebuilt_for_a_lost_fold(),
-            true,
         );
     /// An event recorded just now, in a file at the fold rule before the current one.
     a_young_hole_in_a_file_at_an_older_fold_rule_owes_the_older_rule_alone:
@@ -2294,7 +2303,6 @@ rigger::test_cases! {
             PROJECTION_VERSION - 1,
             std::time::Duration::ZERO,
             rebuilt_for(OLDER_RULE_REBUILD_LINE),
-            true,
         );
     /// An event older than the catch-up horizon, in a file at the fold rule before the current one.
     an_old_hole_in_a_file_at_an_older_fold_rule_owes_both_causes:
@@ -2302,7 +2310,6 @@ rigger::test_cases! {
             PROJECTION_VERSION - 1,
             past_the_horizon(),
             rebuilt_for(BOTH_CAUSES_REBUILD_LINE),
-            true,
         );
 }
 
@@ -2351,6 +2358,21 @@ fn cut_the_log_below_a_cursorless_graph_db(root: &Path) {
         .unwrap();
 }
 
+/// Copy `root`'s `.rigger/events.db`, fold the decision `d-third` ([`emit_folding`]) and run
+/// `rigger setup` so the `caught_up` cursor of its `graph.db` reaches the log's head, then replace
+/// the log by the copy: a file whose cursor stands above the head of a log the operator replaced
+/// under it by a shorter one, whose positions issued end below the cursor.
+fn replace_the_log_below_a_cursored_graph_db(root: &Path) {
+    let shorter = rigger_file(root, "events.db.shorter");
+    rigger_db(root, "events.db")
+        .execute("VACUUM INTO ?1", [shorter.to_str().unwrap()])
+        .unwrap();
+    emit_folding(root, "d-third");
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    remove_the_store_file(root, "events.db");
+    std::fs::rename(shorter, rigger_file(root, "events.db")).unwrap();
+}
+
 rigger::test_cases! {
     /// The operator removes `graph.db`: setup creates the file afresh, its empty ledger beside the
     /// log's events.
@@ -2364,6 +2386,97 @@ rigger::test_cases! {
         setup_rebuilds_a_lost_fold_into_the_graph_the_log_holds(
             cut_the_log_below_a_cursorless_graph_db
         );
+    /// The operator replaces the log under a file carrying its cursor by a shorter one, the cursor
+    /// standing above the new log's head.
+    setup_rebuilds_a_graph_db_whose_cursor_stands_past_a_shorter_log_s_head_into_the_graph_it_holds:
+        setup_rebuilds_a_lost_fold_into_the_graph_the_log_holds(
+            replace_the_log_below_a_cursored_graph_db
+        );
+}
+
+/// Given a `graph.db` carrying its `caught_up` cursor that misses more events than one page of the
+/// log holds ([`FOLD_BATCH`]) - appended behind every fold, as another writer of the log leaves
+/// them - when the operator runs `rigger setup`, then setup folds every one forward from the
+/// cursor, one page per catch-up call, says it caught up with all of them, and leaves the cursor at
+/// the log's head, rebuilding nothing.
+#[test]
+fn setup_folds_a_cursored_graph_db_forward_over_a_gap_longer_than_a_page() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    emit_the_first_decision_after_setup(root);
+    let missed: Vec<u64> = (0..=FOLD_BATCH)
+        .map(|i| {
+            let decision = decision_json(&format!("d-gap-{i}"), "s", &["src/f.rs"], "");
+            append_unfolded_decision(root, decision.to_string().as_bytes())
+        })
+        .collect();
+    let graph_db = rigger_file(root, "graph.db");
+
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (
+            common::cli::rebuild_lines(&out),
+            applied_each(&graph_db, &missed),
+            caught_up_at(&graph_db)
+        ),
+        (
+            vec![caught_up_line(missed.len())],
+            vec![true; missed.len()],
+            Some(run_log_head(root))
+        ),
+        "setup folds each missed event forward from the cursor, over more than one page; stdout: \
+         {out}"
+    );
+}
+
+/// Given a `graph.db` carrying its `caught_up` cursor that misses an event appended behind every
+/// fold, when the operator runs `rigger setup` while the file's storage refuses that event's node
+/// ([`the_disk_gives_out_at_d_boom`]), then setup's catch-up stops at the cursor and setup fails
+/// naming that position and the storage error, leaving the event missing and the cursor where it
+/// stood; once the storage recovers, the next `rigger setup` folds the event forward from the
+/// cursor and moves the cursor to it.
+#[test]
+fn setup_whose_catch_up_meets_a_storage_error_fails_at_the_cursor_and_the_next_setup_folds_on() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    emit_the_first_decision_after_setup(root);
+    let graph_db = rigger_file(root, "graph.db");
+    let cursor = caught_up_at(&graph_db).unwrap();
+    let lost = append_unfolded_decision(root, D_BOOM);
+    the_disk_gives_out_at_d_boom(&graph_db);
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let refused = refusal_line(&catch_up_failed_line(cursor, DISK_GAVE_OUT));
+    assert_eq!(
+        (
+            ok,
+            err.lines().last(),
+            common::cli::rebuild_lines(&out),
+            applied(&graph_db, lost),
+            caught_up_at(&graph_db)
+        ),
+        (
+            false,
+            Some(refused.as_str()),
+            Vec::<String>::new(),
+            false,
+            Some(cursor)
+        ),
+        "setup fails naming where its catch-up stopped and why, and leaves the event missing and \
+         the cursor where it stood; stdout: {out} stderr: {err}"
+    );
+
+    the_disk_recovers(&graph_db);
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (
+            common::cli::rebuild_lines(&out),
+            applied(&graph_db, lost),
+            caught_up_at(&graph_db)
+        ),
+        (vec![caught_up_line(1)], true, Some(lost)),
+        "once the storage recovers, setup folds the event forward from the cursor; stdout: {out}"
+    );
 }
 
 /// Given a `graph.db` without the `caught_up` cursor that folded the log, on a project whose
@@ -3658,6 +3771,10 @@ fn append_unfolded_decision(root: &Path, data: &[u8]) -> u64 {
         .unwrap()
 }
 
+/// The `DecisionMade` payload of the decision `d-boom`, whose node a graph file refuses while
+/// [`the_disk_gives_out_at_d_boom`] stands in it.
+const D_BOOM: &[u8] = br#"{"id":"d-boom","summary":"s","governs":["src/f.rs"],"supersedes":""}"#;
+
 /// Fold a decision into `root`'s `graph.db` above every event it misses, then backdate the log past
 /// the catch-up horizon ([`backdate_the_log`]): each missing event is then an old hole below an
 /// applied position, which the next `rigger setup`'s seeding of a file without `caught_up` finds a
@@ -3778,8 +3895,7 @@ fn an_event_appended_but_never_folded_is_paid_by_the_next_setup_from_the_ledger(
 }
 
 /// Given a project whose event log is a KurrentDB server, the first `rigger setup` creates
-/// `graph.db` and seeds its `caught_up` cursor at 0 beside the empty stream, and a setup over a
-/// file carrying that cursor reads nothing of its ledger and owes nothing. Given a `graph.db` on
+/// `graph.db` and seeds its `caught_up` cursor at 0 beside the empty stream. Given a `graph.db` on
 /// this machine without `caught_up` - as a fold made it before the cursor existed - that misses an
 /// event another writer of that server appended (a second machine sharing the log) below one this
 /// machine folded, when the operator runs `rigger setup`, then setup's seeding reads the server's
@@ -3788,8 +3904,10 @@ fn an_event_appended_but_never_folded_is_paid_by_the_next_setup_from_the_ledger(
 /// horizon - names it as the cause, rebuilds `graph.db` from the server's whole run stream (a
 /// server-backed log has no compaction plan, so its live selection is the stream as it stands),
 /// reports its progress and its prune, leaves the graph a fold of that stream with its cursor at
-/// the stream's head, and a second setup owes nothing. Gracefully skipped when no container
-/// runtime is reachable.
+/// the stream's head, and a second setup owes nothing. When that writer appends one more event,
+/// the next setup folds it forward from the cursor (spec 124, ONE PROCEDURE), says it caught up
+/// with the one event and moves the cursor to it, and a setup after it owes nothing. Gracefully
+/// skipped when no container runtime is reachable.
 #[test]
 fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_server_log() {
     common::fixtures::with_kurrentdb(|conn| {
@@ -3828,15 +3946,17 @@ fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_ser
         let project = run_stream_identity(root);
         let backend = rigger::eventstore::kurrentdb::Store::open(conn).unwrap();
         let log = Namespaced::new(&backend, &project);
-        let lost = log
-            .append(
+        let other_writer_appends = |id: &str| {
+            log.append(
                 rigger::conductor::STREAM,
                 ExpectedRevision::Any,
-                &[Event::new("DecisionMade", decision("d-other").into_bytes())],
+                &[Event::new("DecisionMade", decision(id).into_bytes())],
             )
             .unwrap()
             .one("the other writer's decision")
-            .unwrap();
+            .unwrap()
+        };
+        let lost = other_writer_appends("d-other");
         let graph_db = rigger_file(root, "graph.db");
         assert!(
             !applied(&graph_db, lost),
@@ -3852,10 +3972,6 @@ fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_ser
             ok && out.ends_with(EMIT_FOLDED_ENDING),
             "the emit appends to the server and folds into the local graph.db; stdout: {out} \
              stderr: {err}"
-        );
-        owes_nothing(
-            "the file carries the cursor the first setup seeded, so setup reads nothing of its \
-             ledger and owes nothing",
         );
 
         // The file as a fold made it before the cursor existed: its first seeding reads the
@@ -3906,6 +4022,23 @@ fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_ser
         owes_nothing(
             "the rebuilt ledger holds every position the server hands, so the rebuild is paid",
         );
+
+        // The rebuilt file carries its cursor: what the other writer appends next is folded
+        // forward from it, with no rebuild.
+        let later = other_writer_appends("d-later");
+        let (out, err, ok) = setup();
+        assert_eq!(
+            (
+                ok,
+                common::cli::rebuild_lines(&out),
+                applied(&graph_db, later),
+                caught_up_at(&graph_db)
+            ),
+            (true, vec![caught_up_line(1)], true, Some(later)),
+            "setup folds the other writer's later event forward from the cursor and moves the \
+             cursor to it, rebuilding nothing; stdout: {out} stderr: {err}"
+        );
+        owes_nothing("the cursor stands at the server's head, so setup folds nothing more");
     });
 }
 
@@ -4073,10 +4206,7 @@ fn setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_
     let root = dir.path();
     emit_the_first_decision(root);
     let first = run_log_head(root);
-    let lost = append_unfolded_decision(
-        root,
-        br#"{"id":"d-boom","summary":"s","governs":["src/f.rs"],"supersedes":""}"#,
-    );
+    let lost = append_unfolded_decision(root, D_BOOM);
     bury_below_an_applied_event(root);
     let graph_db = rigger_file(root, "graph.db");
     let shadow = rigger_file(root, "graph.db.rebuild");
@@ -4086,21 +4216,12 @@ fn setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_
         source_interrupted()
     })
     .unwrap_err();
-    // Opened per statement and closed at once: a rebuild owns its shadow alone, so the test holds
-    // no connection to it while `rigger setup` rebuilds.
-    let on_shadow = |sql: &str| {
-        rusqlite::Connection::open(&shadow)
-            .unwrap()
-            .execute_batch(sql)
-            .unwrap()
-    };
-    on_shadow(
-        "CREATE TRIGGER boom BEFORE INSERT ON nodes WHEN NEW.id = 'd-boom'
-         BEGIN SELECT RAISE(ABORT, 'disk gave out'); END;",
-    );
+    // A rebuild owns its shadow alone, so the fixture holds no connection to it while `rigger
+    // setup` rebuilds.
+    the_disk_gives_out_at_d_boom(&shadow);
 
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    let refused = common::cli::refusal_line(&graph_error("event store: disk gave out"));
+    let refused = common::cli::refusal_line(&graph_error(&format!("event store: {DISK_GAVE_OUT}")));
     assert_eq!(
         (
             ok,
@@ -4122,7 +4243,7 @@ fn setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_
          was, the event still missing; stdout: {out} stderr: {err}"
     );
 
-    on_shadow("DROP TRIGGER boom;");
+    the_disk_recovers(&shadow);
     the_next_setup_pays_the_missing_event(root, lost);
 }
 

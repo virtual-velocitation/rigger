@@ -46,39 +46,15 @@
     ]
   },
   {
-    "name": "catch_up",
-    "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-    "content_hash": "2c38b2b31a3f2fcc",
-    "visibility": "pub",
+    "name": "catch_up_to_head",
+    "file": "src/cli/setup.rs",
+    "content_hash": "13bfc9b4bc87ab0b",
+    "visibility": "private",
     "ambiguous": false,
     "test_only_references": [
       {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "content_hash": "716cf0a34f4ef94b"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "content_hash": "8e0a1f4034c056df"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "content_hash": "8e0a1f4034c056df"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "content_hash": "8e0a1f4034c056df"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "content_hash": "8e0a1f4034c056df"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "content_hash": "236864e540459952"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "content_hash": "6ca340ddcc2099ea"
+        "file": "src/cli/setup.rs",
+        "content_hash": "9e04ca780be91229"
       }
     ]
   }
