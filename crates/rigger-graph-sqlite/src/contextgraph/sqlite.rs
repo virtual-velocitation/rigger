@@ -506,9 +506,11 @@ pub enum Seeding {
 /// What one [`Projector::catch_up`] call answered (spec 124, ONE PROCEDURE).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CatchUp {
-    /// The file folds no catch-up of its own, for the cause named: it read no log and wrote nothing.
+    /// The file folds no catch-up of its own, for the cause named, and the call wrote nothing; a
+    /// cause standing when the call starts answers before the log is opened.
     Inert(Inert),
-    /// The call's page read past the cursor met no event: the file is caught up with the log.
+    /// The call's page read past the cursor met no event - the file is caught up with the log - or
+    /// the projector was handed no log to read one from ([`Projector::with_log`]).
     AtHead,
     /// The call folded one cut of the log past the cursor and advanced the cursor to its end;
     /// `recorded` counts the positions the cut's transaction itself wrote to the `applied` ledger.
