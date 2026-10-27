@@ -1967,10 +1967,10 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `src/cli/mod.rs:10156-10156` `Command::new`
 - `src/cli/mod.rs:11870-11870` `Command::new`
 - `src/cli/mod.rs:11904-11904` `Command::new`
-- `src/cli/run.rs:3265-3265` `Command::new`
-- `src/cli/run.rs:3298-3298` `Command::new`
-- `src/cli/run.rs:3342-3342` `Command::new`
-- `src/cli/run.rs:3411-3411` `Command::new`
+- `src/cli/run.rs:3269-3269` `Command::new`
+- `src/cli/run.rs:3302-3302` `Command::new`
+- `src/cli/run.rs:3346-3346` `Command::new`
+- `src/cli/run.rs:3415-3415` `Command::new`
 - `src/cli/setup.rs:4248-4248` `Command::new`
 - `src/cli/setup.rs:4539-4539` `Command::new`
 - `src/cli/validate.rs:1456-1456` `Command::new`
@@ -3394,8 +3394,8 @@ mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically
 - `crates/rigger-worktree-git/src/worktree.rs:2949-2949` `"/proc"`
 - `crates/rigger-worktree-git/src/worktree.rs:2953-2953` `"/proc/{pid}/cmdline"`
 - `crates/rigger-worktree-git/src/worktree.rs:2977-2977` `"/proc/{}"`
-- `src/cli/run.rs:3403-3403` `"/proc"`
-- `src/cli/run.rs:3507-3507` `"/proc"`
+- `src/cli/run.rs:3407-3407` `"/proc"`
+- `src/cli/run.rs:3511-3511` `"/proc"`
 - `tests/cli.rs:20677-20677` `"/proc"`
 - `tests/cli.rs:24892-24892` `"/proc"`
 - `tests/cli.rs:25000-25000` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`

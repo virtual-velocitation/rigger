@@ -2854,10 +2854,12 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     // fold that cannot happen (a graph that owes its rebuild, or one locked past its busy
     // timeout) never fails a result the log holds - but it is SAID, with the reason, because a
     // current graph that missed the fold keeps the result out of grounding until the next `rigger
-    // setup` rebuilds it (the result's position is a hole in the graph's applied ledger, and a
-    // `SpawnResult` is in the live selection that rebuild folds), and until then a lost
-    // adjudicator verdict keeps its discarded findings in grounding. A `--if-absent` no-op
-    // appended nothing, so there is nothing new to fold (the prior record already did).
+    // setup` folds it (the result's position is a hole in the graph's applied ledger, which that
+    // setup's catch-up folds forward from the file's cursor, or, in a file not yet carrying the
+    // cursor whose seeding finds the hole old, the rebuild of the live selection a `SpawnResult`
+    // is in), and until then a lost adjudicator verdict keeps its discarded findings in
+    // grounding. A `--if-absent` no-op appended nothing, so there is nothing new to fold (the
+    // prior record already did).
     if let Some(pos) = recorded {
         if let contextgraph::Fold::NotFolded(why) =
             fold_recorded_result(&loc, &selection, &res, pos)
@@ -2928,7 +2930,9 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
 /// its applied ledger at the result's position (a `SpawnResult` is in the live selection): setup's
 /// seeding of a file not yet carrying the `caught_up` cursor reads that ledger against the log up
 /// to the bound [`contextgraph::sqlite::Projector::seed_cursor`] names, and rebuilds the file for
-/// a hole there it finds old (spec 124).
+/// a hole there it finds old (spec 124); a hole above the file's cursor, a young one the seeding
+/// seeds the cursor below included, setup's catch-up folds forward from that cursor
+/// ([`contextgraph::sqlite::Projector::catch_up`]).
 fn fold_recorded_result(
     loc: &StoreLocation,
     selection: &StoreSelection,
