@@ -902,7 +902,7 @@
   {
     "id": "dup-6ef712aab260",
     "disposition": "not-a-duplicate",
-    "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, landing an interleaved write) is already the one `record`/`land_interleaved` pair both call."
+    "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, running the hooks waiting on the call) is already the one `record`/`returned` pair both call."
   },
   {
     "id": "dup-fe96e15d8fa3",

@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -469,6 +469,38 @@ pub enum Seeding {
     Ran { lost: bool },
 }
 
+/// What one [`Projector::catch_up`] call answered (spec 124, ONE PROCEDURE).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatchUp {
+    /// The file folds no catch-up of its own, for the cause named: it read no log and wrote nothing.
+    Inert(Inert),
+    /// The call's page read past the cursor met no event: the file is caught up with the log.
+    AtHead,
+    /// The call folded one cut of the log past the cursor and advanced the cursor to its end;
+    /// `recorded` counts the positions the cut's transaction itself wrote to the `applied` ledger.
+    Advanced { recorded: usize },
+    /// The call's cut met another writer - its write lock past the busy timeout, or a cursor moved
+    /// past the call's read twice - and wrote nothing; `at` is the position its last page read from.
+    Skipped { at: Position },
+    /// The call failed - the log's open, its page read or the cut's fold - and wrote nothing; `at`
+    /// is the position its last page read from, `error` the failure's text.
+    Failed { at: Position, error: String },
+}
+
+/// Why a graph file folds no catch-up of its own ([`CatchUp::Inert`]): each is a file whose rebuild
+/// seeds or repairs its cursor, or one no seeding has given a cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Inert {
+    /// The file a rebuild swapped in still owes that rebuild's tail ([`REBUILD_STATE`]).
+    RebuildState,
+    /// The file records an older fold rule ([`OWED_OLDER_RULE`]).
+    OlderRule,
+    /// The file's mark says a fold into it was lost ([`OWED_LOST_FOLD`]).
+    Marked,
+    /// The file carries no `caught_up` cursor.
+    NoCursor,
+}
+
 /// What the one transaction frame ([`in_transaction`]) answers when it does not answer its
 /// body's value (spec 124, EXISTING MECHANISMS): CONTENTION is read at the frame's IMMEDIATE open,
 /// before [`be`] stringifies anything, so a caller decides by the variant, never by an error's
@@ -801,6 +833,7 @@ impl Projector {
         &self,
         live: &mut PositionSource,
         stamp_of: &mut StampLookup,
+        _head: Option<Position>,
         now: SystemTime,
     ) -> Result<Seeding, Error> {
         let seeded = self.transact(|tx| -> Result<Seeding, Error> {
@@ -856,6 +889,28 @@ impl Projector {
             Err(FrameError::Contended(_)) => Ok(Seeding::Skipped),
             seeded => seeded.map_err(FrameError::unframed),
         }
+    }
+
+    /// Install the opener of the event log this file folds forward from ([`Projector::catch_up`]).
+    pub fn with_log(
+        self,
+        _open: impl Fn() -> Result<Arc<dyn EventStore>, Error> + Send + Sync + 'static,
+    ) -> Self {
+        self
+    }
+
+    /// Install the factory each [`Projector::catch_up`] call builds its re-extraction from.
+    pub fn with_reextraction(
+        self,
+        _factory: impl Fn() -> Box<Reextract<'static>> + Send + Sync + 'static,
+    ) -> Self {
+        self
+    }
+
+    /// Fold this file forward from its `caught_up` cursor by one cut of the log (spec 124, ONE
+    /// PROCEDURE).
+    pub fn catch_up(&self) -> Result<CatchUp, Error> {
+        Err(Error("catch_up is not built yet".into()))
     }
 
     /// Mark this file as missing an event the log holds ([`owed_mark`]), so a folding open refuses
@@ -6430,16 +6485,15 @@ mod tests {
         crate::test_support::judged_cause(class, type_, crate::test_support::POISON)
     }
 
-    /// [`passing_over_log`] rebuilt into a fresh graph file, as setup rebuilds it: the rebuild
-    /// completes, and the file's directory and path are handed back.
-    fn rebuilt_passing_over() -> (tempfile::TempDir, String) {
+    /// `log`, a [`passing_over_log`], rebuilt into a fresh graph file, as setup rebuilds it: the
+    /// rebuild completes, and the file's directory and path are handed back.
+    fn rebuilt_passing_over(log: &[Event]) -> (tempfile::TempDir, String) {
         let (dir, path) = crate::test_support::temp_graph_db();
-        let log = passing_over_log();
         assert_eq!(
             crate::test_support::rebuild_answer(
                 &path,
                 true,
-                &mut |after, sink| stream_past(&log, after, 10, sink),
+                &mut |after, sink| stream_past(log, after, 10, sink),
                 &mut batch_of_the_rejected_entry,
             ),
             crate::test_support::clean_rebuild(),
@@ -6455,7 +6509,7 @@ mod tests {
     /// rest - neither entry installs a generation.
     #[test]
     fn a_rebuild_passes_an_unresolved_entry_and_a_rejected_batch_over_with_their_causes() {
-        let (_dir, path) = rebuilt_passing_over();
+        let (_dir, path) = rebuilt_passing_over(&passing_over_log());
         let p = Projector::open(&path, "test").unwrap();
         assert_eq!(
             (
@@ -6492,8 +6546,8 @@ mod tests {
     #[test]
     fn a_direct_fold_meeting_its_own_passed_over_position_answers_its_cause_with_no_mark() {
         use crate::contextgraph::Fold;
-        let (dir, path) = rebuilt_passing_over();
         let log = passing_over_log();
+        let (dir, path) = rebuilt_passing_over(&log);
         let p = Projector::open(&path, "test").unwrap();
         let rejected = poison_cause(PAYLOAD_REJECTED, TYPE_DECISION_MADE);
         assert_eq!(
@@ -6679,12 +6733,13 @@ mod tests {
     /// Why the file behind `p` owes its rebuild once its cursor is seeded against `log` as `rigger
     /// setup` seeds it ([`crate::test_support::owed_once_seeded`]): `log`'s positions streamed in
     /// batches of two so a hole in a later batch is met too, each missing position's stamp read
-    /// from `log`.
+    /// from `log`, and `log`'s last position handed as its head.
     fn owed_against_the_log(p: &Projector, log: &[Event]) -> Vec<&'static str> {
         crate::test_support::owed_once_seeded(
             p,
             &mut |sink| positions_in(log, 2, sink),
             &mut |at| crate::test_support::stamp_in(log, at),
+            crate::test_support::head_of(log),
         )
     }
 
@@ -6735,7 +6790,7 @@ mod tests {
             (
                 true,
                 true,
-                log.last().map(|e| e.position),
+                crate::test_support::head_of(log),
                 Vec::<&str>::new()
             ),
             "the rebuild folds the lost position, seeds the cursor at the log's last position and \
@@ -6752,20 +6807,26 @@ mod tests {
             .collect()
     }
 
+    /// The seeding of `p`'s cursor at `now` against the positions `log` streams with their stamps,
+    /// `log`'s last position handed as its head, as `rigger setup` seeds it.
+    fn seeded_against(p: &Projector, log: &[Event], now: SystemTime) -> Seeding {
+        p.seed_cursor(
+            &mut |sink| positions_in(log, 2, sink),
+            &mut |at| crate::test_support::stamp_in(log, at),
+            crate::test_support::head_of(log),
+            now,
+        )
+        .unwrap()
+    }
+
     /// A fresh graph file whose ledger records each position of `folded`, seeded at `now` against
-    /// the positions `log` streams with their stamps, as `rigger setup` seeds it: what the seeding
-    /// answered, and where the file's cursor stands after it.
+    /// `log` ([`seeded_against`]): what the seeding answered, and where the file's cursor stands
+    /// after it.
     fn seeding_over(log: &[Event], folded: &[u64], now: SystemTime) -> (Seeding, Option<u64>) {
         let (_dir, path) = crate::test_support::temp_graph_db();
         let p = Projector::open(&path, "test").unwrap();
         crate::test_support::folds(&p, &decisions_at(folded.iter().copied()));
-        let seeding = p
-            .seed_cursor(
-                &mut |sink| positions_in(log, 2, sink),
-                &mut |at| crate::test_support::stamp_in(log, at),
-                now,
-            )
-            .unwrap();
+        let seeding = seeded_against(&p, log, now);
         (seeding, crate::test_support::caught_up_at(Path::new(&path)))
     }
 
@@ -6846,6 +6907,7 @@ mod tests {
                 p.seed_cursor(
                     &mut |sink| positions_in(&log, 2, sink),
                     &mut |_| Ok(None),
+                    crate::test_support::head_of(&log),
                     recorded(),
                 )
                 .unwrap(),
@@ -6854,6 +6916,18 @@ mod tests {
             lost,
             "a hole the lookup answers no stamp for is old"
         );
+    }
+
+    /// The seeding of `p`'s cursor at a day past [`recorded`], handed `head` as the log's head, by a
+    /// caller whose positions and stamps a seeded file never reads.
+    fn seeded_unread(p: &Projector, head: Option<Position>) -> Seeding {
+        p.seed_cursor(
+            &mut |_| panic!("a seeded file reads no positions"),
+            &mut |_| panic!("a seeded file reads no stamp"),
+            head,
+            at_age(Duration::from_secs(86_400)),
+        )
+        .unwrap()
     }
 
     /// The seeding runs once per file: a file already carrying `caught_up` is not read - neither
@@ -6868,13 +6942,7 @@ mod tests {
         crate::test_support::folds(&p, &log[..2]);
         assert_eq!(owed_against_the_log(&p, &log[..2]), Vec::<&str>::new());
         crate::test_support::folds(&p, &log[3..]);
-        let seeding = p
-            .seed_cursor(
-                &mut |_| panic!("a seeded file reads no positions"),
-                &mut |_| panic!("a seeded file reads no stamp"),
-                at_age(Duration::from_secs(86_400)),
-            )
-            .unwrap();
+        let seeding = seeded_unread(&p, crate::test_support::head_of(&log));
         assert_eq!(
             (
                 seeding.clone(),
@@ -6896,15 +6964,12 @@ mod tests {
         let (dir, path) = crate::test_support::temp_graph_db();
         let p = Projector::open(&path, "test").unwrap();
         crate::test_support::folds(&p, &log);
-        p.conn
-            .lock()
-            .unwrap()
-            .busy_timeout(Duration::from_millis(1))
-            .unwrap();
+        impatient(&p);
         let seeding = crate::test_support::with_graph_locked(Path::new(&path), || {
             p.seed_cursor(
                 &mut |_| panic!("a skipped seeding reads no positions"),
                 &mut |_| panic!("a skipped seeding reads no stamp"),
+                crate::test_support::head_of(&log),
                 recorded(),
             )
             .unwrap()
@@ -6970,6 +7035,735 @@ mod tests {
             ),
             "the shadow open seeds caught_up at its rebuild cursor, the drop at the final one"
         );
+    }
+
+    /// The event log a [`catching_up`] graph file folds forward from: the store beside the file,
+    /// every read of which is counted.
+    type CountedLog = Arc<crate::test_support::ReadCountingStore<'static>>;
+
+    /// The path of the `events.db` beside the graph file at `path`: where a store keeps the log
+    /// that file folds.
+    fn events_beside(path: &str) -> String {
+        Path::new(path)
+            .with_file_name("events.db")
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The opener of the log beside the graph file at `path` ([`events_beside`]): each call opens a
+    /// store of its own on it.
+    fn the_log_beside(
+        path: &str,
+    ) -> impl Fn() -> Result<Arc<dyn EventStore>, Error> + Send + Sync + 'static {
+        let events = events_beside(path);
+        move || {
+            rigger_store_sqlite::eventstore::sqlite::Store::open(&events)
+                .map(|store| Arc::new(store) as Arc<dyn EventStore>)
+                .map_err(be)
+        }
+    }
+
+    /// A fresh graph file under the project `test` whose `caught_up` cursor is seeded at 0 beside
+    /// an empty log, as `rigger setup` seeds a new file: the directory that keeps it, its path and
+    /// a projector on it, handed no log.
+    fn seeded_graph() -> (tempfile::TempDir, String, Projector) {
+        let (dir, path) = crate::test_support::temp_graph_db();
+        let p = Projector::open(&path, "test").unwrap();
+        assert_eq!(
+            seeded_against(&p, &[], recorded()),
+            Seeding::Ran { lost: false }
+        );
+        (dir, path, p)
+    }
+
+    /// A [`seeded_graph`] handed the log beside it ([`events_beside`]) to fold forward from, and
+    /// that log, every read of which is counted.
+    fn catching_up() -> (tempfile::TempDir, String, Projector, CountedLog) {
+        let (dir, path, p) = seeded_graph();
+        let log: CountedLog = Arc::new(crate::test_support::ReadCountingStore::owning(
+            rigger_store_sqlite::eventstore::sqlite::Store::open(&events_beside(&path)).unwrap(),
+        ));
+        let held = Arc::clone(&log);
+        let p = p.with_log(move || Ok(Arc::clone(&held) as Arc<dyn EventStore>));
+        (dir, path, p, log)
+    }
+
+    /// Append `events`, in order, to `stream` of the project `project` in `log`, as that project's
+    /// writer appends them: through the namespace that scopes its streams.
+    fn appended_to(log: &dyn EventStore, project: &str, stream: &str, events: &[Event]) {
+        rigger_store_sqlite::eventstore::namespace::Namespaced::new(log, project)
+            .append(stream, crate::eventstore::ExpectedRevision::Any, events)
+            .unwrap();
+    }
+
+    /// Append `events`, in order, to the run stream of the project `test` in `log`
+    /// ([`appended_to`]): the events a graph file under that project folds.
+    fn logged(log: &dyn EventStore, events: &[Event]) {
+        appended_to(log, "test", rigger_domain::run::STREAM, events);
+    }
+
+    /// What `p` answers to [`Projector::catch_up`] called until an answer is not
+    /// [`CatchUp::Advanced`], each error as its text: at most 16 calls, so a file that never stops
+    /// advancing ends the test.
+    fn answers(p: &Projector) -> Vec<Result<CatchUp, String>> {
+        let mut answers = Vec::new();
+        while answers.len() < 16 {
+            let answer = p.catch_up().map_err(|e| e.0);
+            let advanced = matches!(answer, Ok(CatchUp::Advanced { .. }));
+            answers.push(answer);
+            if !advanced {
+                break;
+            }
+        }
+        answers
+    }
+
+    /// The page read of the log a catch-up call makes from `from`, handed `materialized` events of
+    /// its project's streams.
+    fn page_read(from: Position, materialized: usize) -> crate::test_support::CountedRead {
+        crate::test_support::CountedRead::AllPage {
+            from,
+            max: FOLD_BATCH,
+            materialized,
+        }
+    }
+
+    /// Each `(from, materialized)` of `reads` as the page read it names ([`page_read`]).
+    fn page_reads(reads: &[(Position, usize)]) -> Vec<crate::test_support::CountedRead> {
+        reads.iter().map(|&(from, n)| page_read(from, n)).collect()
+    }
+
+    /// Another writer of the graph file at `path`: a projector of its own under the project `test`,
+    /// folding forward from a store of its own on the log beside the file ([`the_log_beside`]).
+    fn another_writer(path: &str) -> Projector {
+        Projector::open(path, "test")
+            .unwrap()
+            .with_log(the_log_beside(path))
+    }
+
+    /// Make `p`'s connection give up on another writer's write lock after a millisecond.
+    fn impatient(p: &Projector) {
+        p.conn
+            .lock()
+            .unwrap()
+            .busy_timeout(Duration::from_millis(1))
+            .unwrap();
+    }
+
+    /// What a test makes stand in, or beside, the graph file at `path` before the file is asked.
+    type Stand = fn(&str);
+
+    /// The graph file at `path` holding the cursor a swapped-in rebuild's tail is owed past.
+    fn a_standing_tail(path: &str) {
+        connection_to(path).execute_batch(REBUILD_STATE).unwrap();
+    }
+
+    /// The graph file at `path` recording the fold rule before the current one over a decision it
+    /// folded: a file at an older rule that folded nothing takes the current one on open, so the
+    /// decision is folded first.
+    fn folded_under_an_older_rule(path: &str) {
+        crate::test_support::folds(
+            &Projector::open(path, "test").unwrap(),
+            &decisions_through(1),
+        );
+        crate::test_support::stamp_user_version(Path::new(path), PROJECTION_VERSION - 1)
+    }
+
+    /// The graph file at `path` carrying the owed mark that says it misses an event the log holds.
+    fn carrying_an_owed_mark(path: &str) {
+        std::fs::write(owed_mark(path).unwrap(), b"").unwrap()
+    }
+
+    /// The graph file at `path` without its `caught_up` cursor.
+    fn without_a_cursor(path: &str) {
+        crate::test_support::drop_the_cursor(Path::new(path))
+    }
+
+    /// Spec 124, ONE PROCEDURE: a foreign non-entry folds in order. A decision past the cursor and
+    /// one superseding it, another project's position between them, fold as log order folds them -
+    /// the superseded decision's `GOVERNS` edge invalidated, the superseding one's live - in one
+    /// cut through the page's last position; the other project's position is neither read nor
+    /// folded, and the next call meets the head.
+    #[test]
+    fn a_foreign_decision_folds_in_log_order_past_another_project_s_position() {
+        let (_dir, path, p, log) = catching_up();
+        logged(&*log, &[decision_at("d1", "a.rs", 1)]);
+        appended_to(
+            &*log,
+            "other",
+            rigger_domain::run::STREAM,
+            &[decision_at("o2", "o.rs", 2)],
+        );
+        let superseding = crate::test_support::decision_json("d3", "x", &["b.rs"], "d1");
+        logged(
+            &*log,
+            &[Event::new(
+                TYPE_DECISION_MADE,
+                serde_json::to_vec(&superseding).unwrap(),
+            )],
+        );
+        assert_eq!(
+            (
+                answers(&p),
+                live_governs(&p)
+                    .into_iter()
+                    .map(|g| (g.0, g.1))
+                    .collect::<Vec<_>>(),
+                applied_through(&p, 3),
+                crate::test_support::caught_up_at(Path::new(&path)),
+                log.reads(),
+            ),
+            (
+                vec![Ok(CatchUp::Advanced { recorded: 2 }), Ok(CatchUp::AtHead)],
+                vec![("d3".to_string(), "b.rs".to_string())],
+                vec![true, false, true],
+                Some(3),
+                page_reads(&[(0, 2), (3, 0)]),
+            ),
+            "the decisions fold in log order, the other project's position unread"
+        );
+    }
+
+    /// Spec 124, ONE PROCEDURE: each call reads one page of the log past the cursor, of at most
+    /// [`FOLD_BATCH`] events, narrowed to the project's run stream, and folds its first cut
+    /// ([`fold_transactions`]) - through the page's last position when the cut covers every
+    /// narrowed event, else through the cut's last - every ledger entry alone, until a call meets
+    /// no event past the cursor ([`CatchUp::AtHead`]). An empty log is at its head; a page of
+    /// another stream's events alone moves the cursor past them, folding nothing; an entry no
+    /// re-extraction resolves is passed over `resolved to nothing`; a gap longer than a page is
+    /// read one page per call.
+    #[test]
+    fn each_catch_up_call_folds_one_cut_of_one_page_past_the_cursor_until_the_head() {
+        let canary = rigger_domain::canary::STREAM;
+        let run = rigger_domain::run::STREAM;
+        let advanced = |recorded| CatchUp::Advanced { recorded };
+        // Each case: the batches the log is appended, each to a stream of the project `test`; what
+        // the calls answer; their page reads, each as where it read from and how many events it
+        // handed back; where the cursor stands after them; and what was passed over.
+        type Case = (
+            &'static str,
+            Vec<(&'static str, Vec<Event>)>,
+            Vec<CatchUp>,
+            Vec<(Position, usize)>,
+            Position,
+            Vec<(u64, String)>,
+        );
+        let cases: [Case; 5] = [
+            (
+                "an empty log",
+                vec![],
+                vec![CatchUp::AtHead],
+                vec![(0, 0)],
+                0,
+                vec![],
+            ),
+            (
+                "a page of another stream's events alone",
+                vec![(canary, decisions_at(1..=2))],
+                vec![advanced(0), CatchUp::AtHead],
+                vec![(0, 2), (2, 0)],
+                2,
+                vec![],
+            ),
+            (
+                "a run event before another stream's",
+                vec![(run, decisions_at([1])), (canary, decisions_at([2]))],
+                vec![advanced(1), CatchUp::AtHead],
+                vec![(0, 2), (2, 0)],
+                2,
+                vec![],
+            ),
+            (
+                "an entry between two decisions, another stream's event last",
+                vec![
+                    (
+                        run,
+                        vec![
+                            decision_at("d1", "a.rs", 1),
+                            crate::test_support::unresolved_entry_at(2),
+                            decision_at("d3", "c.rs", 3),
+                        ],
+                    ),
+                    (canary, decisions_at([4])),
+                ],
+                vec![advanced(1), advanced(1), advanced(1), CatchUp::AtHead],
+                vec![(0, 4), (1, 3), (2, 2), (4, 0)],
+                4,
+                vec![(2, RESOLVED_TO_NOTHING.to_string())],
+            ),
+            (
+                "a gap longer than a page",
+                vec![(run, decisions_at(1..=258))],
+                vec![advanced(256), advanced(2), CatchUp::AtHead],
+                vec![(0, 256), (256, 2), (258, 0)],
+                258,
+                vec![],
+            ),
+        ];
+        for (case, batches, calls, reads, cursor, passed) in cases {
+            let (_dir, path, p, log) = catching_up();
+            for (stream, events) in &batches {
+                appended_to(&*log, "test", stream, events);
+            }
+            assert_eq!(
+                (
+                    answers(&p),
+                    log.reads(),
+                    crate::test_support::caught_up_at(Path::new(&path)),
+                    crate::test_support::passed_over_rows(&path),
+                ),
+                (
+                    calls.into_iter().map(Ok).collect::<Vec<_>>(),
+                    page_reads(&reads),
+                    Some(cursor),
+                    passed,
+                ),
+                "{case}: the calls' answers, their page reads, the cursor and what was passed over"
+            );
+        }
+    }
+
+    /// Spec 124, ONE PROCEDURE: catching a file up over a log folds what a rebuild of that log
+    /// folds, through the re-extraction its projector is handed - an entry it resolves to nothing,
+    /// one whose re-extracted batch the judge rejects and a decision whose payload it rejects each
+    /// passed over with its cause, the last decision folded - each entry in a call of its own.
+    #[test]
+    fn catching_up_over_a_log_folds_what_a_rebuild_of_it_folds() {
+        let events = passing_over_log();
+        let (_rebuilt_dir, rebuilt) = rebuilt_passing_over(&events);
+        let rebuilt_p = Projector::open(&rebuilt, "test").unwrap();
+        let (_dir, path, p, log) = catching_up();
+        let p = p.with_reextraction(|| Box::new(batch_of_the_rejected_entry));
+        logged(&*log, &events);
+        assert_eq!(
+            (answers(&p), log.reads()),
+            (
+                vec![
+                    Ok(CatchUp::Advanced { recorded: 1 }),
+                    Ok(CatchUp::Advanced { recorded: 1 }),
+                    Ok(CatchUp::Advanced { recorded: 2 }),
+                    Ok(CatchUp::AtHead),
+                ],
+                page_reads(&[(0, 4), (1, 3), (2, 2), (4, 0)]),
+            ),
+            "each entry folds in a call of its own, the decisions after them in one"
+        );
+        assert_eq!(
+            (
+                crate::test_support::passed_over_rows(&path),
+                applied_through(&p, 4),
+                crate::test_support::whole_json(&p),
+            ),
+            (
+                crate::test_support::passed_over_rows(&rebuilt),
+                applied_through(&rebuilt_p, 4),
+                crate::test_support::whole_json(&rebuilt_p),
+            ),
+            "the caught-up file holds what the rebuilt one holds"
+        );
+    }
+
+    /// Spec 124, ONE PROCEDURE: a file whose rebuild seeds or repairs its cursor folds no catch-up
+    /// of its own ([`CatchUp::Inert`]), opening no log and writing nothing - one holding a
+    /// rebuild's state, one recording an older fold rule over what it folded, one carrying the owed
+    /// mark, one without `caught_up` - and of two such causes standing together the first in that
+    /// order is the answer.
+    #[test]
+    fn catch_up_on_a_file_its_rebuild_seeds_or_repairs_opens_no_log_and_answers_inert() {
+        let cases: [(&str, &[Stand], Inert, Option<Position>); 7] = [
+            (
+                "a rebuild's state",
+                &[a_standing_tail],
+                Inert::RebuildState,
+                Some(0),
+            ),
+            (
+                "an older fold rule",
+                &[folded_under_an_older_rule],
+                Inert::OlderRule,
+                Some(0),
+            ),
+            (
+                "the owed mark",
+                &[carrying_an_owed_mark],
+                Inert::Marked,
+                Some(0),
+            ),
+            ("no cursor", &[without_a_cursor], Inert::NoCursor, None),
+            (
+                "a rebuild's state beside an older fold rule",
+                &[folded_under_an_older_rule, a_standing_tail],
+                Inert::RebuildState,
+                Some(0),
+            ),
+            (
+                "an older fold rule beside the owed mark",
+                &[folded_under_an_older_rule, carrying_an_owed_mark],
+                Inert::OlderRule,
+                Some(0),
+            ),
+            (
+                "the owed mark beside no cursor",
+                &[without_a_cursor, carrying_an_owed_mark],
+                Inert::Marked,
+                None,
+            ),
+        ];
+        for (case, stands, inert, cursor) in cases {
+            let (_dir, path, p) = seeded_graph();
+            let p = p.with_log(|| panic!("a file that folds no catch-up opens no log"));
+            for stand in stands {
+                stand(&path);
+            }
+            assert_eq!(
+                (
+                    p.catch_up().map_err(|e| e.0),
+                    crate::test_support::caught_up_at(Path::new(&path)),
+                ),
+                (Ok(CatchUp::Inert(inert)), cursor),
+                "{case}: the answer, and the cursor as it stood"
+            );
+        }
+    }
+
+    /// Spec 124, ONE PROCEDURE: a cause another writer brings about between a call's page read and
+    /// its cut - a rebuild's state, an older fold rule, the cursor dropped - is read again under the
+    /// cut's write lock: the call answers it ([`CatchUp::Inert`]), folding nothing, leaving the
+    /// cursor as it stood and reading no second page.
+    #[test]
+    fn catch_up_meeting_a_cause_under_its_write_lock_answers_inert_folding_nothing() {
+        let cases: [(&str, Stand, Inert, Option<Position>); 3] = [
+            (
+                "a rebuild's state",
+                a_standing_tail,
+                Inert::RebuildState,
+                Some(0),
+            ),
+            (
+                "an older fold rule",
+                folded_under_an_older_rule,
+                Inert::OlderRule,
+                Some(0),
+            ),
+            ("no cursor", without_a_cursor, Inert::NoCursor, None),
+        ];
+        for (case, stand, inert, cursor) in cases {
+            let (_dir, path, p, log) = catching_up();
+            logged(&*log, &decisions_at(1..=2));
+            let standing = path.clone();
+            log.after_call(0, move |_| stand(&standing));
+            assert_eq!(
+                (
+                    p.catch_up().map_err(|e| e.0),
+                    crate::test_support::caught_up_at(Path::new(&path)),
+                    applied(&p, 2),
+                    log.reads(),
+                ),
+                (
+                    Ok(CatchUp::Inert(inert)),
+                    cursor,
+                    false,
+                    page_reads(&[(0, 2)])
+                ),
+                "{case}: the answer, the cursor as it stood, nothing folded and one page read"
+            );
+        }
+    }
+
+    /// Spec 124, ONE PROCEDURE: a projector handed no log has none to fold forward from - its call
+    /// answers the head, writing nothing.
+    #[test]
+    fn catch_up_handed_no_log_answers_at_head() {
+        let (_dir, path, p) = seeded_graph();
+        assert_eq!(
+            (
+                p.catch_up().map_err(|e| e.0),
+                crate::test_support::caught_up_at(Path::new(&path)),
+            ),
+            (Ok(CatchUp::AtHead), Some(0))
+        );
+    }
+
+    /// Another writer of the graph file at `path` ([`another_writer`]) catching it up the moment
+    /// call `at` of `log` returns, insisting it folds `recorded` positions.
+    fn caught_up_by_another_writer(log: &CountedLog, path: &str, at: usize, recorded: usize) {
+        let q = another_writer(path);
+        log.after_call(at, move |_| {
+            assert_eq!(
+                q.catch_up().map_err(|e| e.0),
+                Ok(CatchUp::Advanced { recorded }),
+                "the other writer catches the file up"
+            );
+        });
+    }
+
+    /// Another writer catching the graph file at `path` up past the cut of `log`'s first page read
+    /// ([`caught_up_by_another_writer`]), then the log gaining a decision at 4.
+    fn outrun_once(log: &CountedLog, path: &str) {
+        caught_up_by_another_writer(log, path, 0, 3);
+        log.after_call(0, |inner| logged(inner, &decisions_at([4])));
+    }
+
+    /// Spec 124, ONE PROCEDURE: a call's cut reads the cursor again under its write lock. Another
+    /// writer's catch-up past the cut, or a swap lowering the cursor below the call's page, sends
+    /// the call to read one page again from where the cursor then stands, and a second such page
+    /// answers [`CatchUp::Skipped`] at the first one's start, writing nothing. Another writer's
+    /// direct fold of a position of the cut, or a cursor moved inside the cut, is no outrun: the
+    /// call folds the rest, counting only the positions its own transaction recorded.
+    #[test]
+    fn catch_up_reads_one_page_again_when_another_writer_passes_its_cut_and_skips_the_second() {
+        // How a case places another writer's act among the calls, given the log and the file.
+        type Act = fn(&CountedLog, &str);
+        // Each case: another writer's act; what the calls answer; their page reads, each as where
+        // it read from and how many events it handed back; and where the cursor stands after them.
+        type Case = (
+            &'static str,
+            Act,
+            Vec<CatchUp>,
+            Vec<(Position, usize)>,
+            Position,
+        );
+        let advanced = |recorded| CatchUp::Advanced { recorded };
+        let cases: [Case; 5] = [
+            (
+                "a catch-up past the cut, the log gaining a position",
+                outrun_once,
+                vec![advanced(1), CatchUp::AtHead],
+                vec![(0, 3), (3, 1), (4, 0)],
+                4,
+            ),
+            (
+                "a catch-up past the cut read again too",
+                |log, path| {
+                    outrun_once(log, path);
+                    caught_up_by_another_writer(log, path, 1, 1);
+                },
+                vec![CatchUp::Skipped { at: 3 }],
+                vec![(0, 3), (3, 1)],
+                4,
+            ),
+            (
+                "a direct fold of a position of the cut",
+                |log, path| {
+                    let q = Projector::open(path, "test").unwrap();
+                    log.after_call(0, move |_| {
+                        crate::test_support::folds(&q, &decisions_at([2]))
+                    });
+                },
+                vec![advanced(2), CatchUp::AtHead],
+                vec![(0, 3), (3, 0)],
+                3,
+            ),
+            (
+                "the cursor moved inside the cut",
+                |log, path| {
+                    let q = Projector::open(path, "test").unwrap();
+                    let at = path.to_string();
+                    log.after_call(0, move |_| {
+                        crate::test_support::folds(&q, &decisions_at(1..=2));
+                        crate::test_support::move_the_cursor(Path::new(&at), 2);
+                    });
+                },
+                vec![advanced(1), CatchUp::AtHead],
+                vec![(0, 3), (3, 0)],
+                3,
+            ),
+            (
+                "a swap lowering the cursor below the call's page",
+                |log, path| {
+                    crate::test_support::folds(
+                        &Projector::open(path, "test").unwrap(),
+                        &decisions_at(1..=2),
+                    );
+                    crate::test_support::move_the_cursor(Path::new(path), 2);
+                    let at = path.to_string();
+                    log.after_call(0, move |_| {
+                        crate::test_support::move_the_cursor(Path::new(&at), 0)
+                    });
+                },
+                vec![advanced(1), CatchUp::AtHead],
+                vec![(2, 1), (0, 3), (3, 0)],
+                3,
+            ),
+        ];
+        for (case, act, calls, reads, cursor) in cases {
+            let (_dir, path, p, log) = catching_up();
+            logged(&*log, &decisions_at(1..=3));
+            act(&log, &path);
+            assert_eq!(
+                (
+                    answers(&p),
+                    log.reads(),
+                    crate::test_support::caught_up_at(Path::new(&path)),
+                ),
+                (
+                    calls.into_iter().map(Ok).collect::<Vec<_>>(),
+                    page_reads(&reads),
+                    Some(cursor),
+                ),
+                "{case}: the calls' answers, their page reads and the cursor"
+            );
+        }
+    }
+
+    /// Spec 124, THE TWO WRITES MEETING A LOCK: a call whose cut meets another writer's write lock
+    /// past the busy timeout answers [`CatchUp::Skipped`] at the cursor it read from, folding
+    /// nothing and leaving the cursor where it stood; the next call, the lock released, folds.
+    #[test]
+    fn catch_up_meeting_the_write_lock_is_skipped_at_its_cursor_writing_nothing() {
+        let (_dir, path, p, log) = catching_up();
+        logged(&*log, &decisions_at([1]));
+        impatient(&p);
+        let skipped = crate::test_support::with_graph_locked(Path::new(&path), || {
+            p.catch_up().map_err(|e| e.0)
+        });
+        assert_eq!(
+            (
+                skipped,
+                crate::test_support::caught_up_at(Path::new(&path)),
+                applied(&p, 1),
+            ),
+            (Ok(CatchUp::Skipped { at: 0 }), Some(0), false),
+            "the contended call is skipped, writing nothing"
+        );
+        assert_eq!(
+            answers(&p),
+            vec![Ok(CatchUp::Advanced { recorded: 1 }), Ok(CatchUp::AtHead)],
+            "the next call, the lock released, folds"
+        );
+    }
+
+    /// What the opener of the log [`a_catch_up_that_fails_answers_failed_at_its_cursor_writing_nothing`]
+    /// hands answers the first time it is called.
+    const LOG_UNOPENED: &str = "the log could not be opened";
+
+    /// Spec 124, ONE PROCEDURE: a call that fails - the log's open, its page read or its cut's
+    /// fold - answers [`CatchUp::Failed`] at the cursor it read from with the failure's text,
+    /// writing nothing. A failed open is tried again by the next call, and a log once opened is
+    /// never opened again.
+    #[test]
+    fn a_catch_up_that_fails_answers_failed_at_its_cursor_writing_nothing() {
+        let (_dir, path, p) = seeded_graph();
+        let tries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tried = Arc::clone(&tries);
+        let open = the_log_beside(&path);
+        let p = p.with_log(move || {
+            if tried.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Err(Error(LOG_UNOPENED.to_string()));
+            }
+            open()
+        });
+        assert_eq!(
+            (
+                [p.catch_up(), p.catch_up(), p.catch_up()].map(|a| a.map_err(|e| e.0)),
+                tries.load(std::sync::atomic::Ordering::SeqCst),
+            ),
+            (
+                [
+                    Ok(CatchUp::Failed {
+                        at: 0,
+                        error: LOG_UNOPENED.to_string()
+                    }),
+                    Ok(CatchUp::AtHead),
+                    Ok(CatchUp::AtHead),
+                ],
+                2,
+            ),
+            "the failed open is tried again, and the opened log kept"
+        );
+
+        let (_dir, path, p, log) = catching_up();
+        let p = p.with_reextraction(|| Box::new(|_: &Event| crate::test_support::blob_unread()));
+        logged(&*log, &[crate::test_support::unresolved_entry_at(1)]);
+        assert_eq!(
+            (
+                answers(&p),
+                crate::test_support::caught_up_at(Path::new(&path)),
+                crate::test_support::passed_over_rows(&path),
+                applied(&p, 1),
+            ),
+            (
+                vec![Ok(CatchUp::Failed {
+                    at: 0,
+                    error: crate::test_support::BLOB_UNREAD.to_string()
+                })],
+                Some(0),
+                vec![],
+                false,
+            ),
+            "a re-extraction that fails fails the call, passing nothing over"
+        );
+
+        let (_dir, path, p, log) = catching_up();
+        logged(&*log, &decisions_at([1]));
+        Connection::open(events_beside(&path))
+            .unwrap()
+            .execute_batch("DROP TABLE events")
+            .unwrap();
+        let unread = rigger_store_sqlite::eventstore::namespace::Namespaced::new(&*log, "test")
+            .read_all_page(0, &crate::eventstore::Filter::default(), FOLD_BATCH)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            (
+                answers(&p),
+                crate::test_support::caught_up_at(Path::new(&path)),
+                applied(&p, 1),
+            ),
+            (
+                vec![Ok(CatchUp::Failed {
+                    at: 0,
+                    error: unread
+                })],
+                Some(0),
+                false,
+            ),
+            "a page read that fails fails the call with the store's own text"
+        );
+    }
+
+    /// Spec 124, ONE PROCEDURE: the one setter of a cursor never moves it backward - a position
+    /// below where it stands leaves it standing, its own position keeps it, and one above moves it.
+    #[test]
+    fn set_cursor_moves_a_cursor_forward_only() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        let tx = conn.transaction().unwrap();
+        create_cursor(&tx, 5).unwrap();
+        let stands = [3, 5, 7].map(|at| {
+            set_cursor(&tx, "caught_up", at).unwrap();
+            tx.query_row("SELECT position FROM caught_up", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        });
+        assert_eq!(stands, [5, 5, 7]);
+    }
+
+    /// Spec 124, THE CURSOR AND ITS SEEDING: a file already carrying `caught_up` keeps its cursor,
+    /// and its verdict is lost only beside a log shorter than the prefix the cursor claims - a head
+    /// below the cursor, or no head beside a cursor above 0, as when the log is replaced under the
+    /// file - and loses nothing beside a head at or above it.
+    #[test]
+    fn a_cursored_file_s_seeding_is_lost_only_beside_a_head_below_its_cursor() {
+        let cases: [(Position, Option<Position>, bool); 6] = [
+            (2, Some(3), false),
+            (2, Some(2), false),
+            (2, Some(1), true),
+            (2, None, true),
+            (0, None, false),
+            (0, Some(5), false),
+        ];
+        for (cursor, head, lost) in cases {
+            let (_dir, path, p) = seeded_graph();
+            crate::test_support::move_the_cursor(Path::new(&path), cursor);
+            assert_eq!(
+                (
+                    seeded_unread(&p, head),
+                    crate::test_support::caught_up_at(Path::new(&path)),
+                ),
+                (Seeding::Ran { lost }, Some(cursor)),
+                "a cursor at {cursor} beside a head at {head:?}"
+            );
+        }
     }
 
     /// Whether `p`'s applied ledger records each position from 1 through `last`, in order
@@ -7706,11 +8500,7 @@ mod tests {
         let log = decisions_through(3);
         let p = Projector::open(path, "test").unwrap();
         crate::test_support::folds(&p, &log[..1]);
-        p.conn
-            .lock()
-            .unwrap()
-            .busy_timeout(std::time::Duration::from_millis(1))
-            .unwrap();
+        impatient(&p);
         let folded = crate::test_support::with_graph_locked(Path::new(path), || {
             std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
             let folded = crate::test_support::fold_of(&p, &log[1..]);
@@ -8043,32 +8833,19 @@ mod tests {
         }
         // The graph file at `path` with nothing standing beside it.
         fn nothing_stands(_: &str) {}
-        // The graph file at `path` holding the cursor a swapped-in rebuild's tail is owed past.
-        fn a_standing_tail(path: &str) {
-            connection_to(path).execute_batch(REBUILD_STATE).unwrap();
-        }
-        // What stands beside the graph file at `path` before it is asked.
-        type Stand = fn(&str);
         // Each case: what stands, the `owed` it is asked with, and whether the pay starts fresh.
         let cases: [(&str, Stand, bool, bool); 12] = [
             ("nothing owed", nothing_stands, false, false),
             ("a cause the caller owes", nothing_stands, true, true),
             (
                 "an older fold rule the file records",
-                |path| {
-                    // A file at an older rule that folded nothing takes the current one on open.
-                    crate::test_support::folds(
-                        &Projector::open(path, "test").unwrap(),
-                        &decisions_through(1),
-                    );
-                    crate::test_support::stamp_user_version(Path::new(path), PROJECTION_VERSION - 1)
-                },
+                folded_under_an_older_rule,
                 false,
                 true,
             ),
             (
                 "an owed mark the file carries",
-                |path| std::fs::write(owed_mark(path).unwrap(), b"").unwrap(),
+                carrying_an_owed_mark,
                 false,
                 true,
             ),
@@ -16439,6 +17216,53 @@ mod tests {
                 let p = Projector::open(&path, "test").unwrap();
                 p.conn.lock().unwrap().execute_batch(REBUILD_STATE).unwrap();
                 (dir, path, p)
+            }
+
+            /// Spec 124, ONE PROCEDURE: a foreign ledger entry past the cursor, however old, folds
+            /// re-extracted through the re-extraction its projector is handed - its generation
+            /// installed - and, handed none, is passed over `resolved to nothing`, installing
+            /// none; either way the call records its position and the next meets the head.
+            #[test]
+            fn catch_up_folds_a_foreign_entry_re_extracted_else_passes_it_over_resolved_to_nothing()
+            {
+                // How a case hands the projector its re-extraction, if it hands one.
+                type Handed = fn(Projector) -> Projector;
+                // Each case: how the projector is handed its re-extraction; the generation the
+                // file holds for `gc/src/f.rs` after the calls; and what was passed over.
+                type Case = (&'static str, Handed, Option<String>, Vec<(u64, String)>);
+                let cases: [Case; 2] = [
+                    (
+                        "handed a re-extraction",
+                        |p| p.with_reextraction(|| Box::new(|_: &Event| Ok(Some(h1_batch())))),
+                        Some("h1".to_string()),
+                        vec![],
+                    ),
+                    (
+                        "handed none",
+                        |p| p,
+                        None,
+                        vec![(1, RESOLVED_TO_NOTHING.to_string())],
+                    ),
+                ];
+                for (case, handed, generation, passed) in cases {
+                    let (_dir, path, p, log) = catching_up();
+                    let p = handed(p);
+                    logged(&*log, &[entry("gc", "src/f.rs", "h1", 1, 10)]);
+                    assert_eq!(
+                        (
+                            answers(&p),
+                            generation_of_f(&p),
+                            crate::test_support::passed_over_rows(&path),
+                        ),
+                        (
+                            vec![Ok(CatchUp::Advanced { recorded: 1 }), Ok(CatchUp::AtHead)],
+                            generation,
+                            passed,
+                        ),
+                        "{case}: the calls' answers, the generation installed and what was passed \
+                         over"
+                    );
+                }
             }
 
             /// Spec 122, ONE BATCHING RULE and THE SEAM: a rebuild's tail commits a transaction

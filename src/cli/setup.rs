@@ -1137,7 +1137,12 @@ fn pay_owed_rebuild<'t>(
     refuse_if_live: &LiveRunRefusal,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let graph = Projector::open(held.path(), project)?;
-    let seeded = graph.seed_cursor(seeding.live, seeding.stamp_of, std::time::SystemTime::now())?;
+    let seeded = graph.seed_cursor(
+        seeding.live,
+        seeding.stamp_of,
+        log.log_head()?,
+        std::time::SystemTime::now(),
+    )?;
     let causes = graph.owed_against(&seeded)?;
     let owed = !causes.is_empty();
     // A NEW rebuild - one whose pay starts a fresh shadow and folds the log from its start - is

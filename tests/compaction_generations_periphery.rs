@@ -673,6 +673,7 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
         &Projector::open(graph_db.to_str().unwrap(), PROJECT).unwrap(),
         &mut stream_positions(&counting, rigger::conductor::STREAM, 2),
         &mut |_| Ok(None),
+        store.log_head().unwrap(),
     );
     let rebuilt = Projector::open(graph_db.to_str().unwrap(), PROJECT)
         .unwrap()

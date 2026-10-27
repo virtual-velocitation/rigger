@@ -6158,7 +6158,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-d7229824fb12",
+    "id": "dup-b12beed1cbba",
     "classification": "semantic",
     "sites": [
       {
@@ -6185,6 +6185,11 @@
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "a53e241130fed625"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "6bf8e46c7a04fdfd"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -6320,6 +6325,11 @@
         "file": "tests/common/fixtures/cursor.rs",
         "name": "Connection::open",
         "content_hash": "21e10304a9cde36f"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "tests/common/fixtures/cursor.rs",
@@ -6483,7 +6493,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 64 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 66 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

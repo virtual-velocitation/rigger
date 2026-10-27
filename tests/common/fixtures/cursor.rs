@@ -45,13 +45,17 @@ pub fn stamp_in(
 
 /// Why the graph file behind `p` owes its rebuild as `rigger setup` reads it: its cursor seeded
 /// now against the positions `live` streams, each missing position's stamp read through
-/// `stamp_of`, then the causes the file carries joined by the seeding's verdict.
+/// `stamp_of`, handed `head` as the log's head, then the causes the file carries joined by the
+/// seeding's verdict.
 pub fn owed_once_seeded(
     p: &Projector,
     live: &mut PositionSource,
     stamp_of: &mut StampLookup,
+    head: Option<u64>,
 ) -> Vec<&'static str> {
-    let seeding = p.seed_cursor(live, stamp_of, SystemTime::now()).unwrap();
+    let seeding = p
+        .seed_cursor(live, stamp_of, head, SystemTime::now())
+        .unwrap();
     p.owed_against(&seeding).unwrap()
 }
 
@@ -64,6 +68,16 @@ pub fn caught_up_at(graph_db: &Path) -> Option<u64> {
         Err(e) if e.to_string() == "no such table: caught_up" => None,
         Err(e) => panic!("read the caught_up cursor: {e}"),
     }
+}
+
+/// Move the `caught_up` cursor of the graph file at `graph_db` to `to`, through a connection of its
+/// own and around the cursor's setter: another writer's catch-up, or a rebuild's swap, placing it
+/// there.
+pub fn move_the_cursor(graph_db: &Path, to: u64) {
+    rusqlite::Connection::open(graph_db)
+        .unwrap()
+        .execute("UPDATE caught_up SET position = ?1", [to as i64])
+        .unwrap();
 }
 
 /// Drop the `caught_up` cursor of the graph file at `graph_db`, through a connection of its own:
