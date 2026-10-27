@@ -516,7 +516,12 @@ fn reset_derived(loc: &StoreLocation, hash: &HashBlob) -> Res {
     // A `graph.db` that owes its rebuild is refused here as every command that depends on the
     // fold refuses it (spec 101): the migration runs once `rigger setup` has paid the rebuild.
     if Path::new(&graph_db).exists() {
-        open_graph(&graph_db, &loc.identity(), "reset --derived")?;
+        open_graph(
+            &graph_db,
+            &loc.identity(),
+            &StoreSelection::Sqlite,
+            "reset --derived",
+        )?;
     }
     let store = open_sqlite_store(&loc.file("events.db"))?;
     // THE OPERATOR'S BEFORE, taken before the migration's transaction opens: what the
@@ -966,7 +971,7 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
     // run) reclaims no edge, so LIVE and recent history are both untouched.
     let boundary = superseded_edge_boundary(&events);
 
-    let graph = open_graph(&graph_db, &loc.identity(), "reset --runs")?;
+    let graph = open_graph(&graph_db, &loc.identity(), selection, "reset --runs")?;
     // The probe's step lock is held until the close returns, so no `rigger step` starts against a
     // run this reset is closing; the graph prune below takes no part in it.
     let probe = live_writer_facts(loc, selection, env, &events)?;

@@ -609,7 +609,12 @@ fn cmd_graph_build(_args: &[String]) -> Res {
     let selection = store_selection(None, None)?;
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), "graph build")?;
+    let graph = open_graph(
+        &db_path("graph.db"),
+        &project_identity(),
+        &selection,
+        "graph build",
+    )?;
 
     // The tree to fold: the git top-level, so a build launched from a subdirectory still ingests
     // the WHOLE project (the same root a run's `deps.repo` carries), falling back to the cwd
@@ -829,6 +834,7 @@ fn run_graph_pass(
     let graph = open_graph(
         &db_path("graph.db"),
         &project_identity(),
+        &selection,
         &format!("graph {verb}"),
     )?;
 
@@ -1103,7 +1109,12 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
     }
     // The event goes on the log FIRST; `graph.db` is opened only after (spec 101), and a fold
     // that cannot happen is reported as not folded, with the reason, instead of claimed.
-    let emitted = mcpserver::emit_event(&store, conductor::STREAM, || loc.graph(), &tool_args)?;
+    let emitted = mcpserver::emit_event(
+        &store,
+        conductor::STREAM,
+        || loc.graph(&selection),
+        &tool_args,
+    )?;
     println!(
         "emitted {typ} (position {}){}",
         emitted.position,

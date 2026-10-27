@@ -901,6 +901,16 @@ const REBUILD_BATCH: usize = 10_000;
 /// step ([`Projector::rebuild`]), streaming the log once, resuming an interrupted rebuild from its
 /// last committed transaction and finishing exactly the tail of one interrupted after its swap.
 ///
+/// Setup opens `graph.db` for write once, under the rebuild lock ([`open_graph_for_write`]): the
+/// file it seeds, rebuilds and catches up is that one, made by that open on a cold start. After
+/// the rebuild, or with none owed, setup folds the file forward from its `caught_up` cursor to the
+/// log's head (spec 124, ONE PROCEDURE, [`catch_up_to_head`]) and says how that ended, unless the
+/// seeding met another writer's write lock; the catch-up reads the log through the store the
+/// projector opens for itself at its first call, a second open of the log the seeding and the
+/// rebuild read, and re-extracts each ledger entry it meets from the sources a rebuild reads
+/// (below, [`reextract_entry`]). A catch-up stopped at a failure fails setup with the line naming
+/// the position it stopped at.
+///
 /// A NEW rebuild - one whose pay starts a fresh shadow and folds the log from its start
 /// ([`Projector::rebuild_starts_fresh`]): a cause owed beside no standing shadow, a swapped-in
 /// tail standing or not, or a standing shadow that is not resumable, an older-rule binary's among
@@ -948,20 +958,8 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     // no identity behind asks git for neither.
     let rooted = std::cell::OnceCell::new();
     let tree = || -> &Path { rooted.get_or_init(|| tree_root(&cwd().join(RIGGER_DIR))) };
-    let mut batch: Option<Option<rigger::worktree::BlobBatch>> = None;
-    let mut reextract = |entry: &Event| {
-        let root = tree();
-        let blobs = batch.get_or_insert_with(|| entry_blobs(root));
-        let mut held = blobs
-            .as_mut()
-            .map(|batch| |id: &str| batch.blob(id).map_err(|e| contextgraph::Error(e.0)));
-        rigger::ingest::resolve_entry(
-            root,
-            entry,
-            held.as_mut()
-                .map(|source| source as &mut rigger::ingest::BlobSource),
-        )
-    };
+    let mut batch = None;
+    let mut reextract = |entry: &Event| reextract_entry(tree(), &mut batch, entry);
     // A NEW rebuild - one whose pay starts a fresh shadow - is refused while the run is live (spec
     // 124): the live-run refusal `rigger reset --derived` has, over this store's log, its scratch
     // configuration, registry and clock read only once the pay would start one, so a setup whose
@@ -979,21 +977,20 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
             live_run_rebuild_refusal,
         )
     };
+    // The one write open of `graph.db` this setup makes, under the rebuild lock: the file it
+    // seeds, rebuilds and catches up, with the catch-up's log and re-extraction installed.
+    let graph = open_graph_for_write(held.path(), &project, &selection)?;
     match &selection {
         sqlite @ StoreSelection::Sqlite => {
             // A project with no run recorded has no log file: its log is read as the empty one it
             // is, so setup never makes `events.db`.
             let events_db = db_path("events.db");
-            let store = open_sqlite_store(if sqlite.log_absent(&events_db) {
-                ":memory:"
-            } else {
-                &events_db
-            })?;
+            let store = open_sqlite_store(sqlite.log_file(&events_db))?;
             let prefix = Namespaced::prefix_for(&project);
             let identity = rigger::ingest::derived_index_identity();
             pay_owed_rebuild(
                 &held,
-                &project,
+                &graph,
                 &Namespaced::new(&store, &project),
                 &tree,
                 SeedingReads {
@@ -1048,7 +1045,7 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                 contextgraph::sqlite::stream_source(&store, conductor::STREAM, REBUILD_BATCH);
             pay_owed_rebuild(
                 &held,
-                &project,
+                &graph,
                 &store,
                 &tree,
                 SeedingReads {
@@ -1062,17 +1059,6 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                 &refuse,
             )
         }
-    }
-}
-
-/// The batch process a rebuild reads its entries' blobs from, over the repository holding `root`:
-/// none outside a git repository or when the process cannot start, and none in the lane that
-/// compiles no extraction, where no entry resolves and no process is started.
-fn entry_blobs(root: &Path) -> Option<rigger::worktree::BlobBatch> {
-    if cfg!(feature = "symbols") {
-        rigger::worktree::BlobBatch::start(root)
-    } else {
-        None
     }
 }
 
@@ -1106,11 +1092,11 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
     )
 }
 
-/// Open the `graph.db` whose rebuild lock is `held`, making it where none stands, and seed its
-/// `caught_up` cursor against the log through `seeding`, its missing positions aged against the
-/// clock read once here ([`Projector::seed_cursor`]); read why the file owes its rebuild - its own
-/// records, and the seeding's verdict ([`Projector::owed_against`]); when the pay starts a NEW
-/// rebuild, a fresh shadow the log is folded into from its start
+/// Seed the `caught_up` cursor of `graph`, the `graph.db` whose rebuild lock is `held`, against
+/// the log through `seeding`, handed the head of `log` read once here and its missing positions
+/// aged against the clock read once here ([`Projector::seed_cursor`]); read why the file owes its
+/// rebuild - its own records, and the seeding's verdict ([`Projector::owed_against`]); when the pay
+/// starts a NEW rebuild, a fresh shadow the log is folded into from its start
 /// ([`Projector::rebuild_starts_fresh`]) - a cause owed beside no standing shadow, a swapped-in
 /// tail standing or not, or a standing shadow that is not resumable - ask `refuse_if_live` of `log`
 /// and fail with its refusal while the run is live, before any line is printed or the file
@@ -1125,19 +1111,20 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// graph once the rebuild ends, how many identities the next ingest records again
 /// ([`rebuild_report_line`]); then, when the seeding met another writer's write lock
 /// ([`contextgraph::sqlite::Seeding::Skipped`]), that the catch-up was not started, the next setup
-/// seeding the file (spec 124, CATCH-UP LINES); then, rebuilt or not, how many events the file
-/// records passed over, by cause, whenever it records any ([`Projector::passed_over`], spec 124,
-/// CATCH-UP LINES); report whether it rebuilt.
+/// seeding the file (spec 124, CATCH-UP LINES), and otherwise fold the file forward from its cursor
+/// to the log's head ([`catch_up_to_head`]), saying how that ended; then, rebuilt or not, how many
+/// events the file records passed over, by cause, whenever it records any
+/// ([`Projector::passed_over`], spec 124, CATCH-UP LINES); and report whether it rebuilt, or fail
+/// with the line naming where the catch-up stopped at a failure.
 fn pay_owed_rebuild<'t>(
     held: &contextgraph::sqlite::RebuildLock,
-    project: &str,
+    graph: &Projector,
     log: &dyn EventStore,
     tree: &dyn Fn() -> &'t Path,
     seeding: SeedingReads,
     reads: RebuildReads,
     refuse_if_live: &LiveRunRefusal,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let graph = Projector::open(held.path(), project)?;
     let seeded = graph.seed_cursor(
         seeding.live,
         seeding.stamp_of,
@@ -1173,14 +1160,20 @@ fn pay_owed_rebuild<'t>(
         println!("{} from the rebuilt graph", pruned_line(&rebuilt.pruned));
         println!(
             "{}",
-            rebuild_report_line(identities_behind_their_recording(log, &graph, tree)?)
+            rebuild_report_line(identities_behind_their_recording(log, graph, tree)?)
         );
     }
-    if seeded == contextgraph::sqlite::Seeding::Skipped {
+    let caught_up = if seeded == contextgraph::sqlite::Seeding::Skipped {
         println!(
             "graph.db catch-up was not started: another writer holds the write lock - the next \
              rigger setup starts it"
         );
+        Ok(None)
+    } else {
+        catch_up_to_head(&mut || graph.catch_up())?
+    };
+    if let Ok(Some(line)) = &caught_up {
+        println!("{line}");
     }
     let passed = graph.passed_over()?;
     if let Some(by_cause) = passed_over_by_cause(&passed) {
@@ -1189,6 +1182,9 @@ fn pay_owed_rebuild<'t>(
             passed.total(),
             PASSED_OVER_RETRIED
         );
+    }
+    if let Err(stopped) = caught_up {
+        return Err(stopped.into());
     }
     Ok(rebuilt.is_some())
 }
@@ -1205,8 +1201,37 @@ fn pay_owed_rebuild<'t>(
 fn catch_up_to_head(
     catch_up: &mut dyn FnMut() -> Result<CatchUp, contextgraph::Error>,
 ) -> Result<Result<Option<String>, String>, contextgraph::Error> {
-    let _ = catch_up;
-    Ok(Ok(None))
+    let mut recorded_by_the_calls = 0;
+    loop {
+        return Ok(match catch_up()? {
+            CatchUp::Advanced { recorded } => {
+                recorded_by_the_calls += recorded;
+                continue;
+            }
+            CatchUp::AtHead => Ok((recorded_by_the_calls > 0).then(|| {
+                format!(
+                    "caught graph.db up with the event log: folded {recorded_by_the_calls} \
+                     event(s) it missed"
+                )
+            })),
+            CatchUp::Inert(_) => Ok(None),
+            CatchUp::Skipped { at } => Ok(Some(catch_up_stopped(
+                at,
+                "another writer holds the write lock or advanced the cursor past this call's \
+                 read - the next rigger setup continues it",
+            ))),
+            CatchUp::Failed { at, error } => Err(catch_up_stopped(
+                at,
+                &format!("{error} - rerun rigger setup once the cause is fixed"),
+            )),
+        });
+    }
+}
+
+/// The line `rigger setup` says its catch-up of `graph.db` stopped with, at the position `at` its
+/// last call read from, for the reason `why` (spec 124, CATCH-UP LINES).
+fn catch_up_stopped(at: rigger::eventstore::Position, why: &str) -> String {
+    format!("graph.db catch-up stopped at position {at}: {why}")
 }
 
 /// How many identities `graph` holds at a generation that is not their latest recording's on
@@ -2012,7 +2037,7 @@ mod tests {
         let mut racing = Vec::new();
         let rebuilt = pay_owed_rebuild(
             &held,
-            "proj",
+            &Projector::open(held.path(), "proj").unwrap(),
             &log,
             &|| dir.path(),
             SeedingReads {

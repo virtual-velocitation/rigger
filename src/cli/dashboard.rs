@@ -825,7 +825,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
     // an emit this server serves appends whether or not the graph owes its rebuild (the fold
     // refuses while it does), and the graph and grounding tools, which depend on the fold,
     // refuse naming `rigger setup` until it is paid (spec 101).
-    let graph = loc.graph()?;
+    let graph = loc.graph(&selection)?;
     let driver = rigger::driver::workflow::Driver::new();
 
     // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's

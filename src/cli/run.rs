@@ -412,11 +412,12 @@ pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
     }
     // The resume goes on the log first; `graph.db` is opened only after (spec 101), so a graph
     // that cannot be had costs the operator's recovery verb only the fold, which it says.
-    rigger::ingest::FoldingStore::new(&store, Some(|| loc.graph()), &stderr_line).append(
-        conductor::STREAM,
-        ExpectedRevision::Any,
-        std::slice::from_ref(&ev),
-    )?;
+    rigger::ingest::FoldingStore::new(&store, Some(|| loc.graph(&selection)), &stderr_line)
+        .append(
+            conductor::STREAM,
+            ExpectedRevision::Any,
+            std::slice::from_ref(&ev),
+        )?;
 
     println!(
         "resumed unit {unit_id:?}: {attempts_granted} attempt(s) granted (by operator) - the \
@@ -549,7 +550,12 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // the graph's applied ledger holds every position the step wrote (the conductor folds its own
     // through the same store). Opened before any append, so a graph that owes its rebuild refuses
     // the step before it writes anything the graph would miss.
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), "step")?;
+    let graph = open_graph(
+        &db_path("graph.db"),
+        &project_identity(),
+        &selection,
+        "step",
+    )?;
     let folding = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line);
 
     // The definition hash this step pins / re-checks (spec 13, unit 1): the digest of the
@@ -1442,7 +1448,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     let _registration = register_run_instance(&repo, &selection);
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), "run")?;
+    let graph = open_graph(&db_path("graph.db"), &project_identity(), &selection, "run")?;
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
     // `runscope_store::start_fresh` - the evented restart for a terminal escalation on an
@@ -1811,7 +1817,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // adopts this boundary rather than the latest (possibly wedged) run. `true`: this is the
     // MCP-serving path, so the notice must land on stderr, mirroring the reminder three lines
     // above (spec 66, criterion 5 escalation remedy round 2) - stdout stays the pure MCP wire.
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), "run")?;
+    let graph = open_graph(&db_path("graph.db"), &project_identity(), &selection, "run")?;
     fresh_run_if_requested(
         parsed,
         &rigger::ingest::folding_into(&store, Some(&graph), &stderr_line),
@@ -2853,7 +2859,9 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     // adjudicator verdict keeps its discarded findings in grounding. A `--if-absent` no-op
     // appended nothing, so there is nothing new to fold (the prior record already did).
     if let Some(pos) = recorded {
-        if let contextgraph::Fold::NotFolded(why) = fold_recorded_result(&loc, &res, pos) {
+        if let contextgraph::Fold::NotFolded(why) =
+            fold_recorded_result(&loc, &selection, &res, pos)
+        {
             println!("{}", not_folded(&why));
         }
     }
@@ -2909,8 +2917,8 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
 /// graph edges (the `contextgraph` `TYPE_SPAWN_RESULT` fold arm), and answer what became of the
 /// fold. This is the result-channel counterpart of [`mcpserver::emit_event`]: rebuild the
 /// appended event, stamp it with the position the append returned, and fold it through the one
-/// [`contextgraph::Fold::of`] into the graph [`StoreLocation::graph`] opens, the same opener
-/// [`cmd_emit`] hands the emit core.
+/// [`contextgraph::Fold::of`] into the graph [`StoreLocation::graph`] opens under the store
+/// `selection` the courier resolved, the same opener [`cmd_emit`] hands the emit core.
 ///
 /// The result is already on the log, so nothing here fails it: a graph that owes its rebuild,
 /// one locked past its busy timeout, or a result that will not serialize (unreachable for one
@@ -2923,13 +2931,14 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
 /// a hole there it finds old (spec 124).
 fn fold_recorded_result(
     loc: &StoreLocation,
+    selection: &StoreSelection,
     res: &spawn::SpawnResult,
     pos: rigger::eventstore::Position,
 ) -> contextgraph::Fold {
     match res.to_event() {
         Ok(mut event) => {
             event.position = pos;
-            contextgraph::Fold::of(loc.graph(), &event)
+            contextgraph::Fold::of(loc.graph(selection), &event)
         }
         Err(e) => contextgraph::Fold::NotFolded(e.to_string()),
     }

@@ -1030,6 +1030,11 @@
     "reason": "`reclaimed_line` is the line `rigger reset --derived` prints for the bytes its compaction reclaimed and `caught_up_line` the line `rigger setup` prints for the events its catch-up folded: two test-side expected lines of different commands, each defined once, sharing only the shape of one `format!` over one count."
   },
   {
+    "id": "dup-3f04af8603ff",
+    "disposition": "not-a-duplicate",
+    "reason": "`setup.rs`'s `catch_up_stopped` is the production head of `rigger setup`'s two catch-up stop lines, which `catch_up_to_head` builds both from, while the cursor fixtures' `catch_up_stopped` is the tests' independent oracle of that head, which both expected stop lines build from and which must not reuse the code it checks (the root suites reach no binary-private fn), as `derived_key_parts` and its periphery oracle `split` are kept apart; each side spells the head once."
+  },
+  {
     "id": "dup-90e32eb50d95",
     "disposition": "not-a-duplicate",
     "reason": "All four already delegate to the one line picker `lines_where`; each names a different command's lines by its own predicate (the bare reset menu's `--derived` lines, `rigger peers`' decision rows, the index-lag advisory's and the log-bloat advisory's)."

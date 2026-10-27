@@ -410,6 +410,17 @@ impl StoreSelection {
         self.is_sqlite() && !Path::new(path).exists()
     }
 
+    /// What a store open under this selection opens for the log file at `path`: `path` itself,
+    /// unless that is an embedded log whose file does not exist yet ([`Self::log_absent`]), which
+    /// is read as the empty in-memory log it is, so the open never makes the file.
+    fn log_file<'p>(&self, path: &'p str) -> &'p str {
+        if self.log_absent(path) {
+            ":memory:"
+        } else {
+            path
+        }
+    }
+
     /// The environment that hands this selection to a child rigger process: a server's
     /// connection string as [`CONN_ENV`], the rung of [`store_selection`] that outranks the
     /// secret file and the configured store, so the child resolves the same server whichever
@@ -444,16 +455,87 @@ fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
     Ok(Store::open(path)?)
 }
 
-/// Open this project's `graph.db` for `command`, whose answer depends on the fold (spec 101): a
-/// file that says it owes its rebuild - folded under an older fold rule, or marked by a fold into it that failed - is
-/// refused at once, naming `rigger setup` - the one command that rebuilds it - never waited on,
-/// rebuilt or folded into here. The open itself writes nothing to such a file.
+/// Open the `graph.db` at `graph_db` for write, under `project` (spec 124, WIRING): the one open
+/// that may write to a graph file, making it where none stands ([`Projector::open`]), with the
+/// catch-up wiring installed. Its log ([`Projector::with_log`]) is the store `selection` resolves
+/// for the `events.db` beside the file ([`resolve_store`]), opened at the projector's first
+/// catch-up and held for its life; an embedded log whose file does not exist yet is read as the
+/// empty one it is ([`StoreSelection::log_file`]), so no open makes `events.db`. Its
+/// re-extraction ([`Projector::with_reextraction`]) is a fresh one per catch-up call, resolving each
+/// ledger entry under THE ONE ROOT of the directory holding the file ([`tree_root`]), asked of git
+/// at the call's first entry, through [`reextract_entry`].
+fn open_graph_for_write(
+    graph_db: &str,
+    project: &str,
+    selection: &StoreSelection,
+) -> Result<Projector, contextgraph::Error> {
+    let store_dir = cwd()
+        .join(graph_db)
+        .parent()
+        .map_or_else(cwd, Path::to_path_buf);
+    let (selection, events_db) = (selection.clone(), store_file(&store_dir, "events.db"));
+    let log = move || {
+        resolve_store(&selection, selection.log_file(&events_db))
+            .map(std::sync::Arc::from)
+            .map_err(|e| contextgraph::Error(e.to_string()))
+    };
+    let reextraction = move || -> Box<contextgraph::sqlite::Reextract<'static>> {
+        let (dir, mut root, mut batch) = (store_dir.clone(), None, None);
+        Box::new(move |entry: &Event| {
+            let root = root.get_or_insert_with(|| tree_root(&dir));
+            reextract_entry(root, &mut batch, entry)
+        })
+    };
+    Ok(Projector::open(graph_db, project)?
+        .with_log(log)
+        .with_reextraction(reextraction))
+}
+
+/// Re-extract the batch of the ledger entry of perception `entry` (spec 107,
+/// `ingest::resolve_entry`) for the tree under `root`: from the entry's blob in the repository's
+/// object database, read through the batch process `batch` holds - started at the first entry it
+/// is handed ([`entry_blobs`]), and none where no database can be asked - else from the tree's
+/// file, else from no bytes. An entry no source resolves answers none.
+fn reextract_entry(
+    root: &Path,
+    batch: &mut Option<Option<rigger::worktree::BlobBatch>>,
+    entry: &Event,
+) -> Result<Option<Vec<Event>>, contextgraph::Error> {
+    let blobs = batch.get_or_insert_with(|| entry_blobs(root));
+    let mut held = blobs
+        .as_mut()
+        .map(|batch| |id: &str| batch.blob(id).map_err(|e| contextgraph::Error(e.0)));
+    rigger::ingest::resolve_entry(
+        root,
+        entry,
+        held.as_mut()
+            .map(|source| source as &mut rigger::ingest::BlobSource),
+    )
+}
+
+/// The batch process a re-extraction reads its entries' blobs from, over the repository holding
+/// `root`: none outside a git repository or when the process cannot start, and none in the lane
+/// that compiles no extraction, where no entry resolves and no process is started.
+fn entry_blobs(root: &Path) -> Option<rigger::worktree::BlobBatch> {
+    if cfg!(feature = "symbols") {
+        rigger::worktree::BlobBatch::start(root)
+    } else {
+        None
+    }
+}
+
+/// Open this project's `graph.db` for write ([`open_graph_for_write`], under `selection`) for
+/// `command`, whose answer depends on the fold (spec 101): a file that says it owes its rebuild -
+/// folded under an older fold rule, or marked by a fold into it that failed - is refused at once,
+/// naming `rigger setup` - the one command that rebuilds it - never waited on, rebuilt or folded
+/// into here. The open itself writes nothing to such a file.
 fn open_graph(
     graph_db: &str,
     project: &str,
+    selection: &StoreSelection,
     command: &str,
 ) -> Result<Projector, Box<dyn std::error::Error>> {
-    let graph = Projector::open(graph_db, project)?;
+    let graph = open_graph_for_write(graph_db, project, selection)?;
     if graph.rebuild_owed()? {
         return Err(contextgraph::rebuild_owed_refusal(command).into());
     }
@@ -1217,7 +1299,7 @@ fn migrate_identity_at(loc: &StoreLocation) -> Res {
         return Ok(()); // no minted identity distinct from the basename
     }
     let backend = open_sqlite_store(&store_path)?;
-    let graph = Projector::open(&loc.file("graph.db"), &minted)?;
+    let graph = open_graph_for_write(&loc.file("graph.db"), &minted, &StoreSelection::Sqlite)?;
     if let Some((n, decision)) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))?
     {
         eprintln!(
@@ -1440,9 +1522,13 @@ impl StoreLocation {
     /// This store's context graph, opened for one fold: the one opener every command that appends
     /// and then folds hands [`contextgraph::Fold::of`] (directly or through
     /// [`mcpserver::emit_event`]), so each folds into the `graph.db` its store owns, under the
-    /// store's identity.
-    fn graph(&self) -> Result<Box<dyn Projection>, contextgraph::Error> {
-        Projector::open(&self.file("graph.db"), &self.identity())
+    /// store's identity, opened for write ([`open_graph_for_write`]) under the store `selection`
+    /// the command resolved.
+    fn graph(
+        &self,
+        selection: &StoreSelection,
+    ) -> Result<Box<dyn Projection>, contextgraph::Error> {
+        open_graph_for_write(&self.file("graph.db"), &self.identity(), selection)
             .map(|g| Box::new(g) as Box<dyn Projection>)
     }
 

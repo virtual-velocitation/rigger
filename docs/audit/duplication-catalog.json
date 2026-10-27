@@ -7667,6 +7667,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-3f04af8603ff",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "src/cli/setup.rs",
+        "name": "catch_up_stopped",
+        "content_hash": "6207475a6d263499"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "catch_up_stopped",
+        "content_hash": "89bc7a8b68cb459b"
+      }
+    ],
+    "proposed_home": "one shared `catch_up_stopped` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-dc79af9af1c6",
     "classification": "near",
     "sites": [

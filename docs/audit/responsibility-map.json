@@ -8305,6 +8305,14 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "log_file",
+    "is_test": false,
+    "proposed_module": "main::store_selection",
+    "reason": "method inside `impl StoreSelection`; grouped with its other `StoreSelection` methods.",
+    "content_hash": "b923b958c068d7c6"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "handed_env",
     "is_test": false,
     "proposed_module": "main::store_selection",
@@ -8337,11 +8345,35 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "open_graph_for_write",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "f9cdd81b10e0a7f6"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "reextract_entry",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "c3f387f12191fefc"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "entry_blobs",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "0a827b281f69bb19"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "open_graph",
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "2bd533a89dbd70c3"
+    "content_hash": "d72434303381d8df"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8581,7 +8613,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"migrate\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "748a94db094f6210"
+    "content_hash": "54acf0ee057072bc"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8637,7 +8669,7 @@
     "is_test": false,
     "proposed_module": "main::store_location",
     "reason": "method inside `impl StoreLocation`; grouped with its other `StoreLocation` methods.",
-    "content_hash": "12e70479b549a36f"
+    "content_hash": "9c0631e4a7d87fc9"
   },
   {
     "file": "src/cli/mod.rs",
