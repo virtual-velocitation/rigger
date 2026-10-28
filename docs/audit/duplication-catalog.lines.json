@@ -974,8 +974,8 @@
       },
       {
         "file": "tests/core_lane_purity_audit.rs",
-        "start_line": 317,
-        "end_line": 317
+        "start_line": 319,
+        "end_line": 319
       },
       {
         "file": "tests/dash_release_ready.rs",

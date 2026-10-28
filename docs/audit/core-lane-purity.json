@@ -50,7 +50,7 @@
       "reason": "Event::new's mint() store-arm reads the real clock; gated #[cfg(any(feature = \"store\", not(feature = \"core\")))], with a sibling core-only arm (mint() below, returning SystemTime::UNIX_EPOCH) satisfying the same call site under core-only - CONSTRAINTS WALK's 'the core has no now(), every age arrives as an input'."
     }
   ],
-  "found_occurrences_note": "The ONLY two banned-pattern occurrences across every core module's source text, both inside Event::new's mint() split (spec 93's own Clock constraint) and both gated one line below the #[cfg(any(feature = \"store\", not(feature = \"core\")))] attribute the always-run test below verifies is genuinely present.",
+  "found_occurrences_note": "The ONLY two banned-pattern occurrences across every core module's source text, both inside Event::new's mint() split (spec 93's own Clock constraint) and both in the body of the store arm's fn mint(), two lines below the #[cfg(any(feature = \"store\", not(feature = \"core\")))] attribute on that fn, which the always-run test below verifies is genuinely present.",
   "verification": {
     "cheap_tests": "tests/core_lane_purity_audit.rs re-scans every file in core_modules for banned_patterns (identically to how this record was produced) and asserts the result matches found_occurrences exactly - zero more, zero fewer - plus that each found occurrence's cited gated_by_line actually carries the required #[cfg(...)] text. This runs on every `cargo test`, no subprocess, no recompile.",
     "expensive_rebuild": {

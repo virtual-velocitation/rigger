@@ -2009,7 +2009,7 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `tests/common/served.rs:295-295` `Command::new`
 - `tests/compiler_pass_stage1_audit.rs:193-193` `Command::new`
 - `tests/compiler_pass_stage1_audit.rs:211-211` `Command::new`
-- `tests/core_lane_purity_audit.rs:317-317` `Command::new`
+- `tests/core_lane_purity_audit.rs:319-319` `Command::new`
 - `tests/dash_release_ready.rs:348-348` `Command::new`
 - `tests/gitsemver_derivation.rs:86-86` `Command::new`
 - `tests/gitsemver_worktree_periphery.rs:111-111` `Command::new`

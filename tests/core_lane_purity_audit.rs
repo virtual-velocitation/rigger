@@ -272,10 +272,12 @@ fn no_core_module_imports_the_banned_set_outside_its_cited_store_gate() {
     assert_eq!(
         actual, expected_sorted,
         "the live banned-pattern scan over core_modules no longer matches \
-         docs/audit/core-lane-purity.json's found_occurrences - either a NEW banned import \
+         docs/audit/core-lane-purity.json's found_occurrences - a NEW banned import \
          landed in a core module (THE PURITY RULE violation, fix it or gate it and re-run \
-         RIGGER_AUDIT_WRITE=1-equivalent by hand to update the record), or a previously-gated \
-         one was removed (update the record to drop the stale citation)"
+         RIGGER_AUDIT_WRITE=1-equivalent by hand to update the record), a previously-gated \
+         one was removed (update the record to drop the stale citation), or a line added or \
+         removed above a cited one moved it (update the record to cite its line and its \
+         gated_by_line where they now stand)"
     );
 
     // Every cited occurrence's gated_by_line genuinely carries the required attribute text.
