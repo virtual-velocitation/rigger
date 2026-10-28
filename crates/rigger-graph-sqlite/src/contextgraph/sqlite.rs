@@ -2451,8 +2451,9 @@ impl FoldCursor for CatchUpCut {
 
 /// Where the `caught_up` cursor of the file behind `conn` stands for a catch-up of its own
 /// ([`Projector::catch_up`]), or the first cause, in this order, that it folds none ([`Inert`]):
-/// it holds a rebuild's state ([`rebuild_tail_owed`]), it records an older fold rule over what it
-/// folded ([`rebuild_owed`]), it carries `mark` ([`marked`]), or it carries no cursor.
+/// it holds a rebuild's state ([`rebuild_tail_owed`]), the first cause it owes its rebuild for
+/// ([`owed_by_file`]) - an older fold rule over what it folded, or `mark` - or it carries no
+/// cursor.
 fn standing_cursor(
     conn: &Connection,
     mark: &Option<PathBuf>,
@@ -2460,13 +2461,11 @@ fn standing_cursor(
     if rebuild_tail_owed(conn)? {
         return Ok(Err(Inert::RebuildState));
     }
-    if rebuild_owed(conn)? {
-        return Ok(Err(Inert::OlderRule));
-    }
-    if marked(mark) {
-        return Ok(Err(Inert::Marked));
-    }
-    Ok(cursor_at(conn, "caught_up")?.ok_or(Inert::NoCursor))
+    Ok(match owed_by_file(conn, mark)?.first() {
+        Some(&OWED_OLDER_RULE) => Err(Inert::OlderRule),
+        Some(_) => Err(Inert::Marked),
+        None => cursor_at(conn, "caught_up")?.ok_or(Inert::NoCursor),
+    })
 }
 
 /// How many positions the `applied` ledger of the file behind `conn` records past `after`, up to
