@@ -9643,32 +9643,69 @@ mod tests {
     }
 
     /// Spec 124, THE APPENDER: an appender's own positions fold - on a file carrying `caught_up`
-    /// through a projector handed the log, by its call, the cursor moved past them; on a file
+    /// through a projector handed the log, by its call, the cursor moved past them, even with its
+    /// ceiling already passed, since the success test reads before the ceiling; on a file a
+    /// seeding gives the cursor while the direct fold's first open waits on the seeding's write
+    /// lock, by its call too, since that open reads the cursor again under the lock; on a file
     /// whose cursor another writer dropped under that call, and on one without it, by its direct
     /// fold - and no mark is written.
     #[test]
     fn an_appender_s_positions_fold_by_its_call_or_directly_where_the_file_has_no_cursor() {
         use crate::contextgraph::Fold;
+        // How the appender folds its copies through its projector, given the graph file's path.
+        type Folding = fn(&str, &Projector, &[Event]) -> Fold;
+        let alone: Folding = |_, p, copies| crate::test_support::fold_of(p, copies);
         // Each case: what stands in the file before the fold, what stands in it the moment the
-        // call reads the log, and where the cursor stands after the fold.
+        // call reads the log, the appender's ceiling, how it folds, and where the cursor stands
+        // after the fold.
         type Stands = &'static [Stand];
-        let cases: [(&str, Stands, Stands, Option<u64>); 3] = [
-            ("its call", &[], &[], Some(1)),
+        let cases: [(&str, Stands, Stands, Duration, Folding, Option<u64>); 5] = [
+            ("its call", &[], &[], FOLD_LOCK_CEILING, alone, Some(1)),
+            (
+                "its call with its ceiling already passed",
+                &[],
+                &[],
+                Duration::ZERO,
+                alone,
+                Some(1),
+            ),
+            (
+                "its call once a seeding lands under its direct fold's first open",
+                &[without_a_cursor],
+                &[],
+                FOLD_LOCK_CEILING,
+                // The seeding takes the write lock before the fold starts and commits a fifth of
+                // the busy timeout later, inside the wait of the direct fold's first open.
+                |path, p, copies| {
+                    crate::test_support::under_a_seedings_lock(
+                        || Projector::open(path, "test").unwrap(),
+                        &[],
+                        p.busy_interval().unwrap() / 5,
+                        || crate::test_support::fold_of(p, copies),
+                    )
+                },
+                Some(1),
+            ),
             (
                 "its direct fold once the cursor is dropped under its call",
                 &[],
                 &[without_a_cursor],
+                FOLD_LOCK_CEILING,
+                alone,
                 None,
             ),
             (
                 "its direct fold on a file without the cursor",
                 &[without_a_cursor],
                 &[],
+                FOLD_LOCK_CEILING,
+                alone,
                 None,
             ),
         ];
-        for (case, before, under, cursor) in cases {
+        for (case, before, under, ceiling, folding, cursor) in cases {
             let (_dir, path, p, log) = catching_up();
+            let p = p.with_lock_ceiling(ceiling);
             for stand in before {
                 stand(&path);
             }
@@ -9681,7 +9718,7 @@ mod tests {
             let copies = appended_copies(&path, &decisions_at([1]));
             assert_eq!(
                 (
-                    crate::test_support::fold_of(&p, &copies),
+                    folding(&path, &p, &copies),
                     applied(&p, 1),
                     crate::test_support::caught_up_at(Path::new(&path)),
                     owed_mark(&path).unwrap().exists(),

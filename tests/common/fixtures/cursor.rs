@@ -1,9 +1,12 @@
 //! The catch-up cursor fixtures (spec 124, THE CURSOR AND ITS SEEDING and HORIZON IN TESTS): where
 //! a graph file's `caught_up` cursor stands, a file without it as one folded before the cursor
-//! existed, the seeding `rigger setup` runs before it reads why a file owes its rebuild, and events
-//! older than the catch-up horizon - shared by the root suites and the graph crate's inline tests.
+//! existed, the seeding `rigger setup` runs before it reads why a file owes its rebuild, that
+//! seeding holding the file's write lock while a test acts, and events older than the catch-up
+//! horizon - shared by the root suites and the graph crate's inline tests.
 
-use rigger::contextgraph::sqlite::{PositionSource, Projector, StampLookup, CATCH_UP_HORIZON};
+use rigger::contextgraph::sqlite::{
+    PositionSource, Projector, Seeding, StampLookup, CATCH_UP_HORIZON,
+};
 use rigger::eventstore::Event;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -57,6 +60,44 @@ pub fn owed_once_seeded(
         .seed_cursor(live, stamp_of, head, SystemTime::now())
         .unwrap();
     p.owed_against(&seeding).unwrap()
+}
+
+/// Run `run` while the seeding `rigger setup` runs of the cursor of the graph file `open` opens
+/// holds that file's write lock: the seeding's source streams the positions of `log`, then waits
+/// `held` inside the seeding's transaction, `run` starting once they are streamed, each missing
+/// position's stamp read from `log` ([`stamp_in`]) and its last position handed as the log's head.
+/// The seeding must run and find nothing lost; hand back what `run` returned.
+pub fn under_a_seedings_lock<T>(
+    open: impl FnOnce() -> Projector + Send,
+    log: &[Event],
+    held: Duration,
+    run: impl FnOnce() -> T,
+) -> T {
+    let (seeding, started) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let seeder = scope.spawn(move || {
+            let positions: Vec<u64> = log.iter().map(|e| e.position).collect();
+            open().seed_cursor(
+                &mut |sink| {
+                    sink(&positions)?;
+                    seeding.send(()).unwrap();
+                    std::thread::sleep(held);
+                    Ok(())
+                },
+                &mut |position| stamp_in(log, position),
+                positions.last().copied(),
+                SystemTime::now(),
+            )
+        });
+        started.recv().unwrap();
+        let ran = run();
+        assert_eq!(
+            seeder.join().unwrap().unwrap(),
+            Seeding::Ran { lost: false },
+            "the seeding ran under its lock and found nothing lost"
+        );
+        ran
+    })
 }
 
 /// Where the `caught_up` cursor of the graph file at `graph_db` stands, read through a connection

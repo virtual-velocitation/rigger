@@ -117,10 +117,10 @@ use common::fixtures::{graph_error, not_folded, not_folded_suffix, NOT_A_DATABAS
 use common::fixtures::{lost_fold, CATCH_UP_PAYS, UNFINISHED_REBUILD};
 use common::fixtures::{mark_owed_in, mark_stands_beside};
 use common::fixtures::{source_interrupted, SOURCE_INTERRUPTED};
-use common::fixtures::{stamp_in, with_graph_locked, with_graph_locked_for};
+use common::fixtures::{under_a_seedings_lock, with_graph_locked, with_graph_locked_for};
 use common::git::temp_git_project_with_commit;
 use rigger::contextgraph::sqlite::{
-    PruneStats, RebuildSink, Rebuilt, Seeding, CATCH_UP_HORIZON, FOLD_BATCH, PROJECTION_VERSION,
+    PruneStats, RebuildSink, Rebuilt, CATCH_UP_HORIZON, FOLD_BATCH, PROJECTION_VERSION,
 };
 use rigger::contextgraph::Fold;
 use rigger::contextgraph::{
@@ -131,7 +131,6 @@ use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{ContentIdentity, Event, EventStore, ExpectedRevision};
 use std::path::Path;
-use std::time::SystemTime;
 
 // ---------------------------------------------------------------------------------------
 // Harness
@@ -3365,37 +3364,17 @@ fn emit_behind_another_writers_lock(root: &Path, id: &str) -> (String, String, b
 }
 
 /// Emit the decision `id` in `root` ([`emit_decision`]) while the seeding `rigger setup` runs of
-/// its `graph.db` cursor holds the file's write lock past the busy timeout: the seeding's source
-/// streams the log's positions, then sleeps [`HELD_PAST_THE_BUSY_TIMEOUT`] inside the seeding's
-/// transaction before the emit starts. The seeding runs, finds nothing lost and seeds the cursor
-/// at the head the emit's append has not yet passed.
+/// its `graph.db` cursor over the log's positions holds the file's write lock past the busy
+/// timeout ([`under_a_seedings_lock`]): [`HELD_PAST_THE_BUSY_TIMEOUT`] from before the emit
+/// starts. The seeding runs, finds nothing lost and seeds the cursor at the head the emit's
+/// append has not yet passed.
 fn emit_behind_a_seedings_lock(root: &Path, id: &str) -> (String, String, bool) {
-    let log = read_run_events(root);
-    let (seeding, started) = std::sync::mpsc::channel();
-    std::thread::scope(|scope| {
-        let seeder = scope.spawn(move || {
-            let positions: Vec<u64> = log.iter().map(|e| e.position).collect();
-            common::cli::open_graph(root).seed_cursor(
-                &mut |sink| {
-                    sink(&positions)?;
-                    seeding.send(()).unwrap();
-                    std::thread::sleep(HELD_PAST_THE_BUSY_TIMEOUT);
-                    Ok(())
-                },
-                &mut |position| stamp_in(&log, position),
-                positions.last().copied(),
-                SystemTime::now(),
-            )
-        });
-        started.recv().unwrap();
-        let emitted = emit_decision(root, id);
-        assert_eq!(
-            seeder.join().unwrap().unwrap(),
-            Seeding::Ran { lost: false },
-            "the seeding ran under its lock and found nothing lost"
-        );
-        emitted
-    })
+    under_a_seedings_lock(
+        || common::cli::open_graph(root),
+        &read_run_events(root),
+        HELD_PAST_THE_BUSY_TIMEOUT,
+        || emit_decision(root, id),
+    )
 }
 
 /// Given a `graph.db` `first` left in `root`, when a writer holds its write lock past the busy
@@ -3455,8 +3434,10 @@ rigger::test_cases! {
             Some,
         );
     /// A first emit leaves the file without the cursor and a seeding holds the lock while it seeds
-    /// one, so the locked emit starts folding directly, waits out the contended open, finds the
-    /// cursor inside its transaction and folds through its calls, the cursor standing at its event.
+    /// one, so the locked emit starts folding directly; the seeding's hold outlasts the busy
+    /// timeout of the emit's first open, which meets the lock contended, and the next attempt's
+    /// read before any transaction finds the seeded cursor and folds through its calls, the cursor
+    /// standing at its event.
     an_emit_folding_directly_behind_a_seedings_lock_folds_through_the_seeded_cursor_and_marks_nothing:
         an_emit_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing(
             emit_the_first_decision,
