@@ -8133,6 +8133,25 @@ mod tests {
         assert_eq!(stands, [5, 5, 7]);
     }
 
+    /// Spec 124, THE CURSOR AND ITS SEEDING: a rebuild's cursor is read as every one-row cursor
+    /// table is ([`cursor_at`]): where the rebuild state of the file holds it, and, on a file
+    /// holding no rebuild state, the error saying so.
+    #[test]
+    fn a_rebuild_cursor_is_read_from_the_rebuild_state_and_its_absence_is_named() {
+        let conn = Connection::open_in_memory().unwrap();
+        let absent = rebuild_cursor(&conn).map_err(|e| e.0);
+        conn.execute_batch(REBUILD_STATE).unwrap();
+        conn.execute("UPDATE rebuild_cursor SET position = 7", [])
+            .unwrap();
+        assert_eq!(
+            (absent, rebuild_cursor(&conn).map_err(|e| e.0)),
+            (
+                Err("the graph file holds no rebuild state".to_string()),
+                Ok(7)
+            )
+        );
+    }
+
     /// Spec 124, THE CURSOR AND ITS SEEDING: a file already carrying `caught_up` keeps its cursor,
     /// and its verdict is lost only beside a log shorter than the prefix the cursor claims - a head
     /// below the cursor, or no head beside a cursor above 0, as when the log is replaced under the
