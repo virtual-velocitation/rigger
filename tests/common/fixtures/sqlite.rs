@@ -34,11 +34,15 @@ pub fn stamp_user_version(db: &std::path::Path, version: i64) {
         .expect("stamp user_version");
 }
 
-/// The message every insert of the node `d-boom` aborts with in a graph file
+/// The id of the decision whose node a graph file refuses while [`the_disk_gives_out_at_d_boom`]
+/// stands in it.
+pub const D_BOOM: &str = "d-boom";
+
+/// The message every insert of the node [`D_BOOM`] aborts with in a graph file
 /// [`the_disk_gives_out_at_d_boom`] made refuse it.
 pub const DISK_GAVE_OUT: &str = "disk gave out";
 
-/// Make the graph file `db` refuse every insert of the node `d-boom` with [`DISK_GAVE_OUT`], as
+/// Make the graph file `db` refuse every insert of the node [`D_BOOM`] with [`DISK_GAVE_OUT`], as
 /// storage that gave out under that one write, until [`the_disk_recovers`]. The connection is
 /// opened for the statement and closed at once, so the test holds none to the file while the code
 /// under test writes it.
@@ -46,7 +50,7 @@ pub fn the_disk_gives_out_at_d_boom(db: &std::path::Path) {
     rusqlite::Connection::open(db)
         .expect("open the graph file to fail a write in it")
         .execute_batch(&format!(
-            "CREATE TRIGGER boom BEFORE INSERT ON nodes WHEN NEW.id = 'd-boom'
+            "CREATE TRIGGER boom BEFORE INSERT ON nodes WHEN NEW.id = '{D_BOOM}'
              BEGIN SELECT RAISE(ABORT, '{DISK_GAVE_OUT}'); END;"
         ))
         .expect("fail the insert of d-boom's node");

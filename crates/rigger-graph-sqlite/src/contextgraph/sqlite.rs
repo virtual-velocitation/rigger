@@ -6978,7 +6978,7 @@ mod tests {
     fn a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it() {
         let log = [
             decision_at("d1", "a.rs", 1),
-            decision_at("d-boom", "b.rs", 2),
+            decision_at(crate::test_support::D_BOOM, "b.rs", 2),
             decision_at("d3", "c.rs", 3),
         ];
         let dir = tempfile::tempdir().unwrap();

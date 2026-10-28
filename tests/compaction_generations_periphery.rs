@@ -104,6 +104,7 @@ use common::fixtures::rebuild_owed_note;
 use common::fixtures::wait_until_for;
 use common::fixtures::with_graph_locked;
 use common::fixtures::DISK_GAVE_OUT;
+use common::fixtures::D_BOOM;
 use common::fixtures::STEP_LOCK_REASON;
 use common::fixtures::{catch_up_failed_line, the_disk_gives_out_at_d_boom, the_disk_recovers};
 use common::fixtures::{graph_error, lost_fold, not_folded, DATABASE_IS_LOCKED, NOT_A_DATABASE};
@@ -2478,7 +2479,7 @@ fn setup_whose_catch_up_meets_a_storage_error_fails_at_the_cursor_and_the_next_s
     emit_the_first_decision_after_setup(root);
     let graph_db = rigger_file(root, "graph.db");
     let cursor = caught_up_at(&graph_db).unwrap();
-    let lost = append_unfolded_decision(root, D_BOOM);
+    let lost = append_unfolded_decision_named(root, D_BOOM);
     the_disk_gives_out_at_d_boom(&graph_db);
 
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
@@ -3814,10 +3815,6 @@ fn append_unfolded_decision_named(root: &Path, id: &str) -> u64 {
     append_unfolded_decision(root, decision.to_string().as_bytes())
 }
 
-/// The `DecisionMade` payload of the decision `d-boom`, whose node a graph file refuses while
-/// [`the_disk_gives_out_at_d_boom`] stands in it.
-const D_BOOM: &[u8] = br#"{"id":"d-boom","summary":"s","governs":["src/f.rs"],"supersedes":""}"#;
-
 /// Fold a decision into `root`'s `graph.db` above every event it misses, then backdate the log past
 /// the catch-up horizon ([`backdate_the_log`]): each missing event is then an old hole below an
 /// applied position, which the next `rigger setup`'s seeding of a file without `caught_up` finds a
@@ -3925,10 +3922,7 @@ fn an_event_appended_but_never_folded_is_paid_by_the_next_setup_from_the_ledger(
     let dir = temp_store_project();
     let root = dir.path();
     emit_the_first_decision(root);
-    let lost = append_unfolded_decision(
-        root,
-        br#"{"id":"d-crashed","summary":"s","governs":["src/f.rs"],"supersedes":""}"#,
-    );
+    let lost = append_unfolded_decision_named(root, "d-crashed");
     assert!(
         !applied(&rigger_file(root, "graph.db"), lost),
         "the event is on the log and not in the graph"
@@ -4249,7 +4243,7 @@ fn setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_
     let root = dir.path();
     emit_the_first_decision(root);
     let first = run_log_head(root);
-    let lost = append_unfolded_decision(root, D_BOOM);
+    let lost = append_unfolded_decision_named(root, D_BOOM);
     bury_below_an_applied_event(root);
     let graph_db = rigger_file(root, "graph.db");
     let shadow = rigger_file(root, "graph.db.rebuild");
