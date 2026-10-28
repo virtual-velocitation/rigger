@@ -1229,7 +1229,7 @@ fn catch_up_to_head(
 }
 
 /// The line `rigger setup` says its catch-up of `graph.db` stopped with, at the position `at` its
-/// last call read from, for the reason `why` (spec 124, CATCH-UP LINES).
+/// last call read, or would read, its page from, for the reason `why` (spec 124, CATCH-UP LINES).
 fn catch_up_stopped(at: rigger::eventstore::Position, why: &str) -> String {
     format!("graph.db catch-up stopped at position {at}: {why}")
 }

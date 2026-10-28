@@ -519,7 +519,8 @@ pub enum CatchUp {
     /// and wrote nothing; `at` is the position its last page read from.
     Skipped { at: Position },
     /// The call failed - the log's open, its page read or the cut's fold - and wrote nothing; `at`
-    /// is the position its last page read from, `error` the failure's text.
+    /// is the position the call reads, or would read, its last page from, `error` the failure's
+    /// text.
     Failed { at: Position, error: String },
 }
 
@@ -995,9 +996,11 @@ impl Projector {
     /// own, each cause in order: it holds a rebuild's state, records an older fold rule over what
     /// it folded, carries its [`owed_mark`], or carries no cursor ([`Inert`]); the first standing
     /// is the answer, read without opening the log. A projector handed no log answers
-    /// [`CatchUp::AtHead`]. Otherwise the call reads one page of the log past the cursor, of at
-    /// most [`FOLD_BATCH`] events of the project's own log as it is handed, with no lock of the
-    /// file held: a page without an event is [`CatchUp::AtHead`]. The page's events of the
+    /// [`CatchUp::AtHead`]. Otherwise the call reads one page of the log past the cursor - the
+    /// first [`FOLD_BATCH`] events of the project's own log as it is handed, or every one there is
+    /// when fewer are, and on to the last event of the position the last of them shares, since a
+    /// page never splits one position ([`EventStore::read_all_page`]) - with no lock of the file
+    /// held: a page without an event is [`CatchUp::AtHead`]. The page's events of the
     /// project's run stream are its positions to decide; its first transaction cut
     /// ([`fold_transactions`]) - one ledger entry alone, or a run of other events - is decided and
     /// folded by THE DECIDE STEP ([`decide_step`]), the step a rebuild's fold pass shares, each
@@ -1018,7 +1021,7 @@ impl Projector {
     /// meets another writer's write lock past the busy timeout answers [`CatchUp::Skipped`] at the
     /// position its page was read from; a log that fails to open, a page read that fails, and a
     /// cut whose fold fails - a re-extraction that fails included - answer [`CatchUp::Failed`] at
-    /// the position the call reads, or would read, its page from, with the failure's text. Each
+    /// the position the call reads, or would read, its last page from, with the failure's text. Each
     /// of those writes nothing. The connection's lock is held for the cut's transaction
     /// and, briefly, for the reads that decide whether an entry asks its re-extraction, and
     /// released for the page read and the re-extraction itself. Only a failure to read the file's
@@ -2482,8 +2485,9 @@ fn applied_between(conn: &Connection, after: Position, through: Position) -> Res
 
 /// The most events other than ledger entries of perception that one transaction of a fold pass
 /// ([`fold_source`]) folds before it commits (spec 122, ONE BATCHING RULE): a writer meeting the
-/// pass waits at most this many events' fold, or one entry's alone. It is also the most events one
-/// [`Projector::catch_up`] call reads in its page of the log.
+/// pass waits at most this many events' fold, or one entry's alone. It is also the count of events
+/// one [`Projector::catch_up`] call asks of the log for its page, which extends past it to the
+/// last event of the position the page's last event shares ([`EventStore::read_all_page`]).
 pub const FOLD_BATCH: usize = 256;
 
 /// The transactions a fold pass ([`fold_source`]) folds `events` in, in order: every ledger entry
@@ -7588,8 +7592,9 @@ mod tests {
         );
     }
 
-    /// Spec 124, ONE PROCEDURE: each call reads one page of the log past the cursor, of at most
-    /// [`FOLD_BATCH`] events, narrowed to the project's run stream, and folds its first cut
+    /// Spec 124, ONE PROCEDURE: each call reads one page of the log past the cursor, of
+    /// [`FOLD_BATCH`] events and on to the end of the last one's position, narrowed to the
+    /// project's run stream, and folds its first cut
     /// ([`fold_transactions`]) - through the page's last position when the cut covers every
     /// narrowed event, else through the cut's last - every ledger entry alone, until a call meets
     /// no event past the cursor ([`CatchUp::AtHead`]). An empty log is at its head; a page of

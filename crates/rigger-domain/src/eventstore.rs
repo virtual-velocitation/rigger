@@ -15,16 +15,18 @@ use thiserror::Error;
 /// ever increasing. It is a single opaque ordering value: callers compare and
 /// checkpoint it, never decompose it.
 ///
-/// SQLite assigns it directly as the 1-based row position. KurrentDB's native
-/// `$all` position is a `(commit, prepare)` pair; the adapter exposes the
+/// SQLite assigns it directly as the 1-based row position, one per event. KurrentDB's
+/// native `$all` position is a `(commit, prepare)` pair; the adapter exposes the
 /// **commit position** as this `Position` and reconstructs the pair as
-/// `(commit, commit)` when resuming a read or subscription. That round-trips
-/// faithfully because KurrentDB orders and seeks `$all` by commit position, and
-/// every record Rigger writes is a single-event append whose own commit and
-/// prepare positions coincide (the prepare half of a *start* position only
-/// disambiguates records that share a commit, which Rigger never produces). A
-/// position returned from `read_all`/`subscribe_all` therefore resolves back to
-/// the same logical location when fed into the next resume.
+/// `(commit, commit)` when resuming a read or subscription, which KurrentDB orders and
+/// seeks `$all` by. A single-event append's commit and prepare positions coincide, so its
+/// position names that one event. The events of one multi-event append (a batched fold's,
+/// the conductor's `append_and_fold_batch`) share that append's commit, so on KurrentDB
+/// they share one `Position`, told apart only by the prepare half this type does not
+/// carry. A read or subscription resumed from a position is exclusive of every event at
+/// it, so a resume from a shared position lands past all of that append's events - the
+/// logical location after the append - and a page of the log never splits the events of
+/// one position ([`EventStore::read_all_page`]).
 pub type Position = u64;
 
 /// Revision is an event's place within its own stream: 0-based, so the first event
