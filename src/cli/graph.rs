@@ -647,9 +647,9 @@ fn cmd_graph_build(_args: &[String]) -> Res {
 /// N counts the batch events of each entry SINK OUTCOMES counts (spec 107): an entry the graph
 /// folded, and one whose fold was lost - refused by a graph that owes its rebuild, or failed.
 /// An entry that folded as a re-recording, the graph already holding its generation, moved no
-/// fact and is not counted. The fold answered is the FIRST one this build could not make: a
-/// lost fold marks a current graph owed, so every entry after it is refused for that debt, and
-/// the first names the cause.
+/// fact and is not counted. The fold answered is the FIRST one this build could not make, naming
+/// its cause: a lost fold writes no mark (spec 124), so every entry after it still folds, its
+/// position the only one missing from the graph's `applied` ledger.
 ///
 /// The walk runs under the one walk policy both ingest sinks share
 /// ([`rigger::ingest::sink_walked_batches`]): a batch whose lookup the store cannot answer, or whose

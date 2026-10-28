@@ -28,7 +28,9 @@ use crate::eventstore::{
 pub use rigger_domain::ingest::*;
 
 /// Exactly the events `appended` reports the store placed, each stamped with the position the
-/// store issued for it (see [`FoldingStore::append_and_fold`]): what a fold of that append folds.
+/// store issued for it (see [`FoldingStore::append_and_fold`]) and with `stream`, the stream it
+/// was appended to, so a fold of the copy reads it as the log does (spec 124, THE APPENDER):
+/// what a fold of that append folds.
 fn placed(stream: &str, events: &[Event], appended: &Appended) -> Result<Vec<Event>, Error> {
     // The port promises ONE slot per event handed in, and this authority folds by ZIPPING
     // the report against the batch - so a report of a different length is not a smaller
@@ -50,6 +52,7 @@ fn placed(stream: &str, events: &[Event], appended: &Appended) -> Result<Vec<Eve
             events.get(i).map(|e| {
                 let mut e = e.clone();
                 e.position = position;
+                e.stream = stream.to_string();
                 e
             })
         })
@@ -62,8 +65,10 @@ fn placed(stream: &str, events: &[Event], appended: &Appended) -> Result<Vec<Eve
 /// the caller's own expectation and goes to the log FIRST; only then is the graph opened, through
 /// the `graph` opener the store was wired with (spec 101: a verb whose job is to append never opens
 /// `graph.db` before its append), and the append folded at the positions the store issued. A fold
-/// it could not make - the graph could not be had, owes its rebuild, or refused the write - is said
-/// through `log`, never swallowed: the events are on the log whatever became of the fold. Wired
+/// it could not make - the graph could not be had, owes its rebuild, or did not fold the events
+/// inside the appender's ceiling (spec 124) - is said through `log`, never swallowed: the events
+/// are on the log whatever became of the fold, and their positions missing from the graph's
+/// `applied` ledger are what the next fold through a folding store reads. Wired
 /// with no opener (an offline replay's isolated re-drive) it folds nothing by design and has
 /// nothing to say. Every read passes through untouched.
 pub struct FoldingStore<'a, O> {
@@ -797,7 +802,9 @@ impl std::fmt::Display for EntryFailure {
 impl std::error::Error for EntryFailure {}
 
 /// THE ONE HASH FUNCTION as a sink is handed it (spec 107): a file's bytes to the object id git
-/// gives them, or the failure of the hash.
+/// gives them, the hash writing the object it hashes into the repository's object database
+/// (spec 124, THE BLOB IS WRITTEN), so another process re-extracting the entry reads its blob from
+/// there; or the failure of the hash, a failed write included.
 #[cfg(feature = "symbols")]
 pub type HashBlob<'h> = dyn Fn(&[u8]) -> Result<String, rigger_domain::worktree::Error> + 'h;
 

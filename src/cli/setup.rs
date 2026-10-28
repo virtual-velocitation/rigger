@@ -957,7 +957,7 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     // The scaffold may just have minted the durable identity: the log moves to it first (the
     // migration every run driver performs on open), so the rebuild reads the history the legacy
     // namespace still holds.
-    migrate_local_identity()?;
+    migrate_local_identity(Some(&held))?;
     let project = project_identity();
     let graph_error = |e: rigger::eventstore::Error| contextgraph::Error(e.to_string());
     // A NEW rebuild - one whose pay starts a fresh shadow - is refused while the run is live (spec
@@ -1228,7 +1228,8 @@ fn catch_up_to_head(
             CatchUp::Skipped { at } => Ok(Some(catch_up_stopped(
                 at,
                 "another writer holds the write lock or advanced the cursor past this call's \
-                 read - the next rigger setup continues it",
+                 read - the next fold through the folding store or the next rigger setup \
+                 continues it",
             ))),
             CatchUp::Failed { at, error } => Err(catch_up_stopped(
                 at,

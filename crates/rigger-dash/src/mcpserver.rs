@@ -834,7 +834,8 @@ pub fn emit_event<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
 }
 
 /// The append half of [`emit_event`]: refuse what the emit surface refuses, append the event, and
-/// return it carrying the position the store issued.
+/// return it carrying the position the store issued and the stream it was appended to, so its fold
+/// reads it as the log does (spec 124, THE APPENDER).
 fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Event, String> {
     let typ = args
         .get("type")
@@ -882,6 +883,7 @@ fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Eve
         .append(stream, ExpectedRevision::Any, std::slice::from_ref(&event))
         .and_then(|appended| appended.one(&format!("the {typ} on {stream:?}")))
         .map_err(|e| e.to_string())?;
+    event.stream = stream.to_string();
     Ok(event)
 }
 

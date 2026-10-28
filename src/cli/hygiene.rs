@@ -35,7 +35,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
     if args.is_empty() {
         let (loc, selection) = require_store_dir()?;
         if selection.is_sqlite() {
-            migrate_identity_at(&loc)?;
+            migrate_identity_at(&loc, None)?;
         }
         return reset_menu(&loc, &selection);
     }
@@ -58,7 +58,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
     // command's whole design refuses. Anchored at the RESOLVED store root, not the process cwd, so
     // a reset run from a nested worktree migrates the store it is about to prune.
     if selection.is_sqlite() {
-        migrate_identity_at(&loc)?;
+        migrate_identity_at(&loc, None)?;
     }
     if modes.runs {
         reset_runs(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?;

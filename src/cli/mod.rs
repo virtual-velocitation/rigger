@@ -14,7 +14,7 @@ use rigger::config_store;
 use rigger::console;
 use rigger::contextgraph::{
     self, fold_clause, fold_loss_clause, not_folded,
-    sqlite::{Projector, PruneStats},
+    sqlite::{Projector, PruneStats, RebuildLock},
     Located, Projection,
 };
 use rigger::dash;
@@ -536,7 +536,8 @@ fn entry_blobs(root: &Path) -> Option<rigger::worktree::BlobBatch> {
 
 /// Open this project's `graph.db` for write ([`open_graph_for_write`], under `selection`) for
 /// `command`, whose answer depends on the fold (spec 101): a file that says it owes its rebuild -
-/// folded under an older fold rule, or marked by a fold into it that failed - is refused at once,
+/// folded under an older fold rule, or carrying the mark an older binary wrote for a fold into it
+/// that failed, since no fold writes one now (spec 124) - is refused at once,
 /// naming `rigger setup` - the one command that rebuilds it - never waited on, rebuilt or folded
 /// into here. The open itself writes nothing to such a file.
 fn open_graph(
@@ -1273,12 +1274,16 @@ fn migrate_project_identity(
 /// not distinct from the legacy basename (no `project.id` minted). Refuses loudly (Err) when
 /// both namespaces hold history. Self-contained: it opens its own short-lived store + graph
 /// connections and drops them before the caller opens the real ones, so it wires into any
-/// run-driver entry point in a single call and never touches the injected backend.
-fn migrate_local_identity() -> Res {
+/// run-driver entry point in a single call and never touches the injected backend. `held` is the
+/// rebuild lock the caller holds on that store's `graph.db`, or none ([`migrate_identity_at`]).
+fn migrate_local_identity(held: Option<&RebuildLock>) -> Res {
     let cwd = std::env::current_dir()?;
-    migrate_identity_at(&StoreLocation {
-        dir: cwd.join(RIGGER_DIR),
-    })
+    migrate_identity_at(
+        &StoreLocation {
+            dir: cwd.join(RIGGER_DIR),
+        },
+        held,
+    )
 }
 
 /// The spec-09 open-time identity migration against an ALREADY-RESOLVED store
@@ -1291,7 +1296,12 @@ fn migrate_local_identity() -> Res {
 /// which store it is about to touch - a courier, or a maintenance prune walked up from a nested
 /// worktree - calls THIS rather than re-deriving the store from the process cwd, which is how a
 /// walked-up command would otherwise migrate one store and mutate another.
-fn migrate_identity_at(loc: &StoreLocation) -> Res {
+///
+/// The projector it folds its decision through is told the rebuild lock `held` its caller holds
+/// ([`Projector::with_rebuild_lock`]): `rigger setup`, holding that lock across its pay, passes it,
+/// so the fold meeting the file's unfinished rebuild returns at once rather than waiting out a
+/// tail only that setup folds (spec 124, THE APPENDER); every other caller holds none.
+fn migrate_identity_at(loc: &StoreLocation, held: Option<&RebuildLock>) -> Res {
     let store_path = loc.file("events.db");
     if !Path::new(&store_path).is_file() {
         return Ok(()); // a fresh project: no history to migrate
@@ -1310,6 +1320,7 @@ fn migrate_identity_at(loc: &StoreLocation) -> Res {
     }
     let backend = open_sqlite_store(&store_path)?;
     let (graph, _) = open_graph_for_write(&loc.file("graph.db"), &minted, &StoreSelection::Sqlite)?;
+    let graph = graph.with_rebuild_lock(held);
     if let Some((n, decision)) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))?
     {
         eprintln!(

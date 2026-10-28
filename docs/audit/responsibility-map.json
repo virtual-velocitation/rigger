@@ -8605,7 +8605,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"migrate\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "4fc7293bfeeae1a0"
+    "content_hash": "d766e3989d0cc28b"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8613,7 +8613,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"migrate\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "51fa7af4bf581104"
+    "content_hash": "2063d4d34e3dd9b7"
   },
   {
     "file": "src/cli/mod.rs",

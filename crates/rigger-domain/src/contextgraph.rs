@@ -732,8 +732,9 @@ pub enum Fold {
     /// The events are in the graph.
     Folded,
     /// The events are not in the graph, for this reason: the graph could not be had (unopenable,
-    /// not wired), owes its rebuild ([`REBUILD_OWED`]), or refused the write (held past its
-    /// busy timeout). A projection that records positions it passed over may also answer here an
+    /// not wired), owes its rebuild ([`REBUILD_OWED`]), or did not fold them - its fold failed, or
+    /// another writer's write lock or its catch-up held them past the appender's ceiling (spec
+    /// 124). A projection that records positions it passed over may also answer here an
     /// event of its own already recorded passed over, with that position's cause: that event is
     /// not in the graph, while the events of its batch that fold are committed.
     NotFolded(String),
@@ -759,8 +760,9 @@ pub enum EntryFold {
 
 /// The function [`Projection::apply_generation`] asks for an entry's batch, at most once: the
 /// batch's events, `None` when no source resolves the entry, or an error, which fails the fold.
-/// It runs inside the fold's transaction, while the projection is held for that write: it must
-/// not read or fold the projection it is handed to, and must do no slow work there.
+/// It runs inside the fold's transaction, while the projection is held for that write, or just
+/// before that transaction opens: it must not read or fold the projection it is handed to, and
+/// must do no slow work there.
 pub type EntryBatch<'a> = Box<dyn FnOnce() -> Result<Option<Vec<Event>>, Error> + 'a>;
 
 /// The permission to fold into a [`Projection`] through [`Projection::apply`] and
@@ -913,7 +915,8 @@ pub trait Projection: Send + Sync {
     /// identity and generation, never under a key the event carries, and installs that
     /// generation; an entry `batch` answers `None` for folds nothing; an error from `batch` fails
     /// the fold. `batch` runs inside that transaction, while this projection is held for the
-    /// write: it must not read or fold this projection, and must do no slow work there. A ledger
+    /// write, or just before it opens: it must not read or fold this projection, and must do no
+    /// slow work there. A ledger
     /// entry folds only here: an implementor that folds refuses one on
     /// [`apply`](Projection::apply) and [`apply_batch`](Projection::apply_batch). It takes no
     /// [`FoldAccess`].
@@ -925,11 +928,12 @@ pub trait Projection: Send + Sync {
     fn current_generation(&self, identity: &str) -> Result<Option<String>, Error>;
 
     /// Whether this projection says, without reading the log, that it owes one rebuild from it
-    /// (spec 101) - it was folded under an older fold rule, or a fold into it failed and marked it
-    /// as missing an event the log holds: until `rigger setup` pays it nothing folds into it, and
-    /// nothing whose answer depends on the fold may answer from it - it refuses with
-    /// [`REBUILD_OWED`]. An event it misses that nothing marked is found by `rigger setup`, which
-    /// reads the projection's record of what it folded against the log.
+    /// (spec 101) - it was folded under an older fold rule, or it carries the mark an older binary
+    /// wrote when a fold into it failed, saying it misses an event the log holds: until `rigger
+    /// setup` pays it nothing folds into it, and nothing whose answer depends on the fold may
+    /// answer from it - it refuses with [`REBUILD_OWED`]. A fold that fails writes no mark now
+    /// (spec 124): an event it misses is found by `rigger setup`, or by the next fold through a
+    /// folding store, which read the projection's record of what it folded against the log.
     fn rebuild_owed(&self) -> Result<bool, Error>;
 
     /// The connected subgraph reachable from any seed within depth hops (the FEED arc / an

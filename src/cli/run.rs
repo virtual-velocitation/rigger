@@ -535,7 +535,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // before opening the run backend (spec 09, Gap 20). A no-op unless `.rigger/project.id`
     // was minted with an id distinct from the basename and the legacy namespace still holds
     // the history; refuses loudly if both namespaces are populated.
-    migrate_local_identity()?;
+    migrate_local_identity(None)?;
 
     let selection = store_selection(None, None)?;
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2):
@@ -1437,7 +1437,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
     let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
     if selection.is_sqlite() {
-        migrate_local_identity()?;
+        migrate_local_identity(None)?;
     }
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2).
     // `rigger run` drives the WHOLE run in-process through a single `conductor::run` below, so the
@@ -1802,7 +1802,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
     let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
     if selection.is_sqlite() {
-        migrate_local_identity()?;
+        migrate_local_identity(None)?;
     }
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2). Like
     // `rigger run`, the served conductor drives the whole run in-process (on the background thread
@@ -2851,8 +2851,9 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     // is safe: a plain worker/courier result folds to nothing.
     //
     // AFTER the durable append, as `emit_event` does: the record already landed in the log, so a
-    // fold that cannot happen (a graph that owes its rebuild, or one locked past its busy
-    // timeout) never fails a result the log holds - but it is SAID, with the reason, because a
+    // fold that cannot happen (a graph that owes its rebuild, or one whose write lock or catch-up
+    // held the fold past the appender's ceiling) never fails a result the log holds - but it is
+    // SAID, with the reason, because a
     // current graph that missed the fold keeps the result out of grounding until a later `rigger
     // setup` folds it (a graph that owes its rebuild re-derives it from the live selection a
     // `SpawnResult` is in, and so does a file not yet carrying the cursor whose seeding finds the
@@ -2918,14 +2919,16 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
 /// `position`, so an adjudicator verdict that disposes a review's findings invalidates their
 /// graph edges (the `contextgraph` `TYPE_SPAWN_RESULT` fold arm), and answer what became of the
 /// fold. This is the result-channel counterpart of [`mcpserver::emit_event`]: rebuild the
-/// appended event, stamp it with the position the append returned, and fold it through the one
+/// appended event, stamp it with the position the append returned and the run stream
+/// ([`conductor::STREAM`]) the result was recorded on, and fold it through the one
 /// [`contextgraph::Fold::of`] into the graph [`StoreLocation::graph`] opens under the store
 /// `selection` the courier resolved, the same opener [`cmd_emit`] hands the emit core.
 ///
 /// The result is already on the log, so nothing here fails it: a graph that owes its rebuild,
-/// one locked past its busy timeout, or a result that will not serialize (unreachable for one
-/// that just serialized to append) is answered as [`contextgraph::Fold::NotFolded`], with the
-/// reason, for the caller to report. A graph that owes its rebuild re-derives the result from the
+/// one whose write lock or catch-up held it past the appender's ceiling (spec 124), or a result
+/// that will not serialize (unreachable for one that just serialized to append) is answered as
+/// [`contextgraph::Fold::NotFolded`], with the reason, for the caller to report. A graph that
+/// owes its rebuild re-derives the result from the
 /// log when `rigger setup` rebuilds it, and a current graph that missed it is left with a hole in
 /// its applied ledger at the result's position (a `SpawnResult` is in the live selection): setup's
 /// seeding of a file not yet carrying the `caught_up` cursor reads that ledger against the log up
@@ -2942,6 +2945,7 @@ fn fold_recorded_result(
     match res.to_event() {
         Ok(mut event) => {
             event.position = pos;
+            event.stream = conductor::STREAM.to_string();
             contextgraph::Fold::of(loc.graph(selection), &event)
         }
         Err(e) => contextgraph::Fold::NotFolded(e.to_string()),

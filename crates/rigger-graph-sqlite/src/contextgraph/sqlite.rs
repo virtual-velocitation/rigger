@@ -2,6 +2,7 @@
 //! node and edge tables in a local SQLite file and answers Subgraph and Resolve.
 //! A single connection behind a mutex serializes the read-then-write of apply.
 
+use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -182,23 +183,49 @@ CREATE TABLE IF NOT EXISTS rebuild_run_closure (
 ";
 
 /// The bound [`CATCH_UP_HORIZON`] adds its margin to (spec 124, THE CLOCKS): ten minutes, the
-/// longest a direct fold's writer is to wait out another writer's write lock once criterion 2's
-/// appender holds it. At this tree a direct fold waits one busy timeout of its connection
-/// ([`open_connection`]) and gives up, leaving its position missing from the ledger.
+/// longest an appender ([`Projector::guarded`]) waits, counted from its lowest own position's
+/// stamp, for its positions to fold - by its calls, or by its direct fold's retried opens past
+/// another writer's write lock - before it returns them not folded, the gap left in the ledger.
 const FOLD_LOCK_CEILING: Duration = Duration::from_secs(600);
 
 /// How old a position missing from the `applied` ledger must be before a seeding of the
 /// `caught_up` cursor ([`Projector::seed_cursor`]) counts it lost (spec 124, THE CLOCKS): the
-/// [`FOLD_LOCK_CEILING`] plus a margin of 60 s. The ceiling is the longest a direct fold's writer
-/// is to wait out another writer's write lock once criterion 2's appender holds it; at this tree a
-/// direct fold waits one busy timeout of its connection and gives up.
+/// [`FOLD_LOCK_CEILING`] plus a margin of 60 s. The ceiling is the longest an appender
+/// ([`Projector::guarded`]) waits for its positions to fold, and its direct fold opens no later
+/// than its stamp plus the ceiling plus one busy timeout of its connection, which the margin
+/// covers, so a younger missing position may still be folded by its appender.
 pub const CATCH_UP_HORIZON: Duration = Duration::from_secs(FOLD_LOCK_CEILING.as_secs() + 60);
 
 /// The ceiling `held` as a cause text spells it (spec 124, CAUSE TEXTS): in whole minutes at or
-/// above one minute, else in whole seconds.
+/// above one minute, else in whole seconds, each rounded down.
 fn held_for(held: Duration) -> String {
-    let _ = held;
-    String::new()
+    match held.as_secs() {
+        secs if secs >= 60 => format!("{} min", secs / 60),
+        secs => format!("{secs} s"),
+    }
+}
+
+/// The suffix a call-run fold's not-folded text ends with (spec 124, CAUSE TEXTS): an appender
+/// whose positions its calls ([`Projector::catch_up`]) had not folded leaves them to the next.
+const CALL_PAYS: &str = " - the next fold through the folding store catches it up";
+
+/// The suffix a direct fold's not-folded text ends with (spec 124, CAUSE TEXTS), for an own event
+/// of the project's run stream: `rigger setup` reads that stream's positions against the file's
+/// `applied` ledger and folds the one missing there.
+const DIRECT_PAYS: &str =
+    " - the next rigger setup finds the event missing from graph.db and folds it";
+
+/// The not-folded text of an appender whose calls met the file's rebuild state (spec 124, CAUSE
+/// TEXTS): past its ceiling, or at once when its own process holds the file's rebuild lock.
+const UNFINISHED_REBUILD: &str = "graph.db holds an unfinished rebuild";
+
+/// Why an appender's positions stood short of the `caught_up` cursor when its ceiling passed
+/// (spec 124, CAUSE TEXTS): what its text says held them off ([`Projector::past_the_ceiling`]).
+enum Short {
+    /// Another writer's write lock held its fold's open off.
+    Contended,
+    /// Its calls had not reached its positions.
+    CatchingUp,
 }
 
 /// Drop the [`REBUILD_STATE`] a rebuild kept, both tables in one transaction ([`in_transaction`]).
@@ -365,7 +392,7 @@ pub struct Projector {
     project: String,
     /// The graph file this projector was opened on, the one [`Projector::rebuild`] rebuilds.
     path: String,
-    /// Where a failed fold marks this file as owing its rebuild ([`owed_mark`]).
+    /// Where an older binary's failed fold marked this file as owing its rebuild ([`owed_mark`]).
     owed_mark: Option<PathBuf>,
     /// The event log [`Projector::catch_up`] folds this file forward from, once installed
     /// ([`Projector::with_log`]): none folds nothing forward.
@@ -411,8 +438,9 @@ impl CatchUpLog {
 type ReextractionFactory = Box<dyn Fn() -> Box<Reextract<'static>> + Send + Sync>;
 
 /// The file beside the graph file at `path` whose presence marks it as owing its rebuild because a
-/// fold into it failed - a write lost to another writer's lock past the busy timeout leaves the
-/// file current but missing an event no later fold re-derives. The mark is only what lets a
+/// fold into it failed under an older binary, which wrote it when a write lost to another writer's
+/// lock left the file current but missing an event; no fold writes it now (spec 124), a fold that
+/// fails leaving only its position missing. The mark is only what lets a
 /// folding open refuse at once without reading the log: the debt itself is the position missing
 /// from the file's `applied` ledger, which `rigger setup`'s seeding of a file not yet carrying the
 /// `caught_up` cursor reads against the log up to the bound [`Projector::seed_cursor`] names.
@@ -421,7 +449,8 @@ fn owed_mark(path: &str) -> Option<PathBuf> {
     (path != ":memory:").then(|| PathBuf::from(format!("{path}.owed")))
 }
 
-/// Whether `mark` is present: a fold into its graph file failed and the rebuild is owed.
+/// Whether `mark` is present: a fold into its graph file failed under an older binary and the
+/// rebuild is owed.
 fn marked(mark: &Option<PathBuf>) -> bool {
     mark.as_ref().is_some_and(|m| m.exists())
 }
@@ -567,7 +596,8 @@ enum FrameError {
     /// Every other failure: another open error, the body's, the settlement's or the commit's.
     Failed(Error),
     /// A direct fold met its own position already passed over: that position's `passed_over`
-    /// cause, a recorded outcome rather than a lost fold.
+    /// cause, a recorded outcome rather than a lost fold, so the appender commits what the fold
+    /// wrote beside it ([`Projector::guarded`]).
     Recorded(String),
     /// A catch-up cut ([`CatchUpCut`]) found the `caught_up` cursor, read again under its write
     /// lock, at the position named outside the call's read - at or past the cut's last position,
@@ -650,7 +680,8 @@ impl Projector {
     /// ([`Rebuilt`]): what its run-closure prune removed - owed because its caller found it so
     /// (`owed`: what [`Projector::owed_against`] answered once the file's `caught_up` cursor was
     /// seeded), or because
-    /// the file itself records an older fold rule or carries the [`owed_mark`] a failed fold left,
+    /// the file itself records an older fold rule or carries the [`owed_mark`] an older binary's
+    /// failed fold left,
     /// both read again here. A rebuild's own
     /// unfinished work is paid too, with no owed cause: the shadow a stopped rebuild left
     /// standing, whose swap it finishes before any tail, and the tail past the cursor a swap
@@ -1005,11 +1036,15 @@ impl Projector {
     }
 
     /// This projector, knowing its process holds `held`, the rebuild lock [`Projector::lock_rebuild`]
-    /// answered, when that lock is of this projector's own file (spec 124, THE APPENDER); none, or
-    /// another file's, records nothing.
+    /// answered, when that lock is of this projector's own file (spec 124, THE APPENDER) - the two
+    /// paths naming one file once each is made absolute against the working directory, so a
+    /// relative and an absolute spelling of it match; none, another file's, or a path that cannot
+    /// be made absolute records nothing.
     pub fn with_rebuild_lock(mut self, held: Option<&RebuildLock>) -> Self {
-        self.holds_rebuild_lock = false;
-        let _ = held;
+        let absolute = |path: &str| std::path::absolute(path).ok();
+        self.holds_rebuild_lock = held.is_some_and(|lock| {
+            absolute(&lock.path).is_some_and(|locked| absolute(&self.path) == Some(locked))
+        });
         self
     }
 
@@ -1071,6 +1106,14 @@ impl Projector {
     /// host may pass over a concurrent writer's young own entry as resolved to nothing before that
     /// writer's own fold folds it.
     pub fn catch_up(&self) -> Result<CatchUp, Error> {
+        self.catch_up_with(None)
+    }
+
+    /// One [`Projector::catch_up`] call made by the appender of `own` (spec 124, THE OWN ENTRY):
+    /// a cut that is that entry alone folds it from the batch the appender holds rather than from
+    /// the call's re-extraction ([`decide_step`]); with none, every entry folds from the
+    /// re-extraction.
+    fn catch_up_with(&self, own: Option<&OwnEntry>) -> Result<CatchUp, Error> {
         let mut from = match standing_cursor(&self.conn.lock().unwrap(), &self.owed_mark)? {
             Ok(at) => at,
             Err(inert) => return Ok(CatchUp::Inert(inert)),
@@ -1102,10 +1145,7 @@ impl Projector {
             let Some(last) = page.last().map(|e| e.position) else {
                 return Ok(CatchUp::AtHead);
             };
-            let run: Vec<Event> = page
-                .into_iter()
-                .filter(|e| e.stream == rigger_domain::run::STREAM)
-                .collect();
+            let run: Vec<Event> = page.into_iter().filter(on_the_run_stream).collect();
             let part = fold_transactions(&run).next().unwrap_or_default();
             let through = match part.last() {
                 Some(cut_last) if part.len() < run.len() => cut_last.position,
@@ -1123,7 +1163,10 @@ impl Projector {
                 part,
                 through,
                 &mut cut,
-                &mut *reextract,
+                EntryBatches {
+                    reextract: &mut *reextract,
+                    own,
+                },
                 false,
             );
             match decided {
@@ -1147,15 +1190,6 @@ impl Projector {
                     })
                 }
             }
-        }
-    }
-
-    /// Mark this file as missing an event the log holds ([`owed_mark`]), so a folding open refuses
-    /// at once. An in-memory graph, which no rebuild outlives, is never marked.
-    fn mark_lost_fold(&self) -> Result<(), String> {
-        match &self.owed_mark {
-            Some(mark) => std::fs::write(mark, b"").map_err(|e| failed_at(mark, e)),
-            None => Ok(()),
         }
     }
 
@@ -1201,40 +1235,193 @@ impl Projector {
         in_transaction(&mut self.conn.lock().unwrap(), &self.project, body)
     }
 
-    /// Run `fold` under the two guards every fold into this file keeps. It refuses before folding
-    /// when the file owes its rebuild ([`REBUILD_OWED`]). And a fold that fails into a file that
-    /// owed nothing leaves that file behind the log for good - nothing folds a position twice - and
-    /// its positions missing from the `applied` ledger are that debt. The failure also marks the
-    /// file ([`owed_mark`]), so from then on it refuses every fold and every answer that depends on
-    /// the fold with [`REBUILD_OWED`] without reading the log, and `rigger setup` rebuilds it; a
-    /// mark that cannot be written is named beside the fold's error and nothing else is recorded -
-    /// the ledger still carries the debt, which `rigger setup`'s seeding of a file not yet carrying
-    /// the `caught_up` cursor reads against the log up to the bound [`Projector::seed_cursor`]
-    /// names, rebuilding the file for a missing position there it finds old. Either way the error
-    /// ends by naming `rigger setup`, so every surface that reports the lost fold names that
-    /// command. A fold that answers its own position already recorded passed over
-    /// ([`FrameError::Recorded`], spec 124) lost nothing: it answers that position's cause alone,
-    /// writing no mark.
-    fn guarded<T>(&self, fold: impl FnOnce() -> Result<T, FrameError>) -> Result<T, Error> {
+    /// THE APPENDER (spec 124): fold the appender's own `events` - with `own`, the ledger entry
+    /// among them and the batch it holds ([`OwnEntry`]) - into this file, and answer what the
+    /// direct fold's `fold` answered, or none when the calls folded them. It refuses before
+    /// folding when the file owes its rebuild ([`REBUILD_OWED`]), and writes no mark for any
+    /// failure: a position it leaves unfolded is missing from the `applied` ledger, which the next
+    /// fold through the folding store or the next `rigger setup` reads.
+    ///
+    /// Each attempt first reads, with no transaction open, whether the calls fold the events
+    /// ([`Projector::folds_by_calls`]): on a projector handed the log, for events all of the
+    /// project's run stream, on a file carrying `caught_up`, it folds them by its calls
+    /// ([`Projector::fold_by_calls`]), and a call meeting no cursor turns to the direct fold.
+    /// Otherwise `fold` runs in ONE immediate transaction ([`in_transaction`]), which reads that
+    /// again under the write lock and, finding the calls fold them - a seeding landed between the
+    /// two reads - ends unwritten and turns to the calls. An open meeting another writer's write
+    /// lock past the busy timeout ([`FrameError::Contended`]) is waited out: one busy interval of
+    /// the connection with its lock released, then the attempt again, each open after the first
+    /// made only while the lowest own position is no older than the ceiling ([`Projector::past_ceiling`]),
+    /// else answered with the write-lock text ([`Projector::past_the_ceiling`]). A direct fold
+    /// that answers its own position already recorded passed over ([`FrameError::Recorded`])
+    /// commits what it wrote beside it and answers that cause alone; any other failure rolls the
+    /// transaction back and answers its own text. Each text a direct fold
+    /// answers but the recorded cause ends with [`DIRECT_PAYS`] when the events are of the run
+    /// stream, and with nothing when they are not, since no later fold reads another stream.
+    fn guarded<T>(
+        &self,
+        events: &[Event],
+        own: Option<&OwnEntry>,
+        mut fold: impl FnMut(&Transaction) -> Result<T, FrameError>,
+    ) -> Result<Option<T>, Error> {
         if self.rebuild_owed()? {
             return Err(Error(REBUILD_OWED.to_string()));
         }
-        let lost = match fold() {
-            Ok(folded) => return Ok(folded),
-            Err(FrameError::Recorded(cause)) => return Err(Error(cause)),
-            Err(lost) => lost.unframed(),
-        };
-        let unmarked = match self.mark_lost_fold() {
-            Ok(()) => String::new(),
-            Err(unmarked) => {
-                format!("; the mark that graph.db owes its rebuild was not written ({unmarked})")
+        let streamed = events.iter().all(on_the_run_stream);
+        let pays = if streamed { DIRECT_PAYS } else { "" };
+        let busy = self.busy_interval()?;
+        let mut retry = false;
+        loop {
+            let by_calls = self.folds_by_calls(&self.conn.lock().unwrap(), streamed)?;
+            if by_calls && self.fold_by_calls(events, own, busy)? {
+                return Ok(None);
             }
-        };
-        Err(Error(format!(
-            "{}{unmarked} - the next `rigger setup` finds the event missing from graph.db and \
-             rebuilds it",
-            lost.0
-        )))
+            let mut conn = self.conn.lock().unwrap();
+            if retry && self.past_ceiling(events) {
+                return Err(self.past_the_ceiling(Short::Contended, pays));
+            }
+            let folded = in_transaction(&mut conn, &self.project, |tx| {
+                if self.folds_by_calls(tx, streamed)? {
+                    return Ok(None);
+                }
+                match fold(tx) {
+                    Ok(folded) => Ok(Some(Ok(folded))),
+                    // A recorded cause commits what the fold wrote beside it.
+                    Err(FrameError::Recorded(cause)) => Ok(Some(Err(cause))),
+                    Err(failed) => Err(failed),
+                }
+            });
+            drop(conn);
+            match folded {
+                Ok(Some(Ok(folded))) => return Ok(Some(folded)),
+                Ok(Some(Err(cause))) => return Err(Error(cause)),
+                Ok(None) => {}
+                Err(FrameError::Contended(_)) => {
+                    retry = true;
+                    std::thread::sleep(busy);
+                }
+                Err(failed) => return Err(Error(format!("{}{pays}", failed.unframed().0))),
+            }
+        }
+    }
+
+    /// Whether an appender folds its events by its calls (spec 124, THE APPENDER): this projector
+    /// was handed the log ([`Projector::with_log`]), the events are all of the project's run
+    /// stream (`streamed`), and the file behind `conn` carries the `caught_up` cursor.
+    fn folds_by_calls(&self, conn: &Connection, streamed: bool) -> Result<bool, Error> {
+        Ok(self.log.is_some() && streamed && cursor_at(conn, "caught_up")?.is_some())
+    }
+
+    /// THE APPENDER's calls (spec 124): call [`Projector::catch_up`] - with `own`, the appender's
+    /// own entry, folding from its batch ([`Projector::catch_up_with`]) - until the appender's
+    /// success test passes, and answer true then, or false when a call or the test meets no
+    /// `caught_up` cursor, the direct fold folding the events instead.
+    ///
+    /// After every call but one meeting no cursor, the success test reads the cursor and the
+    /// first own position recorded passed over in one statement outside any transaction
+    /// ([`own_standing`]): such a row answers its cause at once, with no suffix, since no later
+    /// fold folds it; the last own position at or below the cursor is folded. Still short, the
+    /// call's answer decides. An older fold rule or the mark answers [`REBUILD_OWED`] at once, the
+    /// file's rebuild state the unfinished-rebuild text at once when this projector's process
+    /// holds its rebuild lock ([`Projector::with_rebuild_lock`]), and a failure anywhere but at
+    /// the own entry its error at once; otherwise, past the ceiling ([`Projector::past_ceiling`]),
+    /// it answers what the call met - the catch-up text after a call that advanced or met the
+    /// log's head, the write-lock text after a skipped one, the unfinished-rebuild text, or the own
+    /// entry's failure - each but `REBUILD_OWED` ending with [`CALL_PAYS`]. Inside the ceiling a
+    /// call that advanced is followed by the next at once, and any other by one busy interval
+    /// `busy` with the connection's lock released.
+    fn fold_by_calls(
+        &self,
+        events: &[Event],
+        own: Option<&OwnEntry>,
+        busy: Duration,
+    ) -> Result<bool, Error> {
+        let positions: Vec<Position> = events.iter().map(|e| e.position).collect();
+        let last = positions.iter().copied().max();
+        let positions = serde_json::to_string(&positions).map_err(be)?;
+        loop {
+            let call = self.catch_up_with(own)?;
+            if call == CatchUp::Inert(Inert::NoCursor) {
+                return Ok(false);
+            }
+            let standing = own_standing(&self.conn.lock().unwrap(), &positions)?;
+            match standing {
+                None => return Ok(false),
+                Some((_, Some(cause))) => return Err(Error(cause)),
+                Some((cursor, None)) if last.is_none_or(|last| last <= cursor) => return Ok(true),
+                Some(_) => {}
+            }
+            let (short, waits) = match call {
+                CatchUp::Advanced { .. } => {
+                    (self.past_the_ceiling(Short::CatchingUp, CALL_PAYS), false)
+                }
+                CatchUp::AtHead => (self.past_the_ceiling(Short::CatchingUp, CALL_PAYS), true),
+                CatchUp::Skipped { .. } => {
+                    (self.past_the_ceiling(Short::Contended, CALL_PAYS), true)
+                }
+                CatchUp::Inert(Inert::RebuildState) => {
+                    let unfinished = Error(format!("{UNFINISHED_REBUILD}{CALL_PAYS}"));
+                    if self.holds_rebuild_lock {
+                        return Err(unfinished);
+                    }
+                    (unfinished, true)
+                }
+                // An older fold rule or the mark; a call meeting no cursor turned direct above.
+                CatchUp::Inert(_) => return Err(Error(REBUILD_OWED.to_string())),
+                CatchUp::Failed { error, .. } => {
+                    let failed = Error(format!("{error}{CALL_PAYS}"));
+                    if !own.is_some_and(|own| own.failed.take()) {
+                        return Err(failed);
+                    }
+                    (failed, true)
+                }
+            };
+            if self.past_ceiling(events) {
+                return Err(short);
+            }
+            if waits {
+                std::thread::sleep(busy);
+            }
+        }
+    }
+
+    /// Whether an appender of `events` has waited past its ceiling (spec 124, THE APPENDER): the
+    /// clock has run longer than [`Projector::with_lock_ceiling`]'s ceiling, [`FOLD_LOCK_CEILING`]
+    /// unless a test injects another, since the stamp of its lowest own position - or it has no
+    /// position to wait for.
+    fn past_ceiling(&self, events: &[Event]) -> bool {
+        events
+            .iter()
+            .min_by_key(|e| e.position)
+            .is_none_or(|lowest| {
+                SystemTime::now()
+                    .duration_since(lowest.recorded_at)
+                    .is_ok_and(|age| age > self.lock_ceiling)
+            })
+    }
+
+    /// The not-folded error of an appender past its ceiling (spec 124, CAUSE TEXTS), what held it
+    /// `short` spelled with the ceiling it held ([`held_for`]) and ending with its path's suffix
+    /// `pays`.
+    fn past_the_ceiling(&self, short: Short, pays: &str) -> Error {
+        let held = held_for(self.lock_ceiling);
+        Error(match short {
+            Short::Contended => format!("graph.db's write lock stayed held past {held}{pays}"),
+            Short::CatchingUp => {
+                format!("graph.db's catch-up had not reached this event after {held}{pays}")
+            }
+        })
+    }
+
+    /// The interval an appender waits between two attempts (spec 124, THE APPENDER): one busy
+    /// timeout of this file's connection, as the connection reads it.
+    fn busy_interval(&self) -> Result<Duration, Error> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA busy_timeout", [], |r| r.get::<_, u64>(0))
+            .map(Duration::from_millis)
+            .map_err(be)
     }
 
     /// The WHOLE live projection for this project: every node plus every currently-valid edge
@@ -2138,7 +2325,10 @@ fn fold_source(
                 part,
                 through,
                 &mut RebuildCursor,
-                reextract,
+                EntryBatches {
+                    reextract: &mut *reextract,
+                    own: None,
+                },
                 gather_run_closure,
             )
             .map_err(FrameError::unframed)?;
@@ -2170,10 +2360,12 @@ fn fold_source(
 /// [`Projection::apply_generation`] folds it ([`fold_entry`]), in its own transaction
 /// ([`fold_entry_alone`]), with the batch `reextract` answers for it before that transaction opens
 /// ([`extracted_batch`], spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION), so no extraction
-/// holds the write lock: one whose own payload the judge rejects is passed over with
+/// holds the write lock - with the batch `batches` names for it ([`EntryBatches`]), recording on
+/// an appender's own entry what became of its fold ([`OwnEntry::settle`]): one whose own payload
+/// the judge rejects is passed over with
 /// [`PAYLOAD_REJECTED`], one whose re-extracted batch holds an event the judge rejects with
 /// [`FOLD_FAILED`], and one whose re-extraction resolves to nothing with [`RESOLVED_TO_NOTHING`]
-/// (CONTENT). Any other failure (ENVIRONMENT) - a `reextract` that fails, before the entry's
+/// (CONTENT). Any other failure (ENVIRONMENT) - a re-extraction that fails, before the entry's
 /// transaction opens; an entry that asks a batch it was not handed on its retry too
 /// ([`unread_entry`]); a fold's own error over a payload and a batch the judge accepts; a statement
 /// outside every fold - propagates with the cut's transaction rolled back, and an open meeting
@@ -2185,19 +2377,32 @@ fn decide_step<L: Lend>(
     part: &[Event],
     through: Position,
     cursor: &mut impl FoldCursor,
-    reextract: &mut Reextract,
+    batches: EntryBatches,
     gather_run_closure: bool,
 ) -> Result<(), FrameError> {
     match part {
-        [entry] if is_ledger_entry(&entry.type_) => fold_entry_alone(
-            conn,
-            project,
-            entry,
-            through,
-            cursor,
-            &mut |lent| extracted_batch(lent, project, entry, reextract),
-            gather_run_closure,
-        ),
+        [entry] if is_ledger_entry(&entry.type_) => {
+            let own = batches.own.filter(|own| own.position == entry.position);
+            let reextract = batches.reextract;
+            let folded = fold_entry_alone(
+                conn,
+                project,
+                entry,
+                through,
+                cursor,
+                &mut |lent| match own {
+                    Some(own) => {
+                        extracted_batch(lent, project, entry, &mut |_: &Event| own.batch())
+                    }
+                    None => extracted_batch(lent, project, entry, reextract),
+                },
+                gather_run_closure,
+            );
+            if let Some(own) = own {
+                own.settle(&folded);
+            }
+            folded.map(drop)
+        }
         _ => conn.lend(|conn| {
             in_transaction(conn, project, |tx| {
                 cursor.open(tx, through)?;
@@ -2286,15 +2491,109 @@ fn pass_over(tx: &Transaction, position: Position, cause: &str) -> Result<(), Er
     .map_err(be)
 }
 
-/// The cause `conn`'s file recorded `position` passed over with ([`pass_over`]), or none.
-fn passed_over_cause(conn: &Connection, position: Position) -> Result<Option<String>, Error> {
+/// The cause a file recorded the first of the positions the JSON array `?1` names passed over
+/// with ([`pass_over`]), or none: the one read of an own position passed over, which a direct fold
+/// ([`passed_over_cause`]) and an appender's success test ([`own_standing`]) share (spec 124).
+const FIRST_PASSED_OVER: &str = "SELECT cause FROM passed_over \
+     WHERE position IN (SELECT value FROM json_each(?1)) ORDER BY position LIMIT 1";
+
+/// The cause `conn`'s file recorded the first of `positions` passed over with
+/// ([`FIRST_PASSED_OVER`]), or none.
+fn passed_over_cause(conn: &Connection, positions: &[Position]) -> Result<Option<String>, Error> {
+    let positions = serde_json::to_string(positions).map_err(be)?;
+    conn.query_row(FIRST_PASSED_OVER, [positions], |r| r.get(0))
+        .optional()
+        .map_err(be)
+}
+
+/// Where an appender of the positions the JSON array `positions` names stands (spec 124, THE
+/// APPENDER's success test): the `caught_up` cursor of the file behind `conn` and the cause the
+/// first of them was recorded passed over with ([`FIRST_PASSED_OVER`]), read together in ONE
+/// statement outside any transaction - a row is written in the transaction that moves the cursor
+/// past its position, so a read that sees the cursor past it sees the row - or none on a file
+/// without the cursor.
+fn own_standing(
+    conn: &Connection,
+    positions: &str,
+) -> Result<Option<(Position, Option<String>)>, Error> {
+    if !has_table(conn, "caught_up")? {
+        return Ok(None);
+    }
     conn.query_row(
-        "SELECT cause FROM passed_over WHERE position = ?1",
-        [position as i64],
-        |r| r.get(0),
+        &format!("SELECT (SELECT position FROM caught_up), ({FIRST_PASSED_OVER})"),
+        [positions],
+        |r| Ok((r.get::<_, i64>(0)? as Position, r.get(1)?)),
     )
-    .optional()
+    .map(Some)
     .map_err(be)
+}
+
+/// Whether `e` is an event of the project's run stream (spec 124, ONE PROCEDURE): the stream a
+/// catch-up folds from the log ([`Projector::catch_up`]), and so the stream an appender's events
+/// must all be of for its calls to fold them ([`Projector::folds_by_calls`]).
+fn on_the_run_stream(e: &Event) -> bool {
+    e.stream == rigger_domain::run::STREAM
+}
+
+/// Where THE DECIDE STEP ([`decide_step`]) takes the batch of a ledger entry it folds: the
+/// pass's re-extraction `reextract`, or, for the entry at the position of `own`, an appender's own
+/// entry, the batch that appender holds (spec 124, THE OWN ENTRY).
+struct EntryBatches<'a, 'r, 'b> {
+    reextract: &'a mut Reextract<'r>,
+    own: Option<&'a OwnEntry<'b>>,
+}
+
+/// THE OWN ENTRY (spec 124): the ledger entry at `position` an appender folds
+/// ([`Projection::apply_generation`]), with the batch function it was handed, asked at most once,
+/// by whichever fold of the entry asks first - its direct fold's or one of its calls' - and its
+/// answer kept for every later one ([`OwnEntry::batch`]); what its calls did with the entry is
+/// recorded here ([`OwnEntry::settle`]). It lives in the appender's frame and drops with it.
+struct OwnEntry<'b> {
+    position: Position,
+    /// The batch function, until it is asked.
+    ask: Cell<Option<EntryBatch<'b>>>,
+    /// What the batch function answered, its error as text.
+    answer: OnceCell<Result<Option<Vec<Event>>, String>>,
+    /// The outcome the call that folded the entry folded it with.
+    folded: Cell<Option<EntryFold>>,
+    /// Whether the last call that decided the entry failed at it, cleared as the appender's call
+    /// loop reads it ([`Projector::fold_by_calls`]), so a later call's failure elsewhere never
+    /// reads as the entry's.
+    failed: Cell<bool>,
+}
+
+impl<'b> OwnEntry<'b> {
+    fn new(position: Position, batch: EntryBatch<'b>) -> Self {
+        OwnEntry {
+            position,
+            ask: Cell::new(Some(batch)),
+            answer: OnceCell::new(),
+            folded: Cell::new(None),
+            failed: Cell::new(false),
+        }
+    }
+
+    /// The entry's batch: what the batch function answered when first asked, asked now if it has
+    /// not been.
+    fn batch(&self) -> Result<Option<Vec<Event>>, Error> {
+        self.answer
+            .get_or_init(|| match self.ask.take() {
+                Some(ask) => ask().map_err(|e| e.0),
+                None => Ok(None),
+            })
+            .clone()
+            .map_err(Error)
+    }
+
+    /// Record what a call's fold of the entry answered ([`fold_entry_alone`]): the outcome it
+    /// folded the entry with, and whether it failed at the entry.
+    fn settle(&self, folded: &Result<Option<EntryFold>, FrameError>) {
+        self.failed
+            .set(matches!(folded, Err(FrameError::Failed(_))));
+        if let Ok(Some(fold)) = folded {
+            self.folded.set(Some(*fold));
+        }
+    }
 }
 
 /// The entry's body of a fold pass ([`decide_step`], spec 122, EXTRACTION OUTSIDE THE WRITE
@@ -2308,7 +2607,8 @@ fn passed_over_cause(conn: &Connection, position: Position) -> Result<Option<Str
 /// ([`fold_in_savepoint`]). An entry whose fold asks a batch `batch` did not extract
 /// ([`BatchAnswer::Unread`]) is undone with its savepoint, so its transaction commits no write
 /// and leaves the cursor where it stood; `batch` is asked again and the entry retried ONCE (THE
-/// REVERSE RACE), and a second miss fails with [`unread_entry`].
+/// REVERSE RACE), and a second miss fails with [`unread_entry`]. A read entry answers the outcome
+/// its committed fold folded it with ([`EntryFold`]), or none when it was passed over.
 fn fold_entry_alone<L: Lend>(
     conn: &mut L,
     project: &str,
@@ -2317,19 +2617,24 @@ fn fold_entry_alone<L: Lend>(
     cursor: &mut impl FoldCursor,
     batch: &mut dyn FnMut(&mut L) -> Result<Extracted, Error>,
     gather_run_closure: bool,
-) -> Result<(), FrameError> {
-    let mut attempt = || -> Result<bool, FrameError> {
+) -> Result<Option<EntryFold>, FrameError> {
+    // Some when the entry is read, holding the outcome it folded with; none when it is unread.
+    let mut attempt = || -> Result<Option<Option<EntryFold>>, FrameError> {
         let Extracted { answer, rejected } = batch(conn)?;
         conn.lend(|conn| {
             in_transaction(conn, project, |tx| {
                 cursor.open(tx, through)?;
+                let mut folded = None;
                 let read = fold_in_savepoint(
                     tx,
                     entry,
                     gather_run_closure,
                     || {
                         fold_entry(tx, entry, project, || Ok(answer)).map(|outcome| match outcome {
-                            EntryOutcome::Folded(_) => Decided::Read,
+                            EntryOutcome::Folded(fold) => {
+                                folded = Some(fold);
+                                Decided::Read
+                            }
                             EntryOutcome::Unresolved => {
                                 Decided::PassedOver(RESOLVED_TO_NOTHING.to_string())
                             }
@@ -2341,14 +2646,13 @@ fn fold_entry_alone<L: Lend>(
                 if read {
                     cursor.close(tx, through)?;
                 }
-                Ok::<_, FrameError>(read)
+                Ok::<_, FrameError>(read.then_some(folded))
             })
         })
     };
-    if attempt()? || attempt()? {
-        Ok(())
-    } else {
-        Err(unread_entry(entry.position).into())
+    match attempt()? {
+        Some(folded) => Ok(folded),
+        None => attempt()?.ok_or_else(|| unread_entry(entry.position).into()),
     }
 }
 
@@ -2818,45 +3122,54 @@ impl Projection for Projector {
     /// CADENCE only, never the graph. Atomic: a fold error rolls the whole batch back (the events are
     /// still durable in the log, and the sink folds best-effort), never a half-applied batch.
     ///
-    /// It folds under the two guards of [`Projector::guarded`]: refused on a file that owes its
-    /// rebuild, and a batch that fails to fold marks the file owed. A batch one of whose positions
-    /// the file already recorded passed over (spec 124) still commits its other positions, and
-    /// then answers the first such position's cause ([`FrameError::Recorded`]), which marks
-    /// nothing.
+    /// It folds as THE APPENDER of `events` ([`Projector::guarded`], spec 124): refused on a file
+    /// that owes its rebuild, folded by its calls or directly, and a batch that does not fold
+    /// returns its cause and writes no mark. A batch one of whose positions the file already
+    /// recorded passed over still commits its other positions, and then answers the first such
+    /// position's cause ([`FrameError::Recorded`]).
     fn apply_batch(&self, events: &[Event], _access: FoldAccess) -> Result<(), Error> {
-        self.guarded(
-            || match self.transact(|tx| fold_new(tx, events, &self.project))? {
+        self.guarded(events, None, |tx| {
+            match fold_new(tx, events, &self.project)? {
                 Some(cause) => Err(FrameError::Recorded(cause)),
                 None => Ok(()),
-            },
-        )
+            }
+        })
+        .map(drop)
     }
 
-    /// Fold `entry` with its batch in ONE transaction ([`fold_entry`]), under the same two guards
-    /// as every other fold into this file ([`Projector::guarded`]): refused before folding, its
-    /// batch never asked for, on a file that owes its rebuild, and a fold that fails - an entry
-    /// whose payload does not parse, a batch function that fails, a batch event the fold rejects
-    /// - rolls back whole, its `applied` row included, and marks the file owed.
+    /// Fold `entry` with its batch as THE APPENDER of it ([`Projector::guarded`], spec 124),
+    /// holding the batch as its own entry ([`OwnEntry`]): refused before folding, its batch never
+    /// asked for, on a file that owes its rebuild. Folded directly, it folds in ONE transaction
+    /// ([`fold_entry`]); folded by its calls, a call whose cut is the entry alone folds it from the
+    /// same batch, and the appender answers the outcome that call folded it with, or
+    /// [`EntryFold::AlreadyApplied`] when another writer folded it first. The batch function is
+    /// asked at most once, whichever fold asks first. A fold that fails - an entry whose payload
+    /// does not parse, a batch function that fails, a batch event the fold rejects - rolls back
+    /// whole, its `applied` row included, and returns its cause, writing no mark.
     ///
     /// A batch function answering no batch folds nothing ([`EntryFold::BatchAsked`]). An entry
-    /// whose position the file already recorded passed over (spec 124) answers that cause
-    /// ([`FrameError::Recorded`]), which marks nothing.
+    /// whose position the file already recorded passed over answers that cause
+    /// ([`FrameError::Recorded`]).
     fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error> {
-        self.guarded(|| {
-            self.transact(|tx| {
-                match fold_entry(tx, entry, &self.project, || batch().map(BatchAnswer::Batch))? {
-                    EntryOutcome::Folded(EntryFold::AlreadyApplied) => {
-                        match passed_over_cause(tx, entry.position)? {
-                            Some(cause) => Err(FrameError::Recorded(cause)),
-                            None => Ok(EntryFold::AlreadyApplied),
-                        }
+        let own = OwnEntry::new(entry.position, batch);
+        let folded = self.guarded(
+            std::slice::from_ref(entry),
+            Some(&own),
+            |tx| match fold_entry(tx, entry, &self.project, || {
+                own.batch().map(BatchAnswer::Batch)
+            })? {
+                EntryOutcome::Folded(EntryFold::AlreadyApplied) => {
+                    match passed_over_cause(tx, std::slice::from_ref(&entry.position))? {
+                        Some(cause) => Err(FrameError::Recorded(cause)),
+                        None => Ok(EntryFold::AlreadyApplied),
                     }
-                    EntryOutcome::Folded(fold) => Ok(fold),
-                    EntryOutcome::Unresolved => Ok(EntryFold::BatchAsked),
-                    EntryOutcome::Unread => Err(unread_entry(entry.position).into()),
                 }
-            })
-        })
+                EntryOutcome::Folded(fold) => Ok(fold),
+                EntryOutcome::Unresolved => Ok(EntryFold::BatchAsked),
+                EntryOutcome::Unread => Err(unread_entry(entry.position).into()),
+            },
+        )?;
+        Ok(folded.unwrap_or_else(|| own.folded.get().unwrap_or(EntryFold::AlreadyApplied)))
     }
 
     /// A plain read of the `generations` table ([`current_generation`]): it consults no owed
@@ -3037,7 +3350,7 @@ fn fold_new(tx: &Transaction, events: &[Event], project: &str) -> Result<Option<
         if record_applied(tx, e.position)? {
             fold(tx, e, project, &Asserter::of(e))?;
         } else if passed_over.is_none() {
-            passed_over = passed_over_cause(tx, e.position)?;
+            passed_over = passed_over_cause(tx, std::slice::from_ref(&e.position))?;
         }
     }
     relabel_owed_communities(tx)?;
@@ -18417,7 +18730,7 @@ mod tests {
                     false,
                 );
                 Answered {
-                    folded: folded.map_err(|e| e.unframed().0),
+                    folded: folded.map(drop).map_err(|e| e.unframed().0),
                     asks,
                     after: committed_of(&p),
                     generation: generation_of_f(&p),

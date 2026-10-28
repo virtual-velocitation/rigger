@@ -98,7 +98,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
     std::fs::create_dir_all(RIGGER_DIR)?;
     let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
     if selection.is_sqlite() {
-        migrate_local_identity()?;
+        migrate_local_identity(None)?;
     }
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let identity = project_identity();
