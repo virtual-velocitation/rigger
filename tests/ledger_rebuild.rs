@@ -1432,10 +1432,11 @@ fn setup_own_git_around_its_fold() -> (&'static [&'static str], &'static [&'stat
     SETUP_OWN_GIT.split_at(4)
 }
 
-/// Every `git` invocation a re-extraction makes at the first entry it meets when no reader of its
-/// write open's root has read it before, in order: that root, whether an object database stands
-/// there, and the one `git cat-file --batch` process it reads that database through. A
-/// re-extraction meeting its first entry after the root was read asks the last two alone.
+/// Every `git` invocation a re-extraction compiled with an extraction makes at the first entry it
+/// meets when no reader of its write open's root has read it before, in order: that root, whether
+/// an object database stands there, and the one `git cat-file --batch` process it reads that
+/// database through. One meeting its first entry after the root was read asks the last two alone,
+/// and one compiled without an extraction asks neither of them.
 const FIRST_ENTRY_GIT: [&str; 3] = [
     "rev-parse --show-toplevel",
     "rev-parse --git-dir",
