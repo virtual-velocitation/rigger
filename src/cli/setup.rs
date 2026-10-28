@@ -3740,15 +3740,17 @@ mod tests {
     /// The two author roles carry this project's anchors for the built-in hand-over rules as one
     /// block, byte-identical in both and in no other persona: the implement gate set by name, the
     /// commands the author runs before it reports (clippy on both lanes, the audit gate with a
-    /// clean `git status`, the boundary audit, the content gates and red-before-green), the whole
-    /// suite left to the gates, the audit's closing rule, the test homes with the tool that
-    /// searches them, the counted check: the roots a retired spelling is counted over with the
-    /// command that counts it, no per-statement test-shape record, and the sentence
-    /// walk's generators as commands over the unit's whole range on every round (the merge base
-    /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
-    /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
-    /// per item of the walk's hunk list, each item the hunks add - a SQL conjunct inside a query
-    /// string included - carrying its one-home line in one of the working discipline's three
+    /// clean `git status`, the boundary audit, the content gates, red-before-green and, when the
+    /// production hunks touch `src/` or `crates/`, every root test that reads a checked-in file
+    /// as text through a reader the block's command names, listed by that command and run on
+    /// both lanes), the whole suite left to the gates, the audit's closing rule, the test homes
+    /// with the tool that searches them, the counted check: the roots a retired spelling is
+    /// counted over with the command that counts it, no per-statement test-shape record, and the
+    /// sentence walk's generators as commands over the unit's whole range on every round (the
+    /// merge base with the run branch to head, never the round's delta), the graph's caller lookup
+    /// at depth 1 with its counted fallback recorded as a gap, the count and the caller lookup run
+    /// once per item of the walk's hunk list, each item the hunks add - a SQL conjunct inside a
+    /// query string included - carrying its one-home line in one of the working discipline's three
     /// forms, the item list read by shape as well as by name with every added predicate an item,
     /// a changed condition among them, and a set of named members searched by each member's
     /// name, the rule-spelling search over every tracked text file, one run per pair of short
@@ -3799,6 +3801,9 @@ mod tests {
             "`sh .rigger/gates/content.sh no-os-kill`",
             "`sh .rigger/gates/red-before-green.sh`",
             "every test binary your change touched, on both lanes",
+            "When your production hunks touch `src/` or `crates/`",
+            "`git ls-files 'tests/*.rs' | awk -F/ 'NF == 2' | xargs awk 'index($0, \
+             \"repo_text(\")",
             "The whole workspace suite on both lanes is the test and lane-no-default gates' run, \
              not yours",
             "`every_open_cluster_is_dispositioned`",
