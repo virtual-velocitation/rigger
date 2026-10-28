@@ -3629,7 +3629,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests::run_sink",
     "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "e5d3d7c1c5240b48"
+    "content_hash": "1d07754ace7f4647"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

@@ -47,6 +47,17 @@ pub fn object_ids(root: &Path) -> std::collections::BTreeSet<String> {
     .collect()
 }
 
+/// Assert, as a test's premise, that the object database of the repository at `root` holds no
+/// object ([`object_ids`] answers empty), so each object it holds afterwards is one the command
+/// under test wrote.
+pub fn assert_holds_no_object(root: &Path) {
+    assert_eq!(
+        object_ids(root),
+        std::collections::BTreeSet::new(),
+        "premise: the object database holds no object before the command runs"
+    );
+}
+
 /// The bytes the object database of the repository at `root` holds under the blob `id`, as
 /// `git cat-file blob` prints them, or `None` when it holds no such blob.
 pub fn held_blob(root: &Path, id: &str) -> Option<Vec<u8>> {

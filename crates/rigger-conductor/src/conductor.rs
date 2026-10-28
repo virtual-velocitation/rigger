@@ -20825,11 +20825,11 @@ mod tests {
         use super::*;
         use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
         use crate::test_support::{
-            arm_read_fault, entry_records, fixture_entry_events, generation_ingested, git_dir,
-            git_hash_object, group_lookups, handed_by_the_walk, held_generations, ledger_head_read,
-            logged_generations, one_lookup_each, owe_a_rebuild, planted_extraction_tree,
-            rebuild_from_the_tree, seed_generations_on_another_stream, source_with,
-            walked_generations, walked_identities, write_file, CountedRead, Handed,
+            arm_read_fault, assert_outside_any_repository, entry_records, fixture_entry_events,
+            generation_ingested, git_hash_object, group_lookups, handed_by_the_walk,
+            held_generations, ledger_head_read, logged_generations, one_lookup_each, owe_a_rebuild,
+            planted_extraction_tree, rebuild_from_the_tree, seed_generations_on_another_stream,
+            source_with, walked_generations, walked_identities, write_file, CountedRead, Handed,
             ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH, MOVED, SOURCE, SOURCE_BODY,
             SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED, WORKFLOW_BODY, WORKFLOW_PATH,
         };
@@ -21305,11 +21305,7 @@ mod tests {
         fn a_tree_that_is_not_a_git_repository_records_the_blob_id_git_hash_object_gives() {
             let tree = planted_extraction_tree(write_file);
             let root = tree.path().to_str().unwrap();
-            assert_eq!(
-                git_dir(tree.path()),
-                None,
-                "the tree is outside any repository"
-            );
+            assert_outside_any_repository(tree.path());
             let st = Store::open(":memory:").unwrap();
             let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
             let driver = Stub::new();

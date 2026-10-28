@@ -110,6 +110,11 @@ pub fn git_dir(dir: impl AsRef<Path>) -> Option<String> {
     git_answer(dir, &["rev-parse", "--git-dir"])
 }
 
+/// Assert, as a test's premise, that `dir` is outside any repository: [`git_dir`] answers `None`.
+pub fn assert_outside_any_repository(dir: impl AsRef<Path>) {
+    assert_eq!(git_dir(dir), None, "the tree is outside any repository");
+}
+
 /// The object id git computes for the file at `path` under `dir` (`git hash-object`), the file
 /// also written to the repository's object database as a loose object when `write`.
 pub fn git_hash_object(dir: impl AsRef<Path>, path: &str, write: bool) -> String {

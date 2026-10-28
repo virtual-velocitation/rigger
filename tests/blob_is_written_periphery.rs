@@ -21,9 +21,10 @@ mod common;
 
 use common::cli::{batch_events, graph_build_line, recorded_and_walked, run_rigger};
 use common::fixtures::{
-    dir_snapshot, git_dir, git_init_quiet, planted_extraction_tree, write_file, EntryRecord,
+    assert_outside_any_repository, dir_snapshot, git_dir, git_init_quiet, planted_extraction_tree,
+    write_file, EntryRecord,
 };
-use common::git::{held_blob, object_ids};
+use common::git::{assert_holds_no_object, held_blob, object_ids};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -52,11 +53,7 @@ fn a_graph_build_inside_a_repository_writes_the_blob_of_each_entry_it_records() 
     let dir = planted_extraction_tree(write_file);
     let root = dir.path();
     git_init_quiet(root);
-    assert_eq!(
-        object_ids(root),
-        BTreeSet::new(),
-        "premise: the object database holds no object before the build"
-    );
+    assert_holds_no_object(root);
 
     let recorded = build_records_the_walk(root);
 
@@ -90,11 +87,7 @@ fn a_graph_build_inside_a_repository_writes_the_blob_of_each_entry_it_records() 
 fn a_graph_build_outside_a_repository_records_each_blob_id_and_writes_no_repository() {
     let dir = planted_extraction_tree(write_file);
     let root = dir.path();
-    assert_eq!(
-        git_dir(root),
-        None,
-        "premise: the tree is outside any repository"
-    );
+    assert_outside_any_repository(root);
     let found = dir_snapshot(root, "");
 
     build_records_the_walk(root);

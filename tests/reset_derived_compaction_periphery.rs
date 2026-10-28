@@ -26,7 +26,7 @@
 
 mod common;
 use common::fixtures::git_hash_object;
-use common::git::{held_blob, object_ids, run_git};
+use common::git::{assert_holds_no_object, held_blob, object_ids, run_git};
 
 use common::cli::migrated_lines;
 use common::cli::pre_ledger_batch;
@@ -1399,11 +1399,7 @@ fn a_reset_writes_the_blob_of_the_entry_it_migrates_into_the_object_database() {
     let root = dir.path();
     seed_project(root, 1);
     plant_the_tree_body(root);
-    assert_eq!(
-        object_ids(root),
-        BTreeSet::new(),
-        "premise: the object database holds no object before the migration"
-    );
+    assert_holds_no_object(root);
     let blob = git_hash_object(root, "src/a.rs", false);
 
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
