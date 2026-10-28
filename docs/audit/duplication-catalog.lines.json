@@ -3669,8 +3669,13 @@
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 112,
-        "end_line": 112
+        "start_line": 108,
+        "end_line": 108
+      },
+      {
+        "file": "tests/projections_stay_local.rs",
+        "start_line": 159,
+        "end_line": 159
       },
       {
         "file": "tests/projections_stay_local.rs",
@@ -3679,18 +3684,18 @@
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 165,
-        "end_line": 165
+        "start_line": 172,
+        "end_line": 172
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 175,
-        "end_line": 175
+        "start_line": 173,
+        "end_line": 173
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 176,
-        "end_line": 176
+        "start_line": 216,
+        "end_line": 216
       },
       {
         "file": "tests/projections_stay_local.rs",
@@ -3699,18 +3704,13 @@
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 222,
-        "end_line": 222
+        "start_line": 242,
+        "end_line": 242
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 245,
-        "end_line": 245
-      },
-      {
-        "file": "tests/projections_stay_local.rs",
-        "start_line": 246,
-        "end_line": 246
+        "start_line": 243,
+        "end_line": 243
       },
       {
         "file": "tests/published_content_key_split_periphery.rs",

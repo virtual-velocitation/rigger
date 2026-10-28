@@ -3019,19 +3019,19 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/projections_stay_local.rs:93-93` `"the graph projection must be opened for write at the resolved store's .rigger/graph.db \
          (`open_graph_for_write(&self.file(\"graph.db\") ...)`); the canonical local construction \
          is gone"`
-- `tests/projections_stay_local.rs:112-112` `"the progress projection must be opened by the LOCAL sqlite Store at .rigger/progress.db \
+- `tests/projections_stay_local.rs:108-108` `"the progress projection must be opened by the LOCAL sqlite Store at .rigger/progress.db \
          (`Store::open(&db_path(\"progress.db\") ...)`); the canonical local construction is gone"`
-- `tests/projections_stay_local.rs:162-162` `".rigger"`
-- `tests/projections_stay_local.rs:165-165` `"graph.db must be created under the LOCAL .rigger/ even when the event store is the \
+- `tests/projections_stay_local.rs:159-159` `".rigger"`
+- `tests/projections_stay_local.rs:162-162` `"graph.db must be created under the LOCAL .rigger/ even when the event store is the \
              server - projections are per-machine and stay local"`
-- `tests/projections_stay_local.rs:175-175` `".rigger"`
-- `tests/projections_stay_local.rs:176-176` `"a server-configured `graph build` must NOT create a local .rigger/events.db - the \
+- `tests/projections_stay_local.rs:172-172` `".rigger"`
+- `tests/projections_stay_local.rs:173-173` `"a server-configured `graph build` must NOT create a local .rigger/events.db - the \
              event log is the server's; only the projection is local"`
-- `tests/projections_stay_local.rs:219-219` `".rigger"`
-- `tests/projections_stay_local.rs:222-222` `"progress.db must be created under the LOCAL .rigger/ even when the event store is the \
+- `tests/projections_stay_local.rs:216-216` `".rigger"`
+- `tests/projections_stay_local.rs:219-219` `"progress.db must be created under the LOCAL .rigger/ even when the event store is the \
              server - the progress store is a local projection, not the shared log"`
-- `tests/projections_stay_local.rs:245-245` `".rigger"`
-- `tests/projections_stay_local.rs:246-246` `"a server-configured `rigger progress` must NOT create a local .rigger/events.db - the \
+- `tests/projections_stay_local.rs:242-242` `".rigger"`
+- `tests/projections_stay_local.rs:243-243` `"a server-configured `rigger progress` must NOT create a local .rigger/events.db - the \
              run log is the server's; only the progress projection is local"`
 - `tests/published_content_key_split_periphery.rs:259-259` `".rigger"`
 - `tests/registry_periphery.rs:55-55` `r#"{

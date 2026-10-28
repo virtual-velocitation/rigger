@@ -94,11 +94,7 @@ fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
          (`open_graph_for_write(&self.file(\"graph.db\") ...)`); the canonical local construction \
          is gone"
     );
-    let write_open = src
-        .split_once("fn open_graph_for_write(")
-        .and_then(|(_, rest)| rest.split_once("\n}\n"))
-        .map(|(body, _)| body)
-        .expect("production main.rs must define the one graph write open, open_graph_for_write");
+    let write_open = js_declaration(&src, "fn open_graph_for_write(");
     assert!(
         write_open.contains("Projector::open(graph_db, project)"),
         "the one graph write open must construct the LOCAL sqlite Projector on the graph.db path \
@@ -126,6 +122,7 @@ mod common;
 
 use common::cli::identified_git_project;
 use common::cli::run_stream_identity;
+use common::fixtures::js_declaration;
 use common::fixtures::with_kurrentdb;
 use common::repo::production_main_rs;
 

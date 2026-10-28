@@ -230,12 +230,13 @@ pub fn cleanup(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// The brace-balanced JavaScript declaration in `src` that starts at `start_marker`, from the
-/// marker through its closing brace.
+/// The brace-balanced declaration in `src` that starts at `start_marker`, from the marker
+/// through its closing brace: a JavaScript declaration of the workflow, or a Rust item of a
+/// source, since the cut counts braces alone.
 pub fn js_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
     let start = src
         .find(start_marker)
-        .unwrap_or_else(|| panic!("workflow must contain `{start_marker}`"));
+        .unwrap_or_else(|| panic!("the source must contain `{start_marker}`"));
     let open = start
         + src[start..]
             .find('{')
