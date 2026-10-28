@@ -6158,7 +6158,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-e5fd35b1ae42",
+    "id": "dup-8b503a5b1666",
     "classification": "semantic",
     "sites": [
       {
@@ -6184,7 +6184,7 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
-        "content_hash": "6bf8e46c7a04fdfd"
+        "content_hash": "fab1ba2a543fef66"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",

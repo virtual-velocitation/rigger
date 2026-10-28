@@ -8032,9 +8032,10 @@ mod tests {
     const LOG_UNOPENED: &str = "the log could not be opened";
 
     /// Spec 124, ONE PROCEDURE: a call that fails - the log's open, its page read or its cut's
-    /// fold - answers [`CatchUp::Failed`] at the cursor it read from with the failure's text,
-    /// writing nothing. A failed open is tried again by the next call, and a log once opened is
-    /// never opened again.
+    /// fold - answers [`CatchUp::Failed`] at the position it reads, or would read, its page from,
+    /// the cursor it read, with the failure's text, writing nothing, at a cursor of 0 and above it
+    /// alike. A failed open is tried again by the next call, and a log once opened is never opened
+    /// again.
     #[test]
     fn a_catch_up_that_fails_answers_failed_at_its_cursor_writing_nothing() {
         let (_dir, path, p) = seeded_graph();
@@ -8066,54 +8067,56 @@ mod tests {
             "the failed open is tried again, and the opened log kept"
         );
 
-        let (_dir, path, p, log) = catching_up();
-        let p = p.with_reextraction(|| Box::new(|_: &Event| crate::test_support::blob_unread()));
-        logged(&*log, &[crate::test_support::unresolved_entry_at(1)]);
-        assert_eq!(
-            (
-                answers(&p),
-                crate::test_support::caught_up_at(Path::new(&path)),
-                crate::test_support::passed_over_rows(&path),
-                applied(&p, 1),
-            ),
-            (
-                vec![Ok(CatchUp::Failed {
-                    at: 0,
-                    error: crate::test_support::BLOB_UNREAD.to_string()
-                })],
-                Some(0),
-                vec![],
-                false,
-            ),
-            "a re-extraction that fails fails the call, passing nothing over"
-        );
-
-        let (_dir, path, p, log) = catching_up();
-        logged(&*log, &decisions_at([1]));
-        Connection::open(events_beside(&path))
-            .unwrap()
-            .execute_batch("DROP TABLE events")
-            .unwrap();
-        let unread = scoped_to_test(Arc::clone(&log) as Arc<dyn EventStore>)
-            .read_all_page(0, &crate::eventstore::Filter::default(), FOLD_BATCH)
-            .unwrap_err()
-            .to_string();
-        assert_eq!(
-            (
-                answers(&p),
-                crate::test_support::caught_up_at(Path::new(&path)),
-                applied(&p, 1),
-            ),
-            (
-                vec![Ok(CatchUp::Failed {
-                    at: 0,
-                    error: unread
-                })],
-                Some(0),
-                false,
-            ),
-            "a page read that fails fails the call with the store's own text"
-        );
+        // What fails the call, given its projector, its graph file, its log and the cursor it
+        // reads from: the projector the call is made on, and the failure's text.
+        type Failing = fn(Projector, &str, &CountedLog, Position) -> (Projector, String);
+        let arms: [(&str, Failing); 3] = [
+            ("the log's open", |p, _, _, _| {
+                let p = p.with_log(|| Err(Error(LOG_UNOPENED.to_string())));
+                (p, LOG_UNOPENED.to_string())
+            }),
+            ("its page read", |p, path, log, at| {
+                Connection::open(events_beside(path))
+                    .unwrap()
+                    .execute_batch("DROP TABLE events")
+                    .unwrap();
+                let unread = scoped_to_test(Arc::clone(log) as Arc<dyn EventStore>)
+                    .read_all_page(at, &crate::eventstore::Filter::default(), FOLD_BATCH)
+                    .unwrap_err()
+                    .to_string();
+                (p, unread)
+            }),
+            ("its cut's fold", |p, _, log, at| {
+                logged(&**log, &[crate::test_support::unresolved_entry_at(at + 1)]);
+                let p = p
+                    .with_reextraction(|| Box::new(|_: &Event| crate::test_support::blob_unread()));
+                (p, crate::test_support::BLOB_UNREAD.to_string())
+            }),
+        ];
+        for (arm, failing) in arms {
+            for cursor in [0, 3] {
+                let (_dir, path, p, log) = catching_up();
+                logged(&*log, &decisions_at(1..=cursor));
+                crate::test_support::move_the_cursor(Path::new(&path), cursor);
+                let (p, error) = failing(p, &path, &log, cursor);
+                assert_eq!(
+                    (
+                        answers(&p),
+                        crate::test_support::caught_up_at(Path::new(&path)),
+                        crate::test_support::passed_over_rows(&path),
+                        applied(&p, cursor + 1),
+                    ),
+                    (
+                        vec![Ok(CatchUp::Failed { at: cursor, error })],
+                        Some(cursor),
+                        vec![],
+                        false,
+                    ),
+                    "{arm} failing at the cursor {cursor}: the call answers it there with the \
+                     failure's text, writing nothing"
+                );
+            }
+        }
     }
 
     /// Spec 124, ONE PROCEDURE: the one setter of a cursor never moves it backward - a position
