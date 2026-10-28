@@ -34,6 +34,14 @@ pub fn stamp_user_version(db: &std::path::Path, version: i64) {
         .expect("stamp user_version");
 }
 
+/// Remove the log table out from under a store that holds `db` open, so its next read fails.
+pub fn drop_the_log(db: &std::path::Path) {
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .execute_batch("DROP TABLE events;")
+        .unwrap();
+}
+
 /// The id of the decision whose node a graph file refuses while [`the_disk_gives_out_at_d_boom`]
 /// stands in it.
 pub const D_BOOM: &str = "d-boom";

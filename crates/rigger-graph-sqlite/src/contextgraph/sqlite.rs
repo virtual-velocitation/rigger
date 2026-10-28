@@ -8081,10 +8081,7 @@ mod tests {
                 (p, LOG_UNOPENED.to_string())
             }),
             ("its page read", |p, path, log, at| {
-                Connection::open(events_beside(path))
-                    .unwrap()
-                    .execute_batch("DROP TABLE events")
-                    .unwrap();
+                crate::test_support::drop_the_log(Path::new(&events_beside(path)));
                 let unread = scoped_to_test(Arc::clone(log) as Arc<dyn EventStore>)
                     .read_all_page(at, &crate::eventstore::Filter::default(), FOLD_BATCH)
                     .unwrap_err()

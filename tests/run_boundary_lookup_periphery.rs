@@ -16,7 +16,7 @@
 
 mod common;
 
-use common::fixtures::{ev, CountedRead, ReadCountingStore};
+use common::fixtures::{drop_the_log, ev, CountedRead, ReadCountingStore};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore, ExpectedRevision, Filter};
@@ -34,14 +34,6 @@ fn index_columns(conn: &rusqlite::Connection, index: &str) -> Vec<String> {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     cols
-}
-
-/// Remove the log table out from under a store that holds `db` open, so its next read fails.
-fn drop_the_log(db: &std::path::Path) {
-    rusqlite::Connection::open(db)
-        .unwrap()
-        .execute_batch("DROP TABLE events;")
-        .unwrap();
 }
 
 /// Given an `events.db` written before the stream-and-type index existed, when the store opens it,
