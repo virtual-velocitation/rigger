@@ -2502,8 +2502,9 @@ fn rebuild_tail_owed(conn: &Connection) -> Result<bool, Error> {
     has_table(conn, "rebuild_cursor")
 }
 
-/// The cursor a [`Projector::rebuild`] swapped into the file behind `conn` - the last position it
-/// folded, past which the file owes that rebuild's tail - or `None` for a file that owes no tail.
+/// The cursor the [`REBUILD_STATE`] of a [`Projector::rebuild`] holds in the file behind `conn`
+/// ([`cursor_at`]) - the last position the rebuild folded, past which a file it swapped in owes
+/// that rebuild's tail - or `None` for a file holding no rebuild state, which owes no tail.
 fn rebuild_tail_from(conn: &Connection) -> Result<Option<Position>, Error> {
     cursor_at(conn, "rebuild_cursor")
 }
@@ -2521,13 +2522,11 @@ fn cursor_at(conn: &Connection, cursor: &str) -> Result<Option<Position>, Error>
     .map_err(be)
 }
 
-/// The last position the rebuild whose [`REBUILD_STATE`] the file behind `conn` holds folded.
+/// The last position the rebuild whose [`REBUILD_STATE`] the file behind `conn` holds folded
+/// ([`rebuild_tail_from`]), or the error saying the file holds no rebuild state.
 fn rebuild_cursor(conn: &Connection) -> Result<Position, Error> {
-    conn.query_row("SELECT position FROM rebuild_cursor", [], |r| {
-        r.get::<_, i64>(0)
-    })
-    .map(|position| position as Position)
-    .map_err(be)
+    rebuild_tail_from(conn)?
+        .ok_or_else(|| Error("the graph file holds no rebuild state".to_string()))
 }
 
 /// Create the `caught_up` cursor in `tx` where its file carries none, seeded at `at` (spec 124, THE
