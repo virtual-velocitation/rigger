@@ -68,7 +68,6 @@ use common::cli::read_run_events;
 use common::cli::refusal_line;
 use common::cli::refused_derived_reset;
 use common::cli::remove_the_store_file;
-use common::cli::rigger_command;
 use common::cli::rigger_db;
 use common::cli::rigger_file;
 use common::cli::run_log;
@@ -112,6 +111,7 @@ use common::fixtures::HELD_PAST_THE_BUSY_TIMEOUT;
 use common::fixtures::STEP_LOCK_REASON;
 use common::fixtures::{catch_up_failed_line, the_disk_gives_out_at_d_boom, the_disk_recovers};
 use common::fixtures::{graph_error, not_folded, NOT_A_DATABASE};
+use common::fixtures::{lost_fold, CATCH_UP_PAYS, UNFINISHED_REBUILD};
 use common::fixtures::{mark_owed_in, mark_stands_beside};
 use common::fixtures::{source_interrupted, SOURCE_INTERRUPTED};
 use common::fixtures::{stamp_in, with_graph_locked, with_graph_locked_for};
@@ -3547,6 +3547,64 @@ rigger::test_cases! {
         );
 }
 
+/// Given a `graph.db` a setup seeded its `caught_up` cursor in at 0 beside the empty log, when a
+/// writer appends a decision to `stream` through the folding store's batched append, then the
+/// decision folds, its cursor standing where `cursor` answers for the decision's position, and no
+/// `graph.db.owed` is written (spec 124, THE APPENDER).
+fn a_decision_appended_through_the_folding_store_folds_by_the_stream_it_was_placed_on(
+    stream: &str,
+    cursor: fn(u64) -> Option<u64>,
+) {
+    let dir = temp_store_project();
+    let root = dir.path();
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let graph = common::cli::open_graph_with_its_log(root);
+    let done = common::cli::with_run_store(root, |store| {
+        rigger::ingest::folding_into(store, Some(&graph), &|_| {})
+            .append_and_fold(
+                stream,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    "DecisionMade",
+                    decision_json("d-placed", "s", &["src/f.rs"], "")
+                        .to_string()
+                        .into_bytes(),
+                )],
+            )
+            .unwrap()
+    });
+    let placed: Vec<u64> = done.appended.placed().map(|(_, at)| at).collect();
+    let graph_db = rigger_file(root, "graph.db");
+    assert_eq!(
+        (
+            done.fold,
+            placed.len(),
+            applied(&graph_db, placed[0]),
+            caught_up_at(&graph_db),
+            mark_stands_beside(&graph_db)
+        ),
+        (Fold::Folded, 1, true, cursor(placed[0]), false),
+        "the decision folds, the cursor where its row says, and no mark is written"
+    );
+}
+
+rigger::test_cases! {
+    /// On the run stream the catch-up reads, the decision - stamped with that stream - folds
+    /// through the appender's calls of the folding store's catch-up, and the cursor stands at it.
+    a_decision_appended_to_the_run_stream_folds_by_its_calls_moving_the_cursor_to_it:
+        a_decision_appended_through_the_folding_store_folds_by_the_stream_it_was_placed_on(
+            rigger::conductor::STREAM,
+            Some,
+        );
+    /// On a stream the catch-up never reads, the decision - stamped with that stream - folds
+    /// directly, and the cursor stands where the setup seeded it.
+    a_decision_appended_to_another_stream_folds_directly_leaving_the_cursor_where_it_stood:
+        a_decision_appended_through_the_folding_store_folds_by_the_stream_it_was_placed_on(
+            "elsewhere",
+            |_| Some(0),
+        );
+}
+
 /// Given a current `graph.db` another writer holds locked past the busy timeout, when an agent's
 /// `rigger mcp` session calls `rigger_emit`, then the tool waits under the ceiling and, once the
 /// lock is released, answers its event's position folded, and no `graph.db.owed` is written
@@ -3750,14 +3808,18 @@ fn a_result_at_the_old_rule_is_on_the_log_and_says_it_skipped_the_fold() {
     );
 }
 
-/// Given a current `graph.db` another writer holds locked past the busy timeout, when a courier
-/// runs `rigger result`, then the courier waits under the ceiling and, once the lock is released,
-/// folds the result and says nothing of the fold, and no `graph.db.owed` is written (spec 124, AN
-/// APPENDER WAITS UNDER THE CEILING AND NEVER MARKS).
-#[test]
-fn a_result_behind_a_held_lock_is_folded_once_it_is_released() {
+/// Given a current `graph.db` `before` left in `root` another writer holds locked past the busy
+/// timeout, when a courier runs `rigger result`, then the courier waits under the ceiling and,
+/// once the lock is released, folds the result and says nothing of the fold, its cursor standing
+/// where `cursor` answers for the result's position, and no `graph.db.owed` is written (spec 124,
+/// AN APPENDER WAITS UNDER THE CEILING AND NEVER MARKS).
+fn a_result_behind_a_held_lock_is_folded_once_it_is_released(
+    before: fn(&Path),
+    cursor: fn(u64) -> Option<u64>,
+) {
     let dir = temp_store_project();
     let root = dir.path();
+    before(root);
     let (out, err, ok) = emit_decision(root, "d-first");
     assert!(
         ok && out.ends_with("and folded it into the context graph\n"),
@@ -3788,10 +3850,11 @@ fn a_result_behind_a_held_lock_is_folded_once_it_is_released() {
         (
             applied(&graph_db, free),
             applied(&graph_db, last.position),
+            caught_up_at(&graph_db),
             mark_stands_beside(&graph_db)
         ),
-        (true, true, false),
-        "both results folded and the lock left no mark"
+        (true, true, cursor(last.position), false),
+        "both results folded, the cursor where its row says, and the lock left no mark"
     );
     assert_eq!(
         (ok, out),
@@ -3804,6 +3867,23 @@ fn a_result_behind_a_held_lock_is_folded_once_it_is_released() {
         ),
         "the result folded once the lock was released says nothing of the fold; stderr: {err}"
     );
+}
+
+rigger::test_cases! {
+    /// The first emit alone leaves the file without the `caught_up` cursor, so the locked result
+    /// folds directly, waiting out the contended open, and the file stays without the cursor.
+    a_result_folding_directly_behind_a_held_lock_is_folded_once_it_is_released:
+        a_result_behind_a_held_lock_is_folded_once_it_is_released(|_| {}, |_| None);
+    /// A setup seeds the file's cursor, so the locked result - stamped with the run stream it was
+    /// recorded on - folds through its calls of the folding store's catch-up, and the cursor
+    /// stands at it.
+    a_result_folding_through_its_calls_behind_a_held_lock_is_folded_once_it_is_released:
+        a_result_behind_a_held_lock_is_folded_once_it_is_released(
+            |root| {
+                setup_ok(root, &[("RIGGER_NPM", "true")]);
+            },
+            Some,
+        );
 }
 
 /// Given a store still named after its directory whose `graph.db` is at the old fold rule, when
@@ -4943,6 +5023,15 @@ fn stop_setup_past_its_prune(root: &Path, meanwhile: fn(&Path)) -> (String, bool
     (stopped, stopped_ok)
 }
 
+/// [`stop_setup_past_its_prune`] with its shadow removed meanwhile: the state a rebuild leaves in
+/// `root` once its swap has ended and before it folds the tail - `graph.db` holding the rebuild's
+/// cursor, no shadow beside it.
+fn stop_setup_in_its_tail(root: &Path) -> (String, bool) {
+    stop_setup_past_its_prune(root, |root| {
+        std::fs::remove_file(rigger_file(root, "graph.db.rebuild")).unwrap();
+    })
+}
+
 /// Given a `rigger setup` whose rebuild stopped past its prune and its swap, when the log gains
 /// events before setup runs again - a decision the active run records with `rigger emit`, which
 /// the owed graph does not fold, a run another writer of the log starts, closing the run that was
@@ -5163,9 +5252,7 @@ fn a_setup_stopped_in_its_tail_is_finished_by_the_next_setup_folding_exactly_the
     let root = dir.path();
     closed_run_store(root);
     lose_graph(root);
-    let (stopped, stopped_ok) = stop_setup_past_its_prune(root, |root| {
-        std::fs::remove_file(rigger_file(root, "graph.db.rebuild")).unwrap();
-    });
+    let (stopped, stopped_ok) = stop_setup_in_its_tail(root);
     let graph_db = rigger_file(root, "graph.db");
     let swapped_cursor = holds_table(&graph_db, "rebuild_cursor");
     let unfolded = append_unfolded_decision(
@@ -5587,9 +5674,7 @@ fn a_second_setup_while_a_rebuild_holds_graph_db_lock_is_refused_at_once_and_tou
         if let FoldingTheTail = phase {
             // The state a rebuild leaves once its swap has ended: the cursor it carried into
             // graph.db, and no shadow.
-            stop_setup_past_its_prune(root, |root| {
-                std::fs::remove_file(rigger_file(root, "graph.db.rebuild")).unwrap();
-            });
+            stop_setup_in_its_tail(root);
         }
         let graph_db = rigger_file(root, "graph.db");
         let shadow = rigger_file(&root.canonicalize().unwrap(), "graph.db.rebuild");
@@ -5603,32 +5688,20 @@ fn a_second_setup_while_a_rebuild_holds_graph_db_lock_is_refused_at_once_and_tou
             .unwrap();
         }
         let found = graph_files(root);
-        let state = tempfile::tempdir().unwrap();
-        let mut second = rigger_command(root, &["setup"], &[("RIGGER_NPM", "true")], state.path())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
         // How many descriptors the second setup ever held on the shadow while it ran: a setup
         // that read the held shadow would wait on the fixture's exclusive lock, long enough to be
         // seen.
-        let pid = second.id();
         let mut shadow_opened = 0;
-        let ended = wait_until_for(4800, || {
-            shadow_opened = shadow_opened.max(files_open_by(pid, &shadow));
-            !matches!(second.try_wait(), Ok(None))
-        });
-        if !ended {
-            cleanup(&mut second);
-            panic!("the second setup ({phase:?}) never ended in 120s");
-        }
-        let refused = second.wait_with_output().unwrap();
-        let (out, err) = (
-            String::from_utf8_lossy(&refused.stdout).into_owned(),
-            String::from_utf8_lossy(&refused.stderr).into_owned(),
-        );
+        let (out, err, refused_ok) = common::cli::run_rigger_within(
+            root,
+            &["setup"],
+            &[("RIGGER_NPM", "true")],
+            4800,
+            |pid| shadow_opened = shadow_opened.max(files_open_by(pid, &shadow)),
+        )
+        .unwrap_or_else(|| panic!("the second setup ({phase:?}) never ended in 120s"));
         let refused = (
-            refused.status.success(),
+            refused_ok,
             lines_naming(&out, "graph.db"),
             err.lines().last().map(str::to_string),
             shadow_opened,
@@ -5859,6 +5932,69 @@ fn a_setup_refused_by_a_rebuild_in_progress_migrates_nothing_and_names_it_in_its
     );
 }
 
+/// Given history recorded under the project's directory name - its `.rigger/project.id` spelling
+/// that name - and a `rigger setup` stopped in its tail, when the identity file is gone and the next
+/// `rigger setup` mints a fresh identity, then that setup's identity migration records its decision
+/// and, meeting the rebuild state of the file whose rebuild lock this same setup holds, answers it
+/// unfolded at once - the unfinished-rebuild text and the call-run suffix - rather than waiting out
+/// the appender's ceiling on a tail only it can fold; the setup then folds its tail, the decision
+/// the one event past the swapped cursor, and leaves no rebuild state and no `graph.db.owed` (spec
+/// 124, THE APPENDER).
+#[test]
+fn a_setup_migrating_beside_its_own_standing_tail_folds_the_migration_in_that_tail_at_once() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let legacy = run_stream_identity(root);
+    let id_file = rigger_file(root, "project.id");
+    std::fs::write(&id_file, format!("{legacy}\n")).unwrap();
+    closed_run_store(root);
+    lose_graph(root);
+    stop_setup_in_its_tail(root);
+    let graph_db = rigger_file(root, "graph.db");
+    let swapped_cursor = holds_table(&graph_db, "rebuild_cursor");
+    std::fs::remove_file(&id_file).unwrap();
+
+    let (out, err, ok) =
+        common::cli::run_rigger_within(root, &["setup"], &[("RIGGER_NPM", "true")], 4800, |_| {})
+            .unwrap_or_else(|| {
+                panic!("the migrating setup never ended in 120s: it waited on its own tail")
+            });
+    let minted = run_stream_identity(root);
+    let migration = read_run_events(root).last().unwrap().position;
+    assert_eq!(
+        (
+            swapped_cursor,
+            ok,
+            err,
+            rebuild_progress(&out),
+            applied(&graph_db, migration),
+            [
+                holds_table(&graph_db, "rebuild_cursor"),
+                holds_table(&graph_db, "rebuild_run_closure"),
+                mark_stands_beside(&graph_db),
+            ],
+        ),
+        (
+            true,
+            true,
+            migration_report(
+                &legacy,
+                &minted,
+                migration,
+                &format!(
+                    "; {}",
+                    not_folded(&lost_fold(&graph_error(UNFINISHED_REBUILD), CATCH_UP_PAYS))
+                )
+            ),
+            vec![rebuilt_through_the_head(1, migration)],
+            true,
+            [false, false, false],
+        ),
+        "the migration's decision is answered unfolded at once and folded by the setup's own \
+         tail; stdout: {out}"
+    );
+}
+
 /// The ids the run stream of `root` holds under the namespace `identity`, in log order.
 fn ids_under(root: &Path, identity: &str) -> Vec<String> {
     let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
@@ -6077,9 +6213,7 @@ fn reset_derived_refuses_a_rebuild_stopped_in_its_tail_until_setup_finishes_it()
     closed_run_store(root);
     common::cli::seed_derived_duplicates(root);
     lose_graph(root);
-    let (stopped, stopped_ok) = stop_setup_past_its_prune(root, |root| {
-        std::fs::remove_file(rigger_file(root, "graph.db.rebuild")).unwrap();
-    });
+    let (stopped, stopped_ok) = stop_setup_in_its_tail(root);
     let graph_db = rigger_file(root, "graph.db");
     // The refused command, over the log and the graph files as it found them.
     let refused = || refused_derived_reset(root, &log_and_graph_files(root));

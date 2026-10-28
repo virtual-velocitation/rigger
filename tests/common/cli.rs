@@ -2,7 +2,7 @@
 //! running it, seeding the stores it reads, and reading back what it wrote.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rigger::config::RIGGER_DIR;
@@ -141,11 +141,56 @@ pub fn edge_lines(out: &str) -> Vec<(String, String, String)> {
 /// Run `rigger <args...>` in `cwd` with extra environment `envs` and return
 /// (stdout, stderr, success).
 pub fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    // Bound to `state` so the dir lives until after the command runs.
+    // Bound to `_state` so the dir lives until after the command runs.
+    let (_state, child) = spawn_rigger(cwd, args, envs);
+    rigger_outcome(child)
+}
+
+/// [`run_rigger_envs`] bounded in time: `rigger <args...>` in `cwd` with extra environment `envs`,
+/// spawned and polled up to `tries` times 25 ms apart ([`super::fixtures::wait_until_for`]),
+/// `meanwhile` handed its pid at each poll while it runs. Its (stdout, stderr, success) once it
+/// ends within them, or `None` once they are spent, the process ended and reaped through its handle
+/// ([`super::fixtures::cleanup`]) first. Its output is read once it has ended, so it suits a
+/// command whose output fits a pipe.
+pub fn run_rigger_within(
+    cwd: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    tries: u32,
+    mut meanwhile: impl FnMut(u32),
+) -> Option<(String, String, bool)> {
+    let (_state, mut child) = spawn_rigger(cwd, args, envs);
+    let pid = child.id();
+    let ended = super::fixtures::wait_until_for(tries, || {
+        meanwhile(pid);
+        !matches!(child.try_wait(), Ok(None))
+    });
+    if !ended {
+        super::fixtures::cleanup(&mut child);
+        return None;
+    }
+    Some(rigger_outcome(child))
+}
+
+/// `rigger <args...>` in `cwd` with extra environment `envs` ([`rigger_command`]) spawned under a
+/// fresh `XDG_STATE_HOME`, its stdin closed and its stdout and stderr piped as `Command::output`
+/// runs a command; the state dir is returned beside the child, which it must outlive.
+fn spawn_rigger(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (tempfile::TempDir, Child) {
     let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    let out = rigger_command(cwd, args, envs, state.path())
-        .output()
+    let child = rigger_command(cwd, args, envs, state.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("failed to spawn the rigger binary");
+    (state, child)
+}
+
+/// The (stdout, stderr, success) of the rigger run `child` ([`spawn_rigger`]), read once it ends.
+fn rigger_outcome(child: Child) -> (String, String, bool) {
+    let out = child
+        .wait_with_output()
+        .expect("wait for the rigger run to end");
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
