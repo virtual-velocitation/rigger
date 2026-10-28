@@ -1423,9 +1423,17 @@ const SETUP_OWN_GIT: [&str; 5] = [
     "rev-parse --git-path hooks",
 ];
 
-/// Every `git` invocation a re-extraction makes at the first entry it meets, in order: the tree's
-/// root, which no reader of the one write open had asked for before it, whether an object database
-/// stands there, and the one `git cat-file --batch` process it reads that database through.
+/// [`SETUP_OWN_GIT`] split where a `rigger setup` asks git what its rebuild or catch-up of
+/// `graph.db` needs: before its scaffold's last question, the hooks directory.
+#[cfg(feature = "symbols")]
+fn setup_own_git_around_its_fold() -> (&'static [&'static str], &'static [&'static str]) {
+    SETUP_OWN_GIT.split_at(4)
+}
+
+/// Every `git` invocation a re-extraction makes at the first entry it meets when no reader of its
+/// write open's root has read it before, in order: that root, whether an object database stands
+/// there, and the one `git cat-file --batch` process it reads that database through. A
+/// re-extraction meeting its first entry after the root was read asks the last two alone.
 #[cfg(feature = "symbols")]
 const FIRST_ENTRY_GIT: [&str; 3] = [
     "rev-parse --show-toplevel",
@@ -1484,40 +1492,39 @@ fn record_entries_resolving_from_their_blobs_alone(root: &Path) -> String {
     project
 }
 
-/// The generations the graph at `root` holds of the identities whose entries
-/// [`record_entries_resolving_from_their_blobs_alone`] recorded, and the ones it holds once each
-/// entry has folded from the blob it names.
+/// Assert that the graph at `root` holds, of each identity whose entry
+/// [`record_entries_resolving_from_their_blobs_alone`] recorded, the generation that entry folds
+/// from the blob it names, failing with `why`.
 #[cfg(feature = "symbols")]
-fn generations_from_their_blobs(
-    root: &Path,
-    project: &str,
-) -> (Vec<Option<String>>, Vec<Option<String>>) {
-    (
+fn assert_each_entry_held_from_its_blob(root: &Path, project: &str, why: &str) {
+    assert_eq!(
         generations(
             root,
             project,
-            &["gc/src/lib.rs", "gd/docs/architecture.md", "gd/src/lib.rs"],
+            &["gc/src/lib.rs", "gd/docs/architecture.md", "gd/src/lib.rs"]
         ),
         vec![
             held_generation("gc", SOURCE_PATH),
             held_generation("gd", DOCUMENT_PATH),
             held_generation("gd", SOURCE_PATH),
         ],
-    )
+        "{why}"
+    );
 }
 
 /// Given a repository whose log holds three entries past the cursor its cold start seeded, each
 /// resolving only from the blob it names, when the operator runs `rigger setup`, then its catch-up
 /// folds each entry in a call of its own and asks git for the tree's root once across the calls,
 /// read from the one cell its write open shares, while each call asks for the object database and
-/// starts a batch process of its own; and a setup at the log's head asks git for neither.
+/// starts a batch process of its own; and a setup at the log's head makes its own invocations
+/// alone, its catch-up asking git for nothing.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_catch_up_asks_git_for_the_root_once_across_its_calls_and_each_call_for_its_own_batch() {
     let dir = temp_project();
     let root = dir.path();
     let project = record_entries_resolving_from_their_blobs_alone(root);
-    let (before_catch_up, after_catch_up) = SETUP_OWN_GIT.split_at(4);
+    let (before_catch_up, after_catch_up) = setup_own_git_around_its_fold();
     let [_, each_later_call @ ..] = FIRST_ENTRY_GIT;
 
     assert_eq!(
@@ -1533,20 +1540,21 @@ fn a_catch_up_asks_git_for_the_root_once_across_its_calls_and_each_call_for_its_
         "the root is asked of git once across the catch-up's three calls, and each call asks for \
          the object database and starts its own batch process"
     );
-    let (held, from_their_blobs) = generations_from_their_blobs(root, &project);
-    assert_eq!(
-        held, from_their_blobs,
-        "each entry folded from the blob its call's batch process answered"
+    assert_each_entry_held_from_its_blob(
+        root,
+        &project,
+        "each entry folded from the blob its call's batch process answered",
     );
     assert_eq!(
         git_invocations_of_setup(root),
         SETUP_OWN_GIT,
-        "a setup whose catch-up meets no entry asks git for neither a root nor an object database"
+        "a setup whose catch-up meets no entry makes its own git invocations alone"
     );
 }
 
-/// Given a repository whose log holds three entries, two of them resolving only from the blobs
-/// they name, when the operator runs `rigger setup`, then the rebuild decides once whether an
+/// Given a repository whose log holds three entries, each resolving only from the blob it names
+/// ([`record_entries_resolving_from_their_blobs_alone`]), when the operator runs `rigger setup`,
+/// then the rebuild decides once whether an
 /// object database can be asked and reads every blob from one `git cat-file --batch` process;
 /// and a setup that owes no rebuild, a rebuild over a log holding no entry, and a rebuild
 /// outside a repository each start none - the last after asking, once, and finding no
@@ -1565,10 +1573,10 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
         (1, 1),
         "one question and one batch process for three entries"
     );
-    let (held, from_their_blobs) = generations_from_their_blobs(root, &project);
-    assert_eq!(
-        held, from_their_blobs,
-        "each entry resolved from the blob the one process answered"
+    assert_each_entry_held_from_its_blob(
+        root,
+        &project,
+        "each entry resolved from the blob the one process answered",
     );
     assert_eq!(
         git_invocations_of_setup(root),
@@ -1873,7 +1881,7 @@ fn setup_reads_only_the_files_the_walk_visits_and_asks_git_for_its_root_once() {
     stand_graph(root, &project);
 
     // The rebuild runs before the scaffold's last question, the hooks directory.
-    let (before_rebuild, after_rebuild) = SETUP_OWN_GIT.split_at(4);
+    let (before_rebuild, after_rebuild) = setup_own_git_around_its_fold();
     assert_eq!(
         git_invocations_of_setup(root),
         [before_rebuild, &FIRST_ENTRY_GIT, after_rebuild].concat(),
@@ -2493,7 +2501,7 @@ fn unparsable_source_entry() -> Event {
 fn the_report_asks_git_for_the_root_only_once_an_identity_is_behind_its_recording() {
     let zero = report_line(0);
     let one = report_line(1);
-    let (before_rebuild, after_rebuild) = SETUP_OWN_GIT.split_at(4);
+    let (before_rebuild, after_rebuild) = setup_own_git_around_its_fold();
     let behind = || {
         let mut rows = keyed_source_rows();
         rows.push(unparsable_source_entry());
