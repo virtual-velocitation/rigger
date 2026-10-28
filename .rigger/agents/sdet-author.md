@@ -110,10 +110,14 @@ your committed tree:
   `cargo test --test <file>`, then the same with `--no-default-features`. When your production
   hunks touch `src/` or `crates/`, those binaries include every root test that reads a
   checked-in file as text, edited by you or not, since a text pin goes red when a hunk moves
-  the text it reads: the top-level `tests/*.rs` files spelling one of the readers this command
-  names, which lists them and runs them in one invocation; run it again with
+  the text it reads: the top-level `tests/*.rs` files spelling one of the ways to the tree this
+  command names - the package root `CARGO_MANIFEST_DIR`, a compile-time include, a read given a
+  literal path (a root test runs from the package root), the audit-record reader and the
+  walkers, which read the root-relative path their caller hands them, and each `tests/common`
+  helper that resolves against the root, by its bare name so a turbofish call is found too -
+  which lists them and runs them in one invocation; run it again with
   `xargs cargo test --no-default-features` as its last stage:
-  `git ls-files 'tests/*.rs' | awk -F/ 'NF == 2' | xargs awk 'index($0, "repo_text(") || index($0, "production_main_rs(") || index($0, "production_sources(") || index($0, "collect_rs_files(") || index($0, "for_each_rs_file(") || index($0, "include_str!(") || index($0, "read_to_string(repo_root()") { print FILENAME }' | sort -u | sed 's|^tests/||; s|\.rs$||; s|^|--test |' | xargs cargo test`.
+  `git ls-files 'tests/*.rs' | awk -F/ 'NF == 2' | xargs awk 'index($0, "CARGO_MANIFEST_DIR") || index($0, "include_str!(") || index($0, "include_bytes!(") || index($0, "read_to_string(\"") || index($0, "fs::read(\"") || index($0, "read_dir(\"") || index($0, "File::open(\"") || index($0, "read_text(Path::new(\"") || index($0, "read_audit_record") || index($0, "production_sources") || index($0, "collect_rs_files") || index($0, "collect_files") || index($0, "for_each_rs_file") || index($0, "repo_root") || index($0, "repo_text") || index($0, "stub_path") || index($0, "write_critique_stub") || index($0, "committed_json") || index($0, "assert_committed_ledger_is_nonempty") || index($0, "assert_doc_carries_none_of") || index($0, "production_main_rs") || index($0, "worker_label") || index($0, "run_capturing_system_prompt") || index($0, "record_critique") || index($0, "record_clean_critique") || index($0, "refused_run") || index($0, "echo_agent_path") || index($0, "assert_no_src_line_gates_on") || index($0, "assert_real_tree_clean") { print FILENAME }' | sort -u | sed 's|^tests/||; s|\.rs$||; s|^|--test |' | xargs cargo test`.
 
 Each run above, the test binaries on both lanes and any `sh .rigger/gates/lanes.sh <lane>` run
 a unit asks of you included, takes minutes here: run it in the foreground with the Bash timeout
