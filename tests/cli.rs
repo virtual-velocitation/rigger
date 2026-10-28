@@ -36,6 +36,8 @@ use common::cli::temp_repoless_project;
 use common::cli::temp_store_project;
 use common::cli::validate_after_init;
 use common::cli::{assert_stopped_at_the_grounder, stopping_at_the_grounder};
+#[cfg(feature = "symbols")]
+use common::cli::{batch_events, recorded_and_walked};
 use common::cli::{escalate_solo_unit, REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW};
 use common::cli::{
     write_scaffold, write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER,
@@ -2196,16 +2198,6 @@ fn symbol_index_is_byte_identical_across_processes() {
         first, second,
         "the persisted multi-file index must be byte-identical across processes"
     );
-}
-
-/// How many batch events `entries` stand for: the sum of the event counts their replay keys
-/// carry.
-#[cfg(feature = "symbols")]
-fn batch_events(entries: &[common::fixtures::EntryRecord]) -> usize {
-    entries
-        .iter()
-        .map(|(_, _, key)| common::fixtures::entry_key_parts(key).2)
-        .sum()
 }
 
 /// Cold-checkout build (spec 45, criterion 3; spec 107, criterion 12): `rigger graph build`
@@ -28037,20 +28029,6 @@ fn init_scaffolds_the_instructions_readme_and_names_it() {
         out.contains("(none)"),
         "the scaffolded README is not injected as an instruction; got:\n{out}"
     );
-}
-
-/// What the log of the project at `root` records as ledger entries, beside what a run records
-/// for the tree as it stands under the blob `git hash-object` gives each file.
-#[cfg(feature = "symbols")]
-type RecordedAndWalked = [Vec<common::fixtures::EntryRecord>; 2];
-
-#[cfg(feature = "symbols")]
-fn recorded_and_walked(root: &Path) -> RecordedAndWalked {
-    use common::fixtures::{entry_records, walked_git_entry_records};
-    [
-        entry_records(&read_run_events(root)),
-        walked_git_entry_records(root),
-    ]
 }
 
 /// A two-stage project holding the extraction tree's committed source file, for a run to walk.

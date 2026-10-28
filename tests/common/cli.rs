@@ -1233,6 +1233,30 @@ pub fn graph_build_line(events: usize, lost: &str) -> String {
     format!("graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n")
 }
 
+/// How many batch events `entries` stand for: the sum of the event counts their replay keys
+/// carry.
+#[cfg(feature = "symbols")]
+pub fn batch_events(entries: &[super::fixtures::EntryRecord]) -> usize {
+    entries
+        .iter()
+        .map(|(_, _, key)| super::fixtures::entry_key_parts(key).2)
+        .sum()
+}
+
+/// What the log of the project at `root` records as ledger entries, beside what a run records
+/// for the tree as it stands under the blob `git hash-object` gives each file.
+#[cfg(feature = "symbols")]
+pub type RecordedAndWalked = [Vec<super::fixtures::EntryRecord>; 2];
+
+#[cfg(feature = "symbols")]
+pub fn recorded_and_walked(root: &Path) -> RecordedAndWalked {
+    use super::fixtures::{entry_records, walked_git_entry_records};
+    [
+        entry_records(&read_run_events(root)),
+        walked_git_entry_records(root),
+    ]
+}
+
 /// The entity count a `rigger graph build` reports (`... ingested <n> ...`).
 pub fn ingested_count(stdout: &str) -> usize {
     stdout

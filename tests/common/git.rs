@@ -31,6 +31,29 @@ pub fn nested_worktree(root: &Path, name: &str) -> PathBuf {
     nested
 }
 
+/// The id of every object the object database of the repository at `root` holds, loose or
+/// packed, in id order: empty for a repository that holds none.
+pub fn object_ids(root: &Path) -> std::collections::BTreeSet<String> {
+    git_out(
+        root,
+        &[
+            "cat-file",
+            "--batch-all-objects",
+            "--batch-check=%(objectname)",
+        ],
+    )
+    .lines()
+    .map(str::to_string)
+    .collect()
+}
+
+/// The bytes the object database of the repository at `root` holds under the blob `id`, as
+/// `git cat-file blob` prints them, or `None` when it holds no such blob.
+pub fn held_blob(root: &Path, id: &str) -> Option<Vec<u8>> {
+    let out = run_git(root, &["cat-file", "blob", id]);
+    out.status.success().then_some(out.stdout)
+}
+
 /// A go-gitsemver fixture repository at `root`: `go-gitsemver.yml` matching this repo's own
 /// (`mode: Mainline`, `tag-prefix: v`), an initial commit tagged `v1.0.0`, then one more commit
 /// with `second_commit_message` - enough history for a real version derivation.

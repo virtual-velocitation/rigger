@@ -104,6 +104,12 @@ pub fn git_answer(dir: impl AsRef<Path>, args: &[&str]) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// The repository directory `git rev-parse --git-dir` answers under `dir` ([`git_answer`]), or
+/// `None` when `dir` is outside any repository.
+pub fn git_dir(dir: impl AsRef<Path>) -> Option<String> {
+    git_answer(dir, &["rev-parse", "--git-dir"])
+}
+
 /// The object id git computes for the file at `path` under `dir` (`git hash-object`), the file
 /// also written to the repository's object database as a loose object when `write`.
 pub fn git_hash_object(dir: impl AsRef<Path>, path: &str, write: bool) -> String {

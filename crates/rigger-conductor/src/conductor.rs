@@ -20825,7 +20825,7 @@ mod tests {
         use super::*;
         use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
         use crate::test_support::{
-            arm_read_fault, entry_records, fixture_entry_events, generation_ingested, git_answer,
+            arm_read_fault, entry_records, fixture_entry_events, generation_ingested, git_dir,
             git_hash_object, group_lookups, handed_by_the_walk, held_generations, ledger_head_read,
             logged_generations, one_lookup_each, owe_a_rebuild, planted_extraction_tree,
             rebuild_from_the_tree, seed_generations_on_another_stream, source_with,
@@ -21306,7 +21306,7 @@ mod tests {
             let tree = planted_extraction_tree(write_file);
             let root = tree.path().to_str().unwrap();
             assert_eq!(
-                git_answer(tree.path(), &["rev-parse", "--git-dir"]),
+                git_dir(tree.path()),
                 None,
                 "the tree is outside any repository"
             );
