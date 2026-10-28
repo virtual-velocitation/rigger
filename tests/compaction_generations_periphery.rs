@@ -2156,38 +2156,75 @@ fn rigger_setup_on_a_project_without_a_graph_db_creates_it_and_seeds_its_cursor_
     }
 }
 
-/// Given a `graph.db` without the `caught_up` cursor - folded before any setup seeded it - on a
-/// project whose identity is minted, so no identity migration waits for the next setup, when the
-/// operator runs `rigger setup` while another writer holds the file's write lock past the busy
-/// timeout, then setup exits zero, says the catch-up was not started and the next `rigger setup`
-/// starts it, and writes no cursor; the next `rigger setup`, the lock released, seeds the cursor at
-/// the highest applied position and says nothing of `graph.db`.
-#[test]
-fn a_seeding_that_meets_another_writer_s_lock_is_skipped_and_the_next_setup_seeds_the_cursor() {
+/// Given a `graph.db` on a project whose identity is minted, so no identity migration waits for
+/// the next setup, that `stand` leaves as the route under test finds it beside the log's newest
+/// event, folded or not as `folded_while_locked` says, when the operator runs `rigger setup` while
+/// another writer holds the file's write lock past the busy timeout, then setup exits zero, says
+/// of `graph.db` only that the catch-up was not started and the next `rigger setup` starts it, and
+/// leaves that event as folded or missing as it found it and the cursor where it stood; the next
+/// `rigger setup`, the lock released, says `said` of `graph.db` and leaves that event folded and
+/// the cursor at it.
+fn a_seeding_that_meets_another_writer_s_lock_is_skipped_and_the_next_setup_folds_on(
+    stand: fn(&Path),
+    folded_while_locked: bool,
+    said: Vec<String>,
+) {
     let dir = temp_store_project();
     let root = dir.path();
     emit_the_first_decision_after_setup(root);
-    let first = run_log_head(root);
     let graph_db = rigger_file(root, "graph.db");
-    // The file as a fold made it before the cursor existed: its first seeding reads the log's
-    // positions against its ledger.
-    drop_the_cursor(&graph_db);
+    stand(root);
+    let (cursor, newest) = (caught_up_at(&graph_db), run_log_head(root));
 
     let out = with_graph_locked(&graph_db, || setup_ok(root, &[("RIGGER_NPM", "true")]));
     assert_eq!(
         (
             common::cli::lines_where(&out, |l| l.contains("graph.db")),
+            applied(&graph_db, newest),
             caught_up_at(&graph_db)
         ),
-        (vec![SEEDING_SKIPPED_LINE], None),
-        "the seeding meets the lock: setup exits zero, says so and writes no cursor; stdout: {out}"
+        (vec![SEEDING_SKIPPED_LINE], folded_while_locked, cursor),
+        "the seeding meets the lock: setup exits zero, says so, folds nothing and moves no cursor; \
+         stdout: {out}"
     );
     let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
-        (out.contains("graph.db"), caught_up_at(&graph_db)),
-        (false, Some(first)),
-        "the next setup seeds the cursor at the highest applied position; stdout: {out}"
+        (
+            common::cli::lines_where(&out, |l| l.contains("graph.db")),
+            applied(&graph_db, newest),
+            caught_up_at(&graph_db)
+        ),
+        (
+            said.iter().map(String::as_str).collect::<Vec<_>>(),
+            true,
+            Some(newest)
+        ),
+        "the next setup leaves the log's newest event folded and the cursor at it; stdout: {out}"
     );
+}
+
+rigger::test_cases! {
+    /// The file as a fold made it before the cursor existed ([`drop_the_cursor`]), its first
+    /// seeding reading the log's positions against its ledger: the next setup seeds the cursor at
+    /// the highest applied position, the log's newest event, and says nothing of `graph.db`.
+    a_seeding_that_meets_another_writer_s_lock_is_skipped_and_the_next_setup_seeds_the_cursor:
+        a_seeding_that_meets_another_writer_s_lock_is_skipped_and_the_next_setup_folds_on(
+            |root| drop_the_cursor(&rigger_file(root, "graph.db")),
+            true,
+            vec![],
+        );
+    /// The file carries its cursor and misses a decision appended behind every fold: the seeding
+    /// takes the write lock before it reads the cursor, so the catch-up is not started either, and
+    /// the next setup folds the decision forward from the cursor and says it caught the file up.
+    a_seeding_of_a_cursored_graph_db_that_meets_another_writer_s_lock_starts_no_catch_up:
+        a_seeding_that_meets_another_writer_s_lock_is_skipped_and_the_next_setup_folds_on(
+            |root| {
+                let decision = decision_json("d-lost", "s", &["src/f.rs"], "");
+                append_unfolded_decision(root, decision.to_string().as_bytes());
+            },
+            false,
+            vec![caught_up_line(1)],
+        );
 }
 
 /// Given an embedded event log whose run stream holds three events, each appended by a store
