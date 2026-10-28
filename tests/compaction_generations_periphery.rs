@@ -4126,6 +4126,10 @@ fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_ser
             "the other writer's event is on the server and not in this machine's graph"
         );
 
+        // The file as a fold made it before the cursor existed: the emit folds its own event
+        // directly, leaving the other writer's below it missing, and the next seeding reads the
+        // server's positions against its ledger.
+        drop_the_cursor(&graph_db);
         let (out, err, ok) = run_rigger_envs(
             root,
             &["emit", "DecisionMade", &decision("d-first")],
@@ -4137,9 +4141,6 @@ fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_ser
              stderr: {err}"
         );
 
-        // The file as a fold made it before the cursor existed: its first seeding reads the
-        // server's positions against its ledger.
-        drop_the_cursor(&graph_db);
         let (out, err, ok) = setup();
         let stream = log
             .read_stream(
