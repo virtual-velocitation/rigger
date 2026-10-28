@@ -2165,7 +2165,7 @@ fn rigger_setup_on_a_project_without_a_graph_db_creates_it_and_seeds_its_cursor_
 /// `rigger setup`, the lock released, says `said` of `graph.db` and leaves that event folded and
 /// the cursor at it.
 fn a_seeding_that_meets_another_writer_s_lock_is_skipped_and_the_next_setup_folds_on(
-    stand: fn(&Path),
+    stand: fn(&Path, &Path),
     folded_while_locked: bool,
     said: Vec<String>,
 ) {
@@ -2173,32 +2173,36 @@ fn a_seeding_that_meets_another_writer_s_lock_is_skipped_and_the_next_setup_fold
     let root = dir.path();
     emit_the_first_decision_after_setup(root);
     let graph_db = rigger_file(root, "graph.db");
-    stand(root);
+    stand(root, &graph_db);
     let (cursor, newest) = (caught_up_at(&graph_db), run_log_head(root));
+    // What setup's stdout `out` says of `graph.db`, whether the log's newest event is folded, and
+    // where the cursor stands.
+    let standing = |out: &str| {
+        (
+            common::cli::lines_where(out, |l| l.contains("graph.db"))
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+            applied(&graph_db, newest),
+            caught_up_at(&graph_db),
+        )
+    };
 
     let out = with_graph_locked(&graph_db, || setup_ok(root, &[("RIGGER_NPM", "true")]));
     assert_eq!(
+        standing(&out),
         (
-            common::cli::lines_where(&out, |l| l.contains("graph.db")),
-            applied(&graph_db, newest),
-            caught_up_at(&graph_db)
+            vec![SEEDING_SKIPPED_LINE.to_string()],
+            folded_while_locked,
+            cursor
         ),
-        (vec![SEEDING_SKIPPED_LINE], folded_while_locked, cursor),
         "the seeding meets the lock: setup exits zero, says so, folds nothing and moves no cursor; \
          stdout: {out}"
     );
     let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
     assert_eq!(
-        (
-            common::cli::lines_where(&out, |l| l.contains("graph.db")),
-            applied(&graph_db, newest),
-            caught_up_at(&graph_db)
-        ),
-        (
-            said.iter().map(String::as_str).collect::<Vec<_>>(),
-            true,
-            Some(newest)
-        ),
+        standing(&out),
+        (said, true, Some(newest)),
         "the next setup leaves the log's newest event folded and the cursor at it; stdout: {out}"
     );
 }
@@ -2209,7 +2213,7 @@ rigger::test_cases! {
     /// the highest applied position, the log's newest event, and says nothing of `graph.db`.
     a_seeding_that_meets_another_writer_s_lock_is_skipped_and_the_next_setup_seeds_the_cursor:
         a_seeding_that_meets_another_writer_s_lock_is_skipped_and_the_next_setup_folds_on(
-            |root| drop_the_cursor(&rigger_file(root, "graph.db")),
+            |_, graph_db| drop_the_cursor(graph_db),
             true,
             vec![],
         );
@@ -2218,9 +2222,8 @@ rigger::test_cases! {
     /// the next setup folds the decision forward from the cursor and says it caught the file up.
     a_seeding_of_a_cursored_graph_db_that_meets_another_writer_s_lock_starts_no_catch_up:
         a_seeding_that_meets_another_writer_s_lock_is_skipped_and_the_next_setup_folds_on(
-            |root| {
-                let decision = decision_json("d-lost", "s", &["src/f.rs"], "");
-                append_unfolded_decision(root, decision.to_string().as_bytes());
+            |root, _| {
+                append_unfolded_decision_named(root, "d-lost");
             },
             false,
             vec![caught_up_line(1)],
@@ -2282,8 +2285,7 @@ fn setup_reads_the_age_of_a_hole_below_an_applied_event(
     emit_the_first_decision_after_setup(root);
     let graph_db = rigger_file(root, "graph.db");
     drop_the_cursor(&graph_db);
-    let hole = common::fixtures::decision_json("d-hole", "s", &["src/f.rs"], "");
-    let lost = append_unfolded_decision(root, hole.to_string().as_bytes());
+    let lost = append_unfolded_decision_named(root, "d-hole");
     emit_folding(root, "d-above");
     common::fixtures::stamp_user_version(&graph_db, rule);
     backdate_the_log_by(root, age);
@@ -2442,10 +2444,7 @@ fn setup_folds_a_cursored_graph_db_forward_over_a_gap_longer_than_a_page() {
     let root = dir.path();
     emit_the_first_decision_after_setup(root);
     let missed: Vec<u64> = (0..=FOLD_BATCH)
-        .map(|i| {
-            let decision = decision_json(&format!("d-gap-{i}"), "s", &["src/f.rs"], "");
-            append_unfolded_decision(root, decision.to_string().as_bytes())
-        })
+        .map(|i| append_unfolded_decision_named(root, &format!("d-gap-{i}")))
         .collect();
     let graph_db = rigger_file(root, "graph.db");
 
@@ -3806,6 +3805,13 @@ fn append_unfolded_decision(root: &Path, data: &[u8]) -> u64 {
         .unwrap()
         .one("the unfolded decision")
         .unwrap()
+}
+
+/// Append the decision `id`, governing `src/f.rs`, to `root`'s run stream behind every fold
+/// ([`append_unfolded_decision`]) and answer its log position.
+fn append_unfolded_decision_named(root: &Path, id: &str) -> u64 {
+    let decision = decision_json(id, "s", &["src/f.rs"], "");
+    append_unfolded_decision(root, decision.to_string().as_bytes())
 }
 
 /// The `DecisionMade` payload of the decision `d-boom`, whose node a graph file refuses while
