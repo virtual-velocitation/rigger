@@ -18,6 +18,7 @@ mod common;
 use common::git::run_git;
 
 use common::cli::graph_build_line;
+use common::cli::pin_identity;
 use common::cli::plant_stale_marker;
 use common::cli::read_run_events;
 use common::cli::reported_reclaimed_bytes;
@@ -2428,7 +2429,7 @@ fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
 
     let dir = temp_rigger_project();
     let root = dir.path();
-    std::fs::write(rigger_file(root, "project.id"), "proj-older\n").unwrap();
+    pin_identity(root, "proj-older");
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join(OLDER_STORE_CLOCK_PATH),
@@ -9330,7 +9331,7 @@ fn seed_spawn_events_at(root: &Path, project: &str, rows: &[(rigger::eventstore:
 
     let rigger_dir = root.join(".rigger");
     std::fs::create_dir_all(&rigger_dir).unwrap();
-    std::fs::write(rigger_dir.join("project.id"), format!("{project}\n")).unwrap();
+    pin_identity(root, project);
     let db = rigger_dir.join("events.db");
     // Open through the real store first, so the schema is laid down exactly as the binary
     // itself would lay it down (mirrors seed_order_signature).
@@ -14039,7 +14040,7 @@ fn step_migrates_legacy_history_to_the_minted_identity() {
 
     // Mint a durable identity DISTINCT from the basename (written directly so the test is
     // deterministic, independent of the temp dir's random basename).
-    std::fs::write(root.join(".rigger/project.id"), "durablemint\n").unwrap();
+    pin_identity(root, "durablemint");
 
     // A step opens the store with the minted identity: it migrates the legacy history once
     // and says so on stderr.
@@ -14093,7 +14094,7 @@ fn validate_warns_when_the_project_id_is_absent_and_is_silent_after_minting() {
     );
 
     // Mint it, then validate is SILENT on the identity advisory.
-    std::fs::write(root.join(".rigger/project.id"), "durable-xyz\n").unwrap();
+    pin_identity(root, "durable-xyz");
     let (_out, err2, ok2) = run_rigger(root, &["validate"]);
     assert!(ok2, "validate must succeed; stderr:\n{err2}");
     assert!(
@@ -14337,7 +14338,7 @@ fn stats_canary_over(project: &str, items: &[&str]) -> (tempfile::TempDir, Strin
     let dir = tempfile::tempdir().unwrap();
     let rigger = dir.path().join(".rigger");
     std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::write(rigger.join("project.id"), format!("{project}\n")).unwrap();
+    pin_identity(dir.path(), project);
     let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, project);
     let events: Vec<Event> = std::iter::once(r#"{"id":"batch-1","status":"canary-run"}"#)
@@ -14980,7 +14981,7 @@ fn seed_two_runs_with_models(root: &Path, project: &str, prev_model: &str, curr_
 
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::write(rigger.join("project.id"), format!("{project}\n")).unwrap();
+    pin_identity(root, project);
 
     let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, project);
@@ -15108,11 +15109,7 @@ fn validate_detects_a_stream_whose_position_order_and_revision_order_disagree() 
         "rigger init must scaffold a valid config; stderr:\n{err}"
     );
     std::fs::create_dir_all(droot.join(".rigger")).unwrap();
-    std::fs::write(
-        droot.join(".rigger").join("project.id"),
-        "order-signature-project\n",
-    )
-    .unwrap();
+    pin_identity(droot, "order-signature-project");
     seed_order_signature(droot, "order-signature-project", 0);
     let (_out, err, ok) = run_rigger(droot, &["validate"]);
     assert!(
@@ -15260,7 +15257,7 @@ fn seed_two_runs_with_model_changes(root: &Path, project: &str, changes: &[(&str
 
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::write(rigger.join("project.id"), format!("{project}\n")).unwrap();
+    pin_identity(root, project);
 
     let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, project);

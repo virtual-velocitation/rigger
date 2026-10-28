@@ -29,6 +29,7 @@ use common::fixtures::git_hash_object;
 use common::git::{assert_holds_no_object, held_blob, object_ids, run_git};
 
 use common::cli::migrated_lines;
+use common::cli::pin_identity;
 use common::cli::pre_ledger_batch;
 use common::cli::reclaimed_line;
 use common::cli::reported_reclaimed_bytes;
@@ -747,8 +748,7 @@ fn pinned_project() -> tempfile::TempDir {
 /// A temp project whose identity is pinned to `id` in `.rigger/project.id`.
 fn project_pinned_to(id: &str) -> tempfile::TempDir {
     let dir = temp_rigger_project();
-    std::fs::write(dir.path().join(".rigger").join("project.id"), id)
-        .expect("pin the project identity");
+    pin_identity(dir.path(), id);
     dir
 }
 
@@ -1030,7 +1030,7 @@ fn seed_project_under_the_legacy_namespace(root: &Path, rounds: u64) -> (String,
     // still matching the LEGACY prefix and the assertions below would be reading that ambiguity
     // rather than whether the history moved.
     let minted = MINTED_ID.to_string();
-    std::fs::write(root.join(".rigger").join("project.id"), &minted).expect("mint the identity");
+    pin_identity(root, &minted);
     assert!(
         !minted.starts_with(&legacy) && !legacy.starts_with(&minted),
         "neither identity may be a string prefix of the other, or the namespace assertions below \

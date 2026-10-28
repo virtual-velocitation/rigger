@@ -732,7 +732,7 @@ fn cli_project() -> tempfile::TempDir {
     let dir = temp_project();
     let rigger_dir = dir.path().join(".rigger");
     std::fs::create_dir_all(&rigger_dir).expect("create .rigger");
-    std::fs::write(rigger_dir.join("project.id"), "u4-cli-surface").expect("pin the identity");
+    pin_identity(dir.path(), "u4-cli-surface");
     // Opening the store creates the schema the binary then appends to.
     init_event_log(dir.path());
     dir
@@ -742,7 +742,7 @@ fn cli_project() -> tempfile::TempDir {
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::cli::{init_event_log, temp_project};
+use common::cli::{init_event_log, pin_identity, temp_project};
 
 /// Run `rigger <args...>` in `root` through the COMPILED binary, returning its stdout.
 fn run_rigger(root: &std::path::Path, args: &[&str]) -> String {

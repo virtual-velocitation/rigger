@@ -418,6 +418,12 @@ pub fn run_stream_identity(root: &Path) -> String {
         .unwrap_or_else(|| "rigger".to_string())
 }
 
+/// Pins the identity of the project rooted at `root` to `identity`: its `project.id` under the
+/// state directory written as `identity` and a newline, which [`run_stream_identity`] reads back.
+pub fn pin_identity(root: &Path, identity: &str) {
+    std::fs::write(rigger_file(root, "project.id"), format!("{identity}\n")).unwrap();
+}
+
 /// The fold rule a `graph.db` records (its `user_version`).
 pub fn user_version(db: &Path) -> i64 {
     super::fixtures::pragma_i64(db, "user_version")

@@ -40,6 +40,7 @@ use common::cli::idle_window_secs;
 use common::cli::liveness_fault_body;
 use common::cli::named_marker_age;
 use common::cli::one_unanswered_spawn;
+use common::cli::pin_identity;
 use common::cli::plant_marker;
 use common::cli::read_run_events;
 use common::cli::real_result_body;
@@ -818,8 +819,7 @@ fn every_mode_reading_the_scratch_root_fails_on_it_before_the_identity_migration
         ],
     );
     assert!(ok, "seeding legacy history must succeed; stderr: {err}");
-    std::fs::write(rigger_file(root, "project.id"), "durablemint\n")
-        .expect("mint an identity distinct from the basename");
+    pin_identity(root, "durablemint");
     let (_workdir, _) = configure_unparsable_defaults(root);
     let rows = row_count(root);
     for mode in ["--runs", "--build-cache", "--derived"] {

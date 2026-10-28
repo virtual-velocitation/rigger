@@ -357,6 +357,12 @@ pub fn not_folded(why: &str) -> String {
     ["not folded into the context graph: ", why].concat()
 }
 
+/// The suffix a report line ends with when the graph did not fold the event it reports, for
+/// `why`: the [`not_folded`] clause after a `; `.
+pub fn not_folded_suffix(why: &str) -> String {
+    format!("; {}", not_folded(why))
+}
+
 /// The line a run surface prints when it recorded `events` run events whose fold the graph did
 /// not make, for `reason` - a graph error's reason, its `graph: ` prefix added ([`graph_error`]).
 pub fn recorded_not_folded(events: usize, reason: &str) -> String {

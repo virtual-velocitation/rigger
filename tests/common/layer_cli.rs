@@ -19,7 +19,7 @@ use crate::common::rigger_bin;
 /// id file makes the seed and the binary agree on the store namespace. Kept alive by the caller.
 pub fn project(identity: &str) -> tempfile::TempDir {
     let dir = crate::common::cli::identified_git_project();
-    std::fs::write(dir.path().join(".rigger").join("project.id"), identity).unwrap();
+    crate::common::cli::pin_identity(dir.path(), identity);
     dir
 }
 

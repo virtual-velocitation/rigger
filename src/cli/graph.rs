@@ -1449,12 +1449,9 @@ mod tests {
                 (counted, fold_loss_clause(&fold)),
                 (
                     18,
-                    format!(
-                        "; {}",
-                        crate::test_support::not_folded(&crate::test_support::graph_error(
-                            contextgraph::REBUILD_OWED
-                        ))
-                    )
+                    crate::test_support::not_folded_suffix(&crate::test_support::graph_error(
+                        contextgraph::REBUILD_OWED
+                    ))
                 )
             );
             assert_eq!(recorded(&store), only(walked_entries(tree.path())));

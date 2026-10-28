@@ -64,6 +64,7 @@ use common::cli::migrated_lines;
 use common::cli::named_marker_age;
 use common::cli::no_progress;
 use common::cli::one_unanswered_spawn;
+use common::cli::pin_identity;
 use common::cli::read_run_events;
 use common::cli::refusal_line;
 use common::cli::refused_derived_reset;
@@ -97,12 +98,14 @@ use common::fixtures::caught_up_line;
 use common::fixtures::cleanup;
 use common::fixtures::decision_json;
 use common::fixtures::drop_the_cursor;
+use common::fixtures::event_of;
 use common::fixtures::f_rs_batch_def;
 use common::fixtures::files_open_by;
 use common::fixtures::fresh_test_reference;
 use common::fixtures::nanos;
 use common::fixtures::owned_ids;
 use common::fixtures::past_the_horizon;
+use common::fixtures::placed_positions;
 use common::fixtures::rebuild_owed_note;
 use common::fixtures::wait_until_for;
 use common::fixtures::DISK_GAVE_OUT;
@@ -110,7 +113,7 @@ use common::fixtures::D_BOOM;
 use common::fixtures::HELD_PAST_THE_BUSY_TIMEOUT;
 use common::fixtures::STEP_LOCK_REASON;
 use common::fixtures::{catch_up_failed_line, the_disk_gives_out_at_d_boom, the_disk_recovers};
-use common::fixtures::{graph_error, not_folded, NOT_A_DATABASE};
+use common::fixtures::{graph_error, not_folded, not_folded_suffix, NOT_A_DATABASE};
 use common::fixtures::{lost_fold, CATCH_UP_PAYS, UNFINISHED_REBUILD};
 use common::fixtures::{mark_owed_in, mark_stands_beside};
 use common::fixtures::{source_interrupted, SOURCE_INTERRUPTED};
@@ -1405,7 +1408,7 @@ impl ReleaseEraStore {
         let dir = temp_store_project();
         let root = dir.path();
         if minted {
-            std::fs::write(root.join(".rigger").join("project.id"), "proj-era\n").unwrap();
+            pin_identity(root, "proj-era");
         }
         let events_db = rigger_file(root, "events.db");
         let graph_db = rigger_file(root, "graph.db");
@@ -3564,16 +3567,14 @@ fn a_decision_appended_through_the_folding_store_folds_by_the_stream_it_was_plac
             .append_and_fold(
                 stream,
                 ExpectedRevision::Any,
-                &[Event::new(
+                &[event_of(
                     "DecisionMade",
-                    decision_json("d-placed", "s", &["src/f.rs"], "")
-                        .to_string()
-                        .into_bytes(),
+                    decision_json("d-placed", "s", &["src/f.rs"], ""),
                 )],
             )
             .unwrap()
     });
-    let placed: Vec<u64> = done.appended.placed().map(|(_, at)| at).collect();
+    let placed = placed_positions(&done.appended);
     let graph_db = rigger_file(root, "graph.db");
     assert_eq!(
         (
@@ -3929,10 +3930,7 @@ fn an_identity_migration_into_a_graph_that_owes_its_rebuild_says_its_decision_wa
             &legacy,
             &minted,
             last.position,
-            &format!(
-                "; {}",
-                not_folded(&graph_error(rigger::contextgraph::REBUILD_OWED))
-            )
+            &not_folded_suffix(&graph_error(rigger::contextgraph::REBUILD_OWED))
         )),
         "the migration reports that its decision skipped the owed graph, with the reason; \
          stderr: {err}"
@@ -5945,14 +5943,13 @@ fn a_setup_migrating_beside_its_own_standing_tail_folds_the_migration_in_that_ta
     let dir = temp_store_project();
     let root = dir.path();
     let legacy = run_stream_identity(root);
-    let id_file = rigger_file(root, "project.id");
-    std::fs::write(&id_file, format!("{legacy}\n")).unwrap();
+    pin_identity(root, &legacy);
     closed_run_store(root);
     lose_graph(root);
     stop_setup_in_its_tail(root);
     let graph_db = rigger_file(root, "graph.db");
     let swapped_cursor = holds_table(&graph_db, "rebuild_cursor");
-    std::fs::remove_file(&id_file).unwrap();
+    std::fs::remove_file(rigger_file(root, "project.id")).unwrap();
 
     let (out, err, ok) =
         common::cli::run_rigger_within(root, &["setup"], &[("RIGGER_NPM", "true")], 4800, |_| {})
@@ -5960,7 +5957,7 @@ fn a_setup_migrating_beside_its_own_standing_tail_folds_the_migration_in_that_ta
                 panic!("the migrating setup never ended in 120s: it waited on its own tail")
             });
     let minted = run_stream_identity(root);
-    let migration = read_run_events(root).last().unwrap().position;
+    let migration = run_log_head(root);
     assert_eq!(
         (
             swapped_cursor,
@@ -5981,10 +5978,7 @@ fn a_setup_migrating_beside_its_own_standing_tail_folds_the_migration_in_that_ta
                 &legacy,
                 &minted,
                 migration,
-                &format!(
-                    "; {}",
-                    not_folded(&lost_fold(&graph_error(UNFINISHED_REBUILD), CATCH_UP_PAYS))
-                )
+                &not_folded_suffix(&lost_fold(&graph_error(UNFINISHED_REBUILD), CATCH_UP_PAYS))
             ),
             vec![rebuilt_through_the_head(1, migration)],
             true,

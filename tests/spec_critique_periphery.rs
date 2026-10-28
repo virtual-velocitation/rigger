@@ -14,9 +14,9 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    assert_selected_server, critique_finding_id, emit, read_run_events, rigger_file, run_payloads,
-    run_rigger, run_rigger_envs, run_rigger_ok, run_stream_identity, seed_run_events, seed_store,
-    temp_project, temp_repoless_project, write_spec_project,
+    assert_selected_server, critique_finding_id, emit, pin_identity, read_run_events, rigger_file,
+    run_payloads, run_rigger, run_rigger_envs, run_rigger_ok, run_stream_identity, seed_run_events,
+    seed_store, temp_project, temp_repoless_project, write_spec_project,
 };
 use common::fixtures::{composed_system_prompt, git_ok, temp_git_project_with_commit};
 use common::repo::{
@@ -1287,7 +1287,7 @@ fn a_store_from_before_the_minted_identity_is_migrated_before_the_verbs_first_ap
         "DecisionMade",
         r#"{"id":"legacy-decision","summary":"pre-mint history","governs":["specs/9-demo.md"]}"#,
     );
-    std::fs::write(root.join(".rigger/project.id"), "durablemint\n").unwrap();
+    pin_identity(root, "durablemint");
     let (_work, path) = stub(REJECT);
 
     // ... when the spec is critiqued ...

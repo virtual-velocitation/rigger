@@ -588,7 +588,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-17929363b267",
+    "id": "dup-cde89b281edb",
     "classification": "near",
     "sites": [
       {
@@ -605,9 +605,14 @@
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
         "name": "key_expr",
         "content_hash": "14b162c1828e22af"
+      },
+      {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "not_folded_suffix",
+        "content_hash": "9c80ca639aa5a725"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs)",
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs, tests/common/fixtures/fold.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -1222,7 +1227,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-9e2455a395b7",
+    "id": "dup-b5a6a4dd40e0",
     "classification": "semantic",
     "sites": [
       {
@@ -2783,17 +2788,7 @@
       {
         "file": "tests/cli.rs",
         "name": "\".rigger/project.id\"",
-        "content_hash": "69179fb3070fab20"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/project.id\"",
         "content_hash": "cfbcbe47c2c581ac"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/project.id\"",
-        "content_hash": "69179fb3070fab20"
       },
       {
         "file": "tests/cli.rs",
@@ -2814,11 +2809,6 @@
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "fab45089dfff5214"
       },
       {
         "file": "tests/cli.rs",
@@ -3268,11 +3258,6 @@
       {
         "file": "tests/common/layer_cli.rs",
         "name": "\".rigger\"",
-        "content_hash": "eb4fced0969e6c77"
-      },
-      {
-        "file": "tests/common/layer_cli.rs",
-        "name": "\".rigger\"",
         "content_hash": "0ab805b5101d6502"
       },
       {
@@ -3294,11 +3279,6 @@
         "file": "tests/common/workflow_probe.rs",
         "name": "\"create .rigger\"",
         "content_hash": "647e8aea340be175"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "175029481360777f"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -3888,22 +3868,12 @@
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
         "name": "\".rigger\"",
-        "content_hash": "54c2f825b098dcb4"
-      },
-      {
-        "file": "tests/reset_derived_compaction_periphery.rs",
-        "name": "\".rigger\"",
         "content_hash": "5164efc064547d69"
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
         "name": "\"create .rigger\"",
         "content_hash": "5164efc064547d69"
-      },
-      {
-        "file": "tests/reset_derived_compaction_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "3681f8f62b9b02e3"
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
@@ -4004,11 +3974,6 @@
         "file": "tests/spec_critique_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
-      },
-      {
-        "file": "tests/spec_critique_periphery.rs",
-        "name": "\".rigger/project.id\"",
-        "content_hash": "69179fb3070fab20"
       },
       {
         "file": "tests/statusline_command_periphery.rs",
@@ -4237,7 +4202,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 602 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 594 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

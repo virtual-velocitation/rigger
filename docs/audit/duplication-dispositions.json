@@ -450,9 +450,9 @@
     "reason": "`spawn_is_recorded` checks a test driver's recorded spawn set while `is_shared` classifies a graph query result; the shared shape is a single boolean lookup."
   },
   {
-    "id": "dup-17929363b267",
+    "id": "dup-cde89b281edb",
     "disposition": "not-a-duplicate",
-    "reason": "`unit_branch` names a unit's git branch, `key_expr` builds a SQL key expression and `proof_targets_sql` builds the read of the targets a key's proof rows resolve to; each is one `format!` call over a different template."
+    "reason": "`unit_branch` names a unit's git branch, `key_expr` builds a SQL key expression, `proof_targets_sql` builds the read of the targets a key's proof rows resolve to and the test-side `not_folded_suffix` builds the `; ` clause a report line ends with when the graph did not fold its event; each is one `format!` call over a different template."
   },
   {
     "id": "dup-ebee743f02de",

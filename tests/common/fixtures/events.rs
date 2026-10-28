@@ -56,6 +56,11 @@ pub fn positions_of(events: &[Event]) -> Vec<Position> {
     events.iter().map(|e| e.position).collect()
 }
 
+/// The positions `appended` placed its events at, in batch order.
+pub fn placed_positions(appended: &Appended) -> Vec<u64> {
+    appended.placed().map(|(_, at)| at).collect()
+}
+
 /// The head of a log holding `events` in order: the last one's position ([`positions_of`]), none
 /// for no events.
 pub fn head_of(events: &[Event]) -> Option<Position> {
