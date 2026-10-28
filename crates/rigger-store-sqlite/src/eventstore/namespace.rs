@@ -335,4 +335,37 @@ mod tests {
         let scoped = Namespaced::new(&backend, "contract");
         crate::eventstore::contract::assert_contract(&scoped);
     }
+
+    /// The owning form is a store of its own, held as the port: it passes the contract, and it
+    /// scopes to the namespace the borrowing form writes, reading its project's events alone.
+    #[test]
+    fn the_owning_form_is_held_as_the_port_and_scopes_as_the_borrowing_form() {
+        use crate::test_support::ev;
+        use std::sync::Arc;
+        let contract: Arc<dyn EventStore> = Arc::new(Namespaced::owning(
+            Arc::new(Store::open(":memory:").unwrap()),
+            "contract",
+        ));
+        crate::eventstore::contract::assert_contract(&*contract);
+
+        let backend: Arc<dyn EventStore> = Arc::new(Store::open(":memory:").unwrap());
+        let alpha: Arc<dyn EventStore> =
+            Arc::new(Namespaced::owning(Arc::clone(&backend), "alpha"));
+        Namespaced::new(&*backend, "beta")
+            .append("run", ExpectedRevision::Any, &[ev("B0", "{}")])
+            .unwrap();
+        Namespaced::new(&*backend, "alpha")
+            .append("run", ExpectedRevision::Any, &[ev("A1", "{}")])
+            .unwrap();
+        assert_eq!(
+            alpha
+                .read_all(0, Direction::Forward, &Filter::default())
+                .unwrap()
+                .iter()
+                .map(|e| (e.stream.as_str(), e.type_.as_str(), e.position))
+                .collect::<Vec<_>>(),
+            vec![("run", "A1", 2)],
+            "the owning form reads alpha's events alone, unprefixed"
+        );
+    }
 }
