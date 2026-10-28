@@ -129,8 +129,8 @@
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 1746,
-        "end_line": 1748
+        "start_line": 1758,
+        "end_line": 1760
       },
       {
         "file": "src/cli/hygiene.rs",
@@ -449,13 +449,13 @@
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 3722,
-        "end_line": 3749
+        "start_line": 3734,
+        "end_line": 3761
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5061,
-        "end_line": 5115
+        "start_line": 5073,
+        "end_line": 5127
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -749,8 +749,8 @@
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 4022,
-        "end_line": 4022
+        "start_line": 4034,
+        "end_line": 4034
       },
       {
         "file": "src/cli/mod.rs",
@@ -1469,53 +1469,53 @@
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5389,
-        "end_line": 5389
+        "start_line": 5401,
+        "end_line": 5401
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5390,
-        "end_line": 5390
+        "start_line": 5402,
+        "end_line": 5402
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5393,
-        "end_line": 5393
+        "start_line": 5405,
+        "end_line": 5405
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5393,
-        "end_line": 5393
+        "start_line": 5405,
+        "end_line": 5405
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5394,
-        "end_line": 5394
+        "start_line": 5406,
+        "end_line": 5406
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5413,
-        "end_line": 5413
+        "start_line": 5425,
+        "end_line": 5425
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5437,
-        "end_line": 5437
+        "start_line": 5449,
+        "end_line": 5449
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5438,
-        "end_line": 5438
+        "start_line": 5450,
+        "end_line": 5450
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 7110,
-        "end_line": 7110
+        "start_line": 7122,
+        "end_line": 7122
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 7140,
-        "end_line": 7140
+        "start_line": 7152,
+        "end_line": 7152
       },
       {
         "file": "src/cli/critique.rs",
@@ -4594,18 +4594,18 @@
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 2949,
-        "end_line": 2949
+        "start_line": 2961,
+        "end_line": 2961
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 2953,
-        "end_line": 2953
+        "start_line": 2965,
+        "end_line": 2965
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 2977,
-        "end_line": 2977
+        "start_line": 2989,
+        "end_line": 2989
       },
       {
         "file": "src/cli/run.rs",
@@ -6729,8 +6729,8 @@
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 1673,
-        "end_line": 1675
+        "start_line": 1685,
+        "end_line": 1687
       }
     ]
   },
@@ -6784,13 +6784,13 @@
     "sites": [
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 2575,
-        "end_line": 2583
+        "start_line": 2587,
+        "end_line": 2595
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 2674,
-        "end_line": 2682
+        "start_line": 2686,
+        "end_line": 2694
       }
     ]
   },
@@ -6799,13 +6799,13 @@
     "sites": [
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 2772,
-        "end_line": 2775
+        "start_line": 2784,
+        "end_line": 2787
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 2779,
-        "end_line": 2782
+        "start_line": 2791,
+        "end_line": 2794
       }
     ]
   },
@@ -6814,13 +6814,13 @@
     "sites": [
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 3286,
-        "end_line": 3306
+        "start_line": 3298,
+        "end_line": 3318
       },
       {
         "file": "crates/rigger-worktree-git/src/worktree.rs",
-        "start_line": 5198,
-        "end_line": 5221
+        "start_line": 5210,
+        "end_line": 5233
       }
     ]
   },

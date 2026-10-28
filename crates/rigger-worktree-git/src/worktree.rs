@@ -1550,9 +1550,12 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
 }
 
 /// THE ONE HASH FUNCTION (spec 107): the object id git gives `bytes`, as `git hash-object --stdin`
-/// prints it under `root`. One process per call, waited to its exit: it writes no object and
-/// applies no filter, so the id is that of the bytes as they are, and it answers outside a
-/// repository too. A process that cannot start, or that fails, fails the hash, naming the
+/// prints it under `root`. It applies no filter, so the id is that of the bytes as they are.
+/// Inside a repository ([`in_repository`]) it writes the object it hashes (`git hash-object -w`,
+/// spec 124, THE BLOB IS WRITTEN), so that repository's object database holds the bytes under the
+/// id it answers; outside one, where no object database stands, it hashes without writing. Two
+/// processes per call, each waited to its exit: the detection's, then the hash's. A hash process
+/// that cannot start, or that fails - a write that fails included - fails the hash, naming the
 /// command, the root and the cause.
 pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> {
     use std::io::Write;
@@ -1564,15 +1567,18 @@ pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> 
             root.display()
         ))
     };
+    let write: &[&str] = if in_repository(root) { &["-w"] } else { &[] };
     let mut process = crate::subprocess::git_in(root)
-        .args(["hash-object", "--no-filters", "--stdin"])
+        .arg("hash-object")
+        .args(write)
+        .args(["--no-filters", "--stdin"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| failed(&e.to_string()))?;
-    // A write that fails is a process that stopped reading, which its exit status then says:
-    // git prints an id only once it has read its whole input.
+    // A write to its input that fails is a process that stopped reading, which its exit status
+    // then says: git prints an id only once it has read its whole input.
     if let Some(mut input) = process.stdin.take() {
         let _ = input.write_all(bytes);
     }
@@ -1583,6 +1589,16 @@ pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> 
         return Err(failed(String::from_utf8_lossy(&out.stderr).trim()));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Whether `root` is inside a git repository, so an object database stands there to read from and
+/// write to: `git rev-parse --git-dir` succeeds under it. The one repository detection
+/// [`hash_blob`] and [`BlobBatch::start`] apply. A `git` that cannot start answers outside.
+fn in_repository(root: &std::path::Path) -> bool {
+    crate::subprocess::git_in(root)
+        .args(["rev-parse", "--git-dir"])
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
 /// The one `git cat-file --batch` process a graph rebuild reads its ledger entries' blobs from
@@ -1599,16 +1615,12 @@ pub struct BlobBatch {
 
 impl BlobBatch {
     /// Start the batch process over the repository holding `root`, or answer none when there is
-    /// no object database to ask: `root` is outside a git repository, or the process cannot
-    /// start at all.
+    /// no object database to ask: `root` is outside a git repository ([`in_repository`]), or the
+    /// process cannot start at all.
     pub fn start(root: &std::path::Path) -> Option<Self> {
         use std::process::Stdio;
 
-        let in_repository = crate::subprocess::git_in(root)
-            .args(["rev-parse", "--git-dir"])
-            .output()
-            .is_ok_and(|out| out.status.success());
-        if !in_repository {
+        if !in_repository(root) {
             return None;
         }
         let mut process = crate::subprocess::git_in(root)
