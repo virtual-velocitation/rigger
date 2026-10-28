@@ -2794,7 +2794,7 @@ mod blob_batch_tests {
     use std::path::Path;
 
     /// What `batch` answers for `id`: the bytes, none, or the error's text.
-    fn asked(batch: &mut BlobBatch, id: &str) -> Result<Option<Vec<u8>>, String> {
+    pub(super) fn asked(batch: &mut BlobBatch, id: &str) -> Result<Option<Vec<u8>>, String> {
         batch.blob(id).map_err(|e| e.0)
     }
 
@@ -3034,12 +3034,18 @@ mod tests {
         );
     }
 
-    /// The hash applies no filter and writes no object: in a repository whose attributes convert
-    /// line endings, bytes ending in CRLF hash as they are - not as the converted blob a path's
-    /// hash would name - and the object database does not hold the id afterwards.
+    /// The hash applies no filter and writes the object it hashes only inside a repository (spec
+    /// 124, THE BLOB IS WRITTEN): in a repository whose attributes convert line endings, bytes
+    /// ending in CRLF hash as they are - not as the converted blob a path's hash would name - and
+    /// the object database, which did not hold them before the hash, holds them under that id
+    /// afterwards; outside a repository, where no object database stands, the same bytes hash to
+    /// the same id and the directory is left as the hash found it.
     #[test]
-    fn hash_blob_applies_no_filter_and_writes_no_object() {
-        use crate::test_support::{git_hash_object, temp_git_project_with_commit, write_file};
+    fn hash_blob_applies_no_filter_and_writes_the_object_only_inside_a_repository() {
+        use super::blob_batch_tests::asked;
+        use crate::test_support::{
+            dir_snapshot, git_hash_object, temp_git_project_with_commit, write_file,
+        };
 
         let dir = temp_git_project_with_commit();
         let root = dir.path();
@@ -3047,11 +3053,37 @@ mod tests {
         write_file(&root.join("crlf.txt"), b"one\r\ntwo\r\n");
         let filtered = git_hash_object(root, "crlf.txt", false);
         let unfiltered = "4e349b596c5c9d38a82829fafbaf52281c21e319";
+        let held = || {
+            asked(
+                &mut BlobBatch::start(root).expect("a repository starts the batch process"),
+                unfiltered,
+            )
+        };
+        assert_eq!(
+            held(),
+            Ok(None),
+            "the object database holds no such object yet"
+        );
 
         assert_eq!(hashed(root, b"one\r\ntwo\r\n"), Ok(unfiltered.to_string()));
         assert_ne!(filtered, unfiltered);
-        let mut held = BlobBatch::start(root).expect("a repository starts the batch process");
-        assert_eq!(held.blob(unfiltered).map_err(|e| e.0), Ok(None));
+        assert_eq!(held(), Ok(Some(b"one\r\ntwo\r\n".to_vec())));
+
+        let outside = tempfile::tempdir().unwrap();
+        assert!(
+            BlobBatch::start(outside.path()).is_none(),
+            "no object database stands outside a repository"
+        );
+        let found = dir_snapshot(outside.path(), "");
+        assert_eq!(
+            hashed(outside.path(), b"one\r\ntwo\r\n"),
+            Ok(unfiltered.to_string())
+        );
+        assert_eq!(
+            dir_snapshot(outside.path(), ""),
+            found,
+            "a hash outside a repository writes nothing"
+        );
     }
 
     /// A hash process that fails fails the hash, naming the command, the root and what git said:
