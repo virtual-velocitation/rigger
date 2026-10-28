@@ -3453,6 +3453,119 @@ mod tests {
             .unwrap_or_else(|| panic!("{file} must be a committed persona"))
     }
 
+    /// The tracked files under `paths`, repo-relative, as `git ls-files` lists them.
+    fn tracked_files(paths: &[&str]) -> Vec<String> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo())
+            .args(["ls-files", "--"])
+            .args(paths)
+            .output()
+            .expect("git ls-files runs");
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The awk program the author block spells after `open`, up to the `close` that ends it.
+    fn author_awk_program(open: &str, close: &str) -> String {
+        let text = committed_persona("rust-engineer.md");
+        let from = text
+            .find(open)
+            .unwrap_or_else(|| panic!("the block spells {open:?}"))
+            + open.len();
+        let len = text[from..]
+            .find(close)
+            .unwrap_or_else(|| panic!("the awk after {open:?} closes at {close:?}"));
+        text[from..from + len].to_string()
+    }
+
+    /// What awk prints running `program` over `files` with `env` set; the run must succeed.
+    fn awk_output(program: &str, files: &[std::path::PathBuf], env: &[(&str, &str)]) -> String {
+        let out = std::process::Command::new("awk")
+            .arg(program)
+            .args(files)
+            .envs(env.iter().copied())
+            .output()
+            .expect("awk runs");
+        assert!(
+            out.status.success(),
+            "awk runs the block's program: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    /// The public functions of the tracked `tests/common` files that reach the checked-in tree,
+    /// by name: each whose body spells the package root `CARGO_MANIFEST_DIR` or a compile-time
+    /// include, then each whose body names one already found, to a fixpoint. The bodies are
+    /// read by the tree's one lexer, so a comment naming a function is no call.
+    fn tree_reaching_helpers() -> std::collections::BTreeSet<String> {
+        use crate::source_audit::{block_span, fn_sig_lines, tokenize, RawKind};
+        const PRIMITIVES: [&str; 3] = ["CARGO_MANIFEST_DIR", "include_str!(", "include_bytes!("];
+        struct Item {
+            name: String,
+            public: bool,
+            spelled: String,
+            names: std::collections::BTreeSet<String>,
+        }
+        let mut items = Vec::new();
+        for file in tracked_files(&["tests/common"]) {
+            if !file.ends_with(".rs") {
+                continue;
+            }
+            let text = read_text(&repo().join(&file));
+            let lines: Vec<&str> = text.lines().collect();
+            for sig in fn_sig_lines(&lines, &[]) {
+                let (start, end) = block_span(&lines, sig);
+                let chars: Vec<char> = lines[start..=end].join("\n").chars().collect();
+                let toks = tokenize(&chars);
+                let Some(at) = toks
+                    .iter()
+                    .position(|t| t.kind == RawKind::Keyword && t.text == "fn")
+                else {
+                    continue;
+                };
+                let Some(name) = toks.get(at + 1).filter(|t| t.kind == RawKind::Ident) else {
+                    continue;
+                };
+                items.push(Item {
+                    name: name.text.clone(),
+                    public: toks[..at].iter().any(|t| t.text == "pub"),
+                    spelled: toks.iter().map(|t| t.text.as_str()).collect(),
+                    names: toks[at + 2..]
+                        .iter()
+                        .filter(|t| t.kind == RawKind::Ident)
+                        .map(|t| t.text.clone())
+                        .collect(),
+                });
+            }
+        }
+        let mut found = std::collections::BTreeSet::new();
+        loop {
+            let more: Vec<String> = items
+                .iter()
+                .filter(|item| !found.contains(&item.name))
+                .filter(|item| {
+                    PRIMITIVES.iter().any(|p| item.spelled.contains(p))
+                        || item.names.iter().any(|n| found.contains(n))
+                })
+                .map(|item| item.name.clone())
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            found.extend(more);
+        }
+        items
+            .into_iter()
+            .filter(|item| item.public && found.contains(&item.name))
+            .map(|item| item.name)
+            .collect()
+    }
+
     /// Every agent text rigger ships, labelled: the committed personas and scaffold seeds, the
     /// fan-out helpers, the built-in instruction entries and the discipline every review-tier
     /// prompt carries.
@@ -3741,9 +3854,11 @@ mod tests {
     /// block, byte-identical in both and in no other persona: the implement gate set by name, the
     /// commands the author runs before it reports (clippy on both lanes, the audit gate with a
     /// clean `git status`, the boundary audit, the content gates, red-before-green and, when the
-    /// production hunks touch `src/` or `crates/`, every root test that reads a checked-in file
-    /// as text through a reader the block's command names, listed by that command and run on
-    /// both lanes), the whole suite left to the gates, the audit's closing rule, the test homes
+    /// production hunks touch `src/` or `crates/`, every root test that reaches the checked-in
+    /// tree - by the package root, a compile-time include, a read of a literal path or a
+    /// `tests/common` helper that resolves against the root or reads the root-relative path its
+    /// caller hands it, each anchor the block's command names - listed by that command and run
+    /// on both lanes), the whole suite left to the gates, the audit's closing rule, the test homes
     /// with the tool that searches them, the counted check: the roots a retired spelling is
     /// counted over with the command that counts it, no per-statement test-shape record, and the
     /// sentence walk's generators as commands over the unit's whole range on every round (the
@@ -3803,7 +3918,14 @@ mod tests {
             "every test binary your change touched, on both lanes",
             "When your production hunks touch `src/` or `crates/`",
             "`git ls-files 'tests/*.rs' | awk -F/ 'NF == 2' | xargs awk 'index($0, \
-             \"repo_text(\")",
+             \"CARGO_MANIFEST_DIR\") || index($0, \"include_str!(\") || index($0, \
+             \"include_bytes!(\") || index($0, \"read_to_string(\\\"\") || index($0, \
+             \"fs::read(\\\"\") || index($0, \"read_dir(\\\"\") || index($0, \
+             \"File::open(\\\"\") || index($0, \"read_text(Path::new(\\\"\") || index($0, \
+             \"read_audit_record\") || index($0, \"production_sources\") || index($0, \
+             \"collect_rs_files\") || index($0, \"collect_files\") || index($0, \
+             \"for_each_rs_file\")",
+            "run it again with `xargs cargo test --no-default-features` as its last stage",
             "The whole workspace suite on both lanes is the test and lane-no-default gates' run, \
              not yours",
             "`every_open_cluster_is_dispositioned`",
@@ -3932,10 +4054,7 @@ mod tests {
     /// not.
     #[test]
     fn the_author_rule_search_finds_both_terms_on_one_joined_line_and_never_one_alone() {
-        const OPEN: &str = "b='<noun phrase>' xargs awk '";
-        let text = committed_persona("rust-engineer.md");
-        let from = text.find(OPEN).expect("the block spells the rule search") + OPEN.len();
-        let program = &text[from..from + text[from..].find("'`").expect("the awk closes")];
+        let program = author_awk_program("b='<noun phrase>' xargs awk '", "'`");
         let dir = tempfile::tempdir().unwrap();
         let fixture = dir.path().join("fixture.md");
         std::fs::write(
@@ -3950,22 +4069,148 @@ mod tests {
              is an Exact Id too\n",
         )
         .unwrap();
-        let out = std::process::Command::new("awk")
-            .arg(program)
-            .arg(&fixture)
-            .env("a", "around")
-            .env("b", "exact id")
-            .output()
-            .expect("awk runs");
+        let printed = awk_output(
+            &program,
+            std::slice::from_ref(&fixture),
+            &[("a", "around"), ("b", "exact id")],
+        );
         let path = fixture.display();
         assert_eq!(
-            String::from_utf8(out.stdout).unwrap(),
+            printed,
             format!(
                 "{path}:1: /// bare names resolve where an `--around` seed is an exact id only\n\
                  {path}:8: is an Exact Id too\n\
                  2 hits\n"
             ),
             "both terms on one joined line are a hit, one term alone is not"
+        );
+    }
+
+    /// The author block's root-test selector finds a top-level test by each way it can reach
+    /// the checked-in tree: the package root `CARGO_MANIFEST_DIR`, a compile-time include, a
+    /// read given a literal path (a root test runs from the package root), the audit-record
+    /// reader and the walkers, each given the root-relative path its caller hands it, and every
+    /// public `tests/common` function that resolves against the root, derived from the tracked
+    /// `tests/common` files rather than listed, each found called plainly and by turbofish. A
+    /// read of a temporary file is no tree read, and the selector passes it by.
+    #[test]
+    fn the_author_text_test_selector_finds_every_way_a_root_test_reaches_the_tree() {
+        let helpers = tree_reaching_helpers();
+        for known in ["repo_root", "repo_text", "production_main_rs"] {
+            assert!(
+                helpers.contains(known),
+                "the derivation reads tests/common and finds {known}: {helpers:?}"
+            );
+        }
+        let program = author_awk_program("awk -F/ 'NF == 2' | xargs awk '", "' | sort -u");
+        let mut reaches: Vec<(String, String)> = [
+            (
+                "manifest_dir",
+                "let root = PathBuf::from(env!(\"CARGO_MANIFEST_DIR\"));",
+            ),
+            (
+                "include_str",
+                "const DOC: &str = include_str!(\"../README.md\");",
+            ),
+            (
+                "include_bytes",
+                "const RAW: &[u8] = include_bytes!(\"../Cargo.lock\");",
+            ),
+            (
+                "read_to_string",
+                "let lib = fs::read_to_string(\"src/lib.rs\").unwrap();",
+            ),
+            (
+                "fs_read",
+                "let manifest = std::fs::read(\"Cargo.toml\").unwrap();",
+            ),
+            (
+                "read_dir",
+                "let docs = std::fs::read_dir(\"docs\").unwrap();",
+            ),
+            (
+                "file_open",
+                "let lock = File::open(\"Cargo.lock\").unwrap();",
+            ),
+            (
+                "read_text_literal",
+                "let readme = read_text(Path::new(\"README.md\"));",
+            ),
+            (
+                "audit_record",
+                "let record = read_audit_record(\"docs/audit/core-lane-purity.json\");",
+            ),
+            (
+                "production_sources",
+                "let sources = production_sources(Path::new(\"src\"));",
+            ),
+            (
+                "collect_rs_files",
+                "collect_rs_files(Path::new(\"crates\"), &mut found);",
+            ),
+            (
+                "collect_files",
+                "collect_files(Path::new(\"docs\"), &mut found);",
+            ),
+            (
+                "collect_files_with_extension",
+                "collect_files_with_extension(Path::new(\"docs\"), \"md\", &mut found);",
+            ),
+            (
+                "for_each_rs_file",
+                "for_each_rs_file(Path::new(\"src\"), &mut visit);",
+            ),
+        ]
+        .into_iter()
+        .map(|(label, line)| (label.to_string(), line.to_string()))
+        .collect();
+        for name in &helpers {
+            reaches.push((
+                format!("call_{name}"),
+                format!("let _ = common::{name}(&at);"),
+            ));
+            reaches.push((
+                format!("turbofish_{name}"),
+                format!("let _ = {name}::<Vec<String>>(&at);"),
+            ));
+        }
+        const TEMPORARY: &str = "temporary_read";
+        let dir = tempfile::tempdir().unwrap();
+        let files: Vec<std::path::PathBuf> = reaches
+            .iter()
+            .map(|(label, line)| (label.as_str(), line.as_str()))
+            .chain([(
+                TEMPORARY,
+                "let out = read_text(&dir.path().join(\"out.txt\"));",
+            )])
+            .map(|(label, line)| {
+                let file = dir.path().join(format!("{label}.rs"));
+                std::fs::write(&file, format!("{line}\n")).unwrap();
+                file
+            })
+            .collect();
+        let printed: std::collections::BTreeSet<String> = awk_output(&program, &files, &[])
+            .lines()
+            .map(|path| {
+                std::path::Path::new(path)
+                    .file_stem()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        let missed: Vec<&str> = reaches
+            .iter()
+            .map(|(label, _)| label.as_str())
+            .filter(|label| !printed.contains(*label))
+            .collect();
+        assert!(
+            missed.is_empty(),
+            "the selector names no anchor for these ways to the tree: {missed:?}"
+        );
+        assert!(
+            !printed.contains(TEMPORARY),
+            "a read of a temporary file is no tree read"
         );
     }
 
@@ -4252,17 +4497,11 @@ mod tests {
     #[test]
     fn no_built_in_entry_persona_helper_or_production_line_names_mutation_testing() {
         let mut texts = every_shipped_agent_text();
-        let tracked = std::process::Command::new("git")
-            .arg("-C")
-            .arg(repo())
-            .args(["ls-files", "--", "crates", "src"])
-            .output()
-            .expect("git ls-files runs");
-        for file in String::from_utf8(tracked.stdout).unwrap().lines() {
+        for file in tracked_files(&["crates", "src"]) {
             if !file.ends_with(".rs") || file.split('/').any(|part| part == "tests") {
                 continue;
             }
-            let text = std::fs::read_to_string(repo().join(file)).unwrap();
+            let text = std::fs::read_to_string(repo().join(&file)).unwrap();
             let lines: Vec<&str> = text.lines().collect();
             let opens_test_module = |at: usize| {
                 lines[at].trim_start().starts_with("#[cfg(test)]")

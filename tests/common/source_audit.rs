@@ -5,7 +5,8 @@
 //! source reading those audits and `tests/boundary_audit.rs` share: which lines are test code,
 //! and which function encloses a line. And the one Rust lexer, [`tokenize`], that
 //! `tests/simplification_audit.rs` scans by and rule 4 of `tests/boundary_audit.rs` finds string
-//! literals with. Each suite uses the subset it needs (hence the module-wide `dead_code`
+//! literals with, and the binary's unit tests (mounted by `src/main.rs`) read `tests/common`'s
+//! functions by. Each suite uses the subset it needs (hence the module-wide `dead_code`
 //! allowance, as in `tests/common/mod.rs`).
 
 #![allow(dead_code)]
