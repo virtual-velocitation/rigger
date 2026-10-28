@@ -84,10 +84,10 @@ fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
 
     // The graph projection is opened by the sqlite `Projector` at the resolved store's local
     // `.rigger/graph.db`: `StoreLocation::file` names a file under the resolved `.rigger/`, which
-    // the one opener every store-resolving command shares hands the one write open
-    // (`open_graph_for_write`), and that open constructs the local `Projector` on the path it is
-    // handed. If a regression redirected it - e.g. through `resolve_store` - this canonical local
-    // construction would disappear.
+    // the one opener every command that appends and then folds shares (`StoreLocation::graph`)
+    // hands the one write open (`open_graph_for_write`), and that open constructs the local
+    // `Projector` on the path it is handed. If a regression redirected it - e.g. through
+    // `resolve_store` - this canonical local construction would disappear.
     assert!(
         src.contains(r#"open_graph_for_write(&self.file("graph.db")"#),
         "the graph projection must be opened for write at the resolved store's .rigger/graph.db \
