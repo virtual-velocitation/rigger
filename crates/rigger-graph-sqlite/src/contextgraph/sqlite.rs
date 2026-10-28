@@ -8130,8 +8130,7 @@ mod tests {
         create_cursor(&tx, 5).unwrap();
         let stands = [3, 5, 7].map(|at| {
             set_cursor(&tx, "caught_up", at).unwrap();
-            tx.query_row("SELECT position FROM caught_up", [], |r| r.get::<_, i64>(0))
-                .unwrap()
+            cursor_at(&tx, "caught_up").unwrap().unwrap()
         });
         assert_eq!(stands, [5, 5, 7]);
     }
