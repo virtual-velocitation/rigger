@@ -1583,7 +1583,7 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
     assert_eq!(
         git_invocations_of_setup(root),
         SETUP_OWN_GIT,
-        "a setup that owes no rebuild starts no git process beyond its scaffold's own"
+        "a setup that owes no rebuild starts no git process beyond its scaffold's and identity's own"
     );
 
     // A rebuild that meets no entry never starts the process.
@@ -1597,8 +1597,8 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
     assert_eq!(
         git_invocations_of_setup(bare.path()),
         SETUP_OWN_GIT,
-        "a rebuild that folds no entry and reports no identity behind its recording asks git for \
-         neither a root nor an object database"
+        "a rebuild that folds no entry and reports no identity behind its recording makes its \
+         scaffold's and identity's git invocations alone"
     );
     assert!(
         applied(&rigger_file(bare.path(), "graph.db"), position),
