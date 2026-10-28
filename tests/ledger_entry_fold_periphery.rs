@@ -11,9 +11,9 @@
 //! position that failed, or that the generic fold refused, folds afterwards and never answers
 //! that it was already applied.
 //!
-//! The owed mark is a file beside `graph.db`, so the projector that lost a fold is not the only
-//! one bound by it: a second projector on the same file refuses the ledger fold without asking for
-//! the batch, and still reads the generation.
+//! A fold that fails or is refused writes no owed mark beside `graph.db` (spec 124, AN APPENDER
+//! WAITS UNDER THE CEILING AND NEVER MARKS), so a second projector on the same file owes nothing
+//! and folds the position the first left unrecorded.
 //!
 //! Two projectors folding entries of one generation at once is a seam no single-connection test
 //! reaches: the second waits for the first's transaction and then meets a re-recording.
@@ -44,8 +44,8 @@ use common::fixtures::{
 };
 use rigger::contextgraph::sqlite::{Projector, RebuildSink};
 use rigger::contextgraph::{
-    wired, EntryFold, Error, Fold, Projection, KIND_DECISION, OWED_LOST_FOLD, REBUILD_OWED,
-    REL_CONTAINS, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
+    wired, EntryFold, Error, Fold, Projection, KIND_DECISION, REBUILD_OWED, REL_CONTAINS,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
 };
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
@@ -238,8 +238,9 @@ fn an_entry_folded_through_the_port_is_held_by_the_file_and_each_outcome_is_name
 
 #[test]
 fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_applied_row() {
-    // In memory there is no owed mark to write, so the projection owes nothing after a failure
-    // and the same position can be folded again.
+    // A failed fold writes no owed mark (spec 124, AN APPENDER WAITS UNDER THE CEILING AND NEVER
+    // MARKS), so the projection owes nothing after a failure and the same position can be folded
+    // again. The constructor's entries name no stream, so each error is its bare cause.
     let p = Projector::open(":memory:", "test").unwrap();
     let port: &dyn Projection = &p;
 
@@ -247,14 +248,11 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
     let first = entry(F, "h1", 7, 10);
     assert_eq!(
         fold_through_port(port, &first, common::fixtures::blob_unread()),
-        (
-            Err(common::fixtures::lost_fold(common::fixtures::BLOB_UNREAD)),
-            1
-        )
+        (Err(common::fixtures::BLOB_UNREAD.to_string()), 1)
     );
     assert!(
         !port.rebuild_owed().unwrap(),
-        "no mark is written in memory"
+        "the failed fold leaves the projection owing nothing"
     );
     assert_eq!(generation(port, IDENTITY), None);
     assert_eq!(node_ids(&p), Vec::<String>::new());
@@ -274,9 +272,9 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
             Ok(Some(vec![defines(F, "other", 5, true)]))
         ),
         (
-            Err(common::fixtures::lost_fold(
-                "GenerationIngested payload: missing field `prefix` at line 1 column 2"
-            )),
+            Err(
+                "GenerationIngested payload: missing field `prefix` at line 1 column 2".to_string()
+            ),
             0
         )
     );
@@ -305,7 +303,7 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
                 Event::new(TYPE_CODE_ENTITY_EXTRACTED, poison.to_vec()),
             ]))
         ),
-        (Err(common::fixtures::lost_fold(&rejected)), 1)
+        (Err(rejected), 1)
     );
     assert_eq!(
         generation(port, "gc/src/g.rs"),
@@ -360,74 +358,66 @@ fn a_ledger_entry_the_public_fold_refused_folds_afterwards_through_apply_generat
     assert_eq!(generation(port, IDENTITY), Some("h1".to_string()));
 }
 
+/// A second projector opened on the `graph.db` of `dir`, after a fold into it failed or was
+/// refused: it owes nothing and no owed mark stands beside the file (spec 124, AN APPENDER WAITS
+/// UNDER THE CEILING AND NEVER MARKS).
+fn a_second_projector_owing_nothing(dir: &tempfile::TempDir) -> Projector {
+    let second = Projector::open(&graph_db(dir), "test").unwrap();
+    assert_eq!(
+        (
+            second.owed_because().unwrap(),
+            common::fixtures::mark_stands_beside(graph_db(dir).as_ref())
+        ),
+        (Vec::<&str>::new(), false),
+        "the fold that failed or was refused wrote no mark"
+    );
+    second
+}
+
 #[test]
-fn the_mark_a_refused_public_fold_writes_binds_a_second_projector_on_the_file() {
+fn a_refused_public_fold_writes_no_mark_and_a_second_projector_folds_the_entry() {
     let dir = tempfile::tempdir().unwrap();
-    let path = graph_db(&dir);
-    let first = Projector::open(&path, "test").unwrap();
+    let first = Projector::open(&graph_db(&dir), "test").unwrap();
     assert_eq!(
         fold_through_port(&first, &entry(F, "h1", 7, 10), alpha_answer()),
         BATCH_ASKED
     );
-    let held = whole_json(&first);
-    assert_eq!(first.owed_because().unwrap(), Vec::<&str>::new());
+    let refused = entry(F, "h2", 8, 20);
     assert_eq!(
-        Fold::of(
-            wired(Some(&first as &dyn Projection)),
-            &entry(F, "h2", 8, 20)
-        ),
+        Fold::of(wired(Some(&first as &dyn Projection)), &refused),
         common::fixtures::entry_refusal()
     );
 
-    let second = Projector::open(&path, "test").unwrap();
-    let port: &dyn Projection = &second;
-    assert_eq!(second.owed_because().unwrap(), vec![OWED_LOST_FOLD]);
-    assert!(port.rebuild_owed().unwrap());
+    let second = a_second_projector_owing_nothing(&dir);
     assert_eq!(
         fold_through_port(
-            port,
-            &entry(F, "h2", 9, 20),
+            &second,
+            &refused,
             Ok(Some(vec![defines(F, "alpha", 2, true)]))
         ),
-        (Err(REBUILD_OWED.to_string()), 0),
-        "an owed graph refuses the ledger fold and never asks for the batch"
+        BATCH_ASKED,
+        "position 8 was not recorded by the refusal, so the second projector folds it"
     );
-    assert_eq!(
-        generation(port, IDENTITY),
-        Some("h1".to_string()),
-        "the generation still reads from a graph that owes its rebuild"
-    );
-    assert_eq!(whole_json(&second), held);
+    assert_eq!(generation(&second, IDENTITY), Some("h2".to_string()));
 }
 
 #[test]
-fn the_mark_a_failed_ledger_fold_writes_binds_a_second_projector_on_the_file() {
+fn a_failed_ledger_fold_writes_no_mark_and_a_second_projector_folds_the_position() {
     let dir = tempfile::tempdir().unwrap();
-    let path = graph_db(&dir);
-    let first = Projector::open(&path, "test").unwrap();
-    assert_eq!(first.owed_because().unwrap(), Vec::<&str>::new());
+    let first = Projector::open(&graph_db(&dir), "test").unwrap();
+    let failed = entry(F, "h1", 7, 10);
     assert_eq!(
-        fold_through_port(
-            &first,
-            &entry(F, "h1", 7, 10),
-            common::fixtures::blob_unread()
-        ),
-        (
-            Err(common::fixtures::lost_fold(common::fixtures::BLOB_UNREAD)),
-            1
-        )
+        fold_through_port(&first, &failed, common::fixtures::blob_unread()),
+        (Err(common::fixtures::BLOB_UNREAD.to_string()), 1)
     );
 
-    let second = Projector::open(&path, "test").unwrap();
-    let port: &dyn Projection = &second;
-    assert_eq!(second.owed_because().unwrap(), vec![OWED_LOST_FOLD]);
-    assert!(port.rebuild_owed().unwrap());
+    let second = a_second_projector_owing_nothing(&dir);
     assert_eq!(
-        fold_through_port(port, &entry(F, "h1", 7, 10), alpha_answer()),
-        (Err(REBUILD_OWED.to_string()), 0)
+        fold_through_port(&second, &failed, alpha_answer()),
+        BATCH_ASKED,
+        "position 7 was not recorded by the failure, so the second projector folds it"
     );
-    assert_eq!(generation(port, IDENTITY), None);
-    assert_eq!(node_ids(&second), Vec::<String>::new());
+    assert_eq!(generation(&second, IDENTITY), Some("h1".to_string()));
 }
 
 #[test]
@@ -918,8 +908,9 @@ fn the_ledger_form_answers_a_fold_it_could_not_make_beside_an_entry_that_is_on_t
     let log = |line: &str| said.say(line);
     let folding = folding_into(&store, Some(&p as &dyn Projection), &log);
 
-    // A batch event the fold rejects: the fold fails, the entry stays on the log, the graph is
-    // marked owing and holds no applied row for it.
+    // A batch event the fold rejects: the fold fails, the entry stays on the log, and the graph
+    // holds no applied row for it and writes no owed mark (spec 124, AN APPENDER WAITS UNDER THE
+    // CEILING AND NEVER MARKS).
     let poison = common::fixtures::POISON;
     let rejected = serde_json::from_slice::<serde_json::Value>(poison)
         .unwrap_err()
@@ -939,16 +930,17 @@ fn the_ledger_form_answers_a_fold_it_could_not_make_beside_an_entry_that_is_on_t
     let Some(failed_at) = failed.0 else {
         panic!("the store placed the entry whose fold failed");
     };
-    let lost = Fold::NotFolded(common::fixtures::lost_fold(&common::fixtures::graph_error(
-        &rejected,
-    )));
+    let lost = Fold::NotFolded(common::fixtures::lost_fold(
+        &common::fixtures::graph_error(&rejected),
+        common::fixtures::SETUP_PAYS,
+    ));
     assert_eq!(failed, (Some(failed_at), lost.clone(), None));
-    assert_eq!(p.owed_because().unwrap(), vec![OWED_LOST_FOLD]);
+    assert_eq!(p.owed_because().unwrap(), Vec::<&str>::new());
     assert_eq!(applied_positions(&graph_path), Vec::<u64>::new());
     assert_eq!(generation(&p, IDENTITY), None);
 
-    // The graph now owes its rebuild: the next entry is appended and its fold refused.
-    let refused = recorded(
+    // The graph owes nothing: the next entry is appended and folded with its batch.
+    let next = recorded(
         folding
             .append_entry_and_fold(
                 LEDGER_STREAM,
@@ -957,12 +949,14 @@ fn the_ledger_form_answers_a_fold_it_could_not_make_beside_an_entry_that_is_on_t
             )
             .unwrap(),
     );
-    let Some(refused_at) = refused.0 else {
-        panic!("the store placed the entry whose fold was refused");
+    let Some(next_at) = next.0 else {
+        panic!("the store placed the entry folded after the failure");
     };
-    let owed = common::fixtures::owed_refusal();
-    assert_eq!(refused, (Some(refused_at), owed.clone(), None));
-    assert_eq!(applied_positions(&graph_path), Vec::<u64>::new());
+    assert_eq!(
+        next,
+        (Some(next_at), Fold::Folded, Some(EntryFold::BatchAsked))
+    );
+    assert_eq!(applied_positions(&graph_path), vec![next_at]);
     assert_eq!(
         logged(&store)
             .into_iter()
@@ -970,20 +964,24 @@ fn the_ledger_form_answers_a_fold_it_could_not_make_beside_an_entry_that_is_on_t
             .collect::<Vec<_>>(),
         vec![
             (failed_at, "GenerationIngested".to_string()),
-            (refused_at, "GenerationIngested".to_string()),
+            (next_at, "GenerationIngested".to_string()),
         ]
     );
 
     // The form itself says nothing; its caller says a lost fold through the store's own log, in
     // the words every other lost fold is said in, and says nothing of a fold that was made.
     assert_eq!(said.lines(), Vec::<String>::new());
+    let owed = common::fixtures::owed_refusal();
     folding.say_fold_lost(1, &Fold::Folded);
     folding.say_fold_lost(1, &lost);
     folding.say_fold_lost(3, &owed);
     assert_eq!(
         said.lines(),
         vec![
-            common::fixtures::recorded_not_folded(1, &common::fixtures::lost_fold(&rejected)),
+            common::fixtures::recorded_not_folded(
+                1,
+                &common::fixtures::lost_fold(&rejected, common::fixtures::SETUP_PAYS),
+            ),
             common::fixtures::recorded_not_folded(3, REBUILD_OWED),
         ]
     );

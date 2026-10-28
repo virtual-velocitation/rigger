@@ -79,16 +79,20 @@ use common::cli::run_stream_identity;
 use common::cli::seed_owned;
 use common::cli::stopping_at_the_grounder;
 use common::cli::temp_store_project;
+use common::cli::unfolded_run_events;
 use common::cli::write_workflow_fixture;
 use common::cli::DriverTraces;
+use common::cli::LOG_LEFT_AS_IT_STANDS_LINE;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
 use common::cli::SPAWN;
+use common::cli::{
+    emit_folded_line, EMIT_FOLDED_ENDING, LOST_FOLD_REBUILD_LINE, REBUILT_LINE,
+    SEEDING_SKIPPED_LINE,
+};
 use common::cli::{pruned_from_the_rebuilt_graph, rebuilt_through_the_head};
 use common::cli::{rebuild_owed, setup_ok, user_version, version_and_owed};
 use common::cli::{rebuilt_for, rebuilt_for_a_lost_fold};
 use common::cli::{BOTH_CAUSES_REBUILD_LINE, OLDER_RULE_REBUILD_LINE};
-use common::cli::{EMIT_FOLDED_ENDING, LOST_FOLD_REBUILD_LINE, REBUILT_LINE, SEEDING_SKIPPED_LINE};
-use common::cli::{LOG_LEFT_AS_IT_STANDS_LINE, NOTHING_TO_SHED_LINE};
 use common::fixtures::caught_up_at;
 use common::fixtures::caught_up_line;
 use common::fixtures::cleanup;
@@ -102,16 +106,18 @@ use common::fixtures::owned_ids;
 use common::fixtures::past_the_horizon;
 use common::fixtures::rebuild_owed_note;
 use common::fixtures::wait_until_for;
-use common::fixtures::with_graph_locked;
 use common::fixtures::DISK_GAVE_OUT;
 use common::fixtures::D_BOOM;
+use common::fixtures::HELD_PAST_THE_BUSY_TIMEOUT;
 use common::fixtures::STEP_LOCK_REASON;
 use common::fixtures::{catch_up_failed_line, the_disk_gives_out_at_d_boom, the_disk_recovers};
-use common::fixtures::{graph_error, lost_fold, not_folded, DATABASE_IS_LOCKED, NOT_A_DATABASE};
+use common::fixtures::{graph_error, not_folded, NOT_A_DATABASE};
+use common::fixtures::{mark_owed_in, mark_stands_beside};
 use common::fixtures::{source_interrupted, SOURCE_INTERRUPTED};
+use common::fixtures::{stamp_in, with_graph_locked, with_graph_locked_for};
 use common::git::temp_git_project_with_commit;
 use rigger::contextgraph::sqlite::{
-    PruneStats, RebuildSink, Rebuilt, CATCH_UP_HORIZON, FOLD_BATCH, PROJECTION_VERSION,
+    PruneStats, RebuildSink, Rebuilt, Seeding, CATCH_UP_HORIZON, FOLD_BATCH, PROJECTION_VERSION,
 };
 use rigger::contextgraph::Fold;
 use rigger::contextgraph::{
@@ -122,6 +128,7 @@ use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{ContentIdentity, Event, EventStore, ExpectedRevision};
 use std::path::Path;
+use std::time::SystemTime;
 
 // ---------------------------------------------------------------------------------------
 // Harness
@@ -1565,8 +1572,7 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
 #[test]
 fn rigger_setup_names_both_causes_a_graph_db_owes_its_rebuild_for_and_pays_both() {
     let store = ReleaseEraStore::new();
-    let mark = rigger_file(store.root(), "graph.db.owed");
-    std::fs::write(&mark, b"").unwrap();
+    let mark = mark_owed_in(store.graph_db.parent().unwrap());
     let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
     assert_eq!(
         out.lines()
@@ -3190,14 +3196,15 @@ fn holds_table(db: &Path, table: &str) -> bool {
 }
 
 /// Given `rigger setup`'s rebuild has swapped its shadow in and is about to fold the tail the log
-/// gained, when an agent runs `rigger emit`, then the emit neither waits on the rebuild nor skips
-/// the fold: the file is current, so its event is folded at once; the tail then meets it exactly
-/// once, drops its cursor, and the graph is exactly the whole log's.
+/// gained, when an agent runs `rigger emit`, then the emit appends and waits under the ceiling on
+/// the rebuild's state rather than folding into the file the tail is still folding; once the tail
+/// has folded - the emitted event among its own - and dropped its cursor, the emit answers its
+/// event folded, met exactly once: the graph is exactly the whole log's (spec 124, AN APPENDER
+/// WAITS UNDER THE CEILING AND NEVER MARKS).
 #[test]
-fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_once() {
+fn an_emit_while_the_rebuild_folds_its_tail_waits_for_the_tail_and_is_met_exactly_once() {
     use rigger::contextgraph::sqlite::Projector;
     use std::sync::mpsc::channel;
-    use std::time::{Duration, Instant};
     let store = ReleaseEraStore::new();
     let head_before = store.log().last().unwrap().position;
     let (paused_tx, paused) = channel();
@@ -3242,37 +3249,34 @@ fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_on
         "the rebuilt file is swapped in and still owes its tail"
     );
 
-    let started = Instant::now();
-    let (out, err, ok) = run_rigger(
-        store.root(),
-        &[
-            "emit",
-            "DecisionMade",
-            r#"{"id":"d-tail","summary":"s","governs":["src/f.rs::alpha"],"supersedes":""}"#,
-        ],
+    let (appended, returned, paused_applied, (), (out, err, ok)) = emit_held_until(
+        || {
+            run_rigger(
+                store.root(),
+                &[
+                    "emit",
+                    "DecisionMade",
+                    r#"{"id":"d-tail","summary":"s","governs":["src/f.rs::alpha"],"supersedes":""}"#,
+                ],
+            )
+        },
+        || store.log().last().unwrap().position > head_before,
+        || applied(&store.graph_db, store.log().last().unwrap().position),
+        || resume.send(()).unwrap(),
     );
+    let paused_answer = (returned, paused_applied);
     let emitted = store.log().last().unwrap().position;
     assert_eq!(
-        (ok, out.as_str()),
-        (
-            true,
-            format!(
-                "emitted DecisionMade (position {emitted}) and folded it into the context graph\n"
-            )
-            .as_str()
-        ),
-        "an emit during the tail folds its event; stderr: {err}"
+        (appended, paused_answer),
+        (true, (false, false)),
+        "the emit appends its event while the tail is paused and waits on the rebuild's state \
+         rather than folding into the file its tail is folding"
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(4),
-        "the emit did not wait on the rebuild (the busy timeout is 5s)"
+    assert_eq!(
+        (ok, out),
+        (true, emit_folded_line(emitted)),
+        "the emit answers its event folded once the tail has folded it; stderr: {err}"
     );
-    assert!(
-        applied(&store.graph_db, emitted),
-        "the emitted event is folded before the tail runs"
-    );
-
-    resume.send(()).unwrap();
     assert_eq!(
         rebuilder.join().unwrap(),
         Some(Rebuilt::default()),
@@ -3294,6 +3298,36 @@ fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_on
 fn emit_decision(root: &Path, id: &str) -> (String, String, bool) {
     let args = format!(r#"{{"id":"{id}","summary":"s","governs":["src/f.rs"],"supersedes":""}}"#);
     run_rigger(root, &["emit", "DecisionMade", &args])
+}
+
+/// Run `emit`, a `rigger emit` whose fold is held off, on a thread of its own, and answer once it
+/// has returned: whether `appended` held within [`wait_until_for`]'s 200 polls - its event reached
+/// the log - and whether it had returned within 240 more, six seconds, longer than one busy
+/// timeout of the store's connection (`open_connection`), so an emit that folded after a single
+/// busy interval would have; then what `waiting` read while it had not, what `release`, which
+/// lets its fold through, answered, and its stdout, its stderr and whether it exited successfully.
+/// `release` runs before any of these is asserted, so a failing assertion never leaves the emit
+/// waiting out its ceiling.
+fn emit_held_until<W, R>(
+    emit: impl FnOnce() -> (String, String, bool) + Send,
+    appended: impl FnMut() -> bool,
+    waiting: impl FnOnce() -> W,
+    release: impl FnOnce() -> R,
+) -> (bool, bool, W, R, (String, String, bool)) {
+    std::thread::scope(|scope| {
+        let emitting = scope.spawn(emit);
+        let appended = wait_until_for(200, appended);
+        let returned = wait_until_for(240, || emitting.is_finished());
+        let waited = waiting();
+        let released = release();
+        (
+            appended,
+            returned,
+            waited,
+            released,
+            emitting.join().unwrap(),
+        )
+    })
 }
 
 /// Emit the decision `id` in `root` ([`emit_decision`]), which must succeed and fold it into
@@ -3321,53 +3355,204 @@ fn emit_the_first_decision_after_setup(root: &Path) {
     emit_the_first_decision(root);
 }
 
-/// Given a current `graph.db` another writer holds locked past the busy timeout, when an agent
-/// runs `rigger emit`, then the event is on the log and the emit reports its position, but it does
-/// not claim to have folded an event its fold failed to write: the graph is current, so no
-/// rebuild will ever re-derive it, and a claimed fold would hide a permanent divergence.
-#[test]
-fn an_emit_whose_fold_fails_does_not_claim_it_folded() {
+/// Emit the decision `id` in `root` ([`emit_decision`]) while another writer holds its `graph.db`
+/// write lock past the busy timeout ([`with_graph_locked_for`]).
+fn emit_behind_another_writers_lock(root: &Path, id: &str) -> (String, String, bool) {
+    with_graph_locked_for(&rigger_file(root, "graph.db"), || emit_decision(root, id))
+}
+
+/// Emit the decision `id` in `root` ([`emit_decision`]) while the seeding `rigger setup` runs of
+/// its `graph.db` cursor holds the file's write lock past the busy timeout: the seeding's source
+/// streams the log's positions, then sleeps [`HELD_PAST_THE_BUSY_TIMEOUT`] inside the seeding's
+/// transaction before the emit starts. The seeding runs, finds nothing lost and seeds the cursor
+/// at the head the emit's append has not yet passed.
+fn emit_behind_a_seedings_lock(root: &Path, id: &str) -> (String, String, bool) {
+    let log = read_run_events(root);
+    let (seeding, started) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let seeder = scope.spawn(move || {
+            let positions: Vec<u64> = log.iter().map(|e| e.position).collect();
+            common::cli::open_graph(root).seed_cursor(
+                &mut |sink| {
+                    sink(&positions)?;
+                    seeding.send(()).unwrap();
+                    std::thread::sleep(HELD_PAST_THE_BUSY_TIMEOUT);
+                    Ok(())
+                },
+                &mut |position| stamp_in(&log, position),
+                positions.last().copied(),
+                SystemTime::now(),
+            )
+        });
+        started.recv().unwrap();
+        let emitted = emit_decision(root, id);
+        assert_eq!(
+            seeder.join().unwrap().unwrap(),
+            Seeding::Ran { lost: false },
+            "the seeding ran under its lock and found nothing lost"
+        );
+        emitted
+    })
+}
+
+/// Given a `graph.db` `first` left in `root`, when a writer holds its write lock past the busy
+/// timeout while an agent runs `rigger emit` (`emit`), then the emit waits under the ceiling and,
+/// once the lock is released, folds its event and says so, its cursor standing where `cursor`
+/// answers for the event's position; no `graph.db.owed` is written, the next emit folds, and the
+/// next `rigger setup` owes no rebuild (spec 124, AN APPENDER WAITS UNDER THE CEILING AND NEVER
+/// MARKS).
+fn an_emit_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing(
+    first: fn(&Path),
+    emit: fn(&Path, &str) -> (String, String, bool),
+    cursor: fn(u64) -> Option<u64>,
+) {
     let dir = temp_store_project();
     let root = dir.path();
-    let (out, err, ok) = emit_decision(root, "d-first");
-    assert!(
-        ok && out.ends_with("and folded it into the context graph\n"),
-        "an emit into an unlocked graph folds; stdout: {out} stderr: {err}"
-    );
+    first(root);
     let graph_db = rigger_file(root, "graph.db");
-    let (out, err, ok) = with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
-    let log = read_run_events(root);
-    let last = log.last().unwrap();
+    let (out, err, ok) = emit(root, "d-locked");
+    let locked = run_log_head(root);
     assert_eq!(
-        (log.len(), last.type_.as_str()),
-        (2, "DecisionMade"),
-        "the event is on the log"
-    );
-    assert!(
-        !applied(&graph_db, last.position),
-        "the locked fold wrote nothing"
-    );
-    assert_eq!(
-        (ok, out),
         (
-            true,
-            format!(
-                "emitted DecisionMade (position {}); {}\n",
-                last.position,
-                not_folded(&lost_fold(&graph_error(DATABASE_IS_LOCKED)))
-            )
+            ok,
+            out,
+            applied(&graph_db, locked),
+            caught_up_at(&graph_db),
+            mark_stands_beside(&graph_db)
         ),
-        "the emit reports the position and the fold it could not make, with the reason; \
+        (true, emit_folded_line(locked), true, cursor(locked), false),
+        "the emit waits out the lock, folds its event once it is released and marks nothing; \
          stderr: {err}"
+    );
+    emit_folding(root, "d-after");
+    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        common::cli::rebuild_lines(&out),
+        Vec::<String>::new(),
+        "the next setup owes no rebuild; stdout: {out}"
     );
 }
 
+rigger::test_cases! {
+    /// A first emit alone leaves the file without the `caught_up` cursor, so the locked emit folds
+    /// directly, waiting out the contended open, and the file stays without the cursor.
+    an_emit_folding_directly_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing:
+        an_emit_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing(
+            emit_the_first_decision,
+            emit_behind_another_writers_lock,
+            |_| None,
+        );
+    /// A setup seeds the file's cursor, so the locked emit folds through its calls of the folding
+    /// store's catch-up, waiting a busy timeout after each call that advanced nothing, and the
+    /// cursor stands at its event.
+    an_emit_folding_through_its_calls_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing:
+        an_emit_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing(
+            emit_the_first_decision_after_setup,
+            emit_behind_another_writers_lock,
+            Some,
+        );
+    /// A first emit leaves the file without the cursor and a seeding holds the lock while it seeds
+    /// one, so the locked emit starts folding directly, waits out the contended open, finds the
+    /// cursor inside its transaction and folds through its calls, the cursor standing at its event.
+    an_emit_folding_directly_behind_a_seedings_lock_folds_through_the_seeded_cursor_and_marks_nothing:
+        an_emit_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing(
+            emit_the_first_decision,
+            emit_behind_a_seedings_lock,
+            Some,
+        );
+}
+
+/// Given a seeded `graph.db` in a repository whose tree holds a fresh, uncommitted generation of
+/// `src/f.rs`, when the run's sink records that generation as a ledger entry through the ledger
+/// form - the entry's blob hashed, and so written, before the append - the tree moves on past it,
+/// and `between` runs after the append and before the fold, then the entry folds once, at the
+/// generation it recorded, answering `outcome`: the appender's projector asks no re-extraction,
+/// its cursor stands at the log's head and no `graph.db.owed` is written (spec 124, THE OWN ENTRY
+/// and THE BLOB IS WRITTEN).
+#[cfg(feature = "symbols")]
+fn an_own_entry_folds_once_at_the_generation_it_recorded(
+    between: fn(&Path),
+    outcome: rigger::contextgraph::EntryFold,
+) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    common::fixtures::write_text(root, "src/f.rs", "pub fn recorded() {}\n");
+    let handed = common::fixtures::handed_by_the_walk(root.to_str().unwrap(), "gc/src/f.rs");
+    let graph = common::cli::open_graph_with_its_log(root).with_reextraction(|| {
+        Box::new(|_: &Event| panic!("the appender folds its own entry, asking no re-extraction"))
+    });
+    let recorded = rigger::ingest::entry_of_batch(
+        root,
+        &handed.as_keyed(),
+        handed.excluded,
+        |_| Ok(None),
+        &graph,
+        &|bytes: &[u8]| rigger::worktree::hash_blob(root, bytes),
+    )
+    .unwrap()
+    .unwrap();
+    common::fixtures::write_text(root, "src/f.rs", "pub fn moved_on() {}\n");
+    let opened = || {
+        between(root);
+        rigger::contextgraph::wired(Some(&graph))
+    };
+    let done = common::cli::with_run_store(root, |store| {
+        rigger::ingest::FoldingStore::new(store, Some(opened), &|_| {})
+            .append_entry_and_fold(
+                rigger::conductor::STREAM,
+                &recorded.entry.event(recorded.batch.len()),
+                recorded.batch,
+            )
+            .unwrap()
+    });
+    let graph_db = rigger_file(root, "graph.db");
+    assert_eq!(
+        (
+            done.fold,
+            done.outcome,
+            common::fixtures::held_generations(&graph, &["gc/src/f.rs"]),
+            caught_up_at(&graph_db),
+            mark_stands_beside(&graph_db)
+        ),
+        (
+            Fold::Folded,
+            Some(outcome),
+            vec![Some(handed.generation())],
+            Some(run_log_head(root)),
+            false
+        ),
+        "the entry folds once at its recorded generation, the cursor at the head, no mark"
+    );
+}
+
+rigger::test_cases! {
+    /// No other process folds between the append and the appender's call, so its call folds its
+    /// own entry from the batch it holds.
+    #[cfg(feature = "symbols")]
+    an_own_entry_no_other_process_folded_folds_from_its_batch:
+        an_own_entry_folds_once_at_the_generation_it_recorded(
+            |_| {},
+            rigger::contextgraph::EntryFold::BatchAsked,
+        );
+    /// An agent's `rigger emit` between the append and the appender's call catches the file up
+    /// to its own event, re-extracting the young entry from the object database the hash wrote
+    /// its blob into - the tree no longer holds those bytes - so the appender's call finds the
+    /// entry applied.
+    #[cfg(feature = "symbols")]
+    an_own_entry_a_second_process_folded_from_the_object_database_answers_already_applied:
+        an_own_entry_folds_once_at_the_generation_it_recorded(
+            |root| emit_folding(root, "d-between"),
+            rigger::contextgraph::EntryFold::AlreadyApplied,
+        );
+}
+
 /// Given a current `graph.db` another writer holds locked past the busy timeout, when an agent's
-/// `rigger mcp` session calls `rigger_emit`, then the event is on the log and the tool answers its
-/// position and that it was not folded, with the reason: the graph is current, so no rebuild will
-/// ever re-derive the event, and an answer that looked like a fold would hide the divergence.
+/// `rigger mcp` session calls `rigger_emit`, then the tool waits under the ceiling and, once the
+/// lock is released, answers its event's position folded, and no `graph.db.owed` is written
+/// (spec 124, AN APPENDER WAITS UNDER THE CEILING AND NEVER MARKS).
 #[test]
-fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
+fn an_mcp_emit_behind_a_held_lock_answers_its_event_folded_once_it_is_released() {
     let dir = temp_store_project();
     let root = dir.path();
     emit_the_first_decision(root);
@@ -3387,7 +3572,7 @@ fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
     );
 
     let graph_db = rigger_file(root, "graph.db");
-    let locked = with_graph_locked(&graph_db, || {
+    let locked = with_graph_locked_for(&graph_db, || {
         mcp.tool_call("rigger_emit", decision("d-locked"))
     });
     mcp.finish_cleanly();
@@ -3401,21 +3586,17 @@ fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
     );
     assert_eq!(
         locked["result"]["structuredContent"],
-        common::fixtures::emit_answer(
-            last.position,
-            Some(&common::fixtures::lost_fold(&common::fixtures::graph_error(
-                common::fixtures::DATABASE_IS_LOCKED
-            )))
-        ),
-        "the tool answers the position and the fold it could not make, with the reason; got: {locked}"
+        common::fixtures::emit_answer(last.position, None),
+        "the tool answers the position folded once the lock is released; got: {locked}"
     );
     assert_eq!(
         (
             applied(&graph_db, free_at),
-            applied(&graph_db, last.position)
+            applied(&graph_db, last.position),
+            mark_stands_beside(&graph_db)
         ),
-        (true, false),
-        "the free emit folded and the locked fold wrote nothing"
+        (true, true, false),
+        "both emits folded and the lock left no mark"
     );
 }
 
@@ -3570,11 +3751,11 @@ fn a_result_at_the_old_rule_is_on_the_log_and_says_it_skipped_the_fold() {
 }
 
 /// Given a current `graph.db` another writer holds locked past the busy timeout, when a courier
-/// runs `rigger result`, then the result is on the log and the courier exits successfully, but it
-/// says the result was not folded, with the reason: the graph is current, so no rebuild will ever
-/// re-derive it, and a silent miss would keep an adjudicator's discarded findings in grounding.
+/// runs `rigger result`, then the courier waits under the ceiling and, once the lock is released,
+/// folds the result and says nothing of the fold, and no `graph.db.owed` is written (spec 124, AN
+/// APPENDER WAITS UNDER THE CEILING AND NEVER MARKS).
 #[test]
-fn a_result_whose_fold_fails_says_it_was_not_folded() {
+fn a_result_behind_a_held_lock_is_folded_once_it_is_released() {
     let dir = temp_store_project();
     let root = dir.path();
     let (out, err, ok) = emit_decision(root, "d-first");
@@ -3593,7 +3774,7 @@ fn a_result_whose_fold_fails_says_it_was_not_folded() {
         "a result into an unlocked graph folds silently; stderr: {err}"
     );
     let graph_db = rigger_file(root, "graph.db");
-    let (out, err, ok) = with_graph_locked(&graph_db, || {
+    let (out, err, ok) = with_graph_locked_for(&graph_db, || {
         run_rigger(root, &["result", "v/implementer#0", "second"])
     });
     let log = read_run_events(root);
@@ -3604,21 +3785,24 @@ fn a_result_whose_fold_fails_says_it_was_not_folded() {
         "the locked result is on the log"
     );
     assert_eq!(
-        (applied(&graph_db, free), applied(&graph_db, last.position)),
-        (true, false),
-        "the free result folded and the locked fold wrote nothing"
+        (
+            applied(&graph_db, free),
+            applied(&graph_db, last.position),
+            mark_stands_beside(&graph_db)
+        ),
+        (true, true, false),
+        "both results folded and the lock left no mark"
     );
     assert_eq!(
         (ok, out),
         (
             true,
             format!(
-                "recorded result for v/implementer#0 (position {})\n{}\n",
-                last.position,
-                not_folded(&lost_fold(&graph_error(DATABASE_IS_LOCKED)))
+                "recorded result for v/implementer#0 (position {})\n",
+                last.position
             )
         ),
-        "the result reports the fold it could not make, with the reason; stderr: {err}"
+        "the result folded once the lock was released says nothing of the fold; stderr: {err}"
     );
 }
 
@@ -3685,102 +3869,21 @@ fn an_identity_migration_into_a_graph_that_owes_its_rebuild_says_its_decision_wa
     );
 }
 
-/// Given a current `graph.db` whose fold of an emit was lost to another writer's lock, when the
-/// agent emits again, then the graph owes its rebuild: the next emit appends and says it was not
-/// folded because the rebuild is owed, a read-only inspection says the rebuild is owed, and once
-/// `rigger setup` has paid it every event of the log is folded - the lost one included - and an
-/// emit folds again.
-#[test]
-fn a_fold_lost_to_a_lock_marks_the_graph_owed_until_setup_rebuilds_it() {
-    let dir = temp_store_project();
-    let root = dir.path();
-    emit_the_first_decision(root);
-    let graph_db = rigger_file(root, "graph.db");
-    let (out, err, _) = with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
-    assert!(
-        out.ends_with(&format!(
-            "; {}\n",
-            not_folded(&lost_fold(&graph_error(DATABASE_IS_LOCKED)))
-        )),
-        "the locked emit's fold is lost; stdout: {out} stderr: {err}"
-    );
-    let lost = run_log_head(root);
-
-    let (out, err, ok) = emit_decision(root, "d-after");
-    let after = run_log_head(root);
-    assert_eq!(
-        (ok, out),
-        (
-            true,
-            format!(
-                "emitted DecisionMade (position {after}); {}\n",
-                not_folded(&graph_error(rigger::contextgraph::REBUILD_OWED))
-            )
-        ),
-        "the graph now owes its rebuild, so the next emit says so; stderr: {err}"
-    );
-    let (_, err, ok) = run_rigger(root, &["graph", "--around", "src/f.rs"]);
-    assert!(
-        ok && err.contains(&rebuild_owed_note()),
-        "a read-only inspection says the rebuild is owed; stderr: {err}"
-    );
-    let owed_log = read_run_events(root).len();
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
-    assert_eq!(
-        (ok, read_run_events(root).len()),
-        (false, owed_log),
-        "the migration refuses a graph a lost fold left owed and sheds nothing; stdout: {out}"
-    );
-    assert!(
-        err.contains(&rigger::contextgraph::rebuild_owed_refusal(
-            "reset --derived"
-        )),
-        "the migration's refusal names `rigger setup`; stderr: {err}"
-    );
-
-    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
-    assert_eq!(
-        out.lines()
-            .filter(|l| l.starts_with("rebuilding graph.db"))
-            .collect::<Vec<_>>(),
-        vec![LOST_FOLD_REBUILD_LINE],
-        "setup names the cause the graph owes its rebuild for - the lost fold, not an older \
-         rule; stdout: {out}"
-    );
-    assert_eq!(
-        (applied(&graph_db, lost), applied(&graph_db, after)),
-        (true, true),
-        "setup's rebuild folds the lost event and the one emitted while owed"
-    );
-    emit_folding(root, "d-rebuilt");
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
-    assert_eq!(
-        (ok, out),
-        (
-            true,
-            format!("{NOTHING_TO_SHED_LINE}{LOG_LEFT_AS_IT_STANDS_LINE}")
-        ),
-        "once setup has paid the rebuild the migration runs, over a log holding no derived \
-         event; stderr: {err}"
-    );
-}
-
-/// Given a `graph.db` a lost fold left owed, on a project whose identity is minted, so no identity
-/// migration waits for the next setup, when the operator removes the graph file and runs `rigger
-/// setup`, then setup drops the mark the removed file left behind and rebuilds a fresh graph from
-/// the log - its own open creates the file, an empty ledger beside a non-empty log - the lost event
-/// folded with the rest, so the next emit folds into it rather than inheriting a debt that file no
-/// longer carries.
+/// Given a `graph.db` an older binary's lost fold left owed - an event on the log it misses, and
+/// the owed mark beside it - on a project whose identity is minted, so no identity migration waits
+/// for the next setup, when the operator removes the graph file and runs `rigger setup`, then
+/// setup drops the mark the removed file left behind and rebuilds a fresh graph from the log - its
+/// own open creates the file, an empty ledger beside a non-empty log - the lost event folded with
+/// the rest, so the next emit folds into it rather than inheriting a debt that file no longer
+/// carries.
 #[test]
 fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_folds() {
     let dir = temp_store_project();
     let root = dir.path();
     emit_the_first_decision_after_setup(root);
     let graph_db = rigger_file(root, "graph.db");
-    let mark = rigger_file(root, "graph.db.owed");
-    with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
-    let locked = run_log_head(root);
-    assert!(mark.exists(), "the lost fold marks the graph owed");
+    let locked = append_unfolded_decision_named(root, "d-locked");
+    let mark = mark_owed_in(graph_db.parent().unwrap());
     remove_the_store_file(root, "graph.db");
 
     setup_ok(root, &[("RIGGER_NPM", "true")]);
@@ -3856,61 +3959,6 @@ fn the_next_setup_pays_the_missing_event(root: &Path, lost: u64) {
         ok && !out.contains("graph.db"),
         "a paid rebuild is not owed or reported again; stdout: {out} stderr: {err}"
     );
-}
-
-/// Given a current `graph.db`, when an agent's `rigger emit` loses its fold to another writer's
-/// lock while the directory the owed mark lives in is not writable, then the emit appends and
-/// says it did not fold, naming the mark it could not write, and records nothing else - no mark,
-/// no table in the file - yet the loss is not forgotten with the process: once a later event folds
-/// above it and it is older than the catch-up horizon, the next `rigger setup` finds the event
-/// missing from the graph's ledger and pays it.
-#[test]
-fn a_fold_lost_where_its_mark_cannot_be_written_is_paid_by_the_next_setup_from_the_ledger() {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = temp_store_project();
-    let root = dir.path();
-    emit_the_first_decision(root);
-    let graph_db = rigger_file(root, "graph.db");
-    let mark = rigger_file(root, "graph.db.owed");
-    let rigger_dir = graph_db.parent().unwrap().to_path_buf();
-    // Both files' write-ahead files stay in place while these are open, so the append and the
-    // lock need no new file in the directory the mark cannot be written to.
-    let keepers = [rigger_file(root, "events.db"), graph_db.clone()].map(|db| {
-        let keeper = rusqlite::Connection::open(db).unwrap();
-        keeper
-            .query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| {
-                r.get::<_, i64>(0)
-            })
-            .unwrap();
-        keeper
-    });
-    std::fs::set_permissions(&rigger_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let (out, err, ok) = with_graph_locked(&graph_db, || emit_decision(root, "d-lost"));
-    std::fs::set_permissions(&rigger_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-    drop(keepers);
-    let lost = run_log_head(root);
-    let prefix = format!(
-        "emitted DecisionMade (position {lost}); {}",
-        not_folded(&format!(
-            "{}; the mark that graph.db owes its rebuild was not written (",
-            graph_error(DATABASE_IS_LOCKED)
-        ))
-    );
-    let suffix = lost_fold("graph.db.owed: Permission denied (os error 13))") + "\n";
-    assert_eq!(
-        (
-            ok,
-            out.starts_with(&prefix) && out.ends_with(&suffix),
-            mark.exists(),
-            holds_table(&graph_db, "lost_fold"),
-            applied(&graph_db, lost)
-        ),
-        (true, true, false, false, false),
-        "the emit appends, says it did not fold and names the unwritten mark, and records the \
-         loss nowhere but in the ledger it misses; stdout: {out} stderr: {err}"
-    );
-    bury_below_an_applied_event(root);
-    the_next_setup_pays_the_missing_event(root, lost);
 }
 
 /// Given an event on the log that no fold ever reached - its process died between the append and
@@ -4299,13 +4347,8 @@ fn every_event_rigger_s_own_verbs_append_is_folded_so_setup_owes_no_rebuild() {
         ok,
         "resume-unit on the escalated unit must succeed; stderr: {err}"
     );
-    let graph_db = rigger_file(root, "graph.db");
     assert_eq!(
-        read_run_events(root)
-            .into_iter()
-            .filter(|e| !applied(&graph_db, e.position))
-            .map(|e| (e.position, e.type_))
-            .collect::<Vec<_>>(),
+        unfolded_run_events(root),
         Vec::<(u64, String)>::new(),
         "every event the verbs appended is in the graph's ledger"
     );
@@ -4361,15 +4404,11 @@ fn a_fresh_runs_mint_is_folded(args: &[&str]) {
     let dir = fresh_run_project();
     let root = dir.path();
     assert_stopped_at_the_grounder(&run_rigger(root, args), &format!("rigger {args:?}"));
-    let graph_db = rigger_file(root, "graph.db");
     let log = run_log(root);
     assert_eq!(
         (
             log.iter().filter(|(_, t)| t == "RunStarted").count(),
-            log.iter()
-                .filter(|(p, _)| !applied(&graph_db, *p))
-                .cloned()
-                .collect::<Vec<_>>(),
+            unfolded_run_events(root),
         ),
         (1, Vec::<(u64, String)>::new()),
         "the fresh boundary is on the log and every appended event is in the graph's ledger; \
@@ -4377,10 +4416,10 @@ fn a_fresh_runs_mint_is_folded(args: &[&str]) {
     );
 }
 
-/// Given a project whose `graph.db` owes its rebuild (a fold lost to another writer's lock), when
-/// the operator begins a new run with `args`, then it refuses naming `rigger setup` before it
-/// appends anything: no boundary is minted that the graph would miss, and neither the log nor
-/// `graph.db` changes.
+/// Given a project whose `graph.db` owes its rebuild (it records an older fold rule), when the
+/// operator begins a new run with `args`, then it refuses naming `rigger setup` before it appends
+/// anything: no boundary is minted that the graph would miss, and neither the log nor `graph.db`
+/// changes.
 fn a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
     args: &[&str],
     command: &str,
@@ -4390,14 +4429,7 @@ fn a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
     common::cli::seed_store(root);
     emit_the_first_decision(root);
     let graph_db = rigger_file(root, "graph.db");
-    let (out, err, _) = with_graph_locked(&graph_db, || emit_decision(root, "d-locked"));
-    assert!(
-        out.ends_with(&format!(
-            "; {}\n",
-            not_folded(&lost_fold(&graph_error(DATABASE_IS_LOCKED)))
-        )),
-        "the locked emit's fold is lost, so the graph owes its rebuild; stdout: {out} stderr: {err}"
-    );
+    common::fixtures::owe_a_rebuild(&common::cli::open_graph(root), &graph_db);
     let (log, graph) = (run_log(root), std::fs::read(&graph_db).unwrap());
 
     let (out, err, ok) = run_rigger(root, args);
@@ -4469,15 +4501,15 @@ fn reset_runs_on_a_graph_that_owes_its_rebuild_refuses_naming_setup_and_writes_n
     );
 }
 
-/// Given a current `graph.db` another writer holds locked, when the operator runs `rigger graph
-/// build` over a project with two source files, then the build records both files' ledger
-/// entries, counts the batch events of both - a lost fold and a refused one each count - and says
-/// they were not folded, naming the first fold it lost (the lock) rather than the owed refusal
-/// the second entry met because of it; the graph now owes its rebuild, so the next build refuses
-/// naming `rigger setup`.
+/// Given a current `graph.db` another writer holds locked past the busy timeout, when the operator
+/// runs `rigger graph build` over a project with two source files, then the build waits under the
+/// ceiling and, once the lock is released, records both files' ledger entries, folds each with
+/// its batch, counts the batch events of both and says nothing of the fold; no `graph.db.owed` is
+/// written, so the next build runs (spec 124, AN APPENDER WAITS UNDER THE CEILING AND NEVER
+/// MARKS).
 #[cfg(feature = "symbols")]
 #[test]
-fn a_graph_build_whose_fold_is_lost_to_a_lock_says_so_and_the_next_build_refuses() {
+fn a_graph_build_behind_a_held_lock_folds_its_entries_once_it_is_released() {
     let dir = temp_store_project();
     let root = dir.path();
     emit_the_first_decision(root);
@@ -4491,22 +4523,13 @@ fn a_graph_build_whose_fold_is_lost_to_a_lock_says_so_and_the_next_build_refuses
     let graph_db = rigger_file(root, "graph.db");
     let before = read_run_events(root).len();
 
-    let (out, err, ok) = with_graph_locked(&graph_db, || run_rigger(root, &["graph", "build"]));
+    let (out, err, ok) = with_graph_locked_for(&graph_db, || run_rigger(root, &["graph", "build"]));
     let recorded = common::fixtures::recorded_entry_keys(&read_run_events(root)[before..]);
     assert_eq!(
         (ok, out),
-        (
-            true,
-            common::cli::graph_build_line(
-                6,
-                &format!(
-                    "; {}",
-                    not_folded(&lost_fold(&graph_error(DATABASE_IS_LOCKED)))
-                )
-            )
-        ),
-        "the build counts both entries' batch events and names the first fold it lost - the \
-         lock - never the owed refusal the later entry then met; stderr: {err}"
+        (true, common::cli::graph_build_line(6, "")),
+        "the build counts both entries' batch events and, its folds made once the lock was \
+         released, says nothing of the fold; stderr: {err}"
     );
     assert_eq!(
         (recorded.clone(), read_run_events(root).len() - before),
@@ -4527,23 +4550,27 @@ fn a_graph_build_whose_fold_is_lost_to_a_lock_says_so_and_the_next_build_refuses
         ],
         "sanity: the two entries stand for two and four batch events"
     );
+    assert_eq!(
+        (unfolded_run_events(root), mark_stands_beside(&graph_db)),
+        (Vec::<(u64, String)>::new(), false),
+        "both entries are in the graph's ledger and the lock left no mark"
+    );
 
     let (out, err, ok) = run_rigger(root, &["graph", "build"]);
-    assert!(
-        !ok && err.contains(&format!(
-            "graph build: {}",
-            rigger::contextgraph::REBUILD_OWED
-        )),
-        "the next build refuses naming `rigger setup`; stdout: {out} stderr: {err}"
+    assert_eq!(
+        (ok, out),
+        (true, common::cli::graph_build_line(0, "")),
+        "the next build runs over the unchanged tree; stderr: {err}"
     );
 }
 
-/// Given a run whose `graph.db` another writer holds locked while `rigger step` records the run's
-/// events, when the step runs, then it still advances the run and says on stderr that the events
-/// it recorded were not folded, with the reason; the graph now owes its rebuild, so the next step
-/// refuses naming `rigger setup` instead of advancing the run over a graph that lost them.
+/// Given a run whose `graph.db` another writer holds locked past the busy timeout while `rigger
+/// step` records the run's events, when the step runs, then it waits under the ceiling, advances
+/// the run and, once the lock is released, folds every event it recorded and says nothing of the
+/// fold; no `graph.db.owed` is written (spec 124, AN APPENDER WAITS UNDER THE CEILING AND NEVER
+/// MARKS).
 #[test]
-fn a_step_whose_fold_is_lost_to_a_lock_says_so_and_the_next_step_refuses() {
+fn a_step_behind_a_held_lock_folds_the_events_it_records_once_it_is_released() {
     let dir = common::cli::temp_repoless_project();
     let root = dir.path();
     common::cli::seed_store(root);
@@ -4558,24 +4585,17 @@ fn a_step_whose_fold_is_lost_to_a_lock_says_so_and_the_next_step_refuses() {
     assert!(ok, "the spawn's result is recorded; stderr: {err}");
 
     let graph_db = rigger_file(root, "graph.db");
-    let (out, err, ok) = with_graph_locked(&graph_db, || run_rigger(root, &["step"]));
+    let (out, err, ok) = with_graph_locked_for(&graph_db, || run_rigger(root, &["step"]));
     assert_eq!(
-        (ok, out.as_str()),
-        (true, "{\"wave\":[],\"done\":true}\n"),
-        "the step replays the result and finishes the run; stderr: {err}"
+        (ok, out.as_str(), err.contains("run event(s)")),
+        (true, "{\"wave\":[],\"done\":true}\n", false),
+        "the step replays the result, finishes the run and, its events folded once the lock was \
+         released, says nothing of the fold; stderr: {err}"
     );
-    assert!(
-        err.contains(&format!(
-            "; {}\n",
-            not_folded(&lost_fold(&graph_error(DATABASE_IS_LOCKED)))
-        )),
-        "the step says the events it recorded were not folded; stderr: {err}"
-    );
-
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(
-        !ok && err.contains(&format!("step: {}", rigger::contextgraph::REBUILD_OWED)),
-        "the next step refuses naming `rigger setup`; stdout: {out} stderr: {err}"
+    assert_eq!(
+        (unfolded_run_events(root), mark_stands_beside(&graph_db)),
+        (Vec::<(u64, String)>::new(), false),
+        "every event of the run is in the graph's ledger and the lock left no mark"
     );
 }
 
@@ -4613,12 +4633,12 @@ fn last_integration(root: &Path) -> u64 {
 
 /// Given a run no driver drives whose unit's branch is landed on the run branch, when the operator
 /// runs `rigger reset --runs`, then it records the unit's `UnitIntegrated`, folds it, and its
-/// closing line claims nothing more; when another writer holds `graph.db` locked while it closes
-/// the next landed unit, the closing line says that unit's integration was not folded, with the
-/// reason, and the graph now owes its rebuild, so the next `rigger reset --runs` refuses naming
-/// `rigger setup`.
+/// closing line claims nothing more; when another writer holds `graph.db` locked past the busy
+/// timeout while it closes the next landed unit, it waits under the ceiling and, once the lock is
+/// released, folds that unit's integration too, its closing line claiming nothing more, and no
+/// `graph.db.owed` is written (spec 124, AN APPENDER WAITS UNDER THE CEILING AND NEVER MARKS).
 #[test]
-fn reset_runs_says_whether_the_integration_it_recorded_for_a_landed_unit_was_folded() {
+fn reset_runs_folds_the_integration_it_records_for_a_landed_unit_behind_a_held_lock_too() {
     use common::git::{git_ok, init_repo};
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -4650,25 +4670,20 @@ fn reset_runs_says_whether_the_integration_it_recorded_for_a_landed_unit_was_fol
         &[("UnitStarted", r#"{"id":"u2","branch":"rigger/u2"}"#)],
     );
     let tip = land_on_the_run_branch(root, "rigger/u2");
-    let (out, err, _) = with_graph_locked(&graph_db, || run_rigger(root, &["reset", "--runs"]));
+    let (out, err, ok) =
+        with_graph_locked_for(&graph_db, || run_rigger(root, &["reset", "--runs"]));
     assert_eq!(
-        out.lines().next().unwrap_or_default(),
-        format!(
-            "{}; {}",
-            closed_unit_line("u2", &tip),
-            not_folded(&lost_fold(&graph_error(DATABASE_IS_LOCKED)))
+        (ok, out.lines().next().unwrap_or_default().to_string()),
+        (true, closed_unit_line("u2", &tip)),
+        "the integration folded once the lock was released claims nothing more; stderr: {err}"
+    );
+    assert_eq!(
+        (
+            applied(&graph_db, last_integration(root)),
+            mark_stands_beside(&graph_db)
         ),
-        "the lost integration's line says it was not folded, with the reason; stderr: {err}"
-    );
-    assert!(
-        !applied(&graph_db, last_integration(root)),
-        "the integration is on the log but not in the graph"
-    );
-
-    let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
-    assert!(
-        !ok && err.contains(&rigger::contextgraph::rebuild_owed_refusal("reset --runs")),
-        "the next reset --runs refuses naming `rigger setup`; stdout: {out} stderr: {err}"
+        (true, false),
+        "the integration is in the graph and the lock left no mark"
     );
 }
 
@@ -6070,7 +6085,7 @@ fn reset_derived_refuses_a_rebuild_stopped_in_its_tail_until_setup_finishes_it()
         rigger_file(root, "graph.db.rebuild").exists(),
     );
     let in_its_tail = refused();
-    common::fixtures::owe_a_rebuild(&common::cli::open_graph(root));
+    common::fixtures::owe_a_rebuild(&common::cli::open_graph(root), &graph_db);
     let owing_too = refused();
     let (out, err, finished_ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     let finished = (finished_ok, holds_table(&graph_db, "rebuild_cursor"));

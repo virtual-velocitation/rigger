@@ -194,6 +194,13 @@ const FOLD_LOCK_CEILING: Duration = Duration::from_secs(600);
 /// direct fold waits one busy timeout of its connection and gives up.
 pub const CATCH_UP_HORIZON: Duration = Duration::from_secs(FOLD_LOCK_CEILING.as_secs() + 60);
 
+/// The ceiling `held` as a cause text spells it (spec 124, CAUSE TEXTS): in whole minutes at or
+/// above one minute, else in whole seconds.
+fn held_for(held: Duration) -> String {
+    let _ = held;
+    String::new()
+}
+
 /// Drop the [`REBUILD_STATE`] a rebuild kept, both tables in one transaction ([`in_transaction`]).
 const DROP_REBUILD_STATE: &str = "
 DROP TABLE rebuild_cursor;
@@ -366,6 +373,14 @@ pub struct Projector {
     /// What each [`Projector::catch_up`] call builds its re-extraction from, once installed
     /// ([`Projector::with_reextraction`]): with none a call re-extracts nothing.
     reextraction: Option<ReextractionFactory>,
+    /// The longest an appender in [`Projector::guarded`] waits for its own positions to fold
+    /// (spec 124, THE APPENDER): [`FOLD_LOCK_CEILING`], unless a test injects another
+    /// ([`Projector::with_lock_ceiling`]).
+    lock_ceiling: Duration,
+    /// Whether this projector's process holds the rebuild lock of its file
+    /// ([`Projector::with_rebuild_lock`]): an appender meeting the file's rebuild state then
+    /// returns at once, since only that process's tail folds its event.
+    holds_rebuild_lock: bool,
 }
 
 /// The event log a [`Projector::catch_up`] folds forward from: the opener installed
@@ -616,6 +631,8 @@ impl Projector {
             owed_mark: owed_mark(path),
             log: None,
             reextraction: None,
+            lock_ceiling: FOLD_LOCK_CEILING,
+            holds_rebuild_lock: false,
         })
     }
 
@@ -975,6 +992,24 @@ impl Projector {
         factory: impl Fn() -> Box<Reextract<'static>> + Send + Sync + 'static,
     ) -> Self {
         self.reextraction = Some(Box::new(factory));
+        self
+    }
+
+    /// This projector, its appender waiting at most `ceiling` for its own positions to fold
+    /// ([`Projector::guarded`], spec 124, THE APPENDER) in place of [`FOLD_LOCK_CEILING`]: what a
+    /// test injects, compiled for this crate's tests alone, since production never calls it.
+    #[cfg(test)]
+    pub(crate) fn with_lock_ceiling(mut self, ceiling: Duration) -> Self {
+        self.lock_ceiling = ceiling;
+        self
+    }
+
+    /// This projector, knowing its process holds `held`, the rebuild lock [`Projector::lock_rebuild`]
+    /// answered, when that lock is of this projector's own file (spec 124, THE APPENDER); none, or
+    /// another file's, records nothing.
+    pub fn with_rebuild_lock(mut self, held: Option<&RebuildLock>) -> Self {
+        self.holds_rebuild_lock = false;
+        let _ = held;
         self
     }
 
@@ -6538,12 +6573,14 @@ mod tests {
         );
     }
 
-    /// A batch that fails to fold into a current `graph.db` leaves it behind the log for good, so
-    /// the failure marks it owed: the same projector and a fresh open both say so and refuse every
-    /// later fold, until a rebuild from the log pays it - which folds what was lost, drops the mark
-    /// and is then not owed again.
+    /// A batch that fails to fold into a current `graph.db` writes no mark (spec 124, THE
+    /// APPENDER): the same projector and a fresh open owe nothing and the next fold is not
+    /// refused, while the ledger misses the lost position below the one folded after it - so once
+    /// the hole is older than the catch-up horizon, the seeding `rigger setup` runs finds the
+    /// prefix violated and a rebuild from the log pays it, folding what was lost, and is then not
+    /// owed again.
     #[test]
-    fn a_failed_fold_into_a_current_file_marks_it_owed_until_a_rebuild_pays_it() {
+    fn a_failed_fold_into_a_current_file_writes_no_mark_and_a_rebuild_pays_its_old_hole() {
         use crate::contextgraph::Fold;
         let decision = |id: &str, file: &str, position: u64| {
             let payload = serde_json::json!({
@@ -6555,7 +6592,11 @@ mod tests {
         };
         let mut poison = Event::new(TYPE_DECISION_MADE, crate::test_support::POISON.to_vec());
         poison.position = 2;
-        let log = [decision("d1", "a.rs", 1), poison, decision("d3", "b.rs", 3)];
+        let log = crate::test_support::backdated(&[
+            decision("d1", "a.rs", 1),
+            poison,
+            decision("d3", "b.rs", 3),
+        ]);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
@@ -6573,21 +6614,18 @@ mod tests {
             Fold::NotFolded(_)
         ));
         assert_eq!(
-            (p.rebuild_owed().unwrap(), mark.exists()),
-            (true, true),
-            "the failed fold marks the file owed"
-        );
-        assert_eq!(
-            crate::test_support::fold_of(&p, &log[2..]),
-            crate::test_support::owed_refusal(),
-            "a marked file refuses every later fold"
-        );
-        assert!(
-            Projector::open(path, "test")
-                .unwrap()
-                .rebuild_owed()
-                .unwrap(),
-            "a fresh open sees the mark"
+            (
+                p.rebuild_owed().unwrap(),
+                mark.exists(),
+                crate::test_support::fold_of(&p, &log[2..]),
+                Projector::open(path, "test")
+                    .unwrap()
+                    .rebuild_owed()
+                    .unwrap(),
+            ),
+            (false, false, Fold::Folded, false),
+            "the failed fold writes no mark: neither the same projector nor a fresh open owes, and \
+             the next fold is not refused"
         );
         drop(p);
 
@@ -6596,7 +6634,7 @@ mod tests {
         assert_eq!(
             (rebuilt, mark.exists(), p.rebuild_owed().unwrap()),
             (true, false, false),
-            "the rebuild pays the debt and drops the mark"
+            "the rebuild pays the ledger's old hole, writing no mark"
         );
         let governed: Vec<String> = live_governs(&p).into_iter().map(|g| g.1).collect();
         assert_eq!(
@@ -7327,8 +7365,7 @@ mod tests {
             )
             .unwrap()
         });
-        let mark = crate::test_support::owed_mark_in(dir.path());
-        std::fs::write(&mark, b"").unwrap();
+        let mark = crate::test_support::mark_owed_in(dir.path());
         assert_eq!(
             (
                 seeding.clone(),
@@ -8904,43 +8941,38 @@ mod tests {
         e
     }
 
-    /// A batch that fails to fold into a current `graph.db` - lost to another writer's lock -
-    /// where the owed mark cannot be written (its directory is not writable) records nothing
-    /// else: the fold's error comes back naming the unwritten mark, no process holds the debt,
-    /// and the file itself carries it in its ledger, which misses the lost position below the
-    /// next batch's - so it outlives the process, and once the hole is older than the catch-up
-    /// horizon the seeding `rigger setup` runs finds the prefix violated and its rebuild pays it.
+    /// A batch another writer's write lock holds off a current `graph.db` past its ceiling writes
+    /// no mark (spec 124, THE APPENDER): the fold answers the write-lock text, no process holds
+    /// the debt, and the file itself carries it in its ledger, which misses the lost position
+    /// below the next batch's - so it outlives the process, and once the hole is older than the
+    /// catch-up horizon the seeding `rigger setup` runs finds the prefix violated and its rebuild
+    /// pays it. Its events name no stream, so the text carries no suffix (CAUSE TEXTS).
     #[test]
-    fn a_lost_fold_whose_mark_cannot_be_written_is_owed_by_the_ledger_alone() {
+    fn a_fold_lost_past_its_ceiling_writes_no_mark_and_is_owed_by_the_ledger_alone() {
         use crate::contextgraph::Fold;
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
         let mark = crate::test_support::owed_mark_in(dir.path());
         let log = decisions_through(3);
-        let p = Projector::open(path, "test").unwrap();
+        let p = Projector::open(path, "test")
+            .unwrap()
+            .with_lock_ceiling(Duration::ZERO);
         crate::test_support::folds(&p, &log[..1]);
         impatient(&p);
         let folded = crate::test_support::with_graph_locked(Path::new(path), || {
-            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-            let folded = crate::test_support::fold_of(&p, &log[1..]);
-            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-            folded
+            crate::test_support::fold_of(&p, &log[1..])
         });
         assert_eq!(
             (folded, p.owed_because().unwrap(), mark.exists()),
             (
-                Fold::NotFolded(crate::test_support::lost_fold(&format!(
-                    "{}; the mark that graph.db owes its rebuild was not written ({}: Permission \
-                     denied (os error 13))",
-                    crate::test_support::graph_error(crate::test_support::DATABASE_IS_LOCKED),
-                    mark.display()
-                ))),
+                Fold::NotFolded(crate::test_support::graph_error(
+                    &crate::test_support::lock_held_past("0 s")
+                )),
                 Vec::<&str>::new(),
                 false,
             ),
-            "the fold's error names the unwritten mark, and nothing else records the loss"
+            "the fold answers the write-lock text past its ceiling, and nothing records the loss"
         );
         crate::test_support::folds(&p, &log[2..]);
         drop(p);
@@ -8949,6 +8981,451 @@ mod tests {
             &crate::test_support::backdated(&log),
             2,
         );
+    }
+
+    /// `events` appended to the run stream of the project `test` in the log beside the graph file
+    /// at `path` ([`logged`]), read back as the copies their appender folds: each with the position
+    /// and the stream the log gave it.
+    fn appended_copies(path: &str, events: &[Event]) -> Vec<Event> {
+        logged(&*the_unscoped_log_beside(path)().unwrap(), events);
+        let page = the_log_beside(path)()
+            .unwrap()
+            .read_all_page(0, &crate::eventstore::Filter::default(), 4096)
+            .unwrap();
+        page[page.len() - events.len()..].to_vec()
+    }
+
+    /// Whether the appender of `copies` answered past `ceiling`: the clock has run longer than it
+    /// since the store stamped the lowest of them, the instant the appender's ceiling counts from
+    /// (spec 124, THE APPENDER).
+    fn answered_past(copies: &[Event], ceiling: Duration) -> bool {
+        SystemTime::now()
+            .duration_since(copies[0].recorded_at)
+            .unwrap()
+            > ceiling
+    }
+
+    /// Spec 124, CAUSE TEXTS: a ceiling reads in whole minutes at or above one minute and in whole
+    /// seconds below it, each rounded down.
+    #[test]
+    fn a_ceiling_reads_in_whole_minutes_from_one_minute_and_in_whole_seconds_below() {
+        let reads = [
+            0, 999, 1_000, 59_999, 60_000, 61_000, 119_999, 120_000, 600_000,
+        ]
+        .map(|millis| held_for(Duration::from_millis(millis)));
+        assert_eq!(
+            reads,
+            ["0 s", "0 s", "1 s", "59 s", "1 min", "1 min", "1 min", "2 min", "10 min"],
+            "whole seconds below a minute, whole minutes from one"
+        );
+    }
+
+    /// Spec 124, THE APPENDER: the write-lock fixture holds another writer's lock past the busy
+    /// timeout a projector's connection waits on it, the interval its appender waits between
+    /// calls, and inside the appender's ceiling.
+    #[test]
+    fn the_write_lock_fixture_holds_past_the_busy_timeout_and_inside_the_ceiling() {
+        let (_dir, path) = crate::test_support::temp_graph_db();
+        let p = Projector::open(&path, "test").unwrap();
+        let busy: u64 = p
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        let held = crate::test_support::HELD_PAST_THE_BUSY_TIMEOUT;
+        assert_eq!(
+            (held > Duration::from_millis(busy), held < FOLD_LOCK_CEILING),
+            (true, true),
+            "the fixture holds the lock past the busy timeout and inside the ceiling"
+        );
+    }
+
+    /// Spec 124, THE APPENDER and CAUSE TEXTS: an appender another writer's write lock holds off
+    /// past its ceiling returns not-folded with the write-lock text, its own position unfolded and
+    /// no mark written, the text ending with its path's suffix: after its call, on a file carrying
+    /// `caught_up` through a projector handed the log, the call-run suffix; after its direct
+    /// fold's retried open, on a file without the cursor or through a projector handed no log, the
+    /// direct suffix; and for a copy naming no stream, folded directly whatever the file carries,
+    /// none.
+    #[test]
+    fn an_appender_held_off_past_its_ceiling_answers_the_write_lock_text_and_marks_nothing() {
+        use crate::contextgraph::Fold;
+        use crate::test_support::{graph_error, lost_fold, CATCH_UP_PAYS, SETUP_PAYS};
+        let held = graph_error(&crate::test_support::lock_held_past("0 s"));
+        // Each case: what stands in the file, whether the projector is handed the log, whether the
+        // appender's copy keeps the stream the log gave it, and what its fold answers.
+        let cases: [(&str, &[Stand], bool, bool, String); 4] = [
+            ("a call", &[], true, true, lost_fold(&held, CATCH_UP_PAYS)),
+            (
+                "a direct fold on a file without the cursor",
+                &[without_a_cursor],
+                true,
+                true,
+                lost_fold(&held, SETUP_PAYS),
+            ),
+            (
+                "a direct fold through a projector handed no log",
+                &[],
+                false,
+                true,
+                lost_fold(&held, SETUP_PAYS),
+            ),
+            (
+                "a direct fold of a copy naming no stream",
+                &[],
+                true,
+                false,
+                held.clone(),
+            ),
+        ];
+        for (case, stands, handed, streamed, text) in cases {
+            let (_dir, path, p) = seeded_graph();
+            for stand in stands {
+                stand(&path);
+            }
+            let mut copies = appended_copies(&path, &decisions_at([1]));
+            if !streamed {
+                copies[0].stream.clear();
+            }
+            let p = match handed {
+                true => p.with_log(the_log_beside(&path)),
+                false => p,
+            }
+            .with_lock_ceiling(Duration::ZERO);
+            impatient(&p);
+            let folded = crate::test_support::with_graph_locked(Path::new(&path), || {
+                crate::test_support::fold_of(&p, &copies)
+            });
+            assert_eq!(
+                (folded, applied(&p, 1), owed_mark(&path).unwrap().exists()),
+                (Fold::NotFolded(text), false, false),
+                "{case}: the write-lock text with its path's suffix, nothing folded and no mark"
+            );
+        }
+    }
+
+    /// Spec 124, THE APPENDER and CAUSE TEXTS: past its ceiling an appender still short of the
+    /// cursor returns not-folded with the cause of its last call and the call-run suffix: after a
+    /// call that advanced short of its position, or one that met the log's head below it, the
+    /// catch-up text; after one the file's rebuild state held inert, the unfinished-rebuild text.
+    /// None writes the mark.
+    #[test]
+    fn past_its_ceiling_an_appender_answers_the_cause_of_its_last_call() {
+        use crate::contextgraph::Fold;
+        use crate::test_support::{graph_error, lost_fold, CATCH_UP_PAYS};
+        let short = lost_fold(
+            &graph_error(&crate::test_support::catch_up_short_after("0 s")),
+            CATCH_UP_PAYS,
+        );
+        // Each case: the appender's copies, given the graph file's path, and what its fold answers.
+        type Case = (&'static str, fn(&str) -> Vec<Event>, String);
+        let cases: [Case; 3] = [
+            (
+                "a call that advanced short of it",
+                |path| {
+                    let copies = appended_copies(path, &decisions_at(1..=FOLD_BATCH as u64 + 1));
+                    copies[FOLD_BATCH..].to_vec()
+                },
+                short.clone(),
+            ),
+            (
+                "a call that met the log's head below it",
+                |_| {
+                    let mut copy = decision_at("d1", "a.rs", 1);
+                    copy.stream = rigger_domain::run::STREAM.to_string();
+                    vec![copy]
+                },
+                short,
+            ),
+            (
+                "a call the file's rebuild state held inert",
+                |path| {
+                    a_standing_tail(path);
+                    appended_copies(path, &decisions_at([1]))
+                },
+                lost_fold(
+                    &graph_error(crate::test_support::UNFINISHED_REBUILD),
+                    CATCH_UP_PAYS,
+                ),
+            ),
+        ];
+        for (case, copies, text) in cases {
+            let (_dir, path, p) = seeded_graph();
+            let copies = copies(&path);
+            let p = p
+                .with_log(the_log_beside(&path))
+                .with_lock_ceiling(Duration::ZERO);
+            assert_eq!(
+                (
+                    crate::test_support::fold_of(&p, &copies),
+                    applied(&p, copies[0].position),
+                    owed_mark(&path).unwrap().exists(),
+                ),
+                (Fold::NotFolded(text), false, false),
+                "{case}: the last call's cause with the call-run suffix, nothing folded, no mark"
+            );
+        }
+    }
+
+    /// Spec 124, THE OWN ENTRY: an appender whose own ledger entry fails its calls waits them out
+    /// under its ceiling, keeping the batch it was handed - asked once, however many calls retry
+    /// the entry - and past the ceiling returns not-folded with the last call's error and the
+    /// call-run suffix, the entry unfolded and no mark written.
+    #[test]
+    fn an_own_entry_failing_its_calls_is_waited_out_under_the_ceiling_asking_its_batch_once() {
+        use crate::test_support::{lost_fold, BLOB_UNREAD, CATCH_UP_PAYS};
+        let (_dir, path, p) = seeded_graph();
+        let copies = appended_copies(&path, &[crate::test_support::unresolved_entry_at(1)]);
+        let ceiling = Duration::from_secs(1);
+        let p = p.with_log(the_log_beside(&path)).with_lock_ceiling(ceiling);
+        impatient(&p);
+        let asked = std::cell::Cell::new(0);
+        let folded = generations::ledger_entries::apply_entry(
+            &p,
+            &copies[0],
+            crate::test_support::blob_unread(),
+            &asked,
+        );
+        assert_eq!(
+            (
+                folded,
+                asked.get(),
+                answered_past(&copies, ceiling),
+                applied(&p, 1),
+                owed_mark(&path).unwrap().exists(),
+            ),
+            (
+                Err(lost_fold(BLOB_UNREAD, CATCH_UP_PAYS)),
+                1,
+                true,
+                false,
+                false,
+            ),
+            "the entry's failure is waited out past the ceiling, its batch asked once, no mark"
+        );
+    }
+
+    /// Spec 124, THE APPENDER and CAUSE TEXTS: an appender returns at once, inside its ceiling,
+    /// when a call fails at a position other than its own ledger entry, with the call's error and
+    /// the call-run suffix; when a call meets an older fold rule another writer stamped, with the
+    /// refusal of a file that owes its rebuild; and when its own position is passed over, with the
+    /// cause it was passed over for and no suffix. None writes the mark.
+    #[test]
+    fn an_appender_returns_at_once_on_a_foreign_failure_an_owed_rebuild_or_its_position_passed_over(
+    ) {
+        use crate::contextgraph::Fold;
+        use crate::test_support::{graph_error, lost_fold, BLOB_UNREAD, CATCH_UP_PAYS};
+        // Each case: the appender's copies and its projector, given the graph file's path, its
+        // log and the projector handed that log; and what its fold answers, given the copies.
+        type Handed = fn(&str, &CountedLog, Projector) -> (Vec<Event>, Projector);
+        type Answer = fn(&[Event]) -> Fold;
+        let cases: [(&str, Handed, Answer); 3] = [
+            (
+                "a foreign entry failing its call",
+                |path, _, p| {
+                    let copies = appended_copies(
+                        path,
+                        &[
+                            crate::test_support::unresolved_entry_at(1),
+                            decision_at("d2", "a.rs", 2),
+                        ],
+                    );
+                    let p = p.with_reextraction(|| {
+                        Box::new(|_: &Event| crate::test_support::blob_unread())
+                    });
+                    (copies[1..].to_vec(), p)
+                },
+                |_| Fold::NotFolded(lost_fold(&graph_error(BLOB_UNREAD), CATCH_UP_PAYS)),
+            ),
+            (
+                "an older fold rule stamped under the call",
+                |path, log, p| {
+                    let copies = appended_copies(path, &decisions_at([1]));
+                    let standing = path.to_string();
+                    log.after_call(0, move |_| folded_under_an_older_rule(&standing));
+                    (copies, p)
+                },
+                |_| crate::test_support::owed_refusal(),
+            ),
+            (
+                "its own position passed over",
+                |path, _, p| {
+                    let poisoned = crate::test_support::poisoned_decision_at(1);
+                    (appended_copies(path, &[poisoned]), p)
+                },
+                |copies| {
+                    let (_, cause) = crate::test_support::rejected_row(&copies[0]);
+                    Fold::NotFolded(graph_error(&cause))
+                },
+            ),
+        ];
+        let ceiling = Duration::from_secs(30);
+        for (case, handed, answer) in cases {
+            let (_dir, path, p, log) = catching_up();
+            let (copies, p) = handed(&path, &log, p.with_lock_ceiling(ceiling));
+            assert_eq!(
+                (
+                    crate::test_support::fold_of(&p, &copies),
+                    answered_past(&copies, ceiling),
+                    owed_mark(&path).unwrap().exists(),
+                ),
+                (answer(&copies), false, false),
+                "{case}: answered at once, inside the ceiling, writing no mark"
+            );
+        }
+    }
+
+    /// Spec 124, THE APPENDER: an appender meeting its file's rebuild state waits it out under its
+    /// ceiling, unless its own process holds that file's rebuild lock - the tell
+    /// [`Projector::with_rebuild_lock`] records - when it returns at once, since only that
+    /// process's tail folds the event; either way it answers the unfinished-rebuild text and the
+    /// call-run suffix, writing no mark. Another file's lock, or none, records nothing.
+    #[test]
+    fn an_appender_meeting_rebuild_state_returns_at_once_only_holding_its_file_s_rebuild_lock() {
+        use crate::contextgraph::Fold;
+        use crate::test_support::{graph_error, lost_fold, CATCH_UP_PAYS, UNFINISHED_REBUILD};
+        // Each case: the graph file whose rebuild lock the projector is handed, given its own
+        // file's path, or none; its ceiling; and whether it answers past that ceiling.
+        type Locked = fn(&str) -> Option<String>;
+        let cases: [(&str, Locked, Duration, bool); 3] = [
+            (
+                "its own file's lock",
+                |path| Some(path.to_string()),
+                Duration::from_secs(30),
+                false,
+            ),
+            (
+                "another file's lock",
+                |path| Some(format!("{path}.other")),
+                Duration::from_secs(1),
+                true,
+            ),
+            ("no lock", |_| None, Duration::from_secs(1), true),
+        ];
+        for (case, locked, ceiling, past) in cases {
+            let (_dir, path, p) = seeded_graph();
+            a_standing_tail(&path);
+            let copies = appended_copies(&path, &decisions_at([1]));
+            let held = locked(&path).map(|file| Projector::lock_rebuild(&file).unwrap());
+            let p = p
+                .with_log(the_log_beside(&path))
+                .with_lock_ceiling(ceiling)
+                .with_rebuild_lock(held.as_ref());
+            impatient(&p);
+            assert_eq!(
+                (
+                    crate::test_support::fold_of(&p, &copies),
+                    answered_past(&copies, ceiling),
+                    owed_mark(&path).unwrap().exists(),
+                ),
+                (
+                    Fold::NotFolded(lost_fold(&graph_error(UNFINISHED_REBUILD), CATCH_UP_PAYS)),
+                    past,
+                    false,
+                ),
+                "{case}: the unfinished-rebuild text, past the ceiling only when waited out"
+            );
+        }
+    }
+
+    /// Spec 124, THE APPENDER: an appender's own positions fold - on a file carrying `caught_up`
+    /// through a projector handed the log, by its call, the cursor moved past them; on a file
+    /// whose cursor another writer dropped under that call, and on one without it, by its direct
+    /// fold - and no mark is written.
+    #[test]
+    fn an_appender_s_positions_fold_by_its_call_or_directly_where_the_file_has_no_cursor() {
+        use crate::contextgraph::Fold;
+        // Each case: what stands in the file before the fold, what stands in it the moment the
+        // call reads the log, and where the cursor stands after the fold.
+        type Stands = &'static [Stand];
+        let cases: [(&str, Stands, Stands, Option<u64>); 3] = [
+            ("its call", &[], &[], Some(1)),
+            (
+                "its direct fold once the cursor is dropped under its call",
+                &[],
+                &[without_a_cursor],
+                None,
+            ),
+            (
+                "its direct fold on a file without the cursor",
+                &[without_a_cursor],
+                &[],
+                None,
+            ),
+        ];
+        for (case, before, under, cursor) in cases {
+            let (_dir, path, p, log) = catching_up();
+            for stand in before {
+                stand(&path);
+            }
+            let standing = path.clone();
+            log.after_call(0, move |_| {
+                for stand in under {
+                    stand(&standing);
+                }
+            });
+            let copies = appended_copies(&path, &decisions_at([1]));
+            assert_eq!(
+                (
+                    crate::test_support::fold_of(&p, &copies),
+                    applied(&p, 1),
+                    crate::test_support::caught_up_at(Path::new(&path)),
+                    owed_mark(&path).unwrap().exists(),
+                ),
+                (Fold::Folded, true, cursor, false),
+                "{case}: folded, the cursor where it stands, no mark"
+            );
+        }
+    }
+
+    /// Spec 124, THE OWN ENTRY: an appender's own ledger entry folds by its call from the batch it
+    /// was handed, asked once, and answers [`EntryFold::BatchAsked`]; one another writer's call
+    /// folded first, from its own re-extraction, answers [`EntryFold::AlreadyApplied`], the
+    /// appender's batch never asked. Either way the cursor stands past it.
+    #[test]
+    fn an_own_entry_folds_from_its_batch_or_answers_already_applied_once_another_folded_it() {
+        // Each case: whether another writer catches the file up before the appender folds, and
+        // what the appender's fold answers.
+        let cases = [
+            ("its call", false, EntryFold::BatchAsked, 1),
+            (
+                "another writer's call first",
+                true,
+                EntryFold::AlreadyApplied,
+                0,
+            ),
+        ];
+        for (case, another_first, outcome, asks) in cases {
+            let (_dir, path, p, _log) = catching_up();
+            let copies = appended_copies(&path, &[crate::test_support::unresolved_entry_at(1)]);
+            if another_first {
+                let q = another_writer(&path)
+                    .with_reextraction(|| Box::new(|_: &Event| Ok(Some(Vec::new()))));
+                assert_eq!(
+                    q.catch_up().map_err(|e| e.0),
+                    Ok(CatchUp::Advanced { recorded: 1 }),
+                    "{case}: the other writer folds the entry"
+                );
+            }
+            let asked = std::cell::Cell::new(0);
+            let folded = generations::ledger_entries::apply_entry(
+                &p,
+                &copies[0],
+                Ok(Some(Vec::new())),
+                &asked,
+            );
+            assert_eq!(
+                (
+                    folded,
+                    asked.get(),
+                    crate::test_support::caught_up_at(Path::new(&path)),
+                    owed_mark(&path).unwrap().exists(),
+                ),
+                (Ok(outcome), asks, Some(1), false),
+                "{case}: the entry's outcome, its batch's asks, the cursor past it, no mark"
+            );
+        }
     }
 
     /// An event the log holds that no fold ever reached - its process died between the append
@@ -8982,7 +9459,7 @@ mod tests {
         let log = crate::test_support::backdated(&decisions_through(3));
         let p = Projector::open(path.to_str().unwrap(), "test").unwrap();
         crate::test_support::folds(&p, &[log[0].clone(), log[2].clone()]);
-        std::fs::write(crate::test_support::owed_mark_in(dir.path()), b"").unwrap();
+        crate::test_support::mark_owed_in(dir.path());
         assert_eq!(
             (
                 owed_against_the_log(&p, &log),
@@ -9030,7 +9507,7 @@ mod tests {
         let p = Projector::open(path, "test").unwrap();
         crate::test_support::apply_decision(&p, 1, "d1", "x", &["a.rs"], "");
         assert_eq!(p.owed_because().unwrap(), Vec::<&str>::new());
-        std::fs::write(&mark, b"").unwrap();
+        crate::test_support::mark_owed_in(dir.path());
         assert_eq!(p.owed_because().unwrap(), vec![OWED_LOST_FOLD]);
         p.conn
             .lock()
@@ -9076,8 +9553,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
-        let mark = crate::test_support::owed_mark_in(dir.path());
-        std::fs::write(&mark, b"").unwrap();
+        let mark = crate::test_support::mark_owed_in(dir.path());
         Projector::forget_orphaned_mark(path).unwrap();
         assert!(
             !mark.exists(),
@@ -9091,7 +9567,7 @@ mod tests {
             Vec::<&str>::new(),
             "a file made in its place owes nothing"
         );
-        std::fs::write(&mark, b"").unwrap();
+        crate::test_support::mark_owed_in(dir.path());
         Projector::forget_orphaned_mark(path).unwrap();
         assert!(
             mark.exists(),
@@ -17486,7 +17962,7 @@ mod tests {
 
             /// Fold `entry` into `p` with a batch function that answers `batch` and counts each
             /// call of it in `asked`, answering the outcome or the error's text.
-            fn apply_entry(
+            pub(in crate::contextgraph::sqlite::tests) fn apply_entry(
                 p: &Projector,
                 entry: &Event,
                 batch: Result<Option<Vec<Event>>, Error>,
@@ -18323,8 +18799,8 @@ mod tests {
             }
 
             #[test]
-            fn the_generic_fold_refuses_a_ledger_entry_naming_apply_generation_and_marks_the_graph_owed(
-            ) {
+            fn the_generic_fold_refuses_a_ledger_entry_naming_apply_generation_and_writes_no_mark()
+            {
                 let refused = crate::test_support::entry_refusal();
                 // A batch holding an entry is refused whole.
                 let (_dir, p, mark) = graph_file();
@@ -18333,7 +18809,7 @@ mod tests {
                 held.position = 1;
                 let batch = [held, entry("gc", "src/f.rs", "h1", 2, 10)];
                 assert_eq!(crate::test_support::fold_of(&p, &batch), refused);
-                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
                 assert_eq!(applied_positions(&p), Vec::<i64>::new());
                 assert_eq!(node_ids(&p), Vec::<String>::new());
 
@@ -18343,7 +18819,7 @@ mod tests {
                     Fold::of(wired(Some(&p)), &entry("gc", "src/f.rs", "h1", 2, 10)),
                     refused
                 );
-                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
                 assert_eq!(applied_positions(&p), Vec::<i64>::new());
 
                 // So is one whose position the ledger already holds.
@@ -18356,7 +18832,7 @@ mod tests {
                 );
                 assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
                 assert_eq!(Fold::of(wired(Some(&p)), &folded), refused);
-                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
                 assert_eq!(applied_positions(&p), vec![5]);
             }
 
@@ -18365,14 +18841,8 @@ mod tests {
             ) {
                 let (_dir, p, mark) = graph_file();
                 holding_h1(&p);
-                let mut poison =
-                    Event::new(TYPE_DECISION_MADE, crate::test_support::POISON.to_vec());
-                poison.position = 8;
-                assert!(matches!(
-                    Fold::of(wired(Some(&p)), &poison),
-                    Fold::NotFolded(_)
-                ));
-                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
+                crate::test_support::stamp_user_version(Path::new(&p.path), PROJECTION_VERSION - 1);
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, false));
                 let before = projection_but_ledger(&p);
                 let asked = Cell::new(0);
                 assert_eq!(
@@ -18394,19 +18864,21 @@ mod tests {
                 );
             }
 
-            /// A fresh file-backed graph whose fold of `entry` with `batch` fails with `why`: the
-            /// file is marked owed, and no applied row, generation or fact is written.
-            fn fails_and_marks(entry: Event, batch: Result<Option<Vec<Event>>, Error>, why: &str) {
+            /// A fresh file-backed graph whose fold of `entry` with `batch` fails with `why`, with
+            /// no tail since the entry names no stream: no mark, applied row, generation or fact is
+            /// written.
+            fn fails_writing_no_mark(
+                entry: Event,
+                batch: Result<Option<Vec<Event>>, Error>,
+                why: &str,
+            ) {
                 let (_dir, p, mark) = graph_file();
                 assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
                 let asked = Cell::new(0);
-                assert_eq!(
-                    apply_entry(&p, &entry, batch, &asked),
-                    Err(crate::test_support::lost_fold(why))
-                );
+                assert_eq!(apply_entry(&p, &entry, batch, &asked), Err(why.to_string()));
                 assert_eq!(
                     (p.rebuild_owed().unwrap(), mark.exists()),
-                    (true, true),
+                    (false, false),
                     "{why}"
                 );
                 assert_eq!(applied_positions(&p), Vec::<i64>::new(), "{why}");
@@ -18419,9 +18891,9 @@ mod tests {
             }
 
             #[test]
-            fn a_failed_apply_generation_marks_the_file_owed_and_writes_no_applied_row() {
+            fn a_failed_apply_generation_writes_no_mark_and_no_applied_row() {
                 // The batch function fails.
-                fails_and_marks(
+                fails_writing_no_mark(
                     h1_at_7(),
                     crate::test_support::blob_unread(),
                     crate::test_support::BLOB_UNREAD,
@@ -18429,7 +18901,7 @@ mod tests {
                 // The entry's payload does not parse.
                 let mut unparsable = h1_at_7();
                 unparsable.data = b"{}".to_vec();
-                fails_and_marks(
+                fails_writing_no_mark(
                     unparsable,
                     Ok(Some(vec![def_event("alpha", 1, true)])),
                     "GenerationIngested payload: missing field `prefix` at line 1 column 2",
@@ -18440,7 +18912,7 @@ mod tests {
                 let rejected = serde_json::from_slice::<serde_json::Value>(poison)
                     .unwrap_err()
                     .to_string();
-                fails_and_marks(
+                fails_writing_no_mark(
                     h1_at_7(),
                     Ok(Some(vec![
                         def_event("alpha", 1, true),
@@ -20338,18 +20810,13 @@ mod tests {
             }
 
             /// After `setup`, a trigger refusing `refused` ([`refusing`]) fails the batch `failing` answers - its entry and events - whole, with the
-            /// trigger's text.
+            /// trigger's text and no tail, since the entry names no stream.
             fn refused_by(
                 refused: &str,
                 setup: impl FnOnce(&Projector),
                 failing: (Event, Vec<Event>),
             ) {
-                failed_by(
-                    &refusing(refused),
-                    setup,
-                    failing,
-                    crate::test_support::lost_fold(REFUSED),
-                );
+                failed_by(&refusing(refused), setup, failing, REFUSED.to_string());
             }
 
             /// After `setup`, the `trigger` planted fails the batch `failing` answers - its
@@ -20428,9 +20895,7 @@ mod tests {
                     ),
                     |_| {},
                     a_batch("a1", 1, &["CAP"]),
-                    crate::test_support::lost_fold(&format!(
-                        "Invalid column type Blob at index: {index}, name: {column}"
-                    )),
+                    format!("Invalid column type Blob at index: {index}, name: {column}"),
                 );
             }
 
@@ -21122,9 +21587,7 @@ mod tests {
                         &format!("UPDATE nodes SET attrs = x'00' WHERE id = '{MODULE_FILE}'"),
                         held,
                         declaring_entry(2),
-                        crate::test_support::lost_fold(
-                            "Invalid column type Blob at index: 2, name: attrs",
-                        ),
+                        "Invalid column type Blob at index: 2, name: attrs".to_string(),
                     );
                 }
 

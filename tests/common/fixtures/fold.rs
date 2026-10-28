@@ -364,23 +364,48 @@ pub fn recorded_not_folded(events: usize, reason: &str) -> String {
     recorded + &not_folded(&graph_error(reason))
 }
 
-/// The tail every lost fold's error ends with.
+/// The tail a direct fold's not-folded error ends with, for an event of the project's run stream
+/// (spec 124, CAUSE TEXTS): a fold into a file without the `caught_up` cursor, or through a
+/// projector handed no log.
 pub const SETUP_PAYS: &str =
-    " - the next `rigger setup` finds the event missing from graph.db and rebuilds it";
+    " - the next rigger setup finds the event missing from graph.db and folds it";
 
-/// The error text of a fold lost for `reason`: the reason, then [`SETUP_PAYS`].
-pub fn lost_fold(reason: &str) -> String {
-    [reason, SETUP_PAYS].concat()
+/// The tail a call-run fold's not-folded error ends with (spec 124, CAUSE TEXTS): a fold into a
+/// file carrying the `caught_up` cursor, through a projector handed the log.
+pub const CATCH_UP_PAYS: &str = " - the next fold through the folding store catches it up";
+
+/// The error text of a fold not made for `reason`: the reason, then `pays`, the tail of the
+/// fold's path naming what folds the event later ([`SETUP_PAYS`] after a direct fold,
+/// [`CATCH_UP_PAYS`] after a call).
+pub fn lost_fold(reason: &str, pays: &str) -> String {
+    [reason, pays].concat()
 }
+
+/// The cause a fold answers past its ceiling `held` while another writer holds the write lock
+/// (spec 124, CAUSE TEXTS), `held` as the ceiling reads.
+pub fn lock_held_past(held: &str) -> String {
+    format!("graph.db's write lock stayed held past {held}")
+}
+
+/// The cause a call-run fold answers past its ceiling `held` after a call that advanced (spec
+/// 124, CAUSE TEXTS), `held` as the ceiling reads.
+pub fn catch_up_short_after(held: &str) -> String {
+    format!("graph.db's catch-up had not reached this event after {held}")
+}
+
+/// The cause a call-run fold answers while the file holds a rebuild's state (spec 124, CAUSE
+/// TEXTS).
+pub const UNFINISHED_REBUILD: &str = "graph.db holds an unfinished rebuild";
 
 /// What the generic fold answers a ledger entry, the reason of its refusal.
 pub const ENTRY_REFUSED: &str =
     "a GenerationIngested entry folds only with its batch, through `Projection::apply_generation`";
 
-/// What the public fold answers a batch holding a ledger entry: lost to the generic fold's
-/// refusal ([`ENTRY_REFUSED`]).
+/// What the public fold answers a batch holding a ledger entry the constructor built, naming no
+/// stream: the generic fold's refusal ([`ENTRY_REFUSED`]), with no tail, since no later fold
+/// re-derives an event of no stream.
 pub fn entry_refusal() -> rigger::contextgraph::Fold {
-    rigger::contextgraph::Fold::NotFolded(lost_fold(&graph_error(ENTRY_REFUSED)))
+    rigger::contextgraph::Fold::NotFolded(graph_error(ENTRY_REFUSED))
 }
 
 /// What a test's rebuild source answers when it stops a rebuild mid-read.
@@ -392,10 +417,24 @@ pub fn source_interrupted<T>() -> Result<T, rigger::contextgraph::Error> {
     Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()))
 }
 
-/// The owed mark of the graph file `graph.db` in the directory `dir`: the file a fold that fails
-/// writes beside it.
+/// The owed mark of the graph file `graph.db` in the directory `dir`: the file whose presence
+/// beside it says it owes its rebuild.
 pub fn owed_mark_in(dir: &std::path::Path) -> std::path::PathBuf {
     dir.join("graph.db.owed")
+}
+
+/// Write the owed mark of the graph file `graph.db` in the directory `dir` ([`owed_mark_in`]),
+/// empty, as a fold that lost its event once left it, and answer its path: no fold writes it now
+/// (spec 124, AN APPENDER WAITS UNDER THE CEILING AND NEVER MARKS).
+pub fn mark_owed_in(dir: &std::path::Path) -> std::path::PathBuf {
+    let mark = owed_mark_in(dir);
+    std::fs::write(&mark, b"").unwrap();
+    mark
+}
+
+/// Whether the owed mark of the graph file `graph_db` ([`owed_mark_in`]) stands beside it.
+pub fn mark_stands_beside(graph_db: &std::path::Path) -> bool {
+    owed_mark_in(graph_db.parent().unwrap()).exists()
 }
 
 /// The one note every read-only surface prints while `graph.db` owes its rebuild.

@@ -1,1 +1,24 @@
-[]
+[
+  {
+    "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+    "name": "held_for",
+    "line": 199,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "line": 9015
+      }
+    ]
+  },
+  {
+    "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+    "name": "with_rebuild_lock",
+    "line": 1010,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "line": 9314
+      }
+    ]
+  }
+]

@@ -14381,7 +14381,7 @@ mod tests {
             Vec::<String>::new(),
             "a fold that lands is not reported"
         );
-        std::fs::write(crate::test_support::owed_mark_in(dir.path()), b"").unwrap();
+        crate::test_support::mark_owed_in(dir.path());
         ctx.emit_with_actor("", contextgraph::TYPE_DECISION_MADE, json!({"id": "d2"}))
             .unwrap();
         assert_eq!(
@@ -21516,7 +21516,7 @@ mod tests {
             let graph_path = graph_dir.path().join("graph.db");
             let graph = contextgraph::sqlite::Projector::open(graph_path.to_str().unwrap(), "test")
                 .unwrap();
-            owe_a_rebuild(&graph);
+            owe_a_rebuild(&graph, &graph_path);
             let st = Store::open(":memory:").unwrap();
             let driver = Stub::new();
             let said: Mutex<Vec<String>> = Mutex::default();
@@ -22356,7 +22356,7 @@ mod tests {
             }
             write_file(&file, SOURCE_BODY.as_bytes());
             match after {
-                AfterAnotherProcess::Owes => owe_a_rebuild(&graph),
+                AfterAnotherProcess::Owes => owe_a_rebuild(&graph, &graph_db),
                 AfterAnotherProcess::RebuiltAtTheFirstBody => {
                     let log = inner.read_stream(STREAM, 0, Direction::Forward).unwrap();
                     rebuild_from_the_tree(&graph_db, &log, tree.path());

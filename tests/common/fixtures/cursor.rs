@@ -101,7 +101,7 @@ pub fn catch_up_skipped_line(at: u64) -> String {
     catch_up_stopped(
         at,
         "another writer holds the write lock or advanced the cursor past this call's read - the \
-         next rigger setup continues it",
+         next fold through the folding store or the next rigger setup continues it",
     )
 }
 

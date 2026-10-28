@@ -282,11 +282,11 @@ impl LayerCli {
     }
 
     /// Given a seeded project whose pass has folded, when the same pass runs while another
-    /// writer holds `graph.db` locked past the busy timeout, then its line is the folded pass's
-    /// line with the fold it could not make, and the reason, added - a folded pass adds nothing -
-    /// and the graph now owes its rebuild, so the next pass refuses naming `rigger setup` rather
-    /// than deriving from a graph that lost the recorded layer.
-    pub fn a_pass_whose_fold_is_lost_to_a_lock_says_so_and_the_next_pass_refuses(&self) {
+    /// writer holds `graph.db` locked past the busy timeout, then the pass waits under the ceiling
+    /// until the lock is released and folds: its line is the folded pass's line, no
+    /// `graph.db.owed` is written, and the next pass folds as well (spec 124, AN APPENDER WAITS
+    /// UNDER THE CEILING AND NEVER MARKS).
+    pub fn a_pass_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing(&self) {
         let dir = self.project();
         let root = dir.path();
         (self.seed)(root);
@@ -299,37 +299,28 @@ impl LayerCli {
         );
 
         let graph_db = root.join(".rigger").join("graph.db");
-        let locked = crate::common::fixtures::with_graph_locked(&graph_db, || self.run(root, &[]));
+        let locked =
+            crate::common::fixtures::with_graph_locked_for(&graph_db, || self.run(root, &[]));
         assert_eq!(
             (
                 locked.status.success(),
-                String::from_utf8_lossy(&locked.stdout).into_owned()
+                String::from_utf8_lossy(&locked.stdout).into_owned(),
+                crate::common::fixtures::mark_stands_beside(&graph_db)
             ),
-            (
-                true,
-                format!(
-                    "{}; {}\n",
-                    folded_line.trim_end_matches('\n'),
-                    crate::common::fixtures::not_folded(&crate::common::fixtures::lost_fold(
-                        &crate::common::fixtures::graph_error(
-                            crate::common::fixtures::DATABASE_IS_LOCKED
-                        )
-                    ))
-                )
-            ),
-            "the locked pass says the fold it could not make; stderr: {}",
+            (true, folded_line.clone(), false),
+            "the locked pass waits for the lock and folds; stderr: {}",
             String::from_utf8_lossy(&locked.stderr)
         );
 
         let next = self.run(root, &[]);
-        let stderr = String::from_utf8_lossy(&next.stderr);
-        assert!(
-            !next.status.success()
-                && stderr.contains(&rigger::contextgraph::rebuild_owed_refusal(&format!(
-                    "graph {}",
-                    self.subcommand
-                ))),
-            "the next pass refuses naming `rigger setup`; stderr: {stderr}"
+        assert_eq!(
+            (
+                next.status.success(),
+                String::from_utf8_lossy(&next.stdout).into_owned()
+            ),
+            (true, folded_line),
+            "the next pass folds; stderr: {}",
+            String::from_utf8_lossy(&next.stderr)
         );
     }
 }

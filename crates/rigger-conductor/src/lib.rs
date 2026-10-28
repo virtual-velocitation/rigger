@@ -185,8 +185,11 @@ use config_fixtures::{agent, gate_def, gate_def_inputs};
     any(feature = "store", not(feature = "core"))
 ))]
 use {
-    event_fixtures::CountedRead, extraction_tree_fixtures::WALKED,
-    fold_fixtures::generation_ingested, fold_fixtures::graph_file_in,
+    event_fixtures::CountedRead,
+    extraction_tree_fixtures::WALKED,
+    fold_fixtures::{
+        decision_json, event_of, folds, generation_ingested, graph_file_in, placed_at,
+    },
     git_fixtures::git_hash_object,
 };
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]

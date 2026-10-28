@@ -703,7 +703,7 @@ fn a_run_over_a_graph_db_that_owes_its_rebuild_records_one_entry_per_generation_
     let tree = committed_tree();
     let root = tree.path();
     let files = Files::new();
-    owe_a_rebuild(&files.graph());
+    owe_a_rebuild(&files.graph(), &files.graph_db());
     let owed_applied = applied_positions(&files.graph_db());
     let first_walk = walked_git_entry_records(root);
     let lost = common::fixtures::recorded_not_folded(1, REBUILD_OWED);

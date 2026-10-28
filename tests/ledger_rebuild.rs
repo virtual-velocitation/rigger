@@ -30,8 +30,8 @@ use common::cli::{
 };
 use common::fixtures::{
     caught_up_line, drop_the_cursor, events_of, folds, generation_ingested, held_generations,
-    judged_cause, passed_over_rows, rejected_row, walked_generation, write_text, DOCUMENT_PATH,
-    SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
+    judged_cause, mark_stands_beside, passed_over_rows, rejected_row, walked_generation,
+    write_text, DOCUMENT_PATH, SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
 };
 use rigger::contextgraph::sqlite::{
     Projector, RebuildSink, FOLD_FAILED, PAYLOAD_REJECTED, RESOLVED_TO_NOTHING,
@@ -1118,9 +1118,10 @@ fn source_entry() -> Event {
 }
 
 /// Given a `graph.db` that owes nothing, and an entry appended through a plain append and handed
-/// to the generic fold, which refuses it and marks the graph as owing its rebuild, when the
-/// operator runs `rigger setup`, then the rebuild pays the hole through the ledger fold: the
-/// entry's position is recorded, and a second setup owes nothing. Where an extraction is
+/// to the generic fold, which refuses it writing no mark (spec 124, AN APPENDER WAITS UNDER THE
+/// CEILING AND NEVER MARKS), when the operator runs `rigger setup`, then its seeding finds the
+/// empty ledger beside the log a lost fold and the rebuild pays the hole through the ledger fold:
+/// the entry's position is recorded, and a second setup owes nothing. Where an extraction is
 /// compiled, the entry's batch is folded from the tree's file; where none is, it resolves to
 /// nothing and is passed over, which each setup says.
 #[test]
@@ -1143,11 +1144,11 @@ fn an_entry_the_generic_fold_refused_is_paid_by_setup_through_the_ledger_fold() 
     }
     assert_eq!(
         (
-            rigger_file(root, "graph.db.owed").exists(),
+            mark_stands_beside(&graph_db),
             applied(&graph_db, entry.position)
         ),
-        (true, false),
-        "the refusal marks the graph owed and records no position"
+        (false, false),
+        "the refusal writes no mark and records no position"
     );
 
     #[cfg(feature = "symbols")]
@@ -1160,11 +1161,11 @@ fn an_entry_the_generic_fold_refused_is_paid_by_setup_through_the_ledger_fold() 
     );
     assert_eq!(
         (
-            rigger_file(root, "graph.db.owed").exists(),
+            mark_stands_beside(&graph_db),
             applied(&graph_db, entry.position)
         ),
         (false, true),
-        "the rebuild folded the entry through the ledger fold and dropped the mark"
+        "the rebuild folded the entry through the ledger fold, writing no mark"
     );
     assert_eq!(generations(root, &project, &["gc/src/lib.rs"]), vec![held]);
     assert_eq!(

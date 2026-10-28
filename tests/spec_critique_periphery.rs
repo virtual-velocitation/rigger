@@ -1130,7 +1130,7 @@ fn a_graph_that_owes_its_rebuild_refuses_every_call_answered_or_not_naming_rigge
     let (_first, first_path) = stub(REJECT);
     let (_out, err, ok) = critique(root, SPEC_REL, &first_path, &scratch);
     assert!(ok, "the text is critiqued; stderr:\n{err}");
-    std::fs::write(rigger_file(root, "graph.db.owed"), "").unwrap();
+    common::fixtures::mark_owed_in(rigger_file(root, "graph.db").parent().unwrap());
     let refusal = rigger::contextgraph::rebuild_owed_refusal("critique");
 
     // When the graph owes its rebuild, a call the store would answer is refused ...

@@ -105,9 +105,9 @@
     "reason": "Two `new() -> Self::default()` constructors on two unrelated types, the idiomatic pairing clippy's `new_without_default` asks every `new` to have."
   },
   {
-    "id": "dup-bb7aa56f67d8",
+    "id": "dup-11c3e2df77f0",
     "disposition": "not-a-duplicate",
-    "reason": "Two builder setters on two different types setting different fields (`valid_from` on an event, `meta` on a spawn result)."
+    "reason": "Three builder setters on three different types setting different fields (`valid_from` on an event, `meta` on a spawn result, `lock_ceiling` on the graph projector, the last compiled for the graph crate's tests alone)."
   },
   {
     "id": "dup-3b3a41e03376",
@@ -855,9 +855,9 @@
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   },
   {
-    "id": "dup-92f656a3dd07",
+    "id": "dup-821aa6735505",
     "disposition": "not-a-duplicate",
-    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, the live-run refusals of `reset --derived` and of a new rebuild in `rigger setup`, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, an id's file half before it, a staged reference row's liveness term, the proof rows' selection by one key column, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper, a planted refusing trigger's text, a built-in instruction entry's checked-in source path); they share only the `format!` shape."
+    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, the live-run refusals of `reset --derived` and of a new rebuild in `rigger setup`, a rebuild's shadow and pruned-copy file names, the edge text expression after a target column's first `::`, an id's file half before it, a staged reference row's liveness term, the proof rows' selection by one key column, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper, a planted refusing trigger's text, a built-in instruction entry's checked-in source path, the appender's write-lock-held and short-catch-up cause texts for a ceiling); they share only the `format!` shape."
   },
   {
     "id": "dup-db3e199dd312",
@@ -1025,9 +1025,9 @@
     "reason": "`f11` renders the plan critique's F11 advisory for one criterion, `graph_build_line` renders the line `rigger graph build` prints for an event count and a fold-loss clause, and the cursor fixtures' `catch_up_stopped` renders the head both of `rigger setup`'s catch-up stop lines share for a position and a reason: three test-side spellings of different product lines, each defined once, sharing only the shape of one `format!` over a number and a string."
   },
   {
-    "id": "dup-a7957a9941e4",
+    "id": "dup-cb013976dcf4",
     "disposition": "not-a-duplicate",
-    "reason": "`reclaimed_line` is the line `rigger reset --derived` prints for the bytes its compaction reclaimed and `caught_up_line` the line `rigger setup` prints for the events its catch-up folded: two test-side expected lines of different commands, each defined once, sharing only the shape of one `format!` over one count."
+    "reason": "`reclaimed_line` is the line `rigger reset --derived` prints for the bytes its compaction reclaimed, `caught_up_line` the line `rigger setup` prints for the events its catch-up folded and `emit_folded_line` the line `rigger emit` prints for the decision it appended and folded at a position: three test-side expected lines of different commands, each defined once, sharing only the shape of one `format!` over one number."
   },
   {
     "id": "dup-3f04af8603ff",

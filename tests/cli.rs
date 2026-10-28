@@ -28246,7 +28246,10 @@ fn validate_compares_graph_db_too_unless_it_owes_its_rebuild() {
         Some(common::cli::index_lag_advisory(&["churn.rs"]))
     );
 
-    common::fixtures::owe_a_rebuild(&common::cli::open_graph(root));
+    common::fixtures::owe_a_rebuild(
+        &common::cli::open_graph(root),
+        &common::cli::rigger_file(root, "graph.db"),
+    );
 
     assert_eq!(validate_index_lag(root), None);
 
@@ -29236,7 +29239,10 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
     };
     #[cfg(feature = "symbols")]
     let folded_facts = facts(&common::cli::open_graph(root));
-    common::fixtures::owe_a_rebuild(&common::cli::open_graph(root));
+    common::fixtures::owe_a_rebuild(
+        &common::cli::open_graph(root),
+        &common::cli::rigger_file(root, "graph.db"),
+    );
     let (rebuilt, rebuilt_err, rebuilt_ok) =
         run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     let behind = if cfg!(feature = "symbols") { 0 } else { 5 };

@@ -1438,10 +1438,9 @@ mod tests {
             let root = tree.path().to_str().unwrap();
             let store = Store::open(":memory:").unwrap();
             let graph_dir = tempfile::tempdir().unwrap();
-            let graph =
-                Projector::open(graph_dir.path().join("graph.db").to_str().unwrap(), "test")
-                    .unwrap();
-            owe_a_rebuild(&graph);
+            let graph_db = graph_dir.path().join("graph.db");
+            let graph = Projector::open(graph_db.to_str().unwrap(), "test").unwrap();
+            owe_a_rebuild(&graph, &graph_db);
             let identities = walked_identities();
 
             let (counted, fold) = ingest_tree(&store, &graph, root).unwrap();

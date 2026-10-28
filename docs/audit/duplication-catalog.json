@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-92f656a3dd07",
+    "id": "dup-821aa6735505",
     "classification": "near",
     "sites": [
       {
@@ -163,6 +163,16 @@
         "content_hash": "6fd90a8c2eed6379"
       },
       {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "lock_held_past",
+        "content_hash": "b0b4170272f04fb7"
+      },
+      {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "catch_up_short_after",
+        "content_hash": "b0b4170272f04fb7"
+      },
+      {
         "file": "tests/common/fixtures/instructions.rs",
         "name": "builtin_instruction_source",
         "content_hash": "b0b4170272f04fb7"
@@ -183,7 +193,7 @@
         "content_hash": "6fd90a8c2eed6379"
       }
     ],
-    "proposed_home": "a new shared module (sites span 19 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/hygiene.rs, src/cli/mod.rs, src/cli/setup.rs, tests/canary_model_drift_periphery.rs, tests/common/fixtures/instructions.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 20 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/hygiene.rs, src/cli/mod.rs, src/cli/setup.rs, tests/canary_model_drift_periphery.rs, tests/common/fixtures/fold.rs, tests/common/fixtures/instructions.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5446,8 +5456,8 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-bb7aa56f67d8",
-    "classification": "exact",
+    "id": "dup-11c3e2df77f0",
+    "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
@@ -5458,9 +5468,14 @@
         "file": "crates/rigger-domain/src/spawn.rs",
         "name": "with_meta",
         "content_hash": "9b5f8275cb17e75c"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "with_lock_ceiling",
+        "content_hash": "3e40e29c76dbbd85"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/spawn.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -6158,7 +6173,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-92686b8490e4",
+    "id": "dup-c1ef89bb9662",
     "classification": "semantic",
     "sites": [
       {
@@ -6404,11 +6419,6 @@
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "21e10304a9cde36f"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
         "content_hash": "c9acaf03cef6d3a0"
       },
       {
@@ -6488,7 +6498,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 65 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 64 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -8299,6 +8309,30 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-cb013976dcf4",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/common/cli.rs",
+        "name": "emit_folded_line",
+        "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "reclaimed_line",
+        "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "caught_up_line",
+        "content_hash": "b051a6d6f4b01ca2"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-90e32eb50d95",
     "classification": "exact",
     "sites": [
@@ -8324,25 +8358,6 @@
       }
     ],
     "proposed_home": "cli::support (consolidate these 4 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-a7957a9941e4",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "tests/common/cli.rs",
-        "name": "reclaimed_line",
-        "content_hash": "b051a6d6f4b01ca2"
-      },
-      {
-        "file": "tests/common/fixtures/cursor.rs",
-        "name": "caught_up_line",
-        "content_hash": "b051a6d6f4b01ca2"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

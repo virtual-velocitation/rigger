@@ -14,3 +14,25 @@ pub fn with_graph_locked<T>(graph_db: &std::path::Path, run: impl FnOnce() -> T)
     holder.execute_batch("ROLLBACK").unwrap();
     out
 }
+
+/// How long [`with_graph_locked_for`] holds the write lock: past the busy timeout every store
+/// connection waits on a lock (`open_connection`), and well inside the appender's ceiling.
+pub const HELD_PAST_THE_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(7);
+
+/// Run `run` on a thread of its own while another writer holds the write lock of the sqlite file
+/// `graph_db` ([`with_graph_locked`]) for [`HELD_PAST_THE_BUSY_TIMEOUT`] from before `run` starts,
+/// and hand back what `run` returned once it ends: a writer whose wait outlasts one busy timeout
+/// meets the lock released.
+pub fn with_graph_locked_for<T: Send>(
+    graph_db: &std::path::Path,
+    run: impl FnOnce() -> T + Send,
+) -> T {
+    std::thread::scope(|scope| {
+        let running = with_graph_locked(graph_db, || {
+            let running = scope.spawn(run);
+            std::thread::sleep(HELD_PAST_THE_BUSY_TIMEOUT);
+            running
+        });
+        running.join().unwrap()
+    })
+}

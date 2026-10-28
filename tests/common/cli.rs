@@ -800,6 +800,16 @@ pub fn applied_each(db: &Path, positions: &[u64]) -> Vec<bool> {
     positions.iter().map(|&at| applied(db, at)).collect()
 }
 
+/// The position and type of each event of `root`'s run log ([`run_log`]) that its `graph.db`'s
+/// applied ledger does not record ([`applied`]), in log order: empty once every event is folded.
+pub fn unfolded_run_events(root: &Path) -> Vec<(u64, String)> {
+    let graph_db = rigger_file(root, "graph.db");
+    run_log(root)
+        .into_iter()
+        .filter(|(position, _)| !applied(&graph_db, *position))
+        .collect()
+}
+
 /// What `rigger setup` prints before it rebuilds a `graph.db` that owes its rebuild only because
 /// it misses an event the log holds.
 pub const LOST_FOLD_REBUILD_LINE: &str = "rebuilding graph.db from the event log: it misses an \
@@ -840,6 +850,12 @@ pub fn pruned_from_the_rebuilt_graph(nodes: usize, edges: usize) -> String {
 
 /// How the stdout of a `rigger emit` that appended its event and folded it into `graph.db` ends.
 pub const EMIT_FOLDED_ENDING: &str = " and folded it into the context graph\n";
+
+/// The stdout of a `rigger emit` that appended its `DecisionMade` at `position` and folded it into
+/// `graph.db` ([`EMIT_FOLDED_ENDING`]).
+pub fn emit_folded_line(position: u64) -> String {
+    format!("emitted DecisionMade (position {position}){EMIT_FOLDED_ENDING}")
+}
 
 /// What `rigger setup` prints, exiting zero, when the transaction that seeds the `graph.db` cursor
 /// meets another writer's lock past the busy timeout (spec 124, CATCH-UP LINES).
@@ -957,6 +973,20 @@ pub fn no_progress(_: rigger::contextgraph::sqlite::RebuildProgress) {}
 pub fn open_graph(root: &Path) -> Projector {
     let id = run_stream_identity(root);
     Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id).unwrap()
+}
+
+/// [`open_graph`] folding forward from `root`'s own project namespace of its `.rigger/events.db`
+/// ([`Projector::with_log`]), as every open of the binary that folds is wired.
+pub fn open_graph_with_its_log(root: &Path) -> Projector {
+    let (events_db, id) = (rigger_file(root, "events.db"), run_stream_identity(root));
+    open_graph(root).with_log(move || {
+        let backend = Store::open(events_db.to_str().unwrap())
+            .map_err(|e| rigger::contextgraph::Error(e.to_string()))?;
+        Ok(std::sync::Arc::new(Namespaced::owning(
+            std::sync::Arc::new(backend),
+            &id,
+        )))
+    })
 }
 
 /// The graph `rigger graph build` folds over a fresh [`temp_project`] holding each of `files`, a

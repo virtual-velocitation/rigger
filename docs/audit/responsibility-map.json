@@ -2237,7 +2237,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e7bdfff09105c9c8"
+    "content_hash": "a3fabd375dd4f3e2"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3685,7 +3685,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests::run_sink",
     "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "d3e3c3ddc4839e6f"
+    "content_hash": "a41697307f924c0f"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3813,7 +3813,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests::run_sink",
     "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "b62552f42a2d1da7"
+    "content_hash": "3a8d01b746fb73ac"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
