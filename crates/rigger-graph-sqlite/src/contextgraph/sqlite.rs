@@ -784,7 +784,7 @@ impl Projector {
                 drop(pruned);
                 remove_if_present(&copy)?;
                 // Paid: the swapped-in file holds every event the source held. Dropped before the
-                // tail, so a fold lost while the tail runs marks the file owed again.
+                // tail, so a mark an older binary's lost fold writes while the tail runs stands.
                 if let Some(mark) = &self.owed_mark {
                     remove_if_present(mark)?;
                 }
