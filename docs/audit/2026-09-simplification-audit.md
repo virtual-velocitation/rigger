@@ -1959,8 +1959,8 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `src/cli/run.rs:3287-3287` `Command::new`
 - `src/cli/run.rs:3331-3331` `Command::new`
 - `src/cli/run.rs:3400-3400` `Command::new`
-- `src/cli/setup.rs:3953-3953` `Command::new`
-- `src/cli/setup.rs:4255-4255` `Command::new`
+- `src/cli/setup.rs:3458-3458` `Command::new`
+- `src/cli/setup.rs:3487-3487` `Command::new`
 - `src/cli/validate.rs:1452-1452` `Command::new`
 - `src/cli/validate.rs:1731-1731` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2409,19 +2409,19 @@ __END__
 - `src/cli/setup.rs:3125-3125` `".rigger/agents/newcomer.md"`
 - `src/cli/setup.rs:3203-3203` `".rigger/workflow.yml"`
 - `src/cli/setup.rs:3433-3433` `".rigger"`
-- `src/cli/setup.rs:3598-3598` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:3798-3798` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:3800-3800` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:3801-3801` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:3802-3802` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:3815-3815` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:3818-3818` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:3830-3830` `"The count and the caller lookup run once per item of the walk's hunk list - every \
+- `src/cli/setup.rs:3711-3711` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:3913-3913` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:3915-3915` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:3916-3916` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:3917-3917` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:3937-3937` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:3940-3940` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:3952-3952` `"The count and the caller lookup run once per item of the walk's hunk list - every \
              item the hunks touch, new or pre-existing, its body or its doc changed - each \
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name."`
-- `src/cli/setup.rs:3896-3896` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:4075-4075` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:4018-4018` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:4320-4320` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
@@ -2438,7 +2438,7 @@ __END__
 - `src/cli/validate.rs:1305-1305` `".rigger/agents/gone.md"`
 - `src/cli/validate.rs:2195-2195` `".rigger"`
 - `src/cli/validate.rs:2249-2249` `".rigger"`
-- `src/main.rs:181-181` `"rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
+- `src/main.rs:184-184` `"rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
 usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
 rigger step [--spec <path>]      advance the run one frontier via the replay driver\n            \
@@ -3679,7 +3679,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/concepts.rs:80-82` `is_label_doc`
 - `crates/rigger-domain/src/ingest.rs:48-50` `is_derived_index_type`
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:751-753` `is_std_root`
-- `tests/common/source_audit.rs:435-437` `is_keyword`
+- `tests/common/source_audit.rs:436-438` `is_keyword`
 
 #### `dup-b1d15044e7fc` (near, 5 sites)
 
@@ -3709,7 +3709,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/config.rs:1461-1463` `is_word_byte`
-- `tests/common/source_audit.rs:198-200` `is_ident_char`
+- `tests/common/source_audit.rs:199-201` `is_ident_char`
 - `tests/no_os_kill_audit.rs:59-61` `is_word_char`
 
 #### `dup-08ca12f5868a` (near, 2 sites)
@@ -4277,7 +4277,7 @@ Proposed home: `crates/rigger-grounder/src/grounder/symbols/extract.rs::extract 
 mandatory sweep: bespoke source-text lexer/scanner functions duplicating the canonical tree-sitter extractor - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-grounder/src/grounder/symbols/extract.rs:270-531` `extract`
-- `tests/common/source_audit.rs:448-554` `tokenize`
+- `tests/common/source_audit.rs:449-555` `tokenize`
 - `tests/simplification_audit.rs:212-214` `scan_file`
 
 #### `dup-6741e1f3023b` (semantic, 2 sites)
@@ -4625,7 +4625,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/setup.rs, src/m
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/setup.rs:311-318` `print_scaffold_pointer`
-- `src/main.rs:385-387` `usage`
+- `src/main.rs:388-390` `usage`
 
 #### `dup-dc79af9af1c6` (near, 2 sites)
 
@@ -5293,7 +5293,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9846 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 9851 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4994-5035` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15035-15057` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
