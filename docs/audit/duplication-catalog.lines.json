@@ -3664,23 +3664,13 @@
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 91,
-        "end_line": 91
+        "start_line": 93,
+        "end_line": 93
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 99,
-        "end_line": 99
-      },
-      {
-        "file": "tests/projections_stay_local.rs",
-        "start_line": 149,
-        "end_line": 149
-      },
-      {
-        "file": "tests/projections_stay_local.rs",
-        "start_line": 152,
-        "end_line": 152
+        "start_line": 112,
+        "end_line": 112
       },
       {
         "file": "tests/projections_stay_local.rs",
@@ -3689,28 +3679,38 @@
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 163,
-        "end_line": 163
+        "start_line": 165,
+        "end_line": 165
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 206,
-        "end_line": 206
+        "start_line": 175,
+        "end_line": 175
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 209,
-        "end_line": 209
+        "start_line": 176,
+        "end_line": 176
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 232,
-        "end_line": 232
+        "start_line": 219,
+        "end_line": 219
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "start_line": 233,
-        "end_line": 233
+        "start_line": 222,
+        "end_line": 222
+      },
+      {
+        "file": "tests/projections_stay_local.rs",
+        "start_line": 245,
+        "end_line": 245
+      },
+      {
+        "file": "tests/projections_stay_local.rs",
+        "start_line": 246,
+        "end_line": 246
       },
       {
         "file": "tests/published_content_key_split_periphery.rs",
@@ -4830,7 +4830,7 @@
     ]
   },
   {
-    "id": "dup-a2973e00918e",
+    "id": "dup-2a4f88aea011",
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
@@ -4846,11 +4846,6 @@
         "file": "tests/console_palette_periphery.rs",
         "start_line": 400,
         "end_line": 415
-      },
-      {
-        "file": "tests/projections_stay_local.rs",
-        "start_line": 82,
-        "end_line": 102
       },
       {
         "file": "tests/store_resolution.rs",

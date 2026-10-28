@@ -515,7 +515,7 @@
     "reason": "Each store adapter's one forward read of a stream over its own backend: the sqlite `read_forward` steps one SQL statement over the events table, spelling a failure as its caller asks, the kurrentdb `read_forward` takes the first events of the gRPC forward read `forward_records` pulls. One per adapter is the design (spec 101); neither can serve the other's backend."
   },
   {
-    "id": "dup-a2973e00918e",
+    "id": "dup-2a4f88aea011",
     "disposition": "not-a-duplicate",
     "reason": "Tests that each assert a different property of a different served page or shipped file; only the fetch-then-contains shape is shared."
   },

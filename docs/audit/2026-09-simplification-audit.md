@@ -1692,7 +1692,7 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 
 ## 2. Duplication Catalog
 
-215 clusters (1472 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+215 clusters (1471 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
@@ -3016,22 +3016,22 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/principle_gates_wiring.rs:409-409` `".rigger/agents"`
 - `tests/principle_gates_wiring.rs:419-419` `".rigger/agents: {missing:#?}"`
 - `tests/principle_gates_wiring.rs:423-423` `".rigger/gates/container-env.sh"`
-- `tests/projections_stay_local.rs:91-91` `"the graph projection must be opened by the LOCAL sqlite Projector at the resolved \
-         store's .rigger/graph.db (`Projector::open(&self.file(\"graph.db\") ...)`); the \
-         canonical local construction is gone"`
-- `tests/projections_stay_local.rs:99-99` `"the progress projection must be opened by the LOCAL sqlite Store at .rigger/progress.db \
+- `tests/projections_stay_local.rs:93-93` `"the graph projection must be opened for write at the resolved store's .rigger/graph.db \
+         (`open_graph_for_write(&self.file(\"graph.db\") ...)`); the canonical local construction \
+         is gone"`
+- `tests/projections_stay_local.rs:112-112` `"the progress projection must be opened by the LOCAL sqlite Store at .rigger/progress.db \
          (`Store::open(&db_path(\"progress.db\") ...)`); the canonical local construction is gone"`
-- `tests/projections_stay_local.rs:149-149` `".rigger"`
-- `tests/projections_stay_local.rs:152-152` `"graph.db must be created under the LOCAL .rigger/ even when the event store is the \
-             server - projections are per-machine and stay local"`
 - `tests/projections_stay_local.rs:162-162` `".rigger"`
-- `tests/projections_stay_local.rs:163-163` `"a server-configured `graph build` must NOT create a local .rigger/events.db - the \
+- `tests/projections_stay_local.rs:165-165` `"graph.db must be created under the LOCAL .rigger/ even when the event store is the \
+             server - projections are per-machine and stay local"`
+- `tests/projections_stay_local.rs:175-175` `".rigger"`
+- `tests/projections_stay_local.rs:176-176` `"a server-configured `graph build` must NOT create a local .rigger/events.db - the \
              event log is the server's; only the projection is local"`
-- `tests/projections_stay_local.rs:206-206` `".rigger"`
-- `tests/projections_stay_local.rs:209-209` `"progress.db must be created under the LOCAL .rigger/ even when the event store is the \
+- `tests/projections_stay_local.rs:219-219` `".rigger"`
+- `tests/projections_stay_local.rs:222-222` `"progress.db must be created under the LOCAL .rigger/ even when the event store is the \
              server - the progress store is a local projection, not the shared log"`
-- `tests/projections_stay_local.rs:232-232` `".rigger"`
-- `tests/projections_stay_local.rs:233-233` `"a server-configured `rigger progress` must NOT create a local .rigger/events.db - the \
+- `tests/projections_stay_local.rs:245-245` `".rigger"`
+- `tests/projections_stay_local.rs:246-246` `"a server-configured `rigger progress` must NOT create a local .rigger/events.db - the \
              run log is the server's; only the progress projection is local"`
 - `tests/published_content_key_split_periphery.rs:259-259` `".rigger"`
 - `tests/registry_periphery.rs:55-55` `r#"{
@@ -3563,16 +3563,15 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:7061-7068` `a_cfg_test_attribute_directly_on_an_impl_block_is_flagged_test`
 - `tests/simplification_audit.rs:7188-7194` `a_cfg_test_pub_fn_is_still_flagged_test_pub_survives_between_attribute_and_keyword`
 
-#### `dup-a2973e00918e` (near, 5 sites)
+#### `dup-2a4f88aea011` (near, 4 sites)
 
-Proposed home: `a new shared module (sites span 4 files: crates/rigger-dash/src/dash.rs, tests/console_palette_periphery.rs, tests/projections_stay_local.rs, tests/store_resolution.rs)`
+Proposed home: `a new shared module (sites span 3 files: crates/rigger-dash/src/dash.rs, tests/console_palette_periphery.rs, tests/store_resolution.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-dash/src/dash.rs:4816-4851` `the_page_layout_cannot_scroll_the_body_horizontally`
 - `crates/rigger-dash/src/dash.rs:4862-4899` `the_landing_view_lists_instances_and_threads_the_attach_selector`
 - `tests/console_palette_periphery.rs:400-415` `the_served_console_page_sends_the_scrub_position_to_palette_commands_when_not_live`
-- `tests/projections_stay_local.rs:82-102` `the_graph_and_progress_projections_open_via_the_local_sqlite_constructors`
 - `tests/store_resolution.rs:98-114` `the_single_resolver_exists_and_the_old_per_command_helper_is_retired`
 
 #### `dup-9904088ec60d` (near, 2 sites)

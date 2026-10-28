@@ -3737,7 +3737,7 @@
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "name": "\"the graph projection must be opened by the LOCAL sqlite Projector at the resolved \\\n         store's .rigger/graph.db (`Projector::open(&self.file(\\\"graph.db\\\") ...)`); the \\\n         canonical local construction is gone\"",
+        "name": "\"the graph projection must be opened for write at the resolved store's .rigger/graph.db \\\n         (`open_graph_for_write(&self.file(\\\"graph.db\\\") ...)`); the canonical local construction \\\n         is gone\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -4990,7 +4990,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a2973e00918e",
+    "id": "dup-2a4f88aea011",
     "classification": "near",
     "sites": [
       {
@@ -5009,17 +5009,12 @@
         "content_hash": "5150fcc6015ab76e"
       },
       {
-        "file": "tests/projections_stay_local.rs",
-        "name": "the_graph_and_progress_projections_open_via_the_local_sqlite_constructors",
-        "content_hash": "5150fcc6015ab76e"
-      },
-      {
         "file": "tests/store_resolution.rs",
         "name": "the_single_resolver_exists_and_the_old_per_command_helper_is_retired",
         "content_hash": "f3ff49e3f09ecb9d"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-dash/src/dash.rs, tests/console_palette_periphery.rs, tests/projections_stay_local.rs, tests/store_resolution.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-dash/src/dash.rs, tests/console_palette_periphery.rs, tests/store_resolution.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
