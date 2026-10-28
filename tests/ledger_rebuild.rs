@@ -1411,9 +1411,10 @@ fn git_invocations_of_setup(cwd: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Every `git` invocation of a `rigger setup` whose rebuild folds no entry and whose report finds
-/// no identity behind its latest recording, in order: the ones its scaffold and its identity
-/// make, and none for a root or an object database.
+/// Every `git` invocation of a `rigger setup` whose rebuild and catch-up fold no entry and whose
+/// report finds no identity behind its latest recording, in order: the ones its scaffold and its
+/// identity make, and none for the root its re-extractions and its report read or for an object
+/// database ([`FIRST_ENTRY_GIT`]).
 #[cfg(feature = "symbols")]
 const SETUP_OWN_GIT: [&str; 5] = [
     "rev-parse --show-toplevel",
@@ -1423,8 +1424,9 @@ const SETUP_OWN_GIT: [&str; 5] = [
     "rev-parse --git-path hooks",
 ];
 
-/// [`SETUP_OWN_GIT`] split where a `rigger setup` asks git what its rebuild or catch-up of
-/// `graph.db` needs: before its scaffold's last question, the hooks directory.
+/// [`SETUP_OWN_GIT`] split where a `rigger setup` asks git what its fold of `graph.db` needs - its
+/// rebuild, the rebuild's report and its catch-up: before its scaffold's last question, the hooks
+/// directory.
 #[cfg(feature = "symbols")]
 fn setup_own_git_around_its_fold() -> (&'static [&'static str], &'static [&'static str]) {
     SETUP_OWN_GIT.split_at(4)
