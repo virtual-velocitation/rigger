@@ -2853,3325 +2853,3325 @@
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_long_lived_run_restores_an_identity_a_rebuild_left_behind_at_its_next_reindex",
     "start_line": 22254,
-    "end_line": 22321
+    "end_line": 22322
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_revert_after_another_process_recorded_is_recorded",
-    "start_line": 22339,
-    "end_line": 22398
+    "start_line": 22340,
+    "end_line": 22399
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_revert_another_process_staled_is_recorded_over_a_graph_that_owes_its_rebuild",
-    "start_line": 22401,
-    "end_line": 22403
+    "start_line": 22402,
+    "end_line": 22404
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_revert_another_process_staled_is_recorded_over_a_graph_rebuilt_at_that_generation",
-    "start_line": 22406,
-    "end_line": 22410
+    "start_line": 22407,
+    "end_line": 22411
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_landed_unit_whose_reindex_lookup_fails_resumes_to_one_file_touched_and_one_integration",
-    "start_line": 22422,
-    "end_line": 22476
+    "start_line": 22423,
+    "end_line": 22477
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_landing_appends_only_its_keyed_post_merge_verdicts",
-    "start_line": 22483,
-    "end_line": 22550
+    "start_line": 22484,
+    "end_line": 22551
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_regeneration_committed_at_landing_reaches_file_touched_and_the_graph",
-    "start_line": 22558,
-    "end_line": 22618
+    "start_line": 22559,
+    "end_line": 22619
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "re_excluding_the_same_file_twice_in_one_process_retires_its_middle_generation",
-    "start_line": 22637,
-    "end_line": 22718
+    "start_line": 22638,
+    "end_line": 22719
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_second_run_over_an_unchanged_tree_appends_no_derived_index_event",
-    "start_line": 22728,
-    "end_line": 22833
+    "start_line": 22729,
+    "end_line": 22834
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "walk_entries",
-    "start_line": 22844,
-    "end_line": 22846
+    "start_line": 22845,
+    "end_line": 22847
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spec60_cold_rebuild",
-    "start_line": 22853,
-    "end_line": 22869
+    "start_line": 22854,
+    "end_line": 22870
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spec60_reachable",
-    "start_line": 22881,
-    "end_line": 22912
+    "start_line": 22882,
+    "end_line": 22913
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spec60_reached_entities",
-    "start_line": 22918,
-    "end_line": 22927
+    "start_line": 22919,
+    "end_line": 22928
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "editing_one_file_between_runs_re_emits_only_that_files_batch_and_supersedes_its_edges",
-    "start_line": 22940,
-    "end_line": 23092
+    "start_line": 22941,
+    "end_line": 23093
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_file_reverted_to_an_earlier_recorded_generation_re_ingests_and_matches_a_cold_rebuild",
-    "start_line": 23104,
-    "end_line": 23231
+    "start_line": 23105,
+    "end_line": 23232
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_prior_runs_non_ingest_replay_key_never_suppresses_this_runs_keyed_emit",
-    "start_line": 23255,
-    "end_line": 23378
+    "start_line": 23256,
+    "end_line": 23379
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "append",
-    "start_line": 23398,
-    "end_line": 23406
+    "start_line": 23399,
+    "end_line": 23407
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_ingest_sink_appends_and_folds_once_per_file_batch_never_once_per_event",
-    "start_line": 23388,
-    "end_line": 23471
+    "start_line": 23389,
+    "end_line": 23472
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "design_intent_grounding_renders_the_governing_rule_and_specifying_ra_by_traversal",
-    "start_line": 23494,
-    "end_line": 23658
+    "start_line": 23495,
+    "end_line": 23659
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_governing_decision_never_leaks_into_the_design_intent_section",
-    "start_line": 23661,
-    "end_line": 23731
+    "start_line": 23662,
+    "end_line": 23732
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_design_intent_section_renders_the_newest_binding_and_elides_the_oldest",
-    "start_line": 23734,
-    "end_line": 23790
+    "start_line": 23735,
+    "end_line": 23791
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_renders_no_section",
-    "start_line": 23795,
-    "end_line": 23815
+    "start_line": 23796,
+    "end_line": 23816
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "render_code_neighborhood",
-    "start_line": 23871,
-    "end_line": 23897
+    "start_line": 23872,
+    "end_line": 23898
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_code_neighborhood_elision_note_names_graph_around_recovery_not_peers",
-    "start_line": 23900,
-    "end_line": 23936
+    "start_line": 23901,
+    "end_line": 23937
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_code_neighborhood_byte_cap_elides_before_the_count_cap_is_reached",
-    "start_line": 23939,
-    "end_line": 23984
+    "start_line": 23940,
+    "end_line": 23985
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_code_neighborhood_lists_no_data_member_and_no_declaration",
-    "start_line": 23989,
-    "end_line": 24006
+    "start_line": 23990,
+    "end_line": 24007
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "lessons_prompt_injection_is_capped_under_budget_with_elision_note",
-    "start_line": 24009,
-    "end_line": 24051
+    "start_line": 24010,
+    "end_line": 24052
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_verbatim_count_cap_binds_on_many_small_lessons",
-    "start_line": 24054,
-    "end_line": 24091
+    "start_line": 24055,
+    "end_line": 24092
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "render_capped_lessons_scoped",
-    "start_line": 24097,
-    "end_line": 24110
+    "start_line": 24098,
+    "end_line": 24111
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "lessons_rank_by_blast_radius_relevance_over_pure_recency",
-    "start_line": 24113,
-    "end_line": 24150
+    "start_line": 24114,
+    "end_line": 24151
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "resume_skips_already_integrated_units",
-    "start_line": 24153,
-    "end_line": 24174
+    "start_line": 24154,
+    "end_line": 24175
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "seed_events_in_run",
-    "start_line": 24178,
-    "end_line": 24195
+    "start_line": 24179,
+    "end_line": 24196
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "replay_trajectory_keeps_only_the_world_inputs_and_restrips_the_run_id",
-    "start_line": 24198,
-    "end_line": 24252
+    "start_line": 24199,
+    "end_line": 24253
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "commit_on_unit_branch",
-    "start_line": 24257,
-    "end_line": 24259
+    "start_line": 24258,
+    "end_line": 24260
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "unit_event",
-    "start_line": 24262,
-    "end_line": 24267
+    "start_line": 24263,
+    "end_line": 24268
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "seed_prior_window_s",
-    "start_line": 24272,
-    "end_line": 24277
+    "start_line": 24273,
+    "end_line": 24278
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "reviewed_merge_cfg",
-    "start_line": 24281,
-    "end_line": 24307
+    "start_line": 24282,
+    "end_line": 24308
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "approving_panel_stub",
-    "start_line": 24312,
-    "end_line": 24322
+    "start_line": 24313,
+    "end_line": 24323
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_resume_integrates_s",
-    "start_line": 24327,
-    "end_line": 24349
+    "start_line": 24328,
+    "end_line": 24350
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "resume_reuses_a_units_branch_instead_of_reimplementing",
-    "start_line": 24352,
-    "end_line": 24381
+    "start_line": 24353,
+    "end_line": 24382
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_branch_gc_resume",
-    "start_line": 24388,
-    "end_line": 24420
+    "start_line": 24389,
+    "end_line": 24421
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume",
-    "start_line": 24423,
-    "end_line": 24447
+    "start_line": 24424,
+    "end_line": 24448
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "seed_branch_worktree",
-    "start_line": 24451,
-    "end_line": 24468
+    "start_line": 24452,
+    "end_line": 24469
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "commit_on_named_branch",
-    "start_line": 24475,
-    "end_line": 24483
+    "start_line": 24476,
+    "end_line": 24484
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "seed_unit_branches",
-    "start_line": 24487,
-    "end_line": 24495
+    "start_line": 24488,
+    "end_line": 24496
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "started_on_branch",
-    "start_line": 24498,
-    "end_line": 24504
+    "start_line": 24499,
+    "end_line": 24505
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "escalated",
-    "start_line": 24507,
-    "end_line": 24512
+    "start_line": 24508,
+    "end_line": 24513
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "integrated_with_straggler",
-    "start_line": 24516,
-    "end_line": 24532
+    "start_line": 24517,
+    "end_line": 24533
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "resume_in",
-    "start_line": 24535,
-    "end_line": 24542
+    "start_line": 24536,
+    "end_line": 24543
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "gc_logged",
-    "start_line": 24546,
-    "end_line": 24559
+    "start_line": 24547,
+    "end_line": 24560
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "branch_gc_falls_back_to_the_derived_branch_when_unitstarted_recorded_no_branch",
-    "start_line": 24574,
-    "end_line": 24610
+    "start_line": 24575,
+    "end_line": 24611
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "branch_gc_reclaims_the_recorded_branch_not_the_derived_name_when_they_differ",
-    "start_line": 24613,
-    "end_line": 24673
+    "start_line": 24614,
+    "end_line": 24674
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "seed_lingering_worktree_on_unit_branch",
-    "start_line": 24684,
-    "end_line": 24708
+    "start_line": 24685,
+    "end_line": 24709
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "worktree_registered_on",
-    "start_line": 24714,
-    "end_line": 24719
+    "start_line": 24715,
+    "end_line": 24720
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "branch_gc_removes_a_lingering_worktree_before_reclaiming_the_branch_on_resume",
-    "start_line": 24722,
-    "end_line": 24814
+    "start_line": 24723,
+    "end_line": 24815
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "branch_gc_reclaims_every_integrated_unit_in_one_resume_not_just_the_first",
-    "start_line": 24817,
-    "end_line": 24827
+    "start_line": 24818,
+    "end_line": 24828
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "branch_gc_fences_reclaim_behind_an_in_flight_straggler_spawn_and_reclaims_once_it_answers",
-    "start_line": 24830,
-    "end_line": 24875
+    "start_line": 24831,
+    "end_line": 24876
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "gc_integrated_branches_logged_prints_kept_evidence_for_an_in_flight_straggler_spawn",
-    "start_line": 24878,
-    "end_line": 24908
+    "start_line": 24879,
+    "end_line": 24909
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "gc_integrated_branches_logged_prints_removing_evidence_for_a_terminal_spawns_decision",
-    "start_line": 24911,
-    "end_line": 24957
+    "start_line": 24912,
+    "end_line": 24958
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "gc_integrated_branches_logged_stays_silent_for_an_already_gone_worktree_but_still_reclaims_an_orphaned_branch",
-    "start_line": 24960,
-    "end_line": 24999
+    "start_line": 24961,
+    "end_line": 25000
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "gc_integrated_branches_logged_does_not_repeat_removing_evidence_once_the_real_removal_already_happened",
-    "start_line": 25002,
-    "end_line": 25051
+    "start_line": 25003,
+    "end_line": 25052
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "review_boundary_events_carry_the_worktree_sha",
-    "start_line": 25054,
-    "end_line": 25100
+    "start_line": 25055,
+    "end_line": 25101
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_review_reject_unitfailed_carries_the_worktree_sha",
-    "start_line": 25103,
-    "end_line": 25147
+    "start_line": 25104,
+    "end_line": 25148
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_exhaustive_gate_failure_on_an_approved_unit_records_a_gate_cause",
-    "start_line": 25150,
-    "end_line": 25189
+    "start_line": 25151,
+    "end_line": 25190
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "stamps_the_model_alias_and_resolved_id_on_live_lifecycle_events",
-    "start_line": 25192,
-    "end_line": 25309
+    "start_line": 25193,
+    "end_line": 25310
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "degenerate_reviewer_cfg",
-    "start_line": 25315,
-    "end_line": 25331
+    "start_line": 25316,
+    "end_line": 25332
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_degenerate_adjudicator_result_respawns_and_a_substantive_retry_folds_normally",
-    "start_line": 25334,
-    "end_line": 25395
+    "start_line": 25335,
+    "end_line": 25396
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "charged_an_attempt",
-    "start_line": 25403,
-    "end_line": 25407
+    "start_line": 25404,
+    "end_line": 25408
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_verdictless_adjudicator_result_re_drives_the_review_once_and_charges_no_attempt",
-    "start_line": 25410,
-    "end_line": 25463
+    "start_line": 25411,
+    "end_line": 25464
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_second_verdictless_adjudicator_result_halts_loudly_and_charges_no_attempt",
-    "start_line": 25466,
-    "end_line": 25519
+    "start_line": 25467,
+    "end_line": 25520
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_recorded_verdictless_adjudicator_result_re_parks_the_review_on_the_stepwise_host",
-    "start_line": 25522,
-    "end_line": 25571
+    "start_line": 25523,
+    "end_line": 25572
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_review_stage_error_result_re_parks_a_fresh_attempt_no_charge_then_a_real_verdict_folds",
-    "start_line": 25574,
-    "end_line": 25688
+    "start_line": 25575,
+    "end_line": 25689
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_review_spawn_that_errors_on_every_re_parked_attempt_escalates_through_the_bound",
-    "start_line": 25691,
-    "end_line": 25827
+    "start_line": 25692,
+    "end_line": 25828
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_gating_spawn_that_emits_an_approve_verdict_but_returns_no_verdict_line_hard_errors_with_the_result_channel_fix",
-    "start_line": 25830,
-    "end_line": 25915
+    "start_line": 25831,
+    "end_line": 25916
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_ordinary_reject",
-    "start_line": 25920,
-    "end_line": 25942
+    "start_line": 25921,
+    "end_line": 25943
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_workflow_live_path_correlates_the_approve_by_stamp_not_a_bare_stream_position",
-    "start_line": 25963,
-    "end_line": 26061
+    "start_line": 25964,
+    "end_line": 26062
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_degenerate_lens_result_respawns_the_lens_before_the_review_proceeds",
-    "start_line": 26064,
-    "end_line": 26109
+    "start_line": 26065,
+    "end_line": 26110
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_lens_that_emitted_a_finding_but_reports_empty_stdout_is_not_degenerate",
-    "start_line": 26112,
-    "end_line": 26165
+    "start_line": 26113,
+    "end_line": 26166
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_reviewer_that_only_ever_returns_degenerate_output_halts_the_run_loudly_naming_it",
-    "start_line": 26168,
-    "end_line": 26259
+    "start_line": 26169,
+    "end_line": 26260
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "approved_but_unmerged_s",
-    "start_line": 26263,
-    "end_line": 26268
+    "start_line": 26264,
+    "end_line": 26269
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "resume_integrates_an_already_approved_unit_without_re_reviewing",
-    "start_line": 26271,
-    "end_line": 26292
+    "start_line": 26272,
+    "end_line": 26293
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_failed_unit_is_not_terminal_and_resumes",
-    "start_line": 26295,
-    "end_line": 26364
+    "start_line": 26296,
+    "end_line": 26365
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "remediation_attempts_accumulate_across_resume_and_escalate_at_the_bound",
-    "start_line": 26367,
-    "end_line": 26471
+    "start_line": 26368,
+    "end_line": 26472
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_escalated_unit_stays_terminal_on_resume",
-    "start_line": 26474,
-    "end_line": 26551
+    "start_line": 26475,
+    "end_line": 26552
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_fresh_unit_with_no_branch_runs_the_full_lifecycle",
-    "start_line": 26554,
-    "end_line": 26604
+    "start_line": 26555,
+    "end_line": 26605
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "agent_decision_folds_content_but_no_agent_attribution",
-    "start_line": 26607,
-    "end_line": 26653
+    "start_line": 26608,
+    "end_line": 26654
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "planner_run",
-    "start_line": 26658,
-    "end_line": 26689
+    "start_line": 26659,
+    "end_line": 26690
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "scope_creep_refuses_a_criterionless_proposed_unit",
-    "start_line": 26692,
-    "end_line": 26706
+    "start_line": 26693,
+    "end_line": 26707
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "adjudicator_reject_blocks_the_stage",
-    "start_line": 26709,
-    "end_line": 26731
+    "start_line": 26710,
+    "end_line": 26732
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "approving_run",
-    "start_line": 26735,
-    "end_line": 26745
+    "start_line": 26736,
+    "end_line": 26746
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_three_tier_order",
-    "start_line": 26749,
-    "end_line": 26771
+    "start_line": 26750,
+    "end_line": 26772
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "adversary_runs_between_the_lenses_and_the_adjudicator",
-    "start_line": 26774,
-    "end_line": 26802
+    "start_line": 26775,
+    "end_line": 26803
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "adjudicator_reject_gates_even_with_an_adversary_present",
-    "start_line": 26805,
-    "end_line": 26844
+    "start_line": 26806,
+    "end_line": 26845
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "unit_reviews_itself_within_its_own_lifecycle",
-    "start_line": 26847,
-    "end_line": 26904
+    "start_line": 26848,
+    "end_line": 26905
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "depth_tiers",
-    "start_line": 26907,
-    "end_line": 26917
+    "start_line": 26908,
+    "end_line": 26918
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "full_panel_with_tiers",
-    "start_line": 26921,
-    "end_line": 26928
+    "start_line": 26922,
+    "end_line": 26929
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "path_is_high_risk_matches_by_prefix_and_by_glob",
-    "start_line": 26933,
-    "end_line": 26959
+    "start_line": 26934,
+    "end_line": 26960
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "route_review_tier_with_no_policy_is_the_full_panel_unchanged",
-    "start_line": 26962,
-    "end_line": 26971
+    "start_line": 26963,
+    "end_line": 26972
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "route_review_tier_routes_a_low_risk_unit_to_the_light_panel",
-    "start_line": 26974,
-    "end_line": 26993
+    "start_line": 26975,
+    "end_line": 26994
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "route_review_tier_forces_full_on_a_high_risk_path_hit",
-    "start_line": 26996,
-    "end_line": 27011
+    "start_line": 26997,
+    "end_line": 27012
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "route_review_tier_forces_full_over_the_size_threshold",
-    "start_line": 27014,
-    "end_line": 27027
+    "start_line": 27015,
+    "end_line": 27028
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "route_review_tier_forces_full_when_the_gates_flapped",
-    "start_line": 27030,
-    "end_line": 27043
+    "start_line": 27031,
+    "end_line": 27044
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "route_review_tier_fails_safe_to_full_on_an_empty_blast_radius",
-    "start_line": 27046,
-    "end_line": 27080
+    "start_line": 27047,
+    "end_line": 27081
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_tiered_unit",
-    "start_line": 27086,
-    "end_line": 27137
+    "start_line": 27087,
+    "end_line": 27138
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "logged_review_tier",
-    "start_line": 27141,
-    "end_line": 27152
+    "start_line": 27142,
+    "end_line": 27153
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_low_risk_unit_runs_the_light_panel_and_logs_the_routing",
-    "start_line": 27155,
-    "end_line": 27181
+    "start_line": 27156,
+    "end_line": 27182
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "tiered_review_run",
-    "start_line": 27189,
-    "end_line": 27230
+    "start_line": 27190,
+    "end_line": 27231
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_low_risk_unit_skips_the_adversary_and_extra_lens",
-    "start_line": 27233,
-    "end_line": 27250
+    "start_line": 27234,
+    "end_line": 27251
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_high_risk_unit_runs_the_full_panel_and_logs_the_routing",
-    "start_line": 27253,
-    "end_line": 27279
+    "start_line": 27254,
+    "end_line": 27280
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "without_a_depth_policy_a_grounded_unit_runs_the_full_panel_and_logs_no_routing",
-    "start_line": 27282,
-    "end_line": 27297
+    "start_line": 27283,
+    "end_line": 27298
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_zero_grounding_unit_fails_safe_to_the_full_panel_and_logs_it",
-    "start_line": 27300,
-    "end_line": 27336
+    "start_line": 27301,
+    "end_line": 27337
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_flapped_unit_escalates_from_light_at_attempt_0_to_full_on_remediation",
-    "start_line": 27339,
-    "end_line": 27450
+    "start_line": 27340,
+    "end_line": 27451
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_stage_level_tiers_policy_routes_the_unit_by_risk",
-    "start_line": 27453,
-    "end_line": 27473
+    "start_line": 27454,
+    "end_line": 27474
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "every_spawn_runs_in_a_worktree_never_the_main_repo_checkout",
-    "start_line": 27476,
-    "end_line": 27550
+    "start_line": 27477,
+    "end_line": 27551
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spec_cfg",
-    "start_line": 27554,
-    "end_line": 27577
+    "start_line": 27555,
+    "end_line": 27578
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_width_2_runs_two_candidates_first_green_wins_rest_cancelled",
-    "start_line": 27580,
-    "end_line": 27667
+    "start_line": 27581,
+    "end_line": 27668
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_budget_accounts_for_every_candidate_spawn",
-    "start_line": 27670,
-    "end_line": 27701
+    "start_line": 27671,
+    "end_line": 27702
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_defaults_off_runs_a_single_candidate",
-    "start_line": 27704,
-    "end_line": 27740
+    "start_line": 27705,
+    "end_line": 27741
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_parks_all_candidates_together_in_one_step",
-    "start_line": 27743,
-    "end_line": 27778
+    "start_line": 27744,
+    "end_line": 27779
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_defers_green_until_the_winner_and_integrates_across_replay_steps",
-    "start_line": 27781,
-    "end_line": 27905
+    "start_line": 27782,
+    "end_line": 27906
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "unit_has_status",
-    "start_line": 27911,
-    "end_line": 27921
+    "start_line": 27912,
+    "end_line": 27922
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "branch_present",
-    "start_line": 27925,
-    "end_line": 27927
+    "start_line": 27926,
+    "end_line": 27928
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_later_candidate_wins_when_an_earlier_lane_is_review_rejected",
-    "start_line": 27930,
-    "end_line": 27999
+    "start_line": 27931,
+    "end_line": 28000
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_low_risk_later_lane_winner_routes_light_not_falsely_flapped",
-    "start_line": 28002,
-    "end_line": 28122
+    "start_line": 28003,
+    "end_line": 28123
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_rejected_loser_is_visible_to_the_review_quality_fold",
-    "start_line": 28125,
-    "end_line": 28176
+    "start_line": 28126,
+    "end_line": 28177
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_escalates_when_every_candidate_is_rejected",
-    "start_line": 28179,
-    "end_line": 28241
+    "start_line": 28180,
+    "end_line": 28242
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_crashed_lane_is_absent_and_a_sibling_still_wins",
-    "start_line": 28244,
-    "end_line": 28304
+    "start_line": 28245,
+    "end_line": 28305
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_exhaustive_integrate_door_red_blocks_a_candidate",
-    "start_line": 28307,
-    "end_line": 28369
+    "start_line": 28308,
+    "end_line": 28370
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_stays_fresh_across_parking_until_a_winner_integrates",
-    "start_line": 28372,
-    "end_line": 28481
+    "start_line": 28373,
+    "end_line": 28482
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 28496,
-    "end_line": 28565
+    "start_line": 28497,
+    "end_line": 28566
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_blocked_winner_captures_evidence_and_a_later_lane_wins",
-    "start_line": 28569,
-    "end_line": 28740
+    "start_line": 28570,
+    "end_line": 28741
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "lane_0_merge_break",
-    "start_line": 28748,
-    "end_line": 28757
+    "start_line": 28749,
+    "end_line": 28758
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "approving_speculation_stub",
-    "start_line": 28760,
-    "end_line": 28766
+    "start_line": 28761,
+    "end_line": 28767
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_speculating_unit_re_enters_every_lane_with_its_logged_post_merge_block",
-    "start_line": 28769,
-    "end_line": 28825
+    "start_line": 28770,
+    "end_line": 28826
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_compensated_speculating_unit_never_re_enters_with_an_earlier_lanes_logged_block",
-    "start_line": 28828,
-    "end_line": 28894
+    "start_line": 28829,
+    "end_line": 28895
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_isolated_cwd_refuses_empty_or_repo_root_with_a_repo",
-    "start_line": 28897,
-    "end_line": 28938
+    "start_line": 28898,
+    "end_line": 28939
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_conductor_threads_each_agents_persona_to_the_driver",
-    "start_line": 28941,
-    "end_line": 29021
+    "start_line": 28942,
+    "end_line": 29022
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_system_prompt_carries_the_communication_built_in_once",
-    "start_line": 29024,
-    "end_line": 29058
+    "start_line": 29025,
+    "end_line": 29059
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_agent_with_no_persona_threads_an_empty_system_prompt",
-    "start_line": 29061,
-    "end_line": 29098
+    "start_line": 29062,
+    "end_line": 29099
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "operator_instructions_reach_every_spawned_agent_after_every_built_in",
-    "start_line": 29101,
-    "end_line": 29174
+    "start_line": 29102,
+    "end_line": 29175
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "planner_proposed_unit_inherits_the_default_review_panel",
-    "start_line": 29177,
-    "end_line": 29231
+    "start_line": 29178,
+    "end_line": 29232
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_producer_stage_skips_the_three_tier_review_and_unblocks_its_dependents",
-    "start_line": 29234,
-    "end_line": 29321
+    "start_line": 29235,
+    "end_line": 29322
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "plan_stage_commit_under_specs_reaches_the_run_branch_before_the_next_worktree",
-    "start_line": 29324,
-    "end_line": 29401
+    "start_line": 29325,
+    "end_line": 29402
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "plan_stage_commit_outside_specs_fails_the_stage_naming_the_path",
-    "start_line": 29404,
-    "end_line": 29474
+    "start_line": 29405,
+    "end_line": 29475
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "plan_stage_commit_reverting_its_own_out_of_scope_touch_still_fails_the_stage",
-    "start_line": 29477,
-    "end_line": 29556
+    "start_line": 29478,
+    "end_line": 29557
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "plan_stage_commit_conflicting_with_a_concurrent_specs_change_escalates",
-    "start_line": 29559,
-    "end_line": 29625
+    "start_line": 29560,
+    "end_line": 29626
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "integrate_plan_commits_is_idempotent_on_a_resumed_already_landed_worktree",
-    "start_line": 29628,
-    "end_line": 29748
+    "start_line": 29629,
+    "end_line": 29749
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "integrate_plan_commits_tolerates_a_pre_existing_intent_record_with_no_git_mutation_yet",
-    "start_line": 29751,
-    "end_line": 29807
+    "start_line": 29752,
+    "end_line": 29808
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "integrate_plan_commits_keeps_the_earlier_commits_identity_when_the_worktree_grows_between_calls",
-    "start_line": 29810,
-    "end_line": 29883
+    "start_line": 29811,
+    "end_line": 29884
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "append",
-    "start_line": 29896,
-    "end_line": 29912
+    "start_line": 29897,
+    "end_line": 29913
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker",
-    "start_line": 29917,
-    "end_line": 29977
+    "start_line": 29918,
+    "end_line": 29978
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_plan_landing_infra_fault_halts_the_run_loudly_with_no_per_unit_lesson_or_attempt",
-    "start_line": 29980,
-    "end_line": 30057
+    "start_line": 29981,
+    "end_line": 30058
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "per_unit_panel_cfg",
-    "start_line": 30061,
-    "end_line": 30087
+    "start_line": 30062,
+    "end_line": 30088
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "adjudicator_at",
-    "start_line": 30095,
-    "end_line": 30097
+    "start_line": 30096,
+    "end_line": 30098
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_review_rounds",
-    "start_line": 30103,
-    "end_line": 30132
+    "start_line": 30104,
+    "end_line": 30133
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_round_two_review_prompt_carries_the_prior_required_list_and_the_delta_base",
-    "start_line": 30139,
-    "end_line": 30170
+    "start_line": 30140,
+    "end_line": 30171
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "session_stub",
-    "start_line": 30174,
-    "end_line": 30193
+    "start_line": 30175,
+    "end_line": 30194
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "session_cfg",
-    "start_line": 30197,
-    "end_line": 30204
+    "start_line": 30198,
+    "end_line": 30205
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_session_rounds",
-    "start_line": 30207,
-    "end_line": 30220
+    "start_line": 30208,
+    "end_line": 30221
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_relaunched_driver_continues_the_session_the_log_recorded",
-    "start_line": 30227,
-    "end_line": 30280
+    "start_line": 30228,
+    "end_line": 30281
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_later_round_resumes_each_roles_session_with_what_changed_alone",
-    "start_line": 30288,
-    "end_line": 30329
+    "start_line": 30289,
+    "end_line": 30330
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_review_tier_is_sent_the_gate_evidence_of_the_commit_it_now_judges",
-    "start_line": 30336,
-    "end_line": 30360
+    "start_line": 30337,
+    "end_line": 30361
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_gate_only_failure_resumes_the_sdet_authors_session_with_the_gate_evidence",
-    "start_line": 30366,
-    "end_line": 30395
+    "start_line": 30367,
+    "end_line": 30396
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_fallen_back_resume_is_recorded_as_requested_but_not_continued",
-    "start_line": 30402,
-    "end_line": 30446
+    "start_line": 30403,
+    "end_line": 30447
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_later_round_continues_the_respawn_that_produced_the_rounds_output",
-    "start_line": 30453,
-    "end_line": 30473
+    "start_line": 30454,
+    "end_line": 30474
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "each_spawns_session_is_recorded_in_the_log_and_read_back_from_it",
-    "start_line": 30480,
-    "end_line": 30533
+    "start_line": 30481,
+    "end_line": 30534
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_driver_reporting_no_session_keeps_every_spawn_fresh",
-    "start_line": 30538,
-    "end_line": 30556
+    "start_line": 30539,
+    "end_line": 30557
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_later_round_reject_naming_no_required_item_respawns_the_adjudicator",
-    "start_line": 30562,
-    "end_line": 30579
+    "start_line": 30563,
+    "end_line": 30580
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "lessons_about",
-    "start_line": 30582,
-    "end_line": 30589
+    "start_line": 30583,
+    "end_line": 30590
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_round_two_reject_on_only_out_of_delta_wording_lands_and_records_operator_lessons",
-    "start_line": 30595,
-    "end_line": 30627
+    "start_line": 30596,
+    "end_line": 30628
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_correctness_item_outside_the_delta_still_rejects",
-    "start_line": 30633,
-    "end_line": 30660
+    "start_line": 30634,
+    "end_line": 30661
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_later_round_infra_fault_reject_naming_no_item_reruns_uncharged",
-    "start_line": 30666,
-    "end_line": 30692
+    "start_line": 30667,
+    "end_line": 30693
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_later_round_infra_fault_reject_is_never_split",
-    "start_line": 30698,
-    "end_line": 30724
+    "start_line": 30699,
+    "end_line": 30725
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_infra_rerun_records_its_own_operator_lessons",
-    "start_line": 30729,
-    "end_line": 30764
+    "start_line": 30730,
+    "end_line": 30765
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "per_unit_adjudicator_reject_blocks_integration_and_escalates",
-    "start_line": 30767,
-    "end_line": 30797
+    "start_line": 30768,
+    "end_line": 30798
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_adjudicator_infra_fault_reject_reruns_the_review_without_charging",
-    "start_line": 30800,
-    "end_line": 30851
+    "start_line": 30801,
+    "end_line": 30852
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_always_rejecting_adjudicator_escalates_after_exactly_max_retries_cycles",
-    "start_line": 30854,
-    "end_line": 30936
+    "start_line": 30855,
+    "end_line": 30937
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_higher_max_retries_gives_more_attempts_before_escalation",
-    "start_line": 30939,
-    "end_line": 31000
+    "start_line": 30940,
+    "end_line": 31001
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_absent_max_retries_preserves_the_default_bound_of_three",
-    "start_line": 31003,
-    "end_line": 31056
+    "start_line": 31004,
+    "end_line": 31057
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_unit_gets_exactly_its_granted_extra_attempts_before_re_escalating",
-    "start_line": 31059,
-    "end_line": 31140
+    "start_line": 31060,
+    "end_line": 31141
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "max_retries_for_widens_only_the_resumed_unit_never_a_sibling",
-    "start_line": 31143,
-    "end_line": 31176
+    "start_line": 31144,
+    "end_line": 31177
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_stages_own_max_retries_overrides_the_run_default_for_its_units",
-    "start_line": 31179,
-    "end_line": 31218
+    "start_line": 31180,
+    "end_line": 31219
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "new",
-    "start_line": 31236,
-    "end_line": 31242
+    "start_line": 31237,
+    "end_line": 31243
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 31245,
-    "end_line": 31279
+    "start_line": 31246,
+    "end_line": 31280
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_final_attempt_approval_integrates",
-    "start_line": 31288,
-    "end_line": 31312
+    "start_line": 31289,
+    "end_line": 31313
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "approval_on_the_final_permitted_attempt_integrates_a_per_unit_stage",
-    "start_line": 31315,
-    "end_line": 31329
+    "start_line": 31316,
+    "end_line": 31330
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_model_ladder_implementer_escalates_one_rung_per_remediation_attempt",
-    "start_line": 31332,
-    "end_line": 31414
+    "start_line": 31333,
+    "end_line": 31415
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "approval_on_the_final_permitted_attempt_integrates_a_standalone_review_stage",
-    "start_line": 31417,
-    "end_line": 31445
+    "start_line": 31418,
+    "end_line": 31446
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "failing_gate_run",
-    "start_line": 31449,
-    "end_line": 31455
+    "start_line": 31450,
+    "end_line": 31456
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "status_mark_keys",
-    "start_line": 31458,
-    "end_line": 31467
+    "start_line": 31459,
+    "end_line": 31468
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_infra_spawn_crash_retries_under_a_retry_id_and_charges_nothing",
-    "start_line": 31470,
-    "end_line": 31529
+    "start_line": 31471,
+    "end_line": 31530
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "infra_retries_past_the_bound_halt_the_step_and_a_relaunch_gets_a_fresh_bound",
-    "start_line": 31532,
-    "end_line": 31613
+    "start_line": 31533,
+    "end_line": 31614
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "gated_by_ok",
-    "start_line": 31616,
-    "end_line": 31624
+    "start_line": 31617,
+    "end_line": 31625
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "agent_a_cfg",
-    "start_line": 31627,
-    "end_line": 31633
+    "start_line": 31628,
+    "end_line": 31634
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "budget_of_one_over_two_units",
-    "start_line": 31637,
-    "end_line": 31641
+    "start_line": 31638,
+    "end_line": 31642
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_attention",
-    "start_line": 31645,
-    "end_line": 31647
+    "start_line": 31646,
+    "end_line": 31648
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_budget_halt_does_not_restamp_on_a_later_poll_with_nothing_new",
-    "start_line": 31694,
-    "end_line": 31768
+    "start_line": 31695,
+    "end_line": 31769
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "started_store",
-    "start_line": 31771,
-    "end_line": 31775
+    "start_line": 31772,
+    "end_line": 31776
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "replay_step",
-    "start_line": 31779,
-    "end_line": 31783
+    "start_line": 31780,
+    "end_line": 31784
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "fail_attempt",
-    "start_line": 31788,
-    "end_line": 31794
+    "start_line": 31789,
+    "end_line": 31795
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps",
-    "start_line": 31797,
-    "end_line": 31861
+    "start_line": 31798,
+    "end_line": 31862
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "compute_attention_leaves_the_hung_liveness_halt_to_the_caller",
-    "start_line": 31864,
-    "end_line": 31909
+    "start_line": 31865,
+    "end_line": 31910
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "parked_unit_u",
-    "start_line": 31914,
-    "end_line": 31925
+    "start_line": 31915,
+    "end_line": 31926
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_escalation_does_not_restamp_attention_on_a_resumed_process",
-    "start_line": 31928,
-    "end_line": 31968
+    "start_line": 31929,
+    "end_line": 31969
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_clean_step_stamps_no_attention",
-    "start_line": 31971,
-    "end_line": 31982
+    "start_line": 31972,
+    "end_line": 31983
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_second_failure_recurs_and_a_third_also_stalls_the_frontier",
-    "start_line": 31985,
-    "end_line": 32059
+    "start_line": 31986,
+    "end_line": 32060
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "nine_of_ten_budget_crosses_the_final_tenth",
-    "start_line": 32062,
-    "end_line": 32098
+    "start_line": 32063,
+    "end_line": 32099
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_re_step_already_past_the_budget_threshold_does_not_re_stamp",
-    "start_line": 32101,
-    "end_line": 32173
+    "start_line": 32102,
+    "end_line": 32174
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "budget_of_one_over_a_chain",
-    "start_line": 32176,
-    "end_line": 32180
+    "start_line": 32177,
+    "end_line": 32181
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "budget_breaker_stops_the_run_after_the_first_wave",
-    "start_line": 32183,
-    "end_line": 32197
+    "start_line": 32184,
+    "end_line": 32198
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "budget_exhaustion_aborts_the_task",
-    "start_line": 32200,
-    "end_line": 32206
+    "start_line": 32201,
+    "end_line": 32207
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_budget_halt_surfaces_its_reason_on_the_run_state",
-    "start_line": 32209,
-    "end_line": 32219
+    "start_line": 32210,
+    "end_line": 32220
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_run_within_budget_surfaces_no_halt_reason",
-    "start_line": 32222,
-    "end_line": 32232
+    "start_line": 32223,
+    "end_line": 32233
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "with_budget_two_ctx_over",
-    "start_line": 32236,
-    "end_line": 32253
+    "start_line": 32237,
+    "end_line": 32254
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_spawn_budget_folds_from_recorded_spawn_requests_across_steps",
-    "start_line": 32256,
-    "end_line": 32299
+    "start_line": 32257,
+    "end_line": 32300
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_pre_wave_breaker_trips_only_on_a_new_over_budget_spawn",
-    "start_line": 32302,
-    "end_line": 32323
+    "start_line": 32303,
+    "end_line": 32324
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_review_tier_budget_refusal_aborts_with_budgetexhausted_not_a_raw_error",
-    "start_line": 32326,
-    "end_line": 32389
+    "start_line": 32327,
+    "end_line": 32390
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_ungated_fanout_guard",
-    "start_line": 32404,
-    "end_line": 32413
+    "start_line": 32405,
+    "end_line": 32414
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "ungated_fanout_unit_under_a_gated_template_fails_the_step",
-    "start_line": 32416,
-    "end_line": 32444
+    "start_line": 32417,
+    "end_line": 32445
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "ungated_fanout_unit_under_an_ungated_template_is_not_flagged",
-    "start_line": 32447,
-    "end_line": 32470
+    "start_line": 32448,
+    "end_line": 32471
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "gated_fanout_unit_passes",
-    "start_line": 32473,
-    "end_line": 32494
+    "start_line": 32474,
+    "end_line": 32495
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "non_fanout_stage_with_no_gates_is_never_flagged",
-    "start_line": 32497,
-    "end_line": 32521
+    "start_line": 32498,
+    "end_line": 32522
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "unmatched_fanout_proposal_under_a_gated_template_fails_the_step",
-    "start_line": 32524,
-    "end_line": 32559
+    "start_line": 32525,
+    "end_line": 32560
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "unmatched_fanout_proposal_under_an_ungated_template_is_not_flagged",
-    "start_line": 32562,
-    "end_line": 32586
+    "start_line": 32563,
+    "end_line": 32587
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "ungated_fan_out_templates_names_a_gateless_template",
-    "start_line": 32589,
-    "end_line": 32606
+    "start_line": 32590,
+    "end_line": 32607
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "ungated_fan_out_templates_is_silent_on_a_gated_template",
-    "start_line": 32609,
-    "end_line": 32621
+    "start_line": 32610,
+    "end_line": 32622
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "planner_covering_every_criterion_passes",
-    "start_line": 32624,
-    "end_line": 32637
+    "start_line": 32625,
+    "end_line": 32638
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "manual_stage_pauses_while_an_auto_stage_integrates",
-    "start_line": 32640,
-    "end_line": 32668
+    "start_line": 32641,
+    "end_line": 32669
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawned_in_a_repo",
-    "start_line": 32672,
-    "end_line": 32693
+    "start_line": 32673,
+    "end_line": 32694
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "isolation_none_agent_gets_no_worktree_even_with_a_repo",
-    "start_line": 32696,
-    "end_line": 32714
+    "start_line": 32697,
+    "end_line": 32715
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn_opts_isolation_is_set_for_a_worktree_agent",
-    "start_line": 32717,
-    "end_line": 32725
+    "start_line": 32718,
+    "end_line": 32726
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_spawned_implementers_title_is_the_unit_criterion",
-    "start_line": 32728,
-    "end_line": 32747
+    "start_line": 32729,
+    "end_line": 32748
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "roster_run",
-    "start_line": 32754,
-    "end_line": 32783
+    "start_line": 32755,
+    "end_line": 32784
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "per_unit_roster_run",
-    "start_line": 32787,
-    "end_line": 32803
+    "start_line": 32788,
+    "end_line": 32804
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_full_panel_roster",
-    "start_line": 32807,
-    "end_line": 32814
+    "start_line": 32808,
+    "end_line": 32815
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_panel_with_no_adversary_never_fabricates_one_in_the_adjudicators_roster",
-    "start_line": 32839,
-    "end_line": 32851
+    "start_line": 32840,
+    "end_line": 32852
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_roster_reflects_the_actually_routed_light_panel_not_the_full_one",
-    "start_line": 32860,
-    "end_line": 32925
+    "start_line": 32861,
+    "end_line": 32926
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_fan_out_review_loops_adversary_and_adjudicator_spawns_are_stamped_with_the_routed_roster",
-    "start_line": 32939,
-    "end_line": 32970
+    "start_line": 32940,
+    "end_line": 32971
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "stage_autonomy_override_seeds_the_gate",
-    "start_line": 32973,
-    "end_line": 33036
+    "start_line": 32974,
+    "end_line": 33037
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "on_pass_none_runs_gates_but_does_not_integrate",
-    "start_line": 33039,
-    "end_line": 33079
+    "start_line": 33040,
+    "end_line": 33080
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 33090,
-    "end_line": 33105
+    "start_line": 33091,
+    "end_line": 33106
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "two_unit_gate_runs",
-    "start_line": 33114,
-    "end_line": 33143
+    "start_line": 33115,
+    "end_line": 33144
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_one_isolated_dir_per_unit",
-    "start_line": 33148,
-    "end_line": 33177
+    "start_line": 33149,
+    "end_line": 33178
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "two_units_gate_environments_never_share_a_target_dir",
-    "start_line": 33180,
-    "end_line": 33208
+    "start_line": 33181,
+    "end_line": 33209
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "two_units_gate_environments_never_share_a_gate_scratch_root",
-    "start_line": 33211,
-    "end_line": 33227
+    "start_line": 33212,
+    "end_line": 33228
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_gate_round_never_creates_the_gate_scratch_root",
-    "start_line": 33230,
-    "end_line": 33279
+    "start_line": 33231,
+    "end_line": 33280
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "new",
-    "start_line": 33288,
-    "end_line": 33292
+    "start_line": 33289,
+    "end_line": 33293
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 33295,
-    "end_line": 33304
+    "start_line": 33296,
+    "end_line": 33305
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_once",
-    "start_line": 33327,
-    "end_line": 33360
+    "start_line": 33328,
+    "end_line": 33361
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "one_build_environment_authority_reaches_both_a_gate_build_and_an_agent_spawn",
-    "start_line": 33312,
-    "end_line": 33435
+    "start_line": 33313,
+    "end_line": 33436
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn_env_adds_the_per_unit_cargo_target_dir_only_for_a_real_unit_worktree",
-    "start_line": 33438,
-    "end_line": 33504
+    "start_line": 33439,
+    "end_line": 33505
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_units_per_unit_cache_is_reclaimed_when_its_worktree_is_removed",
-    "start_line": 33507,
-    "end_line": 33566
+    "start_line": 33508,
+    "end_line": 33567
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_units_worktree_cache_and_branch_are_all_reclaimed_on_a_successful_integrate",
-    "start_line": 33569,
-    "end_line": 33637
+    "start_line": 33570,
+    "end_line": 33638
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_units_worktree_is_reclaimed_but_its_branch_survives_a_terminal_escalation",
-    "start_line": 33640,
-    "end_line": 33701
+    "start_line": 33641,
+    "end_line": 33702
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "judged_unit_cfg",
-    "start_line": 33705,
-    "end_line": 33730
+    "start_line": 33706,
+    "end_line": 33731
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "parking_stub",
-    "start_line": 33735,
-    "end_line": 33741
+    "start_line": 33736,
+    "end_line": 33742
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "parked_judge_stub",
-    "start_line": 33744,
-    "end_line": 33750
+    "start_line": 33745,
+    "end_line": 33751
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "unit_branch_tip",
-    "start_line": 33754,
-    "end_line": 33762
+    "start_line": 33755,
+    "end_line": 33763
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_unit_worktree_at",
-    "start_line": 33768,
-    "end_line": 33782
+    "start_line": 33769,
+    "end_line": 33783
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_parked_review_spawn_keeps_the_unit_worktree_registered_and_its_cache",
-    "start_line": 33785,
-    "end_line": 33834
+    "start_line": 33786,
+    "end_line": 33835
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "review_unit_restores_a_worktree_a_gate_deleted_out_of_band",
-    "start_line": 33837,
-    "end_line": 33877
+    "start_line": 33838,
+    "end_line": 33878
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_second_step_restores_a_still_parked_units_worktree_deleted_out_of_band",
-    "start_line": 33880,
-    "end_line": 33935
+    "start_line": 33881,
+    "end_line": 33936
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "verified_worktree_sha_is_stamped_after_a_gate_side_deletion_is_restored",
-    "start_line": 33938,
-    "end_line": 34032
+    "start_line": 33939,
+    "end_line": 34033
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "review_tier_boundary_restores_a_worktree_a_prior_tier_deleted",
-    "start_line": 34035,
-    "end_line": 34108
+    "start_line": 34036,
+    "end_line": 34109
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "reviewed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored",
-    "start_line": 34111,
-    "end_line": 34215
+    "start_line": 34112,
+    "end_line": 34216
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "has_real_worktree_sha",
-    "start_line": 34218,
-    "end_line": 34222
+    "start_line": 34219,
+    "end_line": 34223
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "rejecting_deleting_judge_log",
-    "start_line": 34226,
-    "end_line": 34245
+    "start_line": 34227,
+    "end_line": 34246
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "failed_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored",
-    "start_line": 34248,
-    "end_line": 34265
+    "start_line": 34249,
+    "end_line": 34266
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "status_sha",
-    "start_line": 34269,
-    "end_line": 34279
+    "start_line": 34270,
+    "end_line": 34280
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_residue_named_and_never_merged",
-    "start_line": 34285,
-    "end_line": 34309
+    "start_line": 34286,
+    "end_line": 34310
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "approving_round_with_residue",
-    "start_line": 34314,
-    "end_line": 34339
+    "start_line": 34315,
+    "end_line": 34340
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_review_rounds_dirty_residue_is_restored_named_and_never_merged",
-    "start_line": 34342,
-    "end_line": 34384
+    "start_line": 34343,
+    "end_line": 34385
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_review_rounds_moved_tip_is_restored_to_the_reviewed_sha_before_merging",
-    "start_line": 34387,
-    "end_line": 34411
+    "start_line": 34388,
+    "end_line": 34412
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_review_rounds_lens_residue_survives_a_later_tiers_genuine_crash_and_is_restored",
-    "start_line": 34414,
-    "end_line": 34544
+    "start_line": 34415,
+    "end_line": 34545
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "residue_then_park_stub",
-    "start_line": 34550,
-    "end_line": 34558
+    "start_line": 34551,
+    "end_line": 34559
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "park_then_resume",
-    "start_line": 34565,
-    "end_line": 34585
+    "start_line": 34566,
+    "end_line": 34586
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_one_log_derived_round_start",
-    "start_line": 34591,
-    "end_line": 34613
+    "start_line": 34592,
+    "end_line": 34614
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_resumed_round_judges_the_logged_start",
-    "start_line": 34623,
-    "end_line": 34671
+    "start_line": 34624,
+    "end_line": 34672
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_speculation_lanes_log_derived_start_sha_survives_a_cross_call_resume_after_a_park",
-    "start_line": 34724,
-    "end_line": 34787
+    "start_line": 34725,
+    "end_line": 34788
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_reviewed_unit_restores_a_worktree_the_exhaustive_gate_deleted",
-    "start_line": 34790,
-    "end_line": 34830
+    "start_line": 34791,
+    "end_line": 34831
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_a_fresh_process_re_enters_s_with_its_logged_gate_evidence",
-    "start_line": 34837,
-    "end_line": 34865
+    "start_line": 34838,
+    "end_line": 34866
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_reviewed_unit_whose_exhaustive_gate_fails_records_a_gate_cause",
-    "start_line": 34868,
-    "end_line": 34963
+    "start_line": 34869,
+    "end_line": 34964
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_reviewed_units_infra_red_reruns_the_exhaustive_suite_without_charging",
-    "start_line": 34966,
-    "end_line": 35067
+    "start_line": 34967,
+    "end_line": 35068
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_reviewed_units_merge_break_records_an_integrate_conflict_cause",
-    "start_line": 35070,
-    "end_line": 35203
+    "start_line": 35071,
+    "end_line": 35204
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_landed_but_ungated_unit_regates_the_landed_tree",
-    "start_line": 35206,
-    "end_line": 35336
+    "start_line": 35207,
+    "end_line": 35337
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_reviewed_units_genuine_unresolved_conflict_reaches_the_idempotent_merge_path",
-    "start_line": 35339,
-    "end_line": 35510
+    "start_line": 35340,
+    "end_line": 35511
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "regenerate_conflicted_paths_returns_the_real_regeneration_commit_sha",
-    "start_line": 35527,
-    "end_line": 35568
+    "start_line": 35528,
+    "end_line": 35569
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_live_approved_unit_restores_a_worktree_the_integrate_door_exhaustive_gate_deleted",
-    "start_line": 35571,
-    "end_line": 35641
+    "start_line": 35572,
+    "end_line": 35642
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_lenses_restore_a_gate_deleted_worktree_without_racing_and_stamp_the_winner_sha",
-    "start_line": 35644,
-    "end_line": 35757
+    "start_line": 35645,
+    "end_line": 35758
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculating_judged_cfg",
-    "start_line": 35760,
-    "end_line": 35764
+    "start_line": 35761,
+    "end_line": 35765
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored",
-    "start_line": 35767,
-    "end_line": 35788
+    "start_line": 35768,
+    "end_line": 35789
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_winner_reviewed_sha_stays_the_round_start_sha_across_a_post_review_regen_commit_and_integrate",
-    "start_line": 35791,
-    "end_line": 35862
+    "start_line": 35792,
+    "end_line": 35863
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_parked_lens_keeps_the_unit_worktree_beside_a_genuine_sibling_crash",
-    "start_line": 35865,
-    "end_line": 35975
+    "start_line": 35866,
+    "end_line": 35976
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_worktree_less_stage_gate_inherits_the_shared_target",
-    "start_line": 35978,
-    "end_line": 36025
+    "start_line": 35979,
+    "end_line": 36026
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "bounded_pool_completes_every_stage_under_the_cap",
-    "start_line": 36028,
-    "end_line": 36054
+    "start_line": 36029,
+    "end_line": 36055
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_wave_hands_each_freed_slot_to_the_next_ready_stage_under_max_parallel_units",
-    "start_line": 36057,
-    "end_line": 36112
+    "start_line": 36058,
+    "end_line": 36113
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_wave_leaves_a_stage_the_width_refuses_neither_terminal_nor_integrated_across_waves",
-    "start_line": 36115,
-    "end_line": 36181
+    "start_line": 36116,
+    "end_line": 36182
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "occupancy_survives_a_crash_resume_so_a_still_parked_unit_keeps_its_slot_over_a_fresh_one",
-    "start_line": 36184,
-    "end_line": 36257
+    "start_line": 36185,
+    "end_line": 36258
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_step_that_does_not_ingest_costs_the_run_and_the_typed_carry_over_per_read",
-    "start_line": 36265,
-    "end_line": 36288
+    "start_line": 36266,
+    "end_line": 36289
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_step_that_parks_and_replays_reads_only_the_run_and_the_typed_carry_over",
-    "start_line": 36295,
-    "end_line": 36349
+    "start_line": 36296,
+    "end_line": 36350
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_step_that_starts_a_criterion_unit_in_a_repo_reads_adoption_by_lifecycle_type",
-    "start_line": 36358,
-    "end_line": 36419
+    "start_line": 36359,
+    "end_line": 36420
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_step_that_ingests_seeds_each_identity_by_group_lookup_and_appends_only_what_moved",
-    "start_line": 36434,
-    "end_line": 36641
+    "start_line": 36435,
+    "end_line": 36642
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_step_whose_group_lookup_goes_unanswered_fails_and_appends_nothing_for_that_batch",
-    "start_line": 36650,
-    "end_line": 36710
+    "start_line": 36651,
+    "end_line": 36711
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "charge",
-    "start_line": 36726,
-    "end_line": 36733
+    "start_line": 36727,
+    "end_line": 36734
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "append",
-    "start_line": 36736,
-    "end_line": 36743
+    "start_line": 36737,
+    "end_line": 36744
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "read_stream",
-    "start_line": 36744,
-    "end_line": 36752
+    "start_line": 36745,
+    "end_line": 36753
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "read_all",
-    "start_line": 36753,
-    "end_line": 36760
+    "start_line": 36754,
+    "end_line": 36761
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "read_all_page",
-    "start_line": 36761,
-    "end_line": 36768
+    "start_line": 36762,
+    "end_line": 36769
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "log_head",
-    "start_line": 36769,
-    "end_line": 36773
+    "start_line": 36770,
+    "end_line": 36774
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "subscribe_all",
-    "start_line": 36774,
-    "end_line": 36780
+    "start_line": 36775,
+    "end_line": 36781
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "subscribe_stream",
-    "start_line": 36781,
-    "end_line": 36787
+    "start_line": 36782,
+    "end_line": 36788
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "last_position",
-    "start_line": 36788,
-    "end_line": 36794
+    "start_line": 36789,
+    "end_line": 36795
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "read_stream_typed",
-    "start_line": 36795,
-    "end_line": 36803
+    "start_line": 36796,
+    "end_line": 36804
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "read_stream_positions",
-    "start_line": 36804,
-    "end_line": 36814
+    "start_line": 36805,
+    "end_line": 36815
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "read_stream_batched",
-    "start_line": 36815,
-    "end_line": 36824
+    "start_line": 36816,
+    "end_line": 36825
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "latest_in_group",
-    "start_line": 36825,
-    "end_line": 36832
+    "start_line": 36826,
+    "end_line": 36833
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_step_whose_width_is_filled_by_parked_units_returns_instead_of_re_reading_the_stream",
-    "start_line": 36713,
-    "end_line": 36876
+    "start_line": 36714,
+    "end_line": 36877
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "live_run_folds_no_gate_machinery",
-    "start_line": 36879,
-    "end_line": 36916
+    "start_line": 36880,
+    "end_line": 36917
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawned_parallel",
-    "start_line": 36921,
-    "end_line": 36931
+    "start_line": 36922,
+    "end_line": 36932
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "agent_stage_runs_the_per_unit_lifecycle_not_the_fan_out_path",
-    "start_line": 36934,
-    "end_line": 36957
+    "start_line": 36935,
+    "end_line": 36958
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "standalone_review_stage_still_takes_the_fan_out_path",
-    "start_line": 36960,
-    "end_line": 36980
+    "start_line": 36961,
+    "end_line": 36981
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_gates_derives_and_injects_the_review_worktrees_store_fence",
-    "start_line": 36983,
-    "end_line": 37096
+    "start_line": 36984,
+    "end_line": 37097
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "review_lens_ids",
-    "start_line": 37099,
-    "end_line": 37103
+    "start_line": 37100,
+    "end_line": 37104
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "standalone_review_run",
-    "start_line": 37108,
-    "end_line": 37141
+    "start_line": 37109,
+    "end_line": 37142
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_review_worktree_kept",
-    "start_line": 37145,
-    "end_line": 37154
+    "start_line": 37146,
+    "end_line": 37155
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_genuine_crash_halts",
-    "start_line": 37158,
-    "end_line": 37165
+    "start_line": 37159,
+    "end_line": 37166
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_parked_lens_keeps_the_standalone_review_stages_worktree",
-    "start_line": 37168,
-    "end_line": 37189
+    "start_line": 37169,
+    "end_line": 37190
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_parked_lens_keeps_the_review_worktree_even_beside_a_lower_indexed_sibling_crash",
-    "start_line": 37192,
-    "end_line": 37247
+    "start_line": 37193,
+    "end_line": 37248
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_parked_lens_keeps_the_review_worktree_beside_a_sibling_degenerate_halt",
-    "start_line": 37250,
-    "end_line": 37305
+    "start_line": 37251,
+    "end_line": 37306
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_swap_to_front_prioritizes_a_genuine_error_at_a_non_zero_chunk_index",
-    "start_line": 37308,
-    "end_line": 37348
+    "start_line": 37309,
+    "end_line": 37349
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_budget_refused_lens_beside_a_genuinely_crashing_sibling_in_one_chunk",
-    "start_line": 37351,
-    "end_line": 37395
+    "start_line": 37352,
+    "end_line": 37396
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_budget_refused_standalone_review_spawn_keeps_its_worktree",
-    "start_line": 37398,
-    "end_line": 37428
+    "start_line": 37399,
+    "end_line": 37429
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "partition_separates_overlapping_blast_radii",
-    "start_line": 37431,
-    "end_line": 37461
+    "start_line": 37432,
+    "end_line": 37462
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "blast_radius_conflicts_flags_units_that_split_one_file_set",
-    "start_line": 37464,
-    "end_line": 37486
+    "start_line": 37465,
+    "end_line": 37487
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "blast_radius_conflicts_is_empty_for_a_disjoint_partition",
-    "start_line": 37489,
-    "end_line": 37502
+    "start_line": 37490,
+    "end_line": 37503
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "partitioned_wave_still_integrates_every_stage",
-    "start_line": 37505,
-    "end_line": 37555
+    "start_line": 37506,
+    "end_line": 37556
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run",
-    "start_line": 37567,
-    "end_line": 37591
+    "start_line": 37568,
+    "end_line": 37592
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "lens_finding_reaches_later_tiers_through_the_graph",
-    "start_line": 37595,
-    "end_line": 37706
+    "start_line": 37596,
+    "end_line": 37707
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "ok_gate_digest",
-    "start_line": 37709,
-    "end_line": 37719
+    "start_line": 37710,
+    "end_line": 37720
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "every_review_tier_prompt_carries_the_gate_evidence_of_the_commit_it_judges",
-    "start_line": 37728,
-    "end_line": 37761
+    "start_line": 37729,
+    "end_line": 37762
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "digested_verdict",
-    "start_line": 37764,
-    "end_line": 37777
+    "start_line": 37765,
+    "end_line": 37778
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_digest_address_is_the_commit_its_gate_ran_on",
-    "start_line": 37783,
-    "end_line": 37794
+    "start_line": 37784,
+    "end_line": 37795
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_gate_evidence_block_lists_only_the_units_gates_on_the_commit_under_review",
-    "start_line": 37802,
-    "end_line": 37854
+    "start_line": 37803,
+    "end_line": 37855
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_reviewer_builds_into_the_units_review_cache_never_the_units_own",
-    "start_line": 37862,
-    "end_line": 37901
+    "start_line": 37863,
+    "end_line": 37902
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "review_tier_prompts",
-    "start_line": 37906,
-    "end_line": 37932
+    "start_line": 37907,
+    "end_line": 37933
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "review_agents_emit_findings_via_the_review_protocol",
-    "start_line": 37935,
-    "end_line": 37965
+    "start_line": 37936,
+    "end_line": 37966
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "every_reviewer_prompt_carries_only_the_contract_and_its_system_prompt_the_method",
-    "start_line": 37974,
-    "end_line": 37999
+    "start_line": 37975,
+    "end_line": 38000
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "unparseable_adjudicator_output_blocks_integration",
-    "start_line": 38002,
-    "end_line": 38040
+    "start_line": 38003,
+    "end_line": 38041
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "failing_gate_evidence_threaded_into_retry_prompt",
-    "start_line": 38043,
-    "end_line": 38106
+    "start_line": 38044,
+    "end_line": 38107
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "silent_gate_run",
-    "start_line": 38111,
-    "end_line": 38139
+    "start_line": 38112,
+    "end_line": 38140
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "any_verdict",
-    "start_line": 38142,
-    "end_line": 38149
+    "start_line": 38143,
+    "end_line": 38150
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_flaky_gate_rerun_is_a_pass_with_warning_that_never_demotes",
-    "start_line": 38152,
-    "end_line": 38207
+    "start_line": 38153,
+    "end_line": 38208
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_product_gate_failure_is_not_rerun_and_demotes_as_before",
-    "start_line": 38210,
-    "end_line": 38250
+    "start_line": 38211,
+    "end_line": 38251
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_authored_infra_rule_with_limit_zero_at_an_inline_gate_holds_the_ratchet",
-    "start_line": 38253,
-    "end_line": 38333
+    "start_line": 38254,
+    "end_line": 38334
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_inline_gate_red_across_every_rerun_holds_for_infra_and_demotes_for_flaky",
-    "start_line": 38336,
-    "end_line": 38436
+    "start_line": 38337,
+    "end_line": 38437
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_infra_gate_red_reruns_the_stage_at_the_same_attempt_without_charging",
-    "start_line": 38439,
-    "end_line": 38522
+    "start_line": 38440,
+    "end_line": 38523
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "unit_evidence_is_populated_after_a_run",
-    "start_line": 38525,
-    "end_line": 38542
+    "start_line": 38526,
+    "end_line": 38543
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "adjudicator_rejection_reasoning_threaded_into_retry_prompt",
-    "start_line": 38545,
-    "end_line": 38612
+    "start_line": 38546,
+    "end_line": 38613
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "fan_out_lens_does_not_integrate",
-    "start_line": 38615,
-    "end_line": 38674
+    "start_line": 38616,
+    "end_line": 38675
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "review_only_stage_records_no_artifact_truthfully",
-    "start_line": 38677,
-    "end_line": 38718
+    "start_line": 38678,
+    "end_line": 38719
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "two_erroring_stages_both_leave_a_record",
-    "start_line": 38721,
-    "end_line": 38771
+    "start_line": 38722,
+    "end_line": 38772
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "single_wide_wave_overruns_budget_and_is_stopped",
-    "start_line": 38774,
-    "end_line": 38830
+    "start_line": 38775,
+    "end_line": 38831
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "validate_acyclic_detects_a_cycle",
-    "start_line": 38833,
-    "end_line": 38847
+    "start_line": 38834,
+    "end_line": 38848
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "new",
-    "start_line": 38910,
-    "end_line": 38923
+    "start_line": 38911,
+    "end_line": 38924
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "with_side_effect",
-    "start_line": 38925,
-    "end_line": 38931
+    "start_line": 38926,
+    "end_line": 38932
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "calls",
-    "start_line": 38932,
-    "end_line": 38934
+    "start_line": 38933,
+    "end_line": 38935
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "targets",
-    "start_line": 38935,
-    "end_line": 38937
+    "start_line": 38936,
+    "end_line": 38938
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "gate_scratches",
-    "start_line": 38938,
-    "end_line": 38940
+    "start_line": 38939,
+    "end_line": 38941
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "store_fences",
-    "start_line": 38941,
-    "end_line": 38943
+    "start_line": 38942,
+    "end_line": 38944
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "build_cache_guards",
-    "start_line": 38944,
-    "end_line": 38946
+    "start_line": 38945,
+    "end_line": 38947
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "build_cache_dirs",
-    "start_line": 38947,
-    "end_line": 38949
+    "start_line": 38948,
+    "end_line": 38950
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run",
-    "start_line": 38952,
-    "end_line": 39002
+    "start_line": 38953,
+    "end_line": 39003
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 39015,
-    "end_line": 39054
+    "start_line": 39016,
+    "end_line": 39055
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "new",
-    "start_line": 39065,
-    "end_line": 39070
+    "start_line": 39066,
+    "end_line": 39071
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "calls",
-    "start_line": 39071,
-    "end_line": 39073
+    "start_line": 39072,
+    "end_line": 39074
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run",
-    "start_line": 39076,
-    "end_line": 39096
+    "start_line": 39077,
+    "end_line": 39097
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "gate_verdict_event",
-    "start_line": 39100,
-    "end_line": 39109
+    "start_line": 39101,
+    "end_line": 39110
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "verdict_passed",
-    "start_line": 39111,
-    "end_line": 39115
+    "start_line": 39112,
+    "end_line": 39116
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "identical_tree_attempts",
-    "start_line": 39121,
-    "end_line": 39151
+    "start_line": 39122,
+    "end_line": 39152
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_matching_input_digest_answers_a_gate_as_a_logged_cache_hit_citing_the_prior_green",
-    "start_line": 39154,
-    "end_line": 39184
+    "start_line": 39155,
+    "end_line": 39185
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_fast_forward_landing_whose_commit_was_gated_replays_its_post_merge_gates",
-    "start_line": 39193,
-    "end_line": 39283
+    "start_line": 39194,
+    "end_line": 39284
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 39290,
-    "end_line": 39303
+    "start_line": 39291,
+    "end_line": 39304
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_identical_tree_reached_through_different_history_is_not_replayed",
-    "start_line": 39311,
-    "end_line": 39345
+    "start_line": 39312,
+    "end_line": 39346
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_content_change_misses_the_cache_and_re_runs_the_gate",
-    "start_line": 39348,
-    "end_line": 39392
+    "start_line": 39349,
+    "end_line": 39393
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_red_verdict_is_never_cache_answered_and_the_gate_re_runs",
-    "start_line": 39395,
-    "end_line": 39416
+    "start_line": 39396,
+    "end_line": 39417
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "ground",
-    "start_line": 39425,
-    "end_line": 39437
+    "start_line": 39426,
+    "end_line": 39438
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "ground",
-    "start_line": 39449,
-    "end_line": 39464
+    "start_line": 39450,
+    "end_line": 39465
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "blast_radius",
-    "start_line": 39465,
-    "end_line": 39467
+    "start_line": 39466,
+    "end_line": 39468
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "index_stamp",
-    "start_line": 39468,
-    "end_line": 39470
+    "start_line": 39469,
+    "end_line": 39471
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "blast_radius_audits",
-    "start_line": 39474,
-    "end_line": 39489
+    "start_line": 39475,
+    "end_line": 39490
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "review_tier_evidence",
-    "start_line": 39492,
-    "end_line": 39501
+    "start_line": 39493,
+    "end_line": 39502
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "tiered_stage",
-    "start_line": 39506,
-    "end_line": 39529
+    "start_line": 39507,
+    "end_line": 39530
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "tiered_cfg",
-    "start_line": 39531,
-    "end_line": 39538
+    "start_line": 39532,
+    "end_line": 39539
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_beyond_cap_high_risk_routes_full",
-    "start_line": 39547,
-    "end_line": 39593
+    "start_line": 39548,
+    "end_line": 39594
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_structural_grounder_records_the_audit_and_routes_full_on_a_beyond_cap_high_risk_file",
-    "start_line": 39603,
-    "end_line": 39619
+    "start_line": 39604,
+    "end_line": 39620
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_empty_radius_fail_safe_still_records_the_audit_and_routes_full",
-    "start_line": 39626,
-    "end_line": 39668
+    "start_line": 39627,
+    "end_line": 39669
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_non_structural_grounder_records_no_blast_radius_audit",
-    "start_line": 39676,
-    "end_line": 39712
+    "start_line": 39677,
+    "end_line": 39713
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "confidence_tier_fixture",
-    "start_line": 39724,
-    "end_line": 39789
+    "start_line": 39725,
+    "end_line": 39790
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "confidence_tier_radius_splits_the_one_edge_set_into_extracted_precise_and_structural_safe",
-    "start_line": 39799,
-    "end_line": 39839
+    "start_line": 39800,
+    "end_line": 39840
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "files_reachable_maps_a_member_to_its_held_file_and_a_placeholder_to_none",
-    "start_line": 39845,
-    "end_line": 39861
+    "start_line": 39846,
+    "end_line": 39862
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "files_reachable_reaches_no_file_through_a_module_contains",
-    "start_line": 39867,
-    "end_line": 39877
+    "start_line": 39868,
+    "end_line": 39878
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_code_neighborhood_lists_each_member_under_its_held_file",
-    "start_line": 39884,
-    "end_line": 39896
+    "start_line": 39885,
+    "end_line": 39897
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "grounded_blast_radius_tier_filters_the_subgraph_and_keeps_the_grounder_radius",
-    "start_line": 39905,
-    "end_line": 39982
+    "start_line": 39906,
+    "end_line": 39983
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "grounded_blast_radius_with_a_graph_grounds_only_on_the_code_a_criterion_names",
-    "start_line": 39990,
-    "end_line": 40028
+    "start_line": 39991,
+    "end_line": 40029
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "ground",
-    "start_line": 40037,
-    "end_line": 40039
+    "start_line": 40038,
+    "end_line": 40040
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "blast_radius",
-    "start_line": 40040,
-    "end_line": 40046
+    "start_line": 40041,
+    "end_line": 40047
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "co_scheduled_share",
-    "start_line": 40052,
-    "end_line": 40056
+    "start_line": 40053,
+    "end_line": 40057
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "measure_blast_radius_retention_through_grounded_blast_radius",
-    "start_line": 40076,
-    "end_line": 40329
+    "start_line": 40077,
+    "end_line": 40330
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "under_symbols_the_audit_emits_and_records_the_prompt_seed_as_precise",
-    "start_line": 40352,
-    "end_line": 40448
+    "start_line": 40353,
+    "end_line": 40449
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "new",
-    "start_line": 40463,
-    "end_line": 40473
+    "start_line": 40464,
+    "end_line": 40474
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "meeting",
-    "start_line": 40476,
-    "end_line": 40481
+    "start_line": 40477,
+    "end_line": 40482
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "peak",
-    "start_line": 40484,
-    "end_line": 40496
+    "start_line": 40485,
+    "end_line": 40497
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "window",
-    "start_line": 40499,
-    "end_line": 40506
+    "start_line": 40500,
+    "end_line": 40507
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 40509,
-    "end_line": 40537
+    "start_line": 40510,
+    "end_line": 40538
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "stub_radii",
-    "start_line": 40541,
-    "end_line": 40558
+    "start_line": 40542,
+    "end_line": 40559
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "probe_one_wave",
-    "start_line": 40565,
-    "end_line": 40619
+    "start_line": 40566,
+    "end_line": 40620
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_wave_co_schedules_units_naming_a_hub_when_their_radii_are_disjoint",
-    "start_line": 40626,
-    "end_line": 40668
+    "start_line": 40627,
+    "end_line": 40669
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_wave_runs_units_side_by_side_only_when_their_radii_are_disjoint",
-    "start_line": 40674,
-    "end_line": 40702
+    "start_line": 40675,
+    "end_line": 40703
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_wave_keeps_units_apart_on_their_recorded_radii",
-    "start_line": 40710,
-    "end_line": 40727
+    "start_line": 40711,
+    "end_line": 40728
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_wave_keeps_a_ready_unit_apart_from_a_parked_unit_of_an_earlier_wave",
-    "start_line": 40733,
-    "end_line": 40749
+    "start_line": 40734,
+    "end_line": 40750
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_wave_gives_a_freed_slot_to_the_next_ready_unit_before_the_wave_ends",
-    "start_line": 40755,
-    "end_line": 40784
+    "start_line": 40756,
+    "end_line": 40785
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_over_a_structural_grounder_records_the_audit_and_routes_full",
-    "start_line": 40793,
-    "end_line": 40804
+    "start_line": 40794,
+    "end_line": 40805
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "rule6_conflict_detection_grounds_on_the_safe_superset_so_a_grep_only_shared_reference_conflicts",
-    "start_line": 40807,
-    "end_line": 40907
+    "start_line": 40808,
+    "end_line": 40908
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "glob_matches_supports_star_doublestar_and_literals",
-    "start_line": 40910,
-    "end_line": 40936
+    "start_line": 40911,
+    "end_line": 40937
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "gate_intersects_radius_runs_unscoped_and_intersecting_gates_only",
-    "start_line": 40939,
-    "end_line": 40963
+    "start_line": 40940,
+    "end_line": 40964
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "blast_radius_narrows_the_inner_loop_and_the_integrate_step_runs_the_full_library",
-    "start_line": 40966,
-    "end_line": 41117
+    "start_line": 40967,
+    "end_line": 41118
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_gate_skipped_inline_but_red_at_the_exhaustive_integrate_door_blocks_the_merge",
-    "start_line": 41120,
-    "end_line": 41250
+    "start_line": 41121,
+    "end_line": 41251
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "verdict_compensates_names_a_prior_unit_independent_of_approval",
-    "start_line": 41253,
-    "end_line": 41282
+    "start_line": 41254,
+    "end_line": 41283
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 41295,
-    "end_line": 41339
+    "start_line": 41296,
+    "end_line": 41340
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_contradiction_compensates_reverts_and_re_enters_the_integrated_unit",
-    "start_line": 41343,
-    "end_line": 41509
+    "start_line": 41344,
+    "end_line": 41510
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "with_integrations_ctx",
-    "start_line": 41513,
-    "end_line": 41531
+    "start_line": 41514,
+    "end_line": 41532
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "commits_to_compensate_reverts_every_sha_a_multi_commit_landing_recorded",
-    "start_line": 41534,
-    "end_line": 41564
+    "start_line": 41535,
+    "end_line": 41565
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "commits_to_compensate_dedupes_a_repeated_sha_and_skips_an_already_compensated_one",
-    "start_line": 41567,
-    "end_line": 41618
+    "start_line": 41568,
+    "end_line": 41619
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "commits_to_compensate_excludes_the_review_only_marker_even_alongside_a_real_sha",
-    "start_line": 41621,
-    "end_line": 41651
+    "start_line": 41622,
+    "end_line": 41652
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "pending_compensations_from_log_re_derives_only_undrained_marks",
-    "start_line": 41654,
-    "end_line": 41714
+    "start_line": 41655,
+    "end_line": 41715
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_durable_compensation_queued_mark_is_fold_neutral_on_the_target",
-    "start_line": 41717,
-    "end_line": 41748
+    "start_line": 41718,
+    "end_line": 41749
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 41756,
-    "end_line": 41795
+    "start_line": 41757,
+    "end_line": 41796
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_compensated_unit_re_gates",
-    "start_line": 41803,
-    "end_line": 41876
+    "start_line": 41804,
+    "end_line": 41877
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 41905,
-    "end_line": 41952
+    "start_line": 41906,
+    "end_line": 41953
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 41992,
-    "end_line": 42018
+    "start_line": 41993,
+    "end_line": 42019
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resume_re_drives_a_durably_queued_but_undrained_compensation",
-    "start_line": 42022,
-    "end_line": 42157
+    "start_line": 42023,
+    "end_line": 42158
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "integrate_re_gates_the_merged_tree_and_a_merge_break_blocks_the_second_unit",
-    "start_line": 42160,
-    "end_line": 42332
+    "start_line": 42161,
+    "end_line": 42333
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 42355,
-    "end_line": 42424
+    "start_line": 42356,
+    "end_line": 42425
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_post_merge_re_gate_runs_in_its_own_scratch_worktree_never_the_repo",
-    "start_line": 42428,
-    "end_line": 42589
+    "start_line": 42429,
+    "end_line": 42590
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 42603,
-    "end_line": 42650
+    "start_line": 42604,
+    "end_line": 42651
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_passing_post_merge_re_gate_reclaims_the_gate_scratch_root_its_fallback_names",
-    "start_line": 42654,
-    "end_line": 42757
+    "start_line": 42655,
+    "end_line": 42758
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 42773,
-    "end_line": 42802
+    "start_line": 42774,
+    "end_line": 42803
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_a_replayed_post_merge_pass_reclaims_the_gate_scratch_root",
-    "start_line": 42813,
-    "end_line": 42924
+    "start_line": 42814,
+    "end_line": 42925
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_postmerge_err_reaps_its_branch",
-    "start_line": 42932,
-    "end_line": 42970
+    "start_line": 42933,
+    "end_line": 42971
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "postmerge_run_gates_err_still_reaps_the_throwaway_worktree_and_branch",
-    "start_line": 42973,
-    "end_line": 43005
+    "start_line": 42974,
+    "end_line": 43006
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "postmerge_worktree_create_err_still_reaps_the_just_created_branch",
-    "start_line": 43008,
-    "end_line": 43044
+    "start_line": 43009,
+    "end_line": 43045
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "conflict_regenerate_pending_from_log_re_derives_the_union_keyed_by_unit_and_attempt",
-    "start_line": 43047,
-    "end_line": 43167
+    "start_line": 43048,
+    "end_line": 43168
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "conflict_fixture",
-    "start_line": 43175,
-    "end_line": 43196
+    "start_line": 43176,
+    "end_line": 43197
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_both_conflicting_units_land",
-    "start_line": 43205,
-    "end_line": 43260
+    "start_line": 43206,
+    "end_line": 43261
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "integrate_conflict_re_parks_the_implementer_with_no_attempt_charged_and_both_units_land",
-    "start_line": 43263,
-    "end_line": 43283
+    "start_line": 43264,
+    "end_line": 43284
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "integrate_conflict_confined_to_a_regenerable_path_resolves_with_no_spawn",
-    "start_line": 43286,
-    "end_line": 43308
+    "start_line": 43287,
+    "end_line": 43309
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "integrate_conflict_exhausted_after_the_bound_charges_a_real_attempt_with_the_unresolved_evidence",
-    "start_line": 43311,
-    "end_line": 43410
+    "start_line": 43312,
+    "end_line": 43411
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 43448,
-    "end_line": 43492
+    "start_line": 43449,
+    "end_line": 43493
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "integrate_conflict_records_regenerate_pending_before_the_accept_incoming_mutation_that_can_fail",
-    "start_line": 43413,
-    "end_line": 43562
+    "start_line": 43414,
+    "end_line": 43563
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "deferred_gate_run",
-    "start_line": 43568,
-    "end_line": 43602
+    "start_line": 43569,
+    "end_line": 43603
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "names_the_deferred_gate",
-    "start_line": 43605,
-    "end_line": 43607
+    "start_line": 43606,
+    "end_line": 43608
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_deferred_gate_runs_once_at_the_phase_boundary_not_inline",
-    "start_line": 43610,
-    "end_line": 43655
+    "start_line": 43611,
+    "end_line": 43656
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_failing_deferred_gate_is_surfaced_and_the_run_is_not_done",
-    "start_line": 43658,
-    "end_line": 43679
+    "start_line": 43659,
+    "end_line": 43680
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run",
-    "start_line": 43690,
-    "end_line": 43713
+    "start_line": 43691,
+    "end_line": 43714
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_default_infra_fault_at_a_deferred_gate_does_not_demote",
-    "start_line": 43717,
-    "end_line": 43750
+    "start_line": 43718,
+    "end_line": 43751
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "verify_only_cfg",
-    "start_line": 43756,
-    "end_line": 43774
+    "start_line": 43757,
+    "end_line": 43775
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "replayed_twice",
-    "start_line": 43782,
-    "end_line": 43802
+    "start_line": 43783,
+    "end_line": 43803
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "count_carrying",
-    "start_line": 43805,
-    "end_line": 43810
+    "start_line": 43806,
+    "end_line": 43811
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "runs_of",
-    "start_line": 43813,
-    "end_line": 43815
+    "start_line": 43814,
+    "end_line": 43816
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_replayed_step_re_runs_no_recorded_gate_and_appends_no_duplicate_events",
-    "start_line": 43818,
-    "end_line": 43857
+    "start_line": 43819,
+    "end_line": 43858
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_re_step_replays_a_recorded_deferred_gate_without_re_running_it",
-    "start_line": 43860,
-    "end_line": 43903
+    "start_line": 43861,
+    "end_line": 43904
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_parked_step_never_records_a_partial_tree_deferred_verdict",
-    "start_line": 43906,
-    "end_line": 44057
+    "start_line": 43907,
+    "end_line": 44058
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_manual_review_paused_unit_defers_the_whole_tree_gate",
-    "start_line": 44060,
-    "end_line": 44147
+    "start_line": 44061,
+    "end_line": 44148
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_escalated_dep_still_runs_the_whole_tree_deferred_gate",
-    "start_line": 44150,
-    "end_line": 44283
+    "start_line": 44151,
+    "end_line": 44284
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_recorded_failing_deferred_verdict_re_surfaces_its_failure_on_replay",
-    "start_line": 44286,
-    "end_line": 44405
+    "start_line": 44287,
+    "end_line": 44406
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_replayed_fan_out_review_reject_appends_no_duplicate_unitfailed",
-    "start_line": 44408,
-    "end_line": 44506
+    "start_line": 44409,
+    "end_line": 44507
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_fan_out_review_stage_whose_gates_fail_after_approval_records_a_gate_cause",
-    "start_line": 44509,
-    "end_line": 44568
+    "start_line": 44510,
+    "end_line": 44569
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "git_head",
-    "start_line": 44572,
-    "end_line": 44574
+    "start_line": 44573,
+    "end_line": 44575
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run",
-    "start_line": 44585,
-    "end_line": 44611
+    "start_line": 44586,
+    "end_line": 44612
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "gate_measures_the_committed_artifact_not_the_dirty_worktree",
-    "start_line": 44615,
-    "end_line": 44676
+    "start_line": 44616,
+    "end_line": 44677
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "conductor_spawns_the_sdet_author_at_the_build_seam_so_its_tests_land_in_the_committed_tree",
-    "start_line": 44679,
-    "end_line": 44798
+    "start_line": 44680,
+    "end_line": 44799
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "sdet_prompts_around_a_rejected_round",
-    "start_line": 44804,
-    "end_line": 44836
+    "start_line": 44805,
+    "end_line": 44837
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_doc_only_round_tells_the_sdet_author_to_extend_the_owner_needle",
-    "start_line": 44844,
-    "end_line": 44878
+    "start_line": 44845,
+    "end_line": 44879
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "round_start",
-    "start_line": 44882,
-    "end_line": 44894
+    "start_line": 44883,
+    "end_line": 44895
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "round_delta_base_is_the_latest_review_round_before_the_attempt",
-    "start_line": 44901,
-    "end_line": 44917
+    "start_line": 44902,
+    "end_line": 44918
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_round_delta_takes_no_base_outside_the_unit_branch_history",
-    "start_line": 44924,
-    "end_line": 44962
+    "start_line": 44925,
+    "end_line": 44963
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_sdet_author_spawn_respects_the_budget_breaker_at_its_own_spawn_site",
-    "start_line": 44965,
-    "end_line": 45050
+    "start_line": 44966,
+    "end_line": 45051
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_parked_sdet_author_spawn_holds_the_unit_instead_of_integrating_without_its_periphery_tests",
-    "start_line": 45053,
-    "end_line": 45150
+    "start_line": 45054,
+    "end_line": 45151
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "speculation_sdet_author_periphery_lands_in_the_committed_tree_the_gates_judge",
-    "start_line": 45153,
-    "end_line": 45258
+    "start_line": 45154,
+    "end_line": 45259
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_parked_sdet_author_in_a_speculation_candidate_holds_the_unit",
-    "start_line": 45261,
-    "end_line": 45353
+    "start_line": 45262,
+    "end_line": 45354
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_sdet_seam_integrates",
-    "start_line": 45361,
-    "end_line": 45399
+    "start_line": 45362,
+    "end_line": 45400
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_escalated_unit_does_not_integrate_its_code",
-    "start_line": 45480,
-    "end_line": 45572
+    "start_line": 45481,
+    "end_line": 45573
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "critique_cfg",
-    "start_line": 45580,
-    "end_line": 45590
+    "start_line": 45581,
+    "end_line": 45591
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "new",
-    "start_line": 45619,
-    "end_line": 45630
+    "start_line": 45620,
+    "end_line": 45631
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "rejecting",
-    "start_line": 45636,
-    "end_line": 45642
+    "start_line": 45637,
+    "end_line": 45643
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 45645,
-    "end_line": 45698
+    "start_line": 45646,
+    "end_line": 45699
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_blast_radius_overlap_alone_does_not_reject",
-    "start_line": 45702,
-    "end_line": 45773
+    "start_line": 45703,
+    "end_line": 45774
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_plan_critique_gates_adversary_and_adjudicator_spawns_are_stamped_correctly",
-    "start_line": 45786,
-    "end_line": 45822
+    "start_line": 45787,
+    "end_line": 45823
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_rule_7_or_8_defect_rejects_then_releases_on_the_revision",
-    "start_line": 45825,
-    "end_line": 45857
+    "start_line": 45826,
+    "end_line": 45858
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_clean_decomposition_approves_and_releases_the_fan_out",
-    "start_line": 45860,
-    "end_line": 45906
+    "start_line": 45861,
+    "end_line": 45907
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_gate_critiques_only_not_yet_run_units_and_approves",
-    "start_line": 45909,
-    "end_line": 45986
+    "start_line": 45910,
+    "end_line": 45987
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "one_unit_critique",
-    "start_line": 45990,
-    "end_line": 46016
+    "start_line": 45991,
+    "end_line": 46017
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_plan_critique_prompt_names_the_cross_unit_rules",
-    "start_line": 46019,
-    "end_line": 46034
+    "start_line": 46020,
+    "end_line": 46035
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_dag_critique_prompt_pushes_the_shared_plan_critique_rules_between_opener_and_size",
-    "start_line": 46040,
-    "end_line": 46053
+    "start_line": 46041,
+    "end_line": 46054
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_plan_protocol_and_the_dag_critique_carry_one_unit_size_cap",
-    "start_line": 46060,
-    "end_line": 46083
+    "start_line": 46061,
+    "end_line": 46084
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_critique_gate_never_enters_a_wave_even_when_ready",
-    "start_line": 46086,
-    "end_line": 46111
+    "start_line": 46087,
+    "end_line": 46112
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "fan_out_needs_template_fixture",
-    "start_line": 46120,
-    "end_line": 46154
+    "start_line": 46121,
+    "end_line": 46155
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_downstream_stage_needing_the_fan_out_template_stays_unready_until_every_member_integrates",
-    "start_line": 46157,
-    "end_line": 46239
+    "start_line": 46158,
+    "end_line": 46240
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_real_split_pair_must_both_integrate_not_just_the_btreemap_key_first_sibling",
-    "start_line": 46242,
-    "end_line": 46346
+    "start_line": 46243,
+    "end_line": 46347
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resolved_plan_critique_gate_does_not_re_run_on_resume",
-    "start_line": 46349,
-    "end_line": 46427
+    "start_line": 46350,
+    "end_line": 46428
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "widget_split",
-    "start_line": 46434,
-    "end_line": 46444
+    "start_line": 46435,
+    "end_line": 46445
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "critique_step",
-    "start_line": 46449,
-    "end_line": 46451
+    "start_line": 46450,
+    "end_line": 46452
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "critique_step_under",
-    "start_line": 46454,
-    "end_line": 46473
+    "start_line": 46455,
+    "end_line": 46474
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_escalated",
-    "start_line": 46476,
-    "end_line": 46542
+    "start_line": 46477,
+    "end_line": 46543
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "reject_then_approve_critique",
-    "start_line": 46552,
-    "end_line": 46573
+    "start_line": 46553,
+    "end_line": 46574
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_plan_critique_round_re_entered_in_a_later_process_opens_with_the_logged_reject",
-    "start_line": 46576,
-    "end_line": 46615
+    "start_line": 46577,
+    "end_line": 46616
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "stop_halt",
-    "start_line": 46625,
-    "end_line": 46627
+    "start_line": 46626,
+    "end_line": 46628
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "stop_lesson",
-    "start_line": 46630,
-    "end_line": 46636
+    "start_line": 46631,
+    "end_line": 46637
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "critique_rounds",
-    "start_line": 46642,
-    "end_line": 46662
+    "start_line": 46643,
+    "end_line": 46663
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "critique_round_spawns",
-    "start_line": 46666,
-    "end_line": 46676
+    "start_line": 46667,
+    "end_line": 46677
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "launched_on_stop_spec",
-    "start_line": 46680,
-    "end_line": 46684
+    "start_line": 46681,
+    "end_line": 46685
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "rejecting_twice_for_spec_ambiguity",
-    "start_line": 46688,
-    "end_line": 46693
+    "start_line": 46689,
+    "end_line": 46694
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "stopped_run",
-    "start_line": 46698,
-    "end_line": 46700
+    "start_line": 46699,
+    "end_line": 46701
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "stopped_run_under",
-    "start_line": 46703,
-    "end_line": 46708
+    "start_line": 46704,
+    "end_line": 46709
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_stop_is_decided_before_an_exhausted_remediation_bound_escalates",
-    "start_line": 46715,
-    "end_line": 46741
+    "start_line": 46716,
+    "end_line": 46742
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_stopped_gate_re_plans_its_next_spec_ambiguity_reject_as_a_first_one",
-    "start_line": 46749,
-    "end_line": 46789
+    "start_line": 46750,
+    "end_line": 46790
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_stops_the_run",
-    "start_line": 46792,
-    "end_line": 46855
+    "start_line": 46793,
+    "end_line": 46856
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_re_plans_after_every_reject",
-    "start_line": 46860,
-    "end_line": 46875
+    "start_line": 46861,
+    "end_line": 46876
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_first_spec_ambiguity_reject_re_plans_as_today",
-    "start_line": 46878,
-    "end_line": 46883
+    "start_line": 46879,
+    "end_line": 46884
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_spec_ambiguity_reject_after_a_decomposition_conflict_re_plans_again",
-    "start_line": 46886,
-    "end_line": 46894
+    "start_line": 46887,
+    "end_line": 46895
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_stop_with_no_upheld_finding_and_no_spec_says_so",
-    "start_line": 46897,
-    "end_line": 46912
+    "start_line": 46898,
+    "end_line": 46913
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_stopped_gate_halts_the_step_before_the_coverage_check",
-    "start_line": 46915,
-    "end_line": 46940
+    "start_line": 46916,
+    "end_line": 46941
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_later_step_finds_the_stopped_gate_terminal_and_reports_its_halt_appending_nothing",
-    "start_line": 46947,
-    "end_line": 46967
+    "start_line": 46948,
+    "end_line": 46968
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_step_re_entering_a_crashed_stop_completes_it_without_spawning",
-    "start_line": 46970,
-    "end_line": 46999
+    "start_line": 46971,
+    "end_line": 47000
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_stop_whose_lesson_append_fails_records_nothing_after_it_and_the_next_step_completes_it",
-    "start_line": 47002,
-    "end_line": 47040
+    "start_line": 47003,
+    "end_line": 47041
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "gate_failed",
-    "start_line": 47044,
-    "end_line": 47056
+    "start_line": 47045,
+    "end_line": 47057
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "re_plan_id",
-    "start_line": 47059,
-    "end_line": 47061
+    "start_line": 47060,
+    "end_line": 47062
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "re_plan_requested",
-    "start_line": 47064,
-    "end_line": 47068
+    "start_line": 47065,
+    "end_line": 47069
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "stops_at",
-    "start_line": 47072,
-    "end_line": 47074
+    "start_line": 47073,
+    "end_line": 47075
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "two_spec_ambiguity_rejects",
-    "start_line": 47078,
-    "end_line": 47084
+    "start_line": 47079,
+    "end_line": 47085
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_stop_holds_on_two_spec_ambiguity_rejects_around_a_recorded_re_plan",
-    "start_line": 47087,
-    "end_line": 47123
+    "start_line": 47088,
+    "end_line": 47124
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_stop_does_not_hold_short_of_its_whole_shape",
-    "start_line": 47126,
-    "end_line": 47202
+    "start_line": 47127,
+    "end_line": 47203
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_stop_holds_at_any_attempt_its_two_rejects_precede",
-    "start_line": 47205,
-    "end_line": 47212
+    "start_line": 47206,
+    "end_line": 47213
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_spec_defect_halt_names_the_spec_and_the_upheld_findings",
-    "start_line": 47215,
-    "end_line": 47230
+    "start_line": 47216,
+    "end_line": 47231
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_budget_halt_takes_precedence_over_the_spec_defect_stop",
-    "start_line": 47235,
-    "end_line": 47253
+    "start_line": 47236,
+    "end_line": 47254
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_dag_critique_verdict_paragraph_carries_the_spec_defect_cause_contract",
-    "start_line": 47258,
-    "end_line": 47265
+    "start_line": 47259,
+    "end_line": 47266
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_approved_gate_releases_planner_proposed_units_not_only_baselines",
-    "start_line": 47268,
-    "end_line": 47326
+    "start_line": 47269,
+    "end_line": 47327
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_re_plan_directive_instructs_reusing_the_existing_unit_id",
-    "start_line": 47329,
-    "end_line": 47401
+    "start_line": 47330,
+    "end_line": 47402
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "new",
-    "start_line": 47414,
-    "end_line": 47419
+    "start_line": 47415,
+    "end_line": 47420
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 47422,
-    "end_line": 47443
+    "start_line": 47423,
+    "end_line": 47444
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_mid_review",
-    "start_line": 47447,
-    "end_line": 47477
+    "start_line": 47448,
+    "end_line": 47478
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_parked_plan_critique_gate_keeps_its_review_worktree",
-    "start_line": 47480,
-    "end_line": 47535
+    "start_line": 47481,
+    "end_line": 47536
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_budget_refused_plan_critique_gate_keeps_its_review_worktree",
-    "start_line": 47538,
-    "end_line": 47582
+    "start_line": 47539,
+    "end_line": 47583
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_conductors_one_event_authority_reports_a_write_the_store_lost",
-    "start_line": 47595,
-    "end_line": 47614
+    "start_line": 47596,
+    "end_line": 47615
   },
   {
     "file": "src/cli/mod.rs",

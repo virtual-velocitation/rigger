@@ -646,26 +646,26 @@ impl Projector {
     /// swap copies into and the tail folds through, under this projector's project.
     ///
     /// The rebuild folds `source` - the log's live selection, whose cost is bounded by the live
-    /// projection rather than the log's age - each ledger entry of perception with the batch
-    /// `reextract` answers for it (see `fold_source`), into a fresh SHADOW file beside the graph
-    /// file, in the batches `source` hands it, each folded in the bounded transactions
-    /// `fold_source` cuts it into, each transaction committed with the last position it folded and
-    /// the run attribution it gathered ([`REBUILD_STATE`]), and each batch reported to `progress`;
-    /// the live file is only ever read meanwhile. The transaction that opens the shadow's rebuild
-    /// state also creates its `caught_up` cursor at the shadow's rebuild cursor ([`create_cursor`],
-    /// spec 124): zero in a fresh shadow, and where a resumed one stands when a binary from before
-    /// the cursor left it without one. Once `source` is exhausted, a private copy of the
-    /// shadow, pruned as `rigger reset --runs` prunes the live graph and stamped with the current
-    /// [`PROJECTION_VERSION`] ([`prune_a_copy`]), is put in place of the live file's content in ONE
-    /// step - one write transaction that copies it page for page, so a racing open sees the old
-    /// file, which still owes the rebuild, or the rebuilt one, never half of either - and then
-    /// removed; what that prune removed is reported, read from the rebuild state, where it was
-    /// stamped on the copy with the prune. The copy is SQLite's online backup rather than a rename
-    /// of the file: a process holding the live file open (an agent's MCP session, the dashboard)
-    /// keeps a valid connection and reads the rebuilt file from its next query, where a file renamed
-    /// over one it holds would leave it reading the old file through a write-ahead log the new one
-    /// shares. The shadow itself stays unpruned, and stamped with the fold rule it is folded under
-    /// ([`open_shadow`]), until the swap ends by removing it ([`remove_shadow`]).
+    /// projection rather than the log's age - each ledger entry of perception its fold asks a batch
+    /// for with the batch `reextract` answers for it (see `fold_source`), into a fresh SHADOW file
+    /// beside the graph file, in the batches `source` hands it, each folded in the bounded
+    /// transactions `fold_source` cuts it into, each transaction committed with the last position
+    /// it folded and the run attribution it gathered ([`REBUILD_STATE`]), and each batch reported
+    /// to `progress`; the live file is only ever read meanwhile. The transaction that opens the
+    /// shadow's rebuild state also creates its `caught_up` cursor at the shadow's rebuild cursor
+    /// ([`create_cursor`], spec 124): zero in a fresh shadow, and where a resumed one stands when a
+    /// binary from before the cursor left it without one. Once `source` is exhausted, a private
+    /// copy of the shadow, pruned as `rigger reset --runs` prunes the live graph and stamped with
+    /// the current [`PROJECTION_VERSION`] ([`prune_a_copy`]), is put in place of the live file's
+    /// content in ONE step - one write transaction that copies it page for page, so a racing open
+    /// sees the old file, which still owes the rebuild, or the rebuilt one, never half of either -
+    /// and then removed; what that prune removed is reported, read from the rebuild state, where it
+    /// was stamped on the copy with the prune. The copy is SQLite's online backup rather than a
+    /// rename of the file: a process holding the live file open (an agent's MCP session, the
+    /// dashboard) keeps a valid connection and reads the rebuilt file from its next query, where a
+    /// file renamed over one it holds would leave it reading the old file through a write-ahead log
+    /// the new one shares. The shadow itself stays unpruned, and stamped with the fold rule it is
+    /// folded under ([`open_shadow`]), until the swap ends by removing it ([`remove_shadow`]).
     ///
     /// The shadow is never pruned, because the drop set is not monotone in the log: an id a closed
     /// run recorded moves from drop to keep when the active run records it again, and a prune

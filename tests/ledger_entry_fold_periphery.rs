@@ -626,8 +626,8 @@ fn grown_while_the_shadow_folded<'a>(
 
 /// Rebuild the `graph.db` at `path`, owed, from `log` grown while its shadow folded
 /// ([`grown_while_the_shadow_folded`]), `write` run just before the tail reads it, answering
-/// [`alpha_batch`] for every entry's batch: what `write` answered, how many reads the rebuild
-/// made, and how many times it asked an entry's batch.
+/// [`alpha_batch`] for the batch of each entry it is asked for: what `write` answered, how many
+/// reads the rebuild made, and how many times it asked an entry's batch.
 fn tail_after_a_writer<T>(
     path: &str,
     log: &[Event],

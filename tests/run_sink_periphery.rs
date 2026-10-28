@@ -930,10 +930,10 @@ fn one_run_over_pre_ledger_rows_asks_the_group_lookup_once_per_identity_across_i
     );
 }
 
-/// A driver whose one agent, before it writes [`REWORDED`] into its worktree, rebuilds the
-/// run's `graph.db` from the log as it stands, re-extracting each entry from the tree at
-/// `unresolving` with no object database to ask, and keeps the generation the rebuilt graph
-/// holds for each of `identities`.
+/// A driver whose one agent, before it writes [`REWORDED`] into its worktree, rebuilds the run's
+/// `graph.db` from the log as it stands, re-extracting each entry its fold asks a batch for from
+/// the tree at `unresolving` with no object database to ask, and keeps the generation the rebuilt
+/// graph holds for each of `identities`.
 struct RebuildsThenRewords<'a> {
     files: &'a Files,
     unresolving: &'a Path,

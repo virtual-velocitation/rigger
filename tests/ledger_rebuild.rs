@@ -554,8 +554,9 @@ rigger::test_cases! {
             stand_graph,
             rebuilt_for_a_lost_fold(),
         );
-    /// The file keeps the cursor its cold start seeded at 0, and every entry was recorded just
-    /// now: setup folds the file forward from that cursor, re-extracting each entry.
+    /// The file keeps the cursor its cold start seeded at 0, and every entry was recorded just now:
+    /// setup folds the file forward from that cursor, re-extracting each entry its fold asks a
+    /// batch for.
     #[cfg(feature = "symbols")]
     setup_catches_up_over_young_entries_from_blobs_tree_files_and_no_bytes:
         setup_folds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built(
@@ -564,7 +565,8 @@ rigger::test_cases! {
         );
     /// The file keeps the cursor its cold start seeded at 0, and every entry was recorded longer
     /// ago than the catch-up horizon ([`backdate_the_log`]): setup still folds the file forward
-    /// from that cursor, re-extracting each entry, rather than rebuilding over them.
+    /// from that cursor, re-extracting each entry its fold asks a batch for, rather than rebuilding
+    /// over them.
     #[cfg(feature = "symbols")]
     setup_catches_up_over_entries_older_than_the_horizon_from_blobs_tree_files_and_no_bytes:
         setup_folds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built(
@@ -950,8 +952,8 @@ fn one_by_one(log: &[Event]) -> impl FnMut(u64, &mut RebuildSink) -> Result<(), 
 }
 
 /// Rebuild the graph file `db` under `project` from `log`, one event to a committed batch,
-/// re-extracting each entry through `ingest::resolve_entry` over `root` and a batch process
-/// started for this pass, as `rigger setup` binds them.
+/// re-extracting each entry its fold asks a batch for through `ingest::resolve_entry` over `root`
+/// and a batch process started for this pass, as `rigger setup` binds them.
 #[cfg(feature = "symbols")]
 fn rebuild_resolving(
     db: &Path,

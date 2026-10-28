@@ -22276,7 +22276,8 @@ mod tests {
                 one_lookup_each(STREAM, &identities)
             );
 
-            // The rebuild: every entry re-extracted from the tree, no object database to ask.
+            // The rebuild: each entry its fold asks a batch for, re-extracted from the tree with no
+            // object database to ask.
             write_file(&file, source_with(MOVED).as_bytes());
             let log = inner.read_stream(STREAM, 0, Direction::Forward).unwrap();
             rebuild_from_the_tree(&graph_db, &log, tree.path());
