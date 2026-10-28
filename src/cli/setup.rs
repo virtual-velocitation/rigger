@@ -924,8 +924,9 @@ const REBUILD_BATCH: usize = 10_000;
 /// resumable shadow, cause or not, and finishing a tail no cause is owed beside are exempt and run
 /// beside a live run, and a `graph.db` whose pay starts no fresh shadow reads no liveness.
 ///
-/// A ledger entry of perception folds with the batch re-extracted for it (spec 107,
-/// `ingest::resolve_entry`) by a re-extraction of the factory the write open installs
+/// A ledger entry of perception whose fold asks a batch - one not yet folded, whose payload parses
+/// and whose generation its identity does not already hold - folds with the batch re-extracted for
+/// it (spec 107, `ingest::resolve_entry`) by a re-extraction of the factory the write open installs
 /// ([`Projector::reextraction`]), the factory each catch-up call builds its own from. In the lane
 /// compiled with an extraction the batch is re-extracted from the entry's blob in the repository's
 /// object database, else from the tree's file under THE ONE ROOT of the open's cell

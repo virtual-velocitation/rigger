@@ -1001,16 +1001,18 @@ impl Projector {
     /// first [`FOLD_BATCH`] events of the project's own log as it is handed, or every one there is
     /// when fewer are, and on to the last event of the position the last of them shares, since a
     /// page never splits one position ([`EventStore::read_all_page`]) - with no lock of the file
-    /// held: a page without an event is [`CatchUp::AtHead`]. The page's events of the
-    /// project's run stream are its positions to decide; its first transaction cut
-    /// ([`fold_transactions`]) - one ledger entry alone, or a run of other events - is decided and
-    /// folded by THE DECIDE STEP ([`decide_step`]), the step a rebuild's fold pass shares, each
-    /// entry with the batch the call's re-extraction answers ([`Projector::reextraction`]; with
-    /// none installed it resolves nothing, so the entry is passed over [`RESOLVED_TO_NOTHING`]). The cut's transaction reads the cursor again under the write lock
-    /// and ends by moving it to the cut's last position, or to the page's last position when the
-    /// cut holds every run-stream event of the page - a page of other streams' events alone moves
-    /// it there folding nothing - and the call answers [`CatchUp::Advanced`], counting the
-    /// positions that transaction itself recorded in the `applied` ledger.
+    /// held: a page without an event is [`CatchUp::AtHead`]. The page's events of the project's run
+    /// stream are its positions to decide; its first transaction cut ([`fold_transactions`]) - one
+    /// ledger entry alone, or a run of other events - is decided and folded by THE DECIDE STEP
+    /// ([`decide_step`]), the step a rebuild's fold pass shares, each entry its fold asks a batch
+    /// for, one not yet folded whose payload parses and whose generation is not held, with the
+    /// batch the call's re-extraction answers ([`Projector::reextraction`]; with none installed it
+    /// resolves nothing, so the entry is passed over [`RESOLVED_TO_NOTHING`]). The cut's
+    /// transaction reads the cursor again under the write lock and ends by moving it to the cut's
+    /// last position, or to the page's last position when the cut holds every run-stream event of
+    /// the page - a page of other streams' events alone moves it there folding nothing - and the
+    /// call answers [`CatchUp::Advanced`], counting the positions that transaction itself recorded
+    /// in the `applied` ledger.
     ///
     /// Under the write lock the cut answers a rebuild's state, an older fold rule or a dropped
     /// cursor that another writer brought about after the first read as [`CatchUp::Inert`],
