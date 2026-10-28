@@ -1423,12 +1423,126 @@ const SETUP_OWN_GIT: [&str; 5] = [
     "rev-parse --git-path hooks",
 ];
 
+/// Every `git` invocation a re-extraction makes at the first entry it meets, in order: the tree's
+/// root, which no reader of the one write open had asked for before it, whether an object database
+/// stands there, and the one `git cat-file --batch` process it reads that database through.
+#[cfg(feature = "symbols")]
+const FIRST_ENTRY_GIT: [&str; 3] = [
+    "rev-parse --show-toplevel",
+    "rev-parse --git-dir",
+    "cat-file --batch",
+];
+
 /// How often `rigger setup` in `cwd` asked git whether an object database stands there, and how
 /// many `git cat-file --batch` processes it started.
 fn blob_source_starts_of_setup(cwd: &Path) -> (usize, usize) {
     let invocations = git_invocations_of_setup(cwd);
     let asked = |args: &str| invocations.iter().filter(|line| *line == args).count();
     (asked("rev-parse --git-dir"), asked("cat-file --batch"))
+}
+
+/// Settle a repository at `root` ([`settled`]) and record three entries past what its graph
+/// folded, recorded from a tree that then moves on, so each resolves from the blob it names alone:
+/// the project's identity.
+#[cfg(feature = "symbols")]
+fn record_entries_resolving_from_their_blobs_alone(root: &Path) -> String {
+    write_text(root, SOURCE_PATH, SOURCE_BODY);
+    write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
+    let first_source = git_hash_object(root, SOURCE_PATH, true);
+    let first_document = git_hash_object(root, DOCUMENT_PATH, true);
+    let project = settled(root);
+    // The tree moves on, so both first generations resolve from the object database alone.
+    write_text(root, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
+    std::fs::remove_file(root.join(DOCUMENT_PATH)).unwrap();
+    let recordings = [
+        recording(
+            "gc",
+            SOURCE_PATH,
+            &first_source,
+            false,
+            10,
+            events_of(walked_batch("gc", SOURCE_PATH)),
+        ),
+        recording(
+            "gd",
+            DOCUMENT_PATH,
+            &first_document,
+            false,
+            11,
+            events_of(walked_batch("gd", DOCUMENT_PATH)),
+        ),
+        recording(
+            "gd",
+            SOURCE_PATH,
+            &first_source,
+            false,
+            12,
+            events_of(walked_batch("gd", SOURCE_PATH)),
+        ),
+    ];
+    record(root, &recordings);
+    project
+}
+
+/// The generations the graph at `root` holds of the identities whose entries
+/// [`record_entries_resolving_from_their_blobs_alone`] recorded, and the ones it holds once each
+/// entry has folded from the blob it names.
+#[cfg(feature = "symbols")]
+fn generations_from_their_blobs(
+    root: &Path,
+    project: &str,
+) -> (Vec<Option<String>>, Vec<Option<String>>) {
+    (
+        generations(
+            root,
+            project,
+            &["gc/src/lib.rs", "gd/docs/architecture.md", "gd/src/lib.rs"],
+        ),
+        vec![
+            held_generation("gc", SOURCE_PATH),
+            held_generation("gd", DOCUMENT_PATH),
+            held_generation("gd", SOURCE_PATH),
+        ],
+    )
+}
+
+/// Given a repository whose log holds three entries past the cursor its cold start seeded, each
+/// resolving only from the blob it names, when the operator runs `rigger setup`, then its catch-up
+/// folds each entry in a call of its own and asks git for the tree's root once across the calls,
+/// read from the one cell its write open shares, while each call asks for the object database and
+/// starts a batch process of its own; and a setup at the log's head asks git for neither.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_catch_up_asks_git_for_the_root_once_across_its_calls_and_each_call_for_its_own_batch() {
+    let dir = temp_project();
+    let root = dir.path();
+    let project = record_entries_resolving_from_their_blobs_alone(root);
+    let (before_catch_up, after_catch_up) = SETUP_OWN_GIT.split_at(4);
+    let [_, each_later_call @ ..] = FIRST_ENTRY_GIT;
+
+    assert_eq!(
+        git_invocations_of_setup(root),
+        [
+            before_catch_up,
+            &FIRST_ENTRY_GIT,
+            &each_later_call,
+            &each_later_call,
+            after_catch_up,
+        ]
+        .concat(),
+        "the root is asked of git once across the catch-up's three calls, and each call asks for \
+         the object database and starts its own batch process"
+    );
+    let (held, from_their_blobs) = generations_from_their_blobs(root, &project);
+    assert_eq!(
+        held, from_their_blobs,
+        "each entry folded from the blob its call's batch process answered"
+    );
+    assert_eq!(
+        git_invocations_of_setup(root),
+        SETUP_OWN_GIT,
+        "a setup whose catch-up meets no entry asks git for neither a root nor an object database"
+    );
 }
 
 /// Given a repository whose log holds three entries, two of them resolving only from the blobs
@@ -1442,42 +1556,8 @@ fn blob_source_starts_of_setup(cwd: &Path) -> (usize, usize) {
 fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first_entry() {
     let dir = temp_project();
     let root = dir.path();
-    write_text(root, SOURCE_PATH, SOURCE_BODY);
-    write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
-    let first_source = git_hash_object(root, SOURCE_PATH, true);
-    let first_document = git_hash_object(root, DOCUMENT_PATH, true);
-    let project = settled(root);
-    // The tree moves on, so both first generations resolve from the object database alone.
-    write_text(root, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
-    std::fs::remove_file(root.join(DOCUMENT_PATH)).unwrap();
+    let project = record_entries_resolving_from_their_blobs_alone(root);
     let walked = |prefix, path| events_of(walked_batch(prefix, path));
-    let recordings = [
-        recording(
-            "gc",
-            SOURCE_PATH,
-            &first_source,
-            false,
-            10,
-            walked("gc", SOURCE_PATH),
-        ),
-        recording(
-            "gd",
-            DOCUMENT_PATH,
-            &first_document,
-            false,
-            11,
-            walked("gd", DOCUMENT_PATH),
-        ),
-        recording(
-            "gd",
-            SOURCE_PATH,
-            &first_source,
-            false,
-            12,
-            walked("gd", SOURCE_PATH),
-        ),
-    ];
-    record(root, &recordings);
     stand_graph(root, &project);
 
     assert_eq!(
@@ -1485,17 +1565,9 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
         (1, 1),
         "one question and one batch process for three entries"
     );
+    let (held, from_their_blobs) = generations_from_their_blobs(root, &project);
     assert_eq!(
-        generations(
-            root,
-            &project,
-            &["gc/src/lib.rs", "gd/docs/architecture.md", "gd/src/lib.rs"]
-        ),
-        vec![
-            held_generation("gc", SOURCE_PATH),
-            held_generation("gd", DOCUMENT_PATH),
-            held_generation("gd", SOURCE_PATH),
-        ],
+        held, from_their_blobs,
         "each entry resolved from the blob the one process answered"
     );
     assert_eq!(
@@ -1804,16 +1876,7 @@ fn setup_reads_only_the_files_the_walk_visits_and_asks_git_for_its_root_once() {
     let (before_rebuild, after_rebuild) = SETUP_OWN_GIT.split_at(4);
     assert_eq!(
         git_invocations_of_setup(root),
-        [
-            before_rebuild,
-            &[
-                "rev-parse --show-toplevel",
-                "rev-parse --git-dir",
-                "cat-file --batch",
-            ],
-            after_rebuild,
-        ]
-        .concat(),
+        [before_rebuild, &FIRST_ENTRY_GIT, after_rebuild].concat(),
         "the root and the object database are each asked of git once, at the first entry"
     );
 
