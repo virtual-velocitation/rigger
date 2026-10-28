@@ -1434,7 +1434,6 @@ fn setup_own_git_around_its_fold() -> (&'static [&'static str], &'static [&'stat
 /// write open's root has read it before, in order: that root, whether an object database stands
 /// there, and the one `git cat-file --batch` process it reads that database through. A
 /// re-extraction meeting its first entry after the root was read asks the last two alone.
-#[cfg(feature = "symbols")]
 const FIRST_ENTRY_GIT: [&str; 3] = [
     "rev-parse --show-toplevel",
     "rev-parse --git-dir",
@@ -1442,11 +1441,12 @@ const FIRST_ENTRY_GIT: [&str; 3] = [
 ];
 
 /// How often `rigger setup` in `cwd` asked git whether an object database stands there, and how
-/// many `git cat-file --batch` processes it started.
+/// many `git cat-file --batch` processes it started: the last two of [`FIRST_ENTRY_GIT`].
 fn blob_source_starts_of_setup(cwd: &Path) -> (usize, usize) {
     let invocations = git_invocations_of_setup(cwd);
     let asked = |args: &str| invocations.iter().filter(|line| *line == args).count();
-    (asked("rev-parse --git-dir"), asked("cat-file --batch"))
+    let [_, object_database, batch] = FIRST_ENTRY_GIT;
+    (asked(object_database), asked(batch))
 }
 
 /// Settle a repository at `root` ([`settled`]) and record three entries past what its graph
