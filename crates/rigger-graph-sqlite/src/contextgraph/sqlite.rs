@@ -7391,9 +7391,9 @@ mod tests {
             .to_string()
     }
 
-    /// The opener of the log beside the graph file at `path` ([`events_beside`]): each call opens a
-    /// store of its own on it.
-    fn the_log_beside(
+    /// The opener of the log beside the graph file at `path` ([`events_beside`]), unscoped: each
+    /// call opens a store of its own on it, every project's streams under their full names.
+    fn the_unscoped_log_beside(
         path: &str,
     ) -> impl Fn() -> Result<Arc<dyn EventStore>, Error> + Send + Sync + 'static {
         let events = events_beside(path);
@@ -7475,11 +7475,12 @@ mod tests {
     }
 
     /// Another writer of the graph file at `path`: a projector of its own under the project `test`,
-    /// folding forward from a store of its own on the log beside the file ([`the_log_beside`]).
+    /// folding forward from a store of its own on the log beside the file
+    /// ([`the_unscoped_log_beside`]).
     fn another_writer(path: &str) -> Projector {
         Projector::open(path, "test")
             .unwrap()
-            .with_log(the_log_beside(path))
+            .with_log(the_unscoped_log_beside(path))
     }
 
     /// Make `p`'s connection give up on another writer's write lock after a millisecond.
@@ -7825,6 +7826,35 @@ mod tests {
         );
     }
 
+    /// Spec 124, WIRING: a call folds the run stream of the log it is handed as that log presents
+    /// it, laying no scope of its own over it - the write open hands the log already scoped to its
+    /// project - so a log handed unscoped presents its unprefixed run stream as the project's, and
+    /// that stream's event is what folds.
+    #[test]
+    fn catch_up_folds_the_run_stream_of_the_log_it_is_handed_laying_no_scope_over_it() {
+        let (_dir, path, p) = seeded_graph();
+        let p = p.with_log(the_unscoped_log_beside(&path));
+        the_unscoped_log_beside(&path)()
+            .unwrap()
+            .append(
+                rigger_domain::run::STREAM,
+                crate::eventstore::ExpectedRevision::Any,
+                &decisions_at([1]),
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                answers(&p),
+                crate::test_support::caught_up_at(Path::new(&path)),
+            ),
+            (
+                vec![Ok(CatchUp::Advanced { recorded: 1 }), Ok(CatchUp::AtHead)],
+                Some(1),
+            ),
+            "the handed log's unprefixed run event folds, the cursor past it"
+        );
+    }
+
     /// Another writer of the graph file at `path` ([`another_writer`]) catching it up the moment
     /// call `at` of `log` returns, insisting it folds `recorded` positions.
     fn caught_up_by_another_writer(log: &CountedLog, path: &str, at: usize, recorded: usize) {
@@ -7988,7 +8018,7 @@ mod tests {
         let (_dir, path, p) = seeded_graph();
         let tries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let tried = Arc::clone(&tries);
-        let open = the_log_beside(&path);
+        let open = the_unscoped_log_beside(&path);
         let p = p.with_log(move || {
             if tried.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
                 return Err(Error(LOG_UNOPENED.to_string()));
