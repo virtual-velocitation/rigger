@@ -1553,10 +1553,10 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
 /// prints it under `root`. It applies no filter, so the id is that of the bytes as they are.
 /// Inside a repository ([`in_repository`]) it writes the object it hashes (`git hash-object -w`,
 /// spec 124, THE BLOB IS WRITTEN), so that repository's object database holds the bytes under the
-/// id it answers; outside one, where no object database stands, it hashes without writing. Two
-/// processes per call, each waited to its exit: the detection's, then the hash's. A hash process
-/// that cannot start, or that fails - a write that fails included - fails the hash, naming the
-/// command, the root and the cause.
+/// id it answers; outside one, where no object database stands, it hashes without writing. It
+/// starts at most two processes, each waited to its exit: the detection's, then the hash's. A hash
+/// process that cannot start, or that fails - a write that fails included - fails the hash, naming
+/// the command, the root and the cause.
 pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> {
     use std::io::Write;
     use std::process::Stdio;
