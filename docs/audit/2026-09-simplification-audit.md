@@ -4128,7 +4128,7 @@ mandatory sweep: sqlite Connection::open call sites - 64 site(s), collected mech
 - `tests/compaction_generations_periphery.rs:1362-1362` `Connection::open`
 - `tests/compaction_generations_periphery.rs:1530-1530` `Connection::open`
 - `tests/compaction_generations_periphery.rs:4267-4267` `Connection::open`
-- `tests/compaction_generations_periphery.rs:5378-5378` `Connection::open`
+- `tests/compaction_generations_periphery.rs:5391-5391` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:86-86` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:100-100` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:213-213` `Connection::open`
@@ -4561,7 +4561,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/cli.rs:1100-1107` `migrated_lines`
 - `tests/common/cli.rs:1114-1119` `derived_menu_line_naming`
 - `tests/common/cli.rs:1760-1765` `bloat_advisory_naming`
-- `tests/compaction_generations_periphery.rs:6025-6030` `runs_prunable`
+- `tests/compaction_generations_periphery.rs:6038-6043` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
 

@@ -5149,12 +5149,14 @@ fn live_governs(root: &Path, id: &str) -> Vec<String> {
 /// Given a `rigger setup` whose rebuild swapped its pruned graph in and stopped before it folded the
 /// tail - the state it leaves once the owed mark and the shadow are gone, the next two steps its
 /// swap takes: `graph.db` holding the rebuild's cursor, no shadow beside it - when the log gains an
-/// event no fold made (another writer's) and an agent's `rigger emit`, which folds at once into the
-/// current file, then the next `rigger setup` names no cause, because the ledger owes the tail to
-/// the swapped-in cursor rather than to a lost fold, folds exactly the tail - its one progress line
-/// counts the two events past the cursor, through the log's last position - and meets the emitted
-/// event once, reports the prune stamped with the swap, drops the rebuild state, and leaves the
-/// graph a cold rebuild of the same log yields; a setup after it owes nothing.
+/// event no fold made (another writer's) and an agent's `rigger emit`, which appends its own and
+/// waits under the ceiling on the rebuild's state rather than folding into the file (spec 124, AN
+/// APPENDER WAITS UNDER THE CEILING AND NEVER MARKS), then the next `rigger setup` names no cause,
+/// because the ledger owes the tail to the swapped-in cursor rather than to a lost fold, folds
+/// exactly the tail - its one progress line counts the two events past the cursor, through the
+/// log's last position - and meets the emitted event once, reports the prune stamped with the swap,
+/// drops the rebuild state, and leaves the graph a cold rebuild of the same log yields, the emit
+/// answering its event folded; a setup after it owes nothing.
 #[test]
 fn a_setup_stopped_in_its_tail_is_finished_by_the_next_setup_folding_exactly_the_tail() {
     let dir = temp_store_project();
@@ -5170,11 +5172,21 @@ fn a_setup_stopped_in_its_tail_is_finished_by_the_next_setup_folding_exactly_the
         root,
         br#"{"id":"d-tail","summary":"s","governs":["src/t.rs"],"supersedes":""}"#,
     );
-    let (emitted, emit_err, emit_ok) = emit_decision(root, "d-emitted");
-    let emitted_at = run_log_head(root);
-    let before = (applied(&graph_db, unfolded), applied(&graph_db, emitted_at));
 
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let (appended, returned, waited, (out, err, ok), (emitted, emit_err, emit_ok)) =
+        emit_held_until(
+            || emit_decision(root, "d-emitted"),
+            || run_log_head(root) > unfolded,
+            || {
+                let emitted_at = run_log_head(root);
+                let applied_while_waiting =
+                    (applied(&graph_db, unfolded), applied(&graph_db, emitted_at));
+                (emitted_at, applied_while_waiting)
+            },
+            || run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]),
+        );
+    let (emitted_at, (unfolded_applied, emitted_applied)) = waited;
+    let before = (appended, returned, unfolded_applied, emitted_applied);
     let finished = (
         ok,
         out.lines()
@@ -5210,7 +5222,7 @@ fn a_setup_stopped_in_its_tail_is_finished_by_the_next_setup_folding_exactly_the
             None,
             true,
             true,
-            (false, true),
+            (true, false, false, false),
             (
                 true,
                 Vec::<&str>::new(),
@@ -5229,7 +5241,8 @@ fn a_setup_stopped_in_its_tail_is_finished_by_the_next_setup_folding_exactly_the
             true,
             (true, whole_graph(root)),
         ),
-        "the next setup folds exactly the tail and reaches the cold graph; emit stdout: {emitted} \
+        "the emit waits on the rebuild state, and the next setup folds exactly the tail, the \
+         emitted event among it, and reaches the cold graph; emit stdout: {emitted} \
          stderr: {emit_err}; setup stdout: {out} stderr: {err}; second setup stdout: {again} \
          stderr: {again_err}; cold stdout: {cold} stderr: {cold_err}"
     );
