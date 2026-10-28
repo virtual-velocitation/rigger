@@ -463,17 +463,20 @@ fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
 /// embedded log whose file does not exist yet is read as the empty one it is
 /// ([`StoreSelection::log_file`]), so no open makes `events.db`. Its
 /// re-extraction ([`Projector::with_reextraction`]) is a fresh one per catch-up call, resolving each
-/// ledger entry under THE ONE ROOT of the directory holding the file ([`tree_root`]), asked of git
-/// at the call's first entry, through [`reextract_entry`].
+/// ledger entry through [`reextract_entry`] under THE ONE ROOT of the directory holding the file,
+/// read from the one cell the open returns beside the projector ([`TreeRoot`]): asked of git at the
+/// first entry any re-extraction of this open meets, or by the first other reader of the cell
+/// before it, and once among them.
 fn open_graph_for_write(
     graph_db: &str,
     project: &str,
     selection: &StoreSelection,
-) -> Result<Projector, contextgraph::Error> {
+) -> Result<(Projector, std::sync::Arc<TreeRoot>), contextgraph::Error> {
     let store_dir = cwd()
         .join(graph_db)
         .parent()
         .map_or_else(cwd, Path::to_path_buf);
+    let tree = std::sync::Arc::new(TreeRoot::of(store_dir.clone()));
     let (selection, events_db) = (selection.clone(), store_file(&store_dir, "events.db"));
     let scope = project.to_string();
     let log = move || {
@@ -484,16 +487,15 @@ fn open_graph_for_write(
             })
             .map_err(|e| contextgraph::Error(e.to_string()))
     };
+    let rooted = std::sync::Arc::clone(&tree);
     let reextraction = move || -> Box<contextgraph::sqlite::Reextract<'static>> {
-        let (dir, mut root, mut batch) = (store_dir.clone(), None, None);
-        Box::new(move |entry: &Event| {
-            let root = root.get_or_insert_with(|| tree_root(&dir));
-            reextract_entry(root, &mut batch, entry)
-        })
+        let (tree, mut batch) = (std::sync::Arc::clone(&rooted), None);
+        Box::new(move |entry: &Event| reextract_entry(tree.get(), &mut batch, entry))
     };
-    Ok(Projector::open(graph_db, project)?
+    let graph = Projector::open(graph_db, project)?
         .with_log(log)
-        .with_reextraction(reextraction))
+        .with_reextraction(reextraction);
+    Ok((graph, tree))
 }
 
 /// Re-extract the batch of the ledger entry of perception `entry` (spec 107,
@@ -540,7 +542,7 @@ fn open_graph(
     selection: &StoreSelection,
     command: &str,
 ) -> Result<Projector, Box<dyn std::error::Error>> {
-    let graph = open_graph_for_write(graph_db, project, selection)?;
+    let (graph, _) = open_graph_for_write(graph_db, project, selection)?;
     if graph.rebuild_owed()? {
         return Err(contextgraph::rebuild_owed_refusal(command).into());
     }
@@ -1304,7 +1306,7 @@ fn migrate_identity_at(loc: &StoreLocation) -> Res {
         return Ok(()); // no minted identity distinct from the basename
     }
     let backend = open_sqlite_store(&store_path)?;
-    let graph = open_graph_for_write(&loc.file("graph.db"), &minted, &StoreSelection::Sqlite)?;
+    let (graph, _) = open_graph_for_write(&loc.file("graph.db"), &minted, &StoreSelection::Sqlite)?;
     if let Some((n, decision)) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))?
     {
         eprintln!(
@@ -1534,7 +1536,7 @@ impl StoreLocation {
         selection: &StoreSelection,
     ) -> Result<Box<dyn Projection>, contextgraph::Error> {
         open_graph_for_write(&self.file("graph.db"), &self.identity(), selection)
-            .map(|g| Box::new(g) as Box<dyn Projection>)
+            .map(|(g, _)| Box::new(g) as Box<dyn Projection>)
     }
 
     /// A store file path (`events.db` / `graph.db`) under the resolved `.rigger/`, as the
@@ -5268,6 +5270,30 @@ fn tree_root(store_dir: &Path) -> PathBuf {
     match git_repo_at(holder) {
         top_level if top_level.is_empty() => holder.to_path_buf(),
         top_level => PathBuf::from(top_level),
+    }
+}
+
+/// THE ONE ROOT ([`tree_root`]) of the store at a `.rigger/`, as one write open hands it to every
+/// reader of its tree ([`open_graph_for_write`]): asked of git by the first read, and held for the
+/// cell's life, so the readers sharing the cell ask git for it once among them and never when none
+/// reads it.
+struct TreeRoot {
+    store_dir: PathBuf,
+    root: std::sync::OnceLock<PathBuf>,
+}
+
+impl TreeRoot {
+    /// The root of the store at `store_dir`, asked of git by the first [`TreeRoot::get`].
+    fn of(store_dir: PathBuf) -> Self {
+        TreeRoot {
+            store_dir,
+            root: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The root, asked of git at this cell's first read and held for every later one.
+    fn get(&self) -> &Path {
+        self.root.get_or_init(|| tree_root(&self.store_dir))
     }
 }
 

@@ -975,6 +975,17 @@ impl Projector {
         self
     }
 
+    /// A re-extraction of the ledger entries one fold of this file meets (spec 124, WIRING): a
+    /// fresh one the installed factory builds ([`Projector::with_reextraction`]), or, with none
+    /// installed, one that resolves no entry, so each entry it is asked for is passed over
+    /// [`RESOLVED_TO_NOTHING`].
+    pub fn reextraction(&self) -> Box<Reextract<'static>> {
+        match &self.reextraction {
+            Some(build) => build(),
+            None => Box::new(|_: &Event| Ok(None)),
+        }
+    }
+
     /// FOLD FORWARD FROM THE CURSOR (spec 124, ONE PROCEDURE): fold this file forward from its
     /// `caught_up` cursor by one cut of the log ([`Projector::with_log`]), in ONE immediate
     /// transaction, and answer what the call did ([`CatchUp`]); a caller that needs the file at the
@@ -990,9 +1001,8 @@ impl Projector {
     /// project's run stream are its positions to decide; its first transaction cut
     /// ([`fold_transactions`]) - one ledger entry alone, or a run of other events - is decided and
     /// folded by THE DECIDE STEP ([`decide_step`]), the step a rebuild's fold pass shares, each
-    /// entry with the batch the call's re-extraction answers ([`Projector::with_reextraction`];
-    /// with none installed it resolves nothing, so the entry is passed over
-    /// [`RESOLVED_TO_NOTHING`]). The cut's transaction reads the cursor again under the write lock
+    /// entry with the batch the call's re-extraction answers ([`Projector::reextraction`]; with
+    /// none installed it resolves nothing, so the entry is passed over [`RESOLVED_TO_NOTHING`]). The cut's transaction reads the cursor again under the write lock
     /// and ends by moving it to the cut's last position, or to the page's last position when the
     /// cut holds every run-stream event of the page - a page of other streams' events alone moves
     /// it there folding nothing - and the call answers [`CatchUp::Advanced`], counting the
@@ -1034,10 +1044,7 @@ impl Projector {
                 })
             }
         };
-        let mut reextract: Box<Reextract<'static>> = match &self.reextraction {
-            Some(build) => build(),
-            None => Box::new(|_: &Event| Ok(None)),
-        };
+        let mut reextract = self.reextraction();
         let mut outrun = false;
         loop {
             let page = match log.read_all_page(from, &Filter::default(), FOLD_BATCH) {

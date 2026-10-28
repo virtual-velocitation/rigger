@@ -924,15 +924,17 @@ const REBUILD_BATCH: usize = 10_000;
 /// beside a live run, and a `graph.db` whose pay starts no fresh shadow reads no liveness.
 ///
 /// A ledger entry of perception folds with the batch re-extracted for it (spec 107,
-/// `ingest::resolve_entry`): from the entry's blob in the repository's object database, read
-/// through one batch process ([`entry_blobs`]) started when the rebuild meets its first entry and
-/// kept to its end, else from the tree's file under THE ONE ROOT ([`tree_root`]), asked of git at
-/// that first entry too, else from no bytes; an entry no source resolves folds nothing and is
-/// passed over as resolved to nothing (spec 124, THE DECIDE STEP). A rebuild that folds no entry
-/// starts no batch process. The report that follows a rebuild
-/// ([`identities_behind_their_recording`]) reads the tree under the same root, and is the one to
-/// ask git for it when no entry did and an identity is behind its latest recording: the root is
-/// asked for once, by whichever needs it first, and git is asked nothing when neither does.
+/// `ingest::resolve_entry`) by a re-extraction of the factory the write open installs
+/// ([`Projector::reextraction`]), the factory each catch-up call builds its own from: from the
+/// entry's blob in the repository's object database, read through one batch process
+/// ([`entry_blobs`]) started when the rebuild meets its first entry and kept to its end, else from
+/// the tree's file under THE ONE ROOT of the open's cell ([`TreeRoot`]), asked of git at that first
+/// entry too, else from no bytes; an entry no source resolves folds nothing and is passed over as
+/// resolved to nothing (spec 124, THE DECIDE STEP). A rebuild that folds no entry starts no batch
+/// process. The report that follows a rebuild ([`identities_behind_their_recording`]) reads the
+/// tree under the same root, from the same cell, and is the one to ask git for it when no entry did
+/// and an identity is behind its latest recording: the root is asked for once, by whichever needs
+/// it first, and git is asked nothing when neither does.
 ///
 /// Once an orphaned mark is dropped, and before it reads or writes anything else, it takes the
 /// rebuild lock on `graph.db.lock` ([`Projector::lock_rebuild`]), making that zero-byte file
@@ -950,16 +952,6 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     migrate_local_identity()?;
     let project = project_identity();
     let graph_error = |e: rigger::eventstore::Error| contextgraph::Error(e.to_string());
-    // Where the tree is rooted is decided once, by the first to need it: the first entry that
-    // resolves, or else the report's first identity behind its latest recording, which reads the
-    // tree under the root the entries resolved under. Whether an object database can be asked is
-    // decided at that first entry alone: `batch` is none until it, and then holds the batch
-    // process, or none where no database can be asked. A rebuild that folds no entry and leaves
-    // no identity behind asks git for neither.
-    let rooted = std::cell::OnceCell::new();
-    let tree = || -> &Path { rooted.get_or_init(|| tree_root(&cwd().join(RIGGER_DIR))) };
-    let mut batch = None;
-    let mut reextract = |entry: &Event| reextract_entry(tree(), &mut batch, entry);
     // A NEW rebuild - one whose pay starts a fresh shadow - is refused while the run is live (spec
     // 124): the live-run refusal `rigger reset --derived` has, over this store's log, its scratch
     // configuration, registry and clock read only once the pay would start one, so a setup whose
@@ -978,8 +970,16 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
         )
     };
     // The one write open of `graph.db` this setup makes, under the rebuild lock: the file it
-    // seeds, rebuilds and catches up, with the catch-up's log and re-extraction installed.
-    let graph = open_graph_for_write(held.path(), &project, &selection)?;
+    // seeds, rebuilds and catches up, with the catch-up's log and re-extraction installed. The
+    // rebuild re-extracts through a re-extraction of its own from that installed factory, which
+    // asks git for the object database at the first entry it meets. Where the tree is rooted is
+    // decided once, by the first to need it, from the one cell the open returns: the first entry
+    // that resolves, or else the report's first identity behind its latest recording, which reads
+    // the tree under the root the entries resolved under. A rebuild that folds no entry and leaves
+    // no identity behind asks git for neither.
+    let (graph, root) = open_graph_for_write(held.path(), &project, &selection)?;
+    let tree = || root.get();
+    let mut reextract = graph.reextraction();
     match &selection {
         sqlite @ StoreSelection::Sqlite => {
             // A project with no run recorded has no log file: its log is read as the empty one it
@@ -1026,7 +1026,7 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                             )
                             .map_err(graph_error)
                     },
-                    reextract: &mut reextract,
+                    reextract: &mut *reextract,
                 },
                 &refuse,
             )
@@ -1054,7 +1054,7 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                 },
                 RebuildReads {
                     source: &mut source,
-                    reextract: &mut reextract,
+                    reextract: &mut *reextract,
                 },
                 &refuse,
             )

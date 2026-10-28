@@ -8349,7 +8349,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "bc8ba785ceacc236"
+    "content_hash": "5ffc40fa8edc6d7c"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8373,7 +8373,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "d72434303381d8df"
+    "content_hash": "2f486cc080306821"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8613,7 +8613,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"migrate\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "54acf0ee057072bc"
+    "content_hash": "51fa7af4bf581104"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8669,7 +8669,7 @@
     "is_test": false,
     "proposed_module": "main::store_location",
     "reason": "method inside `impl StoreLocation`; grouped with its other `StoreLocation` methods.",
-    "content_hash": "9c0631e4a7d87fc9"
+    "content_hash": "5a542760d07ac935"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9446,6 +9446,22 @@
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
     "content_hash": "2fff94b526614572"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "of",
+    "is_test": false,
+    "proposed_module": "main::tree_root",
+    "reason": "method inside `impl TreeRoot`; grouped with its other `TreeRoot` methods.",
+    "content_hash": "2c911660c14398e3"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "get",
+    "is_test": false,
+    "proposed_module": "main::tree_root",
+    "reason": "method inside `impl TreeRoot`; grouped with its other `TreeRoot` methods.",
+    "content_hash": "b49dadc62f254ad9"
   },
   {
     "file": "src/cli/mod.rs",
