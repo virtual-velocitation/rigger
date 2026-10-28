@@ -133,7 +133,7 @@ fn append_and_fold_stamps_the_store_assigned_positions_and_never_folds_per_event
         .map(|e| e.position)
         .collect();
 
-    let reported: Vec<u64> = appended.placed().map(|(_, p)| p).collect();
+    let reported = common::fixtures::placed_positions(&appended);
     assert_eq!(
         reported, store_positions,
         "the report names, for every event handed in, the position the store actually holds it at"

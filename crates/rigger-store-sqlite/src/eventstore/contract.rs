@@ -114,7 +114,7 @@ fn latest_in_group_answers_the_newest_member_without_reading_the_stream(store: &
             ],
         )
         .expect("the grouped stream appends");
-    let at: Vec<u64> = appended.placed().map(|(_, p)| p).collect();
+    let at = crate::event_fixtures::placed_positions(&appended);
     store
         .append(
             "c-group-sibling",
@@ -290,7 +290,7 @@ fn the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store: &dyn 
             ],
         )
         .expect("the ledger stream appends");
-    let at: Vec<u64> = appended.placed().map(|(_, p)| p).collect();
+    let at = crate::event_fixtures::placed_positions(&appended);
 
     let head = |position: u64, group: &str, key: &str| {
         group_head(
@@ -801,7 +801,7 @@ fn append_reports_every_event_at_the_position_the_store_holds_it(store: &dyn Eve
         "the report must carry exactly one slot per event handed in, in input order"
     );
 
-    let reported: Vec<u64> = appended.placed().map(|(_, p)| p).collect();
+    let reported = crate::event_fixtures::placed_positions(&appended);
     let mut strictly_increasing = reported.clone();
     strictly_increasing.sort_unstable();
     strictly_increasing.dedup();
