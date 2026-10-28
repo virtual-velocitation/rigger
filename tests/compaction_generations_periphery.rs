@@ -6255,3 +6255,64 @@ fn reset_derived_refuses_a_rebuild_stopped_in_its_tail_until_setup_finishes_it()
          setup stdout: {out} stderr: {err}; reset stderr: {shed_err}"
     );
 }
+
+/// Given a `graph.db` a setup seeded its `caught_up` cursor in at 0 beside the empty log, left as
+/// `before` leaves it, and a decision another writer appended to the run stream behind every fold,
+/// when an agent runs `rigger emit`, then the emit appends its own decision above the other and
+/// says it folded it, the other writer's decision is folded exactly when `other` holds, the cursor
+/// stands where `cursor` answers for the emitted position, and no `graph.db.owed` is written (spec
+/// 124, THE APPENDER).
+fn an_emit_above_another_writers_decision_folds_it_as_the_file_s_cursor_says(
+    before: fn(&Path),
+    other: bool,
+    cursor: fn(u64) -> Option<u64>,
+) {
+    let dir = temp_store_project();
+    let root = dir.path();
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let graph_db = rigger_file(root, "graph.db");
+    before(&graph_db);
+    let unfolded = append_unfolded_decision_named(root, "d-other");
+    let (out, err, ok) = emit_decision(root, "d-emitted");
+    let emitted = run_log_head(root);
+    assert_eq!(
+        (
+            ok,
+            out,
+            applied(&graph_db, unfolded),
+            applied(&graph_db, emitted),
+            caught_up_at(&graph_db),
+            mark_stands_beside(&graph_db)
+        ),
+        (
+            true,
+            emit_folded_line(emitted),
+            other,
+            true,
+            cursor(emitted),
+            false
+        ),
+        "the emit folds its own decision, and the other writer's as the cursor says, marking \
+         nothing; stderr: {err}"
+    );
+}
+
+rigger::test_cases! {
+    /// The seeded cursor sends the emit to its calls, which fold every event past the cursor in
+    /// order, the other writer's below its own included, and the cursor stands at its event.
+    an_emit_on_a_seeded_graph_folds_another_writers_decision_below_its_own_by_its_calls:
+        an_emit_above_another_writers_decision_folds_it_as_the_file_s_cursor_says(
+            |_| {},
+            true,
+            Some,
+        );
+    /// A file without the cursor - as a fold made it before the cursor existed - sends the emit to
+    /// its direct fold, which folds its own event alone, leaving the other writer's for setup's
+    /// seeding to find, and the file stays without the cursor.
+    an_emit_on_a_graph_without_the_cursor_folds_its_own_decision_alone_directly:
+        an_emit_above_another_writers_decision_folds_it_as_the_file_s_cursor_says(
+            drop_the_cursor,
+            false,
+            |_| None,
+        );
+}
