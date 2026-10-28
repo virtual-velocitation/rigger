@@ -63,7 +63,13 @@ your committed tree:
 - `cargo test --test boundary_audit`, `sh .rigger/gates/content.sh style`,
   `sh .rigger/gates/content.sh no-os-kill` and `sh .rigger/gates/red-before-green.sh`;
 - every test binary your change touched, on both lanes: `cargo test -p <crate> --lib` or
-  `cargo test --test <file>`, then the same with `--no-default-features`.
+  `cargo test --test <file>`, then the same with `--no-default-features`. When your production
+  hunks touch `src/` or `crates/`, those binaries include every root test that reads a
+  checked-in file as text, edited by you or not, since a text pin goes red when a hunk moves
+  the text it reads: the top-level `tests/*.rs` files spelling one of the readers this command
+  names, which lists them and runs them in one invocation; run it again with
+  `xargs cargo test --no-default-features` as its last stage:
+  `git ls-files 'tests/*.rs' | awk -F/ 'NF == 2' | xargs awk 'index($0, "repo_text(") || index($0, "production_main_rs(") || index($0, "production_sources(") || index($0, "collect_rs_files(") || index($0, "for_each_rs_file(") || index($0, "include_str!(") || index($0, "read_to_string(repo_root()") { print FILENAME }' | sort -u | sed 's|^tests/||; s|\.rs$||; s|^|--test |' | xargs cargo test`.
 
 Each run above, the test binaries on both lanes and any `sh .rigger/gates/lanes.sh <lane>` run
 a unit asks of you included, takes minutes here: run it in the foreground with the Bash timeout
