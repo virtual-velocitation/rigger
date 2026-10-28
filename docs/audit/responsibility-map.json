@@ -8349,7 +8349,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "f9cdd81b10e0a7f6"
+    "content_hash": "bc8ba785ceacc236"
   },
   {
     "file": "src/cli/mod.rs",

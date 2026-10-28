@@ -458,9 +458,10 @@ fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
 /// Open the `graph.db` at `graph_db` for write, under `project` (spec 124, WIRING): the one open
 /// that may write to a graph file, making it where none stands ([`Projector::open`]), with the
 /// catch-up wiring installed. Its log ([`Projector::with_log`]) is the store `selection` resolves
-/// for the `events.db` beside the file ([`resolve_store`]), opened at the projector's first
-/// catch-up and held for its life; an embedded log whose file does not exist yet is read as the
-/// empty one it is ([`StoreSelection::log_file`]), so no open makes `events.db`. Its
+/// for the `events.db` beside the file ([`resolve_store`]), scoped to `project`
+/// ([`Namespaced::owning`]), opened at the projector's first catch-up and held for its life; an
+/// embedded log whose file does not exist yet is read as the empty one it is
+/// ([`StoreSelection::log_file`]), so no open makes `events.db`. Its
 /// re-extraction ([`Projector::with_reextraction`]) is a fresh one per catch-up call, resolving each
 /// ledger entry under THE ONE ROOT of the directory holding the file ([`tree_root`]), asked of git
 /// at the call's first entry, through [`reextract_entry`].
@@ -474,9 +475,13 @@ fn open_graph_for_write(
         .parent()
         .map_or_else(cwd, Path::to_path_buf);
     let (selection, events_db) = (selection.clone(), store_file(&store_dir, "events.db"));
+    let scope = project.to_string();
     let log = move || {
         resolve_store(&selection, selection.log_file(&events_db))
-            .map(std::sync::Arc::from)
+            .map(|store| {
+                std::sync::Arc::new(Namespaced::owning(std::sync::Arc::from(store), &scope))
+                    as std::sync::Arc<dyn EventStore>
+            })
             .map_err(|e| contextgraph::Error(e.to_string()))
     };
     let reextraction = move || -> Box<contextgraph::sqlite::Reextract<'static>> {

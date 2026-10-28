@@ -14,13 +14,46 @@ use super::{
 
 /// Namespaced wraps an EventStore so all of its data is scoped to one project.
 pub struct Namespaced<'a> {
-    inner: &'a dyn EventStore,
+    inner: Inner<'a>,
     prefix: String,
+}
+
+/// The store a [`Namespaced`] scopes: borrowed for the wrapper's life ([`Namespaced::new`]), or
+/// held by it ([`Namespaced::owning`]).
+enum Inner<'a> {
+    Borrowed(&'a dyn EventStore),
+    Held(std::sync::Arc<dyn EventStore>),
+}
+
+impl<'a> std::ops::Deref for Inner<'a> {
+    type Target = dyn EventStore + 'a;
+
+    /// The store, borrowed or held.
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Inner::Borrowed(inner) => *inner,
+            Inner::Held(inner) => &**inner,
+        }
+    }
+}
+
+impl Namespaced<'static> {
+    /// Scope `inner` to the named project, holding it: a scoped store of its own, which a caller
+    /// can hold as the port itself (`Arc<dyn EventStore>`) where no borrow outlives it.
+    pub fn owning(inner: std::sync::Arc<dyn EventStore>, project: &str) -> Self {
+        Self::scoping(Inner::Held(inner), project)
+    }
 }
 
 impl<'a> Namespaced<'a> {
     /// Scope inner to the named project.
     pub fn new(inner: &'a dyn EventStore, project: &str) -> Self {
+        Self::scoping(Inner::Borrowed(inner), project)
+    }
+
+    /// The one constructor both forms read: `inner` scoped to `project`'s streams
+    /// ([`Namespaced::prefix_for`]).
+    fn scoping(inner: Inner<'a>, project: &str) -> Self {
         Namespaced {
             inner,
             prefix: Self::prefix_for(project),

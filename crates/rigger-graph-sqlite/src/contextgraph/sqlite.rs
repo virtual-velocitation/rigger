@@ -33,7 +33,6 @@ use crate::lockfile::HeldLock;
 use crate::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT};
 use crate::sqlite::open_connection;
 use rigger_domain::retention::{is_ledger_entry, GenerationIngested, TYPE_GENERATION_INGESTED};
-use rigger_store_sqlite::eventstore::namespace::Namespaced;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS nodes (
@@ -949,8 +948,9 @@ impl Projector {
     }
 
     /// This projector, folding forward from the event log `open` opens ([`Projector::catch_up`],
-    /// spec 124, WIRING): the store holding the log this file folds, unscoped - each call scopes it
-    /// to this projector's project. `open` is called by the first call that reads the log, never
+    /// spec 124, WIRING): the store holding the log this file folds, already scoped to this
+    /// projector's project, which each call reads as it is handed, laying no scope of its own over
+    /// it. `open` is called by the first call that reads the log, never
     /// here, and the log it opens is kept for the projector's life; an open that fails keeps
     /// nothing, so the next call opens again.
     pub fn with_log(
@@ -985,7 +985,7 @@ impl Projector {
     /// it folded, carries its [`owed_mark`], or carries no cursor ([`Inert`]); the first standing
     /// is the answer, read without opening the log. A projector handed no log answers
     /// [`CatchUp::AtHead`]. Otherwise the call reads one page of the log past the cursor, of at
-    /// most [`FOLD_BATCH`] events of this projector's project ([`Namespaced`]), with no lock of the
+    /// most [`FOLD_BATCH`] events of the project's own log as it is handed, with no lock of the
     /// file held: a page without an event is [`CatchUp::AtHead`]. The page's events of the
     /// project's run stream are its positions to decide; its first transaction cut
     /// ([`fold_transactions`]) - one ledger entry alone, or a run of other events - is decided and
@@ -1038,10 +1038,9 @@ impl Projector {
             Some(build) => build(),
             None => Box::new(|_: &Event| Ok(None)),
         };
-        let scoped = Namespaced::new(&*log, &self.project);
         let mut outrun = false;
         loop {
-            let page = match scoped.read_all_page(from, &Filter::default(), FOLD_BATCH) {
+            let page = match log.read_all_page(from, &Filter::default(), FOLD_BATCH) {
                 Ok(page) => page,
                 Err(e) => {
                     return Ok(CatchUp::Failed {
@@ -7404,6 +7403,23 @@ mod tests {
         }
     }
 
+    /// `log` scoped to the project `test` ([`Namespaced::owning`]), as the write open scopes the
+    /// log it hands a projector under that project.
+    ///
+    /// [`Namespaced::owning`]: rigger_store_sqlite::eventstore::namespace::Namespaced::owning
+    fn scoped_to_test(log: Arc<dyn EventStore>) -> Arc<dyn EventStore> {
+        Arc::new(rigger_store_sqlite::eventstore::namespace::Namespaced::owning(log, "test"))
+    }
+
+    /// The opener of the log beside the graph file at `path` ([`the_unscoped_log_beside`]) scoped
+    /// to the project `test` ([`scoped_to_test`]): each call opens a store of its own on it.
+    fn the_log_beside(
+        path: &str,
+    ) -> impl Fn() -> Result<Arc<dyn EventStore>, Error> + Send + Sync + 'static {
+        let open = the_unscoped_log_beside(path);
+        move || open().map(scoped_to_test)
+    }
+
     /// A fresh graph file under the project `test` whose `caught_up` cursor is seeded at 0 beside
     /// an empty log, as `rigger setup` seeds a new file: the directory that keeps it, its path and
     /// a projector on it, handed no log.
@@ -7417,15 +7433,16 @@ mod tests {
         (dir, path, p)
     }
 
-    /// A [`seeded_graph`] handed the log beside it ([`events_beside`]) to fold forward from, and
-    /// that log, every read of which is counted.
+    /// A [`seeded_graph`] handed the log beside it ([`events_beside`]) to fold forward from,
+    /// scoped to its project ([`scoped_to_test`]), and the store under that scope, every read of
+    /// which is counted.
     fn catching_up() -> (tempfile::TempDir, String, Projector, CountedLog) {
         let (dir, path, p) = seeded_graph();
         let log: CountedLog = Arc::new(crate::test_support::ReadCountingStore::owning(
             rigger_store_sqlite::eventstore::sqlite::Store::open(&events_beside(&path)).unwrap(),
         ));
-        let held = Arc::clone(&log);
-        let p = p.with_log(move || Ok(Arc::clone(&held) as Arc<dyn EventStore>));
+        let handed = scoped_to_test(Arc::clone(&log) as Arc<dyn EventStore>);
+        let p = p.with_log(move || Ok(Arc::clone(&handed)));
         (dir, path, p, log)
     }
 
@@ -7475,12 +7492,12 @@ mod tests {
     }
 
     /// Another writer of the graph file at `path`: a projector of its own under the project `test`,
-    /// folding forward from a store of its own on the log beside the file
-    /// ([`the_unscoped_log_beside`]).
+    /// folding forward from a store of its own on the log beside the file, scoped to that project
+    /// ([`the_log_beside`]).
     fn another_writer(path: &str) -> Projector {
         Projector::open(path, "test")
             .unwrap()
-            .with_log(the_unscoped_log_beside(path))
+            .with_log(the_log_beside(path))
     }
 
     /// Make `p`'s connection give up on another writer's write lock after a millisecond.
@@ -8018,7 +8035,7 @@ mod tests {
         let (_dir, path, p) = seeded_graph();
         let tries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let tried = Arc::clone(&tries);
-        let open = the_unscoped_log_beside(&path);
+        let open = the_log_beside(&path);
         let p = p.with_log(move || {
             if tried.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
                 return Err(Error(LOG_UNOPENED.to_string()));
@@ -8072,7 +8089,7 @@ mod tests {
             .unwrap()
             .execute_batch("DROP TABLE events")
             .unwrap();
-        let unread = rigger_store_sqlite::eventstore::namespace::Namespaced::new(&*log, "test")
+        let unread = scoped_to_test(Arc::clone(&log) as Arc<dyn EventStore>)
             .read_all_page(0, &crate::eventstore::Filter::default(), FOLD_BATCH)
             .unwrap_err()
             .to_string();
