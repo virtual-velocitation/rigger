@@ -308,9 +308,9 @@ pub fn ledger_head_read(stream: &str) -> super::CountedRead {
 }
 
 /// A REBUILD FROM THE TREE ALONE: [`rebuild_from_the_log`], one event to a committed batch,
-/// re-extracting each ledger entry from the tree at `root` with no object database to ask. An
-/// entry whose file the tree holds at another generation resolves from no source, so its identity
-/// is left behind.
+/// re-extracting from the tree at `root`, with no object database to ask, each ledger entry its
+/// fold asks a batch for. An entry whose file the tree holds at another generation resolves from no
+/// source, so its identity is left behind.
 #[cfg(feature = "symbols")]
 pub fn rebuild_from_the_tree(graph_db: &std::path::Path, log: &[Event], root: &std::path::Path) {
     rebuild_from_the_log(graph_db, log, 1, &mut |entry| {
@@ -319,8 +319,8 @@ pub fn rebuild_from_the_tree(graph_db: &std::path::Path, log: &[Event], root: &s
 }
 
 /// A COLD REBUILD OF `log`: rebuild the graph file `graph_db` under the project `test`, owed, from
-/// `log` in batches of at most `batch` events, each one committed transaction, re-extracting each
-/// ledger entry with `reextract`. It insists the rebuild ran.
+/// `log` in batches of at most `batch` events, each one committed transaction, re-extracting with
+/// `reextract` each ledger entry its fold asks a batch for. It insists the rebuild ran.
 pub fn rebuild_from_the_log(
     graph_db: &std::path::Path,
     log: &[Event],

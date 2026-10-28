@@ -1,9 +1,11 @@
 //! Spec 107, criterion 5 - THE GRAPH REBUILDS FROM LEDGER AND TREE.
 //!
 //! A ledger entry names a generation and where its bytes were; the batch itself is nowhere on the
-//! log. These tests hold that `rigger setup`'s rebuild re-extracts each entry's batch from the
-//! repository's object database, the tree's file or no bytes, in that order, and folds it through
-//! the ledger fold, so the rebuilt `graph.db` is the one the incremental folds built.
+//! log. These tests hold that `rigger setup`'s rebuild re-extracts the batch of each entry its fold
+//! asks one for (one not yet folded, whose payload parses and whose generation its identity does
+//! not already hold) from the repository's object database, the tree's file or no bytes, in that
+//! order, and folds it through the ledger fold, so the rebuilt `graph.db` is the one the
+//! incremental folds built.
 //!
 //! Every incremental side is folded from hand-built entries through
 //! `Projection::apply_generation` with batches written out here as literal payloads, so the
@@ -11,8 +13,9 @@
 //! comparison is spec 101's surface: the whole live projection and the fold state.
 //!
 //! The resolved folds, the resolution sources, the equalities and the dating run in the default
-//! lane. The light lane compiles no extraction, so there every entry folds nothing and is passed
-//! over as resolved to nothing (spec 124), and the hole a refused fold left is still paid.
+//! lane. The light lane compiles no extraction, so there every entry its fold asks a batch for
+//! folds nothing and is passed over as resolved to nothing (spec 124), and the hole a refused fold
+//! left is still paid.
 
 mod common;
 

@@ -1102,24 +1102,24 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
     )
 }
 
-/// Seed the `caught_up` cursor of `graph`, the `graph.db` whose rebuild lock is `held`, against
-/// the log through `seeding`, handed the head of `log` read once here and its missing positions
-/// aged against the clock read once here ([`Projector::seed_cursor`]); read why the file owes its
+/// Seed the `caught_up` cursor of `graph`, the `graph.db` whose rebuild lock is `held`, against the
+/// log through `seeding`, handed the head of `log` read once here and its missing positions aged
+/// against the clock read once here ([`Projector::seed_cursor`]); read why the file owes its
 /// rebuild - its own records, and the seeding's verdict ([`Projector::owed_against`]); when the pay
 /// starts a NEW rebuild, a fresh shadow the log is folded into from its start
 /// ([`Projector::rebuild_starts_fresh`]) - a cause owed beside no standing shadow, a swapped-in
 /// tail standing or not, or a standing shadow that is not resumable - ask `refuse_if_live` of `log`
 /// and fail with its refusal while the run is live, before any line is printed or the file
 /// rewritten, else hold the step lock its probe took until the rebuild returns; say so naming each
-/// cause, and pay it by rebuilding from `reads`' source, each ledger entry of perception folded
-/// with the batch its re-extraction answers for it, which also pays a rebuild's own unfinished work
-/// with no cause to name, since neither the file's records nor the seeding names it: a standing
-/// shadow, resumed when it is resumable and else refolded from the start, or a swapped-in cursor's
-/// tail, finished - the resume and the tail with no liveness asked, so beside a live run too; print
-/// how far along the rebuild is, what its run-closure prune removed from the rebuilt graph
-/// ([`pruned_line`], as `rigger reset --runs` words its own), and, read from `log` and the rebuilt
-/// graph once the rebuild ends, how many identities the next ingest records again
-/// ([`rebuild_report_line`]); then, when the seeding met another writer's write lock
+/// cause, and pay it by rebuilding from `reads`' source, each ledger entry of perception its fold
+/// asks a batch for folded with the batch its re-extraction answers for it, which also pays a
+/// rebuild's own unfinished work with no cause to name, since neither the file's records nor the
+/// seeding names it: a standing shadow, resumed when it is resumable and else refolded from the
+/// start, or a swapped-in cursor's tail, finished - the resume and the tail with no liveness asked,
+/// so beside a live run too; print how far along the rebuild is, what its run-closure prune removed
+/// from the rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own), and, read from
+/// `log` and the rebuilt graph once the rebuild ends, how many identities the next ingest records
+/// again ([`rebuild_report_line`]); then, when the seeding met another writer's write lock
 /// ([`contextgraph::sqlite::Seeding::Skipped`]), that the catch-up was not started, the next setup
 /// seeding the file (spec 124, CATCH-UP LINES), and otherwise fold the file forward from its cursor
 /// to the log's head ([`catch_up_to_head`]), saying how that ended; then, rebuilt or not, how many

@@ -494,8 +494,8 @@ pub fn clean_rebuild() -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, 
 }
 
 /// Rebuild the graph file `graph_db` under the project `test` from `source`, owed when `owed` says
-/// so, re-extracting each ledger entry with `reextract` and reporting no progress, and answer what
-/// the rebuild did, its error as text.
+/// so, re-extracting with `reextract` each ledger entry its fold asks a batch for and reporting no
+/// progress, and answer what the rebuild did, its error as text.
 pub fn rebuild_answer(
     graph_db: &str,
     owed: bool,

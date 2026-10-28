@@ -210,12 +210,14 @@ pub type RebuildSink<'s> = dyn FnMut(&[Event], Position) -> Result<(), Error> + 
 pub type RebuildSource<'s> = dyn FnMut(Position, &mut RebuildSink) -> Result<(), Error> + 's;
 
 /// Re-extracts the batch of a ledger entry of perception (spec 107): handed the entry's event, it
-/// answers the batch the entry's generation names, that no source resolves it, which the rebuild
-/// passes the entry over for (spec 124, THE DECIDE STEP), or an error, which fails the rebuild.
-/// What a [`Projector::rebuild`] folds each entry with, behind the ledger
+/// answers the batch the entry's generation names, that no source resolves it, which the fold
+/// passes the entry over for (spec 124, THE DECIDE STEP), or an error, which fails the rebuild or
+/// the catch-up call ([`CatchUp::Failed`]). What a [`Projector::rebuild`] or a
+/// [`Projector::catch_up`] folds with each ledger entry its fold asks a batch for, one not yet
+/// folded whose payload parses and whose generation its identity does not hold, behind the ledger
 /// fold, asked before the entry's transaction opens, so it holds no write lock
-/// ([`extracted_batch`]); `rigger setup` binds the one that reads the repository's object database
-/// and the tree.
+/// ([`extracted_batch`]); `rigger setup` binds the one that, in the lane compiled with an
+/// extraction, reads the repository's object database and the tree.
 pub type Reextract<'s> = dyn FnMut(&Event) -> Result<Option<Vec<Event>>, Error> + 's;
 
 /// Hand `sink` the events of `log` - in position order - past position `after`, in batches of at
