@@ -2854,12 +2854,12 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     // fold that cannot happen (a graph that owes its rebuild, or one locked past its busy
     // timeout) never fails a result the log holds - but it is SAID, with the reason, because a
     // current graph that missed the fold keeps the result out of grounding until the next `rigger
-    // setup` folds it (the result's position is a hole in the graph's applied ledger, which that
-    // setup's catch-up folds forward from the file's cursor, or, in a file not yet carrying the
-    // cursor whose seeding finds the hole old, the rebuild of the live selection a `SpawnResult`
-    // is in), and until then a lost adjudicator verdict keeps its discarded findings in
-    // grounding. A `--if-absent` no-op appended nothing, so there is nothing new to fold (the
-    // prior record already did).
+    // setup` folds it (a graph that owes its rebuild re-derives it from the live selection a
+    // `SpawnResult` is in, and so does a file not yet carrying the cursor whose seeding finds the
+    // hole the result left in its applied ledger old; setup's catch-up folds any other such hole
+    // forward from the file's cursor), and until then a lost adjudicator verdict keeps its
+    // discarded findings in grounding. A `--if-absent` no-op appended nothing, so there is nothing
+    // new to fold (the prior record already did).
     if let Some(pos) = recorded {
         if let contextgraph::Fold::NotFolded(why) =
             fold_recorded_result(&loc, &selection, &res, pos)
