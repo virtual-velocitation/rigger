@@ -1,5 +1,8 @@
 //! Git fixtures for the integration suites, re-exported from [`super::fixtures`] - the one
 //! definition the crate's own unit tests share - plus the suite-only go-gitsemver fixture.
+//! The other suite-only fixtures beside it: a commit of given files, a linked worktree nested
+//! under a project, and the object database's reads - every object id it holds, the bytes of a
+//! blob - with the premise that it holds none.
 
 #![allow(unused_imports)]
 
