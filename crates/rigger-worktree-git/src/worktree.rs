@@ -3008,6 +3008,12 @@ mod tests {
         hash_blob(root, bytes).map_err(|e| e.0)
     }
 
+    /// One line of text, the bytes the outside-a-repository and the failure hash tests both hash.
+    const HELLO: &[u8] = b"hello\n";
+
+    /// The object id git gives [`HELLO`].
+    const HELLO_ID: &str = "ce013625030ba8dba906f756967f9e9ca394464a";
+
     /// THE ONE HASH FUNCTION outside a repository (spec 107): a tree that is no git repository
     /// still answers the object id git gives the bytes - the id `git hash-object` prints for a
     /// file holding them - for text, for the empty file and for bytes that are not UTF-8.
@@ -3018,18 +3024,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let binary = [0, 159, 146, 150, b'\n', 255];
-        write_file(&root.join("hello"), b"hello\n");
+        write_file(&root.join("hello"), HELLO);
         write_file(&root.join("empty"), b"");
         write_file(&root.join("binary"), &binary);
 
         assert_eq!(
             [
-                hashed(root, b"hello\n"),
+                hashed(root, HELLO),
                 hashed(root, b""),
                 hashed(root, &binary)
             ],
             [
-                Ok("ce013625030ba8dba906f756967f9e9ca394464a".to_string()),
+                Ok(HELLO_ID.to_string()),
                 Ok("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391".to_string()),
                 Ok(git_hash_object(root, "binary", false)),
             ]
@@ -3039,10 +3045,7 @@ mod tests {
                 git_hash_object(root, "hello", false),
                 git_hash_object(root, "empty", false)
             ],
-            [
-                "ce013625030ba8dba906f756967f9e9ca394464a",
-                "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
-            ]
+            [HELLO_ID, "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"]
         );
     }
 
@@ -3098,32 +3101,75 @@ mod tests {
         );
     }
 
-    /// A hash process that fails fails the hash, naming the command, the root and what git said:
-    /// here a root whose `.git` is a file git cannot read as a repository.
+    /// A hash process that fails fails the hash, naming the command, the root and what git said
+    /// for the command line the hash ran, on each of its two paths: outside a repository - a root
+    /// whose `.git` is a file git cannot read as one - the hash without a write fails; inside one
+    /// whose object database cannot take the object - a file stands where the object's directory
+    /// goes - the write fails (spec 124, THE BLOB IS WRITTEN), and the object database is left
+    /// without the object.
     #[test]
     fn hash_blob_names_the_command_the_root_and_gits_own_failure() {
-        use crate::test_support::write_file;
+        use super::blob_batch_tests::asked;
+        use crate::test_support::{git_init_quiet, loose_object_directory, write_file};
+        use std::io::Write;
+        use std::process::Stdio;
 
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        write_file(&root.join(".git"), b"not a gitfile\n");
-        let said = crate::subprocess::git_in(root)
-            .args(["hash-object", "--no-filters", "--stdin"])
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
-        assert!(!said.status.success());
-        let said = String::from_utf8(said.stderr).unwrap();
-        assert!(!said.trim().is_empty());
-
-        assert_eq!(
-            hashed(root, b"hello\n"),
-            Err(format!(
-                "git hash-object --stdin in {}: {}",
-                root.display(),
-                said.trim()
-            ))
+        /// A row: how its root is laid out, the arguments the hash's path runs there, and what the
+        /// object database under the root answers for the bytes' id after the hash - none where
+        /// none stands.
+        type Row = (
+            fn(&std::path::Path),
+            &'static [&'static str],
+            Option<Result<Option<Vec<u8>>, String>>,
         );
+        let rows: [Row; 2] = [
+            (
+                |root| write_file(&root.join(".git"), b"not a gitfile\n"),
+                &[],
+                None,
+            ),
+            (
+                |root| {
+                    git_init_quiet(root);
+                    write_file(&loose_object_directory(root, HELLO_ID), b"");
+                },
+                &["-w"],
+                Some(Ok(None)),
+            ),
+        ];
+        for (lay_out, write, held) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            lay_out(root);
+            let mut git = crate::subprocess::git_in(root)
+                .arg("hash-object")
+                .args(write)
+                .args(["--no-filters", "--stdin"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            // A git that fails before it reads its input may have closed it already.
+            let _ = git.stdin.take().unwrap().write_all(HELLO);
+            let said = git.wait_with_output().unwrap();
+            assert!(!said.status.success());
+            let said = String::from_utf8(said.stderr).unwrap();
+            assert!(!said.trim().is_empty());
+
+            assert_eq!(
+                hashed(root, HELLO),
+                Err(format!(
+                    "git hash-object --stdin in {}: {}",
+                    root.display(),
+                    said.trim()
+                ))
+            );
+            assert_eq!(
+                BlobBatch::start(root).map(|mut batch| asked(&mut batch, HELLO_ID)),
+                held
+            );
+        }
     }
 
     /// Test-only recomposition of [`Worktree::merge_into_worktree`] + [`Worktree::land`] into
