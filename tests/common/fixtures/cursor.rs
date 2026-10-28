@@ -106,7 +106,7 @@ pub fn catch_up_skipped_line(at: u64) -> String {
 }
 
 /// The line `rigger setup` fails with when its catch-up stopped at the position `at` its last call
-/// read from, on `error` (spec 124, CATCH-UP LINES).
+/// read, or would read, its page from, on `error` (spec 124, CATCH-UP LINES).
 pub fn catch_up_failed_line(at: u64, error: &str) -> String {
     catch_up_stopped(
         at,
