@@ -2853,7 +2853,7 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     // AFTER the durable append, as `emit_event` does: the record already landed in the log, so a
     // fold that cannot happen (a graph that owes its rebuild, or one locked past its busy
     // timeout) never fails a result the log holds - but it is SAID, with the reason, because a
-    // current graph that missed the fold keeps the result out of grounding until the next `rigger
+    // current graph that missed the fold keeps the result out of grounding until a later `rigger
     // setup` folds it (a graph that owes its rebuild re-derives it from the live selection a
     // `SpawnResult` is in, and so does a file not yet carrying the cursor whose seeding finds the
     // hole the result left in its applied ledger old; setup's catch-up folds any other such hole
