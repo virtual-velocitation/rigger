@@ -965,9 +965,9 @@ impl Projector {
         self
     }
 
-    /// This projector, each [`Projector::catch_up`] call re-extracting the ledger entries it folds
-    /// through a re-extraction `factory` builds for that call alone (spec 124, WIRING), dropped as
-    /// the call returns.
+    /// This projector, each [`Projector::catch_up`] call re-extracting the ledger entries its fold
+    /// asks a batch for through a re-extraction `factory` builds for that call alone (spec 124,
+    /// WIRING), dropped as the call returns.
     pub fn with_reextraction(
         mut self,
         factory: impl Fn() -> Box<Reextract<'static>> + Send + Sync + 'static,
@@ -976,10 +976,11 @@ impl Projector {
         self
     }
 
-    /// A re-extraction of the ledger entries one fold of this file meets (spec 124, WIRING): a
-    /// fresh one the installed factory builds ([`Projector::with_reextraction`]), or, with none
-    /// installed, one that resolves no entry, so each entry it is asked for is passed over
-    /// [`RESOLVED_TO_NOTHING`].
+    /// A re-extraction of the ledger entries one fold of this file asks a batch for (spec 124,
+    /// WIRING), each not yet folded, whose payload parses and whose generation its identity does
+    /// not hold: a fresh one the installed factory builds ([`Projector::with_reextraction`]), or,
+    /// with none installed, one that resolves no entry, so each entry it is asked for is passed
+    /// over [`RESOLVED_TO_NOTHING`].
     pub fn reextraction(&self) -> Box<Reextract<'static>> {
         match &self.reextraction {
             Some(build) => build(),

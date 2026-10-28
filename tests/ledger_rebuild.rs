@@ -1411,10 +1411,10 @@ fn git_invocations_of_setup(cwd: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Every `git` invocation of a `rigger setup` whose rebuild and catch-up fold no entry and whose
-/// report finds no identity behind its latest recording, in order: the ones its scaffold and its
-/// identity make, and none for the root its re-extractions and its report read or for an object
-/// database ([`FIRST_ENTRY_GIT`]).
+/// Every `git` invocation of a `rigger setup` whose rebuild and catch-up hand their re-extractions
+/// no entry and whose report finds no identity behind its latest recording, in order: the ones its
+/// scaffold and its identity make, and none for the root its re-extractions and its report read or
+/// for an object database ([`FIRST_ENTRY_GIT`]).
 #[cfg(feature = "symbols")]
 const SETUP_OWN_GIT: [&str; 5] = [
     "rev-parse --show-toplevel",
@@ -1557,11 +1557,10 @@ fn a_catch_up_asks_git_for_the_root_once_across_its_calls_and_each_call_for_its_
 
 /// Given a repository whose log holds three entries, each resolving only from the blob it names
 /// ([`record_entries_resolving_from_their_blobs_alone`]), when the operator runs `rigger setup`,
-/// then the rebuild decides once whether an
-/// object database can be asked and reads every blob from one `git cat-file --batch` process;
-/// and a setup that owes no rebuild, a rebuild over a log holding no entry, and a rebuild
-/// outside a repository each start none - the last after asking, once, and finding no
-/// repository.
+/// then the rebuild decides once whether an object database can be asked and reads every blob
+/// from one `git cat-file --batch` process; and a setup that owes no rebuild and whose catch-up
+/// meets no entry, a rebuild over a log holding no entry, and a rebuild outside a repository each
+/// start none - the last after asking, once, and finding no repository.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first_entry() {
@@ -1584,7 +1583,8 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
     assert_eq!(
         git_invocations_of_setup(root),
         SETUP_OWN_GIT,
-        "a setup that owes no rebuild starts no git process beyond its scaffold's and identity's own"
+        "a setup that owes no rebuild and whose catch-up meets no entry starts no git process \
+         beyond its scaffold's and identity's own"
     );
 
     // A rebuild that meets no entry never starts the process.
@@ -1598,7 +1598,7 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
     assert_eq!(
         git_invocations_of_setup(bare.path()),
         SETUP_OWN_GIT,
-        "a rebuild that folds no entry and reports no identity behind its recording makes its \
+        "a rebuild that meets no entry and reports no identity behind its recording makes its \
          scaffold's and identity's git invocations alone"
     );
     assert!(
@@ -2494,10 +2494,10 @@ fn unparsable_source_entry() -> Event {
     )
 }
 
-/// Given a rebuild that folds no ledger entry, when the operator runs `rigger setup`, then the
-/// report asks git where the tree is rooted only once an identity is behind its latest
-/// recording: over keyed derived rows the rebuilt graph holds the generation of it prints a zero
-/// and asks git nothing beyond the scaffold's own questions, and over a recording the rebuild
+/// Given a rebuild that hands its re-extraction no ledger entry, when the operator runs `rigger
+/// setup`, then the report asks git where the tree is rooted only once an identity is behind its
+/// latest recording: over keyed derived rows the rebuilt graph holds the generation of it prints a
+/// zero and asks git nothing beyond the scaffold's own questions, and over a recording the rebuild
 /// passed over it asks for the root once, with no object database asked, and counts the file.
 #[cfg(feature = "symbols")]
 #[test]

@@ -462,11 +462,12 @@ fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
 /// ([`Namespaced::owning`]), opened at the projector's first catch-up and held for its life; an
 /// embedded log whose file does not exist yet is read as the empty one it is
 /// ([`StoreSelection::log_file`]), so no open makes `events.db`. Its
-/// re-extraction ([`Projector::with_reextraction`]) is a fresh one per catch-up call, resolving each
-/// ledger entry through [`reextract_entry`] under THE ONE ROOT of the directory holding the file,
-/// read from the one cell the open returns beside the projector ([`TreeRoot`]): asked of git at the
-/// first entry any re-extraction of this open meets, or by the first other reader of the cell
-/// before it, and once among them.
+/// re-extraction ([`Projector::with_reextraction`]) is a fresh one each time
+/// [`Projector::reextraction`] builds one - a catch-up call's, or setup's rebuild's - resolving
+/// each ledger entry it is handed through [`reextract_entry`] under THE ONE ROOT of the directory
+/// holding the file, read from the one cell the open returns beside the projector ([`TreeRoot`]):
+/// asked of git at the first entry any re-extraction of this open is handed, resolved or not, or
+/// by the first other reader of the cell before it, and once among them.
 fn open_graph_for_write(
     graph_db: &str,
     project: &str,
@@ -501,8 +502,10 @@ fn open_graph_for_write(
 /// Re-extract the batch of the ledger entry of perception `entry` (spec 107,
 /// `ingest::resolve_entry`) for the tree under `root`: from the entry's blob in the repository's
 /// object database, read through the batch process `batch` holds - started at the first entry it
-/// is handed ([`entry_blobs`]), and none where no database can be asked - else from the tree's
-/// file, else from no bytes. An entry no source resolves answers none.
+/// is handed, resolved or not ([`entry_blobs`]), and none outside a git repository, when the
+/// process cannot start, or in the lane compiled without an extraction - else from the tree's
+/// file, else from no bytes. An entry no source resolves answers none, and in the lane compiled
+/// without an extraction no source resolves any.
 fn reextract_entry(
     root: &Path,
     batch: &mut Option<Option<rigger::worktree::BlobBatch>>,
