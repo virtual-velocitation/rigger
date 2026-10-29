@@ -3942,13 +3942,12 @@ fn an_identity_migration_into_a_graph_that_owes_its_rebuild_says_its_decision_wa
     );
 }
 
-/// Given a `graph.db` an older binary's lost fold left owed - an event on the log it misses, and
-/// the owed mark beside it - on a project whose identity is minted, so no identity migration waits
-/// for the next setup, when the operator removes the graph file and runs `rigger setup`, then
-/// setup drops the mark the removed file left behind and rebuilds a fresh graph from the log - its
-/// own open creates the file, an empty ledger beside a non-empty log - the lost event folded with
-/// the rest, so the next emit folds into it rather than inheriting a debt that file no longer
-/// carries.
+/// Given a `graph.db` an older binary's lost fold left behind - an event on the log it misses, and
+/// the owed mark beside it, no cause of its rebuild - on a project whose identity is minted, so no
+/// identity migration waits for the next setup, when the operator removes the graph file and runs
+/// `rigger setup`, then setup drops the mark the removed file left behind and rebuilds a fresh
+/// graph from the log - its own open creates the file, an empty ledger beside a non-empty log - the
+/// lost event folded with the rest, and the next emit folds into it.
 #[test]
 fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_folds() {
     let dir = temp_store_project();
