@@ -608,6 +608,37 @@ fn fn_name(line: &str) -> String {
         .collect()
 }
 
+/// One production file read for a site scan: the lines of its production part (the text
+/// before its `mod tests` block), the `#[cfg(test)]` item ranges among them and the lines that
+/// declare a function.
+struct ProductionFile<'t> {
+    lines: Vec<&'t str>,
+    tests: Vec<(usize, usize)>,
+    sigs: Vec<usize>,
+}
+
+impl<'t> ProductionFile<'t> {
+    fn read(text: &'t str) -> Self {
+        let lines: Vec<&str> = production_part(text).lines().collect();
+        let tests = cfg_test_ranges(&lines);
+        let sigs = fn_sig_lines(&lines, &tests);
+        Self { lines, tests, sigs }
+    }
+
+    /// Whether 0-based line `at` lies inside a `#[cfg(test)]` item.
+    fn in_test(&self, at: usize) -> bool {
+        in_ranges(at, &self.tests)
+    }
+
+    /// The site of 0-based line `at` in the file at `rel`: `rel:item`, `item` the function
+    /// enclosing the line, or `<top level>` when none does.
+    fn site(&self, rel: &str, at: usize) -> String {
+        let item = enclosing_fn_line(&self.lines, &self.sigs, at)
+            .map_or_else(|| "<top level>".to_string(), |s| fn_name(self.lines[s]));
+        format!("{rel}:{item}")
+    }
+}
+
 /// Every production adapter construction under `root` outside the composition root and the
 /// adapter's own files, as `(file:item, family)`, sorted and deduplicated.
 fn misplaced_constructors(root: &Path) -> Vec<(String, &'static str)> {
@@ -620,18 +651,14 @@ fn misplaced_constructors(root: &Path) -> Vec<(String, &'static str)> {
         if COMPOSITION_ROOT.iter().any(|r| rel.starts_with(r)) {
             continue;
         }
-        let lines: Vec<&str> = production_part(&text).lines().collect();
-        let tests = cfg_test_ranges(&lines);
-        let sigs = fn_sig_lines(&lines, &tests);
-        for (i, line) in lines.iter().enumerate() {
-            if in_ranges(i, &tests) || line.trim_start().starts_with("//") {
+        let file = ProductionFile::read(&text);
+        for (i, line) in file.lines.iter().enumerate() {
+            if file.in_test(i) || line.trim_start().starts_with("//") {
                 continue;
             }
             for (re, adapter) in &patterns {
                 if re.is_match(line) && !adapter.home.iter().any(|h| rel.starts_with(h)) {
-                    let item = enclosing_fn_line(&lines, &sigs, i)
-                        .map_or_else(|| "<top level>".to_string(), |s| fn_name(lines[s]));
-                    hits.push((format!("{rel}:{item}"), adapter.family));
+                    hits.push((file.site(&rel, i), adapter.family));
                 }
             }
         }
