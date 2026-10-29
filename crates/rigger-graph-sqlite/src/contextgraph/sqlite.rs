@@ -2789,12 +2789,12 @@ impl FoldCursor for CatchUpCut {
 /// Where the `caught_up` cursor of the file behind `conn` stands for a catch-up of its own
 /// ([`Projector::catch_up`]), or the first cause, in this order, that it folds none ([`Inert`]):
 /// it holds a rebuild's state ([`rebuild_tail_owed`]), it owes its rebuild for an older fold rule
-/// over what it folded ([`owed_by_file`]), or it carries no cursor.
+/// over what it folded ([`rebuild_owed`]), or it carries no cursor.
 fn standing_cursor(conn: &Connection) -> Result<Result<Position, Inert>, Error> {
     if rebuild_tail_owed(conn)? {
         return Ok(Err(Inert::RebuildState));
     }
-    if !owed_by_file(conn)?.is_empty() {
+    if rebuild_owed(conn)? {
         return Ok(Err(Inert::OlderRule));
     }
     Ok(cursor_at(conn, CAUGHT_UP)?.ok_or(Inert::NoCursor))
