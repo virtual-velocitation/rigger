@@ -1557,22 +1557,20 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
 /// starts at most two processes, each waited to its exit: the detection's, then the hash's. A
 /// detection whose `git` cannot start, which says nothing about whether the write is owed, and a
 /// hash process that cannot start, or that fails - a write that fails included - fail the hash,
-/// each naming its command, the root and the cause.
+/// each naming the command line it ran or could not start with, the root and the cause
+/// ([`git_failure`]).
 pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> {
     use std::io::Write;
     use std::process::Stdio;
 
-    let failed = |why: &str| {
-        Error(format!(
-            "git hash-object --stdin in {}: {why}",
-            root.display()
-        ))
+    let args: &[&str] = if in_repository(root)? {
+        &["hash-object", "-w", "--no-filters", "--stdin"]
+    } else {
+        &["hash-object", "--no-filters", "--stdin"]
     };
-    let write: &[&str] = if in_repository(root)? { &["-w"] } else { &[] };
+    let failed = |why: &str| git_failure(args, root, why);
     let mut process = crate::subprocess::git_in(root)
-        .arg("hash-object")
-        .args(write)
-        .args(["--no-filters", "--stdin"])
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -3131,8 +3129,8 @@ mod tests {
         );
     }
 
-    /// A hash process that fails fails the hash, naming the command, the root and what git said
-    /// for the command line the hash ran, on each of its two paths: outside a repository - a root
+    /// A hash process that fails fails the hash, naming the command line it ran, the root and what
+    /// git said for that command line, on each of its two paths: outside a repository - a root
     /// whose `.git` is a file git cannot read as one - the hash without a write fails; inside one
     /// whose object database cannot take the object - a file stands where the object's directory
     /// goes - the write fails (spec 124, THE BLOB IS WRITTEN), and the object database is left
@@ -3144,9 +3142,9 @@ mod tests {
         use std::io::Write;
         use std::process::Stdio;
 
-        /// A row: how its root is laid out, the arguments the hash's path runs there, and what the
-        /// object database under the root answers for the bytes' id after the hash - none where
-        /// none stands.
+        /// A row: how its root is laid out, the argument vector the hash's path runs there, and
+        /// what the object database under the root answers for the bytes' id after the hash - none
+        /// where none stands.
         type Row = (
             fn(&std::path::Path),
             &'static [&'static str],
@@ -3155,7 +3153,7 @@ mod tests {
         let rows: [Row; 2] = [
             (
                 |root| write_file(&root.join(".git"), b"not a gitfile\n"),
-                &[],
+                &["hash-object", "--no-filters", "--stdin"],
                 None,
             ),
             (
@@ -3163,18 +3161,16 @@ mod tests {
                     git_init_quiet(root);
                     write_file(&loose_object_directory(root, HELLO_ID), b"");
                 },
-                &["-w"],
+                &["hash-object", "-w", "--no-filters", "--stdin"],
                 Some(Ok(None)),
             ),
         ];
-        for (lay_out, write, held) in rows {
+        for (lay_out, args, held) in rows {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path();
             lay_out(root);
             let mut git = crate::subprocess::git_in(root)
-                .arg("hash-object")
-                .args(write)
-                .args(["--no-filters", "--stdin"])
+                .args(args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
@@ -3190,7 +3186,8 @@ mod tests {
             assert_eq!(
                 hashed(root, HELLO),
                 Err(format!(
-                    "git hash-object --stdin in {}: {}",
+                    "git {} in {}: {}",
+                    args.join(" "),
                     root.display(),
                     said.trim()
                 ))
