@@ -65,7 +65,7 @@ Review is **per unit**, not a downstream stage, and it is a contest:
 
 - **Tier 1 - the lenses.** Two or more expert reviewers (architecture, technical/SDET) read the unit's diff in parallel. Each has a lane and stays in it.
 - **Tier 2 - the adversary.** Reviews *the lenses' findings and the diff*, and tries to prove the lenses wrong: it surfaces the substantive issues they all missed, refutes overreach on narrow factual grounds only, and proves its claims by running them - one named test, a reversion probe - rather than trusting anyone's report, while the gate evidence in its prompt already proves what the gates ran on that tree. Its success is catching real problems, not converging.
-- **Tier 3 - the adjudicator.** The neutral final judge. Weighs the lenses against the adversary, is strict on design and architecture adherence, and renders the approve/reject verdict that gates integration.
+- **Tier 3 - the adjudicator.** The neutral final judge. Weighs the lenses against the adversary, blocks only on the review rule's three classes - wrong code, an unmet Done-when criterion, a missing test for a behaviour a Done-when criterion names - with every other finding a note that never fails the unit, and renders the approve/reject verdict that gates integration.
 
 The economics: every finding is a win for the adversary and a failure for everyone upstream of it - the implementer should have left it nothing to find. That framing pushes quality left; the target state is a strict adversary that consistently *loses* because first-pass work is airtight.
 
