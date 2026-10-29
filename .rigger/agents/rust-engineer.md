@@ -125,14 +125,20 @@ add - an `if`, `else if`, `while` or match-guard condition, each operand of an `
 chain inside one, the body of a closure passed to `filter`, `any`, `all`, `retain`,
 `position` or `find`, a conjunct inside a query, format or macro string - is an item with its
 `file:line` and its one-home line, a changed condition among them included, and two of one
-fact are lifted to one home or `pinned to` each other. A set of named members - an array of
-constants, an `IN (..)` list, a `matches!` or `match` arm per member, an `||` chain of
-equalities - runs the count above once per member's name, every statement, `match` or macro
-call holding two or more members read as a second spelling of the set, and its line names the
-member sites it read. On every round, the first and each later one alike, `<base>` is the
-unit's merge base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is
-`$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the round's delta your
-prompt carries.
+fact are lifted to one home or `pinned to` each other. That set is read with one generator, run
+at head from the worktree root: it prints, as `file:line: text`, each line the walk's range adds
+to a production source under `src/` or `crates/*/src/`, above the file's test module (the first
+column-0 `#[cfg(test)]` over a `mod` body) and outside a comment, that carries a mark of one of
+those shapes, and each hit is read, the boolean expression it holds quoted as that item with its
+`file:line` and its one-home line, a hit that holds none passed over with no line of its own:
+`git diff -U0 $(git merge-base rigger-run HEAD)..HEAD -- src 'crates/*/src/*' | awk '/^\+\+\+ / { f = substr($0, 7); cut = 0; n = 0; m = 0; while ((getline line < f) > 0) { n++; if (line ~ /^#\[cfg\(test\)\]/) m = n; else if (m && line !~ /^[ \t]*(#\[|\/\/|$)/) { if (line ~ /^(pub(\([a-z]+\))? )?mod [^;]*[{]/) { cut = m; break } m = 0 } } close(f); next } /^@@ / { split($3, h, ","); at = substr(h[1], 2) + 0; next } /^\+/ { s = substr($0, 2); if ((!cut || at < cut) && s !~ /^[ \t]*\/\// && (index(s, " if ") || index(s, " while ") || index(s, " && ") || index(s, " || ") || index(s, "==") || index(s, "!=") || index(s, "<=") || index(s, ">=") || index(s, " < ") || index(s, " > ") || index(s, ".filter(") || index(s, ".any(") || index(s, ".all(") || index(s, ".retain(") || index(s, ".position(") || index(s, ".find(") || index(s, "is_some_and(") || index(s, "is_none_or(") || index(s, "is_ok_and(") || index(s, "is_err_and(") || index(s, "matches!(") || index(s, " AND ") || index(s, " OR ") || index(s, "WHERE "))) print f ":" at ": " s; at++ }'`
+A set of named members - an array of constants, an `IN (..)` list, a `matches!` or `match` arm
+per member, an `||` chain of equalities - runs the count above once per member's name, every
+statement, `match` or macro call holding two or more members read as a second spelling of the
+set, and its line names the member sites it read. On every round, the first and each later one
+alike, `<base>` is the unit's merge base with that branch, `$(git merge-base rigger-run HEAD)`,
+so the walk's range is `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never
+the round's delta your prompt carries.
 
 Each rule the change rewrites is searched by two short terms for its old statement and for
 each label its cases carried (a name a doc, test or comment gives a case the old rule
