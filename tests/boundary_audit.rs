@@ -9,9 +9,13 @@
 //! 2. ADAPTERS ARE WIRED ONLY IN THE COMPOSITION ROOT. An adapter constructor (a store opener,
 //!    a graph opener, an agent driver) is named in production code only inside the composition
 //!    root or inside that adapter's own files. Anything else reaches past a port. Beside it,
-//!    THE APPENDER AUDIT lists every production site that appends to the project stream and
-//!    every one that opens the context graph, as `file:item`: a new site fails the suite until
-//!    it is listed, and a listed site that vanished fails it until it is deleted.
+//!    THE APPENDER AUDIT lists, as `file:item`, every production call to an appender the audit
+//!    names whose arguments name the project stream's constant, and every production call to a
+//!    graph opener the audit names: a new site fails the suite until it is listed, and a listed
+//!    site that vanished fails it until it is deleted. An appender that holds the stream by
+//!    reference is reached through its graph open instead: the MCP server's emit
+//!    (`crates/rigger-dash/src/mcpserver.rs:431`), handed `conductor::STREAM` at
+//!    `src/cli/dashboard.rs:853`, is reached through `cmd_mcp`'s graph open.
 //! 3. THE PRINCIPLE LINTS CARRY NO EXEMPTION. No item opts out of a lint the root manifest
 //!    denies.
 //! 4. THE CORE NAMES NO GATE. A gate is a command a project's workflow wires into a stage, so no
@@ -767,10 +771,15 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
 // Rule 2, beside it: the appender audit
 // ---------------------------------------------------------------------------------------------
 
-/// Every production site that appends to the project stream, as `file:item`: a call
-/// `.append(`, `append_and_fold(`, `append_entry_and_fold(` or `emit_event(` whose argument
-/// list names `conductor::STREAM`, `run::STREAM`, or a bare `STREAM` in a file whose `use` of
-/// `run` names `STREAM`. Spec 124's THE APPENDER AUDIT names the store each one's call reaches.
+/// Every production append call whose arguments name the project stream's constant, as
+/// `file:item`: a call to an [`APPEND_CALLS`] name or a method `.append(` whose argument list,
+/// read to its matching `)`, holds `STREAM` right after a [`STREAM_MODULES`] segment
+/// (`run::STREAM`, `conductor::STREAM`) or a bare `STREAM` in a file that imports it from
+/// [`STREAM_HOME`]. An appender that holds the stream by reference
+/// is no entry: the MCP server's emit (`crates/rigger-dash/src/mcpserver.rs:431`), handed
+/// `conductor::STREAM` at `src/cli/dashboard.rs:853`, is reached through its graph open,
+/// `src/cli/dashboard.rs:cmd_mcp` in [`GRAPH_OPENS`]. Spec 124's THE APPENDER AUDIT names the
+/// store each one's call reaches.
 const PROJECT_STREAM_APPENDS: &[&str] = &[
     "crates/rigger-conductor/src/conductor.rs:append_and_fold_batch",
     "crates/rigger-conductor/src/conductor.rs:emit_keyed_batch",
@@ -788,8 +797,8 @@ const PROJECT_STREAM_APPENDS: &[&str] = &[
     "src/cli/run.rs:cmd_resume_unit",
 ];
 
-/// Every production site that opens the context graph, as `file:item`: a call
-/// `Projector::open(`, `open_graph_for_write(`, `open_graph(` or `.graph(`.
+/// Every production call to a graph opener the audit names, as `file:item`: a call to an
+/// [`OPEN_CALLS`] name, a method `.graph(` or `Projector::open(`.
 const GRAPH_OPENS: &[&str] = &[
     "src/cli/critique.rs:cmd_critique",
     "src/cli/dashboard.rs:cmd_mcp",
@@ -839,12 +848,12 @@ fn list_drift(listed: &[&str], found: &BTreeSet<String>) -> (Vec<String>, Vec<St
     )
 }
 
-/// The free or path calls that append when their argument list names the project stream; a
-/// method `.append(` does too.
+/// The names whose call appends when its argument list names the project stream's constant, in
+/// every call form, free, path or method; `append` does too, as a method `.append(` only.
 const APPEND_CALLS: &[&str] = &["append_and_fold", "append_entry_and_fold", "emit_event"];
 
-/// The free or path calls that open the context graph; `Projector::open(` and a method
-/// `.graph(` do too.
+/// The names whose call opens the context graph, in every call form, free, path or method;
+/// `graph` does too as a method `.graph(` only, and `open` as `Projector::open(` only.
 const OPEN_CALLS: &[&str] = &["open_graph_for_write", "open_graph"];
 
 /// The module that defines the project stream's constant, `STREAM`.
@@ -877,18 +886,20 @@ fn is_project_stream(toks: &[RawTok], at: usize, bare_is_run: bool) -> bool {
 }
 
 /// Whether a `use` declaration among `toks` imports [`STREAM_NAME`] owned by [`STREAM_HOME`],
-/// as [`imported_names`] reads each import's owner: `run::STREAM`, or a member of a `run::{..}`
-/// group.
+/// as [`imported_names`] reads each import's owner: a path ending `run::STREAM`, in a group or
+/// not, or a `STREAM` member of a `run::{..}` group with no path of its own. A rename on either
+/// side of `as` (`run::STREAM as S`, `run::{Event as STREAM}`) is neither.
 fn imports_run_stream(toks: &[RawTok]) -> bool {
     imported_names(toks)
         .iter()
         .any(|(name, owner)| name == STREAM_NAME && owner == STREAM_HOME)
 }
 
-/// Every production site under `root` that appends to the project stream or opens the context
-/// graph ([`PROJECT_STREAM_APPENDS`] and [`GRAPH_OPENS`] name the two families). Each file's
-/// production part is read through [`tokenize`], so a call spelled in a comment or a string
-/// literal is none, and a token on a `#[cfg(test)]` item's line is dropped.
+/// The production sites under `root` of the appender audit's two token families: each append
+/// call whose arguments name the project stream's constant, as [`PROJECT_STREAM_APPENDS`] reads
+/// it, and each call to a graph opener, as [`GRAPH_OPENS`] reads it. Each file's production part
+/// is read through [`tokenize`], so a call spelled in a comment or a string literal is none, and
+/// a token on a `#[cfg(test)]` item's line is dropped.
 fn stream_sites(root: &Path) -> StreamSites {
     let mut sites = StreamSites::default();
     for (rel, text) in production_sources(root) {
