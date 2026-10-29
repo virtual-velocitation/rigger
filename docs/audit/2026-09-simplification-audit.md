@@ -1977,8 +1977,8 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `src/cli/run.rs:3306-3306` `Command::new`
 - `src/cli/run.rs:3350-3350` `Command::new`
 - `src/cli/run.rs:3419-3419` `Command::new`
-- `src/cli/setup.rs:4265-4265` `Command::new`
-- `src/cli/setup.rs:4556-4556` `Command::new`
+- `src/cli/setup.rs:4269-4269` `Command::new`
+- `src/cli/setup.rs:4560-4560` `Command::new`
 - `src/cli/validate.rs:1456-1456` `Command::new`
 - `src/cli/validate.rs:1735-1735` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2389,57 +2389,57 @@ __END__
 - `src/cli/setup.rs:735-735` `"imported {} agent {} from {} into .rigger/agents/ ({} kept - already present)"`
 - `src/cli/setup.rs:786-786` `"provisioned the JS driver in .rigger/shim/ (wrote shim.mjs + package.json + \
              package-lock.json and ran npm install)"`
-- `src/cli/setup.rs:1496-1496` `"kept existing .rigger/agents/{name} (import never overwrites)"`
-- `src/cli/setup.rs:1524-1524` `"imported .rigger/agents/{name} (id: {id})"`
-- `src/cli/setup.rs:2423-2423` `"nothing is written - no .rigger, no .claude, no .gitignore"`
-- `src/cli/setup.rs:2490-2490` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2495-2495` `"no gate template set matches this project (rust: Cargo.toml at the project \
+- `src/cli/setup.rs:1500-1500` `"kept existing .rigger/agents/{name} (import never overwrites)"`
+- `src/cli/setup.rs:1528-1528` `"imported .rigger/agents/{name} (id: {id})"`
+- `src/cli/setup.rs:2427-2427` `"nothing is written - no .rigger, no .claude, no .gitignore"`
+- `src/cli/setup.rs:2494-2494` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2499-2499` `"no gate template set matches this project (rust: Cargo.toml at the project \
                   root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2521-2521` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
-- `src/cli/setup.rs:2549-2549` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2550-2550` `"no gate template set matches this project (demo: a or b; other: c at the project \
+- `src/cli/setup.rs:2525-2525` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
+- `src/cli/setup.rs:2553-2553` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2554-2554` `"no gate template set matches this project (demo: a or b; other: c at the project \
                  root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2567-2567` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:2887-2887` `".rigger/agents/"`
-- `src/cli/setup.rs:2941-2941` `".rigger/dash.url"`
-- `src/cli/setup.rs:2942-2942` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2943-2943` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2952-2952` `".rigger/store.conn"`
-- `src/cli/setup.rs:2969-2969` `".rigger/\n"`
-- `src/cli/setup.rs:2975-2975` `".rigger/dash.url"`
-- `src/cli/setup.rs:2978-2978` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2981-2981` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2982-2982` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
+- `src/cli/setup.rs:2571-2571` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:2891-2891` `".rigger/agents/"`
+- `src/cli/setup.rs:2945-2945` `".rigger/dash.url"`
+- `src/cli/setup.rs:2946-2946` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2947-2947` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2956-2956` `".rigger/store.conn"`
+- `src/cli/setup.rs:2973-2973` `".rigger/\n"`
+- `src/cli/setup.rs:2979-2979` `".rigger/dash.url"`
+- `src/cli/setup.rs:2982-2982` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2985-2985` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2986-2986` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
              even when .rigger/ broadly covers them, so the committed .gitignore stays \
              self-contained, got: {:?}"`
-- `src/cli/setup.rs:2990-2990` `".rigger/dash.url"`
-- `src/cli/setup.rs:2991-2991` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2992-2992` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2993-2993` `"all three explicit per-file dash ignore lines are present in the committed \
+- `src/cli/setup.rs:2994-2994` `".rigger/dash.url"`
+- `src/cli/setup.rs:2995-2995` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2996-2996` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2997-2997` `"all three explicit per-file dash ignore lines are present in the committed \
              .gitignore even though .rigger/ already covers them, got:\n{content}"`
-- `src/cli/setup.rs:3003-3003` `".rigger/dash.url"`
-- `src/cli/setup.rs:3006-3006` `".rigger/dash.marker"`
-- `src/cli/setup.rs:3009-3009` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3362-3362` `".rigger/agents/researcher.md"`
-- `src/cli/setup.rs:3391-3391` `".rigger/agents/planner.md"`
-- `src/cli/setup.rs:3421-3421` `".rigger/agents/newcomer.md"`
-- `src/cli/setup.rs:3499-3499` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:3729-3729` `".rigger"`
-- `src/cli/setup.rs:3894-3894` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:4097-4097` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:4099-4099` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:4100-4100` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:4101-4101` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:4111-4111` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:4114-4114` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:4128-4128` `"The count and the caller lookup run once per item of the walk's hunk list - every \
+- `src/cli/setup.rs:3007-3007` `".rigger/dash.url"`
+- `src/cli/setup.rs:3010-3010` `".rigger/dash.marker"`
+- `src/cli/setup.rs:3013-3013` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3366-3366` `".rigger/agents/researcher.md"`
+- `src/cli/setup.rs:3395-3395` `".rigger/agents/planner.md"`
+- `src/cli/setup.rs:3425-3425` `".rigger/agents/newcomer.md"`
+- `src/cli/setup.rs:3503-3503` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:3733-3733` `".rigger"`
+- `src/cli/setup.rs:3898-3898` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:4101-4101` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:4103-4103` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:4104-4104` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:4105-4105` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:4115-4115` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:4118-4118` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:4132-4132` `"The count and the caller lookup run once per item of the walk's hunk list - every \
              item the hunks touch, new or pre-existing, its body or its doc changed - each \
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
              and the record pairs each item of the hunk list with its count, the lines read and \
              its callers."`
-- `src/cli/setup.rs:4218-4218` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:4427-4427` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:4222-4222` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:4431-4431` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
@@ -4054,7 +4054,7 @@ Proposed home: `one shared `install_status_line` helper (e.g. relocated into `te
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-driver/src/hooks.rs:255-272` `install_status_line`
-- `src/cli/setup.rs:1379-1383` `install_status_line`
+- `src/cli/setup.rs:1383-1387` `install_status_line`
 
 #### `dup-a5bfac770233` (near, 2 sites)
 
@@ -4063,7 +4063,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/liveness.rs:924-938` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
-- `src/cli/setup.rs:2712-2726` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
+- `src/cli/setup.rs:2716-2730` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-c1ef89bb9662` (semantic, 64 sites)
 
@@ -4661,7 +4661,7 @@ Proposed home: `one shared `catch_up_stopped` helper (e.g. relocated into `tests
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `src/cli/setup.rs:1250-1252` `catch_up_stopped`
+- `src/cli/setup.rs:1254-1256` `catch_up_stopped`
 - `tests/common/fixtures/cursor.rs:175-177` `catch_up_stopped`
 
 #### `dup-dc79af9af1c6` (near, 2 sites)
@@ -4670,8 +4670,8 @@ Proposed home: `setup::support (consolidate these 2 sites into one function in t
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/setup.rs:1327-1335` `install_lookup_hook`
-- `src/cli/setup.rs:1379-1383` `install_status_line`
+- `src/cli/setup.rs:1331-1339` `install_lookup_hook`
+- `src/cli/setup.rs:1383-1387` `install_status_line`
 
 #### `dup-2cd309ca2b08` (near, 2 sites)
 

@@ -1126,8 +1126,11 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// events the file records passed over, by cause, whenever it records any
 /// ([`Projector::passed_over`], spec 124, CATCH-UP LINES); then remove the owed mark an older
 /// binary's lost fold left beside the file once it carries `caught_up`, whether or not the seeding
-/// was contended ([`Projector::forget_cursored_mark`], spec 124, THE MARK); and report whether it
-/// rebuilt, or fail with the line naming where the catch-up stopped at a failure.
+/// was contended or the catch-up stopped ([`Projector::forget_cursored_mark`], spec 124, THE
+/// MARK); and report whether it rebuilt. A catch-up that stopped at a failure fails setup with the
+/// line naming where it stopped, whatever the removal answered - a mark left standing is no cause,
+/// and the next setup's removal retries it; only when the catch-up did not stop is a mark the
+/// removal cannot remove setup's failure, naming the mark.
 fn pay_owed_rebuild<'t>(
     held: &contextgraph::sqlite::RebuildLock,
     graph: &Projector,
@@ -1198,10 +1201,11 @@ fn pay_owed_rebuild<'t>(
             PASSED_OVER_RETRIED
         );
     }
-    graph.forget_cursored_mark()?;
+    let forgotten = graph.forget_cursored_mark();
     if let Err(stopped) = caught_up {
         return Err(stopped.into());
     }
+    forgotten?;
     Ok(rebuilt.is_some())
 }
 
