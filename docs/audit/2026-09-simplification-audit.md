@@ -1805,7 +1805,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:73-75` `what`
 - `tests/common/fixtures/plan_critique.rs:29-34` `spec_defect_halt_text`
-- `tests/compaction_generations_periphery.rs:4964-4969` `closed_unit_line`
+- `tests/compaction_generations_periphery.rs:4959-4964` `closed_unit_line`
 - `tests/new_run_critique_refusal_periphery.rs:138-140` `no_critic_line`
 - `tests/no_os_kill_audit.rs:52-54` `join`
 
@@ -1864,7 +1864,7 @@ mandatory sweep: error-shaping helper functions - 13 site(s), collected mechanic
 - `tests/batched_fold_cadence.rs:177-273` `append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch`
 - `tests/canary_item_sharding_jobs_cap_periphery.rs:277-367` `run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors`
 - `tests/cli.rs:7826-7865` `run_workflow_prints_the_budget_halt_reason_on_stderr_when_its_conductor_returns`
-- `tests/compaction_generations_periphery.rs:4634-4678` `setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_event`
+- `tests/compaction_generations_periphery.rs:4629-4673` `setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_event`
 - `tests/grounder_name_contract.rs:40-171` `public_name_contract_predicate_error_and_resolver_agree`
 
 #### `dup-edcfd444cd88` (near, 3 sites)
@@ -2900,16 +2900,16 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/cli.rs:374-374` `".rigger"`
 - `tests/common/cli.rs:408-408` `".rigger"`
 - `tests/common/cli.rs:452-452` `".rigger"`
-- `tests/common/cli.rs:1239-1239` `"reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \
+- `tests/common/cli.rs:1246-1246` `"reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \
          file, which is a mechanic of the embedded .rigger/events.db store; this project is \
          configured for the server-backed store, where the migration does not run. Re-run it \
          against a project on the sqlite backend. Refusing rather than reporting a migration that \
          did not happen."`
-- `tests/common/cli.rs:1330-1330` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
-- `tests/common/cli.rs:1552-1552` `".rigger"`
-- `tests/common/cli.rs:1553-1553` `"create .rigger/agents"`
-- `tests/common/cli.rs:1666-1666` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
-- `tests/common/cli.rs:1763-1763` `".rigger"`
+- `tests/common/cli.rs:1337-1337` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
+- `tests/common/cli.rs:1559-1559` `".rigger"`
+- `tests/common/cli.rs:1560-1560` `"create .rigger/agents"`
+- `tests/common/cli.rs:1673-1673` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
+- `tests/common/cli.rs:1770-1770` `".rigger"`
 - `tests/common/fixtures/config.rs:115-115` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/fixtures/extraction_tree.rs:76-76` `".rigger/workflow.yml"`
 - `tests/common/fixtures/liveness.rs:6-6` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
@@ -3952,7 +3952,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/spec.rs:2643-2645` `f11`
-- `tests/common/cli.rs:1329-1331` `graph_build_line`
+- `tests/common/cli.rs:1336-1338` `graph_build_line`
 - `tests/common/fixtures/cursor.rs:176-178` `catch_up_stopped`
 
 #### `dup-d340e212490f` (exact, 2 sites)
@@ -4100,7 +4100,7 @@ mandatory sweep: sqlite Connection::open call sites - 64 site(s), collected mech
 - `tests/common/cli.rs:796-796` `Connection::open`
 - `tests/common/cli.rs:1010-1010` `Connection::open`
 - `tests/common/cli.rs:1020-1020` `Connection::open`
-- `tests/common/cli.rs:1774-1774` `Connection::open`
+- `tests/common/cli.rs:1781-1781` `Connection::open`
 - `tests/common/fixtures/cursor.rs:123-123` `Connection::open`
 - `tests/common/fixtures/cursor.rs:135-135` `Connection::open`
 - `tests/common/fixtures/cursor.rs:144-144` `Connection::open`
@@ -4119,8 +4119,8 @@ mandatory sweep: sqlite Connection::open call sites - 64 site(s), collected mech
 - `tests/compaction_generations_periphery.rs:1294-1294` `Connection::open`
 - `tests/compaction_generations_periphery.rs:1370-1370` `Connection::open`
 - `tests/compaction_generations_periphery.rs:1538-1538` `Connection::open`
-- `tests/compaction_generations_periphery.rs:4612-4612` `Connection::open`
-- `tests/compaction_generations_periphery.rs:5732-5732` `Connection::open`
+- `tests/compaction_generations_periphery.rs:4607-4607` `Connection::open`
+- `tests/compaction_generations_periphery.rs:5727-5727` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:86-86` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:100-100` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:213-213` `Connection::open`
@@ -4552,8 +4552,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/cli.rs:901-906` `pruned_from_the_rebuilt_graph`
 - `tests/common/cli.rs:1157-1164` `migrated_lines`
 - `tests/common/cli.rs:1171-1176` `derived_menu_line_naming`
-- `tests/common/cli.rs:1827-1832` `bloat_advisory_naming`
-- `tests/compaction_generations_periphery.rs:6424-6429` `runs_prunable`
+- `tests/common/cli.rs:1834-1839` `bloat_advisory_naming`
+- `tests/compaction_generations_periphery.rs:6419-6424` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
 
@@ -4921,8 +4921,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `tests/common/cli.rs:1182-1184` `derived_menu_lines`
 - `tests/common/cli.rs:1187-1189` `decision_lines`
-- `tests/common/cli.rs:1821-1823` `index_lag_lines`
-- `tests/common/cli.rs:1836-1838` `bloat_lines`
+- `tests/common/cli.rs:1828-1830` `index_lag_lines`
+- `tests/common/cli.rs:1843-1845` `bloat_lines`
 
 #### `dup-8dd44d643a5c` (semantic, 2 sites)
 
@@ -4930,7 +4930,7 @@ Proposed home: `one shared `write_workflow` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/common/cli.rs:1612-1619` `write_workflow`
+- `tests/common/cli.rs:1619-1626` `write_workflow`
 - `tests/common/workflow_probe.rs:21-23` `write_workflow`
 
 #### `dup-b58b0ff72b22` (near, 3 sites)
@@ -4939,8 +4939,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:1648-1668` `assert_selected_server`
-- `tests/common/cli.rs:1672-1688` `assert_selected_sqlite`
+- `tests/common/cli.rs:1655-1675` `assert_selected_server`
+- `tests/common/cli.rs:1679-1695` `assert_selected_sqlite`
 - `tests/store_secrets.rs:69-107` `assert_server_reached_and_credentials_redacted`
 
 #### `dup-c82a46fd1fec` (exact, 2 sites)
@@ -5332,7 +5332,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10177 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10178 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:5001-5042` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15042-15064` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

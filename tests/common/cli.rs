@@ -1206,6 +1206,13 @@ pub fn refusal_line(error: &str) -> String {
     line
 }
 
+/// The line a rigger command that exited successfully when `ok` says so ended its stderr `err`
+/// with, when it failed - a [`refusal_line`] for an error it refused on - and `None` when it
+/// succeeded.
+pub fn failure_line(ok: bool, err: &str) -> Option<String> {
+    (!ok).then(|| err.lines().last().unwrap_or_default().to_owned())
+}
+
 /// The [`refusal_line`] `rigger setup` ends its stderr with when it cannot remove the owed mark
 /// beside `graph.db` - a directory stands at its path
 /// ([`unremovable_mark_beside`](super::fixtures::unremovable_mark_beside)) - naming the mark as

@@ -344,8 +344,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4964,
-        "end_line": 4969
+        "start_line": 4959,
+        "end_line": 4964
       },
       {
         "file": "tests/new_run_critique_refusal_periphery.rs",
@@ -489,8 +489,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4634,
-        "end_line": 4678
+        "start_line": 4629,
+        "end_line": 4673
       },
       {
         "file": "tests/grounder_name_contract.rs",
@@ -3139,33 +3139,33 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1239,
-        "end_line": 1239
+        "start_line": 1246,
+        "end_line": 1246
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1330,
-        "end_line": 1330
+        "start_line": 1337,
+        "end_line": 1337
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1552,
-        "end_line": 1552
+        "start_line": 1559,
+        "end_line": 1559
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1553,
-        "end_line": 1553
+        "start_line": 1560,
+        "end_line": 1560
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1666,
-        "end_line": 1666
+        "start_line": 1673,
+        "end_line": 1673
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1763,
-        "end_line": 1763
+        "start_line": 1770,
+        "end_line": 1770
       },
       {
         "file": "tests/common/fixtures/config.rs",
@@ -5564,8 +5564,8 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1329,
-        "end_line": 1331
+        "start_line": 1336,
+        "end_line": 1338
       },
       {
         "file": "tests/common/fixtures/cursor.rs",
@@ -5914,8 +5914,8 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1774,
-        "end_line": 1774
+        "start_line": 1781,
+        "end_line": 1781
       },
       {
         "file": "tests/common/fixtures/cursor.rs",
@@ -6009,13 +6009,13 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4612,
-        "end_line": 4612
+        "start_line": 4607,
+        "end_line": 4607
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5732,
-        "end_line": 5732
+        "start_line": 5727,
+        "end_line": 5727
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
@@ -6854,13 +6854,13 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1827,
-        "end_line": 1832
+        "start_line": 1834,
+        "end_line": 1839
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 6424,
-        "end_line": 6429
+        "start_line": 6419,
+        "end_line": 6424
       }
     ]
   },
@@ -7619,13 +7619,13 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1821,
-        "end_line": 1823
+        "start_line": 1828,
+        "end_line": 1830
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1836,
-        "end_line": 1838
+        "start_line": 1843,
+        "end_line": 1845
       }
     ]
   },
@@ -7634,8 +7634,8 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1612,
-        "end_line": 1619
+        "start_line": 1619,
+        "end_line": 1626
       },
       {
         "file": "tests/common/workflow_probe.rs",
@@ -7649,13 +7649,13 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1648,
-        "end_line": 1668
+        "start_line": 1655,
+        "end_line": 1675
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1672,
-        "end_line": 1688
+        "start_line": 1679,
+        "end_line": 1695
       },
       {
         "file": "tests/store_secrets.rs",

@@ -2530,14 +2530,14 @@ fn setup_whose_catch_up_meets_a_storage_error(stand: fn(&Path), kept: bool) {
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert_eq!(
         (
-            (!ok).then(|| err.lines().last().map(str::to_owned)),
+            common::cli::failure_line(ok, &err),
             common::cli::rebuild_lines(&out),
             applied(&graph_db, lost),
             caught_up_at(&graph_db),
             mark_stands_beside(&graph_db)
         ),
         (
-            kept.then(|| Some(common::cli::unremovable_mark_refusal())),
+            kept.then(common::cli::unremovable_mark_refusal),
             vec![caught_up_line(1)],
             true,
             Some(lost),
@@ -4049,17 +4049,12 @@ fn a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
     };
     assert_eq!(
         (
-            (!ok).then(|| err.lines().last().map(str::to_owned)),
+            common::cli::failure_line(ok, &err),
             common::cli::rebuild_lines(&out),
             mark.exists(),
             caught_up_at(&graph_db)
         ),
-        (
-            refused.map(Some),
-            said,
-            kept,
-            at_head.then(|| run_log_head(root))
-        ),
+        (refused, said, kept, at_head.then(|| run_log_head(root))),
         "the mark is no cause, and setup removes it from a file carrying its cursor, failing \
          naming it only where no removal can remove it; stdout: {out} stderr: {err}"
     );
