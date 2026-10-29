@@ -418,8 +418,7 @@ pub struct Projector {
     /// ([`Projector::with_lock_ceiling`]).
     lock_ceiling: Duration,
     /// Whether this projector's process holds the rebuild lock of its file
-    /// ([`Projector::with_rebuild_lock`]): an appender meeting the file's rebuild state then
-    /// returns at once, since only that process's tail folds its event.
+    /// ([`Projector::with_rebuild_lock`], which states what its appender answers then).
     holds_rebuild_lock: bool,
 }
 
@@ -1051,7 +1050,9 @@ impl Projector {
     /// answered, when that lock is of this projector's own file (spec 124, THE APPENDER) - the two
     /// paths naming one file once each is made absolute against the working directory, so a
     /// relative and an absolute spelling of it match; none, another file's, or a path that cannot
-    /// be made absolute records nothing.
+    /// be made absolute records nothing. An appender of a projector told so whose call meets the
+    /// file's rebuild state answers the unfinished-rebuild text at once
+    /// ([`Projector::fold_by_calls`]), since only that process's tail folds its event.
     pub fn with_rebuild_lock(mut self, held: Option<&RebuildLock>) -> Self {
         let absolute = |path: &str| std::path::absolute(path).ok();
         self.holds_rebuild_lock = held.is_some_and(|lock| {

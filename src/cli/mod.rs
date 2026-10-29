@@ -1302,9 +1302,10 @@ fn migrate_local_identity(held: Option<&RebuildLock>) -> Res {
 /// walked-up command would otherwise migrate one store and mutate another.
 ///
 /// The projector it folds its decision through is told the rebuild lock `held` its caller holds
-/// ([`Projector::with_rebuild_lock`]): `rigger setup`, holding that lock across its pay, passes it,
-/// so the fold meeting the file's unfinished rebuild returns at once rather than waiting out a
-/// tail only that setup folds (spec 124, THE APPENDER); every other caller holds none.
+/// ([`Projector::with_rebuild_lock`], which states what its fold answers on meeting the file's
+/// unfinished rebuild then): `rigger setup`, holding that lock across its pay, passes it, its own
+/// tail the only one that folds the decision (spec 124, THE APPENDER); every other caller holds
+/// none.
 fn migrate_identity_at(loc: &StoreLocation, held: Option<&RebuildLock>) -> Res {
     let store_path = loc.file("events.db");
     if !Path::new(&store_path).is_file() {
