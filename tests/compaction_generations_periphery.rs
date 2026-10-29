@@ -668,7 +668,7 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
 #[test]
 fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_each_event_once() {
     use common::fixtures::{CountedRead, ReadCountingStore};
-    use rigger::contextgraph::sqlite::{stream_positions, stream_source, Projector};
+    use rigger::contextgraph::sqlite::{stream_positions, stream_source, Projector, Seeding};
     let dir = tempfile::tempdir().unwrap();
     let (backend, _) = store_with(
         dir.path(),
@@ -701,7 +701,7 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
         .unwrap()
         .rebuild(
             &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
-            !owed.is_empty(),
+            common::fixtures::setup_owes(&owed),
             &mut stream_source(&counting, rigger::conductor::STREAM, 2),
             &mut |_| Ok(None),
             &mut no_progress,
@@ -710,7 +710,7 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
     assert_eq!(
         (owed, rebuilt, counting.reads()),
         (
-            vec![rigger::contextgraph::OWED_LOST_FOLD],
+            (Vec::<&str>::new(), Seeding::Ran { lost: true }),
             Some(Rebuilt::default()),
             vec![
                 CountedRead::StreamPositions {
@@ -1567,12 +1567,12 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
     );
 }
 
-/// Given a `graph.db` that owes its rebuild for both causes at once - the release before the
-/// generation rule folded it, and it misses an event the log holds - when the operator runs `rigger setup`,
-/// then setup names both causes in order, pays both with its one rebuild (the lost fold's mark is
-/// gone and the file records the current rule), and a second `rigger setup` owes nothing.
+/// Given a `graph.db` the release before the generation rule folded, beside which the owed mark an
+/// older binary's lost fold left stands, when the operator runs `rigger setup`, then setup names the
+/// older fold rule alone - the mark is no cause - and pays it with one rebuild (the mark is gone and
+/// the file records the current rule), and a second `rigger setup` owes nothing.
 #[test]
-fn rigger_setup_names_both_causes_a_graph_db_owes_its_rebuild_for_and_pays_both() {
+fn rigger_setup_names_the_older_rule_alone_beside_an_owed_mark_and_its_rebuild_drops_the_mark() {
     let store = ReleaseEraStore::new();
     let mark = mark_owed_in(store.graph_db.parent().unwrap());
     let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
@@ -1580,13 +1580,14 @@ fn rigger_setup_names_both_causes_a_graph_db_owes_its_rebuild_for_and_pays_both(
         out.lines()
             .filter(|l| l.starts_with("rebuilding graph.db"))
             .collect::<Vec<_>>(),
-        vec![BOTH_CAUSES_REBUILD_LINE],
-        "setup names the older rule first and the lost fold second; stdout: {out}"
+        vec![OLDER_RULE_REBUILD_LINE],
+        "setup names the older rule alone: the mark is no cause; stdout: {out}"
     );
     assert_eq!(
         (mark.exists(), user_version(&store.graph_db)),
         (false, PROJECTION_VERSION),
-        "the one rebuild pays both: the mark is dropped and the file records the current rule"
+        "the one rebuild pays the older rule: the mark is dropped and the file records the current \
+         rule"
     );
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
     assert_eq!(graph, fresh, "the rebuilt graph.db is the whole log's");
@@ -3965,6 +3966,106 @@ fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_fol
         "setup drops the mark of the removed graph file and rebuilds a fresh one from the log"
     );
     emit_folding(root, "d-fresh");
+}
+
+/// Given a `graph.db` on a project whose identity is minted, beside which the owed mark stands as
+/// an older binary's lost fold left it, when the operator emits a decision, then it folds: the mark
+/// refuses no fold. When `stand` then leaves the file as the row finds it and the operator runs
+/// `rigger setup`, under another writer's write lock past the busy timeout when `locked` says so,
+/// then setup says `said` of `graph.db`, the mark is no cause it rebuilds for, setup keeps the mark
+/// only when `kept` says so - it removes the mark whenever the file carries `caught_up` at its last
+/// step, whether or not the seeding was contended - and the cursor stands at the log's head when
+/// `at_head` says so, or the file carries none (spec 124, THE MARK).
+fn a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+    stand: fn(&Path, &Path),
+    locked: bool,
+    said: Vec<String>,
+    kept: bool,
+    at_head: bool,
+) {
+    let dir = temp_store_project();
+    let root = dir.path();
+    emit_the_first_decision_after_setup(root);
+    let graph_db = rigger_file(root, "graph.db");
+    let mark = mark_owed_in(graph_db.parent().unwrap());
+    emit_folding(root, "d-marked");
+    stand(root, &graph_db);
+
+    let setup = || setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let out = if locked {
+        with_graph_locked(&graph_db, setup)
+    } else {
+        setup()
+    };
+    assert_eq!(
+        (
+            common::cli::rebuild_lines(&out),
+            mark.exists(),
+            caught_up_at(&graph_db)
+        ),
+        (said, kept, at_head.then(|| run_log_head(root))),
+        "the mark is no cause, and setup removes it from a file carrying its cursor; stdout: {out}"
+    );
+}
+
+rigger::test_cases! {
+    /// The file carries its cursor at the log's head: setup rebuilds nothing, says nothing of
+    /// `graph.db`, and removes the mark.
+    an_owed_mark_beside_a_cursored_graph_db_owes_nothing_and_setup_removes_it:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |_, _| {},
+            false,
+            vec![],
+            false,
+            true,
+        );
+    /// The file carries its cursor and the seeding meets another writer's lock: setup says the
+    /// catch-up was not started and still removes the mark, the file carrying `caught_up`.
+    an_owed_mark_beside_a_cursored_graph_db_is_removed_when_the_seeding_meets_another_writer_s_lock:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |_, _| {},
+            true,
+            vec![SEEDING_SKIPPED_LINE.to_string()],
+            false,
+            true,
+        );
+    /// The file carries no cursor ([`drop_the_cursor`]) and the seeding meets another writer's
+    /// lock, so no cursor is seeded: the file carries no `caught_up` at setup's last step and the
+    /// mark stands, owing nothing.
+    an_owed_mark_beside_a_graph_db_without_its_cursor_stands_when_the_seeding_meets_a_lock:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |_, graph_db| drop_the_cursor(graph_db),
+            true,
+            vec![SEEDING_SKIPPED_LINE.to_string()],
+            true,
+            false,
+        );
+    /// The file carries no cursor and misses nothing: this setup seeds the cursor at the log's
+    /// head, rebuilds nothing, and removes the mark in the same run.
+    an_owed_mark_beside_a_graph_db_its_setup_seeds_is_removed_by_that_setup:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |_, graph_db| drop_the_cursor(graph_db),
+            false,
+            vec![],
+            false,
+            true,
+        );
+    /// The file carries no cursor and misses an event older than the catch-up horizon below an
+    /// applied one ([`bury_below_an_applied_event`]): the seeding finds the lost fold, so setup
+    /// still rebuilds the file for it, the rebuild's swap removing the mark and setting the cursor
+    /// at the log's head.
+    a_graph_db_without_its_cursor_missing_an_old_event_is_still_rebuilt_beside_an_owed_mark:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |root, graph_db| {
+                drop_the_cursor(graph_db);
+                append_unfolded_decision_named(root, "d-hole");
+                bury_below_an_applied_event(root);
+            },
+            false,
+            rebuilt_for_a_lost_fold(),
+            false,
+            true,
+        );
 }
 
 /// Append a `DecisionMade` whose payload is `data` to `root`'s run stream straight through the

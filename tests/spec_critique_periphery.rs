@@ -1130,7 +1130,10 @@ fn a_graph_that_owes_its_rebuild_refuses_every_call_answered_or_not_naming_rigge
     let (_first, first_path) = stub(REJECT);
     let (_out, err, ok) = critique(root, SPEC_REL, &first_path, &scratch);
     assert!(ok, "the text is critiqued; stderr:\n{err}");
-    common::fixtures::mark_owed_in(rigger_file(root, "graph.db").parent().unwrap());
+    common::fixtures::stamp_user_version(
+        &rigger_file(root, "graph.db"),
+        rigger::contextgraph::sqlite::PROJECTION_VERSION - 1,
+    );
     let refusal = rigger::contextgraph::rebuild_owed_refusal("critique");
 
     // When the graph owes its rebuild, a call the store would answer is refused ...

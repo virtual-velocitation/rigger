@@ -46,20 +46,27 @@ pub fn stamp_in(
         .map(|e| e.recorded_at))
 }
 
-/// Why the graph file behind `p` owes its rebuild as `rigger setup` reads it: its cursor seeded
+/// What `rigger setup` reads of why the graph file behind `p` owes its rebuild: its cursor seeded
 /// now against the positions `live` streams, each missing position's stamp read through
-/// `stamp_of`, handed `head` as the log's head, then the causes the file carries joined by the
-/// seeding's verdict.
+/// `stamp_of`, handed `head` as the log's head, then the causes the file itself records
+/// ([`Projector::owed_because`]) beside the seeding's verdict, whose lost fold setup names as a
+/// cause of its own.
 pub fn owed_once_seeded(
     p: &Projector,
     live: &mut PositionSource,
     stamp_of: &mut StampLookup,
     head: Option<u64>,
-) -> Vec<&'static str> {
+) -> (Vec<&'static str>, Seeding) {
     let seeding = p
         .seed_cursor(live, stamp_of, head, SystemTime::now())
         .unwrap();
-    p.owed_against(&seeding).unwrap()
+    (p.owed_because().unwrap(), seeding)
+}
+
+/// Whether `rigger setup` rebuilds the graph file on what [`owed_once_seeded`] read of it: a cause
+/// the file records, or the lost fold its seeding found.
+pub fn setup_owes((causes, seeding): &(Vec<&'static str>, Seeding)) -> bool {
+    !causes.is_empty() || *seeding == Seeding::Ran { lost: true }
 }
 
 /// Run `run` while the seeding `rigger setup` runs of the cursor of the graph file `open` opens

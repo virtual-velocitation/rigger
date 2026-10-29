@@ -7480,11 +7480,11 @@ mod tests {
             .try_for_each(|b| sink(&crate::test_support::positions_of(b)))
     }
 
-    /// Why the file behind `p` owes its rebuild once its cursor is seeded against `log` as `rigger
-    /// setup` seeds it ([`crate::test_support::owed_once_seeded`]): `log`'s positions streamed in
-    /// batches of two so a hole in a later batch is met too, each missing position's stamp read
-    /// from `log`, and `log`'s last position handed as its head.
-    fn owed_against_the_log(p: &Projector, log: &[Event]) -> Vec<&'static str> {
+    /// The causes the file behind `p` records and the seeding's verdict once its cursor is seeded
+    /// against `log` as `rigger setup` seeds it ([`crate::test_support::owed_once_seeded`]):
+    /// `log`'s positions streamed in batches of two so a hole in a later batch is met too, each
+    /// missing position's stamp read from `log`, and `log`'s last position handed as its head.
+    fn owed_once_seeded_against(p: &Projector, log: &[Event]) -> (Vec<&'static str>, Seeding) {
         crate::test_support::owed_once_seeded(
             p,
             &mut |sink| positions_in(log, 2, sink),
@@ -7494,9 +7494,13 @@ mod tests {
     }
 
     /// What `rigger setup` does to the `graph.db` at `path` over `log`: seed its cursor and read
-    /// why it owes its rebuild against the log, then pay that - reporting whether it rebuilt.
+    /// why it owes its rebuild - a cause the file records, or a lost fold its seeding finds - then
+    /// pay that, reporting whether it rebuilt.
     fn rebuild_as_setup_does(path: &str, log: &[Event]) -> bool {
-        let owed = !owed_against_the_log(&Projector::open(path, "test").unwrap(), log).is_empty();
+        let owed = crate::test_support::setup_owes(&owed_once_seeded_against(
+            &Projector::open(path, "test").unwrap(),
+            log,
+        ));
         Projector::open(path, "test")
             .unwrap()
             .rebuild(
@@ -7520,11 +7524,10 @@ mod tests {
         let p = Projector::open(path, "test").unwrap();
         assert_eq!(
             (
-                p.owed_because().unwrap(),
-                owed_against_the_log(&p, log),
+                owed_once_seeded_against(&p, log),
                 crate::test_support::caught_up_at(Path::new(path)),
             ),
-            (Vec::<&str>::new(), vec![OWED_LOST_FOLD], None),
+            ((Vec::<&str>::new(), Seeding::Ran { lost: true }), None),
             "the file records nothing, and the ledger's old hole is the debt, seeding no cursor"
         );
         drop(p);
@@ -7535,13 +7538,13 @@ mod tests {
                 rebuilt,
                 applied(&p, lost),
                 crate::test_support::caught_up_at(Path::new(path)),
-                owed_against_the_log(&p, log),
+                owed_once_seeded_against(&p, log),
             ),
             (
                 true,
                 true,
                 crate::test_support::head_of(log),
-                Vec::<&str>::new()
+                (Vec::<&str>::new(), Seeding::Ran { lost: false })
             ),
             "the rebuild folds the lost position, seeds the cursor at the log's last position and \
              pays the debt"
@@ -7682,22 +7685,25 @@ mod tests {
 
     /// The seeding runs once per file: a file already carrying `caught_up` is not read - neither
     /// its log's positions nor a stamp - and keeps its cursor at 2, the hole at position 3 above
-    /// the cursor and below the highest position its ledger records included; its verdict adds no
-    /// cause.
+    /// the cursor and below the highest position its ledger records included; its verdict finds
+    /// nothing lost and the file records no cause.
     #[test]
     fn a_file_carrying_caught_up_is_never_read_again_and_keeps_its_cursor() {
         let log = decisions_through(4);
         let (_dir, path) = crate::test_support::temp_graph_db();
         let p = Projector::open(&path, "test").unwrap();
         crate::test_support::folds(&p, &log[..2]);
-        assert_eq!(owed_against_the_log(&p, &log[..2]), Vec::<&str>::new());
+        assert_eq!(
+            owed_once_seeded_against(&p, &log[..2]),
+            (Vec::<&str>::new(), Seeding::Ran { lost: false })
+        );
         crate::test_support::folds(&p, &log[3..]);
         let seeding = seeded_unread(&p, crate::test_support::head_of(&log));
         assert_eq!(
             (
-                seeding.clone(),
+                seeding,
                 crate::test_support::caught_up_at(Path::new(&path)),
-                p.owed_against(&seeding).unwrap(),
+                p.owed_because().unwrap(),
             ),
             (Seeding::Ran { lost: false }, Some(2), Vec::<&str>::new()),
             "the seeded file is not read, keeps its cursor and owes nothing"
@@ -7706,8 +7712,8 @@ mod tests {
 
     /// THE TWO WRITES MEETING A LOCK (spec 124): a seeding whose transaction meets another
     /// writer's lock past the busy timeout is skipped - it reads nothing and creates no cursor -
-    /// and what the file owes is what it carries, read with no lock; the next seeding, the lock
-    /// released, seeds it.
+    /// and what the file owes is what it records, read with no lock, the owed mark standing beside
+    /// it no cause; the next seeding, the lock released, seeds it.
     #[test]
     fn a_seeding_that_meets_the_write_lock_is_skipped_reading_and_writing_nothing() {
         let log = decisions_through(4);
@@ -7724,23 +7730,23 @@ mod tests {
             )
             .unwrap()
         });
-        let mark = crate::test_support::mark_owed_in(dir.path());
+        crate::test_support::mark_owed_in(dir.path());
         assert_eq!(
             (
-                seeding.clone(),
+                seeding,
                 crate::test_support::caught_up_at(Path::new(&path)),
-                p.owed_against(&seeding).unwrap(),
+                p.owed_because().unwrap(),
             ),
-            (Seeding::Skipped, None, vec![OWED_LOST_FOLD]),
-            "the contended seeding is skipped, and the file owes what it carries"
+            (Seeding::Skipped, None, Vec::<&str>::new()),
+            "the contended seeding is skipped, and the file owes what it records: the mark is no \
+             cause"
         );
-        std::fs::remove_file(&mark).unwrap();
         assert_eq!(
             (
-                owed_against_the_log(&p, &log),
+                owed_once_seeded_against(&p, &log),
                 crate::test_support::caught_up_at(Path::new(&path))
             ),
-            (Vec::<&str>::new(), Some(4)),
+            ((Vec::<&str>::new(), Seeding::Ran { lost: false }), Some(4)),
             "the next seeding, the lock released, seeds the file"
         );
     }
@@ -7938,7 +7944,7 @@ mod tests {
         crate::test_support::stamp_user_version(Path::new(path), PROJECTION_VERSION - 1)
     }
 
-    /// The graph file at `path` carrying the owed mark that says it misses an event the log holds.
+    /// The graph file at `path` carrying the owed mark an older binary's lost fold left beside it.
     fn carrying_an_owed_mark(path: &str) {
         std::fs::write(owed_mark(path).unwrap(), b"").unwrap()
     }
@@ -8135,12 +8141,12 @@ mod tests {
 
     /// Spec 124, ONE PROCEDURE: a file whose rebuild seeds or repairs its cursor folds no catch-up
     /// of its own ([`CatchUp::Inert`]), opening no log and writing nothing - one holding a
-    /// rebuild's state, one recording an older fold rule over what it folded, one carrying the owed
-    /// mark, one without `caught_up` - and of two such causes standing together the first in that
-    /// order is the answer.
+    /// rebuild's state, one recording an older fold rule over what it folded, one without
+    /// `caught_up` - and of two such causes standing together the first in that order is the
+    /// answer; the owed mark standing beside the file changes no answer.
     #[test]
     fn catch_up_on_a_file_its_rebuild_seeds_or_repairs_opens_no_log_and_answers_inert() {
-        let cases: [(&str, &[Stand], Inert, Option<Position>); 7] = [
+        let cases: [(&str, &[Stand], Inert, Option<Position>); 6] = [
             (
                 "a rebuild's state",
                 &[a_standing_tail],
@@ -8151,12 +8157,6 @@ mod tests {
                 "an older fold rule",
                 &[folded_under_an_older_rule],
                 Inert::OlderRule,
-                Some(0),
-            ),
-            (
-                "the owed mark",
-                &[carrying_an_owed_mark],
-                Inert::Marked,
                 Some(0),
             ),
             ("no cursor", &[without_a_cursor], Inert::NoCursor, None),
@@ -8175,7 +8175,7 @@ mod tests {
             (
                 "the owed mark beside no cursor",
                 &[without_a_cursor, carrying_an_owed_mark],
-                Inert::Marked,
+                Inert::NoCursor,
                 None,
             ),
         ];
@@ -8194,6 +8194,32 @@ mod tests {
                 "{case}: the answer, and the cursor as it stood"
             );
         }
+    }
+
+    /// Spec 124, THE MARK: the owed mark an older binary's lost fold left beside a file carrying
+    /// `caught_up` is no cause - the file's catch-up opens the log and folds the decision past its
+    /// cursor, then answers it is at the head, as it would with no mark.
+    #[test]
+    fn catch_up_beside_the_owed_mark_folds_past_the_cursor() {
+        let (_dir, path, p, log) = catching_up();
+        carrying_an_owed_mark(&path);
+        appended_to(
+            &*log,
+            "test",
+            rigger_domain::run::STREAM,
+            &decisions_at([1]),
+        );
+        assert_eq!(
+            (
+                answers(&p),
+                crate::test_support::caught_up_at(Path::new(&path))
+            ),
+            (
+                vec![Ok(CatchUp::Advanced { recorded: 1 }), Ok(CatchUp::AtHead)],
+                Some(1)
+            ),
+            "the marked file catches up past its cursor"
+        );
     }
 
     /// Spec 124, ONE PROCEDURE: a cause another writer brings about between a call's page read and
@@ -8772,12 +8798,12 @@ mod tests {
             let whole: Vec<Event> = log.iter().cloned().chain(window.iter().cloned()).collect();
             let mut reads_from = Vec::new();
             let mut read = Vec::new();
-            let owed = owed_against_the_log(&Projector::open(&path, "test").unwrap(), &whole);
+            let owed = owed_once_seeded_against(&Projector::open(&path, "test").unwrap(), &whole);
             let resumed = Projector::open(&path, "test")
                 .unwrap()
                 .rebuild(
                     &locked(&path),
-                    !owed.is_empty(),
+                    crate::test_support::setup_owes(&owed),
                     &mut |after, sink| {
                         reads_from.push(after);
                         stream_past(&whole, after, 10, &mut |events, head| {
@@ -8819,7 +8845,7 @@ mod tests {
                 (
                     refused_at_its_owed_mark(&path),
                     ((true, true), (true, true), false),
-                    Vec::<&str>::new(),
+                    (Vec::<&str>::new(), Seeding::Ran { lost: false }),
                     reads,
                     crate::test_support::positions_of(&window),
                     crate::test_support::owned_ids(&kept),
@@ -8970,10 +8996,11 @@ mod tests {
         let (path, stopped) = stopped_in_its_tail(&dir);
         let path = path.as_str();
         let swapped_in = crate::test_support::caught_up_at(Path::new(path));
-        let owed_tail_only = owed_against_the_log(&Projector::open(path, "test").unwrap(), &whole);
+        let owed_tail_only =
+            owed_once_seeded_against(&Projector::open(path, "test").unwrap(), &whole);
 
         let mut read = Vec::new();
-        let owed = !owed_tail_only.is_empty();
+        let owed = crate::test_support::setup_owes(&owed_tail_only);
         let finished = Projector::open(path, "test")
             .unwrap()
             .rebuild(
@@ -8997,14 +9024,14 @@ mod tests {
                 owed_tail_only,
                 read,
                 finished,
-                owed_against_the_log(&p, &whole),
+                owed_once_seeded_against(&p, &whole),
                 crate::test_support::caught_up_at(Path::new(path)),
                 rebuild_state(path),
             ),
             (
                 Err(crate::test_support::graph_error(TAIL_INTERRUPTED)),
                 Some(0),
-                Vec::<&str>::new(),
+                (Vec::<&str>::new(), Seeding::Ran { lost: false }),
                 vec![5, 6],
                 Some(Rebuilt {
                     pruned: PruneStats {
@@ -9012,7 +9039,7 @@ mod tests {
                         superseded_edges: 0
                     }
                 }),
-                Vec::<&str>::new(),
+                (Vec::<&str>::new(), Seeding::Ran { lost: false }),
                 Some(6),
                 (false, false),
             ),
@@ -9026,15 +9053,21 @@ mod tests {
         let p = Projector::open(&path, "test").unwrap();
         crate::test_support::folds(&p, &whole[5..]);
         let backdated = crate::test_support::backdated(&whole);
-        let owed_below_a_later_fold = owed_against_the_log(&p, &backdated);
+        let owed_below_a_later_fold = owed_once_seeded_against(&p, &backdated);
         p.conn
             .lock()
             .unwrap()
             .execute("DELETE FROM applied WHERE position = 4", [])
             .unwrap();
         assert_eq!(
-            (owed_below_a_later_fold, owed_against_the_log(&p, &backdated)),
-            (Vec::<&str>::new(), vec![OWED_LOST_FOLD]),
+            (
+                owed_below_a_later_fold,
+                owed_once_seeded_against(&p, &backdated)
+            ),
+            (
+                (Vec::<&str>::new(), Seeding::Ran { lost: false }),
+                (Vec::<&str>::new(), Seeding::Ran { lost: true })
+            ),
             "an old tail position missing below a later fold is the tail's debt, and the swapped-in \
              cursor's own position missing from the ledger is a lost fold"
         );
@@ -10091,12 +10124,12 @@ mod tests {
         );
     }
 
-    /// A file whose mark already names the lost fold, and whose seeding finds an old hole below
-    /// its highest applied position, owes the lost fold once, seeding no cursor. One at an older
-    /// fold rule is not seeded, whatever its ledger misses: one whose ledger misses an old
-    /// position owes both causes, and one whose ledger misses nothing owes the older rule alone.
+    /// A file beside the owed mark whose seeding finds an old hole below its highest applied
+    /// position owes the lost fold by the seeding's verdict alone, the mark naming no cause, and
+    /// seeds no cursor. One at an older fold rule is not seeded, whatever its ledger misses: its
+    /// seeding finds the lost fold beside the older rule it records only for an old miss.
     #[test]
-    fn the_lost_fold_is_owed_once_whether_the_mark_or_the_seeding_names_it() {
+    fn the_lost_fold_is_the_seeding_s_verdict_and_the_owed_mark_names_no_cause() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let log = crate::test_support::backdated(&decisions_through(3));
@@ -10105,11 +10138,11 @@ mod tests {
         crate::test_support::mark_owed_in(dir.path());
         assert_eq!(
             (
-                owed_against_the_log(&p, &log),
+                owed_once_seeded_against(&p, &log),
                 crate::test_support::caught_up_at(&path)
             ),
-            (vec![OWED_LOST_FOLD], None),
-            "the mark and the seeding name the lost fold once"
+            ((Vec::<&str>::new(), Seeding::Ran { lost: true }), None),
+            "the seeding names the lost fold, and the mark is no cause"
         );
         let at_an_older_rule = |folded: &[Event]| {
             let (_dir, file) = crate::test_support::temp_graph_db();
@@ -10121,7 +10154,7 @@ mod tests {
                 .pragma_update(None, "user_version", PROJECTION_VERSION - 1)
                 .unwrap();
             (
-                owed_against_the_log(&p, &log),
+                owed_once_seeded_against(&p, &log),
                 crate::test_support::caught_up_at(Path::new(&file)),
             )
         };
@@ -10131,37 +10164,32 @@ mod tests {
                 at_an_older_rule(&log),
             ],
             [
-                (vec![OWED_OLDER_RULE, OWED_LOST_FOLD], None),
-                (vec![OWED_OLDER_RULE], None),
+                ((vec![OWED_OLDER_RULE], Seeding::Ran { lost: true }), None),
+                ((vec![OWED_OLDER_RULE], Seeding::Ran { lost: false }), None),
             ],
             "a file at an older rule is not seeded, and owes the lost fold beside it only for an \
              old miss"
         );
     }
 
-    /// A graph file owes its rebuild for what it says: an older fold rule, a lost fold, or both -
-    /// and a current file that lost nothing owes nothing.
+    /// A graph file owes its rebuild for the older fold rule it records and for nothing else it
+    /// carries: the owed mark beside it is no cause, so a current file owes nothing with or without
+    /// the mark, and one at an older rule owes that rule alone.
     #[test]
-    fn a_graph_file_owes_its_rebuild_for_each_cause_it_carries() {
+    fn a_graph_file_owes_its_rebuild_for_the_older_rule_it_records_and_never_for_its_mark() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
-        let mark = crate::test_support::owed_mark_in(dir.path());
         let p = Projector::open(path, "test").unwrap();
         crate::test_support::apply_decision(&p, 1, "d1", "x", &["a.rs"], "");
         assert_eq!(p.owed_because().unwrap(), Vec::<&str>::new());
         crate::test_support::mark_owed_in(dir.path());
-        assert_eq!(p.owed_because().unwrap(), vec![OWED_LOST_FOLD]);
+        assert_eq!(p.owed_because().unwrap(), Vec::<&str>::new());
         p.conn
             .lock()
             .unwrap()
             .pragma_update(None, "user_version", PROJECTION_VERSION - 1)
             .unwrap();
-        assert_eq!(
-            p.owed_because().unwrap(),
-            vec![OWED_OLDER_RULE, OWED_LOST_FOLD]
-        );
-        std::fs::remove_file(&mark).unwrap();
         assert_eq!(p.owed_because().unwrap(), vec![OWED_OLDER_RULE]);
     }
 
@@ -10188,9 +10216,9 @@ mod tests {
         assert_eq!(owed_at(3), Vec::<&str>::new());
     }
 
-    /// The owed mark belongs to the graph file whose fold it lost: once that file is gone the mark
-    /// is dropped, so a file made in its place owes nothing - and while the file stands its mark
-    /// is kept.
+    /// The owed mark an older binary's lost fold left belongs to the graph file beside it: once that
+    /// file is gone the mark is dropped, and a file made in its place owes nothing - and while the
+    /// file stands its mark is kept, no cause of the file's rebuild.
     #[test]
     fn the_owed_mark_of_a_graph_file_that_is_gone_is_dropped_and_one_that_stands_is_kept() {
         let dir = tempfile::tempdir().unwrap();
@@ -10212,9 +10240,16 @@ mod tests {
         );
         crate::test_support::mark_owed_in(dir.path());
         Projector::forget_orphaned_mark(path).unwrap();
-        assert!(
-            mark.exists(),
-            "the mark of a graph file that stands is kept"
+        assert_eq!(
+            (
+                mark.exists(),
+                Projector::open(path, "test")
+                    .unwrap()
+                    .owed_because()
+                    .unwrap()
+            ),
+            (true, Vec::<&str>::new()),
+            "the mark of a graph file that stands is kept, and is no cause"
         );
         Projector::forget_orphaned_mark(":memory:").unwrap();
     }
@@ -10353,9 +10388,9 @@ mod tests {
     }
 
     /// Whether paying a graph file's rebuild starts a fresh shadow (spec 124) is answered by what
-    /// stands. With no shadow, a cause owed - the caller's, or the file's own: an older fold rule
-    /// over what it folded, or an owed mark - starts one, a swapped-in tail standing or not, and no
-    /// cause starts none. A standing shadow is resumed, cause or not, when it holds the run
+    /// stands. With no shadow, a cause owed - the caller's, or the file's own older fold rule over
+    /// what it folded - starts one, a swapped-in tail standing or not, and no cause starts none: the
+    /// owed mark an older binary's lost fold left beside the file is none. A standing shadow is resumed, cause or not, when it holds the run
     /// attribution it gathered under the current fold rule, and replaced otherwise: one folded
     /// under an older or a newer rule, one without that attribution, or one whose rebuild state
     /// was never opened. Asking makes no shadow and leaves a standing one byte for byte.
@@ -10384,10 +10419,10 @@ mod tests {
                 true,
             ),
             (
-                "an owed mark the file carries",
+                "an owed mark the file carries, which is no cause",
                 carrying_an_owed_mark,
                 false,
-                true,
+                false,
             ),
             (
                 "a tail no cause is owed beside",
