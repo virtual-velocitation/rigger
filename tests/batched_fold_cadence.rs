@@ -1,6 +1,7 @@
 //! Periphery (contract / API / integration) tests for spec 49 criterion 2: the BATCHED-FOLD
-//! CADENCE. A file's whole event batch is appended in ONE store append and folded in ONE graph
-//! transaction, so the store's per-transaction cost is paid once per file, not once per event (the
+//! CADENCE. A file's whole event batch is appended in ONE store append and folded through ONE
+//! `apply_batch` call, at the transaction cadence the sqlite `Projector`'s own `apply_batch` doc
+//! states: many events per commit rather than one per event, which is what spec 49 needed (the
 //! measured cold-build throughput was transaction-cadence bound, not parse-bound). These run OUTSIDE
 //! the crate, over the library's PUBLIC surface (`rigger::...`), so they guard boundaries the
 //! inside-out unit tests are structurally blind to:

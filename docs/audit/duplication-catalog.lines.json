@@ -474,8 +474,8 @@
       },
       {
         "file": "tests/batched_fold_cadence.rs",
-        "start_line": 176,
-        "end_line": 272
+        "start_line": 177,
+        "end_line": 273
       },
       {
         "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
