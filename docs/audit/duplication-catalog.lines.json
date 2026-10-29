@@ -344,8 +344,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4790,
-        "end_line": 4795
+        "start_line": 4899,
+        "end_line": 4904
       },
       {
         "file": "tests/new_run_critique_refusal_periphery.rs",
@@ -489,8 +489,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4462,
-        "end_line": 4506
+        "start_line": 4571,
+        "end_line": 4615
       },
       {
         "file": "tests/grounder_name_contract.rs",
@@ -3214,13 +3214,13 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3770,
-        "end_line": 3770
+        "start_line": 3787,
+        "end_line": 3787
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5108,
-        "end_line": 5108
+        "start_line": 5217,
+        "end_line": 5217
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
@@ -6014,13 +6014,13 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4440,
-        "end_line": 4440
+        "start_line": 4549,
+        "end_line": 4549
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5564,
-        "end_line": 5564
+        "start_line": 5673,
+        "end_line": 5673
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
@@ -6864,8 +6864,8 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 6256,
-        "end_line": 6261
+        "start_line": 6365,
+        "end_line": 6370
       }
     ]
   },
@@ -7864,8 +7864,8 @@
     "sites": [
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3193,
-        "end_line": 3199
+        "start_line": 3210,
+        "end_line": 3216
       },
       {
         "file": "tests/one_shot_reads_periphery.rs",

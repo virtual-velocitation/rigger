@@ -2476,13 +2476,15 @@ fn setup_folds_a_cursored_graph_db_forward_over_a_gap_longer_than_a_page() {
 }
 
 /// Given a `graph.db` carrying its `caught_up` cursor that misses an event appended behind every
-/// fold, when the operator runs `rigger setup` while the file's storage refuses that event's node
-/// ([`the_disk_gives_out_at_d_boom`]), then setup's catch-up stops at the cursor and setup fails
-/// naming that position and the storage error, leaving the event missing and the cursor where it
-/// stood; once the storage recovers, the next `rigger setup` folds the event forward from the
-/// cursor and moves the cursor to it.
-#[test]
-fn setup_whose_catch_up_meets_a_storage_error_fails_at_the_cursor_and_the_next_setup_folds_on() {
+/// fold, beside which the owed mark stands as an older binary's lost fold left it when `marked`
+/// says so, when the operator runs `rigger setup` while the file's storage refuses that event's
+/// node ([`the_disk_gives_out_at_d_boom`]), then setup's catch-up stops at the cursor and setup
+/// fails naming that position and the storage error, leaving the event missing and the cursor
+/// where it stood, and no owed mark beside the file - setup removes a standing one from a file
+/// carrying `caught_up` even when its catch-up stops (spec 124, THE MARK); once the storage
+/// recovers, the next `rigger setup` folds the event forward from the cursor and moves the cursor
+/// to it.
+fn setup_whose_catch_up_meets_a_storage_error(marked: bool) {
     let dir = temp_store_project();
     let root = dir.path();
     emit_the_first_decision_after_setup(root);
@@ -2490,6 +2492,9 @@ fn setup_whose_catch_up_meets_a_storage_error_fails_at_the_cursor_and_the_next_s
     let cursor = caught_up_at(&graph_db).unwrap();
     let lost = append_unfolded_decision_named(root, D_BOOM);
     the_disk_gives_out_at_d_boom(&graph_db);
+    if marked {
+        mark_owed_in(graph_db.parent().unwrap());
+    }
 
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     let refused = refusal_line(&catch_up_failed_line(cursor, DISK_GAVE_OUT));
@@ -2499,17 +2504,19 @@ fn setup_whose_catch_up_meets_a_storage_error_fails_at_the_cursor_and_the_next_s
             err.lines().last(),
             common::cli::rebuild_lines(&out),
             applied(&graph_db, lost),
-            caught_up_at(&graph_db)
+            caught_up_at(&graph_db),
+            mark_stands_beside(&graph_db)
         ),
         (
             false,
             Some(refused.as_str()),
             Vec::<String>::new(),
             false,
-            Some(cursor)
+            Some(cursor),
+            false
         ),
-        "setup fails naming where its catch-up stopped and why, and leaves the event missing and \
-         the cursor where it stood; stdout: {out} stderr: {err}"
+        "setup fails naming where its catch-up stopped and why, and leaves the event missing, the \
+         cursor where it stood and no owed mark; stdout: {out} stderr: {err}"
     );
 
     the_disk_recovers(&graph_db);
@@ -2523,6 +2530,16 @@ fn setup_whose_catch_up_meets_a_storage_error_fails_at_the_cursor_and_the_next_s
         (vec![caught_up_line(1)], true, Some(lost)),
         "once the storage recovers, setup folds the event forward from the cursor; stdout: {out}"
     );
+}
+
+rigger::test_cases! {
+    /// No owed mark stands beside the file: setup's stopped catch-up writes none.
+    setup_whose_catch_up_meets_a_storage_error_fails_at_the_cursor_and_the_next_setup_folds_on:
+        setup_whose_catch_up_meets_a_storage_error(false);
+    /// The owed mark stands beside the file: setup removes it before failing at the cursor, the
+    /// file carrying `caught_up`.
+    setup_whose_catch_up_meets_a_storage_error_beside_an_owed_mark_still_removes_the_mark:
+        setup_whose_catch_up_meets_a_storage_error(true);
 }
 
 /// Given a `graph.db` without the `caught_up` cursor that folded the log, on a project whose
@@ -4065,6 +4082,98 @@ rigger::test_cases! {
             false,
             true,
         );
+    /// The file carries its cursor one event behind the log's head, that event appended behind
+    /// every fold ([`append_unfolded_decision_named`]): setup's catch-up folds it forward from the
+    /// cursor beside the mark, which refuses no catch-up, rebuilds nothing, and removes the mark.
+    an_owed_mark_beside_a_cursored_graph_db_one_event_behind_is_caught_up_past_and_removed:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |root, _| {
+                append_unfolded_decision_named(root, "d-behind");
+            },
+            false,
+            vec![caught_up_line(1)],
+            false,
+            true,
+        );
+}
+
+/// Run `rigger <args>` in `root` ([`run_rigger`]): whether it succeeded, and everything it
+/// printed, its stdout then its stderr.
+fn run_saying(root: &Path, args: &[&str]) -> (bool, String) {
+    let (out, err, ok) = run_rigger(root, args);
+    (ok, format!("{out}{err}"))
+}
+
+/// Given a `graph.db` carrying its `caught_up` cursor on a project whose identity is minted,
+/// beside which the owed mark stands as an older binary's lost fold left it, when the operator
+/// runs a surface that asks whether the file owes its rebuild - `answer` runs it in the project's
+/// root and answers whether it succeeded and what it said - then the surface succeeds and no line
+/// it says names the rebuild owed: a command whose answer depends on the fold is not refused, a
+/// read-only surface prints no owed note, and the mark still stands beside the file the surface
+/// read (spec 124, THE MARK).
+fn a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(
+    answer: fn(&Path) -> (bool, String),
+) {
+    let dir = temp_store_project();
+    let root = dir.path();
+    emit_the_first_decision_after_setup(root);
+    let mark = mark_owed_in(rigger_file(root, "graph.db").parent().unwrap());
+
+    let (ok, said) = answer(root);
+    assert_eq!(
+        (
+            ok,
+            common::cli::lines_where(&said, |line| line
+                .contains(rigger::contextgraph::REBUILD_OWED)),
+            mark.exists()
+        ),
+        (true, Vec::<&str>::new(), true),
+        "the mark beside a cursored graph.db owes no rebuild at this surface; said: {said}"
+    );
+}
+
+rigger::test_cases! {
+    /// `rigger graph build`, a command whose answer depends on the fold, opens the graph without
+    /// a refusal.
+    graph_build_beside_an_owed_mark_on_a_cursored_graph_db_is_not_refused:
+        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
+            run_saying(root, &["graph", "build"])
+        });
+    /// `rigger reset --runs`, a command whose answer depends on the fold, prunes without a
+    /// refusal.
+    reset_runs_beside_an_owed_mark_on_a_cursored_graph_db_is_not_refused:
+        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
+            run_saying(root, &["reset", "--runs"])
+        });
+    /// `rigger reset`, the menu, names no rebuild on its `--runs` line.
+    the_reset_menu_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild_for_runs:
+        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
+            run_saying(root, &["reset"])
+        });
+    /// `rigger graph --around`, a read-only inspection, prints no owed note.
+    graph_around_beside_an_owed_mark_on_a_cursored_graph_db_prints_no_owed_note:
+        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
+            run_saying(root, &["graph", "--around", "src/f.rs"])
+        });
+    /// `rigger validate`, a read-only surface, prints no owed note.
+    validate_beside_an_owed_mark_on_a_cursored_graph_db_prints_no_owed_note:
+        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
+            run_saying(root, &["validate"])
+        });
+    /// `rigger dash --export`, a read-only surface, prints no owed note.
+    the_dash_export_beside_an_owed_mark_on_a_cursored_graph_db_prints_no_owed_note:
+        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
+            run_saying(root, &common::cli::DASH_SNAPSHOT_ARGS)
+        });
+    /// A `rigger mcp` session's `rigger_graph`, a tool whose answer depends on the fold, answers
+    /// without a refusal.
+    an_mcp_rigger_graph_beside_an_owed_mark_on_a_cursored_graph_db_is_not_refused:
+        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
+            let mut mcp = common::mcp::McpSession::start(root);
+            let answer = mcp.tool_call("rigger_graph", serde_json::json!({"around": "src/f.rs"}));
+            mcp.finish_cleanly();
+            (answer.get("error").is_none(), answer.to_string())
+        });
 }
 
 /// Append a `DecisionMade` whose payload is `data` to `root`'s run stream straight through the
