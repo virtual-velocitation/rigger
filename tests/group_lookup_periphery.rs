@@ -1037,14 +1037,8 @@ fn the_group_lookup_answers_each_project_namespace_only_its_own_recording() {
             .unwrap()
     };
     record("alpha", "h1");
-    let beta_at = record("beta", "h2")
-        .placed()
-        .map(|(_, p)| p)
-        .collect::<Vec<_>>();
-    let alpha_at = record("alpha", "h3")
-        .placed()
-        .map(|(_, p)| p)
-        .collect::<Vec<_>>();
+    let beta_at = common::fixtures::placed_positions(&record("beta", "h2"));
+    let alpha_at = common::fixtures::placed_positions(&record("alpha", "h3"));
 
     let head = |project: &str| {
         Namespaced::new(&backend, project)
