@@ -4619,11 +4619,13 @@ mod tests {
 
     /// The periphery author's surface probes: the CLI probe diffs the handlers in `src/cli/`
     /// alongside the registry in `src/main.rs`, every probe reads a raw diff written to a file,
-    /// never a pipe from the git command, and an empty accounting cites the diff's stat with a
-    /// positive control, so a probe that returns nothing on added source lines reads as a broken
-    /// instrument (`d112-op-sdet-probe-raw-diff`).
+    /// never a pipe from the git command, and probes that all return nothing are checked against
+    /// the diff's stat with a positive control, so a probe that returns nothing on added source
+    /// lines reads as a broken instrument (`d112-op-sdet-probe-raw-diff`). Each hit is read for a
+    /// surface a Done-when criterion names, which gets its periphery test; the author owes no
+    /// accounting record of the hits, and a missed surface blocks only as that missing test.
     #[test]
-    fn sdet_author_probes_read_raw_diff_files_and_prove_an_empty_accounting() {
+    fn sdet_author_probes_read_raw_diff_files_and_owe_no_accounting_record() {
         let text = committed_persona("sdet-author.md");
         assert!(
             text.contains("git diff BASE -- src/main.rs src/cli"),
@@ -4651,8 +4653,25 @@ mod tests {
             "with a positive control",
             "A probe that returns nothing on a diff whose stat shows added source lines is a \
              broken instrument, not an empty surface.",
+            "Read each hit: a surface a Done-when criterion names gets a periphery test that \
+             drives it, and the hits owe no record.",
+            "a behaviour a Done-when criterion names that no test drives is the missing test \
+             the review rule blocks on",
         ] {
             assert!(flat.contains(wanted), "sdet-author.md must say {wanted:?}");
+        }
+        for retired in [
+            "## Account for every item",
+            "MUST account for",
+            "TESTED",
+            "EXEMPT",
+            "accounting as a `DecisionMade`",
+            "RE-ENUMERATES",
+        ] {
+            assert!(
+                !flat.contains(retired),
+                "sdet-author.md owes no accounting record of its probes: {retired:?}"
+            );
         }
     }
 

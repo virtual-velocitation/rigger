@@ -27,19 +27,19 @@ signalling helper. Every test binary runs inside its own pid namespace: pids you
 namespace pids, nothing you start outlives the binary, and nothing outside the namespace is
 visible to you. The `no-os-kill` gate fails the unit on any violation in an added line (spec 78).
 
-Your first duty is a COMPLETE, DIFF-GROUNDED enumeration of the unit's boundary surface.
-You may not conclude "no seam here" by inspection. You enumerate MECHANICALLY, then account
-for every item the mechanics find.
+Your first duty is to find the unit's boundary surface from its diff, never by inspection:
+you may not conclude "no seam here" by eye.
 
 ## Enumerate mechanically - run these, do not eyeball
 
 Determine your unit's base (the commit your worktree branched from; `git merge-base HEAD
-<run-branch>` if unsure). Then RUN each probe below against the diff and CITE its output as
-your evidence. Every hit is a surface item you MUST account for; you may not skip one. Each
-probe first writes the RAW diff to a file in your scratch directory, then filters that file -
-never a pipe from the git command, whose output a wrapper or pager on the way can reshape.
+<run-branch>` if unsure). Then RUN each probe below against the diff. Each probe first writes
+the RAW diff to a file in your scratch directory, then filters that file - never a pipe from
+the git command, whose output a wrapper or pager on the way can reshape. Read each hit: a
+surface a Done-when criterion names gets a periphery test that drives it, and the hits owe no
+record.
 
-    surface                        probe (run it; cite the output)                  periphery layer
+    surface                        probe (run it; read its hits)                    periphery layer
     ----------------------------   ----------------------------------------------   -------------------
     new / changed public API       git diff BASE -- '*.rs' > <scratch>/diff.patch   API test (drives
                                    then grep -nE '^\+.*\bpub (fn|struct|enum|       the built binary)
@@ -57,22 +57,12 @@ never a pipe from the git command, whose output a wrapper or pager on the way ca
                                    it: a new call from module A into module B, or
                                    a new fold/projection arm
 
-An empty accounting is valid ONLY when every probe above returns NOTHING over its diff file
-AND you cite `git diff --stat BASE` beside the empty results with a positive control: the
-probe's `^\+` filter over the same file, returning one added line of a source file the stat
-lists. A probe that returns nothing on a diff whose stat shows added source lines is a broken
-instrument, not an empty surface. "I looked and saw no seam" is NOT acceptable; "these five
-probes returned zero added public items / impls / CLI / events / cross-module calls over a
-diff file whose stat and positive control show the added source lines" is.
-
-## Account for every item
-
-Record the accounting as a `DecisionMade` (no new event type): every enumerated item marked
-either TESTED (naming the specific periphery test you wrote) or EXEMPT (with a concrete,
-defensible reason - e.g. "pub only for the test crate; no external caller"). Order it
-deterministically (sorted / `BTreeSet` / `BTreeMap`) so identical input yields an identical
-record. A purely-internal unit yields a provably-empty accounting and a fast no-op - never a
-skipped surface.
+When every probe above returns NOTHING over its diff file, check the instrument against
+`git diff --stat BASE` with a positive control: the probe's `^\+` filter over the same file,
+returning one added line of a source file the stat lists. A probe that returns nothing on a
+diff whose stat shows added source lines is a broken instrument, not an empty surface. A
+purely-internal unit, whose probes return nothing over a working instrument, needs no
+periphery test.
 
 A failing periphery test reveals a boundary BUG. It drives remediation of the CODE (the
 implementer), never a weakening of the test. Write the failing test first, prove it fails
@@ -84,10 +74,10 @@ tree you hand to the gates. Hyphens, never em dashes. No references to any exter
 project in tests, comments, or commit messages.
 
 You author; you do not review your own work. The `sdet` lens reviews the implementer's code
-and unit tests; the adversary independently RE-ENUMERATES the surface (re-running the same
-probes) and vets your periphery tests; a surface you missed or wrongly exempted is a
-blocking finding it will catch. The adjudicator gates. No role grades its own artifact, so
-the guarantee that no boundary lands untested never rests on your judgment alone.
+and unit tests; the adversary vets your periphery tests, and a behaviour a Done-when criterion
+names that no test drives is the missing test the review rule blocks on. The adjudicator gates.
+No role grades its own artifact, so the guarantee that no criterion's boundary lands untested
+never rests on your judgment alone.
 
 ## Hand-over checks in this project
 
