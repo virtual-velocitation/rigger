@@ -110,7 +110,6 @@ use common::fixtures::rebuild_owed_note;
 use common::fixtures::wait_until_for;
 use common::fixtures::DISK_GAVE_OUT;
 use common::fixtures::D_BOOM;
-use common::fixtures::HELD_PAST_THE_BUSY_TIMEOUT;
 use common::fixtures::STEP_LOCK_REASON;
 use common::fixtures::{catch_up_failed_line, the_disk_gives_out_at_d_boom, the_disk_recovers};
 use common::fixtures::{graph_error, not_folded, not_folded_suffix, NOT_A_DATABASE};
@@ -118,6 +117,7 @@ use common::fixtures::{lost_by_calls, UNFINISHED_REBUILD};
 use common::fixtures::{mark_owed_in, mark_stands_beside};
 use common::fixtures::{source_interrupted, SOURCE_INTERRUPTED};
 use common::fixtures::{under_a_seedings_lock, with_graph_locked, with_graph_locked_for};
+use common::fixtures::{HELD_PAST_THE_BUSY_TIMEOUT, HELD_WITHIN_THE_BUSY_TIMEOUT};
 use common::git::temp_git_project_with_commit;
 use rigger::contextgraph::sqlite::{
     PruneStats, RebuildSink, Rebuilt, CATCH_UP_HORIZON, FOLD_BATCH, PROJECTION_VERSION,
@@ -3364,25 +3364,27 @@ fn emit_behind_another_writers_lock(root: &Path, id: &str) -> (String, String, b
 }
 
 /// Emit the decision `id` in `root` ([`emit_decision`]) while the seeding `rigger setup` runs of
-/// its `graph.db` cursor over the log's positions holds the file's write lock past the busy
-/// timeout ([`under_a_seedings_lock`]): [`HELD_PAST_THE_BUSY_TIMEOUT`] from before the emit
-/// starts. The seeding runs, finds nothing lost and seeds the cursor at the head the emit's
-/// append has not yet passed.
-fn emit_behind_a_seedings_lock(root: &Path, id: &str) -> (String, String, bool) {
+/// its `graph.db` cursor over the log's positions holds the file's write lock
+/// ([`under_a_seedings_lock`]): `held` from before the emit starts. The seeding runs, finds
+/// nothing lost and seeds the cursor at the head the emit's append has not yet passed.
+fn emit_behind_a_seedings_lock(
+    root: &Path,
+    id: &str,
+    held: std::time::Duration,
+) -> (String, String, bool) {
     under_a_seedings_lock(
         || common::cli::open_graph(root),
         &read_run_events(root),
-        HELD_PAST_THE_BUSY_TIMEOUT,
+        held,
         || emit_decision(root, id),
     )
 }
 
-/// Given a `graph.db` `first` left in `root`, when a writer holds its write lock past the busy
-/// timeout while an agent runs `rigger emit` (`emit`), then the emit waits under the ceiling and,
-/// once the lock is released, folds its event and says so, its cursor standing where `cursor`
-/// answers for the event's position; no `graph.db.owed` is written, the next emit folds, and the
-/// next `rigger setup` owes no rebuild (spec 124, AN APPENDER WAITS UNDER THE CEILING AND NEVER
-/// MARKS).
+/// Given a `graph.db` `first` left in `root`, when a writer holds its write lock while an agent
+/// runs `rigger emit` (`emit`), then the emit waits under the ceiling and, once the lock is
+/// released, folds its event and says so, its cursor standing where `cursor` answers for the
+/// event's position; no `graph.db.owed` is written, the next emit folds, and the next
+/// `rigger setup` owes no rebuild (spec 124, AN APPENDER WAITS UNDER THE CEILING AND NEVER MARKS).
 fn an_emit_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing(
     first: fn(&Path),
     emit: fn(&Path, &str) -> (String, String, bool),
@@ -3441,7 +3443,18 @@ rigger::test_cases! {
     an_emit_folding_directly_behind_a_seedings_lock_folds_through_the_seeded_cursor_and_marks_nothing:
         an_emit_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing(
             emit_the_first_decision,
-            emit_behind_a_seedings_lock,
+            |root, id| emit_behind_a_seedings_lock(root, id, HELD_PAST_THE_BUSY_TIMEOUT),
+            Some,
+        );
+    /// A first emit leaves the file without the cursor and a seeding holds the lock while it seeds
+    /// one, releasing it inside the busy timeout of the emit's first open: the emit's read before
+    /// any transaction finds no cursor, its open waits the seeding out, and its transaction reads
+    /// the seeded cursor under the write lock, ends unwritten and turns to its calls, the cursor
+    /// standing at its event.
+    an_emit_folding_directly_behind_a_seedings_brief_lock_turns_to_its_calls_inside_its_transaction:
+        an_emit_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing(
+            emit_the_first_decision,
+            |root, id| emit_behind_a_seedings_lock(root, id, HELD_WITHIN_THE_BUSY_TIMEOUT),
             Some,
         );
 }
