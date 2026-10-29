@@ -10523,7 +10523,7 @@ mod tests {
                 PLAYBOOKS_REBUILD,
                 ("src/main.rs", "fn main() {\n    let _ = playbooks::rebuild();\n}\n"),
             ],
-                "src/distiller.rs",
+                DISTILLER_REBUILD.0,
             )
             .ambiguous_with,
             vec!["src/playbooks.rs:1".to_string()]
@@ -10548,7 +10548,7 @@ mod tests {
                 PLAYBOOKS_REBUILD,
                 ("src/main.rs", "use crate::playbooks::rebuild;\nfn main() {\n    let _ = rebuild();\n}\n"),
             ],
-            "src/distiller.rs",
+            DISTILLER_REBUILD.0,
         );
         /// The same attribution through a group import: a bare `rebuild()` call in a file whose
         /// `use` names it inside a `playbooks::{..}` group nested in another group attributes to
