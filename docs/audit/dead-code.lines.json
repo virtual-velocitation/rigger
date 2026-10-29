@@ -1,1 +1,30 @@
-[]
+[
+  {
+    "file": "crates/rigger-grounder/src/ingest.rs",
+    "name": "graph_index_lag",
+    "line": 511,
+    "ambiguous_with": [
+      "crates/rigger-grounder/src/ingest.rs:541"
+    ],
+    "test_only_references": [
+      {
+        "file": "tests/ledger_rebuild.rs",
+        "line": 2633
+      }
+    ]
+  },
+  {
+    "file": "crates/rigger-grounder/src/ingest.rs",
+    "name": "graph_index_lag",
+    "line": 541,
+    "ambiguous_with": [
+      "crates/rigger-grounder/src/ingest.rs:511"
+    ],
+    "test_only_references": [
+      {
+        "file": "tests/ledger_rebuild.rs",
+        "line": 2633
+      }
+    ]
+  }
+]

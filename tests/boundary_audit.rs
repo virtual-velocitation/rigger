@@ -35,8 +35,9 @@ use std::path::{Path, PathBuf};
 mod source_audit;
 use source_audit::{
     assert_real_tree_clean, cfg_test_ranges, close_of, enclosing_fn_line, fn_sig_lines,
-    gate_name_in, holds_whole_word, in_ranges, is_definition_site, qualifier_before, ref_punct,
-    ref_token, tokenize, write_file, Finding, RawKind, RawTok, GATE_WORD,
+    gate_name_in, holds_whole_word, imported_names, in_ranges, is_definition_site,
+    qualifier_before, ref_punct, ref_token, tokenize, write_file, Finding, RawKind, RawTok,
+    GATE_WORD,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -853,9 +854,12 @@ const STREAM_HOME: &str = "run";
 /// `conductor` re-exports it.
 const STREAM_MODULES: &[&str] = &["conductor", STREAM_HOME];
 
-/// Whether `tok` is the identifier `STREAM`.
+/// The name of the project stream's constant.
+const STREAM_NAME: &str = "STREAM";
+
+/// Whether `tok` is the identifier [`STREAM_NAME`].
 fn names_stream(tok: &RawTok) -> bool {
-    ref_token(Some(tok), RawKind::Ident, "STREAM")
+    ref_token(Some(tok), RawKind::Ident, STREAM_NAME)
 }
 
 /// The name called at `at`: an identifier followed by `(` that is no definition site.
@@ -872,32 +876,13 @@ fn is_project_stream(toks: &[RawTok], at: usize, bare_is_run: bool) -> bool {
         && qualifier_before(toks, at).map_or(bare_is_run, |m| STREAM_MODULES.contains(&m.as_str()))
 }
 
-/// Whether a `use` declaration among `toks` imports `STREAM` from a [`STREAM_HOME`] path
-/// segment: as `run::STREAM`, or as a member at the top of a `run::{..}` group.
+/// Whether a `use` declaration among `toks` imports [`STREAM_NAME`] owned by [`STREAM_HOME`],
+/// as [`imported_names`] reads each import's owner: `run::STREAM`, or a member of a `run::{..}`
+/// group.
 fn imports_run_stream(toks: &[RawTok]) -> bool {
-    // Inside a `use` declaration, the segment that owns each open group, innermost last.
-    let mut owners: Option<Vec<String>> = None;
-    for (at, tok) in toks.iter().enumerate() {
-        let Some(groups) = owners.as_mut() else {
-            if ref_token(Some(tok), RawKind::Keyword, "use") {
-                owners = Some(Vec::new());
-            }
-            continue;
-        };
-        if ref_punct(Some(tok), ";") {
-            owners = None;
-        } else if ref_punct(Some(tok), "{") {
-            groups.push(qualifier_before(toks, at).unwrap_or_default());
-        } else if ref_punct(Some(tok), "}") {
-            groups.pop();
-        } else if names_stream(tok) {
-            let owner = qualifier_before(toks, at).or_else(|| groups.last().cloned());
-            if owner.as_deref() == Some(STREAM_HOME) {
-                return true;
-            }
-        }
-    }
-    false
+    imported_names(toks)
+        .iter()
+        .any(|(name, owner)| name == STREAM_NAME && owner == STREAM_HOME)
 }
 
 /// Every production site under `root` that appends to the project stream or opens the context

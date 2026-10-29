@@ -99,8 +99,8 @@ use common::repo::repo_root;
 #[path = "common/source_audit.rs"]
 mod source_audit;
 use source_audit::{
-    char_literal_len, close_of, is_definition_site, is_ident_char, qualifier_before, ref_punct,
-    ref_token, skip_string_literal, tokenize, RawKind, RawTok,
+    char_literal_len, close_of, imported_names, is_definition_site, is_ident_char,
+    qualifier_before, ref_punct, ref_token, skip_string_literal, tokenize, RawKind, RawTok,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -6335,53 +6335,6 @@ fn impl_assoc_qualifier(f: &ScannedFn) -> String {
     impl_self_type(f.enclosing_impl.as_deref().unwrap_or_default())
 }
 
-/// Per-file map: an imported bare name -> its qualifying module segment, for a SIMPLE
-/// `use path::to::name;` import (spec 87 round-1 addendum: "a `use module::name;` ... resolving
-/// to it") - the last two `::`-separated path segments become `(name, qualifier)`. Deliberately
-/// narrow: a group import (`use a::{b, c};`), a glob (`use a::*;`), or a renamed import
-/// (`use a::b as c;`) is NOT resolved, an accepted, disclosed textual-scanner limitation (this is
-/// used only to ATTRIBUTE a bare call site during ambiguity resolution - missing one of these
-/// shapes costs a missed disambiguation, never a wrong one, since an unattributed reference is
-/// simply credited to no definition, never a false one).
-fn use_import_qualifiers(tokens: &[RawTok]) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    let mut i = 0usize;
-    while i < tokens.len() {
-        if tokens[i].kind != RawKind::Keyword || tokens[i].text != "use" {
-            i += 1;
-            continue;
-        }
-        let mut j = i + 1;
-        let mut segments: Vec<String> = Vec::new();
-        let mut simple = true;
-        while j < tokens.len() {
-            match (&tokens[j].kind, tokens[j].text.as_str()) {
-                (RawKind::Punct, ";") => {
-                    j += 1;
-                    break;
-                }
-                (RawKind::Ident, _) => segments.push(tokens[j].text.clone()),
-                (RawKind::Keyword, "self" | "crate" | "super") => {
-                    segments.push(tokens[j].text.clone())
-                }
-                (RawKind::Punct, ":") => {}
-                (RawKind::Keyword, "as") | (RawKind::Punct, "{" | "}" | "*" | ",") => {
-                    simple = false;
-                }
-                _ => {}
-            }
-            j += 1;
-        }
-        if simple && segments.len() >= 2 {
-            let name = segments[segments.len() - 1].clone();
-            let qualifier = segments[segments.len() - 2].clone();
-            out.insert(name, qualifier);
-        }
-        i = j;
-    }
-    out
-}
-
 /// The innermost function whose span contains `line` in `file`, if any.
 fn innermost_fn_at(file: &FileScan, line: usize) -> Option<&ScannedFn> {
     file.fns
@@ -6546,7 +6499,12 @@ fn build_dead_code_candidates(
     }
     let use_imports: HashMap<&str, HashMap<String, String>> = files
         .iter()
-        .map(|fsc| (fsc.rel.as_str(), use_import_qualifiers(&fsc.tokens)))
+        .map(|fsc| {
+            (
+                fsc.rel.as_str(),
+                imported_names(&fsc.tokens).into_iter().collect(),
+            )
+        })
         .collect();
 
     let categories: HashMap<(&str, usize), DispatchCategory> = candidates
@@ -6608,7 +6566,8 @@ fn build_dead_code_candidates(
         // `ImplAssoc` get real per-definition ATTRIBUTION when the name is shared, tried in
         // order: (1) a `::`-qualified call site whose qualifier textually matches this
         // definition's own (a type name for `ImplAssoc`, a module name for `Free`); (2) a bare
-        // call resolved through the REFERENCING file's own `use module::name;` import; (3) for
+        // call resolved through the REFERENCING file's own `use` import of it, a path
+        // `use module::name;` or a member of a `module::{..}` group ([`imported_names`]); (3) for
         // `Free` only, a bare call sitting in the SAME FILE as this definition - Rust's own
         // lexical scoping resolves an unqualified sibling call with no `use` needed at all (the
         // extremely common case: two files each defining and bare-calling their own same-named
@@ -10597,6 +10556,19 @@ mod tests {
             ],
             DISTILLER_REBUILD.0,
         );
+        /// A test module's `use super::{..}` group naming the file's own `rebuild` resolves no
+        /// module the attribution compares: the file's production bare call still attributes
+        /// locally, so only the uncalled `playbooks` sharer is flagged.
+        a_super_group_import_in_a_test_module_leaves_a_same_file_call_attributed_locally: {
+            let distiller = format!(
+                "{}pub fn sample() -> u32 {{\n    rebuild()\n}}\n#[cfg(test)]\nmod tests {{\n    use super::{{rebuild, sample}};\n}}\n",
+                DISTILLER_REBUILD.1
+            );
+            the_one_flagged_rebuild(
+                &[(DISTILLER_REBUILD.0, &distiller), PLAYBOOKS_REBUILD],
+                PLAYBOOKS_REBUILD.0,
+            )
+        };
     }
 
     rigger::test_cases! {

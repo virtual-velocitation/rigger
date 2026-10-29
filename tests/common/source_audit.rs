@@ -7,7 +7,7 @@
 //! `tests/simplification_audit.rs` scans by, rule 4 of `tests/boundary_audit.rs` finds string
 //! literals with and its appender audit finds calls with, and the token readers those two suites
 //! share over its tokens ([`ref_punct`], [`ref_token`], [`qualifier_before`],
-//! [`is_definition_site`], [`close_of`]). Each
+//! [`is_definition_site`], [`close_of`], [`imported_names`]). Each
 //! suite uses the subset it needs (hence the module-wide `dead_code` allowance, as in
 //! `tests/common/mod.rs`).
 
@@ -589,7 +589,12 @@ pub fn qualifier_before(toks: &[RawTok], i: usize) -> Option<String> {
 /// Whether `toks[i]` is a function's DEFINITION site, the name token immediately preceded by the
 /// `fn` keyword (`fn name(`), rather than a reference to the name.
 pub fn is_definition_site(toks: &[RawTok], i: usize) -> bool {
-    i > 0 && ref_token(toks.get(i - 1), RawKind::Keyword, "fn")
+    follows_keyword(toks, i, "fn")
+}
+
+/// Whether the token in front of `toks[i]` is the keyword `keyword`; `false` at the first token.
+fn follows_keyword(toks: &[RawTok], i: usize, keyword: &str) -> bool {
+    i > 0 && ref_token(toks.get(i - 1), RawKind::Keyword, keyword)
 }
 
 /// The index of the `close` punctuation that closes the opening bracket at `toks[open]`, depth
@@ -608,4 +613,42 @@ pub fn close_of(toks: &[RawTok], open: usize, close: &str) -> usize {
         }
     }
     toks.len()
+}
+
+/// Every name a `use` declaration among `toks` imports, paired with the path segment that owns
+/// it, in source order. A name is owned by the segment its own path puts in front of it
+/// (`use a::b::c;` imports `c` owned by `b`), and a group member with no path of its own by the
+/// segment of the innermost group holding it (`use a::{b, c::{d}};` imports `b` owned by `a` and
+/// `d` owned by `c`). A glob and a renamed import (`b as c`) import no name read here.
+pub fn imported_names(toks: &[RawTok]) -> Vec<(String, String)> {
+    let mut names = Vec::new();
+    // Inside a `use` declaration, the segment that owns each open group, innermost last.
+    let mut owners: Option<Vec<String>> = None;
+    for (at, tok) in toks.iter().enumerate() {
+        let Some(groups) = owners.as_mut() else {
+            if ref_token(Some(tok), RawKind::Keyword, "use") {
+                owners = Some(Vec::new());
+            }
+            continue;
+        };
+        if ref_punct(Some(tok), ";") {
+            owners = None;
+        } else if ref_punct(Some(tok), "{") {
+            groups.push(qualifier_before(toks, at).unwrap_or_default());
+        } else if ref_punct(Some(tok), "}") {
+            groups.pop();
+        } else if tok.kind == RawKind::Ident && ends_a_use_path(toks, at) {
+            let owner = qualifier_before(toks, at).or_else(|| groups.last().cloned());
+            names.extend(owner.map(|owner| (tok.text.clone(), owner)));
+        }
+    }
+    names
+}
+
+/// Whether the identifier at `toks[at]` is the last segment of a `use` path that imports it by
+/// its own name: a `,`, `}` or `;` follows it, and it is no `as` rename's target.
+fn ends_a_use_path(toks: &[RawTok], at: usize) -> bool {
+    let next = toks.get(at + 1);
+    let ends = [",", "}", ";"].iter().any(|end| ref_punct(next, end));
+    ends && !follows_keyword(toks, at, "as")
 }

@@ -1,1 +1,34 @@
-[]
+[
+  {
+    "name": "graph_index_lag",
+    "file": "crates/rigger-grounder/src/ingest.rs",
+    "content_hash": "858cc48abd4ef233",
+    "visibility": "pub",
+    "ambiguous": true,
+    "ambiguous_with": [
+      "crates/rigger-grounder/src/ingest.rs#cab827515b73ec9d"
+    ],
+    "test_only_references": [
+      {
+        "file": "tests/ledger_rebuild.rs",
+        "content_hash": "b804f2255032b438"
+      }
+    ]
+  },
+  {
+    "name": "graph_index_lag",
+    "file": "crates/rigger-grounder/src/ingest.rs",
+    "content_hash": "cab827515b73ec9d",
+    "visibility": "pub",
+    "ambiguous": true,
+    "ambiguous_with": [
+      "crates/rigger-grounder/src/ingest.rs#858cc48abd4ef233"
+    ],
+    "test_only_references": [
+      {
+        "file": "tests/ledger_rebuild.rs",
+        "content_hash": "b804f2255032b438"
+      }
+    ]
+  }
+]
