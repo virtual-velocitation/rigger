@@ -160,6 +160,15 @@ pub fn ungated_fan_out_templates(stages: &BTreeMap<String, Stage>) -> Vec<String
         .collect()
 }
 
+/// Whether `st` is a check-in stage: it `needs` a fan-out implement template
+/// ([`is_fan_out_template`]) among `stages`, the workflow as authored, so it runs once after
+/// every unit that template expanded into has integrated.
+pub fn is_check_in(st: &Stage, stages: &BTreeMap<String, Stage>) -> bool {
+    st.needs
+        .iter()
+        .any(|need| stages.get(need).is_some_and(is_fan_out_template))
+}
+
 /// Whether a stage `produces` a DAG at runtime (the planner that decomposes the spec).
 pub fn is_producer(st: &Stage) -> bool {
     !st.produces.is_empty()
@@ -514,6 +523,23 @@ mod tests {
         let other = "the log is parsed".to_string();
         assert!(coverage_gap(&stages, &[criterion, other])
             .is_some_and(|gap| gap.contains("the log is parsed")));
+    }
+
+    #[test]
+    fn a_check_in_stage_is_one_needing_a_fan_out_template() {
+        let flow = workflow(&format!(
+            "stages:\n{PLAN}  implement:\n    agent: worker\n    strategy: fan-out\n    needs: [plan]\n  checkin:\n    agent: worker\n    needs: [implement]\n  after-plan:\n    agent: worker\n    needs: [plan]\n  alone:\n    agent: worker\n  dangling:\n    agent: worker\n    needs: [gone]\n"
+        ));
+        let cases = [
+            ("needs the fan-out template", "checkin", true),
+            ("needs the producer only", "after-plan", false),
+            ("needs nothing", "alone", false),
+            ("needs a stage the workflow lacks", "dangling", false),
+            ("the template itself", "implement", false),
+        ];
+        for (why, name, want) in cases {
+            assert_eq!(is_check_in(&flow.stages[name], &flow.stages), want, "{why}");
+        }
     }
 
     #[test]
