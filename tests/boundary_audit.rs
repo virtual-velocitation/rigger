@@ -1046,6 +1046,30 @@ fn each_append_and_open_token_is_reported_by_file_and_item() {
             &[],
         ),
         (
+            "a bare STREAM in a run group nested inside another group",
+            "src/lib.rs",
+            "use crate::{run::{Event, STREAM}};\n\nfn nested() {\n    \
+             store.append(STREAM, &events);\n}\n",
+            &["src/lib.rs:nested"],
+            &[],
+        ),
+        (
+            "a bare STREAM after a closed run group belongs to the outer group",
+            "src/lib.rs",
+            "use crate::{run::{Event}, STREAM};\n\nfn after() {\n    \
+             store.append(STREAM, &events);\n}\n",
+            &[],
+            &[],
+        ),
+        (
+            "a run::STREAM member of another module's group",
+            "src/lib.rs",
+            "use crate::{eventstore::Event, run::STREAM};\n\nfn member() {\n    \
+             store.append(STREAM, &events);\n}\n",
+            &["src/lib.rs:member"],
+            &[],
+        ),
+        (
             "another module's qualified STREAM",
             "src/lib.rs",
             "fn other() {\n    store.append(canary::STREAM, &events);\n}\n",
