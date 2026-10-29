@@ -1558,12 +1558,52 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
 /// most two processes, each waited to its exit: the detection's, then the hash's. A detection whose
 /// `git` cannot start, which says nothing about whether the write is owed, and a hash process that
 /// cannot start, or that fails - a write that fails included - fail the hash, each naming the
-/// command line it ran or could not start with, the root and the cause ([`git_failure`]).
+/// command line it ran or could not start with, the root and the cause ([`git_failure`]). A caller
+/// hashing more than once under one root binds it once ([`BlobHasher`]), so the detection runs once.
 pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> {
+    BlobHasher::new(root).hash(bytes)
+}
+
+/// [`hash_blob`] bound to one root for the binding's life: its repository detection
+/// ([`in_repository`]) is answered at the first hash and kept, so every later hash starts one
+/// process, the hash's own. A detection whose `git` could not start fails the hash that asked, as
+/// [`hash_blob`]'s does, and is kept for none: the next hash detects again.
+pub struct BlobHasher {
+    root: std::path::PathBuf,
+    inside: std::sync::OnceLock<bool>,
+}
+
+impl BlobHasher {
+    /// The binding of [`hash_blob`] to `root`, which has detected nothing yet.
+    pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            inside: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The object id git gives `bytes` under this binding's root, as [`hash_blob`] answers it.
+    pub fn hash(&self, bytes: &[u8]) -> Result<String, Error> {
+        let inside = match self.inside.get() {
+            Some(inside) => *inside,
+            None => {
+                let inside = in_repository(&self.root)?;
+                // Two hashes detecting at once answer the same root; the first kept stands.
+                let _ = self.inside.set(inside);
+                inside
+            }
+        };
+        hash_detected(&self.root, inside, bytes)
+    }
+}
+
+/// The hash [`hash_blob`] runs under `root` once its detection answered `inside`: writing the
+/// object inside a repository, hashing without a write outside one.
+fn hash_detected(root: &std::path::Path, inside: bool, bytes: &[u8]) -> Result<String, Error> {
     use std::io::Write;
     use std::process::Stdio;
 
-    let args: &[&str] = if in_repository(root)? {
+    let args: &[&str] = if inside {
         &[
             "-c",
             "core.fsync=loose-object",

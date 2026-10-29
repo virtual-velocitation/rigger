@@ -444,11 +444,14 @@ pub(crate) fn stderr_line(line: &str) {
 /// ([`rigger::worktree::hash_blob`]), which inside a repository writes the object it hashes into
 /// that repository's object database before the call returns (spec 124, THE BLOB IS WRITTEN), so
 /// another process re-extracting the entry reads its blob from there, and outside one hashes
-/// without writing; a hash that fails, a failed write included, answers its error.
+/// without writing; a hash that fails, a failed write included, answers its error. The binding
+/// detects whether `root` is inside a repository once, at its first hash, and keeps the answer
+/// ([`rigger::worktree::BlobHasher`]), so each hash is one process.
 pub(crate) fn hash_blob_in(
     root: &str,
 ) -> impl Fn(&[u8]) -> Result<String, rigger::worktree::Error> + Sync + '_ {
-    move |bytes| rigger::worktree::hash_blob(std::path::Path::new(root), bytes)
+    let hasher = rigger::worktree::BlobHasher::new(root);
+    move |bytes| hasher.hash(bytes)
 }
 
 /// Open the embedded sqlite event log at `path`. This is the ONE sqlite event-log constructor

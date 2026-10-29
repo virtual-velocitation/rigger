@@ -114,8 +114,9 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         } else {
             refuse_derived_reset_if_live(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?
         };
-        reset_derived(&loc, &|root, bytes| {
-            Ok(rigger::worktree::hash_blob(root, bytes)?)
+        reset_derived(&loc, &|root| {
+            let hasher = rigger::worktree::BlobHasher::new(root);
+            Box::new(move |bytes| Ok(hasher.hash(bytes)?))
         })?;
     }
     Ok(())
@@ -556,15 +557,18 @@ fn reset_derived(loc: &StoreLocation, hash: &HashBlob) -> Res {
     Ok(())
 }
 
-/// The one hash function as [`reset_derived`] takes it: the object id of `bytes` under a root,
-/// which the composition root binds to [`rigger::worktree::hash_blob`], so inside a repository
-/// the hash writes the object it hashes into that repository's object database (spec 124, THE
-/// BLOB IS WRITTEN) and outside one hashes without writing; or the failure of the hash, a failed
-/// write included.
-type HashBlob<'h> = dyn Fn(&Path, &[u8]) -> Result<String, Box<dyn std::error::Error>> + 'h;
+/// The one hash function as [`reset_derived`] takes it: bound to a root, the object id of `bytes`
+/// under it, which the composition root binds through [`rigger::worktree::BlobHasher`], so the
+/// binding detects the root's repository once, and inside a repository the hash writes the object
+/// it hashes into that repository's object database (spec 124, THE BLOB IS WRITTEN) and outside
+/// one hashes without writing; or the failure of the hash, a failed write included.
+type HashBlob<'h> = dyn Fn(&Path) -> Box<BoundHash<'h>> + 'h;
+
+/// [`HashBlob`] bound to one root: the object id of `bytes` under it, or the failure of the hash.
+type BoundHash<'h> = dyn Fn(&[u8]) -> Result<String, Box<dyn std::error::Error>> + 'h;
 
 /// What the ledger entry of each of `identities` records of the tree at `root` (spec 107): the
-/// blob `hash` gives the bytes the tree's one read rule ([`rigger::grounder::tree_bytes`]) hands
+/// blob `hash`, bound to `root` once, gives the bytes the tree's one read rule ([`rigger::grounder::tree_bytes`]) hands
 /// for the identity's path - none for a path it hands no bytes for - and whether the walk
 /// excludes the identity as an out-of-line test module's ([`rigger::ingest::walk_exclusions`]).
 /// A hash that fails fails the whole answer.
@@ -574,13 +578,14 @@ fn tree_entries(
     hash: &HashBlob,
 ) -> Result<std::collections::BTreeMap<String, (String, bool)>, Box<dyn std::error::Error>> {
     let (_, excluded) = rigger::ingest::walk_exclusions(&root.to_string_lossy());
+    let hash = hash(root);
     identities
         .iter()
         .map(|identity| {
             let bytes = rigger::retention::GenerationIngested::identity_parts(identity)
                 .and_then(|(prefix, file)| rigger::grounder::tree_bytes(root, prefix, file));
             let blob = match bytes {
-                Some(bytes) => hash(root, &bytes)?,
+                Some(bytes) => hash(&bytes)?,
                 None => String::new(),
             };
             Ok((identity.clone(), (blob, excluded.contains(identity))))
@@ -1609,11 +1614,12 @@ mod tests {
         let before = rows();
         let asked = std::cell::RefCell::new(Vec::new());
 
-        let failed = reset_derived(&loc, &|root, bytes| {
-            asked
-                .borrow_mut()
-                .push((root.canonicalize().unwrap(), bytes.to_vec()));
-            Err("no hash today".into())
+        let failed = reset_derived(&loc, &|root| {
+            let (asked, root) = (&asked, root.canonicalize().unwrap());
+            Box::new(move |bytes| {
+                asked.borrow_mut().push((root.clone(), bytes.to_vec()));
+                Err("no hash today".into())
+            })
         })
         .expect_err("a failed hash fails the migration");
 
@@ -1644,13 +1650,16 @@ mod tests {
         let graph_db = loc.file("graph.db");
         let second = std::cell::RefCell::new(Vec::new());
 
-        reset_derived(&loc, &|_, _| {
-            second.borrow_mut().push(
-                Projector::lock_rebuild(&graph_db)
-                    .map(drop)
-                    .map_err(|e| e.to_string()),
-            );
-            Ok("blob".to_string())
+        reset_derived(&loc, &|_| {
+            let (second, graph_db) = (&second, &graph_db);
+            Box::new(move |_| {
+                second.borrow_mut().push(
+                    Projector::lock_rebuild(graph_db)
+                        .map(drop)
+                        .map_err(|e| e.to_string()),
+                );
+                Ok("blob".to_string())
+            })
         })
         .expect("the migration runs");
 

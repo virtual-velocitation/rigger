@@ -639,7 +639,8 @@ fn cmd_graph_build(_args: &[String]) -> Res {
 }
 
 /// The walk of the tree at `root` into `store` and `graph`, answering the N of the build's line
-/// and the first fold it lost.
+/// and the first fold it lost. Every batch's blob is hashed through the one binding of the hash
+/// function to `root` ([`hash_blob_in`]), so the build detects the root's repository once.
 ///
 /// A re-build refreshes incrementally (spec 45) without reading the log (spec 101): the walk hands
 /// this each batch identity exactly once, and each batch is recorded by [`record_batch`], which
@@ -665,12 +666,15 @@ fn ingest_tree(
 ) -> Result<(usize, contextgraph::Fold), Box<dyn std::error::Error>> {
     let mut counted = 0usize;
     let mut first_lost = contextgraph::Fold::Folded;
+    let hash_blob = hash_blob_in(root);
     rigger::ingest::sink_walked_batches(
         |sink| {
             rigger::ingest::ingest_project_batched(root, sink);
         },
         |keyed, excluded| {
-            let Some((events, fold)) = record_batch(store, graph, root, keyed, excluded)? else {
+            let Some((events, fold)) =
+                record_batch(store, graph, root, &hash_blob, keyed, excluded)?
+            else {
                 return Ok::<(), Box<dyn std::error::Error>>(());
             };
             counted += events;
@@ -690,8 +694,8 @@ fn ingest_tree(
 ///
 /// What is recorded is decided by [`rigger::ingest::entry_of_batch`], the one function both
 /// ingest sinks call. This sink hands it what differs from the run's: the log side read from the
-/// store for each batch ([`rigger::ingest::latest_generation`]), with no memo, and the one hash
-/// function bound to git under `root` ([`hash_blob_in`]). The entry is built by its one
+/// store for each batch ([`rigger::ingest::latest_generation`]), with no memo, and `hash`, the one
+/// hash function bound to git under `root` ([`hash_blob_in`]). The entry is built by its one
 /// constructor and carries no run id, there being no run, and it is appended and folded with its
 /// extraction through the ledger form of the folding store, in ONE store append, the entry and its
 /// extraction committing in the transaction
@@ -706,6 +710,7 @@ fn record_batch(
     store: &dyn EventStore,
     graph: &dyn Projection,
     root: &str,
+    hash: &rigger::ingest::HashBlob,
     keyed: &[(String, &Event)],
     excluded: bool,
 ) -> Result<Option<(usize, contextgraph::Fold)>, Box<dyn std::error::Error>> {
@@ -715,7 +720,7 @@ fn record_batch(
         excluded,
         |identity| rigger::ingest::latest_generation(store, conductor::STREAM, identity),
         graph,
-        &hash_blob_in(root),
+        hash,
     )?;
     let Some(recorded) = recorded else {
         return Ok(None);
@@ -742,6 +747,7 @@ fn record_batch(
     _store: &dyn EventStore,
     _graph: &dyn Projection,
     _root: &str,
+    _hash: &(dyn Fn(&[u8]) -> Result<String, rigger::worktree::Error> + Sync),
     _keyed: &[(String, &Event)],
     _excluded: bool,
 ) -> Result<Option<(usize, contextgraph::Fold)>, Box<dyn std::error::Error>> {
