@@ -649,7 +649,7 @@ fn the_public_sink_answer_fails_naming_a_key_with_no_identity_and_a_hash_that_ca
     let why = cannot_start(b"").unwrap_err();
     assert!(
         why.0.starts_with(&format!(
-            "git hash-object --stdin in {}: ",
+            "git hash-object --no-filters --stdin in {}: ",
             nowhere.display()
         )),
         "sanity: the hash names its command and root: {why}"
