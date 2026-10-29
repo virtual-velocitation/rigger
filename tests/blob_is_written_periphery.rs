@@ -22,18 +22,25 @@ mod common;
 use common::cli::{batch_events, graph_build_line, recorded_and_walked, run_rigger};
 use common::fixtures::{
     assert_outside_any_repository, dir_snapshot, git_dir, git_init_quiet, planted_extraction_tree,
-    write_file, EntryRecord,
+    write_file, EntryRecord, WALKED,
 };
 use common::git::{assert_holds_no_object, held_blob, object_ids};
 use std::collections::BTreeSet;
 use std::path::Path;
 
-/// Run `rigger graph build` at `root` and assert it succeeds recording exactly what the walk
-/// extracts - one ledger entry per batch, each under the id `git hash-object` gives its file's
-/// bytes - its line counting the entries' events: the entries it recorded.
+/// Run `rigger graph build` at `root`, where the extraction tree is planted, and assert it
+/// succeeds recording exactly what the walk extracts - one ledger entry per batch, each under the
+/// id `git hash-object` gives its file's bytes - its line counting the entries' events, the walk
+/// extracting each batch the tree holds ([`WALKED`]), so what a caller asserts over the entries
+/// never holds of a walk that extracts nothing: the entries it recorded.
 fn build_records_the_walk(root: &Path) -> Vec<EntryRecord> {
     let (out, err, ok) = run_rigger(root, &["graph", "build"]);
     let [recorded, walked] = recorded_and_walked(root);
+    assert_eq!(
+        walked.len(),
+        WALKED.len(),
+        "the walk extracts each batch the extraction tree holds"
+    );
     assert_eq!(
         (ok, out, recorded.clone()),
         (true, graph_build_line(batch_events(&walked), ""), walked),
