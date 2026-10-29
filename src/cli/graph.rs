@@ -692,10 +692,12 @@ fn ingest_tree(
 /// store for each batch ([`rigger::ingest::latest_generation`]), with no memo, and the one hash
 /// function bound to git under `root` ([`hash_blob_in`]). The entry is built by its one
 /// constructor and carries no run id, there being no run, and it is appended and folded with its
-/// extraction through the ledger form of the folding store, in ONE store append and ONE graph
-/// transaction. A batch whose key names no identity, and a failed read of either side, of the
-/// bytes or of the hash, fails with that failure's text and records nothing, as a refused append
-/// does. A lost fold is answered, never said here: the build's line names it.
+/// extraction through the ledger form of the folding store, in ONE store append, the entry and its
+/// extraction committing in the transaction
+/// [`Projection::apply_generation`](rigger::contextgraph::Projection::apply_generation) states. A
+/// batch whose key names no identity, and a failed read of either side, of the bytes or of the
+/// hash, fails with that failure's text and records nothing, as a refused append does. A lost
+/// fold is answered, never said here: the build's line names it.
 ///
 /// An entry counts its batch's events unless the ledger form reports it a re-recording.
 #[cfg(feature = "symbols")]

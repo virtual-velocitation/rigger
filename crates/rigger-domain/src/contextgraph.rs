@@ -763,8 +763,8 @@ pub enum EntryFold {
 /// The function [`Projection::apply_generation`] asks for an entry's batch, at most once: the
 /// batch's events, `None` when no source resolves the entry, or an error, which fails the fold.
 /// It runs inside the fold's transaction, while the projection is held for that write, or just
-/// before that transaction opens: it must not read or fold the projection it is handed to, and
-/// must do no slow work there.
+/// before that transaction opens, as [`Projection::apply_generation`] says: it must not read or
+/// fold the projection it is handed to, and must do no slow work there.
 pub type EntryBatch<'a> = Box<dyn FnOnce() -> Result<Option<Vec<Event>>, Error> + 'a>;
 
 /// The permission to fold into a [`Projection`] through [`Projection::apply`] and
@@ -923,10 +923,11 @@ pub trait Projection: Send + Sync {
     /// over may instead record the entry's position so - its own payload or an event of its batch
     /// rejected, or its batch `None` - and answer that cause as its error. `batch` runs inside
     /// that transaction, while this projection is held for the write, or just before it opens: it
-    /// must not read or fold this projection, and must do no slow work there. A ledger entry folds
-    /// with a batch it is handed only here: an implementor that folds refuses one handed to
-    /// [`apply`](Projection::apply) or [`apply_batch`](Projection::apply_batch), or folds it there
-    /// with the batch its own source derives for it. It takes no [`FoldAccess`].
+    /// must not read or fold this projection, and must do no slow work there; which of the two the
+    /// sqlite `Projector` does on each of its paths its own `apply_generation` doc states. A ledger
+    /// entry folds with a batch it is handed only here: an implementor that folds refuses one
+    /// handed to [`apply`](Projection::apply) or [`apply_batch`](Projection::apply_batch), or
+    /// folds it there with the batch its own source derives for it. It takes no [`FoldAccess`].
     fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error>;
 
     /// The generation this projection currently holds for the `<prefix>/<file>` identity

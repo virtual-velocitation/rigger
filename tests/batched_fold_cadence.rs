@@ -272,11 +272,11 @@ fn append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch() 
 }
 
 /// End-to-end integration seam: `rigger::ingest::FoldingStore::append_and_fold` folds a whole batch through a
-/// REAL sqlite `Projector` (its ONE-transaction `apply_batch` override), reached here through the
-/// PUBLIC ingest authority rather than the in-crate `super::` path the unit test uses. Building
-/// `DecisionMade` events (whose fold is always compiled, so this runs in both lanes) and reading the
-/// result back through the public `subgraph` proves the ingest -> contextgraph seam: one live
-/// `GOVERNS` edge per decision, folded from the batch alone.
+/// REAL sqlite `Projector` (its `apply_batch` override, at the transaction cadence that override's
+/// doc states), reached here through the PUBLIC ingest authority rather than the in-crate `super::`
+/// path the unit test uses. Building `DecisionMade` events (whose fold is always compiled, so this
+/// runs in both lanes) and reading the result back through the public `subgraph` proves the ingest
+/// -> contextgraph seam: one live `GOVERNS` edge per decision, folded from the batch alone.
 #[test]
 fn append_and_fold_folds_a_whole_batch_through_a_real_projector() {
     let store = Store::open(":memory:").unwrap();
