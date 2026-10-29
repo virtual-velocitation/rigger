@@ -1129,9 +1129,10 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// binary's lost fold left beside the file once it carries `caught_up`, whether or not the seeding
 /// was contended or the catch-up stopped ([`Projector::forget_cursored_mark`], spec 124, THE
 /// MARK); and report whether it rebuilt. A catch-up that stopped at a failure fails setup with the
-/// line naming where it stopped, whatever the removal answered - a mark left standing is no cause,
-/// and the next setup's removal retries it; only when the catch-up did not stop at a failure is a
-/// mark the removal cannot remove setup's failure, naming the mark.
+/// line naming where it stopped, whatever the passed-over read or the removal answered - a mark
+/// left standing is no cause, and the next setup's removal retries it; only when the catch-up did
+/// not stop at a failure is a failed passed-over read setup's failure, and after it a mark the
+/// removal cannot remove, naming the mark.
 fn pay_owed_rebuild<'t>(
     held: &contextgraph::sqlite::RebuildLock,
     graph: &Projector,
@@ -1191,18 +1192,24 @@ fn pay_owed_rebuild<'t>(
     if let Ok(Some(line)) = &caught_up {
         println!("{line}");
     }
-    let passed = graph.passed_over()?;
-    if let Some(by_cause) = passed_over_by_cause(&passed) {
-        println!(
-            "passed over {} event(s) the fold could not fold {by_cause}, recorded as folded - {}",
-            passed.total(),
-            PASSED_OVER_RETRIED
-        );
+    let passed = graph.passed_over();
+    if let Ok(passed) = &passed {
+        if let Some(by_cause) = passed_over_by_cause(passed) {
+            println!(
+                "passed over {} event(s) the fold could not fold {by_cause}, recorded as folded - \
+                 {}",
+                passed.total(),
+                PASSED_OVER_RETRIED
+            );
+        }
     }
     let forgotten = graph.forget_cursored_mark();
+    // A catch-up that stopped at a failure is setup's failure first, whatever the passed-over
+    // read or the mark's removal answered, so its line and position are never masked.
     if let Err(stopped) = caught_up {
         return Err(stopped.into());
     }
+    passed?;
     forgotten?;
     Ok(rebuilt.is_some())
 }
