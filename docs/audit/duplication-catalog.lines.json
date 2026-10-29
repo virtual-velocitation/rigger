@@ -134,8 +134,8 @@
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 725,
-        "end_line": 737
+        "start_line": 730,
+        "end_line": 742
       },
       {
         "file": "src/cli/mod.rs",
@@ -1539,8 +1539,8 @@
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 677,
-        "end_line": 677
+        "start_line": 682,
+        "end_line": 682
       },
       {
         "file": "src/cli/mod.rs",
@@ -6254,8 +6254,8 @@
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1004,
-        "end_line": 1009
+        "start_line": 1009,
+        "end_line": 1014
       }
     ]
   },
@@ -6874,13 +6874,13 @@
     "sites": [
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1987,
-        "end_line": 2007
+        "start_line": 1992,
+        "end_line": 2012
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 2061,
-        "end_line": 2082
+        "start_line": 2066,
+        "end_line": 2087
       }
     ]
   },
@@ -6889,8 +6889,8 @@
     "sites": [
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 2123,
-        "end_line": 2132
+        "start_line": 2128,
+        "end_line": 2137
       },
       {
         "file": "tests/simplification_audit.rs",

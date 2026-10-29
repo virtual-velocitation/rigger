@@ -480,8 +480,9 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
 /// every namespaced read and write of this project uses (`StoreLocation::run_stream`). Before that
 /// transaction opens it reads what the stream holds ([`Store::count_derived`]) and answers, for
 /// every identity holding a derived event, the blob and the flag its entry records
-/// ([`tree_entries`]) under THE ONE ROOT ([`tree_root`]); `hash` is the one hash function, handed
-/// in by the composition root, and a hash that fails fails the command before any row changes.
+/// ([`tree_entries`]) under THE ONE ROOT ([`tree_root`]); `hash` is the one hash function
+/// ([`HashBlob`]), handed in by the composition root, which writes the object it hashes when the
+/// root is inside a repository, and a hash that fails fails the command before any row changes.
 /// A store holding no derived event has nothing to shed and says so.
 ///
 /// Either way it then reclaims the space the log's file holds free
@@ -555,7 +556,11 @@ fn reset_derived(loc: &StoreLocation, hash: &HashBlob) -> Res {
     Ok(())
 }
 
-/// The one hash function as [`reset_derived`] takes it: the object id of `bytes` under a root.
+/// The one hash function as [`reset_derived`] takes it: the object id of `bytes` under a root,
+/// which the composition root binds to [`rigger::worktree::hash_blob`], so inside a repository
+/// the hash writes the object it hashes into that repository's object database (spec 124, THE
+/// BLOB IS WRITTEN) and outside one hashes without writing; or the failure of the hash, a failed
+/// write included.
 type HashBlob<'h> = dyn Fn(&Path, &[u8]) -> Result<String, Box<dyn std::error::Error>> + 'h;
 
 /// What the ledger entry of each of `identities` records of the tree at `root` (spec 107): the
