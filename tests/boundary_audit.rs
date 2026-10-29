@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 mod source_audit;
 use source_audit::{
     assert_real_tree_clean, cfg_test_ranges, enclosing_fn_line, fn_sig_lines, gate_name_in,
-    holds_whole_word, in_ranges, tokenize, write_file, Finding, RawKind, GATE_WORD,
+    holds_whole_word, in_ranges, tokenize, write_file, Finding, RawKind, RawTok, GATE_WORD,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -612,10 +612,11 @@ fn fn_name(line: &str) -> String {
         .collect()
 }
 
-/// One production file read for a site scan: the lines of its production part (the text
-/// before its `mod tests` block), the `#[cfg(test)]` item ranges among them and the lines that
-/// declare a function.
+/// One production file read for a site scan: its production part (the text before its
+/// `mod tests` block), that part's lines, the `#[cfg(test)]` item ranges among them and the
+/// lines that declare a function.
 struct ProductionFile<'t> {
+    part: &'t str,
     lines: Vec<&'t str>,
     tests: Vec<(usize, usize)>,
     sigs: Vec<usize>,
@@ -623,10 +624,16 @@ struct ProductionFile<'t> {
 
 impl<'t> ProductionFile<'t> {
     fn read(text: &'t str) -> Self {
-        let lines: Vec<&str> = production_part(text).lines().collect();
+        let part = production_part(text);
+        let lines: Vec<&str> = part.lines().collect();
         let tests = cfg_test_ranges(&lines);
         let sigs = fn_sig_lines(&lines, &tests);
-        Self { lines, tests, sigs }
+        Self {
+            part,
+            lines,
+            tests,
+            sigs,
+        }
     }
 
     /// Whether 0-based line `at` lies inside a `#[cfg(test)]` item.
@@ -820,10 +827,131 @@ fn site_set(sites: &[&str]) -> BTreeSet<String> {
     sites.iter().map(|s| (*s).to_string()).collect()
 }
 
+/// The free or path calls that append when their argument list names the project stream; a
+/// method `.append(` does too.
+const APPEND_CALLS: &[&str] = &["append_and_fold", "append_entry_and_fold", "emit_event"];
+
+/// The free or path calls that open the context graph; `Projector::open(` and a method
+/// `.graph(` do too.
+const OPEN_CALLS: &[&str] = &["open_graph_for_write", "open_graph"];
+
+/// The modules whose `STREAM` is the project stream's constant: `run` defines it and
+/// `conductor` re-exports it.
+const STREAM_MODULES: &[&str] = &["conductor", "run"];
+
+/// Whether `tok` is the punctuation `p`.
+fn is_punct(tok: &RawTok, p: &str) -> bool {
+    tok.kind == RawKind::Punct && tok.text == p
+}
+
+/// The path segment before the `::` that precedes the token at `at`, as in `run` of
+/// `run::STREAM`, or `None` when no `::` precedes it.
+fn segment_before(toks: &[RawTok], at: usize) -> Option<&str> {
+    let lead = toks.get(at.checked_sub(3)?..at)?;
+    (is_punct(&lead[1], ":") && is_punct(&lead[2], ":")).then_some(lead[0].text.as_str())
+}
+
+/// The name called at `at`: an identifier followed by `(` that is no `fn` declaration.
+fn called_at(toks: &[RawTok], at: usize) -> Option<&str> {
+    let declared = at
+        .checked_sub(1)
+        .is_some_and(|b| toks[b].kind == RawKind::Keyword && toks[b].text == "fn");
+    let call =
+        toks[at].kind == RawKind::Ident && toks.get(at + 1).is_some_and(|t| is_punct(t, "("));
+    (call && !declared).then_some(toks[at].text.as_str())
+}
+
+/// Whether the call at `at` is a method call, its name after a `.`.
+fn is_method(toks: &[RawTok], at: usize) -> bool {
+    at.checked_sub(1).is_some_and(|b| is_punct(&toks[b], "."))
+}
+
+/// The index of the `)` that closes the `(` at `open`, or the end of `toks` when none does.
+fn close_of(toks: &[RawTok], open: usize) -> usize {
+    let mut depth = 0usize;
+    for (at, tok) in toks.iter().enumerate().skip(open) {
+        if is_punct(tok, "(") {
+            depth += 1;
+        } else if is_punct(tok, ")") {
+            depth -= 1;
+            if depth == 0 {
+                return at;
+            }
+        }
+    }
+    toks.len()
+}
+
+/// Whether the `STREAM` at `at` is the project stream's constant: qualified by a
+/// [`STREAM_MODULES`] segment, or bare in a file that imports it from `run` (`bare_is_run`).
+fn is_project_stream(toks: &[RawTok], at: usize, bare_is_run: bool) -> bool {
+    toks[at].kind == RawKind::Ident
+        && toks[at].text == "STREAM"
+        && segment_before(toks, at).map_or(bare_is_run, |m| STREAM_MODULES.contains(&m))
+}
+
+/// Whether a `use` declaration among `toks` imports `STREAM` from a `run` path segment: as
+/// `run::STREAM`, or as a member at the top of a `run::{..}` group.
+fn imports_run_stream(toks: &[RawTok]) -> bool {
+    // Inside a `use` declaration, the segment that owns each open group, innermost last.
+    let mut owners: Option<Vec<&str>> = None;
+    for (at, tok) in toks.iter().enumerate() {
+        let Some(groups) = owners.as_mut() else {
+            if tok.kind == RawKind::Keyword && tok.text == "use" {
+                owners = Some(Vec::new());
+            }
+            continue;
+        };
+        if is_punct(tok, ";") {
+            owners = None;
+        } else if is_punct(tok, "{") {
+            groups.push(segment_before(toks, at).unwrap_or_default());
+        } else if is_punct(tok, "}") {
+            groups.pop();
+        } else if tok.kind == RawKind::Ident && tok.text == "STREAM" {
+            let owner = segment_before(toks, at).or(groups.last().copied());
+            if owner == Some("run") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Every production site under `root` that appends to the project stream or opens the context
-/// graph ([`PROJECT_STREAM_APPENDS`] and [`GRAPH_OPENS`] name the two families).
-fn stream_sites(_root: &Path) -> StreamSites {
-    StreamSites::default()
+/// graph ([`PROJECT_STREAM_APPENDS`] and [`GRAPH_OPENS`] name the two families). Each file's
+/// production part is read through [`tokenize`], so a call spelled in a comment or a string
+/// literal is none, and a token on a `#[cfg(test)]` item's line is dropped.
+fn stream_sites(root: &Path) -> StreamSites {
+    let mut sites = StreamSites::default();
+    for (rel, text) in production_sources(root) {
+        let file = ProductionFile::read(&text);
+        let chars: Vec<char> = file.part.chars().collect();
+        let toks: Vec<RawTok> = tokenize(&chars)
+            .into_iter()
+            .filter(|tok| !file.in_test(tok.line - 1))
+            .collect();
+        let bare_is_run = imports_run_stream(&toks);
+        for at in 0..toks.len() {
+            let Some(name) = called_at(&toks, at) else {
+                continue;
+            };
+            let append = APPEND_CALLS.contains(&name) || name == "append" && is_method(&toks, at);
+            let open = OPEN_CALLS.contains(&name)
+                || name == "graph" && is_method(&toks, at)
+                || name == "open" && segment_before(&toks, at) == Some("Projector");
+            if append
+                && (at + 2..close_of(&toks, at + 1))
+                    .any(|arg| is_project_stream(&toks, arg, bare_is_run))
+            {
+                sites.appends.insert(file.site(&rel, toks[at].line - 1));
+            }
+            if open {
+                sites.opens.insert(file.site(&rel, toks[at].line - 1));
+            }
+        }
+    }
+    sites
 }
 
 #[test]

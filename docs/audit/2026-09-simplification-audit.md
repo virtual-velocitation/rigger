@@ -2668,7 +2668,7 @@ project identity so one backend can hold many projects without their data mixing
          per-machine `.rigger/store.conn` secret file) and the graph inspector's real query \
          surface (the three `lens=` names and the directed `view=calls` `dir=` views). \
          Surfaces the document fails to name: {missing:#?}"`
-- `tests/boundary_audit.rs:1115-1115` `"let b = \"sh .rigger/gates/mutation.sh\";\n"`
+- `tests/boundary_audit.rs:1243-1243` `"let b = \"sh .rigger/gates/mutation.sh\";\n"`
 - `tests/canary_model_drift_periphery.rs:63-63` `".rigger"`
 - `tests/change_path_revert_periphery.rs:83-83` `".rigger"`
 - `tests/checkin_mutation_diff_base_periphery.rs:63-63` `".rigger"`
@@ -5333,7 +5333,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10155 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10162 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:5001-5042` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15042-15064` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
