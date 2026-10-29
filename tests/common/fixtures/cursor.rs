@@ -5,7 +5,7 @@
 //! horizon - shared by the root suites and the graph crate's inline tests.
 
 use rigger::contextgraph::sqlite::{
-    PositionSource, Projector, Seeding, StampLookup, CATCH_UP_HORIZON,
+    causes_once_seeded, PositionSource, Projector, Seeding, StampLookup, CATCH_UP_HORIZON,
 };
 use rigger::eventstore::Event;
 use std::path::Path;
@@ -46,21 +46,38 @@ pub fn stamp_in(
         .map(|e| e.recorded_at))
 }
 
-/// Why the graph file behind `p` owes its rebuild as `rigger setup` reads it: its cursor seeded
+/// What `rigger setup` reads of why the graph file behind `p` owes its rebuild: its cursor seeded
 /// now against the positions `live` streams, each missing position's stamp read through
-/// `stamp_of`, handed `head` as the log's head, then the causes the file carries joined by the
-/// seeding's verdict.
+/// `stamp_of`, handed `head` as the log's head, then the causes the file itself records
+/// ([`Projector::owed_because`]) beside the seeding's verdict, whose lost fold setup names as a
+/// cause of its own.
 pub fn owed_once_seeded(
     p: &Projector,
     live: &mut PositionSource,
     stamp_of: &mut StampLookup,
     head: Option<u64>,
-) -> Vec<&'static str> {
+) -> (Vec<&'static str>, Seeding) {
     let seeding = p
         .seed_cursor(live, stamp_of, head, SystemTime::now())
         .unwrap();
-    p.owed_against(&seeding).unwrap()
+    (p.owed_because().unwrap(), seeding)
 }
+
+/// Whether `rigger setup` rebuilds the graph file on what [`owed_once_seeded`] read of it: it names
+/// a cause for it ([`causes_once_seeded`]) - one the file records, or the lost fold its seeding
+/// found.
+pub fn setup_owes((causes, seeding): &(Vec<&'static str>, Seeding)) -> bool {
+    !causes_once_seeded(causes.clone(), seeding).is_empty()
+}
+
+/// What [`owed_once_seeded`] reads of a graph file that records no cause and whose seeding finds
+/// nothing lost: setup owes it nothing.
+pub const NOTHING_OWED_ONCE_SEEDED: (Vec<&str>, Seeding) =
+    (Vec::new(), Seeding::Ran { lost: false });
+
+/// What [`owed_once_seeded`] reads of a graph file that records no cause and whose seeding finds
+/// the prefix it folded violated: setup owes it the lost fold alone.
+pub const LOST_FOLD_ONCE_SEEDED: (Vec<&str>, Seeding) = (Vec::new(), Seeding::Ran { lost: true });
 
 /// Run `run` while the seeding `rigger setup` runs of the cursor of the graph file `open` opens
 /// holds that file's write lock: the seeding's source streams the positions of `log`, then waits

@@ -541,10 +541,10 @@ fn entry_blobs(root: &Path) -> Option<rigger::worktree::BlobBatch> {
 
 /// Open this project's `graph.db` for write ([`open_graph_for_write`], under `selection`) for
 /// `command`, whose answer depends on the fold (spec 101): a file that says it owes its rebuild -
-/// folded under an older fold rule, or carrying the mark an older binary wrote for a fold into it
-/// that failed, since no fold writes one now (spec 124) - is refused at once,
-/// naming `rigger setup` - the one command that rebuilds it - never waited on, rebuilt or folded
-/// into here. The open itself writes nothing to such a file.
+/// folded under an older fold rule, never for the mark an older binary's lost fold left beside it
+/// (spec 124, THE MARK) - is refused at once, naming `rigger setup` - the one command that
+/// rebuilds it - never waited on, rebuilt or folded into here. The open itself writes nothing to
+/// such a file.
 fn open_graph(
     graph_db: &str,
     project: &str,

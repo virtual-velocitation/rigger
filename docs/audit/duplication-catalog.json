@@ -1232,7 +1232,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-641bad5b9be4",
+    "id": "dup-d3159704b210",
     "classification": "semantic",
     "sites": [
       {
@@ -3301,11 +3301,6 @@
         "content_hash": "25597419b8dbb616"
       },
       {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "7a7f99994acd24d9"
-      },
-      {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "98eec4bb59ff365c"
@@ -4212,7 +4207,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 595 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 594 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

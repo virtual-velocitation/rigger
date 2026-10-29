@@ -39,6 +39,13 @@
 //!      head of a log replaced by a shorter one, and fails, naming the position its catch-up
 //!      stopped at, when a fold meets a storage error, the next setup folding on once the storage
 //!      recovers.
+//!   7. **The owed mark.** A `graph.db.owed` mark an older binary's lost fold left is no cause:
+//!      beside a `graph.db` carrying its `caught_up` cursor an emit folds, no fold-dependent command
+//!      refuses, no read-only surface says the rebuild is owed, and `rigger setup` rebuilds nothing
+//!      for it, folds on from the cursor and removes it at its last step, even when its catch-up
+//!      stops - a mark no removal can remove fails setup, naming it, only when the catch-up did not
+//!      stop at a failure; beside a file without its cursor it is no cause either, the seeding
+//!      reading the file's ledger against the log, never the mark.
 
 mod common;
 
@@ -114,7 +121,7 @@ use common::fixtures::STEP_LOCK_REASON;
 use common::fixtures::{catch_up_failed_line, the_disk_gives_out_at_d_boom, the_disk_recovers};
 use common::fixtures::{graph_error, not_folded, not_folded_suffix, NOT_A_DATABASE};
 use common::fixtures::{lost_by_calls, UNFINISHED_REBUILD};
-use common::fixtures::{mark_owed_in, mark_stands_beside};
+use common::fixtures::{mark_owed_in, mark_stands_beside, owed_mark_in, unremovable_mark_beside};
 use common::fixtures::{source_interrupted, SOURCE_INTERRUPTED};
 use common::fixtures::{under_a_seedings_lock, with_graph_locked, with_graph_locked_for};
 use common::fixtures::{HELD_PAST_THE_BUSY_TIMEOUT, HELD_WITHIN_THE_BUSY_TIMEOUT};
@@ -701,7 +708,7 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
         .unwrap()
         .rebuild(
             &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
-            !owed.is_empty(),
+            common::fixtures::setup_owes(&owed),
             &mut stream_source(&counting, rigger::conductor::STREAM, 2),
             &mut |_| Ok(None),
             &mut no_progress,
@@ -710,7 +717,7 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
     assert_eq!(
         (owed, rebuilt, counting.reads()),
         (
-            vec![rigger::contextgraph::OWED_LOST_FOLD],
+            common::fixtures::LOST_FOLD_ONCE_SEEDED,
             Some(Rebuilt::default()),
             vec![
                 CountedRead::StreamPositions {
@@ -1567,12 +1574,12 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
     );
 }
 
-/// Given a `graph.db` that owes its rebuild for both causes at once - the release before the
-/// generation rule folded it, and it misses an event the log holds - when the operator runs `rigger setup`,
-/// then setup names both causes in order, pays both with its one rebuild (the lost fold's mark is
+/// Given a `graph.db` the release before the generation rule folded, beside which the owed mark an
+/// older binary's lost fold left stands, when the operator runs `rigger setup`, then setup names
+/// the older fold rule alone - the mark is no cause - and pays it with one rebuild (the mark is
 /// gone and the file records the current rule), and a second `rigger setup` owes nothing.
 #[test]
-fn rigger_setup_names_both_causes_a_graph_db_owes_its_rebuild_for_and_pays_both() {
+fn rigger_setup_names_the_older_rule_alone_beside_an_owed_mark_and_its_rebuild_drops_the_mark() {
     let store = ReleaseEraStore::new();
     let mark = mark_owed_in(store.graph_db.parent().unwrap());
     let out = setup_ok(store.root(), &[("RIGGER_NPM", "true")]);
@@ -1580,13 +1587,14 @@ fn rigger_setup_names_both_causes_a_graph_db_owes_its_rebuild_for_and_pays_both(
         out.lines()
             .filter(|l| l.starts_with("rebuilding graph.db"))
             .collect::<Vec<_>>(),
-        vec![BOTH_CAUSES_REBUILD_LINE],
-        "setup names the older rule first and the lost fold second; stdout: {out}"
+        vec![OLDER_RULE_REBUILD_LINE],
+        "setup names the older rule alone: the mark is no cause; stdout: {out}"
     );
     assert_eq!(
         (mark.exists(), user_version(&store.graph_db)),
         (false, PROJECTION_VERSION),
-        "the one rebuild pays both: the mark is dropped and the file records the current rule"
+        "the one rebuild pays the older rule: the mark is dropped and the file records the current \
+         rule"
     );
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
     assert_eq!(graph, fresh, "the rebuilt graph.db is the whole log's");
@@ -2475,13 +2483,17 @@ fn setup_folds_a_cursored_graph_db_forward_over_a_gap_longer_than_a_page() {
 }
 
 /// Given a `graph.db` carrying its `caught_up` cursor that misses an event appended behind every
-/// fold, when the operator runs `rigger setup` while the file's storage refuses that event's node
+/// fold, beside which `stand` leaves the owed mark's path as the row finds it, when the operator
+/// runs `rigger setup` while the file's storage refuses that event's node
 /// ([`the_disk_gives_out_at_d_boom`]), then setup's catch-up stops at the cursor and setup fails
-/// naming that position and the storage error, leaving the event missing and the cursor where it
-/// stood; once the storage recovers, the next `rigger setup` folds the event forward from the
-/// cursor and moves the cursor to it.
-#[test]
-fn setup_whose_catch_up_meets_a_storage_error_fails_at_the_cursor_and_the_next_setup_folds_on() {
+/// naming that position and the storage error whatever its removal of the mark answered, leaving
+/// the event missing and the cursor where it stood; setup removes a standing mark from a file
+/// carrying `caught_up` even when its catch-up stops, so the mark stands after it only when `kept`
+/// says no removal can remove it (spec 124, THE MARK). Once the storage recovers, the next `rigger
+/// setup` folds the event forward from the cursor and moves the cursor to it, and fails naming the
+/// mark only when `kept` says it still stands: its catch-up did not stop, so its failed removal of
+/// the mark is its failure.
+fn setup_whose_catch_up_meets_a_storage_error(stand: fn(&Path), kept: bool) {
     let dir = temp_store_project();
     let root = dir.path();
     emit_the_first_decision_after_setup(root);
@@ -2489,6 +2501,7 @@ fn setup_whose_catch_up_meets_a_storage_error_fails_at_the_cursor_and_the_next_s
     let cursor = caught_up_at(&graph_db).unwrap();
     let lost = append_unfolded_decision_named(root, D_BOOM);
     the_disk_gives_out_at_d_boom(&graph_db);
+    stand(&graph_db);
 
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     let refused = refusal_line(&catch_up_failed_line(cursor, DISK_GAVE_OUT));
@@ -2498,30 +2511,67 @@ fn setup_whose_catch_up_meets_a_storage_error_fails_at_the_cursor_and_the_next_s
             err.lines().last(),
             common::cli::rebuild_lines(&out),
             applied(&graph_db, lost),
-            caught_up_at(&graph_db)
+            caught_up_at(&graph_db),
+            mark_stands_beside(&graph_db)
         ),
         (
             false,
             Some(refused.as_str()),
             Vec::<String>::new(),
             false,
-            Some(cursor)
+            Some(cursor),
+            kept
         ),
-        "setup fails naming where its catch-up stopped and why, and leaves the event missing and \
-         the cursor where it stood; stdout: {out} stderr: {err}"
+        "setup fails naming where its catch-up stopped and why, and leaves the event missing, the \
+         cursor where it stood and the owed mark only where no removal can remove it; stdout: \
+         {out} stderr: {err}"
     );
 
     the_disk_recovers(&graph_db);
-    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert_eq!(
         (
+            common::cli::failure_line(ok, &err),
             common::cli::rebuild_lines(&out),
             applied(&graph_db, lost),
-            caught_up_at(&graph_db)
+            caught_up_at(&graph_db),
+            mark_stands_beside(&graph_db)
         ),
-        (vec![caught_up_line(1)], true, Some(lost)),
-        "once the storage recovers, setup folds the event forward from the cursor; stdout: {out}"
+        (
+            kept.then(common::cli::unremovable_mark_refusal),
+            vec![caught_up_line(1)],
+            true,
+            Some(lost),
+            kept
+        ),
+        "once the storage recovers, setup folds the event forward from the cursor, and fails \
+         naming the mark only where it still stands; stdout: {out} stderr: {err}"
     );
+}
+
+rigger::test_cases! {
+    /// No owed mark stands beside the file: setup's stopped catch-up writes none.
+    setup_whose_catch_up_meets_a_storage_error_fails_at_the_cursor_and_the_next_setup_folds_on:
+        setup_whose_catch_up_meets_a_storage_error(|_| {}, false);
+    /// The owed mark stands beside the file: setup removes it before failing at the cursor, the
+    /// file carrying `caught_up`.
+    setup_whose_catch_up_meets_a_storage_error_beside_an_owed_mark_still_removes_the_mark:
+        setup_whose_catch_up_meets_a_storage_error(
+            |graph_db| {
+                mark_owed_in(graph_db.parent().unwrap());
+            },
+            false,
+        );
+    /// A directory stands at the owed mark's path ([`unremovable_mark_beside`]): setup's removal
+    /// of it fails, yet setup fails naming where its catch-up stopped and the mark stands; once the
+    /// storage recovers, the next setup catches up and fails naming the mark.
+    setup_whose_catch_up_meets_a_storage_error_beside_a_mark_it_cannot_remove_names_the_stop:
+        setup_whose_catch_up_meets_a_storage_error(
+            |graph_db| {
+                unremovable_mark_beside(graph_db);
+            },
+            true,
+        );
 }
 
 /// Given a `graph.db` without the `caught_up` cursor that folded the log, on a project whose
@@ -3941,13 +3991,12 @@ fn an_identity_migration_into_a_graph_that_owes_its_rebuild_says_its_decision_wa
     );
 }
 
-/// Given a `graph.db` an older binary's lost fold left owed - an event on the log it misses, and
-/// the owed mark beside it - on a project whose identity is minted, so no identity migration waits
-/// for the next setup, when the operator removes the graph file and runs `rigger setup`, then
-/// setup drops the mark the removed file left behind and rebuilds a fresh graph from the log - its
-/// own open creates the file, an empty ledger beside a non-empty log - the lost event folded with
-/// the rest, so the next emit folds into it rather than inheriting a debt that file no longer
-/// carries.
+/// Given a `graph.db` an older binary's lost fold left behind - an event on the log it misses, and
+/// the owed mark beside it, no cause of its rebuild - on a project whose identity is minted, so no
+/// identity migration waits for the next setup, when the operator removes the graph file and runs
+/// `rigger setup`, then setup drops the mark the removed file left behind and rebuilds a fresh
+/// graph from the log - its own open creates the file, an empty ledger beside a non-empty log - the
+/// lost event folded with the rest, and the next emit folds into it.
 #[test]
 fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_folds() {
     let dir = temp_store_project();
@@ -3965,6 +4014,225 @@ fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_fol
         "setup drops the mark of the removed graph file and rebuilds a fresh one from the log"
     );
     emit_folding(root, "d-fresh");
+}
+
+/// Given a `graph.db` on a project whose identity is minted, beside which the owed mark stands as
+/// an older binary's lost fold left it, when the operator emits a decision, then it folds: the mark
+/// refuses no fold. When `stand` then leaves the file and its mark as the row finds them and the
+/// operator runs `rigger setup`, under another writer's write lock past the busy timeout when
+/// `locked` says so, then setup says `said` of `graph.db`, the mark is no cause it rebuilds for,
+/// setup keeps the mark only when `kept` says so - it removes the mark whenever the file carries
+/// `caught_up` at its last step, whether or not the seeding was contended, unless no removal can
+/// remove it - and the cursor stands at the log's head when `at_head` says so, or the file carries
+/// none. Setup succeeds unless `refused` gives the line its stderr ends with: its catch-up did not
+/// stop, so a removal of the mark that fails is its failure, naming the mark (spec 124, THE MARK).
+fn a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+    stand: fn(&Path, &Path),
+    locked: bool,
+    said: Vec<String>,
+    kept: bool,
+    at_head: bool,
+    refused: Option<String>,
+) {
+    let dir = temp_store_project();
+    let root = dir.path();
+    emit_the_first_decision_after_setup(root);
+    let graph_db = rigger_file(root, "graph.db");
+    let mark = mark_owed_in(graph_db.parent().unwrap());
+    emit_folding(root, "d-marked");
+    stand(root, &graph_db);
+
+    let setup = || run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let (out, err, ok) = if locked {
+        with_graph_locked(&graph_db, setup)
+    } else {
+        setup()
+    };
+    assert_eq!(
+        (
+            common::cli::failure_line(ok, &err),
+            common::cli::rebuild_lines(&out),
+            mark.exists(),
+            caught_up_at(&graph_db)
+        ),
+        (refused, said, kept, at_head.then(|| run_log_head(root))),
+        "the mark is no cause, and setup removes it from a file carrying its cursor, failing \
+         naming it only where no removal can remove it; stdout: {out} stderr: {err}"
+    );
+}
+
+rigger::test_cases! {
+    /// The file carries its cursor at the log's head: setup rebuilds nothing, says nothing of
+    /// `graph.db`, and removes the mark.
+    an_owed_mark_beside_a_cursored_graph_db_owes_nothing_and_setup_removes_it:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |_, _| {},
+            false,
+            vec![],
+            false,
+            true,
+            None,
+        );
+    /// The file carries its cursor and the seeding meets another writer's lock: setup says the
+    /// catch-up was not started and still removes the mark, the file carrying `caught_up`.
+    an_owed_mark_beside_a_cursored_graph_db_is_removed_when_the_seeding_meets_another_writer_s_lock:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |_, _| {},
+            true,
+            vec![SEEDING_SKIPPED_LINE.to_string()],
+            false,
+            true,
+            None,
+        );
+    /// The file carries no cursor ([`drop_the_cursor`]) and the seeding meets another writer's
+    /// lock, so no cursor is seeded: the file carries no `caught_up` at setup's last step and the
+    /// mark stands, owing nothing.
+    an_owed_mark_beside_a_graph_db_without_its_cursor_stands_when_the_seeding_meets_a_lock:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |_, graph_db| drop_the_cursor(graph_db),
+            true,
+            vec![SEEDING_SKIPPED_LINE.to_string()],
+            true,
+            false,
+            None,
+        );
+    /// The file carries no cursor and misses nothing: this setup seeds the cursor at the log's
+    /// head, rebuilds nothing, and removes the mark in the same run.
+    an_owed_mark_beside_a_graph_db_its_setup_seeds_is_removed_by_that_setup:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |_, graph_db| drop_the_cursor(graph_db),
+            false,
+            vec![],
+            false,
+            true,
+            None,
+        );
+    /// The file carries no cursor and misses an event older than the catch-up horizon below an
+    /// applied one ([`bury_below_an_applied_event`]): the seeding finds the lost fold, so setup
+    /// still rebuilds the file for it, the rebuild's swap removing the mark and setting the cursor
+    /// at the log's head.
+    a_graph_db_without_its_cursor_missing_an_old_event_is_still_rebuilt_beside_an_owed_mark:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |root, graph_db| {
+                drop_the_cursor(graph_db);
+                append_unfolded_decision_named(root, "d-hole");
+                bury_below_an_applied_event(root);
+            },
+            false,
+            rebuilt_for_a_lost_fold(),
+            false,
+            true,
+            None,
+        );
+    /// The file carries its cursor one event behind the log's head, that event appended behind
+    /// every fold ([`append_unfolded_decision_named`]): setup's catch-up folds it forward from the
+    /// cursor beside the mark, which refuses no catch-up, rebuilds nothing, and removes the mark.
+    an_owed_mark_beside_a_cursored_graph_db_one_event_behind_is_caught_up_past_and_removed:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |root, _| {
+                append_unfolded_decision_named(root, "d-behind");
+            },
+            false,
+            vec![caught_up_line(1)],
+            false,
+            true,
+            None,
+        );
+    /// The file carries its cursor at the log's head, owing nothing, and a directory stands at the
+    /// owed mark's path ([`unremovable_mark_beside`]): setup's catch-up does not stop, so its failed
+    /// removal of the mark is its failure - setup says nothing of `graph.db` and exits non-zero
+    /// naming the mark, which stands, the cursor staying at the log's head.
+    setup_beside_a_cursored_graph_db_owing_nothing_fails_naming_a_mark_it_cannot_remove:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |_, graph_db| {
+                std::fs::remove_file(owed_mark_in(graph_db.parent().unwrap())).unwrap();
+                unremovable_mark_beside(graph_db);
+            },
+            false,
+            vec![],
+            true,
+            true,
+            Some(common::cli::unremovable_mark_refusal()),
+        );
+}
+
+/// Run `rigger <args>` in `root` ([`run_rigger`]): whether it succeeded, and everything it
+/// printed, its stdout then its stderr.
+fn run_saying(root: &Path, args: &[&str]) -> (bool, String) {
+    let (out, err, ok) = run_rigger(root, args);
+    (ok, format!("{out}{err}"))
+}
+
+/// Given a `graph.db` carrying its `caught_up` cursor on a project whose identity is minted,
+/// beside which the owed mark stands as an older binary's lost fold left it, when the operator
+/// runs a surface that asks whether the file owes its rebuild - `answer` runs it, or each surface
+/// of a list in turn, in the project's root and answers whether every one succeeded and what they
+/// said - then each surface succeeds and no line it says names the rebuild owed: a command whose
+/// answer depends on the fold is not refused, a read-only surface prints no owed note, and the
+/// mark still stands beside the file the surfaces read (spec 124, THE MARK).
+fn a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(
+    answer: fn(&Path) -> (bool, String),
+) {
+    let dir = temp_store_project();
+    let root = dir.path();
+    emit_the_first_decision_after_setup(root);
+    let mark = mark_owed_in(rigger_file(root, "graph.db").parent().unwrap());
+
+    let (ok, said) = answer(root);
+    assert_eq!(
+        (
+            ok,
+            common::cli::lines_where(&said, |line| line
+                .contains(rigger::contextgraph::REBUILD_OWED)),
+            mark.exists()
+        ),
+        (true, Vec::<&str>::new(), true),
+        "the mark beside a cursored graph.db owes no rebuild at this surface; said: {said}"
+    );
+}
+
+rigger::test_cases! {
+    /// `rigger graph build`, a command whose answer depends on the fold, opens the graph without
+    /// a refusal.
+    graph_build_beside_an_owed_mark_on_a_cursored_graph_db_is_not_refused:
+        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
+            run_saying(root, &["graph", "build"])
+        });
+    /// `rigger reset --runs`, a command whose answer depends on the fold, prunes without a
+    /// refusal.
+    reset_runs_beside_an_owed_mark_on_a_cursored_graph_db_is_not_refused:
+        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
+            run_saying(root, &["reset", "--runs"])
+        });
+    /// `rigger reset`, the menu, names no rebuild on its `--runs` line.
+    the_reset_menu_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild_for_runs:
+        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
+            run_saying(root, &["reset"])
+        });
+    /// `rigger graph --around`, a read-only inspection, prints no owed note.
+    graph_around_beside_an_owed_mark_on_a_cursored_graph_db_prints_no_owed_note:
+        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
+            run_saying(root, &["graph", "--around", "src/f.rs"])
+        });
+    /// The read-only surfaces over `graph.db` ([`READ_ONLY_SURFACES`]: `rigger graph --show`,
+    /// `rigger validate` and `rigger dash --export`), run in turn, each succeed and print no owed
+    /// note.
+    the_read_only_surfaces_beside_an_owed_mark_on_a_cursored_graph_db_print_no_owed_note:
+        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
+            READ_ONLY_SURFACES.iter().fold((true, String::new()), |(ok, said), args| {
+                let (answered, answer) = run_saying(root, args);
+                (ok && answered, format!("{said}rigger {}: {answer}", args.join(" ")))
+            })
+        });
+    /// A `rigger mcp` session's `rigger_graph`, a tool whose answer depends on the fold, answers
+    /// without a refusal.
+    an_mcp_rigger_graph_beside_an_owed_mark_on_a_cursored_graph_db_is_not_refused:
+        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
+            let mut mcp = common::mcp::McpSession::start(root);
+            let answer = mcp.tool_call("rigger_graph", serde_json::json!({"around": "src/f.rs"}));
+            mcp.finish_cleanly();
+            (answer.get("error").is_none(), answer.to_string())
+        });
 }
 
 /// Append a `DecisionMade` whose payload is `data` to `root`'s run stream straight through the
@@ -4490,9 +4758,10 @@ fn a_fresh_runs_mint_is_folded(args: &[&str]) {
 }
 
 /// Given a project whose `graph.db` owes its rebuild (it records an older fold rule), when the
-/// operator begins a new run with `args`, then it refuses naming `rigger setup` before it appends
-/// anything: no boundary is minted that the graph would miss, and neither the log nor `graph.db`
-/// changes.
+/// operator begins a new run with `args`, then it refuses as `command`, saying spec 124's MARK
+/// LINES text ([`REBUILD_OWED_TEXT`](common::cli::REBUILD_OWED_TEXT)) naming `rigger setup`, before
+/// it appends anything: no boundary is minted that the graph would miss, and neither the log nor
+/// `graph.db` changes.
 fn a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
     args: &[&str],
     command: &str,
@@ -4510,10 +4779,11 @@ fn a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
         (
             ok,
             err.trim_end()
-                .ends_with(&rigger::contextgraph::rebuild_owed_refusal(command))
+                .ends_with(&format!("{command}: {}", common::cli::REBUILD_OWED_TEXT))
         ),
         (false, true),
-        "the fresh run refuses naming `rigger setup`; stdout: {out} stderr: {err}"
+        "the fresh run refuses saying the graph owes its rebuild for the older fold rule alone, \
+         naming `rigger setup`; stdout: {out} stderr: {err}"
     );
     assert_eq!(
         (run_log(root), std::fs::read(&graph_db).unwrap() == graph),
@@ -4995,20 +5265,14 @@ fn a_setup_rerun_after_its_rebuild_stopped_past_its_prune_reports_the_same_count
 
 /// Run a `rigger setup` in `root` whose rebuild stops right after its prune and its swap - the owed
 /// mark it must then drop is a directory it cannot remove, and its failure names that mark - then
-/// `meanwhile`, while that mark still says `graph.db` owes its rebuild, and clear the mark: what
-/// the stopped setup printed, and whether it exited successfully.
+/// `meanwhile`, while the rebuild's state stands in `graph.db` with no setup to finish it, and
+/// clear the mark: what the stopped setup printed, and whether it exited successfully.
 fn stop_setup_past_its_prune(root: &Path, meanwhile: fn(&Path)) -> (String, bool) {
-    let mark = rigger_file(root, "graph.db.owed");
-    std::fs::create_dir(&mark).unwrap();
+    let mark = unremovable_mark_beside(&rigger_file(root, "graph.db"));
     let (stopped, err, stopped_ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert_eq!(
         err.lines().last(),
-        Some(
-            common::cli::refusal_line(&common::fixtures::directory_refusal(
-                Path::new(".rigger").join("graph.db.owed").display()
-            ))
-            .as_str()
-        ),
+        Some(common::cli::unremovable_mark_refusal().as_str()),
         "the stopped setup names the mark it could not remove; stdout: {stopped} stderr: {err}"
     );
     meanwhile(root);
@@ -5026,26 +5290,24 @@ fn stop_setup_in_its_tail(root: &Path) -> (String, bool) {
 }
 
 /// Given a `rigger setup` whose rebuild stopped past its prune and its swap, when the log gains
-/// events before setup runs again - a decision the active run records with `rigger emit`, which
-/// the owed graph does not fold, a run another writer of the log starts, closing the run that was
-/// active, or a closed run's decision id the active run records again about another file - or a
-/// swap cut short left its private pruned copy behind, then the rerun names no cause - the shadow
-/// is the rebuild's own unfinished work, which the swapped-in ledger owes nothing for - and resumes
-/// its unpruned shadow, folding only what the log gained past it - its one progress line counts
-/// exactly those events, and a rerun the log gained nothing for folds none - and prunes a fresh
-/// copy of it from the whole run attribution it gathered, the first pass's included, never reading
-/// a stale copy and leaving none behind: it keeps the active run's decision, prunes the run that
-/// closed, keeps the id the active run re-recorded governing both files its two recordings name,
-/// folds every event the log gained, keeps no rebuild state and leaves `rigger reset --runs`
-/// nothing to prune; and a cold rebuild of the same log yields the same graph, every node and edge,
-/// and the same report - the one prune of the whole log, never the sum of two: when the run that
-/// closed is the one that was active, `shared` is dropped with the retired edge it owns, 5 nodes
-/// and no edge left to reclaim.
+/// events before setup runs again - a decision the active run records, which no fold makes, a run
+/// another writer of the log starts, closing the run that was active, or a closed run's decision id
+/// the active run records again about another file - or a swap cut short left its private pruned
+/// copy behind, then the rerun names no cause - the shadow is the rebuild's own unfinished work,
+/// which the swapped-in ledger owes nothing for - and resumes its unpruned shadow, folding only
+/// what the log gained past it - its one progress line counts exactly those events, and a rerun the
+/// log gained nothing for folds none - and prunes a fresh copy of it from the whole run attribution
+/// it gathered, the first pass's included, never reading a stale copy and leaving none behind: it
+/// keeps the active run's decision, prunes the run that closed, keeps the id the active run
+/// re-recorded governing both files its two recordings name, folds every event the log gained,
+/// keeps no rebuild state and leaves `rigger reset --runs` nothing to prune; and a cold rebuild of
+/// the same log yields the same graph, every node and edge, and the same report - the one prune of
+/// the whole log, never the sum of two: when the run that closed is the one that was active,
+/// `shared` is dropped with the retired edge it owns, 5 nodes and no edge left to reclaim.
 #[test]
 fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run_that_closed() {
     let active_run_decides: fn(&Path) = |root| {
-        let (out, err, ok) = emit_decision(root, "d-window");
-        assert!(ok, "the emit appends; stdout: {out} stderr: {err}");
+        append_unfolded_decision_named(root, "d-window");
     };
     let another_writer_starts_a_run: fn(&Path) = |root| {
         common::cli::with_run_store(root, |store| {
@@ -5066,15 +5328,10 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
         });
     };
     let active_run_re_records_a_closed_runs_decision: fn(&Path) = |root| {
-        let (out, err, ok) = run_rigger(
+        append_unfolded_decision(
             root,
-            &[
-                "emit",
-                "DecisionMade",
-                r#"{"id":"d-dead","summary":"s","governs":["src/h.rs"],"supersedes":""}"#,
-            ],
+            br#"{"id":"d-dead","summary":"s","governs":["src/h.rs"],"supersedes":""}"#,
         );
-        assert!(ok, "the emit appends; stdout: {out} stderr: {err}");
     };
     let a_swap_cut_short_left_its_copy: fn(&Path) = |root| {
         std::fs::write(

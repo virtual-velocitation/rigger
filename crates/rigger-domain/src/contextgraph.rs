@@ -849,30 +849,23 @@ macro_rules! owed_older_rule {
     };
 }
 
-/// The one spelling of [`OWED_LOST_FOLD`], a literal so [`REBUILD_OWED`] is composed from it.
-macro_rules! owed_lost_fold {
-    () => {
-        "it misses an event the log holds"
-    };
-}
-
 /// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it records an older fold rule.
 pub const OWED_OLDER_RULE: &str = owed_older_rule!();
 
-/// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it does not hold an event the log
-/// does - a fold into it failed, or its process died between the append and the fold - or its
-/// record of what it folded runs past the log's end, as when the log is replaced beneath it
-/// (spec 124).
-pub const OWED_LOST_FOLD: &str = owed_lost_fold!();
+/// Why `rigger setup` rebuilds a graph from the log when the seeding of its catch-up cursor finds
+/// the prefix it folded violated (spec 124): it misses an event of the log that only a rebuild
+/// folds in order, or its record of what it folded runs past the log's end, as when the log is
+/// replaced beneath it. A verdict of that seeding alone, never a cause the graph records: the
+/// graph owes no rebuild for it ([`Projection::rebuild_owed`]) and refuses no fold.
+pub const OWED_LOST_FOLD: &str = "it misses an event the log holds";
 
 /// What a projection that owes its rebuild ([`Projection::rebuild_owed`]) answers in place of a
 /// fold, and what every command that depends on the fold says when it refuses: the one spelling of
-/// the refusal, naming both causes a rebuild is owed for and the one command that pays it.
+/// the refusal, naming the one cause a rebuild is owed for, the older fold rule
+/// ([`OWED_OLDER_RULE`]), and the one command that pays it.
 pub const REBUILD_OWED: &str = concat!(
     "graph.db owes one rebuild from the event log (",
     owed_older_rule!(),
-    ", or ",
-    owed_lost_fold!(),
     ") - run `rigger setup` to rebuild it"
 );
 
@@ -937,12 +930,12 @@ pub trait Projection: Send + Sync {
     fn current_generation(&self, identity: &str) -> Result<Option<String>, Error>;
 
     /// Whether this projection says, without reading the log, that it owes one rebuild from it
-    /// (spec 101) - it was folded under an older fold rule, or it carries the mark an older binary
-    /// wrote when a fold into it failed, saying it misses an event the log holds: until `rigger
-    /// setup` pays it nothing folds into it, and nothing whose answer depends on the fold may
-    /// answer from it - it refuses with [`REBUILD_OWED`]. A fold that fails writes no mark now
-    /// (spec 124): an event it misses is found by `rigger setup`, or by the next fold through a
-    /// folding store, which read the projection's record of what it folded against the log.
+    /// (spec 101) - it was folded under an older fold rule: until `rigger setup` pays it nothing
+    /// folds into it, and nothing whose answer depends on the fold may answer from it - it refuses
+    /// with [`REBUILD_OWED`]. A fold that fails writes no mark now, and the mark an older binary
+    /// wrote when a fold into it failed is no cause (spec 124): an event it misses is found by
+    /// `rigger setup`, or by the next fold through a folding store, which read the projection's
+    /// record of what it folded against the log.
     fn rebuild_owed(&self) -> Result<bool, Error>;
 
     /// The connected subgraph reachable from any seed within depth hops (the FEED arc / an

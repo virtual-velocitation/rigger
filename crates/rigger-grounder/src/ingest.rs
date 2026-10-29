@@ -2329,13 +2329,13 @@ mod entry_of_batch_tests {
                 tree.path(),
                 source(),
                 Ok(None),
-                (Err("the mark is unreadable"), Ok(None)),
+                (Err("graph.db is unreadable"), Ok(None)),
                 never
             ),
             (
                 Err(format!(
                     "whether graph.db owes its rebuild could not be read: {}",
-                    crate::test_support::graph_error("the mark is unreadable")
+                    crate::test_support::graph_error("graph.db is unreadable")
                 )),
                 asked(&["gc/src/lib.rs"], &["owed"])
             )

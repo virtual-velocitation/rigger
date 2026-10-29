@@ -431,8 +431,8 @@ pub fn source_interrupted<T>() -> Result<T, rigger::contextgraph::Error> {
     Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()))
 }
 
-/// The owed mark of the graph file `graph.db` in the directory `dir`: the file whose presence
-/// beside it says it owes its rebuild.
+/// The owed mark of the graph file `graph.db` in the directory `dir`: the file an older binary's
+/// lost fold left beside it, no cause of its rebuild (spec 124, THE MARK).
 pub fn owed_mark_in(dir: &std::path::Path) -> std::path::PathBuf {
     dir.join("graph.db.owed")
 }
@@ -443,6 +443,15 @@ pub fn owed_mark_in(dir: &std::path::Path) -> std::path::PathBuf {
 pub fn mark_owed_in(dir: &std::path::Path) -> std::path::PathBuf {
     let mark = owed_mark_in(dir);
     std::fs::write(&mark, b"").unwrap();
+    mark
+}
+
+/// Stand a directory at the path of the owed mark of the graph file `graph_db` ([`owed_mark_in`]),
+/// a mark no removal can remove - its removal is refused naming it ([`directory_refusal`]) - and
+/// answer its path.
+pub fn unremovable_mark_beside(graph_db: &std::path::Path) -> std::path::PathBuf {
+    let mark = owed_mark_in(graph_db.parent().unwrap());
+    std::fs::create_dir(&mark).unwrap();
     mark
 }
 
