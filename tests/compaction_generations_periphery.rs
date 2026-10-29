@@ -120,7 +120,7 @@ use common::fixtures::STEP_LOCK_REASON;
 use common::fixtures::{catch_up_failed_line, the_disk_gives_out_at_d_boom, the_disk_recovers};
 use common::fixtures::{graph_error, not_folded, not_folded_suffix, NOT_A_DATABASE};
 use common::fixtures::{lost_by_calls, UNFINISHED_REBUILD};
-use common::fixtures::{mark_owed_in, mark_stands_beside, unremovable_mark_beside};
+use common::fixtures::{mark_owed_in, mark_stands_beside, owed_mark_in, unremovable_mark_beside};
 use common::fixtures::{source_interrupted, SOURCE_INTERRUPTED};
 use common::fixtures::{under_a_seedings_lock, with_graph_locked, with_graph_locked_for};
 use common::fixtures::{HELD_PAST_THE_BUSY_TIMEOUT, HELD_WITHIN_THE_BUSY_TIMEOUT};
@@ -2573,39 +2573,6 @@ rigger::test_cases! {
         );
 }
 
-/// Given a `graph.db` carrying its `caught_up` cursor at the log's head, owing nothing, beside
-/// which a directory stands at the owed mark's path ([`unremovable_mark_beside`]), when the
-/// operator runs `rigger setup`, then its catch-up does not stop, so its failed removal of the
-/// mark is its failure: setup exits non-zero naming the mark, which stands, and the cursor stays
-/// where it stood (spec 124, THE MARK).
-#[test]
-fn setup_beside_a_cursored_graph_db_owing_nothing_fails_naming_a_mark_it_cannot_remove() {
-    let dir = temp_store_project();
-    let root = dir.path();
-    emit_the_first_decision_after_setup(root);
-    let graph_db = rigger_file(root, "graph.db");
-    let cursor = caught_up_at(&graph_db);
-    unremovable_mark_beside(&graph_db);
-
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert_eq!(
-        (
-            ok,
-            err.lines().last(),
-            mark_stands_beside(&graph_db),
-            caught_up_at(&graph_db)
-        ),
-        (
-            false,
-            Some(common::cli::unremovable_mark_refusal().as_str()),
-            true,
-            cursor
-        ),
-        "setup fails naming the mark it cannot remove, which stands, and leaves the cursor where \
-         it stood; stdout: {out} stderr: {err}"
-    );
-}
-
 /// Given a `graph.db` without the `caught_up` cursor that folded the log, on a project whose
 /// identity is minted, recording fold rule `rule`, when the operator removes `.rigger/events.db`
 /// and runs `rigger setup`, then setup reads the absent log as an empty one without creating it,
@@ -4050,18 +4017,21 @@ fn an_owed_mark_whose_graph_is_removed_is_dropped_by_setup_and_the_next_emit_fol
 
 /// Given a `graph.db` on a project whose identity is minted, beside which the owed mark stands as
 /// an older binary's lost fold left it, when the operator emits a decision, then it folds: the mark
-/// refuses no fold. When `stand` then leaves the file as the row finds it and the operator runs
-/// `rigger setup`, under another writer's write lock past the busy timeout when `locked` says so,
-/// then setup says `said` of `graph.db`, the mark is no cause it rebuilds for, setup keeps the mark
-/// only when `kept` says so - it removes the mark whenever the file carries `caught_up` at its last
-/// step, whether or not the seeding was contended - and the cursor stands at the log's head when
-/// `at_head` says so, or the file carries none (spec 124, THE MARK).
+/// refuses no fold. When `stand` then leaves the file and its mark as the row finds them and the
+/// operator runs `rigger setup`, under another writer's write lock past the busy timeout when
+/// `locked` says so, then setup says `said` of `graph.db`, the mark is no cause it rebuilds for,
+/// setup keeps the mark only when `kept` says so - it removes the mark whenever the file carries
+/// `caught_up` at its last step, whether or not the seeding was contended, unless no removal can
+/// remove it - and the cursor stands at the log's head when `at_head` says so, or the file carries
+/// none. Setup succeeds unless `refused` gives the line its stderr ends with: its catch-up did not
+/// stop, so a removal of the mark that fails is its failure, naming the mark (spec 124, THE MARK).
 fn a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
     stand: fn(&Path, &Path),
     locked: bool,
     said: Vec<String>,
     kept: bool,
     at_head: bool,
+    refused: Option<String>,
 ) {
     let dir = temp_store_project();
     let root = dir.path();
@@ -4071,20 +4041,27 @@ fn a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
     emit_folding(root, "d-marked");
     stand(root, &graph_db);
 
-    let setup = || setup_ok(root, &[("RIGGER_NPM", "true")]);
-    let out = if locked {
+    let setup = || run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let (out, err, ok) = if locked {
         with_graph_locked(&graph_db, setup)
     } else {
         setup()
     };
     assert_eq!(
         (
+            (!ok).then(|| err.lines().last().map(str::to_owned)),
             common::cli::rebuild_lines(&out),
             mark.exists(),
             caught_up_at(&graph_db)
         ),
-        (said, kept, at_head.then(|| run_log_head(root))),
-        "the mark is no cause, and setup removes it from a file carrying its cursor; stdout: {out}"
+        (
+            refused.map(Some),
+            said,
+            kept,
+            at_head.then(|| run_log_head(root))
+        ),
+        "the mark is no cause, and setup removes it from a file carrying its cursor, failing \
+         naming it only where no removal can remove it; stdout: {out} stderr: {err}"
     );
 }
 
@@ -4098,6 +4075,7 @@ rigger::test_cases! {
             vec![],
             false,
             true,
+            None,
         );
     /// The file carries its cursor and the seeding meets another writer's lock: setup says the
     /// catch-up was not started and still removes the mark, the file carrying `caught_up`.
@@ -4108,6 +4086,7 @@ rigger::test_cases! {
             vec![SEEDING_SKIPPED_LINE.to_string()],
             false,
             true,
+            None,
         );
     /// The file carries no cursor ([`drop_the_cursor`]) and the seeding meets another writer's
     /// lock, so no cursor is seeded: the file carries no `caught_up` at setup's last step and the
@@ -4119,6 +4098,7 @@ rigger::test_cases! {
             vec![SEEDING_SKIPPED_LINE.to_string()],
             true,
             false,
+            None,
         );
     /// The file carries no cursor and misses nothing: this setup seeds the cursor at the log's
     /// head, rebuilds nothing, and removes the mark in the same run.
@@ -4129,6 +4109,7 @@ rigger::test_cases! {
             vec![],
             false,
             true,
+            None,
         );
     /// The file carries no cursor and misses an event older than the catch-up horizon below an
     /// applied one ([`bury_below_an_applied_event`]): the seeding finds the lost fold, so setup
@@ -4145,6 +4126,7 @@ rigger::test_cases! {
             rebuilt_for_a_lost_fold(),
             false,
             true,
+            None,
         );
     /// The file carries its cursor one event behind the log's head, that event appended behind
     /// every fold ([`append_unfolded_decision_named`]): setup's catch-up folds it forward from the
@@ -4158,6 +4140,23 @@ rigger::test_cases! {
             vec![caught_up_line(1)],
             false,
             true,
+            None,
+        );
+    /// The file carries its cursor at the log's head, owing nothing, and a directory stands at the
+    /// owed mark's path ([`unremovable_mark_beside`]): setup's catch-up does not stop, so its failed
+    /// removal of the mark is its failure - setup says nothing of `graph.db` and exits non-zero
+    /// naming the mark, which stands, the cursor staying at the log's head.
+    setup_beside_a_cursored_graph_db_owing_nothing_fails_naming_a_mark_it_cannot_remove:
+        a_standing_owed_mark_refuses_no_fold_and_setup_removes_it_beside_a_cursor(
+            |_, graph_db| {
+                std::fs::remove_file(owed_mark_in(graph_db.parent().unwrap())).unwrap();
+                unremovable_mark_beside(graph_db);
+            },
+            false,
+            vec![],
+            true,
+            true,
+            Some(common::cli::unremovable_mark_refusal()),
         );
 }
 
