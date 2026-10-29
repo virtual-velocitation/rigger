@@ -10175,6 +10175,44 @@ mod tests {
         assert_eq!(p.owed_because().unwrap(), vec![OWED_OLDER_RULE]);
     }
 
+    /// The causes `rigger setup` names for a graph file that records the causes `recorded` and
+    /// whose seeding answered `seeding` ([`causes_once_seeded`]) are `named`: the recorded ones,
+    /// then the lost fold when the seeding ran and found the prefix it folded violated.
+    fn setup_names(recorded: Vec<&'static str>, seeding: Seeding, named: Vec<&'static str>) {
+        assert_eq!(
+            causes_once_seeded(recorded, &seeding),
+            named,
+            "setup names the recorded causes, then the seeding's lost fold"
+        );
+    }
+
+    crate::test_cases! {
+        /// A contended seeding issues no verdict: the recorded cause alone.
+        a_skipped_seeding_adds_no_cause_to_the_recorded_ones:
+            setup_names(vec![OWED_OLDER_RULE], Seeding::Skipped, vec![OWED_OLDER_RULE]);
+        /// A seeding that found nothing lost, beside a recorded cause: that cause alone.
+        a_seeding_that_found_nothing_lost_adds_no_cause_to_the_recorded_ones:
+            setup_names(
+                vec![OWED_OLDER_RULE],
+                Seeding::Ran { lost: false },
+                vec![OWED_OLDER_RULE],
+            );
+        /// A seeding that found nothing lost, beside no recorded cause: no cause.
+        a_seeding_that_found_nothing_lost_beside_no_recorded_cause_names_none:
+            setup_names(vec![], Seeding::Ran { lost: false }, vec![]);
+        /// A seeding that found the prefix violated, beside no recorded cause: the lost fold alone.
+        a_seeding_that_found_the_prefix_violated_names_the_lost_fold:
+            setup_names(vec![], Seeding::Ran { lost: true }, vec![OWED_LOST_FOLD]);
+        /// A seeding that found the prefix violated, beside a recorded cause: that cause first, then
+        /// the lost fold.
+        a_seeding_that_found_the_prefix_violated_names_the_lost_fold_after_the_recorded_cause:
+            setup_names(
+                vec![OWED_OLDER_RULE],
+                Seeding::Ran { lost: true },
+                vec![OWED_OLDER_RULE, OWED_LOST_FOLD],
+            );
+    }
+
     /// The shared-node rule (spec 116) is fold rule 2 and the path-addressed node (spec 119) rule
     /// 3: a file that folded under rule 1 took a shared node's kind and line from the last
     /// definition folded, and one that folded under rule 2 holds a nested definition at its flat

@@ -5,7 +5,7 @@
 //! horizon - shared by the root suites and the graph crate's inline tests.
 
 use rigger::contextgraph::sqlite::{
-    PositionSource, Projector, Seeding, StampLookup, CATCH_UP_HORIZON,
+    causes_once_seeded, PositionSource, Projector, Seeding, StampLookup, CATCH_UP_HORIZON,
 };
 use rigger::eventstore::Event;
 use std::path::Path;
@@ -63,10 +63,11 @@ pub fn owed_once_seeded(
     (p.owed_because().unwrap(), seeding)
 }
 
-/// Whether `rigger setup` rebuilds the graph file on what [`owed_once_seeded`] read of it: a cause
-/// the file records, or the lost fold its seeding found.
+/// Whether `rigger setup` rebuilds the graph file on what [`owed_once_seeded`] read of it: it names
+/// a cause for it ([`causes_once_seeded`]) - one the file records, or the lost fold its seeding
+/// found.
 pub fn setup_owes((causes, seeding): &(Vec<&'static str>, Seeding)) -> bool {
-    !causes.is_empty() || *seeding == Seeding::Ran { lost: true }
+    !causes_once_seeded(causes.clone(), seeding).is_empty()
 }
 
 /// What [`owed_once_seeded`] reads of a graph file that records no cause and whose seeding finds
