@@ -377,8 +377,9 @@ The MCP server's emit (`mcpserver.rs:431`) names its held stream, not the consta
 finds it through its open (`src/cli/dashboard.rs:cmd_mcp`).
 
 **THE CURSOR AND ITS SEEDING, decided here (criterion 4).** The cursor is the table `caught_up (id
-INTEGER PRIMARY KEY CHECK (id = 0), position INTEGER NOT NULL)`, seeded by `INSERT OR IGNORE` only in
-the transaction that creates it. Opens may create `SCHEMA`'s tables (`passed_over`). An open whose
+INTEGER PRIMARY KEY CHECK (id = 0), position INTEGER NOT NULL, store TEXT)`, seeded by `INSERT OR
+IGNORE` only in the transaction that creates it, `store` the identity of the log the file folds (A
+LOG SWITCHED UNDER A STANDING GRAPH, CONSTRAINTS WALK). Opens may create `SCHEMA`'s tables (`passed_over`). An open whose
 `SCHEMA` statement (`schema`, `sqlite.rs:1764`, through `open_current`, :1747) meets the lock past
 the busy timeout fails with today's text, as `be` gives it, on every open, read-only or write: it is
 CONTENTION at the open and the one CONTENTION no caller waits out, since the statement takes the
@@ -396,10 +397,12 @@ it shares (`misses_any`), `pay_owed_rebuild`'s `owed_against` (`setup.rs:1036`) 
 result rather than reading the ledger again; on a file already carrying `caught_up` the same
 transaction reads no log rows, runs no any-miss read and writes nothing: at every setup, never
 mid-run, setup reads the log's head once through the event-store port's bounded head read
-(`EventStore::log_head`) and hands it to the seeding (`Projector::seed_cursor`), where a head below
-`caught_up`, or no head beside a cursor above 0, is the prefix-violation verdict
-(`Seeding::Ran { lost: true }`), which setup routes as it routes the verdict of a file without
-`caught_up`, and a head at or above `caught_up`, or no head beside a cursor at 0, keeps the cursor.
+(`EventStore::log_head`) and hands it to the seeding (`Projector::seed_cursor`), where a cursor
+recorded beside another log than the one setup selects, or beside none, a head below `caught_up`,
+or no head beside a cursor above 0, is the prefix-violation verdict (`Seeding::Ran { lost: true }`),
+which setup routes as it routes the verdict of a file without `caught_up`, and a cursor recorded
+beside the selected log with a head at or above it, or no head beside a cursor at 0, keeps the
+cursor.
 A direct fold in flight holds the lock
 for its whole transaction, so a seeding that meets it is CONTENTION and SKIPs with the seeding line
 (THE TWO WRITES MEETING A LOCK), issuing no verdict, and a position missing under the lock has no
@@ -653,6 +656,20 @@ IF NOT EXISTS`, so the upgrade bumps no fold rule.
   below `graph.db`'s highest applied position, or below its `caught_up` cursor on a file carrying
   one, is a prefix violation at the seeding, so the rebuild pays it, its shadow seeding the cursor
   anew, never a cursor above the head that later appends would sit at or below unread.
+- A log switched under a standing graph: the store arm is picked on every command (flag,
+  `KURRENTDB_CONN`, the secret file or config), so the log a file folded can change under it with a
+  head at or above its cursor. Beside its position, `caught_up` records the identity of the log the
+  file folds, the store selection: its backend kind and locator, the embedded store's path or, for
+  the server-backed store, a digest of its connection target (the registry's FNV-1a, stable across
+  toolchains), never the connection string, which may carry credentials. The seeding and the
+  rebuild's shadow open and drop write it with the position. At every setup the seeding compares it
+  with the selected store's, reading no log row: a cursor recorded beside another log, or beside
+  none (a `caught_up` table that predates the column reads as none, never an error), is a prefix
+  violation, so the rebuild pays it from the selected log, its shadow seeding the cursor and the
+  identity anew; a standing shadow whose cursor was recorded beside another log, or beside none, is
+  not resumed but replaced by a fresh one. A hand-replaced `events.db` at the same path holding a
+  longer foreign log is outside what setup can see, since its identity is that path, and no reset
+  verb replaces `events.db` (`src/cli/hygiene.rs`).
 - Repeated fold of one position: `applied` makes it a no-op in every path; an appender whose own
   entry another process folded first meets it applied, and its batch is dropped.
 - Revert (an identity's later generation, one returning to an earlier content included): its entry
