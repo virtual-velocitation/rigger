@@ -828,6 +828,16 @@ fn site_set(sites: &[&str]) -> BTreeSet<String> {
     sites.iter().map(|s| (*s).to_string()).collect()
 }
 
+/// The appender audit's verdict on one family: the `found` sites `listed` lacks, each new and
+/// to be listed, then the `listed` sites `found` lacks, each vanished and to be deleted.
+fn list_drift(listed: &[&str], found: &BTreeSet<String>) -> (Vec<String>, Vec<String>) {
+    let listed = site_set(listed);
+    (
+        found.difference(&listed).cloned().collect(),
+        listed.difference(found).cloned().collect(),
+    )
+}
+
 /// The free or path calls that append when their argument list names the project stream; a
 /// method `.append(` does too.
 const APPEND_CALLS: &[&str] = &["append_and_fold", "append_entry_and_fold", "emit_event"];
@@ -938,16 +948,37 @@ fn the_project_stream_appenders_and_graph_opens_are_the_listed_sites() {
         ),
         ("GRAPH_OPENS", GRAPH_OPENS, &found.opens),
     ] {
-        let listed = site_set(listed);
-        let new: Vec<&String> = found.difference(&listed).collect();
-        let vanished: Vec<&String> = listed.difference(found).collect();
         assert_eq!(
-            (new, vanished),
+            list_drift(listed, found),
             (vec![], vec![]),
             "{list} differs from the tree: list each new site (the first set) in it and delete \
              each vanished site (the second set) from it"
         );
     }
+}
+
+/// Given a tree holding an appender its list lacks and a list naming a site the tree no longer
+/// holds, the audit's verdict names the first new and the second vanished; a site the tree and
+/// the list both hold is in neither set.
+#[test]
+fn an_unlisted_site_is_new_and_a_listed_site_the_tree_lacks_is_vanished() {
+    let dir = tempfile::tempdir().unwrap();
+    write_file(
+        dir.path(),
+        "src/lib.rs",
+        "fn kept() {\n    store.append(conductor::STREAM, &events);\n}\n\
+         fn added() {\n    emit_event(&store, run::STREAM, event);\n}\n",
+    );
+    assert_eq!(
+        list_drift(
+            &["src/lib.rs:kept", "src/lib.rs:removed"],
+            &stream_sites(dir.path()).appends
+        ),
+        (
+            vec!["src/lib.rs:added".to_string()],
+            vec!["src/lib.rs:removed".to_string()],
+        )
+    );
 }
 
 #[test]
