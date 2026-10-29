@@ -34,8 +34,8 @@ PUSHED into the prompt string under a ~84 KiB cap. Four facts about that push:
   reference material.
 - **The pull tool already exists and is redundant with the push.** `rigger_peers` (an MCP tool
   agents already call live) returns "the decisions, lessons, AND review findings … scoped to
-  \[blast-radius] files", **uncapped**. So the agent already receives the same content **twice** —
-  once as a truncated push, once as an uncapped pull — and only the push is lossy.
+  \[blast-radius] files" on demand. So the agent already receives the same content **twice** -
+  once as a truncated push, once as a pull it asks for - and only the push arrives unasked.
 - **There is no real query surface.** The MCP tools are `rigger_next`, `rigger_result`,
   `rigger_emit`, `rigger_peers`, `rigger_activity`. `rigger_peers` is file-scoped; there is no
   "explain this node", no NL/symbol query, no path, no seeded traversal, no concept query. The agent
@@ -83,7 +83,9 @@ that works for the operator works identically for the agent.
 ### 2.4 Tool results are bounded per-query, tier-tagged, provenance-carrying, read-only
 A pulled result is bounded by the **query** (a node's neighbors, a path, a file's peers, a concept's
 members), not by a global prompt cap — so nothing is silently truncated; a large result is narrowed
-by asking a narrower question. Every returned node/edge carries its confidence tier
+by asking a narrower question. A file's peers are also bounded per section by the prompt sections'
+own budget, newest first, and the reply counts what it left out and names reading a left-out record
+by id, so no file's history can grow a reply past what a session can carry. Every returned node/edge carries its confidence tier
 (`EXTRACTED`/`INFERRED`/`AMBIGUOUS`) and the event position that folded it, so the agent can weigh a
 model-inferred fact against a deterministic one. The tools are **read-only** over the projection; the
 conductor stays the sole mutation authority (only `rigger_emit` writes, and it appends events, it

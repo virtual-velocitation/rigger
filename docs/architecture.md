@@ -934,8 +934,9 @@ Grounding seeds each agent with exactly the code and memory it needs, on two axe
 **Grounding is pulled, not pushed.** Only the small, deterministic **intent layer** is
 pushed into an agent's prompt; the large reference bulk is served **on demand** through a
 real query tool over the same projection and traversal the human dash reads. Pushing the
-whole bulk truncated it by recency (a measured 85% loss); a pull is bounded by the *query*, so
-the agent asks for a node's neighbors, a call path, or a file's peers exactly when its work
+whole bulk truncated it by recency (a measured 85% loss); a pull is bounded by the *query* (a
+file's peers also by the prompt sections' per-section budget, newest first, with the left-out
+count stated), so the agent asks for a node's neighbors, a call path, or a file's peers exactly when its work
 reaches the point of needing them. The tools are read-only over the projection, which is
 rebuildable from the log and namespaced per project, so a pull never crosses a project
 boundary. The grounding-as-tool addendum linked at the top of this document records the

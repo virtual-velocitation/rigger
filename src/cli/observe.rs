@@ -541,9 +541,8 @@ fn unread_ci_note(ci: &watch::CiProbe, last: &mut Option<String>) -> Option<Stri
 /// is RESOLVED by walking up to the project's existing `.rigger` (refusing to fabricate
 /// one, spec 05 - see [`require_store_dir`]); the side-car reads the `conductor::STREAM` run
 /// from its boundary with the carried-over knowledge by type, and this command renders one
-/// readable line per decision / lesson / finding. Rendering the lessons here is what makes the
-/// capped prompt sections' "recover the full set with `rigger peers <file>`" note honest
-/// for the lessons section, not just decisions and findings (adj-u1gap17).
+/// readable line per decision / lesson / finding the shared core kept under its budget, then,
+/// when a section left records out, the core's `left_out` note as the last line.
 pub(crate) fn cmd_peers(args: &[String]) -> Res {
     let files: Vec<String> = args.to_vec();
 
@@ -575,6 +574,9 @@ pub(crate) fn cmd_peers(args: &[String]) -> Res {
         let summary = f["summary"].as_str().unwrap_or_default();
         let about = json_str_array(&f["about"]);
         println!("finding {id} | by {by} | {summary} | about: {about}");
+    }
+    if let Some(note) = result["left_out"]["note"].as_str() {
+        println!("{note}");
     }
     Ok(())
 }

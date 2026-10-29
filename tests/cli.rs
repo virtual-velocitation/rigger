@@ -138,6 +138,163 @@ fn emit_appends_and_folds_then_peers_shows_it() {
     );
 }
 
+/// The six files one `rigger_peers` call named when its whole-history reply overflowed the
+/// host's stdio frame and closed the session's transport.
+const SIX_HOT_FILES: [&str; 6] = [
+    "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+    "src/cli/setup.rs",
+    "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
+    "tests/ledger_rebuild.rs",
+    "tests/compaction_generations_periphery.rs",
+    "tests/common/fixtures/mod.rs",
+];
+
+/// How many decisions, lessons and findings [`seed_hot_files`] records about each hot file.
+const HOT_RECORDS_PER_FILE: usize = 40;
+
+/// Seed `root`'s run: one decision about `src/old.rs` before the run's boundary (HISTORICAL once
+/// the run starts), the run's `RunStarted`, then [`HOT_RECORDS_PER_FILE`] decisions, lessons and
+/// findings about each of [`SIX_HOT_FILES`], oldest first, each `{kind}-{n:03}` id numbered in
+/// that order and each summary over 2 KiB - many times every section's budget.
+fn seed_hot_files(root: &Path) {
+    use rigger::eventstore::{Event, ExpectedRevision};
+
+    let record =
+        |typ: &str, body: serde_json::Value| Event::new(typ, body.to_string().into_bytes());
+    let pad = "x".repeat(2048);
+    let mut events = vec![
+        record(
+            "DecisionMade",
+            serde_json::json!({"id": "d-old", "summary": "the prior run's ruling", "governs": ["src/old.rs"]}),
+        ),
+        common::fixtures::run_started("run-hot", &[]),
+    ];
+    for i in 0..HOT_RECORDS_PER_FILE {
+        for (f, file) in SIX_HOT_FILES.iter().enumerate() {
+            let n = i * SIX_HOT_FILES.len() + f;
+            events.push(record(
+                "DecisionMade",
+                serde_json::json!({"id": format!("d-{n:03}"), "summary": format!("ruling {n} {pad}"), "governs": [file]}),
+            ));
+            events.push(record(
+                "LessonLearned",
+                serde_json::json!({"id": format!("l-{n:03}"), "summary": format!("lesson {n} {pad}"), "about": [file]}),
+            ));
+            events.push(record(
+                "ReviewFinding",
+                serde_json::json!({"id": format!("f-{n:03}"), "by": "lens", "summary": format!("finding {n} {pad}"), "about": [file]}),
+            ));
+        }
+    }
+    common::cli::with_run_store(root, |store| {
+        store
+            .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+            .unwrap();
+    });
+}
+
+/// `rigger peers` and the `rigger_peers` tool over six hot files - each holding many times its
+/// budget of large decisions, lessons and findings - keep per section the NEWEST records under
+/// the one budget rule the prompt sections use (the conductor's verbatim count and byte budget
+/// per section), so neither the CLI nor a live `rigger mcp` session prints the whole history;
+/// both keep the same records, and the reply's tail counts what each section left out and says
+/// how to reach it. The budget filters by age, never by liveness: a prior run's decision still
+/// answers its own file, labeled HISTORICAL, with no tail.
+#[test]
+fn peers_of_six_hot_files_keeps_the_newest_under_the_shared_budget_through_the_cli_and_the_tool() {
+    use rigger::conductor::{DECISIONS_BUDGET_BYTES, FINDINGS_BUDGET_BYTES, LESSONS_BUDGET_BYTES};
+
+    let dir = temp_store_project();
+    let root = dir.path();
+    seed_hot_files(root);
+    let total = HOT_RECORDS_PER_FILE * SIX_HOT_FILES.len();
+    let budget = DECISIONS_BUDGET_BYTES + LESSONS_BUDGET_BYTES + FINDINGS_BUDGET_BYTES;
+
+    let mut args = vec!["peers"];
+    args.extend(SIX_HOT_FILES);
+    let out = run_rigger_ok(root, &args);
+    assert!(
+        out.len() <= budget + 1024,
+        "`rigger peers` over six hot files stays under the three sections' budgets; printed {} \
+         bytes",
+        out.len()
+    );
+    let kept = |kind: &str| out.lines().filter(|l| l.starts_with(kind)).count();
+    let (decisions, lessons, findings) = (kept("decision "), kept("lesson "), kept("finding "));
+    for (kind, prefix, n) in [
+        ("decision", "d", decisions),
+        ("lesson", "l", lessons),
+        ("finding", "f", findings),
+    ] {
+        assert!(
+            n >= 1 && n < total,
+            "the budget keeps some {kind}s and leaves the rest out; kept {n} of {total}"
+        );
+        assert!(
+            out.contains(&format!("{kind} {prefix}-{:03} ", total - 1))
+                && !out.contains(&format!("{kind} {prefix}-000 ")),
+            "the newest {kind} is kept and the oldest left out"
+        );
+    }
+    let tail = out.lines().last().unwrap_or_default();
+    for (kind, n) in [
+        ("decision", decisions),
+        ("lesson", lessons),
+        ("finding", findings),
+    ] {
+        assert!(
+            tail.contains(&format!("{} older {kind}(s)", total - n)),
+            "the tail counts the {kind}s left out; tail: {tail}"
+        );
+    }
+    assert!(
+        tail.contains("narrow with fewer files") && tail.contains("`rigger graph --show <id>`"),
+        "the tail says how to narrow or reach a left-out record by id; tail: {tail}"
+    );
+
+    let mut mcp = McpSession::start(root);
+    let reply = mcp.tool_call("rigger_peers", serde_json::json!({"files": SIX_HOT_FILES}));
+    mcp.finish_cleanly();
+    let structured = &reply["result"]["structuredContent"];
+    assert!(
+        structured.to_string().len() <= budget + 1024,
+        "the `rigger_peers` tool over six hot files stays under the same budgets; answered {} \
+         bytes",
+        structured.to_string().len()
+    );
+    let section = |name: &str| structured[name].as_array().map_or(0, Vec::len);
+    assert_eq!(
+        (
+            section("decisions"),
+            section("lessons"),
+            section("findings")
+        ),
+        (decisions, lessons, findings),
+        "the CLI and the tool keep the same records"
+    );
+    for (name, n) in [
+        ("decisions", decisions),
+        ("lessons", lessons),
+        ("findings", findings),
+    ] {
+        assert_eq!(
+            structured["left_out"][name],
+            total - n,
+            "the tool counts the {name} left out"
+        );
+    }
+    assert_eq!(
+        structured["left_out"]["note"], tail,
+        "the tool's tail is the CLI's"
+    );
+
+    assert_eq!(
+        run_rigger_ok(root, &["peers", "src/old.rs"]),
+        "decision d-old | HISTORICAL | the prior run's ruling | governs: src/old.rs\n",
+        "a prior run's decision still answers its own file, labeled, with no tail"
+    );
+}
+
 /// `rigger playbooks --rebuild` (spec 13b, unit 2) distills the recorded `LessonLearned`
 /// stream into a deduplicated, trigger-scoped playbook pool under `.rigger/playbooks/`,
 /// reconstructing it from the log. Two lessons carrying the SAME text collapse into ONE

@@ -48,9 +48,8 @@ pub struct PeerFinding {
 
 /// A lesson a prior run's escalation recorded, as the side-car surfaces it. Lessons
 /// fold ABOUT the files the failed unit touched, so they scope on `about` exactly like
-/// a [`PeerFinding`]. This is the recovery surface behind the lessons half of the
-/// prompt-budget elision note: when a hot file's lessons are trimmed from a prompt,
-/// `rigger peers <file>` returns the full set here (adj-u1gap17).
+/// a [`PeerFinding`], and `rigger peers <file>` lists them beside the file's decisions and
+/// findings (the newest under the lessons section's budget).
 #[derive(Clone, Debug, Deserialize)]
 pub struct PeerLesson {
     pub id: String,

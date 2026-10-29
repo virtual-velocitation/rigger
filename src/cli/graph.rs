@@ -162,7 +162,8 @@ fn print_around_subgraph(g: &contextgraph::Graph, around: &str, unresolved: &[St
         let rest = narrative_nodes.len().saturating_sub(AROUND_GOVERNANCE_CAP);
         if rest > 0 {
             println!(
-                "  (+{rest} more decision(s)/finding(s) not shown - see `rigger peers {around}` for the full history)"
+                "  (+{rest} more decision(s)/finding(s) not shown - {})",
+                conductor::RECORD_RECOVERY
             );
         }
     }
