@@ -196,6 +196,14 @@ const FOLD_LOCK_CEILING: Duration = Duration::from_secs(600);
 /// covers, so a younger missing position may still be folded by its appender.
 pub const CATCH_UP_HORIZON: Duration = Duration::from_secs(FOLD_LOCK_CEILING.as_secs() + 60);
 
+/// Whether `stamp` is older than `bound` at `now` (spec 124, THE CLOCKS), the one age rule a
+/// seeding's horizon ([`Projector::seed_cursor`]) and an appender's ceiling
+/// ([`Projector::past_ceiling`]) read: an absent stamp counts old, one more than `bound` before
+/// `now` old, and any other - one after `now` included - young.
+fn older_than(stamp: Option<SystemTime>, bound: Duration, now: SystemTime) -> bool {
+    stamp.is_none_or(|stamp| now.duration_since(stamp).is_ok_and(|age| age > bound))
+}
+
 /// The ceiling `held` as a cause text spells it (spec 124, CAUSE TEXTS): in whole minutes at or
 /// above one minute, else in whole seconds, each rounded down.
 fn held_for(held: Duration) -> String {
@@ -969,8 +977,7 @@ impl Projector {
             })?;
             let mut old_miss = false;
             for &position in &missing {
-                let stamp = stamp_of(position)?;
-                if stamp.is_none_or(|s| now.duration_since(s).is_ok_and(|a| a > CATCH_UP_HORIZON)) {
+                if older_than(stamp_of(position)?, CATCH_UP_HORIZON, now) {
                     old_miss = true;
                     break;
                 }
@@ -1386,18 +1393,16 @@ impl Projector {
     }
 
     /// Whether an appender of `events` has waited past its ceiling (spec 124, THE APPENDER): the
-    /// clock has run longer than [`Projector::with_lock_ceiling`]'s ceiling, [`FOLD_LOCK_CEILING`]
-    /// unless a test injects another, since the stamp of its lowest own position - or it has no
+    /// stamp of its lowest own position is older now than [`Projector::with_lock_ceiling`]'s
+    /// ceiling, [`FOLD_LOCK_CEILING`] unless a test injects another ([`older_than`]) - or it has no
     /// position to wait for.
     fn past_ceiling(&self, events: &[Event]) -> bool {
-        events
-            .iter()
-            .min_by_key(|e| e.position)
-            .is_none_or(|lowest| {
-                SystemTime::now()
-                    .duration_since(lowest.recorded_at)
-                    .is_ok_and(|age| age > self.lock_ceiling)
-            })
+        let lowest = events.iter().min_by_key(|e| e.position);
+        older_than(
+            lowest.map(|e| e.recorded_at),
+            self.lock_ceiling,
+            SystemTime::now(),
+        )
     }
 
     /// The not-folded error of an appender past its ceiling (spec 124, CAUSE TEXTS), what held it
@@ -2509,23 +2514,20 @@ fn passed_over_cause(conn: &Connection, positions: &[Position]) -> Result<Option
 /// Where an appender of the positions the JSON array `positions` names stands (spec 124, THE
 /// APPENDER's success test): the `caught_up` cursor of the file behind `conn` and the cause the
 /// first of them was recorded passed over with ([`FIRST_PASSED_OVER`]), read together in ONE
-/// statement outside any transaction - a row is written in the transaction that moves the cursor
-/// past its position, so a read that sees the cursor past it sees the row - or none on a file
-/// without the cursor.
+/// statement outside any transaction ([`cursor_row`]) - a row is written in the transaction that
+/// moves the cursor past its position, so a read that sees the cursor past it sees the row - or
+/// none on a file without the cursor.
 fn own_standing(
     conn: &Connection,
     positions: &str,
 ) -> Result<Option<(Position, Option<String>)>, Error> {
-    if !has_table(conn, "caught_up")? {
-        return Ok(None);
-    }
-    conn.query_row(
-        &format!("SELECT (SELECT position FROM caught_up), ({FIRST_PASSED_OVER})"),
+    cursor_row(
+        conn,
+        "caught_up",
+        &format!(", ({FIRST_PASSED_OVER})"),
         [positions],
-        |r| Ok((r.get::<_, i64>(0)? as Position, r.get(1)?)),
+        |cursor, r| Ok((cursor, r.get(1)?)),
     )
-    .map(Some)
-    .map_err(be)
 }
 
 /// Whether `e` is an event of the project's run stream (spec 124, ONE PROCEDURE): the stream a
@@ -2856,16 +2858,31 @@ fn rebuild_tail_from(conn: &Connection) -> Result<Option<Position>, Error> {
     cursor_at(conn, "rebuild_cursor")
 }
 
-/// Where the one-row cursor table `cursor` of the file behind `conn` stands, or `None` on a file
-/// without it.
+/// Where the one-row cursor table `cursor` of the file behind `conn` stands ([`cursor_row`]), or
+/// `None` on a file without it.
 fn cursor_at(conn: &Connection, cursor: &str) -> Result<Option<Position>, Error> {
+    cursor_row(conn, cursor, "", [], |position, _| Ok(position))
+}
+
+/// The one read of a cursor table: the one row of the cursor table `cursor` of the file behind
+/// `conn`, its position and the further columns `beside` of the same statement, bound to
+/// `params`, answered through `row` - or `None` on a file without the table.
+fn cursor_row<T>(
+    conn: &Connection,
+    cursor: &str,
+    beside: &str,
+    params: impl rusqlite::Params,
+    row: impl FnOnce(Position, &rusqlite::Row) -> rusqlite::Result<T>,
+) -> Result<Option<T>, Error> {
     if !has_table(conn, cursor)? {
         return Ok(None);
     }
-    conn.query_row(&format!("SELECT position FROM {cursor}"), [], |r| {
-        r.get::<_, i64>(0)
-    })
-    .map(|position| Some(position as Position))
+    conn.query_row(
+        &format!("SELECT position{beside} FROM {cursor}"),
+        params,
+        |r| row(r.get::<_, i64>(0)? as Position, r),
+    )
+    .map(Some)
     .map_err(be)
 }
 
