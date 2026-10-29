@@ -2826,11 +2826,7 @@ fn compute_attention(
     for (id, unit) in &after.units {
         let before_attempts = prior.units.get(id).map_or(0, |u| u.attempts);
         if unit.attempts > before_attempts && crate::blocker::awaits_finding_audit(unit) {
-            out.push(ledger::AttentionEntry::unit_scoped(
-                ledger::ATTENTION_REJECT_RECURRENCE,
-                id.clone(),
-                format!("{} attempts", unit.attempts),
-            ));
+            out.push(ledger::AttentionEntry::reject_recurrence(id, unit.attempts));
         }
     }
 

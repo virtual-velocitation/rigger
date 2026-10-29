@@ -299,6 +299,21 @@ impl AttentionEntry {
         }
     }
 
+    /// The entry for `unit` at `attempts` failed attempts that awaits a finding audit
+    /// ([`crate::blocker::awaits_finding_audit`]): the one text the console's needs-you dock and
+    /// the conductor's attention stamp both print, saying the loop is still remediating the unit
+    /// on its own and naming the operator's action, the `rigger-diagnose-churn` finding audit.
+    pub fn reject_recurrence(unit: impl Into<String>, attempts: u32) -> Self {
+        Self::unit_scoped(
+            ATTENTION_REJECT_RECURRENCE,
+            unit,
+            format!(
+                "{attempts} failed attempts, the loop is still remediating - audit the findings \
+                 (rigger-diagnose-churn)"
+            ),
+        )
+    }
+
     /// The one-line render (spec 93, criterion 4): `"<subject>: <detail>"`, where a
     /// run-scoped entry's subject is the literal `"run"` - the same "subject: prose"
     /// shape [`crate::blocker::Blocker::full_line`] already uses, so the dock's

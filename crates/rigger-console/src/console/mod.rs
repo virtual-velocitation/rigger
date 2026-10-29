@@ -113,11 +113,7 @@ pub fn dock(run: &RunState, events: &[Event]) -> Dock {
 
     for (id, u) in &run.units {
         if blocker::awaits_finding_audit(u) {
-            needs_you.push(AttentionEntry::unit_scoped(
-                ledger::ATTENTION_REJECT_RECURRENCE,
-                id.clone(),
-                format!("{} attempts, still parked", u.attempts),
-            ));
+            needs_you.push(AttentionEntry::reject_recurrence(id, u.attempts));
         }
     }
 
