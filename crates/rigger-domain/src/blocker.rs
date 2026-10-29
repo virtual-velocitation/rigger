@@ -49,6 +49,18 @@ pub const TYPE_BUDGET_EXHAUSTED: &str = "BudgetExhausted";
 /// alerts on it, so the console's always-compiled needs-you dock reads the same constant.
 pub const REJECT_RECURRENCE_DIAGNOSE_THRESHOLD: u32 = 3;
 
+/// Whether `unit` awaits an operator's finding audit: it is [`Status::Failed`] (so the loop is
+/// still remediating it on its own, not escalated and not yet green), its recorded attempts are
+/// at or past [`REJECT_RECURRENCE_DIAGNOSE_THRESHOLD`], and no resume grant is in effect
+/// ([`ledger::Unit::resumed`] is `None`; a grant is the operator's look already taken). The one
+/// test the console's needs-you dock lists a unit on and the conductor's reject-recurrence
+/// attention stamp crosses into, so both surfaces tap the operator on the same failed attempt.
+pub fn awaits_finding_audit(unit: &ledger::Unit) -> bool {
+    unit.status == Status::Failed
+        && unit.attempts >= REJECT_RECURRENCE_DIAGNOSE_THRESHOLD
+        && unit.resumed.is_none()
+}
+
 /// The run's spawn-budget halt, folded from the durable `BudgetExhausted` fact:
 /// `spent` spawns against a `cap` (`defaults.budget`). Surfaced as the run-level
 /// [`Kind::Budget`] blocker.

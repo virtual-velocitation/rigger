@@ -2817,12 +2817,15 @@ fn compute_attention(
         }
     }
 
-    // Signal 3: a worker's death RECURRED - a unit's remediation attempt count rose during
-    // this call to its SECOND (or later) failure. A unit's FIRST-ever failure is not a
-    // recurrence (nothing "recurred" yet), so it deliberately stamps nothing.
+    // Signal 3: REJECT RECURRENCE - a unit's failed-attempt count rose during this call and
+    // the unit now awaits an operator's finding audit ([`blocker::awaits_finding_audit`], the
+    // test the needs-you dock lists it on): still remediating, at or past the diagnose
+    // threshold, with no resume grant in effect. A failure below the threshold, the failure
+    // that escalates the unit (signal 1 reports that one) and a failure inside an operator's
+    // grant stamp nothing.
     for (id, unit) in &after.units {
         let before_attempts = prior.units.get(id).map_or(0, |u| u.attempts);
-        if unit.attempts > before_attempts && unit.attempts >= 2 {
+        if unit.attempts > before_attempts && crate::blocker::awaits_finding_audit(unit) {
             out.push(ledger::AttentionEntry::unit_scoped(
                 ledger::ATTENTION_REJECT_RECURRENCE,
                 id.clone(),
