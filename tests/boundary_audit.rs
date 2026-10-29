@@ -34,9 +34,9 @@ use std::path::{Path, PathBuf};
 #[path = "common/source_audit.rs"]
 mod source_audit;
 use source_audit::{
-    assert_real_tree_clean, cfg_test_ranges, enclosing_fn_line, fn_sig_lines, gate_name_in,
-    holds_whole_word, in_ranges, is_definition_site, qualifier_before, ref_punct, tokenize,
-    write_file, Finding, RawKind, RawTok, GATE_WORD,
+    assert_real_tree_clean, cfg_test_ranges, close_of, enclosing_fn_line, fn_sig_lines,
+    gate_name_in, holds_whole_word, in_ranges, is_definition_site, qualifier_before, ref_punct,
+    tokenize, write_file, Finding, RawKind, RawTok, GATE_WORD,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -854,22 +854,6 @@ fn called_at(toks: &[RawTok], at: usize) -> Option<&str> {
     (call && !is_definition_site(toks, at)).then_some(toks[at].text.as_str())
 }
 
-/// The index of the `)` that closes the `(` at `open`, or the end of `toks` when none does.
-fn close_of(toks: &[RawTok], open: usize) -> usize {
-    let mut depth = 0usize;
-    for at in open..toks.len() {
-        if ref_punct(toks.get(at), "(") {
-            depth += 1;
-        } else if ref_punct(toks.get(at), ")") {
-            depth -= 1;
-            if depth == 0 {
-                return at;
-            }
-        }
-    }
-    toks.len()
-}
-
 /// Whether the token at `at` is the project stream's constant: `STREAM` qualified by a
 /// [`STREAM_MODULES`] segment, or bare in a file that imports it from [`STREAM_HOME`]
 /// (`bare_is_run`).
@@ -930,7 +914,7 @@ fn stream_sites(root: &Path) -> StreamSites {
                 || name == "graph" && method
                 || name == "open" && qualifier_before(&toks, at).as_deref() == Some("Projector");
             if append
-                && (at + 2..close_of(&toks, at + 1))
+                && (at + 2..close_of(&toks, at + 1, ")"))
                     .any(|arg| is_project_stream(&toks, arg, bare_is_run))
             {
                 sites.appends.insert(file.site(&rel, toks[at].line - 1));

@@ -6,7 +6,8 @@
 //! and which function encloses a line. And the one Rust lexer, [`tokenize`], that
 //! `tests/simplification_audit.rs` scans by, rule 4 of `tests/boundary_audit.rs` finds string
 //! literals with and its appender audit finds calls with, and the token readers those two suites
-//! share over its tokens ([`ref_punct`], [`qualifier_before`], [`is_definition_site`]). Each
+//! share over its tokens ([`ref_punct`], [`qualifier_before`], [`is_definition_site`],
+//! [`close_of`]). Each
 //! suite uses the subset it needs (hence the module-wide `dead_code` allowance, as in
 //! `tests/common/mod.rs`).
 
@@ -584,4 +585,22 @@ pub fn qualifier_before(toks: &[RawTok], i: usize) -> Option<String> {
 /// `fn` keyword (`fn name(`), rather than a reference to the name.
 pub fn is_definition_site(toks: &[RawTok], i: usize) -> bool {
     i > 0 && toks[i - 1].kind == RawKind::Keyword && toks[i - 1].text == "fn"
+}
+
+/// The index of the `close` punctuation that closes the opening bracket at `toks[open]`, depth
+/// counted on that bracket and `close` alone, or the end of `toks` when none does.
+pub fn close_of(toks: &[RawTok], open: usize, close: &str) -> usize {
+    let opener = toks[open].text.as_str();
+    let mut depth = 0usize;
+    for at in open..toks.len() {
+        if ref_punct(toks.get(at), opener) {
+            depth += 1;
+        } else if ref_punct(toks.get(at), close) {
+            depth -= 1;
+            if depth == 0 {
+                return at;
+            }
+        }
+    }
+    toks.len()
 }

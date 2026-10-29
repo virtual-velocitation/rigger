@@ -99,7 +99,7 @@ use common::repo::repo_root;
 #[path = "common/source_audit.rs"]
 mod source_audit;
 use source_audit::{
-    char_literal_len, is_definition_site, is_ident_char, qualifier_before, ref_punct,
+    char_literal_len, close_of, is_definition_site, is_ident_char, qualifier_before, ref_punct,
     skip_string_literal, tokenize, RawKind, RawTok,
 };
 
@@ -5796,19 +5796,7 @@ fn attribute_token_ranges(tokens: &[RawTok]) -> Vec<(usize, usize)> {
             continue;
         }
         let start = i + 2;
-        let mut depth = 1i32;
-        let mut j = start;
-        while j < tokens.len() {
-            if tokens[j].kind == RawKind::Punct && tokens[j].text == "[" {
-                depth += 1;
-            } else if tokens[j].kind == RawKind::Punct && tokens[j].text == "]" {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            j += 1;
-        }
+        let j = close_of(tokens, i + 1, "]");
         ranges.push((start, j.min(tokens.len())));
         i = j + 1;
     }
