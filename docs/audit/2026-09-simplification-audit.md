@@ -1805,7 +1805,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:73-75` `what`
 - `tests/common/fixtures/plan_critique.rs:29-34` `spec_defect_halt_text`
-- `tests/compaction_generations_periphery.rs:4959-4964` `closed_unit_line`
+- `tests/compaction_generations_periphery.rs:4960-4965` `closed_unit_line`
 - `tests/new_run_critique_refusal_periphery.rs:138-140` `no_critic_line`
 - `tests/no_os_kill_audit.rs:52-54` `join`
 
@@ -1864,7 +1864,7 @@ mandatory sweep: error-shaping helper functions - 13 site(s), collected mechanic
 - `tests/batched_fold_cadence.rs:177-273` `append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch`
 - `tests/canary_item_sharding_jobs_cap_periphery.rs:277-367` `run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors`
 - `tests/cli.rs:7826-7865` `run_workflow_prints_the_budget_halt_reason_on_stderr_when_its_conductor_returns`
-- `tests/compaction_generations_periphery.rs:4629-4673` `setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_event`
+- `tests/compaction_generations_periphery.rs:4630-4674` `setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_event`
 - `tests/grounder_name_contract.rs:40-171` `public_name_contract_predicate_error_and_resolver_agree`
 
 #### `dup-edcfd444cd88` (near, 3 sites)
@@ -2918,8 +2918,8 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/mod.rs:308-308` `"{}/.rigger-test-scratch"`
 - `tests/common/workflow_probe.rs:15-15` `".rigger"`
 - `tests/common/workflow_probe.rs:16-16` `"create .rigger"`
-- `tests/compaction_generations_periphery.rs:1532-1532` `".rigger"`
-- `tests/compaction_generations_periphery.rs:3818-3818` `"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
+- `tests/compaction_generations_periphery.rs:1533-1533` `".rigger"`
+- `tests/compaction_generations_periphery.rs:3819-3819` `"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \
          {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \
          decision (position {position}){fold}\n"`
 - `tests/config_unknown_key_dotted_path_periphery.rs:138-138` `".rigger"`
@@ -4113,14 +4113,14 @@ mandatory sweep: sqlite Connection::open call sites - 64 site(s), collected mech
 - `tests/common/fixtures/sqlite.rs:70-70` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:99-99` `Connection::open`
 - `tests/common/fixtures/write_lock.rs:11-11` `Connection::open`
-- `tests/compaction_generations_periphery.rs:501-501` `Connection::open`
-- `tests/compaction_generations_periphery.rs:965-965` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1180-1180` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1294-1294` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1370-1370` `Connection::open`
-- `tests/compaction_generations_periphery.rs:1538-1538` `Connection::open`
-- `tests/compaction_generations_periphery.rs:4607-4607` `Connection::open`
-- `tests/compaction_generations_periphery.rs:5727-5727` `Connection::open`
+- `tests/compaction_generations_periphery.rs:502-502` `Connection::open`
+- `tests/compaction_generations_periphery.rs:966-966` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1181-1181` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1295-1295` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1371-1371` `Connection::open`
+- `tests/compaction_generations_periphery.rs:1539-1539` `Connection::open`
+- `tests/compaction_generations_periphery.rs:4608-4608` `Connection::open`
+- `tests/compaction_generations_periphery.rs:5728-5728` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:86-86` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:100-100` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:213-213` `Connection::open`
@@ -4553,7 +4553,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/cli.rs:1157-1164` `migrated_lines`
 - `tests/common/cli.rs:1171-1176` `derived_menu_line_naming`
 - `tests/common/cli.rs:1834-1839` `bloat_advisory_naming`
-- `tests/compaction_generations_periphery.rs:6419-6424` `runs_prunable`
+- `tests/compaction_generations_periphery.rs:6420-6425` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
 
@@ -5059,7 +5059,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/compaction_genera
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/compaction_generations_periphery.rs:3241-3247` `holds_table`
+- `tests/compaction_generations_periphery.rs:3242-3248` `holds_table`
 - `tests/one_shot_reads_periphery.rs:310-312` `poison`
 
 #### `dup-515218e72204` (near, 2 sites)

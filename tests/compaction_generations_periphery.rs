@@ -43,7 +43,8 @@
 //!      beside a `graph.db` carrying its `caught_up` cursor an emit folds, no fold-dependent command
 //!      refuses, no read-only surface says the rebuild is owed, and `rigger setup` rebuilds nothing
 //!      for it, folds on from the cursor and removes it at its last step, even when its catch-up
-//!      stops; beside a file without its cursor it is no cause either, the seeding reading the
+//!      stops - a mark no removal can remove fails setup, naming it, only when the catch-up did not
+//!      stop; beside a file without its cursor it is no cause either, the seeding reading the
 //!      file's ledger against the log, never the mark.
 
 mod common;
