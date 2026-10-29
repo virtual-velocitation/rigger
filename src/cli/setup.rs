@@ -3775,12 +3775,11 @@ mod tests {
         text[from..from + len].to_string()
     }
 
-    /// What awk prints running `program` over `files` with `env` set; the run must succeed.
-    fn awk_output(program: &str, files: &[std::path::PathBuf], env: &[(&str, &str)]) -> String {
+    /// What awk prints running `program` over `files`; the run must succeed.
+    fn awk_output(program: &str, files: &[std::path::PathBuf]) -> String {
         let out = std::process::Command::new("awk")
             .arg(program)
             .args(files)
-            .envs(env.iter().copied())
             .output()
             .expect("awk runs");
         assert!(
@@ -4153,32 +4152,12 @@ mod tests {
     /// `tests/common` helper that resolves against the root or reads the root-relative path its
     /// caller hands it, each anchor the block's command names - listed by that command and run
     /// on both lanes), the whole suite left to the gates, the audit's closing rule, the test homes
-    /// with the tool that searches them, the counted check: the roots a retired spelling is
-    /// counted over with the command that counts it, no per-statement test-shape record, and the
-    /// sentence walk's generators as commands over the unit's whole range on every round (the
-    /// merge base with the run branch to head, never the round's delta), the graph's caller lookup
-    /// at depth 1 with its counted fallback recorded as a gap, the count and the caller lookup run
-    /// once per item of the walk's hunk list, each item the hunks add - a SQL conjunct inside a
-    /// query string included - carrying its one-home line in one of the working discipline's three
-    /// forms, the item list read by shape as well as by name with every added predicate an item,
-    /// a changed condition among them, that set read with one generator whose every hit is read
-    /// and a hit holding no boolean expression passed over, and a set of named members searched
-    /// by each member's name, the rule-spelling search over every tracked text file, one run per
-    /// pair of short terms - the feature's name and the rule's noun phrase, both on one joined
-    /// line with any words between - for a rewritten rule's old statement and each label its
-    /// cases carried (a term in another case or a sentence split by a rewrap still a hit), each
-    /// boolean term a production hunk adds to or removes from a filter, guard or predicate read
-    /// as a rewritten rule whose consumer phrases - the notes, Returns paragraphs, variant docs
-    /// and oracles of the function's depth-1 callers - that search runs as the function's name
-    /// and the old answer's noun, the walk's record bounded so it is written in one pass - each
-    /// command with its hit count and never its hits, every FIXED sentence with its `file:line`
-    /// witness, one per case the code splits a quantified sentence's subject into, each added
-    /// doc block with its witness, each added item with its one-home line and the CHECKED
-    /// remainder as one count per command, no per-hit disposition, per-item count block or
-    /// predicate heading owed - that satisfies the hand-over while the `sdet` lens re-runs the
-    /// searches and reads the hits itself, and the foreground wait for the long runs (the test
-    /// binaries on both lanes and a lane script), polled to its exit line when the host
-    /// backgrounds one.
+    /// with the tool that searches them, the counted check - the roots a retired spelling is
+    /// counted over with the command that counts it - and the foreground wait for the long runs
+    /// (the test binaries on both lanes and a lane script), polled to its exit line when the host
+    /// backgrounds one. The block owes no record: no sentence walk and its generators, no
+    /// one-home line, no rule-spelling search, no hand-applied mutation and no per-statement
+    /// test-shape record.
     #[test]
     fn the_author_roles_carry_one_hand_over_block_naming_the_checks_and_the_test_homes() {
         const HEADING: &str = "## Hand-over checks in this project";
@@ -4234,87 +4213,7 @@ mod tests {
             "the `tests/*.rs` doc comments, `//!` module docs, comments and assertion messages \
              included",
             "`git ls-files src crates tests docs skills scaffold .rigger | xargs awk",
-            "`git diff --name-only <base>..HEAD`",
-            "`rigger-run` when it names none",
-            "the `impl` header above a changed fn and above each of its callers names the trait \
-             item it implements",
-            "`rigger graph --around <file>::<item> --depth 1` lists each changed item's callers \
-             on the lines naming them (the default depth answers the item's whole file \
-             neighbourhood, never its callers)",
-            "when it answers nothing the callers are the lines the count above prints for the \
-             item's name",
-            "a `GAP:` clause naming the item in the record",
-            "the count above with `t='<name>'`",
-            "The count and the caller lookup run once per item of the walk's hunk list - every \
-             item the hunks touch, new or pre-existing, its body or its doc changed - each \
-             item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
-             xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name.",
-            "Each item the hunks add - a constant, static, list, closure, predicate - a SQL \
-             conjunct inside a query string included - or fn - carries its one-home line in one \
-             of the working discipline's three forms: `no other spelling` with the terms \
-             searched (its name count, its caller lookup and the fact's distinguishing literal - \
-             a table name, a kind string - run with the count above), `derived from <file:line>` \
-             or `pinned to <file:line> by <test>`.",
-            "The item list is read from the hunks by shape as well as by name: every boolean \
-             expression they add - an `if`, `else if`, `while` or match-guard condition, each \
-             operand of an `&&` or `||` chain inside one, the body of a closure passed to \
-             `filter`, `any`, `all`, `retain`, `position` or `find`, a conjunct inside a query, \
-             format or macro string - is an item with its `file:line` and its one-home line, a \
-             changed condition among them included, and two of one fact are lifted to one home \
-             or `pinned to` each other.",
-            "That set is read with one generator, run at head from the worktree root",
-            "each hit is read, the boolean expression it holds quoted as that item with its \
-             `file:line` and its one-home line, a hit that holds none passed over with no line of \
-             its own",
-            "A set of named members - an array of constants, an `IN (..)` list, a `matches!` or \
-             `match` arm per member, an `||` chain of equalities - runs the count above once per \
-             member's name, every statement, `match` or macro call holding two or more members \
-             read as a second spelling of the set, and its line names the member sites it read.",
-            "The walk is recorded as one `<unit>-sentence-walk` DecisionMade, bounded so you \
-             write it in one pass.",
-            "It carries each generator and search command as run with its hit count, never its \
-             pasted hits; every sentence FIXED, with its `file:line` and the `file:line` of the \
-             code at head that makes it true, one witness per case for a sentence with a \
-             quantifier (every, all, always, any, a plural subject with a predicate) - each arm, \
-             key component, filter condition or match branch the code splits its subject into, \
-             the cases named; each doc block the unit added, by `file:line`, with its witness; \
-             each item the unit adds with its one-home line; and the CHECKED remainder as one \
-             count per command.",
-            "It owes no per-hit or per-line disposition, no count block beside each item and no \
-             section of its own for added or changed conditions.",
-            "This bounded record satisfies the hand-over; the `sdet` lens re-runs the generators \
-             and searches on the review tree and reads the hits itself.",
-            "On every round, the first and each later one alike, `<base>` is the unit's merge \
-             base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
-             `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the \
-             round's delta your prompt carries.",
-            "END { print n + 0 \" hits\" }'`",
-            "Each rule the change rewrites is searched by two short terms for its old statement \
-             and for each label its cases carried (a name a doc, test or comment gives a case \
-             the old rule decided): the feature's name as the code spells it (`--around`, the \
-             fn, field, variant or table the rule concerns) and the rule's shortest \
-             distinguishing noun phrase (`exact id`, `import`, `collision`), each term at most \
-             three words, one run per pair, over every tracked text file of the project (`.rs`, \
-             `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` and `.html`",
-            "prints the line when the joined text holds both terms, in either order and with any \
-             words, names or code spans between them, so a term in another case, or a sentence a \
-             rewrap splits across two lines, is still a hit",
-            "BEGIN { a = tolower(ENVIRON[\"a\"]); b = tolower(ENVIRON[\"b\"]) }",
-            "s = tolower($0)",
-            "`git ls-files | awk '/\\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | a='<feature \
-             name>' b='<noun phrase>' xargs awk",
-            "index(s, a) && index(s, b) || index(j, a) && index(j, b) && !(index(p, a) && \
-             index(p, b))",
-            "A changed condition rewrites a rule too: every boolean term your production hunks \
-             in `crates/` and `src/` add to or remove from a filter, guard or predicate, listed \
-             from `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src` with the test \
-             regions left out, changes the rule its function answers.",
-            "Its old statement is what the function's callers from `rigger graph --around \
-             <file>::<fn> --depth 1` spell - the notes they print, their Returns paragraphs, the \
-             docs of the variants the answer maps to and the oracles asserting them - and each \
-             such consumer phrase runs as a pair of the search above, the function's name as the \
-             code spells it and the old answer's noun, one run per pair, every hit FIXED with \
-             the new qualifier or CHECKED where it does not reach it.",
+            "It prints nothing, or your hand-over names each line it prints with its reason.",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
@@ -4340,50 +4239,48 @@ mod tests {
             !block.contains("test-shape-audit"),
             "the hand-over block owes no per-statement test-shape record"
         );
-        for retired in ["ADDED PREDICATES", "every hit it printed"] {
+        for retired in [
+            "ADDED PREDICATES",
+            "every hit it printed",
+            "sentence walk",
+            "<unit>-sentence-walk",
+            "one-home line",
+            "DecisionMade",
+            "witness",
+            "CHECKED",
+            "changed condition",
+            "Each rule the change rewrites",
+        ] {
             assert!(
                 !block.contains(retired),
-                "the bounded walk record owes no {retired:?}"
+                "the hand-over block owes no record: {retired:?}"
             );
         }
     }
 
-    /// The author block's rule-spelling search runs as the block spells it: a line, joined with
-    /// the one before, its comment marker stripped and lower-cased, is a hit when it holds both
-    /// terms with any words or a code span between them, and a line holding one term alone is
-    /// not.
+    /// The author roles owe no sentence-walk record, so no persona and no scaffold seed spells a
+    /// command only that record ran: the rule-spelling search over a pair of terms, or the
+    /// by-shape generator of the predicates a range adds. The root-test selector and the counted
+    /// check stay, each pinned by its own test.
     #[test]
-    fn the_author_rule_search_finds_both_terms_on_one_joined_line_and_never_one_alone() {
-        let program = author_awk_program("b='<noun phrase>' xargs awk '", "'`");
-        let dir = tempfile::tempdir().unwrap();
-        let fixture = dir.path().join("fixture.md");
-        std::fs::write(
-            &fixture,
-            "/// bare names resolve where an `--around` seed is an exact id only\n\
-             unrelated\n\
-             an exact id alone on its line\n\
-             unrelated\n\
-             the around flag alone on its line\n\
-             unrelated\n\
-             a seed given to --AROUND\n\
-             is an Exact Id too\n",
-        )
-        .unwrap();
-        let printed = awk_output(
-            &program,
-            std::slice::from_ref(&fixture),
-            &[("a", "around"), ("b", "exact id")],
-        );
-        let path = fixture.display();
-        assert_eq!(
-            printed,
-            format!(
-                "{path}:1: /// bare names resolve where an `--around` seed is an exact id only\n\
-                 {path}:8: is an Exact Id too\n\
-                 2 hits\n"
-            ),
-            "both terms on one joined line are a hit, one term alone is not"
-        );
+    fn no_persona_or_seed_spells_a_retired_walk_command() {
+        let seeds = SCAFFOLD_AGENTS
+            .iter()
+            .map(|(file, text)| (format!("seed {file}"), text.to_string()));
+        let texts: Vec<(String, String)> = committed_personas().into_iter().chain(seeds).collect();
+        for (command, marker) in [
+            ("the rule-spelling search", "b='<noun phrase>' xargs awk"),
+            ("the rule-spelling search", "tolower(ENVIRON[\"a\"])"),
+            ("the by-shape generator", "git diff -U0"),
+            ("the by-shape generator", "index(s, \"is_none_or(\")"),
+        ] {
+            for (file, text) in &texts {
+                assert!(
+                    !text.contains(marker),
+                    "{file} spells {command}, a command of the retired walk: {marker:?}"
+                );
+            }
+        }
     }
 
     /// The author block's root-test selector finds a top-level test by each way it can reach
@@ -4489,7 +4386,7 @@ mod tests {
                 file
             })
             .collect();
-        let printed: std::collections::BTreeSet<String> = awk_output(&program, &files, &[])
+        let printed: std::collections::BTreeSet<String> = awk_output(&program, &files)
             .lines()
             .map(|path| {
                 std::path::Path::new(path)
@@ -4511,113 +4408,6 @@ mod tests {
         assert!(
             !printed.contains(TEMPORARY),
             "a read of a temporary file is no tree read"
-        );
-    }
-
-    /// The by-shape generator the author block spells, from `git diff -U0` to its awk's close.
-    fn added_predicate_generator() -> String {
-        const OPEN: &str = "`git diff -U0 ";
-        format!("{}{}'", &OPEN[1..], author_awk_program(OPEN, "'`"))
-    }
-
-    /// The author block's by-shape generator, spelled byte for byte by the second author role,
-    /// lists each line the walk's range adds to a production source
-    /// that carries a predicate's shape - an `if` condition, an `&&` operand on its own
-    /// continuation line, a `filter` closure - and passes by a doc comment, a line the base
-    /// already held, every line of the file's test module and every line of a root test; a
-    /// `#[cfg(test)]` over a `use` opens no test module.
-    #[test]
-    fn the_added_predicate_generator_lists_each_production_shape_and_no_test_line() {
-        use crate::test_support::{git_commit_all, git_ok, temp_git_project_with_commit};
-        let generator = added_predicate_generator();
-        assert!(
-            committed_persona("sdet-author.md").contains(&format!("`{generator}`")),
-            "sdet-author.md spells the author block's generator byte for byte"
-        );
-        const PRODUCTION: [&str; 9] = [
-            "#[cfg(test)]",
-            "use std::fmt::Debug;",
-            "",
-            "pub fn base(on: bool) -> bool {",
-            "    if on {",
-            "        return true;",
-            "    }",
-            "    false",
-            "}",
-        ];
-        const ADDED: [&str; 10] = [
-            "",
-            "/// Counts the ok items, or none if not ready.",
-            "pub fn admits(ready: bool, done: bool, items: &[Item]) -> usize {",
-            "    if !ready {",
-            "        return 0;",
-            "    }",
-            "    let both = ready",
-            "        && done;",
-            "    items.iter().filter(|item| item.ok).count() + usize::from(both)",
-            "}",
-        ];
-        const BASE_TESTS: [&str; 5] = [
-            "",
-            "#[cfg(test)]",
-            "mod tests {",
-            "    #[test]",
-            "    fn base() {}",
-        ];
-        const ADDED_TESTS: [&str; 6] = [
-            "",
-            "    #[test]",
-            "    fn admits_none_unready() {",
-            "        if super::admits(false, true, &[]) != 0 {",
-            "            panic!();",
-            "        }",
-        ];
-        let lines = |parts: &[&[&str]]| parts.concat().join("\n") + "\n";
-        let repo = temp_git_project_with_commit();
-        let root = repo.path();
-        let source = root.join("crates/demo/src/lib.rs");
-        let root_test = root.join("crates/demo/tests/admits.rs");
-        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(root_test.parent().unwrap()).unwrap();
-        std::fs::write(&source, lines(&[&PRODUCTION, &BASE_TESTS, &["}"]])).unwrap();
-        git_commit_all(root, "base");
-        git_ok(root, &["branch", "rigger-run"]);
-        std::fs::write(
-            &source,
-            lines(&[
-                &PRODUCTION,
-                &ADDED,
-                &BASE_TESTS,
-                &ADDED_TESTS,
-                &["    }", "}"],
-            ]),
-        )
-        .unwrap();
-        std::fs::write(
-            &root_test,
-            "#[test]\nfn admits_none() {\n    if demo::admits(true, true, &[]) != 0 {\n        \
-             panic!();\n    }\n}\n",
-        )
-        .unwrap();
-        git_commit_all(root, "head");
-        let out = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&generator)
-            .current_dir(root)
-            .output()
-            .expect("sh runs the generator");
-        assert!(
-            out.status.success(),
-            "the generator runs: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        assert_eq!(
-            String::from_utf8(out.stdout).unwrap(),
-            "crates/demo/src/lib.rs:13:     if !ready {\n\
-             crates/demo/src/lib.rs:17:         && done;\n\
-             crates/demo/src/lib.rs:18:     items.iter().filter(|item| item.ok).count() + \
-             usize::from(both)\n",
-            "each added production predicate is listed, no comment, base or test line"
         );
     }
 

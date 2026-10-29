@@ -763,7 +763,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-04900f58b78e",
+    "id": "dup-2b3843316743",
     "classification": "semantic",
     "sites": [
       {
@@ -880,11 +880,6 @@
         "file": "src/cli/run.rs",
         "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "name": "Command::new",
-        "content_hash": "7bc9b4eef80706b2"
       },
       {
         "file": "src/cli/setup.rs",
@@ -1228,11 +1223,11 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 92 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 91 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-9701ca5fcf49",
+    "id": "dup-beb4e5be1b10",
     "classification": "semantic",
     "sites": [
       {
@@ -2059,11 +2054,6 @@
         "file": "src/cli/setup.rs",
         "name": "\"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk\"",
         "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "name": "\"The count and the caller lookup run once per item of the walk's hunk list - every \\\n             item the hunks touch, new or pre-existing, its body or its doc changed - each \\\n             item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \\\n             xargs awk -v t='<name>' 'index($0, t) { print FILENAME \\\":\\\" FNR }'` with its name.\"",
-        "content_hash": "25597419b8dbb616"
       },
       {
         "file": "src/cli/setup.rs",
@@ -4232,7 +4222,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 599 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 598 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
