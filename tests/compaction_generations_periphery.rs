@@ -2576,40 +2576,36 @@ rigger::test_cases! {
             |_| {},
             true,
         );
-    /// The file's passed-over record cannot be read back ([`unreadable_passed_over_row_in`]):
-    /// setup still fails naming where its catch-up stopped, never the failed read.
+    /// The file's passed-over record cannot be read back ([`UNREADABLE_PASSED_OVER_AT`]): setup
+    /// still fails naming where its catch-up stopped, never the failed read.
     setup_whose_catch_up_meets_a_storage_error_beside_an_unreadable_passed_over_record_names_the_stop:
         setup_whose_catch_up_meets_a_storage_error(
-            unreadable_passed_over_row_in,
-            clear_the_unreadable_passed_over_row_in,
+            |graph_db| {
+                at_the_unreadable_passed_over_row(
+                    graph_db,
+                    "INSERT INTO passed_over (position, cause) VALUES (?1, X'00')",
+                )
+            },
+            |graph_db| {
+                at_the_unreadable_passed_over_row(
+                    graph_db,
+                    "DELETE FROM passed_over WHERE position = ?1",
+                )
+            },
             false,
         );
 }
 
-/// The position [`unreadable_passed_over_row_in`] records passed over, far above any the tests'
-/// logs issue, so no fold asks its cause.
+/// The position of the `passed_over` row a test records with a blob cause, which setup's count of
+/// the file's passed-over positions by cause cannot read back as text, so that read fails; far
+/// above any position the tests' logs issue, so no fold asks its cause.
 const UNREADABLE_PASSED_OVER_AT: i64 = 1_000_000;
 
-/// Record in the graph file `db` a `passed_over` row whose cause is a blob, which setup's count of
-/// the file's passed-over positions by cause cannot read back as text, so that read fails.
-fn unreadable_passed_over_row_in(db: &Path) {
+/// Run `sql` on the graph file `db`, its one parameter the position [`UNREADABLE_PASSED_OVER_AT`].
+fn at_the_unreadable_passed_over_row(db: &Path, sql: &str) {
     rusqlite::Connection::open(db)
         .unwrap()
-        .execute(
-            "INSERT INTO passed_over (position, cause) VALUES (?1, X'00')",
-            [UNREADABLE_PASSED_OVER_AT],
-        )
-        .unwrap();
-}
-
-/// Remove the row [`unreadable_passed_over_row_in`] recorded in the graph file `db`.
-fn clear_the_unreadable_passed_over_row_in(db: &Path) {
-    rusqlite::Connection::open(db)
-        .unwrap()
-        .execute(
-            "DELETE FROM passed_over WHERE position = ?1",
-            [UNREADABLE_PASSED_OVER_AT],
-        )
+        .execute(sql, [UNREADABLE_PASSED_OVER_AT])
         .unwrap();
 }
 
