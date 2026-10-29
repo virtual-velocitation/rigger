@@ -617,14 +617,20 @@ pub fn close_of(toks: &[RawTok], open: usize, close: &str) -> usize {
     toks.len()
 }
 
-/// Every name a `use` declaration among `toks` imports, paired with the path segment that owns
-/// it, in source order. A name is owned by the segment its own path puts in front of it
-/// (`use a::b::c;` imports `c` owned by `b`), and a group member with no path of its own by the
-/// segment of the innermost group holding it (`use a::{b, c::{d}};` imports `b` owned by `a` and
-/// `d` owned by `c`). A glob and a renamed import (`b as c`) import no name read here.
+/// The names read from the `use` declarations among `toks`, each paired with its owner, in source
+/// order. A declaration runs from any `use` keyword to the next `;`, so a precise-capturing bound
+/// (`impl Sized + use<'a>`) opens one too. A name is an identifier that ends a path: a `,`, `}`
+/// or `;` follows it and no `as` precedes it. Its owner is the identifier or keyword in front of
+/// the `::` before it (`use a::b::c;` imports `c` owned by `b`). A name with no such owner of its
+/// own is owned by the innermost open group, whose owner is read the same way in front of its
+/// `{`, the empty string when there is none (`use a::{b, c::{d}};` imports `b` owned by `a` and
+/// `d` owned by `c`; `use {a, b::c};` imports `a` owned by `""` and `c` owned by `b`). These
+/// imports are read for no name: a glob (`a::*`), a renamed import (`b as c`), a path ending in a
+/// keyword (a `self` group member, which imports the `a` of `use a::{self, b};`) and a name with
+/// no owner outside any group (a one-segment path, `use serde;`).
 pub fn imported_names(toks: &[RawTok]) -> Vec<(String, String)> {
     let mut names = Vec::new();
-    // Inside a `use` declaration, the segment that owns each open group, innermost last.
+    // Inside a `use` declaration, each open group's owner, innermost last.
     let mut owners: Option<Vec<String>> = None;
     for (at, tok) in toks.iter().enumerate() {
         let Some(groups) = owners.as_mut() else {
