@@ -7289,6 +7289,64 @@ mod tests {
         );
     }
 
+    /// Spec 124, WIRING: a rebuild re-extracts through a re-extraction of its own, which it builds
+    /// once from the factory its projector is handed ([`Projector::with_reextraction`]) and drops
+    /// before it returns, so nothing the re-extraction holds - a batch process - outlives the
+    /// rebuild; the entries it folds take the batches that re-extraction answers.
+    #[test]
+    fn a_rebuild_re_extracts_through_one_re_extraction_of_its_own_dropped_as_it_returns() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        /// What a re-extraction holds: it counts itself dropped.
+        struct Held(Arc<AtomicUsize>);
+        impl Drop for Held {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let log = passing_over_log();
+        let (built, dropped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (_dir, path) = crate::test_support::temp_graph_db();
+        let p = Projector::open(&path, "test").unwrap().with_reextraction({
+            let (built, dropped) = (Arc::clone(&built), Arc::clone(&dropped));
+            move || {
+                built.fetch_add(1, Ordering::SeqCst);
+                let held = Held(Arc::clone(&dropped));
+                Box::new(move |entry: &Event| {
+                    let _ = &held;
+                    batch_of_the_rejected_entry(entry)
+                })
+            }
+        });
+        let rebuilt = p.rebuild(
+            &locked(&path),
+            true,
+            &mut |after, sink| stream_past(&log, after, 10, sink),
+            &mut |_| {},
+        );
+        assert_eq!(
+            (
+                rebuilt.map_err(|e| e.0),
+                built.load(Ordering::SeqCst),
+                dropped.load(Ordering::SeqCst),
+                crate::test_support::passed_over_rows(&path),
+            ),
+            (
+                Ok(Some(Rebuilt::default())),
+                1,
+                1,
+                vec![
+                    (1, RESOLVED_TO_NOTHING.to_string()),
+                    (2, poison_cause(FOLD_FAILED, TYPE_CODE_ENTITY_EXTRACTED)),
+                    (3, poison_cause(PAYLOAD_REJECTED, TYPE_DECISION_MADE)),
+                ],
+            ),
+            "one re-extraction built for the rebuild, dropped as it returns, its batches folded"
+        );
+    }
+
     /// Spec 124, the direct fold's own-position answer: a direct fold meeting its own position
     /// already passed over answers that position's cause - through `apply_generation`, through
     /// `apply`, and through `apply_batch` beside a position it folds and still commits - writing no
