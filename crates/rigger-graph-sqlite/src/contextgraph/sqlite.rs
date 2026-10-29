@@ -9443,7 +9443,7 @@ mod tests {
     }
 
     /// Spec 124, THE APPENDER and CAUSE TEXTS: an appender another writer's write lock holds off
-    /// past its ceiling returns not-folded with the write-lock text, its own position unfolded and
+    /// past its ceiling returns not-folded with the write-lock text, its own positions unfolded and
     /// no mark written, the text ending with its path's suffix: after its call, on a file carrying
     /// `caught_up` through a projector handed the log, the call-run suffix; after its direct
     /// fold's retried open, on a file without the cursor or through a projector handed no log, the
@@ -9500,8 +9500,12 @@ mod tests {
                 crate::test_support::fold_of(&p, &copies)
             });
             assert_eq!(
-                (folded, applied(&p, 1), owed_mark(&path).unwrap().exists()),
-                (Fold::NotFolded(text), false, false),
+                (
+                    folded,
+                    applied_through(&p, 2),
+                    owed_mark(&path).unwrap().exists()
+                ),
+                (Fold::NotFolded(text), vec![false, false], false),
                 "{case}: the write-lock text with its path's suffix, nothing folded and no mark"
             );
         }
