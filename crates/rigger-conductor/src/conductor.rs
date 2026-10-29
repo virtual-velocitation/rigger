@@ -32321,11 +32321,7 @@ mod tests {
         assert_eq!(
             rs.attention,
             vec![
-                ledger::AttentionEntry::unit_scoped(
-                    ledger::ATTENTION_REJECT_RECURRENCE,
-                    "u",
-                    "3 attempts",
-                ),
+                ledger::AttentionEntry::reject_recurrence("u", 3),
                 ledger::AttentionEntry::unit_scoped(
                     ledger::ATTENTION_STALLED_FRONTIER,
                     "u",
@@ -32412,11 +32408,7 @@ mod tests {
                 &u_failed_at(DIAGNOSE_THRESHOLD - 1, &[]),
                 &u_failed_at(DIAGNOSE_THRESHOLD, &[]),
             ),
-            vec![ledger::AttentionEntry::unit_scoped(
-                ledger::ATTENTION_REJECT_RECURRENCE,
-                "u",
-                format!("{} attempts", DIAGNOSE_THRESHOLD),
-            )]
+            vec![ledger::AttentionEntry::reject_recurrence("u", DIAGNOSE_THRESHOLD)]
         );
         /// A failure at the threshold that also escalates the unit ends its remediation, so the
         /// escalation is the call's one entry.

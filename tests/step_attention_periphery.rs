@@ -169,6 +169,14 @@ stages:
 "#,
 };
 
+/// `u`'s reject-recurrence entry at `attempts`, as `rigger step` prints it on its wire.
+fn recurrence_wire(attempts: u32) -> String {
+    serde_json::to_string(&rigger::ledger::AttentionEntry::reject_recurrence(
+        "u", attempts,
+    ))
+    .expect("an attention entry serializes")
+}
+
 /// Spec 69, criterion 5: reject-recurrence and stalled-frontier, driven across FIVE
 /// separate `rigger step` subprocesses against ONE persisted on-disk store, each round
 /// exactly as a real courier/driver cycle would leave it.
@@ -238,9 +246,10 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
         "round 4 must park the remediation attempt #3, still unanswered; got: {line:?}"
     );
     assert!(
-        line.contains(
-            r#""attention":[{"kind":"reject-recurrence","unit":"u","detail":"3 attempts"},{"kind":"stalled-frontier","unit":"u","detail":"3 recorded results, still parked"}]"#
-        ),
+        line.contains(&format!(
+            r#""attention":[{},{{"kind":"stalled-frontier","unit":"u","detail":"3 recorded results, still parked"}}]"#,
+            recurrence_wire(3)
+        )),
         "the THIRD recorded failure must stamp BOTH a reject-recurrence and a \
          stalled-frontier entry, in order, on a fresh process's own stdout; got: {line:?}"
     );
@@ -473,7 +482,7 @@ fn hung_liveness_halt_lands_ahead_of_real_reject_recurrence_and_stalled_frontier
          got: {line:?}"
     );
     let recurred_pos = line
-        .find(r#"{"kind":"reject-recurrence","unit":"u","detail":"3 attempts"}"#)
+        .find(&recurrence_wire(3))
         .unwrap_or_else(|| panic!("round 4's recurrence entry must still stamp; got: {line:?}"));
     let stalled_pos = line
         .find(
@@ -617,8 +626,10 @@ fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
     assert_eq!(
         lines,
         vec![
-            "attention - reject-recurrence: u - 3 attempts (respond: rigger-diagnose-churn)"
-                .to_string(),
+            format!(
+                "attention - reject-recurrence: u - {} (respond: rigger-diagnose-churn)",
+                rigger::ledger::AttentionEntry::reject_recurrence("u", 3).detail
+            ),
             "attention - stalled-frontier: u - 3 recorded results, still parked (respond: stop \
              the driver and diagnose before another round spends)"
                 .to_string(),

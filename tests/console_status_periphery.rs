@@ -146,14 +146,17 @@ fn rigger_status_needs_you_covers_budget_halt_and_reject_recurrence_arms() {
         "expected the budget-halt line; got:\n{out}"
     );
     assert!(
-        out.contains(&format!("u-fail: {threshold} attempts, still parked")),
+        out.contains(&format!(
+            "u-fail: {threshold} failed attempts, the loop is still remediating - audit the \
+             findings (rigger-diagnose-churn)"
+        )),
         "expected the reject-recurrence line for u-fail; got:\n{out}"
     );
 
     // The regression this round fixes, pinned through the real binary: a just-resumed unit
     // must not read as still-needs-you.
     assert!(
-        !out.contains("u-resumed: 3 attempts, still parked"),
+        !out.contains(&rigger::ledger::AttentionEntry::reject_recurrence("u-resumed", 3).line()),
         "a just-resumed unit must not appear as reject-recurrence; got:\n{out}"
     );
 }

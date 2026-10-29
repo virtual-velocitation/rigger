@@ -669,11 +669,7 @@ mod tests {
     /// The dock listing `u-churn` alone, as reject-recurrence at `attempts`.
     fn docked_as_recurred(attempts: u32) -> Dock {
         Dock {
-            needs_you: vec![AttentionEntry::unit_scoped(
-                ledger::ATTENTION_REJECT_RECURRENCE,
-                "u-churn",
-                format!("{attempts} attempts, still parked"),
-            )],
+            needs_you: vec![AttentionEntry::reject_recurrence("u-churn", attempts)],
         }
     }
 
