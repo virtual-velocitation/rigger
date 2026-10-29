@@ -736,7 +736,8 @@ pub enum Fold {
     /// another writer's write lock or its catch-up held them past the appender's ceiling (spec
     /// 124). A projection that records positions it passed over may also answer here an
     /// event of its own recorded passed over, before or by this fold, with that position's cause:
-    /// that event is not in the graph, while the events of its batch that fold are committed.
+    /// that event is not in the graph, and which of its batch's other events are committed when
+    /// it answers is the projection's transaction cadence ([`Projection::apply_batch`]).
     NotFolded(String),
 }
 
@@ -784,11 +785,12 @@ impl Fold {
         Self::settle(graph.and_then(|g| g.apply(event, FoldAccess(()))))
     }
 
-    /// Fold `events` into the graph `graph` yields through [`Projection::apply_batch`], at its
-    /// transaction cadence, or say why they were not folded - the graph could not be had, or
-    /// refused them, or one of them is a position the graph recorded passed over, whose cause is
-    /// answered after the batch's other events commit. No events is nothing to fold, so it is
-    /// folded without opening the graph.
+    /// Fold `events` into the graph `graph` yields through [`Projection::apply_batch`], or say why
+    /// they were not folded - the graph could not be had, or refused them, or one of them is a
+    /// position the graph recorded passed over, whose cause is answered: which of the batch's
+    /// other events the graph has committed when it answers is its transaction cadence, as
+    /// [`Projection::apply_batch`] says. No events is nothing to fold, so it is folded without
+    /// opening the graph.
     pub fn of_batch<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
         graph: impl FnOnce() -> Result<G, Error>,
         events: &[Event],
@@ -891,17 +893,16 @@ pub trait Projection: Send + Sync {
     /// applying each event in order would produce; the only difference is transaction CADENCE,
     /// which the implementation chooses. One exception to the answer: an implementation that
     /// records positions passed over may meet one of the batch's own positions recorded so, and
-    /// then commits the batch's other events and answers the first such position's cause, where
-    /// the default loop stops at it.
+    /// then answers the first such position's cause where the default loop stops at it; which of
+    /// the batch's other events it has committed when it answers is its transaction cadence, which
+    /// the sqlite `Projector`'s own `apply_batch` doc states for each of its paths.
     ///
     /// The default folds each event through [`apply`](Projection::apply) (one transaction per
     /// event), so an implementation with no cheaper batch path is unaffected and every `apply`
-    /// still runs. The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it:
-    /// folding the batch directly it opens ONE transaction for the whole batch, and folding it by
-    /// its catch-up calls one per call (spec 124). That ONE transaction is what lets a writer fold
-    /// a file's whole batch at the store's transaction cost of ONE commit instead of one per event
-    /// (spec 49 - the measured cold-build throughput was transaction-cadence bound, not
-    /// parse-bound).
+    /// still runs. The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it,
+    /// at the transaction cadence its own `apply_batch` doc states: folding many events per commit
+    /// rather than one per event is what spec 49 needed, the measured cold-build throughput being
+    /// transaction-cadence bound, not parse-bound.
     fn apply_batch(&self, events: &[Event], access: FoldAccess) -> Result<(), Error> {
         for e in events {
             self.apply(e, access)?;

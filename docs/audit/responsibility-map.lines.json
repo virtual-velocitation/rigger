@@ -422,38 +422,38 @@
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "append_and_fold_batch",
-    "start_line": 3225,
-    "end_line": 3243
+    "start_line": 3224,
+    "end_line": 3242
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "stamped",
-    "start_line": 3247,
-    "end_line": 3254
+    "start_line": 3246,
+    "end_line": 3253
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "emit_with_actor",
-    "start_line": 3259,
-    "end_line": 3265
+    "start_line": 3258,
+    "end_line": 3264
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "emit_meta",
-    "start_line": 3275,
-    "end_line": 3283
+    "start_line": 3274,
+    "end_line": 3282
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "emit_keyed",
-    "start_line": 3296,
-    "end_line": 3298
+    "start_line": 3295,
+    "end_line": 3297
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "emit_keyed_meta",
-    "start_line": 3309,
-    "end_line": 3333
+    "start_line": 3308,
+    "end_line": 3332
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

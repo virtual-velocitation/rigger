@@ -3154,9 +3154,11 @@ impl Projection for Projector {
     /// Folded by its calls ([`Projector::fold_by_calls`]), the batch folds in the calls'
     /// transactions, one per call, each a cut of a page that may hold other writers' positions:
     /// an event whose payload the judge rejects is passed over with [`PAYLOAD_REJECTED`] while the
-    /// cut's other events commit, and the batch answers the first own position recorded passed
-    /// over's cause; any other failure rolls back only its call's cut, the cuts before it
-    /// committed.
+    /// cut's other events commit. After the first of its calls after which one of the batch's own
+    /// positions stands recorded passed over, by that call or an earlier fold, the batch answers
+    /// the first such position's cause at once ([`own_standing`]): the cuts its calls folded by
+    /// then are committed, and the batch's events past them are left for a later fold. Any other
+    /// failure rolls back only its call's cut, the cuts before it committed.
     fn apply_batch(&self, events: &[Event], _access: FoldAccess) -> Result<(), Error> {
         self.guarded(events, None, |tx| {
             match fold_new(tx, events, &self.project)? {
