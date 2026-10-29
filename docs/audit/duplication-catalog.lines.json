@@ -2029,8 +2029,8 @@
       },
       {
         "file": "tests/boundary_audit.rs",
-        "start_line": 1298,
-        "end_line": 1298
+        "start_line": 1306,
+        "end_line": 1306
       },
       {
         "file": "tests/canary_model_drift_periphery.rs",

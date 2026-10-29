@@ -1026,6 +1026,14 @@ fn each_append_and_open_token_is_reported_by_file_and_item() {
             &[],
         ),
         (
+            "a bare STREAM of .append( under a use of conductor::STREAM",
+            "src/lib.rs",
+            "use crate::conductor::STREAM;\n\nfn reexport() {\n    \
+             store.append(STREAM, &events);\n}\n",
+            &["src/lib.rs:reexport"],
+            &[],
+        ),
+        (
             "a bare STREAM imported from another module's group",
             "src/lib.rs",
             "use crate::canary::{Probe, STREAM};\n\nfn probe() {\n    \
