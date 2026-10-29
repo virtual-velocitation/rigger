@@ -5103,7 +5103,8 @@ impl RunCtx<'_> {
     /// the unit back and what goes to the operator. On a LATER round, each REQUIRED item
     /// [`ReviewRound::blocks`] does not keep is recorded as a lesson for the operator about its
     /// file and leaves the verdict; a reject that leaves no item converges to an approve whose
-    /// evidence is [`CONVERGED`]. Returns the verdict, its reason, and the REQUIRED list the
+    /// evidence is [`CONVERGED`] above the verdict text, so the notes that round upheld are
+    /// read from it like an approve's. Returns the verdict, its reason, and the REQUIRED list the
     /// next round holds the unit to. A first round's reject keeps every item, and so does a
     /// reject blaming infrastructure. `ordinal` is the stage run's infra retry ordinal, so an
     /// infra rerun's review records its own lessons.
@@ -5145,7 +5146,7 @@ impl RunCtx<'_> {
             )?;
         }
         if kept.is_empty() && !dropped.is_empty() {
-            return Ok((true, CONVERGED.to_string(), kept));
+            return Ok((true, format!("{CONVERGED}\n{reason}"), kept));
         }
         Ok((false, reason, kept))
     }
@@ -12784,8 +12785,9 @@ fn rejects_without_required(output: &str) -> bool {
             .is_some_and(|a| a.verdict.is_some() && a.required.is_empty() && !a.is_infra_fault())
 }
 
-/// The `reviewed` evidence of a later round's reject that converged: every item it required
-/// was a finding outside its delta and no correctness defect, so each went to the operator.
+/// The first line of the `reviewed` evidence of a later round's reject that converged: every
+/// item it required was a finding outside its delta and no correctness defect, so each went to
+/// the operator. The verdict text follows it.
 const CONVERGED: &str = "converged";
 
 /// One `- <path>: <finding>` line per REQUIRED item, followed for a pattern item by
@@ -17013,8 +17015,9 @@ mod tests {
     #[test]
     fn the_checkin_prompt_carries_each_upheld_note_of_an_integrated_unit_once() {
         // Two units integrate with upheld notes. The second's first round rejects, upholding a
-        // note and a blocking finding, and its approving round upholds the note again, its lens
-        // having raised it again: the check-in stage's first prompt carries each upheld finding
+        // note and a blocking finding; its second round rejects on only a wording item outside
+        // its delta, so it converges, upholding the note again, its lens having raised it again,
+        // and a note of its own: the check-in stage's first prompt carries each upheld finding
         // once, in id order, with the text the latest round recorded. A unit seeded into the run
         // that never integrated upheld a note too, and it is not carried.
         let (u1, u2) = (sweep_unit(1), sweep_unit(2));
@@ -17053,7 +17056,10 @@ mod tests {
                 ),
                 (
                     spawn_id(&u2, &lens, 1),
-                    vec![lens_finding("n-two", &["src/b.rs:4"], "latest wording")],
+                    vec![
+                        lens_finding("n-two", &["src/b.rs:4"], "latest wording"),
+                        lens_finding("c-two", &["src/b.rs:7"], "reword the doc comment"),
+                    ],
                 ),
             ],
             vec![
@@ -17067,7 +17073,7 @@ mod tests {
                 ),
                 (
                     spawn_id(&u2, ROLE_ADJUDICATOR, 1),
-                    r#"{"verdict":"approve","upheld":["n-two"]}"#,
+                    r#"{"verdict":"reject","upheld":["n-two","c-two"],"required":[{"finding":"reword the doc comment","path":"src/b.rs","correctness":false}]}"#,
                 ),
             ],
             &ghost,
@@ -17077,6 +17083,11 @@ mod tests {
                 id: "b-two".into(),
                 about: vec!["src/b.rs:9".into()],
                 summary: "the read is unscoped".into(),
+            },
+            RunNote {
+                id: "c-two".into(),
+                about: vec!["src/b.rs:7".into()],
+                summary: "reword the doc comment".into(),
             },
             RunNote {
                 id: "n-one".into(),
@@ -17096,7 +17107,11 @@ mod tests {
         );
         assert!(
             !notes_block(&want).is_empty(),
-            "premise: three notes render a block"
+            "premise: four notes render a block"
+        );
+        assert_eq!(
+            rs.units[&u2].attempts, 1,
+            "premise: the second unit's second round converged, charged nothing more"
         );
         assert_eq!(
             checkin_prompt(&driver),
@@ -31167,15 +31182,14 @@ mod tests {
 
     /// A later round's reject whose every item is a non-correctness finding outside the delta
     /// that round reviewed converges: each item is recorded as a lesson for the operator about
-    /// its file, and the unit lands on that round, approved "converged", charged nothing more.
+    /// its file, and the unit lands on that round, approved "converged" above the verdict text,
+    /// charged nothing more.
     #[test]
     fn a_round_two_reject_on_only_out_of_delta_wording_lands_and_records_operator_lessons() {
+        let converging = r#"{"verdict":"reject","required":[{"finding":"reword the doc comment","path":"feature.rs","correctness":false}]}"#;
         let (rs, events, _) = run_review_rounds(&[
             (adjudicator_at(0, 0), REJECT_FEATURE),
-            (
-                adjudicator_at(1, 0),
-                r#"{"verdict":"reject","required":[{"finding":"reword the doc comment","path":"feature.rs","correctness":false}]}"#,
-            ),
+            (adjudicator_at(1, 0), converging),
         ]);
         assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
         assert_eq!(
@@ -31198,8 +31212,8 @@ mod tests {
             .collect();
         assert_eq!(
             reviewed.last().map(|b| b["evidence"]["review"].clone()),
-            Some(json!("converged")),
-            "the converged round's approve says so: {reviewed:?}"
+            Some(json!(format!("converged\n{converging}"))),
+            "the converged round's approve says so, above the verdict text: {reviewed:?}"
         );
     }
 
