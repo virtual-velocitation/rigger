@@ -3867,22 +3867,24 @@ mod tests {
     /// once per item of the walk's hunk list, each item the hunks add - a SQL conjunct inside a
     /// query string included - carrying its one-home line in one of the working discipline's three
     /// forms, the item list read by shape as well as by name with every added predicate an item,
-    /// a changed condition among them, and a set of named members searched by each member's
-    /// name, the rule-spelling search over every tracked text file, one run per pair of short
-    /// terms - the feature's name and the rule's noun phrase, both on one joined line with any
-    /// words between - for a rewritten rule's old statement and each label its cases carried (a
-    /// term in another case or a sentence split by a rewrap still a hit), each boolean term a
-    /// production hunk adds to or removes from a filter, guard or predicate read as a rewritten
-    /// rule whose consumer phrases - the notes, Returns paragraphs, variant docs and oracles of
-    /// the function's depth-1 callers - that search runs as the function's name and the old
-    /// answer's noun, the walk's record bounded so it is written in one pass - each command with
-    /// its hit count and never its hits, every FIXED sentence with its `file:line` witness, one
-    /// per case the code splits a quantified sentence's subject into, each added doc block with
-    /// its witness, each added item with its one-home line and the CHECKED remainder as one count
-    /// per command, no per-hit disposition, per-item count block or predicate heading owed - that
-    /// satisfies the hand-over while the `sdet` lens re-runs the searches and reads the hits
-    /// itself, and the foreground wait for the long runs (the test binaries on both lanes and a
-    /// lane script), polled to its exit line when the host backgrounds one.
+    /// a changed condition among them, that set read with one generator whose every hit is read
+    /// and a hit holding no boolean expression passed over, and a set of named members searched
+    /// by each member's name, the rule-spelling search over every tracked text file, one run per
+    /// pair of short terms - the feature's name and the rule's noun phrase, both on one joined
+    /// line with any words between - for a rewritten rule's old statement and each label its
+    /// cases carried (a term in another case or a sentence split by a rewrap still a hit), each
+    /// boolean term a production hunk adds to or removes from a filter, guard or predicate read
+    /// as a rewritten rule whose consumer phrases - the notes, Returns paragraphs, variant docs
+    /// and oracles of the function's depth-1 callers - that search runs as the function's name
+    /// and the old answer's noun, the walk's record bounded so it is written in one pass - each
+    /// command with its hit count and never its hits, every FIXED sentence with its `file:line`
+    /// witness, one per case the code splits a quantified sentence's subject into, each added
+    /// doc block with its witness, each added item with its one-home line and the CHECKED
+    /// remainder as one count per command, no per-hit disposition, per-item count block or
+    /// predicate heading owed - that satisfies the hand-over while the `sdet` lens re-runs the
+    /// searches and reads the hits itself, and the foreground wait for the long runs (the test
+    /// binaries on both lanes and a lane script), polled to its exit line when the host
+    /// backgrounds one.
     #[test]
     fn the_author_roles_carry_one_hand_over_block_naming_the_checks_and_the_test_homes() {
         const HEADING: &str = "## Hand-over checks in this project";
@@ -3966,6 +3968,10 @@ mod tests {
              format or macro string - is an item with its `file:line` and its one-home line, a \
              changed condition among them included, and two of one fact are lifted to one home \
              or `pinned to` each other.",
+            "That set is read with one generator, run at head from the worktree root",
+            "each hit is read, the boolean expression it holds quoted as that item with its \
+             `file:line` and its one-home line, a hit that holds none passed over with no line of \
+             its own",
             "A set of named members - an array of constants, an `IN (..)` list, a `matches!` or \
              `match` arm per member, an `||` chain of equalities - runs the count above once per \
              member's name, every statement, `match` or macro call holding two or more members \
@@ -4214,6 +4220,115 @@ mod tests {
         );
     }
 
+    /// The by-shape generator the author block spells, from `git diff -U0` to its awk's close.
+    fn added_predicate_generator() -> String {
+        const OPEN: &str = "`git diff -U0 ";
+        format!("{}{}'", &OPEN[1..], author_awk_program(OPEN, "'`"))
+    }
+
+    /// The author block's by-shape generator, spelled byte for byte by the second author role
+    /// and the architecture lens, lists each line the walk's range adds to a production source
+    /// that carries a predicate's shape - an `if` condition, an `&&` operand on its own
+    /// continuation line, a `filter` closure - and passes by a doc comment, a line the base
+    /// already held, every line of the file's test module and every line of a root test; a
+    /// `#[cfg(test)]` over a `use` opens no test module.
+    #[test]
+    fn the_added_predicate_generator_lists_each_production_shape_and_no_test_line() {
+        use crate::test_support::{git_commit_all, git_ok, temp_git_project_with_commit};
+        let generator = added_predicate_generator();
+        for persona in ["sdet-author.md", "architecture-reviewer.md"] {
+            assert!(
+                committed_persona(persona).contains(&format!("`{generator}`")),
+                "{persona} spells the author block's generator byte for byte"
+            );
+        }
+        const PRODUCTION: [&str; 9] = [
+            "#[cfg(test)]",
+            "use std::fmt::Debug;",
+            "",
+            "pub fn base(on: bool) -> bool {",
+            "    if on {",
+            "        return true;",
+            "    }",
+            "    false",
+            "}",
+        ];
+        const ADDED: [&str; 10] = [
+            "",
+            "/// Counts the ok items, or none if not ready.",
+            "pub fn admits(ready: bool, done: bool, items: &[Item]) -> usize {",
+            "    if !ready {",
+            "        return 0;",
+            "    }",
+            "    let both = ready",
+            "        && done;",
+            "    items.iter().filter(|item| item.ok).count() + usize::from(both)",
+            "}",
+        ];
+        const BASE_TESTS: [&str; 5] = [
+            "",
+            "#[cfg(test)]",
+            "mod tests {",
+            "    #[test]",
+            "    fn base() {}",
+        ];
+        const ADDED_TESTS: [&str; 6] = [
+            "",
+            "    #[test]",
+            "    fn admits_none_unready() {",
+            "        if super::admits(false, true, &[]) != 0 {",
+            "            panic!();",
+            "        }",
+        ];
+        let lines = |parts: &[&[&str]]| parts.concat().join("\n") + "\n";
+        let repo = temp_git_project_with_commit();
+        let root = repo.path();
+        let source = root.join("crates/demo/src/lib.rs");
+        let root_test = root.join("crates/demo/tests/admits.rs");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(root_test.parent().unwrap()).unwrap();
+        std::fs::write(&source, lines(&[&PRODUCTION, &BASE_TESTS, &["}"]])).unwrap();
+        git_commit_all(root, "base");
+        git_ok(root, &["branch", "rigger-run"]);
+        std::fs::write(
+            &source,
+            lines(&[
+                &PRODUCTION,
+                &ADDED,
+                &BASE_TESTS,
+                &ADDED_TESTS,
+                &["    }", "}"],
+            ]),
+        )
+        .unwrap();
+        std::fs::write(
+            &root_test,
+            "#[test]\nfn admits_none() {\n    if demo::admits(true, true, &[]) != 0 {\n        \
+             panic!();\n    }\n}\n",
+        )
+        .unwrap();
+        git_commit_all(root, "head");
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&generator)
+            .current_dir(root)
+            .output()
+            .expect("sh runs the generator");
+        assert!(
+            out.status.success(),
+            "the generator runs: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            "crates/demo/src/lib.rs:13:     if !ready {\n\
+             crates/demo/src/lib.rs:17:         && done;\n\
+             crates/demo/src/lib.rs:18:     items.iter().filter(|item| item.ok).count() + \
+             usize::from(both)\n",
+            "each added production predicate is listed, no comment, base or test line"
+        );
+    }
+
     /// The `sdet` lens is the enforcement of two built-in rules. Of the shape rule: it reads
     /// the unit's test hunks over its whole range; cases of one behaviour that differ only in
     /// their values written as copies of a test function are BLOCKING, and so is a table,
@@ -4400,9 +4515,10 @@ mod tests {
     /// The architecture lens is the enforcement of the built-in rule that every fact the
     /// production delta states has one home: it derives the added items itself from the
     /// production hunks by shape as well as by name, a SQL conjunct inside a query string
-    /// included, reads the walk record's one-home line for each, the record keeping no heading
-    /// of its own for predicates, and a missing line, two lines for two predicates of one fact
-    /// or one false at head is BLOCKING; for every added set of named members it runs the
+    /// included, reading that set with the authors' generator byte for byte, reads the walk
+    /// record's one-home line for each, the record keeping no heading of its own for predicates,
+    /// and a missing line, two lines for two predicates of one fact or one false at head is
+    /// BLOCKING; for every added set of named members it runs the
     /// member search itself, and a second spelling the line does not name is BLOCKING.
     #[test]
     fn the_architecture_lens_reads_the_one_home_line_of_every_added_item() {
@@ -4417,6 +4533,9 @@ mod tests {
              false at head (the fact has another spelling the line does not name, or the named \
              derivation or pin does not exist), is BLOCKING (DRY, single responsibility), cited \
              with both spellings' `file:line`.",
+            "You read that set with the authors' generator, byte for byte the command their \
+             persona spells, run from your own worktree's root at the review tree's head",
+            "you read each hit, and a hit that holds no boolean expression is passed over.",
             "For every added set of named members, of the forms the built-in rule names, you run \
              the member search yourself, the count of each member's name, every statement, \
              `match` or macro call holding two or more of them read as a second spelling of the \
