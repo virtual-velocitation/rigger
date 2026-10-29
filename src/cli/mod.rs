@@ -521,9 +521,11 @@ fn open_graph_for_write(
 /// `ingest::resolve_entry`) for the tree under `root`: from the entry's blob in the repository's
 /// object database, read through the batch process `batch` holds - started at the first entry it
 /// is handed, resolved or not ([`entry_blobs`]), and none outside a git repository, when the
-/// process cannot start, or in the lane compiled without an extraction - else from the tree's
-/// file, else from no bytes. An entry no source resolves answers none, and in the lane compiled
-/// without an extraction no source resolves any.
+/// detection's process cannot start, or in the lane compiled without an extraction - else from the
+/// tree's file, else from no bytes. A batch process that cannot start inside a repository fails the
+/// entry, naming its command, and is kept for none, so the next entry starts it again. An entry no
+/// source resolves answers none, and in the lane compiled without an extraction no source resolves
+/// any.
 fn reextract_entry(
     root: &Path,
     batch: &mut Option<Option<rigger::worktree::BlobBatch>>,
@@ -546,8 +548,10 @@ fn reextract_entry(
 }
 
 /// The batch process a re-extraction reads its entries' blobs from, over the repository holding
-/// `root`: none outside a git repository or when the process cannot start, and none in the lane
-/// that compiles no extraction, where no entry resolves and no process is started.
+/// `root` ([`rigger::worktree::BlobBatch::start`]): none outside a git repository or when the
+/// detection's process cannot start, a failure naming the command when the batch's own cannot
+/// start inside one, and none in the lane that compiles no extraction, where no entry resolves and
+/// no process is started.
 fn entry_blobs(root: &Path) -> Result<Option<rigger::worktree::BlobBatch>, contextgraph::Error> {
     if cfg!(feature = "symbols") {
         rigger::worktree::BlobBatch::start(root).map_err(|e| contextgraph::Error(e.0))

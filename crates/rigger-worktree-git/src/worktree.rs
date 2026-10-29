@@ -1691,8 +1691,10 @@ pub struct BlobBatch {
 impl BlobBatch {
     /// Start the batch process over the repository holding `root` ([`BLOB_BATCH`], its start read
     /// by [`batch_answer`]), or answer none when there is no object database to ask: `root` is
-    /// outside a git repository, or a `git` - the detection's ([`in_repository`]) or the batch's -
-    /// cannot start at all.
+    /// outside a git repository, or the detection's `git` ([`in_repository`]) cannot start, which
+    /// says nothing about where `root` is. Inside a repository a batch `git` that cannot start
+    /// fails the start, naming its command, the root and the cause: an object database stands
+    /// there to ask.
     pub fn start(root: &std::path::Path) -> Result<Option<Self>, Error> {
         use std::process::Stdio;
 
@@ -1759,15 +1761,14 @@ impl BlobBatch {
 const BLOB_BATCH: [&str; 2] = ["cat-file", "--batch"];
 
 /// What the start of the batch process under `root` - a repository, as the detection answered -
-/// answers, its spawn having answered `spawned`: the batch over a process that started, and none
-/// for one that could not.
+/// answers, its spawn having answered `spawned`: the batch over a process that started, and for
+/// one that could not a failure naming the batch's command, the root and the cause
+/// ([`git_failure`]).
 fn batch_answer(
-    _root: &std::path::Path,
+    root: &std::path::Path,
     spawned: std::io::Result<std::process::Child>,
 ) -> Result<Option<BlobBatch>, Error> {
-    let Ok(mut process) = spawned else {
-        return Ok(None);
-    };
+    let mut process = spawned.map_err(|e| git_failure(&BLOB_BATCH, root, &e.to_string()))?;
     Ok(process.stdout.take().map(|answers| BlobBatch {
         answers: std::io::BufReader::new(answers),
         process,

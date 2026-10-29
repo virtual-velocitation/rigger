@@ -936,14 +936,15 @@ const REBUILD_BATCH: usize = 10_000;
 /// extraction that first entry also asks whether an object database stands there and, inside a
 /// repository, starts the one batch process ([`entry_blobs`]) the blobs are read through, ended as
 /// the rebuild returns - before the report and the catch-up, each call of which starts its own at
-/// the first entry it is handed - so no two batch processes run at once; the lane compiled without
-/// one asks for no object database and starts no batch process. A rebuild that meets no entry
-/// starts no batch process. The report that follows a rebuild
-/// ([`identities_behind_their_recording`]) reads the tree under the same root, from the same cell,
-/// and is the one to ask git for it when the rebuild handed its re-extraction no entry and an
-/// identity is behind its latest recording: the root is asked for once, by whichever reader of the
-/// cell needs it first - the rebuild's re-extraction, the report or a catch-up call's re-extraction
-/// - and of git by none when none does.
+/// the first entry it is handed - so no two batch processes run at once; a batch process that
+/// cannot start there fails the rebuild, naming its command, rather than fold the entries with no
+/// object database asked. The lane compiled without one asks for no object database and starts no
+/// batch process. A rebuild that meets no entry starts no batch process. The report that follows a
+/// rebuild ([`identities_behind_their_recording`]) reads the tree under the same root, from the
+/// same cell, and is the one to ask git for it when the rebuild handed its re-extraction no entry
+/// and an identity is behind its latest recording: the root is asked for once, by whichever reader
+/// of the cell needs it first - the rebuild's re-extraction, the report or a catch-up call's
+/// re-extraction - and of git by none when none does.
 ///
 /// Once an orphaned mark is dropped, and before it reads or writes anything else, it takes the
 /// rebuild lock on `graph.db.lock` ([`Projector::lock_rebuild`]), making that zero-byte file
