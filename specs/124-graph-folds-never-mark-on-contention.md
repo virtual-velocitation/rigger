@@ -251,14 +251,15 @@ held, no in-flight spawn of the current run whose liveness marker is inside its 
 registration for the store with a heartbeat inside `DEFAULT_IDLE_MS` (`live_driver_registrations`,
 :883); the probe holds the step lock for the rebuild (`LiveWriterProbe`, :812). When a rebuild is
 owed and a run is live, setup prints the refusal CATCH-UP LINES names and exits non-zero, offering
-no override (`--force-live` is `reset --derived`'s alone, `hygiene.rs:106-116`). Finishing a
-STANDING rebuild state, a shadow or a tail, is EXEMPT from the refusal and runs beside a live run:
-it is `pay_owed_rebuild`'s no-cause pay path (`setup.rs:1027`, its doc :1020-1021;
-`Projector::rebuild`'s `swap_unfinished` arm and its `rebuild_tail_owed` arm, `sqlite.rs:495-496`,
-:522), safe there because every appender call is INERT on rebuild state; the refusal keeps refusing
-a NEW rebuild, one a cause owes while `Projector::rebuild_unfinished` (`sqlite.rs:555`, the one read
-of a standing shadow or an owed tail, which `rigger reset --derived` already asks, `hygiene.rs:505`)
-answers false, while a run is live. When no rebuild is owed, setup's loop runs, since it is safe
+no override (`--force-live` is `reset --derived`'s alone, `hygiene.rs:106-116`). Finishing
+STANDING rebuild work is EXEMPT from the refusal and runs beside a live run: resuming a resumable
+shadow, whether or not a cause is owed, and finishing a swapped-in tail no cause is owed beside
+(`Projector::rebuild`'s `swap_unfinished` arm and its `rebuild_tail_owed` arm, `sqlite.rs:495-496`,
+:522), safe there because every appender call is INERT on rebuild state. The refusal refuses a NEW
+rebuild while a run is live: a pay that starts a fresh shadow and folds the log from position 0, as
+`Projector::rebuild_starts_fresh` answers, which is a cause owed with no shadow standing, with or
+without a swapped-in tail, and any standing shadow `open_shadow` discards as not resumable.
+When no rebuild is owed, setup's loop runs, since it is safe
 beside appenders. An entry appended while a rebuild runs, an operator ingest's (`rigger graph
 build`) included, is re-extracted by the tail at any age (THE DECIDE STEP). WIRING: the projector
 holds the catch-up wiring - the log and the re-extraction - installed by the composition root's one
@@ -280,11 +281,12 @@ nothing and needs none.
 
 **THE BLOB IS WRITTEN, decided here (criterion 2).** `hash_blob`
 (`crates/rigger-worktree-git/src/worktree.rs:1557`), the one hash function `entry_of_batch` hashes
-an entry's bytes through before the append, writes the object it hashes - `git hash-object -w
---no-filters --stdin` - whenever `root` is inside a repository, by the one detection
-`BlobBatch::start` applies (`git rev-parse --git-dir`, `worktree.rs:1604-1613`; `entry_blobs`,
-`setup.rs:1009`), and hashes without writing outside one, where no object database can be asked; a
-write that fails fails the hash, naming the command, the root and the cause, as every failure of it
+an entry's bytes through before the append, writes the object it hashes, hardened on disk before
+the call returns - `git -c core.fsync=loose-object hash-object -w --no-filters --stdin` - whenever
+`root` is inside a repository, by the one detection `BlobBatch::start` applies (`git rev-parse
+--git-dir`, `worktree.rs:1604-1613`; `entry_blobs`, `setup.rs:1009`), and hashes without writing
+outside one, where no object database can be asked; a detection whose `git` cannot start, and a
+write that fails, fail the hash, naming the command, the root and the cause, as every failure of it
 does. This supersedes spec 107's rule that the hash writes no object (its doc,
 `worktree.rs:1552-1556`). Every worktree of a repository shares its object database, and the store
 belongs to the main worktree's top level, so one store is one object database on one host: any
@@ -337,7 +339,8 @@ contract test, `tests/boundary_audit.rs`, beside its Rule 2 (`misplaced_construc
 - APPEND: a call `.append(`, `append_and_fold(`, `append_entry_and_fold(` or `emit_event(` whose
   argument list, read to its matching close parenthesis, names the project stream's constant:
   `conductor::STREAM` or `run::STREAM` (`crates/rigger-domain/src/run.rs:32`, re-exported at
-  `conductor.rs:63`), or a bare `STREAM` in a file whose `use` of `run` names `STREAM`;
+  `conductor.rs:63`), or a bare `STREAM` in a file whose `use` of a
+  `STREAM_MODULES` member (`run` and `conductor`, `tests/boundary_audit.rs`) names `STREAM`;
 - OPEN: `Projector::open(`, `open_graph_for_write(`, `open_graph(` and `.graph()`
   (`StoreLocation::graph`, `src/cli/mod.rs:1403`).
 The hits are compared as a set of `file:item` entries against this block's allow-list and nothing
@@ -360,7 +363,7 @@ The allow-list is tree 4's set, the one criterion 2 lands on; each line is a poi
 - OPEN, derived from WIRING: the one open for write, `src/cli/mod.rs:open_graph_for_write`, the one
   hit of `Projector::open(` that may write; its callers `src/cli/mod.rs:open_graph` (:444),
   `src/cli/mod.rs:graph` (`StoreLocation::graph`, :1403), `src/cli/mod.rs:migrate_identity_at`
-  (:1179), `src/cli/setup.rs:pay_owed_rebuild` (:1036, :1066) and `src/cli/setup.rs:rebuild_owed_graph`
+  (:1179) and `src/cli/setup.rs:rebuild_owed_graph`
   (THE CURSOR AND ITS SEEDING), the hits of `open_graph_for_write(`; the read-only opens, the other
   hits of `Projector::open(`: `src/cli/mod.rs:standing_graph` (:464), `src/cli/mod.rs:open_graph_to_read`
   (:491), `src/cli/dashboard.rs:dash_read_graph` (:509), `:dash_read_whole_graph` (:528) and
@@ -391,7 +394,13 @@ takes the lock first and runs the seeding's verdict under it, never before it: t
 read of the ledger against the live selection and, on tree 4 onward, the owed check's any-miss read
 it shares (`misses_any`), `pay_owed_rebuild`'s `owed_against` (`setup.rs:1036`) taking that read's
 result rather than reading the ledger again; on a file already carrying `caught_up` the same
-transaction runs the any-miss read alone and writes nothing. A direct fold in flight holds the lock
+transaction reads no log rows, runs no any-miss read and writes nothing: at every setup, never
+mid-run, setup reads the log's head once through the event-store port's bounded head read
+(`EventStore::log_head`) and hands it to the seeding (`Projector::seed_cursor`), where a head below
+`caught_up`, or no head beside a cursor above 0, is the prefix-violation verdict
+(`Seeding::Ran { lost: true }`), which setup routes as it routes the verdict of a file without
+`caught_up`, and a head at or above `caught_up`, or no head beside a cursor at 0, keeps the cursor.
+A direct fold in flight holds the lock
 for its whole transaction, so a seeding that meets it is CONTENTION and SKIPs with the seeding line
 (THE TWO WRITES MEETING A LOCK), issuing no verdict, and a position missing under the lock has no
 writer holding a transaction. No live position missing below the highest applied one seeds the
@@ -408,7 +417,9 @@ violation and the first seeding of a file on a shared log rebuilds it once, as s
 for such a file - and with young missing positions alone the
 cursor is seeded just below the lowest of them, `catch_up` advancing over the applied positions above
 it; an old missing position, an empty ledger beside a non-empty log, or a highest applied position
-above the log's head (an `events.db` replaced under a standing `graph.db`) is a prefix violation, which
+above the log's head (an `events.db` replaced under a standing `graph.db`, found at every setup, never
+mid-run: here on a file without `caught_up`, by the head comparison above on a file carrying it) is
+a prefix violation, which
 only a rebuild can repair in order, so no cursor is created and the seeding returns the
 prefix-violation verdict, a verdict of this setup alone and no record of the file, which setup adds
 to `pay_owed_rebuild`'s printed causes as `OWED_LOST_FOLD` only when it is absent, as `owed_against`
@@ -435,9 +446,10 @@ rebuild state (THE APPENDER); the open through the one open, which creates a mis
 `SCHEMA`'s tables; the seeding of a file without `caught_up` that holds no rebuild state and owes no
 older-rule rebuild, and the owed check's any-miss read, in the one IMMEDIATE transaction (SEEDING),
 whose contention drops only those reads (THE TWO WRITES MEETING A LOCK);
-the owed check, which pays `owed_because`'s causes whether or not the transaction was contended (the any-miss read, which excludes positions above the highest
-applied one, positions above `caught_up` on a file carrying it and missing positions younger than the
-horizon, and the seeding's verdict joins its causes) and the rebuild it owes, or the finishing of a
+the owed check, which pays `owed_because`'s causes whether or not the transaction was contended
+(the seeding's verdict and, on a file without `caught_up`, the any-miss read,
+which excludes positions above the highest applied one and missing positions younger than the
+horizon, join its causes) and the rebuild it owes, or the finishing of a
 standing rebuild state (THE REBUILD RUNS WITH NO RUN LIVE); then the call loop; last, from criterion 6, the removal of a standing `.owed` mark whenever the
 file carries `caught_up` at that step, whether or not the seeding's transaction was contended, so a marked file this setup seeds loses its mark in this run. COLD START: today
 `rebuild_owed_graph` returns before doing anything when no `graph.db` stands (`setup.rs:909-912`) and
@@ -637,9 +649,10 @@ IF NOT EXISTS`, so the upgrade bumps no fold rule.
 **CONSTRAINTS WALK, decided here.**
 - Empty: a call with nothing past the cursor opens no transaction and moves nothing; an empty
   ledger beside an empty log seeds 0.
-- A log replaced under a standing graph: an `events.db` whose head is below `graph.db`'s highest
-  applied position is a prefix violation at the seeding, so no cursor is created and the rebuild
-  pays it, never a cursor above the head that later appends would sit at or below unread.
+- A log replaced under a standing graph: at every setup, never mid-run, an `events.db` whose head is
+  below `graph.db`'s highest applied position, or below its `caught_up` cursor on a file carrying
+  one, is a prefix violation at the seeding, so the rebuild pays it, its shadow seeding the cursor
+  anew, never a cursor above the head that later appends would sit at or below unread.
 - Repeated fold of one position: `applied` makes it a no-op in every path; an appender whose own
   entry another process folded first meets it applied, and its batch is dropped.
 - Revert (an identity's later generation, one returning to an earlier content included): its entry
@@ -674,8 +687,8 @@ IF NOT EXISTS`, so the upgrade bumps no fold rule.
   it waits under the ceiling, checked after every call, a call that passed the fast-path read before the swap finding rebuild state under its
   lock after it; a tail longer than the ceiling makes it return, and the next call folds its event.
 - Owed rebuild beside a live run: on a file owing an older-rule rebuild (and, until criterion 6, a
-  marked one) `guarded` refuses every fold with `REBUILD_OWED`, and setup refuses the rebuild while
-  the run is live, so the one route is to stop the driver, run `rigger setup` and relaunch by
+  marked one) `guarded` refuses every fold with `REBUILD_OWED`, and setup refuses a NEW rebuild of
+  it while the run is live, so the one route is to stop the driver, run `rigger setup` and relaunch by
   adoption; the state is reached only by a fold-rule change, never by contention. On a file setup
   found in prefix violation while a run is live, the appenders keep folding directly, unrefused,
   until a setup with no run live rebuilds it; no file record is written for the violation.
@@ -704,7 +717,7 @@ IF NOT EXISTS`, so the upgrade bumps no fold rule.
   older-rule rebuild `owed_because` reads, under the live-run refusal, then the loop is skipped
   with the seeding line and the next setup seeds; setup exits zero unless a rebuild pass fails or the live-run refusal fires. A
   marked file before criterion 6 is paid the same way, the mark being an `owed_because` cause; a
-  file already carrying `caught_up` loses only its any-miss read to the contention, pays any
+  file already carrying `caught_up` issues no verdict under the contention, pays any
   `owed_because` cause, and skips its loop with the seeding line, the next setup's loop catching it
   up.
 - Crash mid-tail: the rebuild resumes the tail from its cursor, and its drop sets `caught_up`; a run
@@ -734,8 +747,9 @@ IF NOT EXISTS`, so the upgrade bumps no fold rule.
   directly, unrefused, until a setup with no run live rebuilds it.
 - Seeding beside live direct folds: an unseeded file folded directly out of order may hold an
   applied position above a young missing one still in flight; the seeding seeds just below the
-  lowest young missing position, which the any-miss read excludes as above `caught_up` and young
-  (criterion 4), so no rebuild is owed for it, and the loop's calls fold the missing one and advance
+  lowest young missing position, which lies above `caught_up`, and a file carrying it reads no log
+  rows at setup (criterion 4), so no rebuild is owed for it,
+  and the loop's calls fold the missing one and advance
   over the applied ones above. The seeding's reads run under its lock, so a direct fold beside it
   waits the reads out as CONTENTION under its ceiling, and a seeding meeting a direct fold's
   transaction skips with the seeding line, issuing no verdict.
@@ -807,8 +821,9 @@ exactly one owner per behaviour.
   failed fold still writes the mark with today's error and suffix (today's code, no criterion's).
   `catch_up` has one production caller, setup's loop, and folds foreign positions only, so no arm of
   it is test-only. Setup runs criterion 4's order: it creates and seeds the file, pays an owed
-  rebuild (the mark, an older rule, an old hole under applied positions at or below `caught_up`, or
-  the seeding's prefix-violation verdict) through THE DECIDE STEP, then loops calls that fold in
+  rebuild (the mark, an older rule, or the seeding's prefix-violation verdict, which on a file
+  carrying `caught_up` is its head comparison alone)
+  through THE DECIDE STEP, then loops calls that fold in
   order what the appenders left above `caught_up`, a hole there owing no rebuild, printing CATCH-UP
   LINES
   (criterion 4), the SKIPPED line ending with "the next rigger setup continues it". `catch_up` is
