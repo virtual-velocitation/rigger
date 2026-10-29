@@ -14,6 +14,8 @@
 //!   3. **Whatever repository the environment names.** Run with `GIT_DIR` naming a second
 //!      repository, as a git hook's environment names one, the build still writes each blob into
 //!      the root's object database and none into the second's.
+//!   4. **One detection per root.** The build asks whether its root is inside a repository once,
+//!      then starts one process per blob it hashes.
 //!
 //! The migration's own write, `rigger reset --derived` writing the blob of each entry it migrates,
 //! is held beside the migration's other properties in `tests/reset_derived_compaction_periphery.rs`.
@@ -140,5 +142,43 @@ fn a_graph_build_writes_each_blob_into_the_root_s_repository_whatever_git_dir_na
         ),
         "the build writes each entry's blob into the root's repository, never into the one \
          GIT_DIR names"
+    );
+}
+
+/// The argument line of the one repository detection, as git receives it after its `-C <root>`.
+const DETECTION: &str = "rev-parse --git-dir";
+
+/// The argument line of a hash that writes its object, as git receives it after its `-C <root>`.
+const WRITING_HASH: &str = "-c core.fsync=loose-object hash-object -w --no-filters --stdin";
+
+/// GIVEN the extraction tree planted in a repository, and a recording `git` first on PATH
+/// ([`common::repo::stub_path`]),
+/// WHEN the operator runs `rigger graph build`,
+/// THEN, of the build's git processes, one detects whether the root is inside a repository, and
+/// after it one hashes each entry the build records, writing its object.
+#[test]
+fn a_graph_build_detects_its_root_s_repository_once_and_starts_one_process_per_hash() {
+    let dir = planted_extraction_tree(write_file);
+    let root = dir.path();
+    git_init_quiet(root);
+    let work = tempfile::tempdir().unwrap();
+    let path = common::repo::stub_path(work.path(), "git", Some("git-recording.sh"));
+
+    let recorded = build_records_the_walk(root, &[("PATH", path.as_str())]);
+
+    let invocations =
+        std::fs::read_to_string(work.path().join("bin").join("git-invocations")).unwrap();
+    let anchored = format!("-C {} ", root.display());
+    assert_eq!(
+        invocations
+            .lines()
+            .filter_map(|line| line.strip_prefix(anchored.as_str()))
+            .filter(|args| [DETECTION, WRITING_HASH].contains(args))
+            .collect::<Vec<_>>(),
+        std::iter::once(DETECTION)
+            .chain(std::iter::repeat_n(WRITING_HASH, recorded.len()))
+            .collect::<Vec<_>>(),
+        "the build detects its root's repository once, then starts one process per hash; git \
+         invocations: {invocations}"
     );
 }
