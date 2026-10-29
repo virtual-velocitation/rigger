@@ -573,8 +573,8 @@ pub fn ref_token(tok: Option<&RawTok>, kind: RawKind, text: &str) -> bool {
 /// front of the `::` is neither an identifier nor a keyword. Spec 87 round-1 addendum
 /// (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): "the tokenizer's existing
 /// `preceded_by_coloncolon` signal" carried one step further, to name WHICH qualifier a
-/// `::`-qualified reference names, so a bare-name collision between two `Free`/`ImplAssoc` fns
-/// can attribute a qualified call site to the one it actually means.
+/// `::`-qualified reference names, first so a bare-name collision between two `Free`/`ImplAssoc`
+/// fns can attribute a qualified call site to the one it actually means.
 pub fn qualifier_before(toks: &[RawTok], i: usize) -> Option<String> {
     if i < 3 {
         return None;
