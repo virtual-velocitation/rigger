@@ -39,6 +39,12 @@
 //!      head of a log replaced by a shorter one, and fails, naming the position its catch-up
 //!      stopped at, when a fold meets a storage error, the next setup folding on once the storage
 //!      recovers.
+//!   7. **The owed mark.** A `graph.db.owed` mark an older binary's lost fold left is no cause:
+//!      beside a `graph.db` carrying its `caught_up` cursor an emit folds, no fold-dependent command
+//!      refuses, no read-only surface says the rebuild is owed, and `rigger setup` rebuilds nothing
+//!      for it, folds on from the cursor and removes it at its last step, even when its catch-up
+//!      stops; beside a file without its cursor, an old hole the seeding finds, never the mark, is
+//!      what setup owes the rebuild for.
 
 mod common;
 
