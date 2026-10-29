@@ -3321,6 +3321,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_record_citing_lines_of_a_file_renders_in_the_files_sections",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "82c58596bcfb59fb"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "grounding_omits_a_resolved_finding_and_keeps_the_open_one",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -11541,7 +11549,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "b97f606eae649837"
+    "content_hash": "c96f8eaded8eef38"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -12374,6 +12382,14 @@
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "8115d2522c34bd17"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "graph_seeds_seed_the_file_a_record_citing_its_lines_names",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "3ca071415dc93b6d"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

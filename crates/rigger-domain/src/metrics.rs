@@ -104,6 +104,7 @@ use std::time::{Duration, SystemTime};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::contextgraph::query::referenced_id;
 use crate::contextgraph::{META_ACTOR, TYPE_GATE_VERDICT, TYPE_REVIEW_FINDING};
 use crate::eventstore::Event;
 use crate::ledger::{
@@ -888,7 +889,8 @@ pub fn project(events: &[Event]) -> Metrics {
                 // A finding a lens or the adversary raised. Attribute it to the
                 // conductor-stamped META_ACTOR (falling back to the payload `by`, exactly
                 // as the context-graph fold resolves provenance), and record the files it
-                // concerns for the lens-overlap and adversary-only folds. First sighting
+                // concerns for the lens-overlap and adversary-only folds, a `path:line`
+                // citation read as the file it cites ([`referenced_id`]). First sighting
                 // per id wins (a defensive dedup against a replayed finding).
                 let Some(id) = field_str(e, "id") else {
                     continue;
@@ -903,7 +905,10 @@ pub fn project(events: &[Event]) -> Metrics {
                     .cloned()
                     .or_else(|| field_str(e, "by").filter(|b| !b.is_empty()))
                     .unwrap_or_default();
-                let about = field_str_vec(e, "about");
+                let about: Vec<String> = field_str_vec(e, "about")
+                    .iter()
+                    .map(|f| referenced_id(f).to_string())
+                    .collect();
                 if !actor.is_empty() {
                     for f in &about {
                         file_actors
@@ -2489,6 +2494,24 @@ mod tests {
         let adv = m.review_quality.adversary_only;
         assert_eq!((adv.raised, adv.upheld), (2, 1));
         assert!((m.review_quality.adversary_precision() - 0.5).abs() < 1e-9);
+    }
+
+    /// A finding citing lines of a file (`path:line`, `path:from-to`) is about that file: it
+    /// overlaps a lens's finding about the same file, and an adversary finding citing it is not
+    /// adversary-only.
+    #[test]
+    fn a_finding_citing_lines_of_a_file_is_about_that_file_in_the_review_folds() {
+        let events = vec![
+            finding("f1", "architecture-reviewer", &["src/shared.rs:12"]),
+            courier_finding("f2", "lens:sdet", &["src/shared.rs"]),
+            courier_finding("a1", "adversary", &["src/shared.rs:40-44"]),
+        ];
+        let rq = project(&events).review_quality;
+        assert_eq!(
+            (rq.finding_files, rq.overlap_files, rq.adversary_only.raised),
+            (1, 1, 0),
+            "one file, flagged by three actors, and no adversary-only finding"
+        );
     }
 
     #[test]

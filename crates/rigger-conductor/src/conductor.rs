@@ -19901,6 +19901,41 @@ mod tests {
         );
     }
 
+    /// A record citing a line of a file (`tests/x.rs:12`) or a span of lines (`tests/x.rs:12-20`)
+    /// is about that file: the finding, decision and lesson sections rendered for the file's seed
+    /// each carry it, as they carry a record naming the bare path.
+    #[test]
+    fn a_record_citing_lines_of_a_file_renders_in_the_files_sections() {
+        let seed = vec!["tests/x.rs".to_string()];
+        let sections = [
+            (
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-line", "by": "adversary", "summary": "the retry doc misleads", "about": ["tests/x.rs:12"]}),
+                write_capped_findings as fn(&mut String, &Graph, &[String]),
+                "- adversary (f-line): the retry doc misleads",
+            ),
+            (
+                contextgraph::TYPE_DECISION_MADE,
+                json!({"id": "d-span", "summary": "retry twice", "governs": ["tests/x.rs:12-20"]}),
+                write_capped_decisions,
+                "- d-span: retry twice",
+            ),
+            (
+                contextgraph::TYPE_LESSON_LEARNED,
+                json!({"id": "l-line", "summary": "never sleep in a test", "about": ["tests/x.rs:7"]}),
+                write_capped_lessons,
+                "- l-line: never sleep in a test",
+            ),
+        ];
+        for (type_, payload, write, line) in sections {
+            let out = render_capped(type_, vec![payload], &seed, write);
+            assert!(
+                out.contains(line),
+                "the {type_} citing lines of tests/x.rs must render for its seed; output was:\n{out}"
+            );
+        }
+    }
+
     #[test]
     fn grounding_omits_a_resolved_finding_and_keeps_the_open_one() {
         // Spec 25, criterion 4 (the grounding-slice observable effect): for a unit whose

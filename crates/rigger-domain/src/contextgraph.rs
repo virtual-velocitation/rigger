@@ -553,7 +553,8 @@ pub const TYPE_LESSON_LEARNED: &str = "LessonLearned";
 pub const TYPE_ALIAS_DEFINED: &str = "AliasDefined";
 pub const TYPE_ALIAS_UNRESOLVED: &str = "AliasUnresolved";
 /// A review finding a lens / adversary raised about a unit's files. Folded into a
-/// KIND_FINDING node ABOUT each file, plus a RAISED edge from the acting reviewer.
+/// KIND_FINDING node ABOUT each file it cites (a `path:line` citation names its file), the
+/// acting reviewer kept as the node's `by` attribute, never a RAISED edge (spec 43).
 pub const TYPE_REVIEW_FINDING: &str = "ReviewFinding";
 /// One definition extracted from a source file (spec 29a): the extraction pass emits one per
 /// path (spec 119, ONE PATH, ONE EVENT), and the always-compiled fold turns it into a

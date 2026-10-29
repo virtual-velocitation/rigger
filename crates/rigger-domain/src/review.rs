@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::contextgraph::query::referenced_id;
 use crate::contextgraph::TYPE_DECISION_MADE;
 use crate::eventstore::{Error as StoreError, Event, EventStore, Position, TypeSelection};
 use crate::playbooks::fnv1a_64;
@@ -669,7 +670,8 @@ fn string_entries(value: &Value) -> impl Iterator<Item = &str> {
 /// CLEAN): the ids of its BLOCKING findings, in finding order, minus every id named in the
 /// `resolves` of a `DecisionMade` among `decisions` that the store recorded after the critique's
 /// result (a greater position) and whose `governs` names `spec` - the spec path already made
-/// repo-relative - once each entry is normalized against `root` like the spec path
+/// repo-relative - once each entry is read as the id it names ([`referenced_id`], so a citation of
+/// lines of the spec names the spec) and normalized against `root` like the spec path
 /// ([`normalize_spec_path`]). An id the critique does not hold is ignored, and supersession is not
 /// read: a recorded resolution stands until the text changes.
 pub fn open_findings(
@@ -683,8 +685,9 @@ pub fn open_findings(
         .filter(|event| event.type_ == TYPE_DECISION_MADE && event.position > critique.position)
         .filter_map(Event::decode::<Value>)
         .filter(|decision| {
-            string_entries(&decision["governs"])
-                .any(|governed| normalize_spec_path(root, governed).as_deref() == Some(spec))
+            string_entries(&decision["governs"]).any(|governed| {
+                normalize_spec_path(root, referenced_id(governed)).as_deref() == Some(spec)
+            })
         })
         .flat_map(|decision| {
             string_entries(&decision["resolves"])
@@ -1261,6 +1264,26 @@ mod tests {
             open_findings(&approving, &[], spec, root),
             ["b1"],
             "an approve beside a BLOCKING line still counts as blocking: the verdict is never read"
+        );
+    }
+
+    /// A later resolution whose `governs` cites lines of the spec (`path:line`, `path:from-to`)
+    /// governs the spec, so it closes the ids it names.
+    #[test]
+    fn a_resolution_citing_lines_of_the_spec_closes_the_ids_it_names() {
+        let critique = critique_at_ten(&[("b1", true), ("b2", true), ("b3", true)]);
+        assert_eq!(
+            open_findings(
+                &critique,
+                &[
+                    resolution(11, &["specs/a.md:12"], &["b1"]),
+                    resolution(12, &["/work/repo/specs/a.md:3-9"], &["b2"]),
+                ],
+                "specs/a.md",
+                Path::new("/work/repo"),
+            ),
+            ["b3"],
+            "a resolution citing lines of the spec, relative or absolute, closes its ids"
         );
     }
 

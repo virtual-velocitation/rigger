@@ -241,6 +241,58 @@ fn emit_review_finding_shows_in_peers() {
     );
 }
 
+/// A record citing a line of a file (`tests/x.rs:12`) or a span of its lines
+/// (`tests/x.rs:12-20`) is about that file, through the compiled binary: `rigger peers tests/x.rs`
+/// lists the finding, decision and lesson with their citations as recorded, and the graph links
+/// each to the file's node, so `rigger graph --around tests/x.rs` reaches all three.
+#[test]
+fn a_record_citing_lines_of_a_file_is_about_that_file_in_peers_and_the_graph() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    for (type_, payload) in [
+        (
+            "ReviewFinding",
+            r#"{"id":"f1","by":"adversary","summary":"the doc misleads","about":["tests/x.rs:12"]}"#,
+        ),
+        (
+            "DecisionMade",
+            r#"{"id":"d1","summary":"retry twice","governs":["tests/x.rs:12-20"]}"#,
+        ),
+        (
+            "LessonLearned",
+            r#"{"id":"l1","summary":"never sleep in a test","about":["tests/x.rs:7"]}"#,
+        ),
+    ] {
+        run_rigger_ok(root, &["emit", type_, payload]);
+    }
+
+    let out = run_rigger_ok(root, &["peers", "tests/x.rs"]);
+    for line in [
+        "finding f1 | by adversary | the doc misleads | about: tests/x.rs:12",
+        "| retry twice | governs: tests/x.rs:12-20",
+        "lesson l1 | never sleep in a test | about: tests/x.rs:7",
+    ] {
+        assert!(
+            out.contains(line),
+            "peers tests/x.rs must list `{line}`; got: {out:?}"
+        );
+    }
+
+    let (out, err, ok) = run_around(root, "tests/x.rs", 1);
+    assert!(ok, "graph --around must succeed; stderr: {err}");
+    let nodes: Vec<&str> = out
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("node "))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .collect();
+    for id in ["f1", "d1", "l1"] {
+        assert!(
+            nodes.contains(&id),
+            "{id} must be one hop from tests/x.rs; got: {out}"
+        );
+    }
+}
+
 /// Record a LIVENESS fault on `spawn_id`'s behalf in exactly the courier shape the native
 /// driver's outer wall-clock (or the sweep) records a hung agent with - `rigger result <id>
 /// <why> --error --meta '{"liveness_class":"infra"}'` - asserting it lands.
@@ -27370,8 +27422,8 @@ fn graph_show_answers_a_struct_field_by_its_path() {
 /// `src/f.rs` whose method `new` sits at the path `T::new`, folded into a `graph.db` then stamped
 /// with fold rule 2 and holding a row at the flat id `src/f.rs::new` carrying `name`, as a binary
 /// folding before path ids left it, WHEN the operator runs `rigger setup`, THEN the file owed its
-/// rebuild, records fold rule 3 after it, no row at the flat id carries `name`, and the path id
-/// `src/f.rs::T::new` does.
+/// rebuild, records the current fold rule after it, no row at the flat id carries `name`, and the
+/// path id `src/f.rs::T::new` does.
 #[test]
 fn rigger_setup_rebuilds_a_rule_2_graph_db_leaving_no_flat_nested_id_named() {
     use common::cli::{
@@ -27425,9 +27477,90 @@ fn rigger_setup_rebuilds_a_rule_2_graph_db_leaving_no_flat_nested_id_named() {
             named("src/f.rs::new"),
             named("src/f.rs::T::new")
         ),
-        (3, false, true),
-        "the rebuilt file records fold rule 3, no row at the flat nested id carries name and the \
-         path id does"
+        (rigger::contextgraph::sqlite::PROJECTION_VERSION, false, true),
+        "the rebuilt file records the current fold rule, no row at the flat nested id carries name \
+         and the path id does"
+    );
+}
+
+/// A record citing lines of a file is about that file, AN OLDER GRAPH IS REBUILT: GIVEN a log
+/// holding a finding about `tests/x.rs:12`, folded into a `graph.db` then stamped with fold rule 3
+/// and holding the finding ABOUT an artifact at `tests/x.rs:12`, as a binary folding before a
+/// citation named its file left it, WHEN the operator runs `rigger setup`, THEN the file owed its
+/// rebuild, records the current fold rule after it, the finding is ABOUT `tests/x.rs` and no node
+/// sits at the citation.
+#[test]
+fn rigger_setup_rebuilds_a_rule_3_graph_db_folding_a_line_citation_about_its_file() {
+    use common::cli::{
+        exists, insert_node, open_graph, read_run_events, rigger_db, rigger_file,
+        run_stream_identity, seed_run_events, temp_store_project, user_version, version_and_owed,
+    };
+    let dir = temp_store_project();
+    let root = dir.path();
+    seed_run_events(
+        root,
+        &[(
+            rigger::contextgraph::TYPE_REVIEW_FINDING,
+            r#"{"id":"f1","by":"adversary","summary":"s","about":["tests/x.rs:12"]}"#,
+        )],
+    );
+    common::fixtures::folds(&open_graph(root), &read_run_events(root));
+    let graph_db = rigger_file(root, "graph.db");
+    let project = run_stream_identity(root);
+    let conn = rigger_db(root, "graph.db");
+    insert_node(
+        &conn,
+        &project,
+        "tests/x.rs:12",
+        rigger::contextgraph::KIND_ARTIFACT,
+        None,
+    );
+    conn.execute(
+        "UPDATE edges SET to_id = 'tests/x.rs:12' WHERE from_id = 'f1'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    common::fixtures::stamp_user_version(&graph_db, 3);
+    let about = |id: &str| {
+        exists(
+            &graph_db,
+            "SELECT EXISTS (SELECT 1 FROM edges
+              WHERE from_id = 'f1' AND rel = 'ABOUT' AND to_id = ?1 AND valid_to IS NULL)",
+            id,
+        )
+    };
+    assert_eq!(
+        (
+            version_and_owed(&graph_db, &project),
+            about("tests/x.rs:12"),
+            about("tests/x.rs")
+        ),
+        ((3, true), true, false),
+        "the rule-3 file owes its rebuild and holds the finding ABOUT the citation"
+    );
+
+    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let node = |id: &str| {
+        exists(
+            &graph_db,
+            "SELECT EXISTS (SELECT 1 FROM nodes WHERE id = ?1)",
+            id,
+        )
+    };
+    assert_eq!(
+        (
+            user_version(&graph_db),
+            about("tests/x.rs"),
+            node("tests/x.rs:12")
+        ),
+        (
+            rigger::contextgraph::sqlite::PROJECTION_VERSION,
+            true,
+            false
+        ),
+        "the rebuilt file records the current fold rule, the finding is ABOUT the file and no \
+         node sits at the citation"
     );
 }
 
