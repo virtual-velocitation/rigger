@@ -1689,25 +1689,26 @@ pub struct BlobBatch {
 }
 
 impl BlobBatch {
-    /// Start the batch process over the repository holding `root`, or answer none when there is
-    /// no object database to ask: `root` is outside a git repository, or a `git` - the
-    /// detection's ([`in_repository`]) or the batch's - cannot start at all.
-    pub fn start(root: &std::path::Path) -> Option<Self> {
+    /// Start the batch process over the repository holding `root` ([`BLOB_BATCH`], its start read
+    /// by [`batch_answer`]), or answer none when there is no object database to ask: `root` is
+    /// outside a git repository, or a `git` - the detection's ([`in_repository`]) or the batch's -
+    /// cannot start at all.
+    pub fn start(root: &std::path::Path) -> Result<Option<Self>, Error> {
         use std::process::Stdio;
 
         if in_repository(root).ok() != Some(true) {
-            return None;
+            return Ok(None);
         }
-        let mut process = crate::subprocess::git_in(root)
-            .args(["cat-file", "--batch"])
-            .env("GIT_NO_LAZY_FETCH", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        let answers = std::io::BufReader::new(process.stdout.take()?);
-        Some(BlobBatch { process, answers })
+        batch_answer(
+            root,
+            crate::subprocess::git_in(root)
+                .args(BLOB_BATCH)
+                .env("GIT_NO_LAZY_FETCH", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn(),
+        )
     }
 
     /// The bytes of the object `id` names, or none when the repository does not hold it:
@@ -1752,6 +1753,25 @@ impl BlobBatch {
         bytes.truncate(size);
         Some(Some(bytes))
     }
+}
+
+/// The arguments of the one batch process a [`BlobBatch`] reads its blobs from.
+const BLOB_BATCH: [&str; 2] = ["cat-file", "--batch"];
+
+/// What the start of the batch process under `root` - a repository, as the detection answered -
+/// answers, its spawn having answered `spawned`: the batch over a process that started, and none
+/// for one that could not.
+fn batch_answer(
+    _root: &std::path::Path,
+    spawned: std::io::Result<std::process::Child>,
+) -> Result<Option<BlobBatch>, Error> {
+    let Ok(mut process) = spawned else {
+        return Ok(None);
+    };
+    Ok(process.stdout.take().map(|answers| BlobBatch {
+        answers: std::io::BufReader::new(answers),
+        process,
+    }))
 }
 
 impl Drop for BlobBatch {
@@ -2900,7 +2920,9 @@ mod blob_batch_tests {
         let empty = git_hash_object(root, "empty", true);
         let absent = "1111111111111111111111111111111111111111";
 
-        let mut batch = BlobBatch::start(root).expect("a repository starts the batch process");
+        let mut batch = BlobBatch::start(root)
+            .unwrap()
+            .expect("a repository starts the batch process");
         assert_eq!(
             asked(&mut batch, &text),
             Ok(Some(b"first line\nsecond line".to_vec()))
@@ -2937,7 +2959,7 @@ mod blob_batch_tests {
             .unwrap()
             .stdout;
 
-        let mut batch = BlobBatch::start(root).unwrap();
+        let mut batch = BlobBatch::start(root).unwrap().unwrap();
         for id in [
             "",
             "zz zz",
@@ -2963,7 +2985,7 @@ mod blob_batch_tests {
     fn outside_a_repository_no_batch_process_starts() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        assert!(BlobBatch::start(root).is_none());
+        assert!(matches!(BlobBatch::start(root), Ok(None)));
 
         git_init_quiet(root);
         write_file(
@@ -2971,7 +2993,9 @@ mod blob_batch_tests {
             b"held once the directory is a repository\n",
         );
         let id = git_hash_object(root, "a.txt", true);
-        let mut batch = BlobBatch::start(root).expect("a repository starts a batch process");
+        let mut batch = BlobBatch::start(root)
+            .unwrap()
+            .expect("a repository starts a batch process");
         assert_eq!(
             asked(&mut batch, &id),
             Ok(Some(b"held once the directory is a repository\n".to_vec()))
@@ -2993,7 +3017,7 @@ mod blob_batch_tests {
         let bytes = std::fs::read(&object).unwrap();
         std::fs::write(&object, &bytes[..bytes.len() - 6]).unwrap();
 
-        let mut batch = BlobBatch::start(root).unwrap();
+        let mut batch = BlobBatch::start(root).unwrap().unwrap();
         assert_eq!(
             asked(&mut batch, &whole),
             Ok(Some(b"an object git holds whole\n".to_vec()))
@@ -3022,7 +3046,7 @@ mod blob_batch_tests {
         let corrupt = git_hash_object(root, "b.txt", true);
         std::fs::write(loose_object(root, &corrupt), b"garbage").unwrap();
 
-        let mut batch = BlobBatch::start(root).unwrap();
+        let mut batch = BlobBatch::start(root).unwrap().unwrap();
         assert_eq!(asked(&mut batch, &corrupt), Ok(None));
         assert_eq!(
             asked(&mut batch, &whole),
@@ -3052,7 +3076,7 @@ mod blob_batch_tests {
         write_file(&root.join("a.txt"), b"the body\n");
         let text = git_hash_object(root, "a.txt", true);
 
-        let mut batch = BlobBatch::start(root).unwrap();
+        let mut batch = BlobBatch::start(root).unwrap().unwrap();
         assert_eq!(asked(&mut batch, &text), Ok(Some(b"the body\n".to_vec())));
         let running = processes_naming(root);
         assert_eq!(running.len(), 1, "one batch process: {running:?}");
@@ -3145,7 +3169,9 @@ mod tests {
         let unfiltered = "4e349b596c5c9d38a82829fafbaf52281c21e319";
         let held = || {
             asked(
-                &mut BlobBatch::start(root).expect("a repository starts the batch process"),
+                &mut BlobBatch::start(root)
+                    .unwrap()
+                    .expect("a repository starts the batch process"),
                 unfiltered,
             )
         };
@@ -3161,7 +3187,7 @@ mod tests {
 
         let outside = tempfile::tempdir().unwrap();
         assert!(
-            BlobBatch::start(outside.path()).is_none(),
+            matches!(BlobBatch::start(outside.path()), Ok(None)),
             "no object database stands outside a repository"
         );
         let found = dir_snapshot(outside.path(), "");
@@ -3247,7 +3273,9 @@ mod tests {
                 ))
             );
             assert_eq!(
-                BlobBatch::start(root).map(|mut batch| asked(&mut batch, HELLO_ID)),
+                BlobBatch::start(root)
+                    .unwrap()
+                    .map(|mut batch| asked(&mut batch, HELLO_ID)),
                 held
             );
         }

@@ -967,7 +967,7 @@ fn rebuild_resolving(
         .with_reextraction(
             move || -> Box<rigger::contextgraph::sqlite::Reextract<'static>> {
                 let root = root.clone();
-                let mut blobs = rigger::worktree::BlobBatch::start(&root);
+                let mut blobs = rigger::worktree::BlobBatch::start(&root).unwrap();
                 assert!(blobs.is_some(), "the tree is a repository");
                 Box::new(move |entry: &Event| {
                     let mut source =

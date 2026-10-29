@@ -529,8 +529,12 @@ fn reextract_entry(
     batch: &mut Option<Option<rigger::worktree::BlobBatch>>,
     entry: &Event,
 ) -> Result<Option<Vec<Event>>, contextgraph::Error> {
-    let blobs = batch.get_or_insert_with(|| entry_blobs(root));
-    let mut held = blobs
+    let started = match batch.take() {
+        Some(started) => started,
+        None => entry_blobs(root)?,
+    };
+    let mut held = batch
+        .insert(started)
         .as_mut()
         .map(|batch| |id: &str| batch.blob(id).map_err(|e| contextgraph::Error(e.0)));
     rigger::ingest::resolve_entry(
@@ -544,11 +548,11 @@ fn reextract_entry(
 /// The batch process a re-extraction reads its entries' blobs from, over the repository holding
 /// `root`: none outside a git repository or when the process cannot start, and none in the lane
 /// that compiles no extraction, where no entry resolves and no process is started.
-fn entry_blobs(root: &Path) -> Option<rigger::worktree::BlobBatch> {
+fn entry_blobs(root: &Path) -> Result<Option<rigger::worktree::BlobBatch>, contextgraph::Error> {
     if cfg!(feature = "symbols") {
-        rigger::worktree::BlobBatch::start(root)
+        rigger::worktree::BlobBatch::start(root).map_err(|e| contextgraph::Error(e.0))
     } else {
-        None
+        Ok(None)
     }
 }
 
