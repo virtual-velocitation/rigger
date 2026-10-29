@@ -1070,6 +1070,22 @@ fn each_append_and_open_token_is_reported_by_file_and_item() {
             &[],
         ),
         (
+            "a bare STREAM beside a renamed run::STREAM import",
+            "src/lib.rs",
+            "use crate::run::STREAM as S;\n\nfn renamed() {\n    \
+             store.append(STREAM, &events);\n}\n",
+            &[],
+            &[],
+        ),
+        (
+            "a bare STREAM that renames another of run's names",
+            "src/lib.rs",
+            "use crate::run::{Event as STREAM};\n\nfn alias() {\n    \
+             store.append(STREAM, &events);\n}\n",
+            &[],
+            &[],
+        ),
+        (
             "another module's qualified STREAM",
             "src/lib.rs",
             "fn other() {\n    store.append(canary::STREAM, &events);\n}\n",
