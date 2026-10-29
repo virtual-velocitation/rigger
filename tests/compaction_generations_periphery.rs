@@ -2492,8 +2492,9 @@ fn setup_folds_a_cursored_graph_db_forward_over_a_gap_longer_than_a_page() {
 /// says no removal can remove it (spec 124, THE MARK). Once the storage recovers, the next `rigger
 /// setup` folds the event forward from the cursor and moves the cursor to it, and fails naming the
 /// mark only when `kept` says it still stands: its catch-up did not stop, so its failed removal of
-/// the mark is its failure.
-fn setup_whose_catch_up_meets_a_storage_error(stand: fn(&Path), kept: bool) {
+/// the mark is its failure. The storage's recovery also runs `clear`, which ends whatever further
+/// fault `stand` left in the file.
+fn setup_whose_catch_up_meets_a_storage_error(stand: fn(&Path), clear: fn(&Path), kept: bool) {
     let dir = temp_store_project();
     let root = dir.path();
     emit_the_first_decision_after_setup(root);
@@ -2528,6 +2529,7 @@ fn setup_whose_catch_up_meets_a_storage_error(stand: fn(&Path), kept: bool) {
     );
 
     the_disk_recovers(&graph_db);
+    clear(&graph_db);
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert_eq!(
         (
@@ -2552,7 +2554,7 @@ fn setup_whose_catch_up_meets_a_storage_error(stand: fn(&Path), kept: bool) {
 rigger::test_cases! {
     /// No owed mark stands beside the file: setup's stopped catch-up writes none.
     setup_whose_catch_up_meets_a_storage_error_fails_at_the_cursor_and_the_next_setup_folds_on:
-        setup_whose_catch_up_meets_a_storage_error(|_| {}, false);
+        setup_whose_catch_up_meets_a_storage_error(|_| {}, |_| {}, false);
     /// The owed mark stands beside the file: setup removes it before failing at the cursor, the
     /// file carrying `caught_up`.
     setup_whose_catch_up_meets_a_storage_error_beside_an_owed_mark_still_removes_the_mark:
@@ -2560,6 +2562,7 @@ rigger::test_cases! {
             |graph_db| {
                 mark_owed_in(graph_db.parent().unwrap());
             },
+            |_| {},
             false,
         );
     /// A directory stands at the owed mark's path ([`unremovable_mark_beside`]): setup's removal
@@ -2570,8 +2573,44 @@ rigger::test_cases! {
             |graph_db| {
                 unremovable_mark_beside(graph_db);
             },
+            |_| {},
             true,
         );
+    /// The file's passed-over record cannot be read back ([`unreadable_passed_over_row_in`]):
+    /// setup still fails naming where its catch-up stopped, never the failed read.
+    setup_whose_catch_up_meets_a_storage_error_beside_an_unreadable_passed_over_record_names_the_stop:
+        setup_whose_catch_up_meets_a_storage_error(
+            unreadable_passed_over_row_in,
+            clear_the_unreadable_passed_over_row_in,
+            false,
+        );
+}
+
+/// The position [`unreadable_passed_over_row_in`] records passed over, far above any the tests'
+/// logs issue, so no fold asks its cause.
+const UNREADABLE_PASSED_OVER_AT: i64 = 1_000_000;
+
+/// Record in the graph file `db` a `passed_over` row whose cause is a blob, which setup's count of
+/// the file's passed-over positions by cause cannot read back as text, so that read fails.
+fn unreadable_passed_over_row_in(db: &Path) {
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .execute(
+            "INSERT INTO passed_over (position, cause) VALUES (?1, X'00')",
+            [UNREADABLE_PASSED_OVER_AT],
+        )
+        .unwrap();
+}
+
+/// Remove the row [`unreadable_passed_over_row_in`] recorded in the graph file `db`.
+fn clear_the_unreadable_passed_over_row_in(db: &Path) {
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .execute(
+            "DELETE FROM passed_over WHERE position = ?1",
+            [UNREADABLE_PASSED_OVER_AT],
+        )
+        .unwrap();
 }
 
 /// Given a `graph.db` without the `caught_up` cursor that folded the log, on a project whose
