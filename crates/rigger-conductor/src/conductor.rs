@@ -12694,10 +12694,10 @@ pub const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree 
 const REQUIRED_PROTOCOL: &str = " On a reject, your verdict line also lists every item the next attempt must fix, as \"required\":[{\"finding\":\"<what must change>\",\"path\":\"<the repo-relative file it is in>\",\"correctness\":<true for a correctness defect, else false>,\"pattern\":\"<the defect's shape when it recurs across sites, else empty>\"}].";
 
 /// What an adjudicator's verdict line names beside the verdict, approve or reject: the id of
-/// every finding it agrees is real, a note among them, which is how the run's check-in stage
+/// every finding it agrees is real, a note among them, which is how a workflow's check-in stage
 /// learns the notes it fixes ([`run_notes`]). Appended to every adjudicator's prompt by
 /// [`RunCtx::run_adjudicator`], before [`REQUIRED_PROTOCOL`].
-const UPHELD_PROTOCOL: &str = " Your verdict line lists as \"upheld\":[\"<finding id>\"] every finding you agree is real, a note as well as a blocking one: the run's check-in stage fixes the upheld notes once, before the PR.";
+const UPHELD_PROTOCOL: &str = " Your verdict line lists as \"upheld\":[\"<finding id>\"] every finding you agree is real, a note as well as a blocking one: the upheld notes are the run's notes, fixed once by the workflow's check-in stage where it has one.";
 
 /// The block the check-in stage's first prompt ends with when the run's review upheld any
 /// finding (`notes`, from [`run_notes`]): each note once, with its locations and text, and what

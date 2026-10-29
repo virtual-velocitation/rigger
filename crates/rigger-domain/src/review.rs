@@ -705,7 +705,7 @@ pub fn open_findings(
         .collect()
 }
 
-/// One upheld review finding the run's check-in stage fixes before the PR: the finding's id,
+/// One upheld review finding a workflow's check-in stage fixes before its gates: the finding's id,
 /// the locations it is about (a path, or a path and line) and its text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunNote {
