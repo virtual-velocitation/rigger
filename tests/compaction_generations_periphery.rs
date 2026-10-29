@@ -548,31 +548,43 @@ fn live_selection_of<'a>(
 }
 
 /// Rebuild the `graph.db` at `db` from `source`, reporting nothing: whether there was one to pay,
-/// and what it did ([`rebuild_under`] the test project, owing no cause).
+/// and what it did ([`rebuild_through`] an open under the test project, owing no cause).
 fn rebuild(
     db: &Path,
     source: &mut rigger::contextgraph::sqlite::RebuildSource,
 ) -> Result<Option<Rebuilt>, rigger::contextgraph::Error> {
-    rebuild_under(db, PROJECT, false, source)
+    use rigger::contextgraph::sqlite::Projector;
+    let graph = Projector::open(db.to_str().unwrap(), PROJECT).unwrap();
+    rebuild_through(&graph, db, false, source)
 }
 
-/// Rebuild the `graph.db` at `db`, folded under `project`, from `source`, owed when `owed` says
+/// Rebuild the `graph.db` of the store at `root`, opened as the binary opens it
+/// ([`common::cli::open_graph`]), from `source`, owed when `owed` says so, reporting nothing:
+/// whether there was one to pay, and what it did.
+fn rebuild_the_store_s(
+    root: &Path,
+    owed: bool,
+    source: &mut rigger::contextgraph::sqlite::RebuildSource,
+) -> Result<Option<Rebuilt>, rigger::contextgraph::Error> {
+    let db = rigger_file(root, "graph.db");
+    rebuild_through(&common::cli::open_graph(root), &db, owed, source)
+}
+
+/// Rebuild the graph file at `db` through `graph`, its open, from `source`, owed when `owed` says
 /// so, reporting nothing: whether there was one to pay, and what it did.
-fn rebuild_under(
+fn rebuild_through(
+    graph: &rigger::contextgraph::sqlite::Projector,
     db: &Path,
-    project: &str,
     owed: bool,
     source: &mut rigger::contextgraph::sqlite::RebuildSource,
 ) -> Result<Option<Rebuilt>, rigger::contextgraph::Error> {
     use rigger::contextgraph::sqlite::Projector;
-    Projector::open(db.to_str().unwrap(), project)
-        .unwrap()
-        .rebuild(
-            &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
-            owed,
-            source,
-            &mut no_progress,
-        )
+    graph.rebuild(
+        &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
+        owed,
+        source,
+        &mut no_progress,
+    )
 }
 
 /// A `graph.db` folded before the generation rule - with no ledgers at all, or with them in an
@@ -1394,19 +1406,14 @@ impl ReleaseEraStore {
     ) -> Result<Option<Rebuilt>, rigger::contextgraph::Error> {
         let log = self.log();
         let mut reads = 0;
-        rebuild_under(
-            &self.graph_db,
-            &self.project(),
-            true,
-            &mut |after, sink: &mut RebuildSink| {
-                reads += 1;
-                rigger::contextgraph::sqlite::stream_past(&log, after, log.len(), sink)?;
-                if reads == read {
-                    return source_interrupted();
-                }
-                Ok(())
-            },
-        )
+        rebuild_the_store_s(self.root(), true, &mut |after, sink: &mut RebuildSink| {
+            reads += 1;
+            rigger::contextgraph::sqlite::stream_past(&log, after, log.len(), sink)?;
+            if reads == read {
+                return source_interrupted();
+            }
+            Ok(())
+        })
     }
 
     /// The store whose log holds `log` and that has no `graph.db` yet, its durable identity
@@ -4779,10 +4786,7 @@ fn setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_
     let shadow = rigger_file(root, "graph.db.rebuild");
     // The rebuild setup owes, stopped at its first read before it folded an event: the shadow it
     // leaves holds its rebuild state, which the next rebuild resumes, and no node yet.
-    rebuild_under(&graph_db, &run_stream_identity(root), true, &mut |_, _| {
-        source_interrupted()
-    })
-    .unwrap_err();
+    rebuild_the_store_s(root, true, &mut |_, _| source_interrupted()).unwrap_err();
     // A rebuild owns its shadow alone, so the fixture holds no connection to it while `rigger
     // setup` rebuilds.
     the_disk_gives_out_at_d_boom(&shadow);
@@ -6159,8 +6163,7 @@ fn a_rebuild_whose_process_is_gone_leaves_no_lock_and_the_next_setup_resumes_its
     let mut batches = 0;
     let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let mut live = live_selection_of(&backend, &project, 2);
-    let stopped = Projector::open(graph_db.to_str().unwrap(), &project)
-        .unwrap()
+    let stopped = common::cli::open_graph(root)
         .rebuild(
             &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
             true,
