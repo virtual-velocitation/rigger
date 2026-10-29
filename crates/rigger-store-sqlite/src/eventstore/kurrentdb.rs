@@ -1533,7 +1533,8 @@ mod tests {
             (PAGED_LOG, 0, 0, &[], 1),
             (PAGED_LOG, 0, 1, &[("A", 10)], 2),
             // A page ends at the record past its `max`-th event, an undelivered one included; a
-            // page still short of `max` at the undelivered record reads across it to the next event.
+            // page still short of `max` at the undelivered record reads across it to the next
+            // event.
             (PAGED_LOG, 0, 2, &[("A", 10), ("B", 20)], 3),
             (PAGED_LOG, 0, 3, &[("A", 10), ("B", 20), ("C", 30)], 5),
             // A bound past the log reads every event of it, pulling every record.

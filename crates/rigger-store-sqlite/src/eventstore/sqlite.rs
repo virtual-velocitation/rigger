@@ -1324,8 +1324,7 @@ impl EventStore for Store {
         global_events(&conn, &all_sql(dir), params![from as i64, like]).map_err(be)
     }
 
-    /// One seek of the position key cut at `max` rows ([`page_sql`]): every event holds a position
-    /// of its own here, so no cut can split one.
+    /// One seek of the position key cut at `max` rows ([`page_sql`]).
     fn read_all_page(
         &self,
         from: Position,

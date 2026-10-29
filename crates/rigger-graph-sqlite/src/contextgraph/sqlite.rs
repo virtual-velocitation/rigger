@@ -1072,8 +1072,9 @@ impl Projector {
     /// projector handed no log answers [`CatchUp::AtHead`]. Otherwise the call reads one page of
     /// the log past the cursor - the first [`FOLD_BATCH`] events of the project's own log as it is
     /// handed, or every one there is when fewer are ([`EventStore::read_all_page`]) - with no lock
-    /// of the file held: a page without an event is [`CatchUp::AtHead`]. The page's events of the project's run stream are its positions to
-    /// decide; its first transaction cut ([`fold_transactions`]) - one ledger entry alone, or a run
+    /// of the file held: a page without an event is [`CatchUp::AtHead`]. The page's events of the
+    /// project's run stream are its positions to decide; its first transaction cut
+    /// ([`fold_transactions`]) - one ledger entry alone, or a run
     /// of other events - is decided and folded by THE DECIDE STEP ([`decide_step`]), the step a
     /// rebuild's fold pass shares, each entry its fold asks a batch for, one not yet folded whose
     /// payload parses and whose generation is not held, with the batch the call's re-extraction
@@ -8001,9 +8002,8 @@ mod tests {
         );
     }
 
-    /// Spec 124, ONE PROCEDURE: each call reads one page of the log past the cursor, of
-    /// [`FOLD_BATCH`] events and on to the end of the last one's position, narrowed to the
-    /// project's run stream, and folds its first cut
+    /// Spec 124, ONE PROCEDURE: each call reads one page of the log past the cursor, of at most
+    /// [`FOLD_BATCH`] events, narrowed to the project's run stream, and folds its first cut
     /// ([`fold_transactions`]) - through the page's last position when the cut covers every
     /// narrowed event, else through the cut's last - every ledger entry alone, until a call meets
     /// no event past the cursor ([`CatchUp::AtHead`]). An empty log is at its head; a page of
