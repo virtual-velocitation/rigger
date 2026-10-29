@@ -169,8 +169,8 @@
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
-        "start_line": 81,
-        "end_line": 83
+        "start_line": 92,
+        "end_line": 94
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
@@ -824,8 +824,8 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4603,
-        "end_line": 4603
+        "start_line": 4604,
+        "end_line": 4604
       },
       {
         "file": "src/cli/validate.rs",
@@ -1299,8 +1299,8 @@
       },
       {
         "file": "crates/rigger-domain/src/instructions.rs",
-        "start_line": 153,
-        "end_line": 153
+        "start_line": 155,
+        "end_line": 155
       },
       {
         "file": "crates/rigger-gates-shell/src/gate.rs",
@@ -1954,18 +1954,13 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4003,
-        "end_line": 4003
+        "start_line": 4004,
+        "end_line": 4004
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4207,
-        "end_line": 4207
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 4209,
-        "end_line": 4209
+        "start_line": 4208,
+        "end_line": 4208
       },
       {
         "file": "src/cli/setup.rs",
@@ -1979,28 +1974,33 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4231,
-        "end_line": 4231
+        "start_line": 4212,
+        "end_line": 4212
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4234,
-        "end_line": 4234
+        "start_line": 4232,
+        "end_line": 4232
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4246,
-        "end_line": 4246
+        "start_line": 4235,
+        "end_line": 4235
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4316,
-        "end_line": 4316
+        "start_line": 4247,
+        "end_line": 4247
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4727,
-        "end_line": 4727
+        "start_line": 4317,
+        "end_line": 4317
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 4728,
+        "end_line": 4728
       },
       {
         "file": "src/cli/validate.rs",
@@ -5334,8 +5334,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/instructions.rs",
-        "start_line": 178,
-        "end_line": 183
+        "start_line": 180,
+        "end_line": 185
       },
       {
         "file": "crates/rigger-gates-shell/src/gate.rs",
