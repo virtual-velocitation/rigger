@@ -9445,7 +9445,7 @@ mod tests {
     /// Spec 124, THE APPENDER and CAUSE TEXTS: an appender another writer's write lock holds off
     /// past its ceiling returns not-folded with the write-lock text, its own positions unfolded and
     /// no mark written, the text ending with its path's suffix: after its call, on a file carrying
-    /// `caught_up` through a projector handed the log, the call-run suffix; after its direct
+    /// `caught_up` through a projector handed the log, the call-run suffix; in place of its direct
     /// fold's retried open, on a file without the cursor or through a projector handed no log, the
     /// direct suffix; and for copies not all of the run stream - one naming no stream beside one of
     /// it - folded directly whatever the file carries, none.
