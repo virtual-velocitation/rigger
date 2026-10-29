@@ -6,7 +6,7 @@
 //! and which function encloses a line. And the one Rust lexer, [`tokenize`], that
 //! `tests/simplification_audit.rs` scans by, rule 4 of `tests/boundary_audit.rs` finds string
 //! literals with and its appender audit finds calls with, and the token readers those two suites
-//! share over its tokens ([`ref_punct`], [`ref_token`], [`qualifier_before`],
+//! read its tokens with ([`ref_punct`], [`ref_token`], [`qualifier_before`], [`follows_keyword`],
 //! [`is_definition_site`], [`close_of`], [`imported_names`]). Each
 //! suite uses the subset it needs (hence the module-wide `dead_code` allowance, as in
 //! `tests/common/mod.rs`).
@@ -595,7 +595,7 @@ pub fn is_definition_site(toks: &[RawTok], i: usize) -> bool {
 }
 
 /// Whether the token in front of `toks[i]` is the keyword `keyword`; `false` at the first token.
-fn follows_keyword(toks: &[RawTok], i: usize, keyword: &str) -> bool {
+pub fn follows_keyword(toks: &[RawTok], i: usize, keyword: &str) -> bool {
     i > 0 && ref_token(toks.get(i - 1), RawKind::Keyword, keyword)
 }
 

@@ -99,8 +99,9 @@ use common::repo::repo_root;
 #[path = "common/source_audit.rs"]
 mod source_audit;
 use source_audit::{
-    char_literal_len, close_of, imported_names, is_definition_site, is_ident_char, is_keyword,
-    qualifier_before, ref_punct, ref_token, skip_string_literal, tokenize, RawKind, RawTok,
+    char_literal_len, close_of, follows_keyword, imported_names, is_definition_site, is_ident_char,
+    is_keyword, qualifier_before, ref_punct, ref_token, skip_string_literal, tokenize, RawKind,
+    RawTok,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -6390,7 +6391,7 @@ fn local_binding_type(
         if t.kind != RawKind::Ident || t.text != name || j == 0 {
             continue;
         }
-        let before = if ref_token(toks.get(j - 1), RawKind::Keyword, "mut") && j >= 2 {
+        let before = if follows_keyword(toks, j, "mut") && j >= 2 {
             j - 2
         } else {
             j - 1
