@@ -9360,6 +9360,52 @@ mod tests {
             > ceiling
     }
 
+    /// The appender's copies a case builds beside the graph file at its path.
+    type Copies = fn(&str) -> Vec<Event>;
+
+    /// A decision at position 1 appended to the log beside the graph file at `path`, read back as
+    /// its appender's copy ([`appended_copies`]).
+    fn one_decision(path: &str) -> Vec<Event> {
+        appended_copies(path, &decisions_at([1]))
+    }
+
+    /// The copy of the last of decisions at 1 through one past [`FOLD_BATCH`] appended to the log
+    /// beside the graph file at `path` ([`appended_copies`]): a first call advances a whole batch
+    /// and stops short of it.
+    fn beyond_one_batch(path: &str) -> Vec<Event> {
+        appended_copies(path, &decisions_at(1..=FOLD_BATCH as u64 + 1))[FOLD_BATCH..].to_vec()
+    }
+
+    /// A copy of the run stream at position 1 the log beside the graph file never received, so
+    /// every call meets the log's head below it.
+    fn beyond_the_log_s_head(_: &str) -> Vec<Event> {
+        let mut copy = decision_at("d1", "a.rs", 1);
+        copy.stream = rigger_domain::run::STREAM.to_string();
+        vec![copy]
+    }
+
+    /// The copy of a decision at position 1 ([`one_decision`]) of a graph file at `path` holding
+    /// the cursor a swapped-in rebuild's tail is owed past ([`a_standing_tail`]).
+    fn behind_a_standing_tail(path: &str) -> Vec<Event> {
+        a_standing_tail(path);
+        one_decision(path)
+    }
+
+    /// The appender's one copy: the event `at` builds at position 1 - an own ledger entry whose
+    /// batch is not yet resolved, a decision whose payload the judge rejects - appended to the log
+    /// beside the graph file at `path` and read back ([`appended_copies`]).
+    fn own_copy(path: &str, at: fn(u64) -> Event) -> Vec<Event> {
+        appended_copies(path, &[at(1)])
+    }
+
+    /// How a case's appender folds its copies through its projector, given the graph file's path.
+    type Folding = fn(&str, &Projector, &[Event]) -> crate::contextgraph::Fold;
+
+    /// The appender's fold of its copies through its projector, nothing else acting on the file.
+    fn alone(_: &str, p: &Projector, copies: &[Event]) -> crate::contextgraph::Fold {
+        crate::test_support::fold_of(p, copies)
+    }
+
     /// Spec 124, CAUSE TEXTS: a ceiling reads in whole minutes at or above one minute and in whole
     /// seconds below it, each rounded down.
     #[test]
@@ -9401,15 +9447,16 @@ mod tests {
     /// no mark written, the text ending with its path's suffix: after its call, on a file carrying
     /// `caught_up` through a projector handed the log, the call-run suffix; after its direct
     /// fold's retried open, on a file without the cursor or through a projector handed no log, the
-    /// direct suffix; and for a copy naming no stream, folded directly whatever the file carries,
-    /// none.
+    /// direct suffix; and for copies not all of the run stream - one naming no stream beside one of
+    /// it - folded directly whatever the file carries, none.
     #[test]
     fn an_appender_held_off_past_its_ceiling_answers_the_write_lock_text_and_marks_nothing() {
         use crate::contextgraph::Fold;
         use crate::test_support::{graph_error, lost_fold, CATCH_UP_PAYS, SETUP_PAYS};
         let held = graph_error(&crate::test_support::lock_held_past("0 s"));
-        // Each case: what stands in the file, whether the projector is handed the log, whether the
-        // appender's copy keeps the stream the log gave it, and what its fold answers.
+        // Each case: what stands in the file, whether the projector is handed the log, whether both
+        // the appender's copies keep the stream the log gave them - else the first names none - and
+        // what its fold answers.
         let cases: [(&str, &[Stand], bool, bool, String); 4] = [
             ("a call", &[], true, true, lost_fold(&held, CATCH_UP_PAYS)),
             (
@@ -9427,7 +9474,7 @@ mod tests {
                 lost_fold(&held, SETUP_PAYS),
             ),
             (
-                "a direct fold of a copy naming no stream",
+                "a direct fold of copies one of which names no stream",
                 &[],
                 true,
                 false,
@@ -9439,7 +9486,7 @@ mod tests {
             for stand in stands {
                 stand(&path);
             }
-            let mut copies = appended_copies(&path, &decisions_at([1]));
+            let mut copies = appended_copies(&path, &decisions_at([1, 2]));
             if !streamed {
                 copies[0].stream.clear();
             }
@@ -9474,31 +9521,21 @@ mod tests {
             CATCH_UP_PAYS,
         );
         // Each case: the appender's copies, given the graph file's path, and what its fold answers.
-        type Case = (&'static str, fn(&str) -> Vec<Event>, String);
+        type Case = (&'static str, Copies, String);
         let cases: [Case; 3] = [
             (
                 "a call that advanced short of it",
-                |path| {
-                    let copies = appended_copies(path, &decisions_at(1..=FOLD_BATCH as u64 + 1));
-                    copies[FOLD_BATCH..].to_vec()
-                },
+                beyond_one_batch,
                 short.clone(),
             ),
             (
                 "a call that met the log's head below it",
-                |_| {
-                    let mut copy = decision_at("d1", "a.rs", 1);
-                    copy.stream = rigger_domain::run::STREAM.to_string();
-                    vec![copy]
-                },
+                beyond_the_log_s_head,
                 short,
             ),
             (
                 "a call the file's rebuild state held inert",
-                |path| {
-                    a_standing_tail(path);
-                    appended_copies(path, &decisions_at([1]))
-                },
+                behind_a_standing_tail,
                 lost_fold(
                     &graph_error(crate::test_support::UNFINISHED_REBUILD),
                     CATCH_UP_PAYS,
@@ -9531,7 +9568,7 @@ mod tests {
     fn an_own_entry_failing_its_calls_is_waited_out_under_the_ceiling_asking_its_batch_once() {
         use crate::test_support::{lost_fold, BLOB_UNREAD, CATCH_UP_PAYS};
         let (_dir, path, p) = seeded_graph();
-        let copies = appended_copies(&path, &[crate::test_support::unresolved_entry_at(1)]);
+        let copies = own_copy(&path, crate::test_support::unresolved_entry_at);
         let ceiling = Duration::from_secs(1);
         let p = p.with_log(the_log_beside(&path)).with_lock_ceiling(ceiling);
         impatient(&p);
@@ -9564,8 +9601,9 @@ mod tests {
     /// Spec 124, THE APPENDER and CAUSE TEXTS: an appender returns at once, inside its ceiling,
     /// when a call fails at a position other than its own ledger entry, with the call's error and
     /// the call-run suffix; when a call meets an older fold rule another writer stamped, with the
-    /// refusal of a file that owes its rebuild; and when its own position is passed over, with the
-    /// cause it was passed over for and no suffix. None writes the mark.
+    /// refusal of a file that owes its rebuild; and when its own position is passed over by its
+    /// call, or was recorded passed over before its direct fold on a file without the cursor, with
+    /// the cause it was passed over for and no suffix. None writes the mark.
     #[test]
     fn an_appender_returns_at_once_on_a_foreign_failure_an_owed_rebuild_or_its_position_passed_over(
     ) {
@@ -9575,7 +9613,12 @@ mod tests {
         // log and the projector handed that log; and what its fold answers, given the copies.
         type Handed = fn(&str, &CountedLog, Projector) -> (Vec<Event>, Projector);
         type Answer = fn(&[Event]) -> Fold;
-        let cases: [(&str, Handed, Answer); 3] = [
+        // The cause the judge passed the appender's one copy over for, with no suffix.
+        let passed_over: Answer = |copies| {
+            let (_, cause) = crate::test_support::rejected_row(&copies[0]);
+            Fold::NotFolded(graph_error(&cause))
+        };
+        let cases: [(&str, Handed, Answer); 4] = [
             (
                 "a foreign entry failing its call",
                 |path, _, p| {
@@ -9596,7 +9639,7 @@ mod tests {
             (
                 "an older fold rule stamped under the call",
                 |path, log, p| {
-                    let copies = appended_copies(path, &decisions_at([1]));
+                    let copies = one_decision(path);
                     let standing = path.to_string();
                     log.after_call(0, move |_| folded_under_an_older_rule(&standing));
                     (copies, p)
@@ -9604,15 +9647,19 @@ mod tests {
                 |_| crate::test_support::owed_refusal(),
             ),
             (
-                "its own position passed over",
+                "its own position passed over by its call",
+                |path, _, p| (own_copy(path, crate::test_support::poisoned_decision_at), p),
+                passed_over,
+            ),
+            (
+                "its own position recorded passed over before its direct fold",
                 |path, _, p| {
-                    let poisoned = crate::test_support::poisoned_decision_at(1);
-                    (appended_copies(path, &[poisoned]), p)
+                    let copies = own_copy(path, crate::test_support::poisoned_decision_at);
+                    p.catch_up().unwrap();
+                    without_a_cursor(path);
+                    (copies, p)
                 },
-                |copies| {
-                    let (_, cause) = crate::test_support::rejected_row(&copies[0]);
-                    Fold::NotFolded(graph_error(&cause))
-                },
+                passed_over,
             ),
         ];
         let ceiling = Duration::from_secs(30);
@@ -9660,8 +9707,7 @@ mod tests {
         ];
         for (case, locked, ceiling, past) in cases {
             let (_dir, path, p) = seeded_graph();
-            a_standing_tail(&path);
-            let copies = appended_copies(&path, &decisions_at([1]));
+            let copies = behind_a_standing_tail(&path);
             let held = locked(&path).map(|file| Projector::lock_rebuild(&file).unwrap());
             let p = p
                 .with_log(the_log_beside(&path))
@@ -9694,9 +9740,6 @@ mod tests {
     #[test]
     fn an_appender_s_positions_fold_by_its_call_or_directly_where_the_file_has_no_cursor() {
         use crate::contextgraph::Fold;
-        // How the appender folds its copies through its projector, given the graph file's path.
-        type Folding = fn(&str, &Projector, &[Event]) -> Fold;
-        let alone: Folding = |_, p, copies| crate::test_support::fold_of(p, copies);
         // Each case: what stands in the file before the fold, what stands in it the moment the
         // call reads the log, the appender's ceiling, how it folds, and where the cursor stands
         // after the fold.
@@ -9758,7 +9801,7 @@ mod tests {
                     stand(&standing);
                 }
             });
-            let copies = appended_copies(&path, &decisions_at([1]));
+            let copies = one_decision(&path);
             assert_eq!(
                 (
                     folding(&path, &p, &copies),
@@ -9791,7 +9834,7 @@ mod tests {
         ];
         for (case, another_first, outcome, asks) in cases {
             let (_dir, path, p, _log) = catching_up();
-            let copies = appended_copies(&path, &[crate::test_support::unresolved_entry_at(1)]);
+            let copies = own_copy(&path, crate::test_support::unresolved_entry_at);
             if another_first {
                 let q = another_writer(&path)
                     .with_reextraction(|| Box::new(|_: &Event| Ok(Some(Vec::new()))));
@@ -9817,6 +9860,205 @@ mod tests {
                 ),
                 (Ok(outcome), asks, Some(1), false),
                 "{case}: the entry's outcome, its batch's asks, the cursor past it, no mark"
+            );
+        }
+    }
+
+    /// Spec 124, THE APPENDER: an appender's ceiling counts from the stamp of its lowest own
+    /// position, wherever among its events that position comes and whatever the others' stamps;
+    /// an appender with no position to wait for is past it.
+    #[test]
+    fn an_appender_s_ceiling_counts_from_the_stamp_of_its_lowest_own_position() {
+        let ceiling = Duration::from_secs(60);
+        let (_dir, path) = crate::test_support::temp_graph_db();
+        let p = Projector::open(&path, "test")
+            .unwrap()
+            .with_lock_ceiling(ceiling);
+        let (now, young, old) = (SystemTime::now(), Duration::ZERO, ceiling * 2);
+        // Each case: how long before now each own position was stamped, in the order the
+        // appender's events come in, and whether the appender is past its ceiling.
+        type Ages<'a> = &'a [(u64, Duration)];
+        let cases: [(&str, Ages<'_>, bool); 4] = [
+            (
+                "its lowest position, between the others, older than the ceiling",
+                &[(2, young), (1, old), (3, young)],
+                true,
+            ),
+            (
+                "only its first position older than it",
+                &[(2, old), (1, young), (3, young)],
+                false,
+            ),
+            (
+                "only its last position older than it",
+                &[(2, young), (1, young), (3, old)],
+                false,
+            ),
+            ("no position to wait for", &[], true),
+        ];
+        for (case, ages, past) in cases {
+            let events: Vec<Event> = ages
+                .iter()
+                .flat_map(|&(at, age)| {
+                    crate::test_support::restamped(&decisions_at([at]), |_| now - age)
+                })
+                .collect();
+            assert_eq!(
+                p.past_ceiling(&events),
+                past,
+                "{case}: whether the appender is past its ceiling"
+            );
+        }
+    }
+
+    /// Spec 124, THE APPENDER: an appender with no own position to wait for ends its calls
+    /// folded after the first, since nothing of its stands above the cursor.
+    #[test]
+    fn an_appender_with_no_own_position_ends_its_calls_folded_after_the_first() {
+        let (_dir, _path, p, _log) = catching_up();
+        assert_eq!(
+            p.fold_by_calls(&[], None, Duration::ZERO).map_err(|e| e.0),
+            Ok(true),
+            "folded by its calls, with no position to wait for"
+        );
+    }
+
+    /// Spec 124, THE APPENDER: an appender waits between two attempts only after one that did
+    /// not advance, its connection's lock released through the wait. A call that advanced is
+    /// followed by the next at once; one that met the log's head below the appender's position,
+    /// one another writer's write lock skipped, one the file's rebuild state held inert and one
+    /// its own ledger entry failed are each followed by one busy interval of the connection, as is
+    /// a direct fold's open that met that write lock past the busy timeout - and another user of
+    /// the projector asking for the connection halfway through the appender's last wait takes it
+    /// at once.
+    #[test]
+    fn an_appender_waits_a_busy_interval_with_its_connection_released_after_each_attempt_that_did_not_advance(
+    ) {
+        use crate::contextgraph::Fold;
+        use crate::test_support::{graph_error, lost_fold, BLOB_UNREAD, CATCH_UP_PAYS};
+        /// What an appender of the copies `copies` builds answers, folded by `folding` under the
+        /// ceiling `ceiling`; the whole busy intervals of its connection its fold took; and
+        /// whether another user of the projector, asking for the connection halfway through the
+        /// last of the `intervals` the fold is to take - in each case a wait of the appender's -
+        /// was kept waiting a quarter of one.
+        fn waited(
+            copies: Copies,
+            folding: Folding,
+            ceiling: Duration,
+            intervals: u32,
+        ) -> (Fold, u32, bool) {
+            let (_dir, path, p, _log) = catching_up();
+            let copies = copies(&path);
+            let p = p.with_lock_ceiling(ceiling);
+            let busy = p.busy_interval().unwrap();
+            std::thread::scope(|scope| {
+                let asker = scope.spawn(|| {
+                    if intervals == 0 {
+                        return false;
+                    }
+                    std::thread::sleep(busy * (2 * intervals - 1) / 2);
+                    let asked = std::time::Instant::now();
+                    drop(p.conn.lock().unwrap());
+                    asked.elapsed() >= busy / 4
+                });
+                let started = std::time::Instant::now();
+                let folded = folding(&path, &p, &copies);
+                let took = started.elapsed().as_millis() / busy.as_millis();
+                (folded, u32::try_from(took).unwrap(), asker.join().unwrap())
+            })
+        }
+        let locked: Folding = |path, p, copies| {
+            crate::test_support::with_graph_locked_for(Path::new(path), || {
+                crate::test_support::fold_of(p, copies)
+            })
+        };
+        let entry: Folding = |_, p, copies| {
+            let asked = std::cell::Cell::new(0);
+            let blob = crate::test_support::blob_unread();
+            match generations::ledger_entries::apply_entry(p, &copies[0], blob, &asked) {
+                Ok(_) => Fold::Folded,
+                Err(cause) => Fold::NotFolded(cause),
+            }
+        };
+        let without_one: Copies = |path| {
+            without_a_cursor(path);
+            one_decision(path)
+        };
+        let short = |held| lost_fold(&graph_error(held), CATCH_UP_PAYS);
+        // Each case: the appender's copies, given the graph file's path; how it folds them; its
+        // ceiling; what its fold answers; and the whole busy intervals its fold takes - one for
+        // each wait, and one for each attempt that met the write lock, since such an attempt
+        // waits the connection's busy timeout before it gives up.
+        type Case = (&'static str, Copies, Folding, Duration, Fold, u32);
+        let cases: [Case; 6] = [
+            (
+                "a call that advanced short of it",
+                beyond_one_batch,
+                alone,
+                FOLD_LOCK_CEILING,
+                Fold::Folded,
+                0,
+            ),
+            (
+                "a call that met the log's head below it",
+                beyond_the_log_s_head,
+                alone,
+                Duration::from_secs(1),
+                Fold::NotFolded(short(&crate::test_support::catch_up_short_after("1 s"))),
+                1,
+            ),
+            (
+                "a call another writer's write lock skipped",
+                one_decision,
+                locked,
+                FOLD_LOCK_CEILING,
+                Fold::Folded,
+                2,
+            ),
+            (
+                "a call the file's rebuild state held inert",
+                behind_a_standing_tail,
+                alone,
+                Duration::from_secs(1),
+                Fold::NotFolded(short(crate::test_support::UNFINISHED_REBUILD)),
+                1,
+            ),
+            (
+                "a call its own ledger entry failed",
+                |path| own_copy(path, crate::test_support::unresolved_entry_at),
+                entry,
+                Duration::from_secs(1),
+                Fold::NotFolded(lost_fold(BLOB_UNREAD, CATCH_UP_PAYS)),
+                1,
+            ),
+            (
+                "a direct fold's open past another writer's write lock",
+                without_one,
+                locked,
+                FOLD_LOCK_CEILING,
+                Fold::Folded,
+                2,
+            ),
+        ];
+        // The cases run side by side, each on its own file, since each waits whole busy timeouts.
+        let observed: Vec<_> = std::thread::scope(|scope| {
+            let running = cases.map(|(case, copies, folding, ceiling, answer, intervals)| {
+                let run = scope.spawn(move || waited(copies, folding, ceiling, intervals));
+                (case, answer, intervals, run)
+            });
+            running
+                .into_iter()
+                .map(|(case, answer, intervals, run)| {
+                    (case, answer, intervals, run.join().unwrap())
+                })
+                .collect()
+        });
+        for (case, answer, intervals, observed) in observed {
+            assert_eq!(
+                observed,
+                (answer, intervals, false),
+                "{case}: the answer, the whole busy intervals the fold took, and the connection's \
+                 lock free inside the last wait"
             );
         }
     }
