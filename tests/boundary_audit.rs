@@ -845,7 +845,7 @@ const STREAM_MODULES: &[&str] = &["conductor", STREAM_HOME];
 
 /// Whether `tok` is the identifier `STREAM`.
 fn names_stream(tok: &RawTok) -> bool {
-    tok.kind == RawKind::Ident && tok.text == "STREAM"
+    ref_token(Some(tok), RawKind::Ident, "STREAM")
 }
 
 /// The name called at `at`: an identifier followed by `(` that is no definition site.
