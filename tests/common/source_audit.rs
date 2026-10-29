@@ -567,8 +567,10 @@ pub fn ref_token(tok: Option<&RawTok>, kind: RawKind, text: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The identifier immediately in front of a `qualifier::name`-shaped occurrence at `toks[i]`,
-/// or `None` when `toks[i]` is not `::`-preceded at all. Spec 87 round-1 addendum
+/// The identifier or keyword (such as `crate`, `self` or `super`) in front of the `::` that
+/// precedes `toks[i]`, the qualifier of a `qualifier::name`-shaped occurrence; `None` when fewer
+/// than three tokens precede `toks[i]`, when `toks[i]` is not `::`-preceded, or when the token in
+/// front of the `::` is neither an identifier nor a keyword. Spec 87 round-1 addendum
 /// (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): "the tokenizer's existing
 /// `preceded_by_coloncolon` signal" carried one step further, to name WHICH qualifier a
 /// `::`-qualified reference names, so a bare-name collision between two `Free`/`ImplAssoc` fns
