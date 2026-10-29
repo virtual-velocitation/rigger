@@ -548,8 +548,9 @@ pub enum Seeding {
     /// It ran under the write lock. `lost` is its prefix-violation verdict, a verdict of this
     /// seeding alone and no record of the file: the file misses an event of the log, or records
     /// one past the log's end, that only a rebuild repairs in order, so `rigger setup` names the
-    /// lost fold ([`OWED_LOST_FOLD`]) as a cause beside the ones the file records
-    /// ([`causes_once_seeded`]) and pays it with a rebuild.
+    /// lost fold ([`OWED_LOST_FOLD`]) as a cause after the ones the file records
+    /// ([`Projector::owed_because`]), the two composed by [`causes_once_seeded`], and pays it with
+    /// a rebuild.
     Ran { lost: bool },
 }
 
