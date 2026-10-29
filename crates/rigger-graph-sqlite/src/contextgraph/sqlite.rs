@@ -9515,11 +9515,8 @@ mod tests {
     #[test]
     fn past_its_ceiling_an_appender_answers_the_cause_of_its_last_call() {
         use crate::contextgraph::Fold;
-        use crate::test_support::{graph_error, lost_fold, CATCH_UP_PAYS};
-        let short = lost_fold(
-            &graph_error(&crate::test_support::catch_up_short_after("0 s")),
-            CATCH_UP_PAYS,
-        );
+        use crate::test_support::lost_by_calls;
+        let short = lost_by_calls(&crate::test_support::catch_up_short_after("0 s"));
         // Each case: the appender's copies, given the graph file's path, and what its fold answers.
         type Case = (&'static str, Copies, String);
         let cases: [Case; 3] = [
@@ -9536,10 +9533,7 @@ mod tests {
             (
                 "a call the file's rebuild state held inert",
                 behind_a_standing_tail,
-                lost_fold(
-                    &graph_error(crate::test_support::UNFINISHED_REBUILD),
-                    CATCH_UP_PAYS,
-                ),
+                lost_by_calls(crate::test_support::UNFINISHED_REBUILD),
             ),
         ];
         for (case, copies, text) in cases {
@@ -9608,7 +9602,7 @@ mod tests {
     fn an_appender_returns_at_once_on_a_foreign_failure_an_owed_rebuild_or_its_position_passed_over(
     ) {
         use crate::contextgraph::Fold;
-        use crate::test_support::{graph_error, lost_fold, BLOB_UNREAD, CATCH_UP_PAYS};
+        use crate::test_support::{graph_error, lost_by_calls, BLOB_UNREAD};
         // Each case: the appender's copies and its projector, given the graph file's path, its
         // log and the projector handed that log; and what its fold answers, given the copies.
         type Handed = fn(&str, &CountedLog, Projector) -> (Vec<Event>, Projector);
@@ -9634,7 +9628,7 @@ mod tests {
                     });
                     (copies[1..].to_vec(), p)
                 },
-                |_| Fold::NotFolded(lost_fold(&graph_error(BLOB_UNREAD), CATCH_UP_PAYS)),
+                |_| Fold::NotFolded(lost_by_calls(BLOB_UNREAD)),
             ),
             (
                 "an older fold rule stamped under the call",
@@ -9686,7 +9680,7 @@ mod tests {
     #[test]
     fn an_appender_meeting_rebuild_state_returns_at_once_only_holding_its_file_s_rebuild_lock() {
         use crate::contextgraph::Fold;
-        use crate::test_support::{graph_error, lost_fold, CATCH_UP_PAYS, UNFINISHED_REBUILD};
+        use crate::test_support::{lost_by_calls, UNFINISHED_REBUILD};
         // Each case: the graph file whose rebuild lock the projector is handed, given its own
         // file's path, or none; its ceiling; and whether it answers past that ceiling.
         type Locked = fn(&str) -> Option<String>;
@@ -9721,7 +9715,7 @@ mod tests {
                     owed_mark(&path).unwrap().exists(),
                 ),
                 (
-                    Fold::NotFolded(lost_fold(&graph_error(UNFINISHED_REBUILD), CATCH_UP_PAYS)),
+                    Fold::NotFolded(lost_by_calls(UNFINISHED_REBUILD)),
                     past,
                     false,
                 ),
@@ -9935,7 +9929,7 @@ mod tests {
     fn an_appender_waits_a_busy_interval_with_its_connection_released_after_each_attempt_that_did_not_advance(
     ) {
         use crate::contextgraph::Fold;
-        use crate::test_support::{graph_error, lost_fold, BLOB_UNREAD, CATCH_UP_PAYS};
+        use crate::test_support::{lost_by_calls, lost_fold, BLOB_UNREAD, CATCH_UP_PAYS};
         /// What an appender of the copies `copies` builds answers, folded by `folding` under the
         /// ceiling `ceiling`; the whole busy intervals of its connection its fold took; and
         /// whether another user of the projector, asking for the connection halfway through the
@@ -9984,7 +9978,6 @@ mod tests {
             without_a_cursor(path);
             one_decision(path)
         };
-        let short = |held| lost_fold(&graph_error(held), CATCH_UP_PAYS);
         // Each case: the appender's copies, given the graph file's path; how it folds them; its
         // ceiling; what its fold answers; and the whole busy intervals its fold takes - one for
         // each wait, and one for each attempt that met the write lock, since such an attempt
@@ -10004,7 +9997,9 @@ mod tests {
                 beyond_the_log_s_head,
                 alone,
                 Duration::from_secs(1),
-                Fold::NotFolded(short(&crate::test_support::catch_up_short_after("1 s"))),
+                Fold::NotFolded(lost_by_calls(&crate::test_support::catch_up_short_after(
+                    "1 s",
+                ))),
                 1,
             ),
             (
@@ -10020,7 +10015,7 @@ mod tests {
                 behind_a_standing_tail,
                 alone,
                 Duration::from_secs(1),
-                Fold::NotFolded(short(crate::test_support::UNFINISHED_REBUILD)),
+                Fold::NotFolded(lost_by_calls(crate::test_support::UNFINISHED_REBUILD)),
                 1,
             ),
             (

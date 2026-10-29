@@ -114,7 +114,7 @@ use common::fixtures::HELD_PAST_THE_BUSY_TIMEOUT;
 use common::fixtures::STEP_LOCK_REASON;
 use common::fixtures::{catch_up_failed_line, the_disk_gives_out_at_d_boom, the_disk_recovers};
 use common::fixtures::{graph_error, not_folded, not_folded_suffix, NOT_A_DATABASE};
-use common::fixtures::{lost_fold, CATCH_UP_PAYS, UNFINISHED_REBUILD};
+use common::fixtures::{lost_by_calls, UNFINISHED_REBUILD};
 use common::fixtures::{mark_owed_in, mark_stands_beside};
 use common::fixtures::{source_interrupted, SOURCE_INTERRUPTED};
 use common::fixtures::{under_a_seedings_lock, with_graph_locked, with_graph_locked_for};
@@ -5960,7 +5960,7 @@ fn a_setup_migrating_beside_its_own_standing_tail_folds_the_migration_in_that_ta
                 &legacy,
                 &minted,
                 migration,
-                &not_folded_suffix(&lost_fold(&graph_error(UNFINISHED_REBUILD), CATCH_UP_PAYS))
+                &not_folded_suffix(&lost_by_calls(UNFINISHED_REBUILD))
             ),
             vec![rebuilt_through_the_head(1, migration)],
             true,

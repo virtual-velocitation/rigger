@@ -387,6 +387,12 @@ pub fn lost_fold(reason: &str, pays: &str) -> String {
     [reason, pays].concat()
 }
 
+/// The error text of a call-run fold not made for `reason` (spec 124, CAUSE TEXTS): the graph
+/// error of `reason` ([`graph_error`]), then [`CATCH_UP_PAYS`] ([`lost_fold`]).
+pub fn lost_by_calls(reason: &str) -> String {
+    lost_fold(&graph_error(reason), CATCH_UP_PAYS)
+}
+
 /// The cause a fold answers past its ceiling `held` while another writer holds the write lock
 /// (spec 124, CAUSE TEXTS), `held` as the ceiling reads.
 pub fn lock_held_past(held: &str) -> String {
