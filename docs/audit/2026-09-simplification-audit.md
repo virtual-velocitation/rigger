@@ -1750,8 +1750,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/cli/mod.rs:5224-5230` `spec_lint_next_step`
 - `src/cli/setup.rs:1098-1103` `live_run_rebuild_refusal`
 - `tests/canary_model_drift_periphery.rs:113-115` `prose_claiming`
-- `tests/common/fixtures/fold.rs:398-400` `lock_held_past`
-- `tests/common/fixtures/fold.rs:404-406` `catch_up_short_after`
+- `tests/common/fixtures/fold.rs:399-401` `lock_held_past`
+- `tests/common/fixtures/fold.rs:406-408` `catch_up_short_after`
 - `tests/common/fixtures/instructions.rs:81-83` `builtin_instruction_source`
 - `tests/halted_spawn_wip_recovery_periphery.rs:128-130` `unit_branch`
 - `tests/native_driver_pipelining_behavior.rs:597-599` `worker_prompts_harness`
@@ -1782,7 +1782,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:12585-12587` `audit_id`
 - `crates/rigger-domain/src/spawn.rs:140-142` `spawn_id`
 - `crates/rigger-driver/src/driver/claude_code.rs:1120-1128` `stop_message`
-- `tests/common/fixtures/fold.rs:712-714` `code_batch_key`
+- `tests/common/fixtures/fold.rs:714-716` `code_batch_key`
 - `tests/common/fixtures/graph.rs:204-206` `spoke_id`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:56-58` `expected_postmerge_dir`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:59-61` `expected_postmerge_branch`
@@ -4987,7 +4987,7 @@ Proposed home: `fold::support (consolidate these 2 sites into one function in th
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/common/fixtures/fold.rs:301-303` `alias_json`
-- `tests/common/fixtures/fold.rs:972-974` `ref_json`
+- `tests/common/fixtures/fold.rs:974-976` `ref_json`
 
 #### `dup-c3c8358993cf` (near, 2 sites)
 
@@ -4995,8 +4995,8 @@ Proposed home: `fold::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:1180-1182` `apply_ref`
-- `tests/common/fixtures/fold.rs:1210-1212` `apply_call`
+- `tests/common/fixtures/fold.rs:1182-1184` `apply_ref`
+- `tests/common/fixtures/fold.rs:1212-1214` `apply_call`
 
 #### `dup-9c3b5c80063e` (near, 3 sites)
 
@@ -5004,7 +5004,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/common/fixtures/f
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/fixtures/fold.rs:1530-1539` `live_node_ids`
+- `tests/common/fixtures/fold.rs:1532-1541` `live_node_ids`
 - `tests/community_resolution_knob.rs:139-148` `live_memberships_of`
 - `tests/graph_superseded_prune.rs:32-41` `live_contains`
 

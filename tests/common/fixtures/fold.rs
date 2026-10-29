@@ -370,19 +370,20 @@ pub fn recorded_not_folded(events: usize, reason: &str) -> String {
     recorded + &not_folded(&graph_error(reason))
 }
 
-/// The tail a direct fold's not-folded error ends with, for an event of the project's run stream
-/// (spec 124, CAUSE TEXTS): a fold into a file without the `caught_up` cursor, or through a
+/// The tail a direct fold's not-folded error ends with, for events all of the project's run
+/// stream (spec 124, CAUSE TEXTS): a fold into a file without the `caught_up` cursor, or through a
 /// projector handed no log.
 pub const SETUP_PAYS: &str =
     " - the next rigger setup finds the event missing from graph.db and folds it";
 
-/// The tail a call-run fold's not-folded error ends with (spec 124, CAUSE TEXTS): a fold into a
-/// file carrying the `caught_up` cursor, through a projector handed the log.
+/// The tail a call-run fold's not-folded error ends with (spec 124, CAUSE TEXTS): a fold of events
+/// all of the project's run stream into a file carrying the `caught_up` cursor, through a
+/// projector handed the log.
 pub const CATCH_UP_PAYS: &str = " - the next fold through the folding store catches it up";
 
 /// The error text of a fold not made for `reason`: the reason, then `pays`, the tail of the
-/// fold's path naming what folds the event later ([`SETUP_PAYS`] after a direct fold,
-/// [`CATCH_UP_PAYS`] after a call).
+/// fold's path naming what folds the event later ([`SETUP_PAYS`] after a direct fold of the run
+/// stream, [`CATCH_UP_PAYS`] after a call).
 pub fn lost_fold(reason: &str, pays: &str) -> String {
     [reason, pays].concat()
 }
@@ -399,8 +400,9 @@ pub fn lock_held_past(held: &str) -> String {
     format!("graph.db's write lock stayed held past {held}")
 }
 
-/// The cause a call-run fold answers past its ceiling `held` after a call that advanced (spec
-/// 124, CAUSE TEXTS), `held` as the ceiling reads.
+/// The cause a call-run fold answers past its ceiling `held` after a call that advanced short of
+/// its position or met the log's head below it (spec 124, CAUSE TEXTS), `held` as the ceiling
+/// reads.
 pub fn catch_up_short_after(held: &str) -> String {
     format!("graph.db's catch-up had not reached this event after {held}")
 }

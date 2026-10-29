@@ -222,9 +222,9 @@ fn held_for(held: Duration) -> String {
 /// whose positions its calls ([`Projector::catch_up`]) had not folded leaves them to the next.
 const CALL_PAYS: &str = " - the next fold through the folding store catches it up";
 
-/// The suffix a direct fold's not-folded text ends with (spec 124, CAUSE TEXTS), for an own event
-/// of the project's run stream: `rigger setup` reads that stream's positions against the file's
-/// `applied` ledger and folds the one missing there.
+/// The suffix a direct fold's not-folded text ends with (spec 124, CAUSE TEXTS), for own events all
+/// of the project's run stream ([`on_the_run_stream`]): `rigger setup` reads that stream's
+/// positions against the file's `applied` ledger and folds the one missing there.
 const DIRECT_PAYS: &str =
     " - the next rigger setup finds the event missing from graph.db and folds it";
 
