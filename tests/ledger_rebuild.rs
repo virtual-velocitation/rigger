@@ -953,7 +953,7 @@ fn one_by_one(log: &[Event]) -> impl FnMut(u64, &mut RebuildSink) -> Result<(), 
 
 /// Rebuild the graph file `db` under `project` from `log`, one event to a committed batch,
 /// re-extracting each entry its fold asks a batch for through `ingest::resolve_entry` over `root`
-/// and a batch process started for this pass, as `rigger setup` binds them.
+/// and a batch process the pass's own re-extraction starts, as `rigger setup` binds them.
 #[cfg(feature = "symbols")]
 fn rebuild_resolving(
     db: &Path,
@@ -961,19 +961,25 @@ fn rebuild_resolving(
     log: &[Event],
     root: &Path,
 ) -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, String> {
-    let mut blobs = rigger::worktree::BlobBatch::start(root);
-    assert!(blobs.is_some(), "the tree is a repository");
+    let root = root.to_path_buf();
     Projector::open(db.to_str().unwrap(), project)
         .unwrap()
+        .with_reextraction(
+            move || -> Box<rigger::contextgraph::sqlite::Reextract<'static>> {
+                let root = root.clone();
+                let mut blobs = rigger::worktree::BlobBatch::start(&root);
+                assert!(blobs.is_some(), "the tree is a repository");
+                Box::new(move |entry: &Event| {
+                    let mut source =
+                        |id: &str| blobs.as_mut().unwrap().blob(id).map_err(|e| Error(e.0));
+                    rigger::ingest::resolve_entry(&root, entry, Some(&mut source))
+                })
+            },
+        )
         .rebuild(
             &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
             true,
             &mut one_by_one(log),
-            &mut |entry| {
-                let mut source =
-                    |id: &str| blobs.as_mut().unwrap().blob(id).map_err(|e| Error(e.0));
-                rigger::ingest::resolve_entry(root, entry, Some(&mut source))
-            },
             &mut no_progress,
         )
         .map_err(|e| e.0)
@@ -1304,12 +1310,12 @@ fn unparsable_entry_cause() -> String {
     judged_cause(PAYLOAD_REJECTED, TYPE_GENERATION_INGESTED, b"{}")
 }
 
-/// `Projector::rebuild` handed a re-extracting function that answers a batch event whose payload
-/// the fold rejects passes the entry over as a fold failure, with the judge's text, and completes:
-/// both positions are recorded and the entry installs no generation. An entry whose own payload
-/// does not parse is passed over without the function being asked. A rebuild of the same log with
-/// a function whose batch folds retries the entry and folds it, passing over again only the entry
-/// whose own payload does not parse.
+/// `Projector::rebuild` under a re-extraction that answers a batch event whose payload the fold
+/// rejects passes the entry over as a fold failure, with the judge's text, and completes: both
+/// positions are recorded and the entry installs no generation. An entry whose own payload does
+/// not parse is passed over without the re-extraction being asked. A rebuild of the same log under
+/// a re-extraction whose batch folds retries the entry and folds it, passing over again only the
+/// entry whose own payload does not parse.
 #[test]
 fn a_rebuild_passes_a_re_extracted_batch_the_fold_rejects_over_as_a_fold_failure_and_completes() {
     const PROJECT: &str = "proj-ledger";
@@ -1323,18 +1329,19 @@ fn a_rebuild_passes_a_re_extracted_batch_the_fold_rejects_over_as_a_fold_failure
     let log = [unparsable, entry];
 
     let poison = common::fixtures::POISON;
-    let asked = std::cell::RefCell::new(Vec::new());
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let rebuild = |batch: Vec<Event>| {
+        let asked = std::sync::Arc::clone(&asked);
         Projector::open(db.to_str().unwrap(), PROJECT)
             .unwrap()
+            .with_reextraction(common::fixtures::resolving(move |entry| {
+                asked.lock().unwrap().push(entry.position);
+                Ok(Some(batch.clone()))
+            }))
             .rebuild(
                 &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
                 true,
                 &mut one_by_one(&log),
-                &mut |entry| {
-                    asked.borrow_mut().push(entry.position);
-                    Ok(Some(batch.clone()))
-                },
                 &mut no_progress,
             )
             .map_err(|e| e.0)
@@ -1352,7 +1359,7 @@ fn a_rebuild_passes_a_re_extracted_batch_the_fold_rejects_over_as_a_fold_failure
     );
     assert_eq!(
         (
-            asked.borrow().clone(),
+            asked.lock().unwrap().clone(),
             passed_over_rows(db.to_str().unwrap()),
             generation(),
             applied(&db, 1),
@@ -1383,7 +1390,7 @@ fn a_rebuild_passes_a_re_extracted_batch_the_fold_rejects_over_as_a_fold_failure
         common::fixtures::clean_rebuild(),
         "a rebuild whose batch folds retries the entry"
     );
-    assert_eq!(asked.borrow().clone(), vec![2, 2]);
+    assert_eq!(asked.lock().unwrap().clone(), vec![2, 2]);
     assert_eq!(
         (
             passed_over_rows(db.to_str().unwrap()),
@@ -2137,8 +2144,12 @@ fn a_rebuild_interrupted_and_resumed_reports_the_number_a_single_pass_does() {
         .position(|event| event.position == positions[2])
         .unwrap();
 
+    let tree = root.to_path_buf();
     let interrupted = Projector::open(graph_db.to_str().unwrap(), &project)
         .unwrap()
+        .with_reextraction(common::fixtures::resolving(move |entry| {
+            rigger::ingest::resolve_entry(&tree, entry, None)
+        }))
         .rebuild(
             &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
             true,
@@ -2146,7 +2157,6 @@ fn a_rebuild_interrupted_and_resumed_reports_the_number_a_single_pass_does() {
                 rigger::contextgraph::sqlite::stream_past(&log[..=through], after, 1, sink)?;
                 common::fixtures::source_interrupted()
             },
-            &mut |entry| rigger::ingest::resolve_entry(root, entry, None),
             &mut no_progress,
         );
     assert_eq!(

@@ -479,13 +479,13 @@ fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
 /// for the `events.db` beside the file ([`resolve_store`]), scoped to `project`
 /// ([`Namespaced::owning`]), opened at the projector's first catch-up and held for its life; an
 /// embedded log whose file does not exist yet is read as the empty one it is
-/// ([`StoreSelection::log_file`]), so no open makes `events.db`. Its
-/// re-extraction ([`Projector::with_reextraction`]) is a fresh one each time
-/// [`Projector::reextraction`] builds one - a catch-up call's, or setup's rebuild's - resolving
-/// each ledger entry it is handed through [`reextract_entry`] under THE ONE ROOT of the directory
-/// holding the file, read from the one cell the open returns beside the projector ([`TreeRoot`]):
-/// asked of git at the first entry any re-extraction of this open is handed, resolved or not, or
-/// by the first other reader of the cell before it, and once among them.
+/// ([`StoreSelection::log_file`]), so no open makes `events.db`. Its re-extraction
+/// ([`Projector::with_reextraction`]) is a fresh one each catch-up or rebuild call builds for
+/// itself and drops as it returns, resolving each ledger entry it is handed through
+/// [`reextract_entry`] under THE ONE ROOT of the directory holding the file, read from the one cell
+/// the open returns beside the projector ([`TreeRoot`]): asked of git at the first entry any
+/// re-extraction of this open is handed, resolved or not, or by the first other reader of the cell
+/// before it, and once among them.
 fn open_graph_for_write(
     graph_db: &str,
     project: &str,
@@ -5436,7 +5436,7 @@ mod tests {
                 &graph_db,
                 true,
                 &mut |after, sink| contextgraph::sqlite::stream_past(&log, after, 10, sink),
-                &mut |_| Ok(None),
+                crate::test_support::resolving(|_| Ok(None)),
             ),
             crate::test_support::clean_rebuild()
         );

@@ -571,7 +571,6 @@ fn rebuild_under(
             &Projector::lock_rebuild(db.to_str().unwrap()).unwrap(),
             owed,
             source,
-            &mut |_| Ok(None),
             &mut no_progress,
         )
 }
@@ -611,7 +610,6 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
             &Projector::lock_rebuild(old_db.to_str().unwrap()).unwrap(),
             false,
             &mut source_over(&log, 2, &afters),
-            &mut |_| Ok(None),
             &mut |at| reported.push(at),
         )
         .unwrap();
@@ -710,7 +708,6 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
             &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
             common::fixtures::setup_owes(&owed),
             &mut stream_source(&counting, rigger::conductor::STREAM, 2),
-            &mut |_| Ok(None),
             &mut no_progress,
         )
         .unwrap();
@@ -998,11 +995,19 @@ fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_
     let at = |i: usize| log[i].position;
     let (split, writer) = (swapped + 500, swapped + 550);
     // The cursor and every position `applied` holds, as a connection of its own reads them.
-    let committed = || (rebuild_cursor_of(db), applied_positions(db));
-    let (mut reads, mut seam, mut extracted) = (0, Vec::new(), Vec::new());
+    let committed = |db: &Path| (rebuild_cursor_of(db), applied_positions(db));
+    let (mut reads, mut seam) = (0, Vec::new());
+    let extracted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
     let rebuilt = Projector::open(&path, PROJECT)
         .unwrap()
+        .with_reextraction(common::fixtures::resolving({
+            let (db, extracted) = (db.to_path_buf(), std::sync::Arc::clone(&extracted));
+            move |e| {
+                extracted.lock().unwrap().push((e.position, committed(&db)));
+                Ok(None)
+            }
+        }))
         .rebuild(
             &Projector::lock_rebuild(&path).unwrap(),
             true,
@@ -1016,12 +1021,8 @@ fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_
                         &Projector::open(&path, PROJECT).unwrap(),
                         std::slice::from_ref(&log[writer]),
                     );
-                    seam.push(committed());
+                    seam.push(committed(db));
                 })
-            },
-            &mut |e| {
-                extracted.push((e.position, committed()));
-                Ok(None)
             },
             &mut no_progress,
         )
@@ -1034,7 +1035,7 @@ fn a_rebuild_tail_commits_before_each_entry_and_a_writer_lands_between_its_read_
         "the shadow folds the log as it stood, then the tail is read once"
     );
     assert_eq!(
-        extracted,
+        *extracted.lock().unwrap(),
         vec![
             (at(swapped + 300), before(swapped + 300)),
             (at(swapped + 450), before(swapped + 450))
@@ -2765,7 +2766,6 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
                     &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
                     false,
                     &mut source,
-                    &mut |_| Ok(None),
                     &mut |_| {
                         batches += 1;
                         if batches == 1 {
@@ -3316,7 +3316,6 @@ fn an_emit_while_the_rebuild_folds_its_tail_waits_for_the_tail_and_is_met_exactl
                         }
                         source(after, sink)
                     },
-                    &mut |_| Ok(None),
                     &mut |_| {},
                 )
                 .unwrap()
@@ -4619,9 +4618,14 @@ fn passed_over_counts_each_class_a_rebuild_wrote_by_cause_and_no_other_class() {
         rejected_batch_entries(4..=7),
     ]
     .concat();
-    common::fixtures::rebuild_from_the_log(Path::new(&graph_db), &log, 10, &mut |entry| {
-        Ok((entry.position > 3).then(common::fixtures::poisoned_batch))
-    });
+    common::fixtures::rebuild_from_the_log(
+        Path::new(&graph_db),
+        &log,
+        10,
+        common::fixtures::resolving(|entry| {
+            Ok((entry.position > 3).then(common::fixtures::poisoned_batch))
+        }),
+    );
     let counted = || {
         let passed = Projector::open(&graph_db, "test")
             .unwrap()
@@ -6067,7 +6071,6 @@ fn a_rebuild_whose_process_is_gone_leaves_no_lock_and_the_next_setup_resumes_its
                     sink(events, head)
                 })
             },
-            &mut |_| Ok(None),
             &mut |_| {},
         )
         .map_err(|e| e.to_string());

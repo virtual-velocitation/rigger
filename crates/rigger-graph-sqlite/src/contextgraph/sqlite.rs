@@ -414,8 +414,9 @@ pub struct Projector {
     /// The event log [`Projector::catch_up`] folds this file forward from, once installed
     /// ([`Projector::with_log`]): none folds nothing forward.
     log: Option<CatchUpLog>,
-    /// What each [`Projector::catch_up`] call builds its re-extraction from, once installed
-    /// ([`Projector::with_reextraction`]): with none a call re-extracts nothing.
+    /// What each [`Projector::catch_up`] and [`Projector::rebuild`] call builds its re-extraction
+    /// from, once installed ([`Projector::with_reextraction`]): with none a call re-extracts
+    /// nothing.
     reextraction: Option<ReextractionFactory>,
     /// The longest an appender in [`Projector::guarded`] waits for its own positions to fold
     /// (spec 124, THE APPENDER): [`FOLD_LOCK_CEILING`], unless a test injects another
@@ -711,25 +712,28 @@ impl Projector {
     ///
     /// The rebuild folds `source` - the log's live selection, whose cost is bounded by the live
     /// projection rather than the log's age - each ledger entry of perception its fold asks a batch
-    /// for with the batch `reextract` answers for it (see `fold_source`), into a fresh SHADOW file
-    /// beside the graph file, in the batches `source` hands it, each folded in the bounded
-    /// transactions `fold_source` cuts it into, each transaction committed with the last position
-    /// it folded and the run attribution it gathered ([`REBUILD_STATE`]), and each batch reported
-    /// to `progress`; the live file is only ever read meanwhile. The transaction that opens the
-    /// shadow's rebuild state also creates its `caught_up` cursor at the shadow's rebuild cursor
-    /// ([`create_cursor`], spec 124): zero in a fresh shadow, and where a resumed one stands when a
-    /// binary from before the cursor left it without one. Once `source` is exhausted, a private
-    /// copy of the shadow, pruned as `rigger reset --runs` prunes the live graph and stamped with
-    /// the current [`PROJECTION_VERSION`] ([`prune_a_copy`]), is put in place of the live file's
-    /// content in ONE step - one write transaction that copies it page for page, so a racing open
-    /// sees the old file, which still owes the rebuild, or the rebuilt one, never half of either -
-    /// and then removed; what that prune removed is reported, read from the rebuild state, where it
-    /// was stamped on the copy with the prune. The copy is SQLite's online backup rather than a
-    /// rename of the file: a process holding the live file open (an agent's MCP session, the
-    /// dashboard) keeps a valid connection and reads the rebuilt file from its next query, where a
-    /// file renamed over one it holds would leave it reading the old file through a write-ahead log
-    /// the new one shares. The shadow itself stays unpruned, and stamped with the fold rule it is
-    /// folded under ([`open_shadow`]), until the swap ends by removing it ([`remove_shadow`]).
+    /// for with the batch a re-extraction of the rebuild's own answers for it (see `fold_source`):
+    /// one this projector builds for the call ([`Projector::reextraction`]), shared by the shadow's
+    /// fold and the tail and dropped as the call returns, so nothing it holds outlives the rebuild.
+    /// It folds into a fresh SHADOW file beside the graph file, in the batches `source` hands it,
+    /// each folded in the bounded transactions `fold_source` cuts it into, each transaction
+    /// committed with the last position it folded and the run attribution it gathered
+    /// ([`REBUILD_STATE`]), and each batch reported to `progress`; the live file is only ever read
+    /// meanwhile. The transaction that opens the shadow's rebuild state also creates its
+    /// `caught_up` cursor at the shadow's rebuild cursor ([`create_cursor`], spec 124): zero in a
+    /// fresh shadow, and where a resumed one stands when a binary from before the cursor left it
+    /// without one. Once `source` is exhausted, a private copy of the shadow, pruned as `rigger
+    /// reset --runs` prunes the live graph and stamped with the current [`PROJECTION_VERSION`]
+    /// ([`prune_a_copy`]), is put in place of the live file's content in ONE step - one write
+    /// transaction that copies it page for page, so a racing open sees the old file, which still
+    /// owes the rebuild, or the rebuilt one, never half of either - and then removed; what that
+    /// prune removed is reported, read from the rebuild state, where it was stamped on the copy
+    /// with the prune. The copy is SQLite's online backup rather than a rename of the file: a
+    /// process holding the live file open (an agent's MCP session, the dashboard) keeps a valid
+    /// connection and reads the rebuilt file from its next query, where a file renamed over one it
+    /// holds would leave it reading the old file through a write-ahead log the new one shares. The
+    /// shadow itself stays unpruned, and stamped with the fold rule it is folded under
+    /// ([`open_shadow`]), until the swap ends by removing it ([`remove_shadow`]).
     ///
     /// The shadow is never pruned, because the drop set is not monotone in the log: an id a closed
     /// run recorded moves from drop to keep when the active run records it again, and a prune
@@ -765,11 +769,11 @@ impl Projector {
         _held: &RebuildLock,
         owed: bool,
         source: &mut RebuildSource,
-        reextract: &mut Reextract,
         progress: &mut dyn FnMut(RebuildProgress),
     ) -> Result<Option<Rebuilt>, Error> {
         let path = self.path.as_str();
         let project = self.project.as_str();
+        let mut reextract = self.reextraction();
         let mut live = self.conn.lock().unwrap();
         let live = &mut *live;
         let shadow_path = shadow_of(path);
@@ -787,7 +791,14 @@ impl Projector {
                     create_cursor(tx, rebuild_cursor(tx)?)
                 })
                 .map_err(FrameError::unframed)?;
-                fold_source(&mut shadow, project, source, reextract, progress, true)?;
+                fold_source(
+                    &mut shadow,
+                    project,
+                    source,
+                    &mut *reextract,
+                    progress,
+                    true,
+                )?;
                 // The graph the live one would hold, never a larger one: the prune `rigger reset
                 // --runs` applies, derived from what the fold gathered, on a copy of the shadow.
                 let copy = pruned_copy(path);
@@ -810,7 +821,7 @@ impl Projector {
                 remove_shadow(shadow, &shadow_path)?;
             }
         }
-        fold_source(live, project, source, reextract, progress, false)?;
+        fold_source(live, project, source, &mut *reextract, progress, false)?;
         let pruned = live
             .query_row(
                 "SELECT pruned_nodes, reclaimed_edges FROM rebuild_cursor",
@@ -1016,9 +1027,9 @@ impl Projector {
         self
     }
 
-    /// This projector, each [`Projector::catch_up`] call re-extracting the ledger entries its fold
-    /// asks a batch for through a re-extraction `factory` builds for that call alone (spec 124,
-    /// WIRING), dropped as the call returns.
+    /// This projector, each [`Projector::catch_up`] and [`Projector::rebuild`] call re-extracting
+    /// the ledger entries its fold asks a batch for through a re-extraction `factory` builds for
+    /// that call alone (spec 124, WIRING), dropped as the call returns.
     pub fn with_reextraction(
         mut self,
         factory: impl Fn() -> Box<Reextract<'static>> + Send + Sync + 'static,
@@ -1056,7 +1067,7 @@ impl Projector {
     /// not hold: a fresh one the installed factory builds ([`Projector::with_reextraction`]), or,
     /// with none installed, one that resolves no entry, so each entry it is asked for is passed
     /// over [`RESOLVED_TO_NOTHING`].
-    pub fn reextraction(&self) -> Box<Reextract<'static>> {
+    fn reextraction(&self) -> Box<Reextract<'static>> {
         match &self.reextraction {
             Some(build) => build(),
             None => Box::new(|_: &Event| Ok(None)),
@@ -7010,7 +7021,6 @@ mod tests {
                 &locked(path),
                 false,
                 &mut |_, _| panic!("a paid rebuild reads nothing"),
-                &mut |_| Ok(None),
                 &mut |_| {},
             )
             .unwrap();
@@ -7070,7 +7080,6 @@ mod tests {
                 reads_from.push(after);
                 stream_past(log, after, batch, sink)
             },
-            &mut |_| Ok(None),
             &mut |_| {},
         )
     }
@@ -7094,7 +7103,6 @@ mod tests {
                     sink(events, head)
                 })
             },
-            &mut |_| Ok(None),
             &mut |_| {},
         )
     }
@@ -7184,7 +7192,6 @@ mod tests {
                     let log: &[Event] = if reads == 1 { &before } else { &gained };
                     stream_past(log, after, 10, sink)
                 },
-                &mut |_| Ok(None),
                 &mut |_| {},
             )
             .unwrap();
@@ -7244,7 +7251,7 @@ mod tests {
                 &path,
                 true,
                 &mut |after, sink| stream_past(log, after, 10, sink),
-                &mut batch_of_the_rejected_entry,
+                crate::test_support::resolving(batch_of_the_rejected_entry),
             ),
             crate::test_support::clean_rebuild(),
             "the rebuild completes, passing every position it cannot fold over"
@@ -7402,7 +7409,7 @@ mod tests {
                 &path,
                 true,
                 &mut |after, sink| stream_past(&log, after, 10, sink),
-                &mut |_| Ok(None),
+                crate::test_support::resolving(|_| Ok(None)),
             ),
             crate::test_support::clean_rebuild()
         );
@@ -7561,7 +7568,6 @@ mod tests {
                 &locked(path),
                 owed,
                 &mut |after, sink| stream_past(log, after, 10, sink),
-                &mut |_| Ok(None),
                 &mut |_| {},
             )
             .unwrap()
@@ -8732,7 +8738,6 @@ mod tests {
                 let first = stream_past(&log, after, 2, sink);
                 first.and(Err(Error(FIRST_BATCH_INTERRUPTED.to_string())))
             },
-            &mut |_| Ok(None),
             &mut |_| {},
         );
         assert!(interrupted.is_err(), "the first rebuild is interrupted");
@@ -8866,7 +8871,6 @@ mod tests {
                             sink(events, head)
                         })
                     },
-                    &mut |_| Ok(None),
                     &mut |_| {},
                 )
                 .unwrap();
@@ -9041,7 +9045,6 @@ mod tests {
                             _ => Err(Error(TAIL_INTERRUPTED.to_string())),
                         }
                     },
-                    &mut |_| Ok(None),
                     &mut |_| {},
                 )
                 .map_err(|e| e.to_string());
@@ -9067,7 +9070,6 @@ mod tests {
                         sink(events, head)
                     })
                 },
-                &mut |_| Ok(None),
                 &mut |_| {},
             )
             .unwrap();
@@ -9284,7 +9286,6 @@ mod tests {
                     }
                     stream_past(&log, after, 10, sink)
                 },
-                &mut |_| Ok(None),
                 &mut |_| {},
             )
             .map_err(|e| e.to_string());
@@ -9294,7 +9295,6 @@ mod tests {
                 &locked(&tail),
                 false,
                 &mut |after, sink| stream_past(&log, after, 10, sink),
-                &mut |_| Ok(None),
                 &mut |_| {},
             )
             .unwrap();
@@ -10771,7 +10771,6 @@ mod tests {
                     while_it_rebuilds.push(second());
                     Ok(())
                 },
-                &mut |_| Ok(None),
                 &mut |_| {},
             )
             .map_err(|e| e.to_string());
@@ -18968,9 +18967,9 @@ mod tests {
                         _ => decision_at(&format!("d{pos}"), "src/d.rs", pos),
                     })
                     .collect();
-                // The cursor and the last position `applied` holds, as the second connection reads
-                // them committed.
-                let committed = || {
+                // The cursor and the last position `applied` holds, as the second connection `p`
+                // reads them committed.
+                let committed = |p: &Projector| {
                     let conn = p.conn.lock().unwrap();
                     let last: i64 = conn
                         .query_row("SELECT coalesce(max(position), 0) FROM applied", [], |r| {
@@ -18979,28 +18978,34 @@ mod tests {
                         .unwrap();
                     (rebuild_cursor(&conn).unwrap(), last as u64)
                 };
-                let (mut extracted, mut seam, mut reported) = (Vec::new(), Vec::new(), Vec::new());
+                let p = std::sync::Arc::new(p);
+                let extracted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                let (mut seam, mut reported) = (Vec::new(), Vec::new());
                 let rebuilt = Projector::open(&path, "test")
                     .unwrap()
+                    .with_reextraction(crate::test_support::resolving({
+                        let (p, extracted) =
+                            (std::sync::Arc::clone(&p), std::sync::Arc::clone(&extracted));
+                        move |e| {
+                            extracted.lock().unwrap().push((e.position, committed(&p)));
+                            Ok(None)
+                        }
+                    }))
                     .rebuild(
                         &locked(&path),
                         false,
                         &mut |after, sink| {
                             crate::test_support::two_read_batches(&log, 790, after, sink, || {
-                                crate::test_support::folds(&p, std::slice::from_ref(&log[794]));
-                                seam.push(committed());
+                                crate::test_support::folds(&*p, std::slice::from_ref(&log[794]));
+                                seam.push(committed(&p));
                             })
-                        },
-                        &mut |e| {
-                            extracted.push((e.position, committed()));
-                            Ok(None)
                         },
                         &mut |at| reported.push(at),
                     )
                     .unwrap();
                 assert_eq!(rebuilt, Some(Rebuilt::default()));
                 assert_eq!(
-                    extracted,
+                    *extracted.lock().unwrap(),
                     vec![(521, (520, 520)), (778, (777, 777))],
                     "each entry is extracted with every transaction before it committed"
                 );
@@ -19053,18 +19058,23 @@ mod tests {
                     entry("gc", "src/c.rs", "h1", 4, 30),
                     decision_at("d5", "src/d.rs", 5),
                 ];
-                let mut extracted = Vec::new();
+                let p = std::sync::Arc::new(p);
+                let extracted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
                 crate::test_support::rebuild_clean(
                     &path,
                     false,
                     &mut |after, sink| crate::test_support::one_read(&log, after, sink),
-                    &mut |e| {
-                        extracted.push((e.position, cursor_of(&p)));
-                        Ok(None)
-                    },
+                    crate::test_support::resolving({
+                        let (p, extracted) =
+                            (std::sync::Arc::clone(&p), std::sync::Arc::clone(&extracted));
+                        move |e| {
+                            extracted.lock().unwrap().push((e.position, cursor_of(&p)));
+                            Ok(None)
+                        }
+                    }),
                 );
                 assert_eq!(
-                    extracted,
+                    *extracted.lock().unwrap(),
                     vec![(2, 1), (3, 2), (4, 3)],
                     "each adjacent entry is extracted with the one before it committed alone"
                 );
@@ -19072,19 +19082,23 @@ mod tests {
             }
 
             /// How many times a rebuild's tail over the graph file at `path`, folding `log` in one
-            /// read, asks its `reextract` for an entry's batch.
+            /// read, asks its re-extraction for an entry's batch.
             fn tail_asks(path: &str, log: &[Event]) -> usize {
-                let mut asks = 0;
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                let asks = std::sync::Arc::new(AtomicUsize::new(0));
                 crate::test_support::rebuild_clean(
                     path,
                     false,
                     &mut |after, sink| crate::test_support::one_read(log, after, sink),
-                    &mut |_| {
-                        asks += 1;
-                        Ok(None)
-                    },
+                    crate::test_support::resolving({
+                        let asks = std::sync::Arc::clone(&asks);
+                        move |_| {
+                            asks.fetch_add(1, Ordering::SeqCst);
+                            Ok(None)
+                        }
+                    }),
                 );
-                asks
+                asks.load(Ordering::SeqCst)
             }
 
             /// Spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION: the read before an entry's
@@ -19114,10 +19128,10 @@ mod tests {
             }
 
             /// Spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION: a rebuild's tail extracts an
-            /// entry's batch with no transaction open, so while its `reextract` blocks on a barrier
-            /// a writer on a second connection commits, and the entry then folds the batch it
-            /// extracted: the folded rows equal those of folding the entry with that batch in hand,
-            /// after the writer's.
+            /// entry's batch with no transaction open, so while its re-extraction blocks on a
+            /// barrier a writer on a second connection commits, and the entry then folds the batch
+            /// it extracted: the folded rows equal those of folding the entry with that batch in
+            /// hand, after the writer's.
             #[test]
             fn a_writer_commits_while_an_entry_is_extracted_and_the_entry_folds_as_with_its_batch_in_hand(
             ) {
@@ -21767,18 +21781,19 @@ mod tests {
                 assert_eq!(folded.len(), 3, "premise: the log stages three rows");
                 drop(incremental);
                 let log: Vec<Event> = batches.iter().map(|(entry, _)| entry.clone()).collect();
+                let answers = std::sync::Arc::new(batches.clone());
                 Projector::open(&path, "test")
                     .unwrap()
+                    .with_reextraction(crate::test_support::resolving(move |entry| {
+                        Ok(answers
+                            .iter()
+                            .find(|(e, _)| e.position == entry.position)
+                            .map(|(_, batch)| batch.clone()))
+                    }))
                     .rebuild(
                         &Projector::lock_rebuild(&path).unwrap(),
                         true,
                         &mut |after, sink| stream_past(&log, after, 10, sink),
-                        &mut |entry| {
-                            Ok(batches
-                                .iter()
-                                .find(|(e, _)| e.position == entry.position)
-                                .map(|(_, batch)| batch.clone()))
-                        },
                         &mut |_| {},
                     )
                     .unwrap();

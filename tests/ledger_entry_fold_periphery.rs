@@ -626,19 +626,26 @@ fn tail_after_a_writer<T>(
     let reads = Cell::new(0);
     let mut write = Some(write);
     let mut written = None;
-    let mut asks = 0;
+    let asks = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     common::fixtures::rebuild_clean(
         path,
         true,
         &mut grown_while_the_shadow_folded(log, &reads, || {
             written = write.take().map(|write| write());
         }),
-        &mut |_| {
-            asks += 1;
-            alpha_answer()
-        },
+        common::fixtures::resolving({
+            let asks = std::sync::Arc::clone(&asks);
+            move |_| {
+                asks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                alpha_answer()
+            }
+        }),
     );
-    (written, reads.get(), asks)
+    (
+        written,
+        reads.get(),
+        asks.load(std::sync::atomic::Ordering::SeqCst),
+    )
 }
 
 /// A fresh graph file `in_hand.db` in `dir` and a projector on it, the oracle a rebuilt file is

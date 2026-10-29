@@ -925,23 +925,25 @@ const REBUILD_BATCH: usize = 10_000;
 ///
 /// A ledger entry of perception whose fold asks a batch - one not yet folded, whose payload parses
 /// and whose generation its identity does not already hold - folds with the batch re-extracted for
-/// it (spec 107, `ingest::resolve_entry`) by a re-extraction of the factory the write open installs
-/// ([`Projector::reextraction`]), the factory each catch-up call builds its own from. In the lane
-/// compiled with an extraction the batch is re-extracted from the entry's blob in the repository's
-/// object database, else from the tree's file under THE ONE ROOT of the open's cell
-/// ([`TreeRoot`]), else from no bytes; in the lane compiled without one no source re-extracts a
-/// batch. An entry no source resolves folds nothing and is passed over as resolved to nothing
+/// it (spec 107, `ingest::resolve_entry`) by a re-extraction the rebuild builds for itself from the
+/// factory the write open installs ([`Projector::with_reextraction`]), as each catch-up call builds
+/// its own. In the lane compiled with an extraction the batch is re-extracted from the entry's blob
+/// in the repository's object database, else from the tree's file under THE ONE ROOT of the open's
+/// cell ([`TreeRoot`]), else from no bytes; in the lane compiled without one no source re-extracts
+/// a batch. An entry no source resolves folds nothing and is passed over as resolved to nothing
 /// (spec 124, THE DECIDE STEP). The root is asked of git at the first entry the rebuild's
 /// re-extraction is handed, resolved or not, in either lane. In the lane compiled with an
 /// extraction that first entry also asks whether an object database stands there and, inside a
-/// repository, starts the one batch process ([`entry_blobs`]) the blobs are read through, held
-/// until setup's fold of the file returns; the lane compiled without one asks for no object
-/// database and starts no batch process. A rebuild that meets no entry starts no batch process.
-/// The report that follows a rebuild ([`identities_behind_their_recording`]) reads the tree under
-/// the same root, from the same cell, and is the one to ask git for it when the rebuild handed its
-/// re-extraction no entry and an identity is behind its latest recording: the root is asked for
-/// once, by whichever reader of the cell needs it first - the rebuild's re-extraction, the report
-/// or a catch-up call's re-extraction - and of git by none when none does.
+/// repository, starts the one batch process ([`entry_blobs`]) the blobs are read through, ended as
+/// the rebuild returns - before the report and the catch-up, each call of which starts its own at
+/// the first entry it is handed - so no two batch processes run at once; the lane compiled without
+/// one asks for no object database and starts no batch process. A rebuild that meets no entry
+/// starts no batch process. The report that follows a rebuild
+/// ([`identities_behind_their_recording`]) reads the tree under the same root, from the same cell,
+/// and is the one to ask git for it when the rebuild handed its re-extraction no entry and an
+/// identity is behind its latest recording: the root is asked for once, by whichever reader of the
+/// cell needs it first - the rebuild's re-extraction, the report or a catch-up call's re-extraction
+/// - and of git by none when none does.
 ///
 /// Once an orphaned mark is dropped, and before it reads or writes anything else, it takes the
 /// rebuild lock on `graph.db.lock` ([`Projector::lock_rebuild`]), making that zero-byte file
@@ -976,19 +978,18 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
             live_run_rebuild_refusal,
         )
     };
-    // The one write open of `graph.db` this setup makes, under the rebuild lock: the file it
-    // seeds, rebuilds and catches up, with the catch-up's log and re-extraction installed. The
-    // rebuild re-extracts through a re-extraction of its own from that installed factory, which,
-    // compiled with an extraction, asks git for the object database at the first entry it is
-    // handed, and compiled without one never does. Where the tree is rooted is asked of git once,
-    // from the one cell the open returns, by the first reader to need it: the first entry the
-    // rebuild's re-extraction is handed, resolved or not, or else the report's first identity
-    // behind its latest recording, which reads the tree under the root any entry was handed under,
-    // or else the first entry a catch-up call's re-extraction is handed. A rebuild that meets no
-    // entry and leaves no identity behind asks git for neither.
+    // The one write open of `graph.db` this setup makes, under the rebuild lock: the file it seeds,
+    // rebuilds and catches up, with the catch-up's log and re-extraction installed. The rebuild
+    // re-extracts through a re-extraction it builds for itself from that installed factory and
+    // drops as it returns, which, compiled with an extraction, asks git for the object database at
+    // the first entry it is handed, and compiled without one never does. Where the tree is rooted
+    // is asked of git once, from the one cell the open returns, by the first reader to need it: the
+    // first entry the rebuild's re-extraction is handed, resolved or not, or else the report's
+    // first identity behind its latest recording, which reads the tree under the root any entry was
+    // handed under, or else the first entry a catch-up call's re-extraction is handed. A rebuild
+    // that meets no entry and leaves no identity behind asks git for neither.
     let (graph, root) = open_graph_for_write(held.path(), &project, &selection)?;
     let tree = || root.get();
-    let mut reextract = graph.reextraction();
     match &selection {
         sqlite @ StoreSelection::Sqlite => {
             // A project with no run recorded has no log file: its log is read as the empty one it
@@ -1019,23 +1020,20 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                     },
                     stamp_of: &mut |at| store.recorded_at(at).map_err(graph_error),
                 },
-                RebuildReads {
-                    source: &mut |after, sink| {
-                        store
-                            .read_live_selection(
-                                &prefix,
-                                conductor::STREAM,
-                                &identity,
-                                after,
-                                REBUILD_BATCH,
-                                &mut |events, head| {
-                                    sink(events, head)
-                                        .map_err(|e| rigger::eventstore::Error::Backend(e.0))
-                                },
-                            )
-                            .map_err(graph_error)
-                    },
-                    reextract: &mut *reextract,
+                &mut |after, sink| {
+                    store
+                        .read_live_selection(
+                            &prefix,
+                            conductor::STREAM,
+                            &identity,
+                            after,
+                            REBUILD_BATCH,
+                            &mut |events, head| {
+                                sink(events, head)
+                                    .map_err(|e| rigger::eventstore::Error::Backend(e.0))
+                            },
+                        )
+                        .map_err(graph_error)
                 },
                 &refuse,
             )
@@ -1061,10 +1059,7 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                     live: &mut positions,
                     stamp_of: &mut |_| Ok(None),
                 },
-                RebuildReads {
-                    source: &mut source,
-                    reextract: &mut *reextract,
-                },
+                &mut source,
                 &refuse,
             )
         }
@@ -1077,13 +1072,6 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
 struct SeedingReads<'r, 's> {
     live: &'r mut contextgraph::sqlite::PositionSource<'s>,
     stamp_of: &'r mut contextgraph::sqlite::StampLookup<'s>,
-}
-
-/// The two reads a rebuild of `graph.db` folds through ([`Projector::rebuild`]): the log's live
-/// selection past a position, and the batch re-extracted for a ledger entry of perception.
-struct RebuildReads<'r, 's> {
-    source: &'r mut contextgraph::sqlite::RebuildSource<'s>,
-    reextract: &'r mut contextgraph::sqlite::Reextract<'s>,
 }
 
 /// The live-run refusal a new rebuild of `graph.db` meets: [`refuse_if_live`] over the log it is
@@ -1112,34 +1100,35 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// tail standing or not, or a standing shadow that is not resumable - ask `refuse_if_live` of `log`
 /// and fail with its refusal while the run is live, before any line is printed or the file
 /// rewritten, else hold the step lock its probe took until the rebuild returns; say so naming each
-/// cause, and pay it by rebuilding from `reads`' source, each ledger entry of perception its fold
-/// asks a batch for folded with the batch its re-extraction answers for it, which also pays a
-/// rebuild's own unfinished work with no cause to name, since neither the file's records nor the
-/// seeding names it: a standing shadow, resumed when it is resumable and else refolded from the
-/// start, or a swapped-in cursor's tail, finished - the resume and the tail with no liveness asked,
-/// so beside a live run too; print how far along the rebuild is, what its run-closure prune removed
-/// from the rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own), and, read from
-/// `log` and the rebuilt graph once the rebuild ends, how many identities the next ingest records
-/// again ([`rebuild_report_line`]); then, when the seeding met another writer's write lock
+/// cause, and pay it by rebuilding from `source`, the log's live selection, each ledger entry of
+/// perception its fold asks a batch for folded with the batch the rebuild's own re-extraction
+/// answers for it ([`Projector::rebuild`]), which also pays a rebuild's own unfinished work with no
+/// cause to name, since neither the file's records nor the seeding names it: a standing shadow,
+/// resumed when it is resumable and else refolded from the start, or a swapped-in cursor's tail,
+/// finished - the resume and the tail with no liveness asked, so beside a live run too; print how
+/// far along the rebuild is, what its run-closure prune removed from the rebuilt graph
+/// ([`pruned_line`], as `rigger reset --runs` words its own), and, read from `log` and the rebuilt
+/// graph once the rebuild ends, how many identities the next ingest records again
+/// ([`rebuild_report_line`]); then, when the seeding met another writer's write lock
 /// ([`contextgraph::sqlite::Seeding::Skipped`]), that the catch-up was not started, the next setup
 /// seeding the file (spec 124, CATCH-UP LINES), and otherwise fold the file forward from its cursor
 /// to the log's head ([`catch_up_to_head`]), saying how that ended; then, rebuilt or not, how many
 /// events the file records passed over, by cause, whenever it records any
 /// ([`Projector::passed_over`], spec 124, CATCH-UP LINES); then remove the owed mark an older
 /// binary's lost fold left beside the file once it carries `caught_up`, whether or not the seeding
-/// was contended or the catch-up stopped ([`Projector::forget_cursored_mark`], spec 124, THE
-/// MARK); and report whether it rebuilt. A catch-up that stopped at a failure fails setup with the
-/// line naming where it stopped, whatever the passed-over read or the removal answered - a mark
-/// left standing is no cause, and the next setup's removal retries it; only when the catch-up did
-/// not stop at a failure is a failed passed-over read setup's failure, and after it a mark the
-/// removal cannot remove, naming the mark.
+/// was contended or the catch-up stopped ([`Projector::forget_cursored_mark`], spec 124, THE MARK);
+/// and report whether it rebuilt. A catch-up that stopped at a failure fails setup with the line
+/// naming where it stopped, whatever the passed-over read or the removal answered - a mark left
+/// standing is no cause, and the next setup's removal retries it; only when the catch-up did not
+/// stop at a failure is a failed passed-over read setup's failure, and after it a mark the removal
+/// cannot remove, naming the mark.
 fn pay_owed_rebuild<'t>(
     held: &contextgraph::sqlite::RebuildLock,
     graph: &Projector,
     log: &dyn EventStore,
     tree: &dyn Fn() -> &'t Path,
     seeding: SeedingReads,
-    reads: RebuildReads,
+    source: &mut contextgraph::sqlite::RebuildSource,
     refuse_if_live: &LiveRunRefusal,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let seeded = graph.seed_cursor(
@@ -1167,7 +1156,7 @@ fn pay_owed_rebuild<'t>(
         );
     }
     let mut printed = 0;
-    let rebuilt = graph.rebuild(held, owed, reads.source, reads.reextract, &mut |at| {
+    let rebuilt = graph.rebuild(held, owed, source, &mut |at| {
         if let Some(line) = rebuild_progress_line(at, &mut printed) {
             println!("{line}");
         }
@@ -2070,16 +2059,13 @@ mod tests {
                 live: &mut |sink| sink(&[1]),
                 stamp_of: &mut |_| Ok(None),
             },
-            RebuildReads {
-                source: &mut |_, _| {
-                    racing.push(
-                        acquire_step_lock(dir.path())
-                            .map(drop)
-                            .map_err(|e| e.to_string().contains(STEP_BUSY_TOKEN)),
-                    );
-                    Ok(())
-                },
-                reextract: &mut |_| Ok(None),
+            &mut |_, _| {
+                racing.push(
+                    acquire_step_lock(dir.path())
+                        .map(drop)
+                        .map_err(|e| e.to_string().contains(STEP_BUSY_TOKEN)),
+                );
+                Ok(())
             },
             &|_: &dyn EventStore| Ok(Some(acquire_step_lock(dir.path())?)),
         )

@@ -313,29 +313,37 @@ pub fn ledger_head_read(stream: &str) -> super::CountedRead {
 /// source, so its identity is left behind.
 #[cfg(feature = "symbols")]
 pub fn rebuild_from_the_tree(graph_db: &std::path::Path, log: &[Event], root: &std::path::Path) {
-    rebuild_from_the_log(graph_db, log, 1, &mut |entry| {
-        rigger::ingest::resolve_entry(root, entry, None)
-    });
+    let root = root.to_path_buf();
+    rebuild_from_the_log(
+        graph_db,
+        log,
+        1,
+        super::resolving(move |entry| rigger::ingest::resolve_entry(&root, entry, None)),
+    );
 }
 
 /// A COLD REBUILD OF `log`: rebuild the graph file `graph_db` under the project `test`, owed, from
-/// `log` in batches of at most `batch` events, each one committed transaction, re-extracting with
-/// `reextract` each ledger entry its fold asks a batch for. It insists the rebuild ran.
+/// `log` in batches of at most `batch` events, each one committed transaction, re-extracting each
+/// ledger entry its fold asks a batch for through the re-extraction `reextraction` builds for the
+/// rebuild ([`super::resolving`]). It insists the rebuild ran.
 pub fn rebuild_from_the_log(
     graph_db: &std::path::Path,
     log: &[Event],
     batch: usize,
-    reextract: &mut rigger::contextgraph::sqlite::Reextract,
+    reextraction: impl Fn() -> Box<rigger::contextgraph::sqlite::Reextract<'static>>
+        + Send
+        + Sync
+        + 'static,
 ) {
     use rigger::contextgraph::sqlite::{stream_past, Projector, RebuildSink};
 
     let rebuilt = Projector::open(graph_db.to_str().unwrap(), "test")
         .unwrap()
+        .with_reextraction(reextraction)
         .rebuild(
             &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
             true,
             &mut |after, sink: &mut RebuildSink| stream_past(log, after, batch, sink),
-            reextract,
             &mut |_| {},
         )
         .unwrap();
@@ -350,7 +358,7 @@ pub fn rebuilt_graph_file(
     log: &[Event],
     batch: usize,
 ) -> rigger::contextgraph::sqlite::Projector {
-    rebuild_from_the_log(&dir.join(name), log, batch, &mut |_| Ok(None));
+    rebuild_from_the_log(&dir.join(name), log, batch, super::resolving(|_| Ok(None)));
     super::graph_file_in(dir, name)
 }
 

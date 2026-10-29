@@ -500,12 +500,12 @@ pub fn fold_of(p: &dyn Projection, events: &[Event]) -> rigger::contextgraph::Fo
 /// A REBUILD MEETING A WRITER (spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION): rebuild the
 /// graph file `graph_db` under the project `test` from `source`, owed when `owed` says so, while
 /// `writer` folds `events` through the public fold ([`fold_of`]) between two waits on a barrier
-/// whose other party is the rebuild's first ask of `reextract`, which answers `batch` only once
-/// the writer's fold has returned. A rebuild that ends or panics without asking meets the writer's
-/// two waits itself once it has returned, and a writer whose fold panics still meets the rebuild's
-/// second wait, so either goes red - the panic resumed once both have returned - rather than hangs.
-/// It insists the rebuild ran, pruning nothing ([`clean_rebuild`]), and
-/// asked `reextract` once, and answers what became of the writer's fold.
+/// whose other party is the rebuild's first ask of its re-extraction, which answers `batch` only
+/// once the writer's fold has returned. A rebuild that ends or panics without asking meets the
+/// writer's two waits itself once it has returned, and a writer whose fold panics still meets the
+/// rebuild's second wait, so either goes red - the panic resumed once both have returned - rather
+/// than hangs. It insists the rebuild ran, pruning nothing ([`clean_rebuild`]), and asked its
+/// re-extraction once, and answers what became of the writer's fold.
 pub fn rebuild_meeting_a_writer(
     graph_db: &str,
     owed: bool,
@@ -516,8 +516,11 @@ pub fn rebuild_meeting_a_writer(
 ) -> rigger::contextgraph::Fold {
     use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 
-    let barrier = std::sync::Barrier::new(2);
-    let mut asked = 0;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    let barrier = Arc::new(Barrier::new(2));
+    let asked = Arc::new(AtomicUsize::new(0));
     let (written, rebuilt) = std::thread::scope(|s| {
         let folding = s.spawn(|| {
             barrier.wait();
@@ -526,16 +529,22 @@ pub fn rebuild_meeting_a_writer(
             written
         });
         let rebuilt = catch_unwind(AssertUnwindSafe(|| {
-            rebuild_answer(graph_db, owed, source, &mut |_| {
-                asked += 1;
-                if asked == 1 {
-                    barrier.wait();
-                    barrier.wait();
-                }
-                Ok(Some(batch.to_vec()))
-            })
+            let (barrier, asked, batch) =
+                (Arc::clone(&barrier), Arc::clone(&asked), batch.to_vec());
+            rebuild_answer(
+                graph_db,
+                owed,
+                source,
+                resolving(move |_| {
+                    if asked.fetch_add(1, Ordering::SeqCst) == 0 {
+                        barrier.wait();
+                        barrier.wait();
+                    }
+                    Ok(Some(batch.clone()))
+                }),
+            )
         }));
-        if asked == 0 {
+        if asked.load(Ordering::SeqCst) == 0 {
             barrier.wait();
             barrier.wait();
         }
@@ -546,7 +555,11 @@ pub fn rebuild_meeting_a_writer(
         rebuilt.unwrap_or_else(|panic| resume_unwind(panic)),
     );
     assert_eq!(rebuilt, clean_rebuild());
-    assert_eq!(asked, 1, "the rebuild asks the entry's batch once");
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "the rebuild asks the entry's batch once"
+    );
     written
 }
 
@@ -555,22 +568,40 @@ pub fn clean_rebuild() -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, 
     Ok(Some(rigger::contextgraph::sqlite::Rebuilt::default()))
 }
 
+/// The factory a test installs as a projector's re-extraction ([`Projector::with_reextraction`]):
+/// each re-extraction a rebuild or catch-up call builds from it is a fresh copy of `answer`, so
+/// state `answer` shares - a counter, a log of what it was asked - is shared through what it
+/// captures.
+pub fn resolving(
+    answer: impl FnMut(&Event) -> Result<Option<Vec<Event>>, rigger::contextgraph::Error>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+) -> impl Fn() -> Box<rigger::contextgraph::sqlite::Reextract<'static>> + Send + Sync + 'static {
+    move || Box::new(answer.clone())
+}
+
 /// Rebuild the graph file `graph_db` under the project `test` from `source`, owed when `owed` says
-/// so, re-extracting with `reextract` each ledger entry its fold asks a batch for and reporting no
-/// progress, and answer what the rebuild did, its error as text.
+/// so, re-extracting each ledger entry its fold asks a batch for through the re-extraction
+/// `reextraction` builds for the rebuild ([`resolving`]) and reporting no progress, and answer
+/// what the rebuild did, its error as text.
 pub fn rebuild_answer(
     graph_db: &str,
     owed: bool,
     source: &mut rigger::contextgraph::sqlite::RebuildSource,
-    reextract: &mut rigger::contextgraph::sqlite::Reextract,
+    reextraction: impl Fn() -> Box<rigger::contextgraph::sqlite::Reextract<'static>>
+        + Send
+        + Sync
+        + 'static,
 ) -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, String> {
     Projector::open(graph_db, "test")
         .unwrap()
+        .with_reextraction(reextraction)
         .rebuild(
             &Projector::lock_rebuild(graph_db).unwrap(),
             owed,
             source,
-            reextract,
             &mut |_| {},
         )
         .map_err(|e| e.0)
@@ -582,10 +613,13 @@ pub fn rebuild_clean(
     graph_db: &str,
     owed: bool,
     source: &mut rigger::contextgraph::sqlite::RebuildSource,
-    reextract: &mut rigger::contextgraph::sqlite::Reextract,
+    reextraction: impl Fn() -> Box<rigger::contextgraph::sqlite::Reextract<'static>>
+        + Send
+        + Sync
+        + 'static,
 ) {
     assert_eq!(
-        rebuild_answer(graph_db, owed, source, reextract),
+        rebuild_answer(graph_db, owed, source, reextraction),
         clean_rebuild()
     );
 }

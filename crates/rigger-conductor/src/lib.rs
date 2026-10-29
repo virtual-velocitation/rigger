@@ -181,7 +181,7 @@ use {
     event_fixtures::CountedRead,
     extraction_tree_fixtures::WALKED,
     fold_fixtures::{
-        decision_json, event_of, folds, generation_ingested, graph_file_in, placed_at,
+        decision_json, event_of, folds, generation_ingested, graph_file_in, placed_at, resolving,
     },
 };
 // The git fixture the ledger fixtures' default-lane walk names through `super::`.
