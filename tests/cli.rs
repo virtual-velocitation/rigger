@@ -8306,8 +8306,8 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
     // implementer's own `mod tests` in src/conductor.rs), which can never observe whether
     // `cmd_step` truly wires `RunState::attention` onto the printed `Step`. `max_retries: 1`
     // means this unit's first failure IS its escalation, so `reject-recurrence` (which
-    // needs a SECOND failure) does not also fire here - this step isolates the `escalated`
-    // signal cleanly at the process boundary.
+    // needs a still-remediating unit at the diagnose threshold) does not also fire here -
+    // this step isolates the `escalated` signal cleanly at the process boundary.
     assert!(
         line.contains(r#""attention":[{"kind":"escalated","unit":"solo","detail":"#),
         "an escalated fixpoint must stamp an attention entry naming the escalated unit, on \

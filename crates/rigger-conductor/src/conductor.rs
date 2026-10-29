@@ -31958,25 +31958,18 @@ mod tests {
         /// Spec 69, criterion 5, signal 1 (unit ESCALATED): the step during which a unit exhausts
         /// remediation and goes terminal without integrating must surface it on the wire, naming
         /// the unit - not just fold it into `units[..].status`, which an orchestrator would have to
-        /// poll every unit to notice. The default remediation bound (MAX_RETRIES=3) means the
-        /// escalating attempt is ALSO the unit's third failure - a recurrence - so both entries
-        /// fire together; that co-occurrence is correct, not a double-report of the same signal.
+        /// poll every unit to notice. The default remediation bound (MAX_RETRIES=3) makes the
+        /// escalating attempt the unit's third failure, the reject-recurrence diagnose threshold
+        /// too, yet the unit is no longer remediating, so the escalation is its one entry.
         a_newly_escalated_unit_stamps_an_attention_entry: assert_attention(
             failing_gate_run(),
-            vec![
-                ledger::AttentionEntry::unit_scoped(
-                    ledger::ATTENTION_ESCALATED,
-                    "s",
-                    "escalated after exhausting remediation",
-                ),
-                ledger::AttentionEntry::unit_scoped(
-                    ledger::ATTENTION_REJECT_RECURRENCE,
-                    "s",
-                    "3 attempts",
-                ),
-            ],
-            "an escalated unit must stamp an `escalated` entry naming it, in deterministic \
-             kind order ahead of the co-occurring recurrence",
+            vec![ledger::AttentionEntry::unit_scoped(
+                ledger::ATTENTION_ESCALATED,
+                "s",
+                "escalated after exhausting remediation",
+            )],
+            "an escalated unit must stamp one `escalated` entry naming it, and no \
+             reject-recurrence entry for the attempt that ended its remediation",
         );
         /// Spec 69, criterion 5, signal 2 (run HALTED with reason): mirrors `budget_halt` exactly
         /// (same reason string), but on the generic `attention` channel a driver can render
@@ -32290,45 +32283,35 @@ mod tests {
     }
 
     #[test]
-    fn a_second_failure_recurs_and_a_third_also_stalls_the_frontier() {
-        // Spec 69, criterion 5, signals 3 (a worker's death RECURRED) and 5 (STALLED
-        // FRONTIER - a parked spawn already carrying more than two recorded results):
-        // driven over the stepwise/replay driver across several real `rigger step`-shaped
-        // calls, since "still parked" is a property of the wave a step process prints,
-        // not of the blocking Stub driver's single synchronous call.
+    fn a_third_failure_recurs_and_stalls_the_frontier() {
+        // Spec 69, criterion 5, signals 3 (REJECT RECURRENCE - a still-remediating unit's
+        // failed attempts reached the diagnose threshold) and 5 (STALLED FRONTIER - a parked
+        // spawn already carrying more than two recorded results): driven over the
+        // stepwise/replay driver across several real `rigger step`-shaped calls, since "still
+        // parked" is a property of the wave a step process prints, not of the blocking Stub
+        // driver's single synchronous call.
         //
         // max_retries=5 (> 3) so the unit is STILL retrying (not yet escalated) once its
-        // attempt count passes the stalled-frontier threshold of 2 - the scenario the
-        // signal exists to catch.
+        // attempt count reaches both thresholds - the scenario the signals exist to catch.
         let (cfg, st) = parked_unit_u(5);
 
-        // Attempt 0 fails: the FIRST failure is not a recurrence.
-        fail_attempt(&st, "u", 0);
-        let rs = replay_step(&cfg, &st);
-        assert_eq!(rs.units["u"].attempts, 1);
-        assert!(
-            rs.attention.is_empty(),
-            "a unit's FIRST failure is not a recurrence and must stamp nothing, got {:?}",
-            rs.attention
-        );
+        // Attempts 0 and 1 fail: below the diagnose threshold the loop is remediating on its
+        // own, so neither failure stamps anything.
+        for attempt in 0..2 {
+            fail_attempt(&st, "u", attempt);
+            let rs = replay_step(&cfg, &st);
+            assert_eq!(rs.units["u"].attempts, attempt + 1);
+            assert!(
+                rs.attention.is_empty(),
+                "failure {} is below the diagnose threshold and must stamp nothing, got {:?}",
+                attempt + 1,
+                rs.attention
+            );
+        }
 
-        // Attempt 1 fails: the SECOND failure - a recurrence.
-        fail_attempt(&st, "u", 1);
-        let rs = replay_step(&cfg, &st);
-        assert_eq!(rs.units["u"].attempts, 2);
-        assert_eq!(
-            rs.attention,
-            vec![ledger::AttentionEntry::unit_scoped(
-                ledger::ATTENTION_REJECT_RECURRENCE,
-                "u",
-                "2 attempts",
-            )],
-            "a unit's SECOND failure must stamp exactly one reject-recurrence entry"
-        );
-
-        // Attempt 2 fails: the THIRD failure - another recurrence, AND now the unit
-        // already carries more than two recorded (failed) results while a fresh attempt
-        // (#3) is still parked awaiting an answer: the stalled-frontier signal.
+        // Attempt 2 fails: the THIRD failure reaches the diagnose threshold, AND the unit
+        // now carries more than two recorded (failed) results while a fresh attempt (#3) is
+        // still parked awaiting an answer: the stalled-frontier signal.
         fail_attempt(&st, "u", 2);
         let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].attempts, 3);
@@ -32363,6 +32346,109 @@ mod tests {
             "a step that folds no new result must not re-stamp a crossing this run already \
              surfaced, got {:?}",
             rs.attention
+        );
+    }
+
+    /// The count signal 3 fires at, the one the dock and `rigger watch` read.
+    const DIAGNOSE_THRESHOLD: u32 = crate::blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD;
+
+    /// The attention [`compute_attention`] stamps over a call that moved the run from the
+    /// folded `prior` log to the folded `after` log, with no budget and nothing parked, so only
+    /// signals 1 (escalated) and 3 (reject-recurrence) can fire.
+    fn attention_across(prior: &[Event], after: &[Event]) -> Vec<ledger::AttentionEntry> {
+        compute_attention(
+            &ledger::project(prior).unwrap(),
+            &ledger::project(after).unwrap(),
+            0,
+            0,
+            0,
+            false,
+            &BTreeSet::new(),
+        )
+    }
+
+    /// Unit `u`'s log: started, failed with `attempts` recorded, then `tail`.
+    fn u_failed_at(attempts: u32, tail: &[Event]) -> Vec<Event> {
+        let mut events = vec![
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(&json!({"id": "u"})).unwrap(),
+            ),
+            plain_failure("u", attempts),
+        ];
+        events.extend_from_slice(tail);
+        events
+    }
+
+    /// `u`'s escalation, then an operator's grant of two more attempts.
+    fn u_escalated_and_resumed() -> [Event; 2] {
+        [
+            unit_event(ledger::TYPE_UNIT_ESCALATED, "u", ("reason", "")),
+            Event::new(
+                ledger::TYPE_UNIT_RESUMED,
+                serde_json::to_vec(&json!({"unit": "u", "attempts_granted": 2, "by": "operator"}))
+                    .unwrap(),
+            ),
+        ]
+    }
+
+    crate::test_cases! {
+        /// Signal 3 stays silent on the failure just below the reject-recurrence diagnose
+        /// threshold: the loop is still remediating on its own.
+        reject_recurrence_stamps_nothing_just_below_the_diagnose_threshold: assert_eq!(
+            attention_across(
+                &u_failed_at(DIAGNOSE_THRESHOLD - 2, &[]),
+                &u_failed_at(DIAGNOSE_THRESHOLD - 1, &[]),
+            ),
+            Vec::new()
+        );
+        /// The failure that reaches the threshold stamps exactly one entry, the count the dock
+        /// and `rigger watch` alert on.
+        reject_recurrence_stamps_one_entry_at_the_diagnose_threshold: assert_eq!(
+            attention_across(
+                &u_failed_at(DIAGNOSE_THRESHOLD - 1, &[]),
+                &u_failed_at(DIAGNOSE_THRESHOLD, &[]),
+            ),
+            vec![ledger::AttentionEntry::unit_scoped(
+                ledger::ATTENTION_REJECT_RECURRENCE,
+                "u",
+                format!("{} attempts", DIAGNOSE_THRESHOLD),
+            )]
+        );
+        /// A failure at the threshold that also escalates the unit ends its remediation, so the
+        /// escalation is the call's one entry.
+        reject_recurrence_stamps_nothing_on_the_failure_that_escalates: assert_eq!(
+            attention_across(
+                &u_failed_at(DIAGNOSE_THRESHOLD - 1, &[]),
+                &u_failed_at(
+                    DIAGNOSE_THRESHOLD,
+                    &[unit_event(ledger::TYPE_UNIT_ESCALATED, "u", ("reason", ""))],
+                ),
+            ),
+            vec![ledger::AttentionEntry::unit_scoped(
+                ledger::ATTENTION_ESCALATED,
+                "u",
+                "escalated after exhausting remediation",
+            )]
+        );
+        /// A unit an operator resumed past the threshold has had its look, so its next failure
+        /// inside the grant stamps nothing, as the dock lists nothing for it.
+        reject_recurrence_stamps_nothing_on_a_resumed_units_next_failure: assert_eq!(
+            attention_across(
+                &u_failed_at(
+                    DIAGNOSE_THRESHOLD,
+                    &u_escalated_and_resumed(),
+                ),
+                &u_failed_at(
+                    DIAGNOSE_THRESHOLD,
+                    &[
+                        u_escalated_and_resumed().to_vec(),
+                        vec![plain_failure("u", DIAGNOSE_THRESHOLD + 1)],
+                    ]
+                    .concat(),
+                ),
+            ),
+            Vec::new()
         );
     }
 
@@ -47382,16 +47468,9 @@ mod tests {
                 .iter()
                 .map(|a| (a.kind, a.unit.as_str(), a.detail.clone()))
                 .collect::<Vec<_>>(),
-            vec![
-                (ledger::ATTENTION_SPEC_DEFECT, "plan-critique", stop_halt()),
-                (
-                    ledger::ATTENTION_REJECT_RECURRENCE,
-                    "plan-critique",
-                    "2 attempts".to_string()
-                ),
-            ],
+            vec![(ledger::ATTENTION_SPEC_DEFECT, "plan-critique", stop_halt())],
             "the stop's attention entry is its own kind carrying the halt, in place of the \
-             gate's escalation entry, and never a halted entry"
+             gate's escalation entry, and never a halted or reject-recurrence entry"
         );
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(

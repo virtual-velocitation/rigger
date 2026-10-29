@@ -271,13 +271,11 @@ fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step(
             Vec::new(),
             Some(halt().as_str()),
             json!(["plan-critique"]),
-            vec![
-                ("spec-defect", "plan-critique"),
-                ("reject-recurrence", "plan-critique"),
-            ],
+            vec![("spec-defect", "plan-critique")],
         ),
         "the step parks nothing, halts with the amend route and names the gate escalated; its \
-         attention is the stop's own kind in place of the gate's escalation, never a halted entry"
+         attention is the stop's own kind in place of the gate's escalation, never a halted or \
+         reject-recurrence entry"
     );
     let events = read_run_events(root);
     assert_eq!(
