@@ -97,10 +97,10 @@ A finding blocks the change only when it is one of three classes: (a) wrong code
 the wrong thing or breaks something; (b) a Done-when criterion the change leaves unmet; (c) a
 missing test for a behaviour a Done-when criterion names. Every other finding - docs wording,
 naming, a fact with two homes, test shape, comment density, a record, a principle bent without
-breaking anything - is a note: raise it with its location; it is recorded for the operator and
-never fails the unit. A blocking finding names its class and, for (b) or (c), the criterion it
-reads; a verdict whose findings are all notes is an approval, and a rejection requires only its
-blocking findings.
+breaking anything - is a note: raise it with its location; it never fails the unit, and the run's
+check-in stage fixes the run's notes once, before the PR. A blocking finding names its class and,
+for (b) or (c), the criterion it reads; a verdict whose findings are all notes is an approval, and
+a rejection requires only its blocking findings.
 
 ## Fan out the mechanical work
 
