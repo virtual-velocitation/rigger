@@ -99,7 +99,7 @@ use common::repo::repo_root;
 #[path = "common/source_audit.rs"]
 mod source_audit;
 use source_audit::{
-    char_literal_len, close_of, imported_names, is_definition_site, is_ident_char,
+    char_literal_len, close_of, imported_names, is_definition_site, is_ident_char, is_keyword,
     qualifier_before, ref_punct, ref_token, skip_string_literal, tokenize, RawKind, RawTok,
 };
 
@@ -6502,7 +6502,10 @@ fn build_dead_code_candidates(
         .map(|fsc| {
             (
                 fsc.rel.as_str(),
-                imported_names(&fsc.tokens).into_iter().collect(),
+                imported_names(&fsc.tokens)
+                    .into_iter()
+                    .filter(|(_, owner)| !is_keyword(owner))
+                    .collect(),
             )
         })
         .collect();
@@ -6567,7 +6570,9 @@ fn build_dead_code_candidates(
         // order: (1) a `::`-qualified call site whose qualifier textually matches this
         // definition's own (a type name for `ImplAssoc`, a module name for `Free`); (2) a bare
         // call resolved through the REFERENCING file's own `use` import of it, a path
-        // `use module::name;` or a member of a `module::{..}` group ([`imported_names`]); (3) for
+        // `use module::name;` or a member of a `module::{..}` group ([`imported_names`]), where an
+        // import owned by a keyword such as `crate`, `self` or `super` names no module this
+        // comparison reads and so resolves nothing, as if the file had no such import; (3) for
         // `Free` only, a bare call sitting in the SAME FILE as this definition - Rust's own
         // lexical scoping resolves an unqualified sibling call with no `use` needed at all (the
         // extremely common case: two files each defining and bare-calling their own same-named
