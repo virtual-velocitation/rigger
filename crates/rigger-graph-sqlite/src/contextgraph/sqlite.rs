@@ -1071,10 +1071,8 @@ impl Projector {
     /// opening the log, and the [`owed_mark`] an older binary's lost fold left beside it is none. A
     /// projector handed no log answers [`CatchUp::AtHead`]. Otherwise the call reads one page of
     /// the log past the cursor - the first [`FOLD_BATCH`] events of the project's own log as it is
-    /// handed, or every one there is when fewer are, and on to the last event of the position the
-    /// last of them shares, since a page never splits one position
-    /// ([`EventStore::read_all_page`]) - with no lock of the file held: a page without an event is
-    /// [`CatchUp::AtHead`]. The page's events of the project's run stream are its positions to
+    /// handed, or every one there is when fewer are ([`EventStore::read_all_page`]) - with no lock
+    /// of the file held: a page without an event is [`CatchUp::AtHead`]. The page's events of the project's run stream are its positions to
     /// decide; its first transaction cut ([`fold_transactions`]) - one ledger entry alone, or a run
     /// of other events - is decided and folded by THE DECIDE STEP ([`decide_step`]), the step a
     /// rebuild's fold pass shares, each entry its fold asks a batch for, one not yet folded whose
@@ -2826,9 +2824,8 @@ fn applied_between(conn: &Connection, after: Position, through: Position) -> Res
 
 /// The most events other than ledger entries of perception that one transaction of a fold pass
 /// ([`fold_source`]) folds before it commits (spec 122, ONE BATCHING RULE): a writer meeting the
-/// pass waits at most this many events' fold, or one entry's alone. It is also the count of events
-/// one [`Projector::catch_up`] call asks of the log for its page, which extends past it to the
-/// last event of the position the page's last event shares ([`EventStore::read_all_page`]).
+/// pass waits at most this many events' fold, or one entry's alone. It is also the most events one
+/// [`Projector::catch_up`] call reads of the log for its page ([`EventStore::read_all_page`]).
 pub const FOLD_BATCH: usize = 256;
 
 /// The transactions a fold pass ([`fold_source`]) folds `events` in, in order: every ledger entry

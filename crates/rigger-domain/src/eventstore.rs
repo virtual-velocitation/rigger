@@ -16,17 +16,14 @@ use thiserror::Error;
 /// checkpoint it, never decompose it.
 ///
 /// SQLite assigns it directly as the 1-based row position, one per event. KurrentDB's
-/// native `$all` position is a `(commit, prepare)` pair; the adapter exposes the
-/// **commit position** as this `Position` and reconstructs the pair as
-/// `(commit, commit)` when resuming a read or subscription, which KurrentDB orders and
-/// seeks `$all` by. A single-event append's commit and prepare positions coincide, so its
-/// position names that one event. The events of one multi-event append (a batched fold's,
-/// the conductor's `append_and_fold_batch`) share that append's commit, so on KurrentDB
-/// they share one `Position`, told apart only by the prepare half this type does not
-/// carry. A read or subscription resumed from a position is exclusive of every event at
-/// it, so a resume from a shared position lands past all of that append's events - the
-/// logical location after the append - and a page of the log never splits the events of
-/// one position ([`EventStore::read_all_page`]).
+/// native `$all` position is a `(commit, prepare)` pair, and the server issues each event
+/// an append writes - a multi-event append's (a batched fold's, the conductor's
+/// `append_and_fold_batch`) included - a commit position of its own, equal to its prepare
+/// position. The adapter exposes the **commit position** as this `Position` and
+/// reconstructs the pair as `(commit, commit)` when resuming a read or subscription,
+/// which KurrentDB orders and seeks `$all` by. So on both backends each event an append
+/// writes carries its own position, and a read or subscription resumed from a position is
+/// exclusive of the one event at it.
 pub type Position = u64;
 
 /// Revision is an event's place within its own stream: 0-based, so the first event
@@ -737,11 +734,9 @@ pub trait EventStore: Send + Sync {
 
     /// Read one page of the global log forward from a global position (**exclusive**), filtered:
     /// the events [`read_all`](EventStore::read_all) reads forward from `from`, up to `max` of
-    /// them and no further, except that a page never splits the events that share one
-    /// [`Position`] - a page whose `max`-th event shares its position with the next ends with
-    /// every event of that position - so a read resumed from the page's last position misses
-    /// none of them. A `max` of 0 reads nothing. A backend reads no further than the record that
-    /// ends the page, so a read past a long run of events reads one page and never the run.
+    /// them and no further. A `max` of 0 reads nothing. A backend reads no further than the
+    /// record that ends the page, so a read past a long run of events reads one page and never
+    /// the run.
     fn read_all_page(
         &self,
         from: Position,

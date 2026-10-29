@@ -443,10 +443,9 @@ fn first_match<X, T>(
 
 /// THE PAGE over a forward `$all` pull that starts at `from` (the server's start is inclusive),
 /// each record as its commit position and the event it delivers, if any: the delivered events of
-/// the records [`past`] `from`, up to `max` of them and on to the last event of the `max`-th one's
-/// commit, so a page never splits the events one append committed together. The pull stops at
-/// the record that ends the page, the one record it reads past it. A failed pull ends the page in
-/// an error naming the read, never a short page.
+/// the records [`past`] `from`, up to `max` of them. The pull stops at the record that ends the
+/// page, the one record it reads past it. A failed pull ends the page in an error naming the
+/// read, never a short page.
 fn page_of(
     records: impl IntoIterator<Item = Result<(Position, Option<Event>), kurrentdb::Error>>,
     from: Position,
@@ -459,7 +458,7 @@ fn page_of(
         if !past(from, commit) {
             continue;
         }
-        if page.len() >= max && page.last().is_none_or(|last| last.position != commit) {
+        if page.len() >= max {
             break;
         }
         page.extend(event);
