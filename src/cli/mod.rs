@@ -5343,6 +5343,35 @@ mod tests {
     use crate::test_support::CwdGuard;
     use std::process::Command;
 
+    /// The hash bound to no tree - an empty root, as a replay's run is handed - fails naming why
+    /// when asked, and writes nothing into the repository of the working directory, which a
+    /// `git -C ""` would operate on.
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn the_hash_bound_to_no_tree_fails_naming_why_and_writes_into_no_repository() {
+        let _restore = CwdGuard(std::env::current_dir().unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        git_init_quiet(dir.path());
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let hashed = hash_blob_in("")(b"bytes no tree holds\n").map_err(|e| e.0);
+
+        assert_eq!(
+            (
+                hashed,
+                crate::test_support::git_out(dir.path(), &["count-objects"])
+            ),
+            (
+                Err(
+                    "no tree to hash under: a binding handed no root, as a replay's run is, \
+                     hashes no blob"
+                        .to_string()
+                ),
+                "0 objects, 0 kilobytes".to_string()
+            )
+        );
+    }
+
     /// Spec 101: the note a read-only surface prints names `rigger setup` exactly when `graph.db`
     /// owes its rebuild - never for a current file, and never by creating an absent one.
     #[test]
