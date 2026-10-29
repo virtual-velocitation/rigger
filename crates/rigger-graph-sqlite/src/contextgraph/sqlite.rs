@@ -14143,7 +14143,7 @@ mod tests {
             "id": id, "by": by, "summary": "x", "about": about,
         });
         let mut e = Event::new(TYPE_REVIEW_FINDING, serde_json::to_vec(&payload).unwrap())
-            .with_meta(crate::conductor::META_SPAWN, spawn);
+            .with_meta(crate::spawn::META_SPAWN, spawn);
         e.position = pos;
         crate::test_support::folds(p, std::slice::from_ref(&e));
     }

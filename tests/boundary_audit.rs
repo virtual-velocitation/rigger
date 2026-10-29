@@ -516,12 +516,6 @@ const DEFERRED_ADAPTER_ITEMS: &[(&str, &str, &str)] = &[];
 const ADAPTER_VIOLATIONS: &[(&str, &str, &str, &str)] = &[
     (
         "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "apply_review_finding",
-        "the conductor's META_SPAWN meta key, through a dev-dependency on the root crate",
-        "lesson-split-graph-sqlite-test-meta-spawn",
-    ),
-    (
-        "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "a_blast_radius_computed_event_folds_to_nothing_idempotently",
         "metrics' TYPE_BLAST_RADIUS_COMPUTED, named through the conductor, through a \
          dev-dependency on the root crate",
