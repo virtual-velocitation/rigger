@@ -3946,11 +3946,12 @@ mod tests {
         );
     }
 
-    /// Spec 120's THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: the working-discipline body,
-    /// read through the shipped-text helper, holds the three review sentences the reviewer
-    /// discipline no longer carries, in order, as the whole of its `## When you review` section,
-    /// which sits after the hand-over section and before the fan-out one, and the fan-out
-    /// section's `verify` bullet no longer restates the battery rule.
+    /// Spec 120's THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT, with the review rule: the
+    /// working-discipline body, read through the shipped-text helper, holds the three review
+    /// sentences the reviewer discipline no longer carries and the three sentences of the review
+    /// rule, in order, as the whole of its `## When you review` section, which sits after the
+    /// hand-over section and before the fan-out one, and the fan-out section's `verify` bullet no
+    /// longer restates the battery rule.
     #[test]
     fn the_working_discipline_body_holds_the_review_method_under_when_you_review() {
         let body = every_shipped_agent_text()
@@ -3964,8 +3965,8 @@ mod tests {
             WHEN_YOU_REVIEW.join(" ")
         );
         let review = words.find(&section).expect(
-            "`## When you review` holds the three review sentences, in order, and nothing else, \
-             right before the fan-out section",
+            "`## When you review` holds the review method and the review rule, in order, and \
+             nothing else, right before the fan-out section",
         );
         assert_eq!(
             (

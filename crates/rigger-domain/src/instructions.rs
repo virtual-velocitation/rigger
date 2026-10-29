@@ -30,7 +30,9 @@ pub struct Instruction {
 /// BDD where relevant. The second is the working discipline every agent follows: one pass by
 /// excellence, a turn's end being the session's end (every job waited on inside the turn), the
 /// hand-over an author's tree meets before it reports (each outcome with the
-/// check that proves it), and fanning mechanical work out to the `lookup` and `verify` helpers.
+/// check that proves it), the review method with the rule that only wrong code, an unmet
+/// Done-when criterion or a missing test for a behaviour one names blocks, every other finding
+/// a note, and fanning mechanical work out to the `lookup` and `verify` helpers.
 /// The third is the communication discipline: each decision and finding recorded the moment it
 /// is made, peers checked between actions, a peer's decision superseded explicitly.
 /// A harness-wide rule lives here once,

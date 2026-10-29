@@ -1776,7 +1776,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/canary_model_drift_periphery.rs:113-115` `prose_claiming`
 - `tests/common/fixtures/fold.rs:399-401` `lock_held_past`
 - `tests/common/fixtures/fold.rs:406-408` `catch_up_short_after`
-- `tests/common/fixtures/instructions.rs:81-83` `builtin_instruction_source`
+- `tests/common/fixtures/instructions.rs:92-94` `builtin_instruction_source`
 - `tests/halted_spawn_wip_recovery_periphery.rs:128-130` `unit_branch`
 - `tests/native_driver_pipelining_behavior.rs:597-599` `worker_prompts_harness`
 - `tests/regate_landed_on_resume_periphery.rs:76-78` `unit_branch`
@@ -2003,7 +2003,7 @@ mandatory sweep: Command::new call sites - 92 site(s), collected mechanically re
 - `src/cli/run.rs:3421-3421` `Command::new`
 - `src/cli/setup.rs:3750-3750` `Command::new`
 - `src/cli/setup.rs:3779-3779` `Command::new`
-- `src/cli/setup.rs:4603-4603` `Command::new`
+- `src/cli/setup.rs:4604-4604` `Command::new`
 - `src/cli/validate.rs:1456-1456` `Command::new`
 - `src/cli/validate.rs:1735-1735` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2173,7 +2173,7 @@ mandatory sweep: .rigger-path string literals - 600 site(s), collected mechanica
              walk of the whole tree.\n"`
 - `crates/rigger-domain/src/docs.rs:1674-1674` `"the partition holding .rigger/ needs about the compacted size of the log \
                      free"`
-- `crates/rigger-domain/src/instructions.rs:153-153` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
+- `crates/rigger-domain/src/instructions.rs:155-155` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
 - `crates/rigger-gates-shell/src/gate.rs:336-336` `".rigger-cache-probe-{}"`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8803-8803` `"local:/p/.rigger/events.db"`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:8806-8806` `"local:/q/.rigger/events.db"`
@@ -2456,19 +2456,19 @@ __END__
 - `src/cli/setup.rs:3417-3417` `".rigger/agents/newcomer.md"`
 - `src/cli/setup.rs:3495-3495` `".rigger/workflow.yml"`
 - `src/cli/setup.rs:3725-3725` `".rigger"`
-- `src/cli/setup.rs:4003-4003` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:4207-4207` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:4209-4209` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:4210-4210` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:4211-4211` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:4231-4231` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:4234-4234` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:4246-4246` `"The count and the caller lookup run once per item of the walk's hunk list - every \
+- `src/cli/setup.rs:4004-4004` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:4208-4208` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:4210-4210` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:4211-4211` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:4212-4212` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:4232-4232` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:4235-4235` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:4247-4247` `"The count and the caller lookup run once per item of the walk's hunk list - every \
              item the hunks touch, new or pre-existing, its body or its doc changed - each \
              item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
              xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name."`
-- `src/cli/setup.rs:4316-4316` `"`sh .rigger/gates/lanes.sh <lane>`"`
-- `src/cli/setup.rs:4727-4727` `"You find the sentences with the generators above, the count `git ls-files src \
+- `src/cli/setup.rs:4317-4317` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:4728-4728` `"You find the sentences with the generators above, the count `git ls-files src \
              crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
              { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
              change, and the rule-spelling searches"`
@@ -3844,7 +3844,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/instructions.rs:178-183` `op`
+- `crates/rigger-domain/src/instructions.rs:180-185` `op`
 - `crates/rigger-gates-shell/src/gate.rs:1688-1693` `unavailable`
 
 #### `dup-557d6899b868` (exact, 2 sites)
