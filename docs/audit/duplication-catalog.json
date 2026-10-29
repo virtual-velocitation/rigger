@@ -8050,7 +8050,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-751f1b83af79",
+    "id": "dup-9418a9e1c36a",
     "classification": "near",
     "sites": [
       {
@@ -8062,14 +8062,9 @@
         "file": "tests/cli.rs",
         "name": "step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less",
         "content_hash": "eed3d55535d62241"
-      },
-      {
-        "file": "tests/step_attention_periphery.rs",
-        "name": "recurrence_and_stalled_frontier_survive_real_process_boundaries",
-        "content_hash": "f2137133a2af6105"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/cli.rs, tests/step_attention_periphery.rs)",
+    "proposed_home": "cli::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

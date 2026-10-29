@@ -755,9 +755,9 @@
     "reason": "CLI tests that each drive a different command through the shared project fixtures and run_rigger and assert a different outcome; they share only the arrange-run-assert idiom."
   },
   {
-    "id": "dup-751f1b83af79",
+    "id": "dup-9418a9e1c36a",
     "disposition": "not-a-duplicate",
-    "reason": "Multi-step scenario tests over different workflows (budget halt, hung unbounded spawn, recurrence and stalled frontier) through the shared step_line fixture; each asserts a different attention sequence."
+    "reason": "Multi-step scenario tests over different workflows (budget halt, hung unbounded spawn) through the shared step_line fixture; each asserts a different attention sequence."
   },
   {
     "id": "dup-ea8a80f3da16",
