@@ -36,7 +36,7 @@ mod source_audit;
 use source_audit::{
     assert_real_tree_clean, cfg_test_ranges, close_of, enclosing_fn_line, fn_sig_lines,
     gate_name_in, holds_whole_word, in_ranges, is_definition_site, qualifier_before, ref_punct,
-    tokenize, write_file, Finding, RawKind, RawTok, GATE_WORD,
+    ref_token, tokenize, write_file, Finding, RawKind, RawTok, GATE_WORD,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -869,7 +869,7 @@ fn imports_run_stream(toks: &[RawTok]) -> bool {
     let mut owners: Option<Vec<String>> = None;
     for (at, tok) in toks.iter().enumerate() {
         let Some(groups) = owners.as_mut() else {
-            if tok.kind == RawKind::Keyword && tok.text == "use" {
+            if ref_token(Some(tok), RawKind::Keyword, "use") {
                 owners = Some(Vec::new());
             }
             continue;

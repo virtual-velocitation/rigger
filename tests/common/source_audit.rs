@@ -6,8 +6,8 @@
 //! and which function encloses a line. And the one Rust lexer, [`tokenize`], that
 //! `tests/simplification_audit.rs` scans by, rule 4 of `tests/boundary_audit.rs` finds string
 //! literals with and its appender audit finds calls with, and the token readers those two suites
-//! share over its tokens ([`ref_punct`], [`qualifier_before`], [`is_definition_site`],
-//! [`close_of`]). Each
+//! share over its tokens ([`ref_punct`], [`ref_token`], [`qualifier_before`],
+//! [`is_definition_site`], [`close_of`]). Each
 //! suite uses the subset it needs (hence the module-wide `dead_code` allowance, as in
 //! `tests/common/mod.rs`).
 
@@ -558,7 +558,12 @@ pub fn tokenize(chars: &[char]) -> Vec<RawTok> {
 
 /// Whether `tok` is the punctuation `text`; `false` when there is no token.
 pub fn ref_punct(tok: Option<&RawTok>, text: &str) -> bool {
-    tok.map(|t| t.kind == RawKind::Punct && t.text == text)
+    ref_token(tok, RawKind::Punct, text)
+}
+
+/// Whether `tok` is the token `text` of kind `kind`; `false` when there is no token.
+pub fn ref_token(tok: Option<&RawTok>, kind: RawKind, text: &str) -> bool {
+    tok.map(|t| t.kind == kind && t.text == text)
         .unwrap_or(false)
 }
 
@@ -584,7 +589,7 @@ pub fn qualifier_before(toks: &[RawTok], i: usize) -> Option<String> {
 /// Whether `toks[i]` is a function's DEFINITION site, the name token immediately preceded by the
 /// `fn` keyword (`fn name(`), rather than a reference to the name.
 pub fn is_definition_site(toks: &[RawTok], i: usize) -> bool {
-    i > 0 && toks[i - 1].kind == RawKind::Keyword && toks[i - 1].text == "fn"
+    i > 0 && ref_token(toks.get(i - 1), RawKind::Keyword, "fn")
 }
 
 /// The index of the `close` punctuation that closes the opening bracket at `toks[open]`, depth

@@ -100,7 +100,7 @@ use common::repo::repo_root;
 mod source_audit;
 use source_audit::{
     char_literal_len, close_of, is_definition_site, is_ident_char, qualifier_before, ref_punct,
-    skip_string_literal, tokenize, RawKind, RawTok,
+    ref_token, skip_string_literal, tokenize, RawKind, RawTok,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -6431,24 +6431,19 @@ fn local_binding_type(
     self_type: Option<&str>,
 ) -> Option<String> {
     let lo = toks.partition_point(|t| t.line < f.start_line);
-    let is_kw = |j: usize, kw: &str| {
-        toks.get(j)
-            .map(|t| t.kind == RawKind::Keyword && t.text == kw)
-            .unwrap_or(false)
-    };
     let mut found: Option<Option<String>> = None;
     for j in lo..use_idx {
         let t = &toks[j];
         if t.kind != RawKind::Ident || t.text != name || j == 0 {
             continue;
         }
-        let before = if is_kw(j - 1, "mut") && j >= 2 {
+        let before = if ref_token(toks.get(j - 1), RawKind::Keyword, "mut") && j >= 2 {
             j - 2
         } else {
             j - 1
         };
         let typed = ref_punct(toks.get(j + 1), ":") && !ref_punct(toks.get(j + 2), ":");
-        if is_kw(before, "let") {
+        if ref_token(toks.get(before), RawKind::Keyword, "let") {
             found = Some(if typed {
                 type_named_at(toks, j + 2, self_type)
             } else if ref_punct(toks.get(j + 1), "=") {
@@ -6470,7 +6465,9 @@ fn local_binding_type(
             && (ref_punct(toks.get(before), "(") || ref_punct(toks.get(before), ","))
         {
             found = Some(type_named_at(toks, j + 2, self_type));
-        } else if is_kw(before, "for") || ref_punct(toks.get(before), "|") {
+        } else if ref_token(toks.get(before), RawKind::Keyword, "for")
+            || ref_punct(toks.get(before), "|")
+        {
             found = Some(None);
         }
     }
