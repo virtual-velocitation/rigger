@@ -10368,7 +10368,7 @@ mod tests {
     /// response`'s convention for the pull-side watchdog (decision
     /// d-u69c6-attention-response-mapping): `escalated` and `halted` resolve to the two
     /// existing spec-68 skills the Design's own Notes point at by name ("resume and escalation
-    /// response protocols are spec 68's skills, referenced by name"), `worker-death-recurred`
+    /// response protocols are spec 68's skills, referenced by name"), `reject-recurrence`
     /// to the churn skill, `budget-final-tenth` to the resume skill (a preemptive warning for
     /// the same halt), and `stalled-frontier` and `spec-defect` each name their Design's own
     /// literal directive instead of inventing another skill - exactly as `Signal::FrontierStall`
@@ -10421,10 +10421,7 @@ mod tests {
             (ledger::ATTENTION_ESCALATED, "rigger-handle-an-escalation"),
             (ledger::ATTENTION_SPEC_DEFECT, "amend the spec and relaunch"),
             (ledger::ATTENTION_HALTED, "rigger-resume-a-run"),
-            (
-                ledger::ATTENTION_WORKER_DEATH_RECURRED,
-                "rigger-diagnose-churn",
-            ),
+            (ledger::ATTENTION_REJECT_RECURRENCE, "rigger-diagnose-churn"),
             (ledger::ATTENTION_BUDGET_FINAL_TENTH, "rigger-resume-a-run"),
             (
                 ledger::ATTENTION_STALLED_FRONTIER,

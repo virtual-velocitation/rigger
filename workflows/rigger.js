@@ -281,7 +281,7 @@ const STATUS = {
 // protocols are spec 68's skills, referenced by name") - `halted` because a run stopped
 // mid-flight (a budget breaker trip, or a merged hung-liveness fault) is exactly the
 // interrupted-run / stale-heartbeat case `rigger-resume-a-run` diagnoses.
-// `worker-death-recurred` resolves to the churn skill (a unit's repeatedly failing attempts
+// `reject-recurrence` resolves to the churn skill (a unit's repeatedly failing attempts
 // is the same family `Signal::RejectRecurrence` maps to on the pull side).
 // `budget-final-tenth` resolves to the resume skill too - a preemptive, run-scoped warning
 // for the SAME halt an operator would otherwise only learn of via `halted` once it actually
@@ -295,7 +295,7 @@ const ATTENTION_RESPONSE = {
   'escalated': 'rigger-handle-an-escalation',
   'spec-defect': 'amend the spec and relaunch',
   'halted': 'rigger-resume-a-run',
-  'worker-death-recurred': 'rigger-diagnose-churn',
+  'reject-recurrence': 'rigger-diagnose-churn',
   'budget-final-tenth': 'rigger-resume-a-run',
   'stalled-frontier': 'stop the driver and diagnose before another round spends',
 }

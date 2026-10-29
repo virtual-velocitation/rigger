@@ -8305,7 +8305,7 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
     // actual stdout - not merely through `conductor::run` called directly in-process (the
     // implementer's own `mod tests` in src/conductor.rs), which can never observe whether
     // `cmd_step` truly wires `RunState::attention` onto the printed `Step`. `max_retries: 1`
-    // means this unit's first failure IS its escalation, so `worker-death-recurred` (which
+    // means this unit's first failure IS its escalation, so `reject-recurrence` (which
     // needs a SECOND failure) does not also fire here - this step isolates the `escalated`
     // signal cleanly at the process boundary.
     assert!(
@@ -8317,7 +8317,7 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
     // Step 3 (review u69c5, finding sdet-u69c5-escalated-resume-restamp-untested-but-
     // verified-correct: no test drove a THIRD real `rigger step` after an escalation to
     // prove the `escalated` signal does not re-stamp on a RESUMED process - only
-    // worker-death-recurred/stalled-frontier and budget-final-tenth had that real-process-
+    // reject-recurrence/stalled-frontier and budget-final-tenth had that real-process-
     // boundary re-stamp guard coverage; this closes the gap). A FRESH process, nothing new
     // recorded - the run is already at its fixpoint, unchanged. The LEVEL-triggered
     // `escalated` set field must still re-surface (it reflects current truth every call,

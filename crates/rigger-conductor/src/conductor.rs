@@ -2759,7 +2759,7 @@ fn settle_run_state(
 /// fallback, unchanged by this unit), never solely inside `compute_attention`.
 ///
 /// Deterministically ordered - stably sorted by [`ledger::attention_kind_rank`] (escalated,
-/// spec-defect, halted, worker-death-recurred, budget-final-tenth, stalled-frontier), lexical by
+/// spec-defect, halted, reject-recurrence, budget-final-tenth, stalled-frontier), lexical by
 /// unit id within a kind (`after.units` is a `BTreeMap`, `parked_units` a `BTreeSet`) - so two
 /// folds of the same log agree byte-for-byte on the wire (main.rs's merge preserves this
 /// canonical order too; see its own comment).
@@ -2824,7 +2824,7 @@ fn compute_attention(
         let before_attempts = prior.units.get(id).map_or(0, |u| u.attempts);
         if unit.attempts > before_attempts && unit.attempts >= 2 {
             out.push(ledger::AttentionEntry::unit_scoped(
-                ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                ledger::ATTENTION_REJECT_RECURRENCE,
                 id.clone(),
                 format!("{} attempts", unit.attempts),
             ));
@@ -31970,7 +31970,7 @@ mod tests {
                     "escalated after exhausting remediation",
                 ),
                 ledger::AttentionEntry::unit_scoped(
-                    ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                    ledger::ATTENTION_REJECT_RECURRENCE,
                     "s",
                     "3 attempts",
                 ),
@@ -32319,11 +32319,11 @@ mod tests {
         assert_eq!(
             rs.attention,
             vec![ledger::AttentionEntry::unit_scoped(
-                ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                ledger::ATTENTION_REJECT_RECURRENCE,
                 "u",
                 "2 attempts",
             )],
-            "a unit's SECOND failure must stamp exactly one worker-death-recurred entry"
+            "a unit's SECOND failure must stamp exactly one reject-recurrence entry"
         );
 
         // Attempt 2 fails: the THIRD failure - another recurrence, AND now the unit
@@ -32336,7 +32336,7 @@ mod tests {
             rs.attention,
             vec![
                 ledger::AttentionEntry::unit_scoped(
-                    ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                    ledger::ATTENTION_REJECT_RECURRENCE,
                     "u",
                     "3 attempts",
                 ),
@@ -32347,7 +32347,7 @@ mod tests {
                 ),
             ],
             "the THIRD failure must stamp both a recurrence AND a stalled-frontier entry \
-             (deterministically ordered, escalated < halted < worker-death-recurred < \
+             (deterministically ordered, escalated < halted < reject-recurrence < \
              budget-final-tenth < stalled-frontier)"
         );
 
@@ -47385,7 +47385,7 @@ mod tests {
             vec![
                 (ledger::ATTENTION_SPEC_DEFECT, "plan-critique", stop_halt()),
                 (
-                    ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                    ledger::ATTENTION_REJECT_RECURRENCE,
                     "plan-critique",
                     "2 attempts".to_string()
                 ),

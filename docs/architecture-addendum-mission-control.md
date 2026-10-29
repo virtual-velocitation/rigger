@@ -456,10 +456,10 @@ has allowed it once, a browser notification, so nobody watches a board to be tap
 rules on a unit in review; an implementer finishes a round; a rejected unit re-spawns for its
 next round; a blocked unit unblocks when its needs land; the capstone runs; release-ready) -
 the current one highlighted. **Needs you** is the attention list: every `AttentionEntry` the
-ledger already computes (escalated, halted, worker death recurred, budget final tenth, stalled
-frontier), plus release-ready, reject recurrence (two or more rejects on an open unit) and
-stale heartbeats; each item carries the exact command chips (copyable) and, for the two
-actions the console may perform, a guarded button. When the list is empty it says so:
+ledger already computes (escalated, halted, reject recurrence, budget final tenth, stalled
+frontier), plus release-ready and stale heartbeats; each item carries the exact command chips
+(copyable) and, for the two actions the console may perform, a guarded button. When the list
+is empty it says so:
 "Nothing needs a human right now. Walk away - you will be tapped." **Run** is the key-value
 block (spec, base, steps, agents, decisions, findings, the latest decision).
 

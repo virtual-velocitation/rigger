@@ -27,7 +27,7 @@ directory and runs `claude plugin marketplace update rigger-local`.
 
 THE ATTENTION FEED, decided: `rigger attention --follow` prints, at start, one line per
 condition true now (held, escalated, halted), then one line per crossing as the log grows,
-polling at 1 s: `held`, `released`, `escalated`, `halted`, `worker-death-recurred`,
+polling at 1 s: `held`, `released`, `escalated`, `halted`, `reject-recurrence`,
 `budget-final-tenth`, `stalled-frontier`, `completed`, and `supervisor-absent` (no
 `SupervisorBeat` for 90 s on a run neither done nor held). A line names the kind, the subject
 and the response skill. The command keeps no state; with no run it prints nothing and stays

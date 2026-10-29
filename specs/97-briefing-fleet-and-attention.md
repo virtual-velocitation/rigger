@@ -35,8 +35,8 @@ as bars with the now line. `Open console` routes the console to that instance wi
 `?instance=<id>`; the project selector in the header does the same.
 
 THE INBOX AND NOTIFICATIONS, decided: the stream gains an `attention` frame carrying an
-attention entry (escalated, halted, worker death recurred, budget final tenth, stalled
-frontier, release-ready, reject recurrence, stale heartbeat) with its instance whenever one
+attention entry (escalated, halted, reject recurrence, budget final tenth, stalled
+frontier, release-ready, stale heartbeat) with its instance whenever one
 first appears; the page offers to enable browser notifications once, from the inbox, and
 after consent shows one notification per new entry naming the project, the unit and the
 remedy. Without consent the inbox alone carries them.

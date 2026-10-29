@@ -1006,7 +1006,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
 /// inside `conductor::run` itself).
 ///
 /// `attention` already carries whatever `compute_attention` built (escalated / spec-defect /
-/// budget-halted / worker-death-recurred / budget-final-tenth / stalled-frontier, in THAT
+/// budget-halted / reject-recurrence / budget-final-tenth / stalled-frontier, in THAT
 /// canonical order). Pushes ONE run-scoped `halted` entry - built lazily via `reason` only
 /// when actually needed, since `liveness::halt_reason` walks the whole hung set - when
 /// `newly_hung` is true AND no `halted` entry is already present (a budget halt this same
@@ -4311,7 +4311,7 @@ mod tests {
     }
 
     /// The merge must land the hung-liveness `halted` entry in its CANONICAL position
-    /// (escalated, halted, worker-death-recurred, budget-final-tenth, stalled-frontier) even
+    /// (escalated, halted, reject-recurrence, budget-final-tenth, stalled-frontier) even
     /// when `compute_attention` already produced entries both BEFORE and AFTER that slot in
     /// the SAME step (a different unit independently escalating, and a third stalling) - a
     /// naive push-to-the-end would leave `halted` stuck last, violating the wire's

@@ -273,7 +273,7 @@ fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step(
             json!(["plan-critique"]),
             vec![
                 ("spec-defect", "plan-critique"),
-                ("worker-death-recurred", "plan-critique"),
+                ("reject-recurrence", "plan-critique"),
             ],
         ),
         "the step parks nothing, halts with the amend route and names the gate escalated; its \

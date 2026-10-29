@@ -78,7 +78,7 @@ impl Dock {
 /// - **halted** - the run's spawn budget is currently spent
 ///   ([`blocker::budget_halt`], the same durable fact [`blocker::classify`]'s
 ///   run-level [`blocker::Kind::Budget`] line already surfaces).
-/// - **worker-death-recurred** - a unit currently [`Status::Failed`] (mid-remediation: the
+/// - **reject-recurrence** - a unit currently [`Status::Failed`] (mid-remediation: the
 ///   status holds from its failure until its next green, whether or not its next attempt is
 ///   already running) with recorded attempts at or past
 ///   [`blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD`] AND no in-effect resume grant
@@ -117,7 +117,7 @@ pub fn dock(run: &RunState, events: &[Event]) -> Dock {
             && u.resumed.is_none()
         {
             needs_you.push(AttentionEntry::unit_scoped(
-                ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                ledger::ATTENTION_REJECT_RECURRENCE,
                 id.clone(),
                 format!("{} attempts, still parked", u.attempts),
             ));
@@ -628,12 +628,12 @@ mod tests {
     /// A unit an operator has just resumed (`rigger resume-unit`, spec 88) is
     /// re-parked at `Status::Failed` with `resumed = Some` - the exact state
     /// `blocker::classify`'s own resumed guard already excludes from
-    /// `RejectRecurrence`. The dock's worker-death-recurred arm must agree: a
+    /// `RejectRecurrence`. The dock's reject-recurrence arm must agree: a
     /// just-resumed unit reads "the operator already acted", not "still needs
     /// you" - mirrors `dock_drops_a_resolved_budget_halt`'s "operator already
     /// acted -> dock silent" pattern for the budget arm.
     #[test]
-    fn dock_drops_a_resumed_unit_from_worker_death_recurred() {
+    fn dock_drops_a_resumed_unit_from_reject_recurrence() {
         let events = vec![
             ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-resumed"}"#),
             ev(
@@ -669,11 +669,11 @@ mod tests {
         dock(&ledger::project(&events).unwrap(), &events)
     }
 
-    /// The dock listing `u-churn` alone, as worker-death-recurred at `attempts`.
+    /// The dock listing `u-churn` alone, as reject-recurrence at `attempts`.
     fn docked_as_recurred(attempts: u32) -> Dock {
         Dock {
             needs_you: vec![AttentionEntry::unit_scoped(
-                ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                ledger::ATTENTION_REJECT_RECURRENCE,
                 "u-churn",
                 format!("{attempts} attempts, still parked"),
             )],
