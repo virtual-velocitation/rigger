@@ -876,30 +876,29 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
 const REBUILD_BATCH: usize = 10_000;
 
 /// Rebuild this project's `graph.db` from the event log when it owes that rebuild (spec 101) - it
-/// was folded under an older fold rule, or it misses an event the log holds, which its owed mark
-/// says or setup finds by seeding the file's `caught_up` cursor ([`Projector::seed_cursor`]): on a
-/// file not yet carrying it, the seeding reads the file's ledger of folded positions against the
-/// log's live selection whether or not a mark says so, and the prefix it finds violated is owed - a
-/// position missing up to the bound the seeding names and older than the catch-up horizon (every
-/// one on a server-backed log, whose stamps are taken on another host's clock, so their skew moves
-/// nothing), an empty ledger beside a non-empty log, or a non-empty one beside an empty log or past
-/// its head - saying so, naming the cause, reporting how far along it is, and report whether it
-/// did. On a file that owes its rebuild for an older fold rule, or whose rebuild's tail is
-/// unfinished, the seeding seeds no cursor and reads only an old missing position as lost. A
-/// rebuild's own unfinished work - the shadow a stopped rebuild left standing, or the tail past the
-/// cursor a swap put in place - is no owed cause: it is paid with no
-/// `rebuilding graph.db ...: <cause>` line, still reporting how far along it is, and so rewrites a
-/// `graph.db` that owes nothing - a resumable shadow resumed, one that is not resumable refolded
-/// from the start, a tail finished ([`Projector::rebuild`]). Only a `graph.db` that owes nothing
-/// and holds no unfinished rebuild is not rebuilt; a NEW rebuild is refused while the run is live
-/// (below).
-/// With no `graph.db` - a cold start - the owed mark a removed one left
-/// behind is dropped first, so the file made in its place starts owing nothing it recorded, and
-/// setup makes that file: seeded at 0 beside an empty log, whose `events.db` it never makes, and
-/// rebuilt beside a non-empty one. The rebuild folds the log's live selection - the rows
-/// `rigger reset --derived` keeps - into a shadow file whose pruned copy replaces `graph.db` in one
-/// step ([`Projector::rebuild`]), streaming the log once, resuming an interrupted rebuild from its
-/// last committed transaction and finishing exactly the tail of one interrupted after its swap.
+/// was folded under an older fold rule, or it misses an event the log holds, which setup finds by
+/// seeding the file's `caught_up` cursor ([`Projector::seed_cursor`]): on a file not yet carrying
+/// it, the seeding reads the file's ledger of folded positions against the log's live selection,
+/// and the prefix it finds violated is owed - a position missing up to the bound the seeding names
+/// and older than the catch-up horizon (every one on a server-backed log, whose stamps are taken on
+/// another host's clock, so their skew moves nothing), an empty ledger beside a non-empty log, or a
+/// non-empty one beside an empty log or past its head - saying so, naming the cause, reporting how
+/// far along it is, and report whether it did. The owed mark an older binary's lost fold left
+/// beside the file names no cause (spec 124, THE MARK). On a file that owes its rebuild for an
+/// older fold rule, or whose rebuild's tail is unfinished, the seeding seeds no cursor and reads
+/// only an old missing position as lost. A rebuild's own unfinished work - the shadow a stopped
+/// rebuild left standing, or the tail past the cursor a swap put in place - is no owed cause: it is
+/// paid with no `rebuilding graph.db ...: <cause>` line, still reporting how far along it is, and
+/// so rewrites a `graph.db` that owes nothing - a resumable shadow resumed, one that is not
+/// resumable refolded from the start, a tail finished ([`Projector::rebuild`]). Only a `graph.db`
+/// that owes nothing and holds no unfinished rebuild is not rebuilt; a NEW rebuild is refused while
+/// the run is live (below). With no `graph.db` - a cold start - the owed mark a removed one left
+/// behind is dropped first, since it speaks of the removed file alone, and setup makes that file:
+/// seeded at 0 beside an empty log, whose `events.db` it never makes, and rebuilt beside a
+/// non-empty one. The rebuild folds the log's live selection - the rows `rigger reset --derived`
+/// keeps - into a shadow file whose pruned copy replaces `graph.db` in one step
+/// ([`Projector::rebuild`]), streaming the log once, resuming an interrupted rebuild from its last
+/// committed transaction and finishing exactly the tail of one interrupted after its swap.
 ///
 /// Setup opens `graph.db` for write once, under the rebuild lock ([`open_graph_for_write`]): the
 /// file it seeds, rebuilds and catches up is that one, made by that open on a cold start. After the
@@ -1105,8 +1104,9 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// Seed the `caught_up` cursor of `graph`, the `graph.db` whose rebuild lock is `held`, against the
 /// log through `seeding`, handed the head of `log` read once here and its missing positions aged
 /// against the clock read once here ([`Projector::seed_cursor`]); read why the file owes its
-/// rebuild - its own records, and the seeding's verdict ([`Projector::owed_against`]); when the pay
-/// starts a NEW rebuild, a fresh shadow the log is folded into from its start
+/// rebuild - the older fold rule the file records ([`Projector::owed_because`]), and the lost
+/// fold ([`contextgraph::OWED_LOST_FOLD`]) when the seeding ran and found the prefix violated;
+/// when the pay starts a NEW rebuild, a fresh shadow the log is folded into from its start
 /// ([`Projector::rebuild_starts_fresh`]) - a cause owed beside no standing shadow, a swapped-in
 /// tail standing or not, or a standing shadow that is not resumable - ask `refuse_if_live` of `log`
 /// and fail with its refusal while the run is live, before any line is printed or the file
@@ -1124,8 +1124,10 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// seeding the file (spec 124, CATCH-UP LINES), and otherwise fold the file forward from its cursor
 /// to the log's head ([`catch_up_to_head`]), saying how that ended; then, rebuilt or not, how many
 /// events the file records passed over, by cause, whenever it records any
-/// ([`Projector::passed_over`], spec 124, CATCH-UP LINES); and report whether it rebuilt, or fail
-/// with the line naming where the catch-up stopped at a failure.
+/// ([`Projector::passed_over`], spec 124, CATCH-UP LINES); then remove the owed mark an older
+/// binary's lost fold left beside the file once it carries `caught_up`, whether or not the seeding
+/// was contended ([`Projector::forget_cursored_mark`], spec 124, THE MARK); and report whether it
+/// rebuilt, or fail with the line naming where the catch-up stopped at a failure.
 fn pay_owed_rebuild<'t>(
     held: &contextgraph::sqlite::RebuildLock,
     graph: &Projector,
@@ -1141,7 +1143,10 @@ fn pay_owed_rebuild<'t>(
         log.log_head()?,
         std::time::SystemTime::now(),
     )?;
-    let causes = graph.owed_against(&seeded)?;
+    let mut causes = graph.owed_because()?;
+    if seeded == (contextgraph::sqlite::Seeding::Ran { lost: true }) {
+        causes.push(contextgraph::OWED_LOST_FOLD);
+    }
     let owed = !causes.is_empty();
     // A NEW rebuild - one whose pay starts a fresh shadow and folds the log from its start - is
     // refused while the run is live, and the step lock the probe took is held until the rebuild
@@ -1193,6 +1198,7 @@ fn pay_owed_rebuild<'t>(
             PASSED_OVER_RETRIED
         );
     }
+    graph.forget_cursored_mark()?;
     if let Err(stopped) = caught_up {
         return Err(stopped.into());
     }

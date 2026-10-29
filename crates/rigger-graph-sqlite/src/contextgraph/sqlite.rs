@@ -19,7 +19,7 @@ use super::{
     Graph, Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT,
     KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
     KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE,
-    LEAF_REF_KINDS, MODULE_CANDIDATE_SEPARATOR, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
+    LEAF_REF_KINDS, MODULE_CANDIDATE_SEPARATOR, NON_TARGET_KINDS, OWED_OLDER_RULE,
     PLACEHOLDER_SIGIL, REBUILD_OWED, REF_KIND_MODULE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS,
     REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS,
     REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
@@ -405,7 +405,8 @@ pub struct Projector {
     project: String,
     /// The graph file this projector was opened on, the one [`Projector::rebuild`] rebuilds.
     path: String,
-    /// Where an older binary's failed fold marked this file as owing its rebuild ([`owed_mark`]).
+    /// Where an older binary's failed fold left its mark beside this file ([`owed_mark`]): no cause
+    /// of its rebuild, only what setup and the rebuild's swap remove.
     owed_mark: Option<PathBuf>,
     /// The event log [`Projector::catch_up`] folds this file forward from, once installed
     /// ([`Projector::with_log`]): none folds nothing forward.
@@ -449,35 +450,26 @@ impl CatchUpLog {
 /// ([`Projector::with_reextraction`]).
 type ReextractionFactory = Box<dyn Fn() -> Box<Reextract<'static>> + Send + Sync>;
 
-/// The file beside the graph file at `path` whose presence marks it as owing its rebuild because a
-/// fold into it failed under an older binary, which wrote it when a write lost to another writer's
-/// lock left the file current but missing an event; no fold writes it now (spec 124), a fold that
-/// fails leaving only its position missing. The mark is only what lets a
-/// folding open refuse at once without reading the log: the debt itself is the position missing
+/// The file an older binary wrote beside the graph file at `path` when a fold into it failed - a
+/// write lost to another writer's lock left the file current but missing an event; no fold writes
+/// it now, and it is no cause of a rebuild (spec 124, THE MARK): the debt is the position missing
 /// from the file's `applied` ledger, which `rigger setup`'s seeding of a file not yet carrying the
-/// `caught_up` cursor reads against the log up to the bound [`Projector::seed_cursor`] names.
-/// `None` for an in-memory graph, which no rebuild outlives.
+/// `caught_up` cursor reads against the log up to the bound [`Projector::seed_cursor`] names. It is
+/// only removed: by setup once the file carries `caught_up` ([`Projector::forget_cursored_mark`]),
+/// by the rebuild's swap ([`Projector::rebuild`]), and once the file is gone
+/// ([`Projector::forget_orphaned_mark`]). `None` for an in-memory graph, which no rebuild outlives.
 fn owed_mark(path: &str) -> Option<PathBuf> {
     (path != ":memory:").then(|| PathBuf::from(format!("{path}.owed")))
 }
 
-/// Whether `mark` is present: a fold into its graph file failed under an older binary and the
-/// rebuild is owed.
-fn marked(mark: &Option<PathBuf>) -> bool {
-    mark.as_ref().is_some_and(|m| m.exists())
-}
-
-/// Why the graph file behind `conn`, whose [`owed_mark`] is `mark`, says it owes its rebuild, each
-/// cause it carries in order: it records an older fold rule ([`OWED_OLDER_RULE`]), or its mark says
-/// it misses an event the log holds ([`OWED_LOST_FOLD`]). The one reading of the file's own
-/// records that [`Projector::owed_because`] answers and [`Projector::rebuild`] pays on.
-fn owed_by_file(conn: &Connection, mark: &Option<PathBuf>) -> Result<Vec<&'static str>, Error> {
+/// Why the graph file behind `conn` says it owes its rebuild: the older fold rule it records
+/// ([`OWED_OLDER_RULE`]), or no cause - the [`owed_mark`] beside it is none (spec 124, THE MARK).
+/// The one reading of the file's own records that [`Projector::owed_because`] answers and
+/// [`Projector::rebuild`] pays on.
+fn owed_by_file(conn: &Connection) -> Result<Vec<&'static str>, Error> {
     let mut causes = Vec::new();
     if rebuild_owed(conn)? {
         causes.push(OWED_OLDER_RULE);
-    }
-    if marked(mark) {
-        causes.push(OWED_LOST_FOLD);
     }
     Ok(causes)
 }
@@ -555,8 +547,9 @@ pub enum Seeding {
     Skipped,
     /// It ran under the write lock. `lost` is its prefix-violation verdict, a verdict of this
     /// seeding alone and no record of the file: the file misses an event of the log, or records
-    /// one past the log's end, that only a rebuild repairs in order, so it owes the lost fold
-    /// ([`Projector::owed_against`]).
+    /// one past the log's end, that only a rebuild repairs in order, so `rigger setup` names the
+    /// lost fold ([`OWED_LOST_FOLD`](super::OWED_LOST_FOLD)) as a cause beside the ones the file
+    /// records ([`Projector::owed_because`]) and pays it with a rebuild.
     Ran { lost: bool },
 }
 
@@ -590,8 +583,6 @@ pub enum Inert {
     RebuildState,
     /// The file records an older fold rule ([`OWED_OLDER_RULE`]).
     OlderRule,
-    /// The file's mark says a fold into it was lost ([`OWED_LOST_FOLD`]).
-    Marked,
     /// The file carries no `caught_up` cursor.
     NoCursor,
 }
@@ -690,20 +681,18 @@ impl Projector {
     /// Pay the rebuild this projector's graph file - the file it was opened on - owes (spec 101),
     /// and report whether there was one to pay - `None` when there was not, else what it did
     /// ([`Rebuilt`]): what its run-closure prune removed - owed because its caller found it so
-    /// (`owed`: what [`Projector::owed_against`] answered once the file's `caught_up` cursor was
-    /// seeded), or because
-    /// the file itself records an older fold rule or carries the [`owed_mark`] an older binary's
-    /// failed fold left,
-    /// both read again here. A rebuild's own
-    /// unfinished work is paid too, with no owed cause: the shadow a stopped rebuild left
-    /// standing, whose swap it finishes before any tail, and the tail past the cursor a swap
-    /// put in place. What the pay does with its shadow is one classification ([`shadow_pay`],
-    /// which [`Projector::rebuild_starts_fresh`] answers): a standing shadow is resumed when it is
-    /// resumable ([`shadow_resumable`]) and replaced by a fresh one otherwise, and with none
-    /// standing a cause owed starts a fresh one, a swapped-in tail standing or not, while no cause
-    /// starts none. The mark is dropped once the rebuilt file is in place. The live file is this
-    /// projector's own: its connection, held under its mutex for the whole rebuild, is the one the
-    /// swap copies into and the tail folds through, under this projector's project.
+    /// (`owed`: a cause the file records ([`Projector::owed_because`]), or the lost fold the
+    /// seeding of the file's `caught_up` cursor found ([`Seeding::Ran`])), or because the file
+    /// itself records an older fold rule, read again here. A rebuild's own unfinished work is paid
+    /// too, with no owed cause: the shadow a stopped rebuild left standing, whose swap it finishes
+    /// before any tail, and the tail past the cursor a swap put in place. What the pay does with
+    /// its shadow is one classification ([`shadow_pay`], which [`Projector::rebuild_starts_fresh`]
+    /// answers): a standing shadow is resumed when it is resumable ([`shadow_resumable`]) and
+    /// replaced by a fresh one otherwise, and with none standing a cause owed starts a fresh one, a
+    /// swapped-in tail standing or not, while no cause starts none. The [`owed_mark`] an older
+    /// binary's lost fold left, no cause, is dropped once the rebuilt file is in place. The live
+    /// file is this projector's own: its connection, held under its mutex for the whole rebuild, is
+    /// the one the swap copies into and the tail folds through, under this projector's project.
     ///
     /// The rebuild folds `source` - the log's live selection, whose cost is bounded by the live
     /// projection rather than the log's age - each ledger entry of perception its fold asks a batch
@@ -769,7 +758,7 @@ impl Projector {
         let mut live = self.conn.lock().unwrap();
         let live = &mut *live;
         let shadow_path = shadow_of(path);
-        match shadow_pay(path, live, &self.owed_mark, owed)? {
+        match shadow_pay(path, live, owed)? {
             ShadowPay::Skip => {
                 if !rebuild_tail_owed(live)? {
                     return Ok(None);
@@ -795,8 +784,9 @@ impl Projector {
                     .map_err(be)?;
                 drop(pruned);
                 remove_if_present(&copy)?;
-                // Paid: the swapped-in file holds every event the source held. Dropped before the
-                // tail, so a mark an older binary's lost fold writes while the tail runs stands.
+                // Paid: the swapped-in file holds every event the source held, so the mark an older
+                // binary's lost fold left is dropped. Dropped before the tail, so one an older
+                // binary writes while the tail runs stands, for setup to remove.
                 if let Some(mark) = &self.owed_mark {
                     remove_if_present(mark)?;
                 }
@@ -855,22 +845,21 @@ impl Projector {
     /// when the pay resumes a standing shadow, cause or not, finishes a tail no cause is owed
     /// beside, or owes nothing. The one answer the pay picks its shadow by ([`shadow_pay`]). It
     /// takes the held rebuild lock, so between this answer and the pay nothing moves the shadow,
-    /// its fold rule or the tail, and only a fold another process loses can add a cause, by marking
-    /// the file ([`owed_mark`]). It makes no shadow and folds nothing: a standing one is opened
+    /// its fold rule or the tail, and no cause is added: the [`owed_mark`] an older binary's lost
+    /// fold writes is none. It makes no shadow and folds nothing: a standing one is opened
     /// without being created and only read, which rolls back a journal a killed rebuild left hot,
     /// as any read of it does.
     pub fn rebuild_starts_fresh(&self, _held: &RebuildLock, owed: bool) -> Result<bool, Error> {
         let live = self.conn.lock().unwrap();
-        Ok(shadow_pay(&self.path, &live, &self.owed_mark, owed)?.starts_fresh())
+        Ok(shadow_pay(&self.path, &live, owed)?.starts_fresh())
     }
 
-    /// Why this file says it owes its rebuild (spec 101), each cause it carries in order - it
-    /// records an older fold rule ([`OWED_OLDER_RULE`]), or its [`owed_mark`] says it misses an
-    /// event the log holds ([`OWED_LOST_FOLD`]) - and none when it says nothing. Read from the file
-    /// on every call, so another process's [`Projector::rebuild`] or failed fold is seen at once;
-    /// it reads nothing else and writes nothing.
+    /// Why this file says it owes its rebuild (spec 101): the older fold rule it records
+    /// ([`OWED_OLDER_RULE`]), and none when it records none - the [`owed_mark`] beside it is no
+    /// cause (spec 124, THE MARK). Read from the file on every call, so another process's
+    /// [`Projector::rebuild`] is seen at once; it reads nothing else and writes nothing.
     pub fn owed_because(&self) -> Result<Vec<&'static str>, Error> {
-        owed_by_file(&self.conn.lock().unwrap(), &self.owed_mark)
+        owed_by_file(&self.conn.lock().unwrap())
     }
 
     /// How many positions this file records passed over, by the class of their cause (spec 124,
@@ -906,20 +895,6 @@ impl Projector {
             }
         }
         Ok(counts)
-    }
-
-    /// Why this file owes its rebuild once its `caught_up` cursor is seeded (spec 101, spec 124):
-    /// the causes it says it owes ([`Projector::owed_because`]), read from the file with no lock,
-    /// and [`OWED_LOST_FOLD`] when `seeding` ran and found the prefix violated
-    /// ([`Projector::seed_cursor`]) and the file does not already say so - so the lost fold is
-    /// owed once, whether the mark, the seeding or both name it. A skipped seeding adds nothing.
-    /// Reads, and writes nothing.
-    pub fn owed_against(&self, seeding: &Seeding) -> Result<Vec<&'static str>, Error> {
-        let mut causes = self.owed_because()?;
-        if matches!(seeding, Seeding::Ran { lost: true }) && !causes.contains(&OWED_LOST_FOLD) {
-            causes.push(OWED_LOST_FOLD);
-        }
-        Ok(causes)
     }
 
     /// Seed this file's `caught_up` cursor against the log (spec 124, THE CURSOR AND ITS
@@ -1080,24 +1055,24 @@ impl Projector {
     ///
     /// The call first reads, with no transaction open, whether the file folds no catch-up of its
     /// own, each cause in order: it holds a rebuild's state, records an older fold rule over what
-    /// it folded, carries its [`owed_mark`], or carries no cursor ([`Inert`]); the first standing
-    /// is the answer, read without opening the log. A projector handed no log answers
-    /// [`CatchUp::AtHead`]. Otherwise the call reads one page of the log past the cursor - the
-    /// first [`FOLD_BATCH`] events of the project's own log as it is handed, or every one there is
-    /// when fewer are, and on to the last event of the position the last of them shares, since a
-    /// page never splits one position ([`EventStore::read_all_page`]) - with no lock of the file
-    /// held: a page without an event is [`CatchUp::AtHead`]. The page's events of the project's run
-    /// stream are its positions to decide; its first transaction cut ([`fold_transactions`]) - one
-    /// ledger entry alone, or a run of other events - is decided and folded by THE DECIDE STEP
-    /// ([`decide_step`]), the step a rebuild's fold pass shares, each entry its fold asks a batch
-    /// for, one not yet folded whose payload parses and whose generation is not held, with the
-    /// batch the call's re-extraction answers ([`Projector::reextraction`]; with none installed it
-    /// resolves nothing, so the entry is passed over [`RESOLVED_TO_NOTHING`]). The cut's
-    /// transaction reads the cursor again under the write lock and ends by moving it to the cut's
-    /// last position, or to the page's last position when the cut holds every run-stream event of
-    /// the page - a page of other streams' events alone moves it there folding nothing - and the
-    /// call answers [`CatchUp::Advanced`], counting the positions that transaction itself recorded
-    /// in the `applied` ledger.
+    /// it folded, or carries no cursor ([`Inert`]); the first standing is the answer, read without
+    /// opening the log, and the [`owed_mark`] an older binary's lost fold left beside it is none. A
+    /// projector handed no log answers [`CatchUp::AtHead`]. Otherwise the call reads one page of
+    /// the log past the cursor - the first [`FOLD_BATCH`] events of the project's own log as it is
+    /// handed, or every one there is when fewer are, and on to the last event of the position the
+    /// last of them shares, since a page never splits one position
+    /// ([`EventStore::read_all_page`]) - with no lock of the file held: a page without an event is
+    /// [`CatchUp::AtHead`]. The page's events of the project's run stream are its positions to
+    /// decide; its first transaction cut ([`fold_transactions`]) - one ledger entry alone, or a run
+    /// of other events - is decided and folded by THE DECIDE STEP ([`decide_step`]), the step a
+    /// rebuild's fold pass shares, each entry its fold asks a batch for, one not yet folded whose
+    /// payload parses and whose generation is not held, with the batch the call's re-extraction
+    /// answers ([`Projector::reextraction`]; with none installed it resolves nothing, so the entry
+    /// is passed over [`RESOLVED_TO_NOTHING`]). The cut's transaction reads the cursor again under
+    /// the write lock and ends by moving it to the cut's last position, or to the page's last
+    /// position when the cut holds every run-stream event of the page - a page of other streams'
+    /// events alone moves it there folding nothing - and the call answers [`CatchUp::Advanced`],
+    /// counting the positions that transaction itself recorded in the `applied` ledger.
     ///
     /// Under the write lock the cut answers a rebuild's state, an older fold rule or a dropped
     /// cursor that another writer brought about after the first read as [`CatchUp::Inert`],
@@ -1127,7 +1102,7 @@ impl Projector {
     /// the call's re-extraction ([`decide_step`]); with none, every entry folds from the
     /// re-extraction.
     fn catch_up_with(&self, own: Option<&OwnEntry>) -> Result<CatchUp, Error> {
-        let mut from = match standing_cursor(&self.conn.lock().unwrap(), &self.owed_mark)? {
+        let mut from = match standing_cursor(&self.conn.lock().unwrap())? {
             Ok(at) => at,
             Err(inert) => return Ok(CatchUp::Inert(inert)),
         };
@@ -1206,13 +1181,24 @@ impl Projector {
         }
     }
 
-    /// Drop the [`owed_mark`] of the graph file at `path` once that file is gone: the mark records
-    /// a fold lost from that file, so a file made in its place owes nothing it recorded. A mark
-    /// whose file stands is kept.
+    /// Drop the [`owed_mark`] of the graph file at `path` once that file is gone: the mark speaks
+    /// of a fold an older binary lost from that file alone, never of a file made in its place. A
+    /// mark whose file stands is kept.
     pub fn forget_orphaned_mark(path: &str) -> Result<(), Error> {
         match owed_mark(path).filter(|_| !Path::new(path).exists()) {
             Some(mark) => remove_if_present(mark),
             None => Ok(()),
+        }
+    }
+
+    /// Drop the [`owed_mark`] an older binary's lost fold left beside this file once the file
+    /// carries its `caught_up` cursor (spec 124, THE MARK): what the file lost is the seeding's to
+    /// find ([`Seeding::Ran`]) and what lies past the cursor its catch-up's to fold, so the mark is
+    /// no cause. A mark beside a file without the cursor is kept; an in-memory graph has none.
+    pub fn forget_cursored_mark(&self) -> Result<(), Error> {
+        match &self.owed_mark {
+            Some(mark) if carries_caught_up(&self.conn.lock().unwrap())? => remove_if_present(mark),
+            _ => Ok(()),
         }
     }
 
@@ -1322,7 +1308,7 @@ impl Projector {
     /// was handed the log ([`Projector::with_log`]), the events are all of the project's run
     /// stream (`streamed`), and the file behind `conn` carries the `caught_up` cursor.
     fn folds_by_calls(&self, conn: &Connection, streamed: bool) -> Result<bool, Error> {
-        Ok(self.log.is_some() && streamed && cursor_at(conn, CAUGHT_UP)?.is_some())
+        Ok(self.log.is_some() && streamed && carries_caught_up(conn)?)
     }
 
     /// THE APPENDER's calls (spec 124): call [`Projector::catch_up`] - with `own`, the appender's
@@ -1330,19 +1316,19 @@ impl Projector {
     /// success test passes, and answer true then, or false when a call or the test meets no
     /// `caught_up` cursor, the direct fold folding the events instead.
     ///
-    /// After every call but one meeting no cursor, the success test reads the cursor and the
-    /// first own position recorded passed over in one statement outside any transaction
+    /// After every call but one meeting no cursor, the success test reads the cursor and the first
+    /// own position recorded passed over in one statement outside any transaction
     /// ([`own_standing`]): such a row answers its cause at once, with no suffix, since no later
     /// fold folds it; the last own position at or below the cursor is folded. Still short, the
-    /// call's answer decides. An older fold rule or the mark answers [`REBUILD_OWED`] at once, the
-    /// file's rebuild state the unfinished-rebuild text at once when this projector's process
-    /// holds its rebuild lock ([`Projector::with_rebuild_lock`]), and a failure anywhere but at
-    /// the own entry its error at once; otherwise, past the ceiling ([`Projector::past_ceiling`]),
-    /// it answers what the call met - the catch-up text after a call that advanced or met the
-    /// log's head, the write-lock text after a skipped one, the unfinished-rebuild text, or the own
-    /// entry's failure - each but `REBUILD_OWED` ending with [`CALL_PAYS`]. Inside the ceiling a
-    /// call that advanced is followed by the next at once, and any other by one busy interval
-    /// `busy` with the connection's lock released.
+    /// call's answer decides. An older fold rule answers [`REBUILD_OWED`] at once, the file's
+    /// rebuild state the unfinished-rebuild text at once when this projector's process holds its
+    /// rebuild lock ([`Projector::with_rebuild_lock`]), and a failure anywhere but at the own entry
+    /// its error at once; otherwise, past the ceiling ([`Projector::past_ceiling`]), it answers
+    /// what the call met - the catch-up text after a call that advanced or met the log's head, the
+    /// write-lock text after a skipped one, the unfinished-rebuild text, or the own entry's
+    /// failure - each but `REBUILD_OWED` ending with [`CALL_PAYS`]. Inside the ceiling a call that
+    /// advanced is followed by the next at once, and any other by one busy interval `busy` with the
+    /// connection's lock released.
     fn fold_by_calls(
         &self,
         events: &[Event],
@@ -1379,7 +1365,7 @@ impl Projector {
                     }
                     (unfinished, true)
                 }
-                // An older fold rule or the mark; a call meeting no cursor turned direct above.
+                // An older fold rule; a call meeting no cursor turned direct above.
                 CatchUp::Inert(_) => return Err(Error(REBUILD_OWED.to_string())),
                 CatchUp::Failed { error, .. } => {
                     let failed = Error(format!("{error}{CALL_PAYS}"));
@@ -2208,16 +2194,11 @@ impl ShadowPay {
 /// What a rebuild of the graph file at `path`, live on `live` and owed by its caller when `owed`,
 /// pays with its shadow: a standing shadow ([`shadow_stands`]) is resumed when it is resumable
 /// ([`shadow_resumable`]) and replaced by a fresh one otherwise; with none standing, a fresh one is
-/// started when a cause is owed - `owed`, or one the file records through its [`owed_mark`] `mark`
-/// or its fold rule ([`owed_by_file`]) - whether or not a swapped-in tail stands, and none
-/// otherwise. A standing shadow is opened without being created and only read. The one
-/// classification [`Projector::rebuild`] pays by and [`Projector::rebuild_starts_fresh`] answers.
-fn shadow_pay(
-    path: &str,
-    live: &Connection,
-    mark: &Option<PathBuf>,
-    owed: bool,
-) -> Result<ShadowPay, Error> {
+/// started when a cause is owed - `owed`, or the older fold rule the file records
+/// ([`owed_by_file`]) - whether or not a swapped-in tail stands, and none otherwise. A standing
+/// shadow is opened without being created and only read. The one classification
+/// [`Projector::rebuild`] pays by and [`Projector::rebuild_starts_fresh`] answers.
+fn shadow_pay(path: &str, live: &Connection, owed: bool) -> Result<ShadowPay, Error> {
     if shadow_stands(path) {
         let shadow = Connection::open_with_flags(
             shadow_of(path),
@@ -2230,7 +2211,7 @@ fn shadow_pay(
             ShadowPay::Fresh
         });
     }
-    Ok(if owed || !owed_by_file(live, mark)?.is_empty() {
+    Ok(if owed || !owed_by_file(live)?.is_empty() {
         ShadowPay::Fresh
     } else {
         ShadowPay::Skip
@@ -2789,7 +2770,7 @@ struct CatchUpCut {
 
 impl FoldCursor for CatchUpCut {
     fn open(&mut self, tx: &Transaction, through: Position) -> Result<(), FrameError> {
-        let at = standing_cursor(tx, &None)?.map_err(FrameError::Inert)?;
+        let at = standing_cursor(tx)?.map_err(FrameError::Inert)?;
         if !(self.from <= at && at < through) {
             return Err(FrameError::Reread(at));
         }
@@ -2807,21 +2788,16 @@ impl FoldCursor for CatchUpCut {
 
 /// Where the `caught_up` cursor of the file behind `conn` stands for a catch-up of its own
 /// ([`Projector::catch_up`]), or the first cause, in this order, that it folds none ([`Inert`]):
-/// it holds a rebuild's state ([`rebuild_tail_owed`]), the first cause it owes its rebuild for
-/// ([`owed_by_file`]) - an older fold rule over what it folded, or `mark` - or it carries no
-/// cursor.
-fn standing_cursor(
-    conn: &Connection,
-    mark: &Option<PathBuf>,
-) -> Result<Result<Position, Inert>, Error> {
+/// it holds a rebuild's state ([`rebuild_tail_owed`]), it owes its rebuild for an older fold rule
+/// over what it folded ([`owed_by_file`]), or it carries no cursor.
+fn standing_cursor(conn: &Connection) -> Result<Result<Position, Inert>, Error> {
     if rebuild_tail_owed(conn)? {
         return Ok(Err(Inert::RebuildState));
     }
-    Ok(match owed_by_file(conn, mark)?.first() {
-        Some(&OWED_OLDER_RULE) => Err(Inert::OlderRule),
-        Some(_) => Err(Inert::Marked),
-        None => cursor_at(conn, CAUGHT_UP)?.ok_or(Inert::NoCursor),
-    })
+    if !owed_by_file(conn)?.is_empty() {
+        return Ok(Err(Inert::OlderRule));
+    }
+    Ok(cursor_at(conn, CAUGHT_UP)?.ok_or(Inert::NoCursor))
 }
 
 /// How many positions the `applied` ledger of the file behind `conn` records past `after`, up to
@@ -2863,6 +2839,11 @@ fn rebuild_tail_owed(conn: &Connection) -> Result<bool, Error> {
 /// that rebuild's tail - or `None` for a file holding no rebuild state, which owes no tail.
 fn rebuild_tail_from(conn: &Connection) -> Result<Option<Position>, Error> {
     cursor_at(conn, "rebuild_cursor")
+}
+
+/// Whether the file behind `conn` carries its `caught_up` cursor ([`cursor_at`]).
+fn carries_caught_up(conn: &Connection) -> Result<bool, Error> {
+    Ok(cursor_at(conn, CAUGHT_UP)?.is_some())
 }
 
 /// Where the one-row cursor table `cursor` of the file behind `conn` stands ([`cursor_row`]), or
@@ -3215,8 +3196,8 @@ impl Projection for Projector {
         Ok(folded.unwrap_or_else(|| own.folded.get().unwrap_or(EntryFold::AlreadyApplied)))
     }
 
-    /// A plain read of the `generations` table ([`current_generation`]): it consults no owed
-    /// mark, so it answers on a file that owes its rebuild.
+    /// A plain read of the `generations` table ([`current_generation`]): it asks no
+    /// [`Projection::rebuild_owed`], so it answers on a file that owes its rebuild.
     fn current_generation(&self, identity: &str) -> Result<Option<String>, Error> {
         current_generation(&self.conn.lock().unwrap(), &self.project, identity)
     }
@@ -10216,9 +10197,9 @@ mod tests {
         assert_eq!(owed_at(3), Vec::<&str>::new());
     }
 
-    /// The owed mark an older binary's lost fold left belongs to the graph file beside it: once that
-    /// file is gone the mark is dropped, and a file made in its place owes nothing - and while the
-    /// file stands its mark is kept, no cause of the file's rebuild.
+    /// The owed mark an older binary's lost fold left belongs to the graph file beside it: once
+    /// that file is gone the mark is dropped, and a file made in its place owes nothing - and while
+    /// the file stands its mark is kept, no cause of the file's rebuild.
     #[test]
     fn the_owed_mark_of_a_graph_file_that_is_gone_is_dropped_and_one_that_stands_is_kept() {
         let dir = tempfile::tempdir().unwrap();
@@ -10389,11 +10370,12 @@ mod tests {
 
     /// Whether paying a graph file's rebuild starts a fresh shadow (spec 124) is answered by what
     /// stands. With no shadow, a cause owed - the caller's, or the file's own older fold rule over
-    /// what it folded - starts one, a swapped-in tail standing or not, and no cause starts none: the
-    /// owed mark an older binary's lost fold left beside the file is none. A standing shadow is resumed, cause or not, when it holds the run
-    /// attribution it gathered under the current fold rule, and replaced otherwise: one folded
-    /// under an older or a newer rule, one without that attribution, or one whose rebuild state
-    /// was never opened. Asking makes no shadow and leaves a standing one byte for byte.
+    /// what it folded - starts one, a swapped-in tail standing or not, and no cause starts none:
+    /// the owed mark an older binary's lost fold left beside the file is none. A standing shadow is
+    /// resumed, cause or not, when it holds the run attribution it gathered under the current fold
+    /// rule, and replaced otherwise: one folded under an older or a newer rule, one without that
+    /// attribution, or one whose rebuild state was never opened. Asking makes no shadow and leaves
+    /// a standing one byte for byte.
     #[test]
     fn a_rebuild_starts_a_fresh_shadow_for_a_cause_beside_none_or_a_shadow_it_cannot_resume() {
         // A rebuild of the graph file at `path` stopped past its first batch: the resumable

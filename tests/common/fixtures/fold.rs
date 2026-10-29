@@ -431,8 +431,8 @@ pub fn source_interrupted<T>() -> Result<T, rigger::contextgraph::Error> {
     Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()))
 }
 
-/// The owed mark of the graph file `graph.db` in the directory `dir`: the file whose presence
-/// beside it says it owes its rebuild.
+/// The owed mark of the graph file `graph.db` in the directory `dir`: the file an older binary's
+/// lost fold left beside it, no cause of its rebuild (spec 124, THE MARK).
 pub fn owed_mark_in(dir: &std::path::Path) -> std::path::PathBuf {
     dir.join("graph.db.owed")
 }

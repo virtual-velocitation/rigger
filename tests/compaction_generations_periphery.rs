@@ -1568,9 +1568,9 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
 }
 
 /// Given a `graph.db` the release before the generation rule folded, beside which the owed mark an
-/// older binary's lost fold left stands, when the operator runs `rigger setup`, then setup names the
-/// older fold rule alone - the mark is no cause - and pays it with one rebuild (the mark is gone and
-/// the file records the current rule), and a second `rigger setup` owes nothing.
+/// older binary's lost fold left stands, when the operator runs `rigger setup`, then setup names
+/// the older fold rule alone - the mark is no cause - and pays it with one rebuild (the mark is
+/// gone and the file records the current rule), and a second `rigger setup` owes nothing.
 #[test]
 fn rigger_setup_names_the_older_rule_alone_beside_an_owed_mark_and_its_rebuild_drops_the_mark() {
     let store = ReleaseEraStore::new();
