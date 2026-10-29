@@ -1554,9 +1554,10 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
 /// Inside a repository ([`in_repository`]) it writes the object it hashes (`git hash-object -w`,
 /// spec 124, THE BLOB IS WRITTEN), so that repository's object database holds the bytes under the
 /// id it answers; outside one, where no object database stands, it hashes without writing. It
-/// starts at most two processes, each waited to its exit: the detection's, then the hash's. A hash
-/// process that cannot start, or that fails - a write that fails included - fails the hash, naming
-/// the command, the root and the cause.
+/// starts at most two processes, each waited to its exit: the detection's, then the hash's. A
+/// detection whose `git` cannot start, which says nothing about whether the write is owed, and a
+/// hash process that cannot start, or that fails - a write that fails included - fail the hash,
+/// each naming its command, the root and the cause.
 pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> {
     use std::io::Write;
     use std::process::Stdio;
@@ -1567,7 +1568,7 @@ pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> 
             root.display()
         ))
     };
-    let write: &[&str] = if in_repository(root) { &["-w"] } else { &[] };
+    let write: &[&str] = if in_repository(root)? { &["-w"] } else { &[] };
     let mut process = crate::subprocess::git_in(root)
         .arg("hash-object")
         .args(write)
@@ -1591,14 +1592,43 @@ pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> 
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// The arguments of the one repository detection: `git rev-parse --git-dir` succeeds under a root
+/// inside a git repository.
+const REPOSITORY_DETECTION: [&str; 2] = ["rev-parse", "--git-dir"];
+
 /// Whether `root` is inside a git repository, so an object database stands there to read from and
-/// write to: `git rev-parse --git-dir` succeeds under it. The one repository detection
-/// [`hash_blob`] and [`BlobBatch::start`] apply. A `git` that cannot start answers outside.
-fn in_repository(root: &std::path::Path) -> bool {
-    crate::subprocess::git_in(root)
-        .args(["rev-parse", "--git-dir"])
-        .output()
-        .is_ok_and(|out| out.status.success())
+/// write to ([`REPOSITORY_DETECTION`] run under it, read by [`repository_answer`]). The one
+/// repository detection [`hash_blob`] and [`BlobBatch::start`] apply.
+fn in_repository(root: &std::path::Path) -> Result<bool, Error> {
+    repository_answer(
+        root,
+        crate::subprocess::git_in(root)
+            .args(REPOSITORY_DETECTION)
+            .output(),
+    )
+}
+
+/// What the repository detection's run under `root` answers: inside for a `git` that ran and
+/// succeeded, outside for one that ran and failed, and for one that could not start a failure
+/// naming the detection's command, the root and the cause - a `git` that never ran says nothing
+/// about where `root` is.
+fn repository_answer(
+    root: &std::path::Path,
+    ran: std::io::Result<std::process::Output>,
+) -> Result<bool, Error> {
+    ran.map(|out| out.status.success())
+        .map_err(|e| git_failure(&REPOSITORY_DETECTION, root, &e.to_string()))
+}
+
+/// The failure of the git command whose arguments are `args`, run under `root`, for the cause
+/// `why`: `git <args> in <root>: <why>`, spelled from the argument vector the process ran or could
+/// not start with, so the text names the command that failed.
+fn git_failure(args: &[&str], root: &std::path::Path, why: &str) -> Error {
+    Error(format!(
+        "git {} in {}: {why}",
+        args.join(" "),
+        root.display()
+    ))
 }
 
 /// The one `git cat-file --batch` process a graph rebuild reads its ledger entries' blobs from
@@ -1615,12 +1645,12 @@ pub struct BlobBatch {
 
 impl BlobBatch {
     /// Start the batch process over the repository holding `root`, or answer none when there is
-    /// no object database to ask: `root` is outside a git repository ([`in_repository`]), or the
-    /// process cannot start at all.
+    /// no object database to ask: `root` is outside a git repository, or a `git` - the
+    /// detection's ([`in_repository`]) or the batch's - cannot start at all.
     pub fn start(root: &std::path::Path) -> Option<Self> {
         use std::process::Stdio;
 
-        if !in_repository(root) {
+        if in_repository(root).ok() != Some(true) {
             return None;
         }
         let mut process = crate::subprocess::git_in(root)
@@ -3169,6 +3199,41 @@ mod tests {
                 BlobBatch::start(root).map(|mut batch| asked(&mut batch, HELLO_ID)),
                 held
             );
+        }
+    }
+
+    /// The one repository detection answers inside or outside only for a `git` that ran: run
+    /// under a repository it answers inside, run under a directory that is none it answers
+    /// outside, and a `git` that could not start - here inside a repository - answers neither:
+    /// its failure names the detection's command, the root and the cause, which [`hash_blob`]
+    /// fails on and [`BlobBatch::start`] reads as no object database to ask.
+    #[test]
+    fn the_repository_detection_tells_a_git_that_could_not_start_from_one_run_outside() {
+        use crate::test_support::temp_git_project_with_commit;
+
+        let inside = temp_git_project_with_commit();
+        let outside = tempfile::tempdir().unwrap();
+        let ran = |root: &std::path::Path| {
+            crate::subprocess::git_in(root)
+                .args(REPOSITORY_DETECTION)
+                .output()
+        };
+        let could_not_start = || std::io::Error::from(std::io::ErrorKind::WouldBlock);
+        let rows = [
+            (inside.path(), ran(inside.path()), Ok(true)),
+            (outside.path(), ran(outside.path()), Ok(false)),
+            (
+                inside.path(),
+                Err(could_not_start()),
+                Err(format!(
+                    "git rev-parse --git-dir in {}: {}",
+                    inside.path().display(),
+                    could_not_start()
+                )),
+            ),
+        ];
+        for (root, ran, answer) in rows {
+            assert_eq!(repository_answer(root, ran).map_err(|e| e.0), answer);
         }
     }
 
