@@ -964,8 +964,8 @@ pub struct Step {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub escalated: Vec<String>,
     /// The push-side anomalies THIS step surfaced (spec 69: the watching discipline's step
-    /// wire) - unit ESCALATED, run HALTED, a worker's death RECURRED, the budget crossed
-    /// into its final tenth, and STALLED FRONTIER. Empty on a clean step, and OMITTED from
+    /// wire) - unit ESCALATED, run HALTED, REJECT RECURRENCE at the diagnose threshold, the
+    /// budget crossed into its final tenth, and STALLED FRONTIER. Empty on a clean step, and OMITTED from
     /// the wire then, so a converged run still prints `{"wave":[],"done":true}` unchanged;
     /// when non-empty a later criterion's driver renders one narrator line per entry naming
     /// its event, unit, and response skill. Like [`escalated`](Step::escalated) this is
