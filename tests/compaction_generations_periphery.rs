@@ -4112,11 +4112,11 @@ fn run_saying(root: &Path, args: &[&str]) -> (bool, String) {
 
 /// Given a `graph.db` carrying its `caught_up` cursor on a project whose identity is minted,
 /// beside which the owed mark stands as an older binary's lost fold left it, when the operator
-/// runs a surface that asks whether the file owes its rebuild - `answer` runs it in the project's
-/// root and answers whether it succeeded and what it said - then the surface succeeds and no line
-/// it says names the rebuild owed: a command whose answer depends on the fold is not refused, a
-/// read-only surface prints no owed note, and the mark still stands beside the file the surface
-/// read (spec 124, THE MARK).
+/// runs a surface that asks whether the file owes its rebuild - `answer` runs it, or each surface
+/// of a list in turn, in the project's root and answers whether every one succeeded and what they
+/// said - then each surface succeeds and no line it says names the rebuild owed: a command whose
+/// answer depends on the fold is not refused, a read-only surface prints no owed note, and the
+/// mark still stands beside the file the surfaces read (spec 124, THE MARK).
 fn a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(
     answer: fn(&Path) -> (bool, String),
 ) {
@@ -4161,15 +4161,15 @@ rigger::test_cases! {
         a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
             run_saying(root, &["graph", "--around", "src/f.rs"])
         });
-    /// `rigger validate`, a read-only surface, prints no owed note.
-    validate_beside_an_owed_mark_on_a_cursored_graph_db_prints_no_owed_note:
+    /// The read-only surfaces over `graph.db` ([`READ_ONLY_SURFACES`]: `rigger graph --show`,
+    /// `rigger validate` and `rigger dash --export`), run in turn, each succeed and print no owed
+    /// note.
+    the_read_only_surfaces_beside_an_owed_mark_on_a_cursored_graph_db_print_no_owed_note:
         a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
-            run_saying(root, &["validate"])
-        });
-    /// `rigger dash --export`, a read-only surface, prints no owed note.
-    the_dash_export_beside_an_owed_mark_on_a_cursored_graph_db_prints_no_owed_note:
-        a_surface_beside_an_owed_mark_on_a_cursored_graph_db_names_no_rebuild(|root| {
-            run_saying(root, &common::cli::DASH_SNAPSHOT_ARGS)
+            READ_ONLY_SURFACES.iter().fold((true, String::new()), |(ok, said), args| {
+                let (answered, answer) = run_saying(root, args);
+                (ok && answered, format!("{said}rigger {}: {answer}", args.join(" ")))
+            })
         });
     /// A `rigger mcp` session's `rigger_graph`, a tool whose answer depends on the fold, answers
     /// without a refusal.
