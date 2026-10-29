@@ -1550,21 +1550,28 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
 }
 
 /// THE ONE HASH FUNCTION (spec 107): the object id git gives `bytes`, as `git hash-object --stdin`
-/// prints it under `root`. It applies no filter, so the id is that of the bytes as they are.
-/// Inside a repository ([`in_repository`]) it writes the object it hashes (`git hash-object -w`,
-/// spec 124, THE BLOB IS WRITTEN), so that repository's object database holds the bytes under the
-/// id it answers; outside one, where no object database stands, it hashes without writing. It
-/// starts at most two processes, each waited to its exit: the detection's, then the hash's. A
-/// detection whose `git` cannot start, which says nothing about whether the write is owed, and a
-/// hash process that cannot start, or that fails - a write that fails included - fail the hash,
-/// each naming the command line it ran or could not start with, the root and the cause
-/// ([`git_failure`]).
+/// prints it under `root`. It applies no filter, so the id is that of the bytes as they are. Inside
+/// a repository ([`in_repository`]) it writes the object it hashes (`git hash-object -w`, spec 124,
+/// THE BLOB IS WRITTEN), so that repository's object database holds the bytes under the id it
+/// answers, and hardens it (`-c core.fsync=loose-object`), so the object is on disk when the call
+/// returns; outside one, where no object database stands, it hashes without writing. It starts at
+/// most two processes, each waited to its exit: the detection's, then the hash's. A detection whose
+/// `git` cannot start, which says nothing about whether the write is owed, and a hash process that
+/// cannot start, or that fails - a write that fails included - fail the hash, each naming the
+/// command line it ran or could not start with, the root and the cause ([`git_failure`]).
 pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> {
     use std::io::Write;
     use std::process::Stdio;
 
     let args: &[&str] = if in_repository(root)? {
-        &["hash-object", "-w", "--no-filters", "--stdin"]
+        &[
+            "-c",
+            "core.fsync=loose-object",
+            "hash-object",
+            "-w",
+            "--no-filters",
+            "--stdin",
+        ]
     } else {
         &["hash-object", "--no-filters", "--stdin"]
     };
@@ -3133,8 +3140,8 @@ mod tests {
     /// git said for that command line, on each of its two paths: outside a repository - a root
     /// whose `.git` is a file git cannot read as one - the hash without a write fails; inside one
     /// whose object database cannot take the object - a file stands where the object's directory
-    /// goes - the write fails (spec 124, THE BLOB IS WRITTEN), and the object database is left
-    /// without the object.
+    /// goes - the write, which hardens the loose object it writes, fails (spec 124, THE BLOB IS
+    /// WRITTEN), and the object database is left without the object.
     #[test]
     fn hash_blob_names_the_command_the_root_and_gits_own_failure() {
         use super::blob_batch_tests::asked;
@@ -3161,7 +3168,14 @@ mod tests {
                     git_init_quiet(root);
                     write_file(&loose_object_directory(root, HELLO_ID), b"");
                 },
-                &["hash-object", "-w", "--no-filters", "--stdin"],
+                &[
+                    "-c",
+                    "core.fsync=loose-object",
+                    "hash-object",
+                    "-w",
+                    "--no-filters",
+                    "--stdin",
+                ],
                 Some(Ok(None)),
             ),
         ];
