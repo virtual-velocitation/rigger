@@ -877,9 +877,11 @@ pub const BOTH_CAUSES_REBUILD_LINE: &str = "rebuilding graph.db from the event l
      under an older fold rule, and it misses an event the log holds, so the log's live selection \
      is refolded once";
 
-/// What every command whose answer depends on the fold says while `graph.db` owes its rebuild,
-/// after the command's name: spec 124's MARK LINES text, its one cause the older fold rule the file
-/// records - the lost fold is the seeding's verdict, never named here.
+/// What a command whose answer depends on the fold prints after its name when it refuses because
+/// `graph.db` owes its rebuild
+/// ([`rebuild_owed_refusal`](rigger::contextgraph::rebuild_owed_refusal)): spec 124's MARK LINES
+/// text, its one cause the older fold rule the file records - the lost fold is the seeding's
+/// verdict, never named here.
 pub const REBUILD_OWED_TEXT: &str = "graph.db owes one rebuild from the event log (it was folded \
      under an older fold rule) - run `rigger setup` to rebuild it";
 
@@ -1213,10 +1215,11 @@ pub fn failure_line(ok: bool, err: &str) -> Option<String> {
     (!ok).then(|| err.lines().last().unwrap_or_default().to_owned())
 }
 
-/// The [`refusal_line`] `rigger setup` ends its stderr with when it cannot remove the owed mark
-/// beside `graph.db` - a directory stands at its path
+/// The [`refusal_line`] `rigger setup` ends its stderr with when its failure is the owed mark
+/// beside `graph.db` it cannot remove - a directory stands at its path
 /// ([`unremovable_mark_beside`](super::fixtures::unremovable_mark_beside)) - naming the mark as
-/// setup reaches it, under the project root's rigger dir.
+/// setup reaches it, under the project root's rigger dir; never once its catch-up stopped at a
+/// failure, whose stop line ends its stderr instead.
 pub fn unremovable_mark_refusal() -> String {
     refusal_line(&super::fixtures::directory_refusal(
         super::fixtures::owed_mark_in(Path::new(RIGGER_DIR)).display(),

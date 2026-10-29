@@ -1130,8 +1130,8 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// was contended or the catch-up stopped ([`Projector::forget_cursored_mark`], spec 124, THE
 /// MARK); and report whether it rebuilt. A catch-up that stopped at a failure fails setup with the
 /// line naming where it stopped, whatever the removal answered - a mark left standing is no cause,
-/// and the next setup's removal retries it; only when the catch-up did not stop is a mark the
-/// removal cannot remove setup's failure, naming the mark.
+/// and the next setup's removal retries it; only when the catch-up did not stop at a failure is a
+/// mark the removal cannot remove setup's failure, naming the mark.
 fn pay_owed_rebuild<'t>(
     held: &contextgraph::sqlite::RebuildLock,
     graph: &Projector,

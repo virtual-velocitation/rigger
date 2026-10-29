@@ -2900,16 +2900,16 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/cli.rs:374-374` `".rigger"`
 - `tests/common/cli.rs:408-408` `".rigger"`
 - `tests/common/cli.rs:452-452` `".rigger"`
-- `tests/common/cli.rs:1246-1246` `"reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \
+- `tests/common/cli.rs:1249-1249` `"reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \
          file, which is a mechanic of the embedded .rigger/events.db store; this project is \
          configured for the server-backed store, where the migration does not run. Re-run it \
          against a project on the sqlite backend. Refusing rather than reporting a migration that \
          did not happen."`
-- `tests/common/cli.rs:1337-1337` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
-- `tests/common/cli.rs:1559-1559` `".rigger"`
-- `tests/common/cli.rs:1560-1560` `"create .rigger/agents"`
-- `tests/common/cli.rs:1673-1673` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
-- `tests/common/cli.rs:1770-1770` `".rigger"`
+- `tests/common/cli.rs:1340-1340` `"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n"`
+- `tests/common/cli.rs:1562-1562` `".rigger"`
+- `tests/common/cli.rs:1563-1563` `"create .rigger/agents"`
+- `tests/common/cli.rs:1676-1676` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
+- `tests/common/cli.rs:1773-1773` `".rigger"`
 - `tests/common/fixtures/config.rs:115-115` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/fixtures/extraction_tree.rs:76-76` `".rigger/workflow.yml"`
 - `tests/common/fixtures/liveness.rs:6-6` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
@@ -3952,7 +3952,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/spec.rs:2643-2645` `f11`
-- `tests/common/cli.rs:1336-1338` `graph_build_line`
+- `tests/common/cli.rs:1339-1341` `graph_build_line`
 - `tests/common/fixtures/cursor.rs:176-178` `catch_up_stopped`
 
 #### `dup-d340e212490f` (exact, 2 sites)
@@ -4098,9 +4098,9 @@ mandatory sweep: sqlite Connection::open call sites - 64 site(s), collected mech
 - `tests/cli.rs:9340-9340` `Connection::open`
 - `tests/common/cli.rs:97-97` `Connection::open`
 - `tests/common/cli.rs:796-796` `Connection::open`
-- `tests/common/cli.rs:1010-1010` `Connection::open`
-- `tests/common/cli.rs:1020-1020` `Connection::open`
-- `tests/common/cli.rs:1781-1781` `Connection::open`
+- `tests/common/cli.rs:1012-1012` `Connection::open`
+- `tests/common/cli.rs:1022-1022` `Connection::open`
+- `tests/common/cli.rs:1784-1784` `Connection::open`
 - `tests/common/fixtures/cursor.rs:123-123` `Connection::open`
 - `tests/common/fixtures/cursor.rs:135-135` `Connection::open`
 - `tests/common/fixtures/cursor.rs:144-144` `Connection::open`
@@ -4548,11 +4548,11 @@ Proposed home: `a new shared module (sites span 3 files: src/cli/hygiene.rs, tes
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/hygiene.rs:256-258` `derived_count_phrase`
-- `tests/common/cli.rs:895-897` `rebuilt_through_the_head`
-- `tests/common/cli.rs:901-906` `pruned_from_the_rebuilt_graph`
-- `tests/common/cli.rs:1157-1164` `migrated_lines`
-- `tests/common/cli.rs:1171-1176` `derived_menu_line_naming`
-- `tests/common/cli.rs:1834-1839` `bloat_advisory_naming`
+- `tests/common/cli.rs:897-899` `rebuilt_through_the_head`
+- `tests/common/cli.rs:903-908` `pruned_from_the_rebuilt_graph`
+- `tests/common/cli.rs:1159-1166` `migrated_lines`
+- `tests/common/cli.rs:1173-1178` `derived_menu_line_naming`
+- `tests/common/cli.rs:1837-1842` `bloat_advisory_naming`
 - `tests/compaction_generations_periphery.rs:6420-6425` `runs_prunable`
 
 #### `dup-4a813209194e` (near, 2 sites)
@@ -4909,8 +4909,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:913-915` `emit_folded_line`
-- `tests/common/cli.rs:1197-1199` `reclaimed_line`
+- `tests/common/cli.rs:915-917` `emit_folded_line`
+- `tests/common/cli.rs:1199-1201` `reclaimed_line`
 - `tests/common/fixtures/cursor.rs:152-154` `caught_up_line`
 
 #### `dup-90e32eb50d95` (exact, 4 sites)
@@ -4919,10 +4919,10 @@ Proposed home: `cli::support (consolidate these 4 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:1182-1184` `derived_menu_lines`
-- `tests/common/cli.rs:1187-1189` `decision_lines`
-- `tests/common/cli.rs:1828-1830` `index_lag_lines`
-- `tests/common/cli.rs:1843-1845` `bloat_lines`
+- `tests/common/cli.rs:1184-1186` `derived_menu_lines`
+- `tests/common/cli.rs:1189-1191` `decision_lines`
+- `tests/common/cli.rs:1831-1833` `index_lag_lines`
+- `tests/common/cli.rs:1846-1848` `bloat_lines`
 
 #### `dup-8dd44d643a5c` (semantic, 2 sites)
 
@@ -4930,7 +4930,7 @@ Proposed home: `one shared `write_workflow` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/common/cli.rs:1619-1626` `write_workflow`
+- `tests/common/cli.rs:1622-1629` `write_workflow`
 - `tests/common/workflow_probe.rs:21-23` `write_workflow`
 
 #### `dup-b58b0ff72b22` (near, 3 sites)
@@ -4939,8 +4939,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:1655-1675` `assert_selected_server`
-- `tests/common/cli.rs:1679-1695` `assert_selected_sqlite`
+- `tests/common/cli.rs:1658-1678` `assert_selected_server`
+- `tests/common/cli.rs:1682-1698` `assert_selected_sqlite`
 - `tests/store_secrets.rs:69-107` `assert_server_reached_and_credentials_redacted`
 
 #### `dup-c82a46fd1fec` (exact, 2 sites)
