@@ -716,9 +716,10 @@ pub struct RunNote {
 
 /// The run's notes for its check-in stage: every finding id an adjudicator's verdict upheld on
 /// a unit that integrated, once each in id order, with the locations and text the latest
-/// `ReviewFinding` of that id recorded. A verdict is read where every driver records it: an
-/// approve's `reviewed` status evidence and a reject's `UnitFailed` `review_reason`. An upheld id
-/// no recorded finding carries has no text to fix and is left out. `events` is the current run.
+/// `ReviewFinding` of that id recorded. A verdict is read where every driver records it: a
+/// landing round's `reviewed` status evidence - an approve's, or a later round's reject that
+/// converged - and a failed round's `UnitFailed` `review_reason`. An upheld id no recorded
+/// finding carries has no text to fix and is left out. `events` is the current run.
 pub fn run_notes(events: &[Event]) -> Result<Vec<RunNote>, serde_json::Error> {
     let state = ledger::project(events)?;
     let integrated = |unit: &str| {
@@ -1435,6 +1436,19 @@ mod tests {
                     integrated("u2"),
                 ],
                 vec![note("n1", &["a.rs"], "a")],
+            ),
+            (
+                "a later round's reject that converged upholds through its reviewed evidence",
+                vec![
+                    finding_event("c1", &["c.rs:2"], "wording"),
+                    ev_at(
+                        0,
+                        ledger::TYPE_UNIT_STATUS,
+                        json!({"id": "u1", "status": "reviewed", "evidence": {"review": "converged\n{\"verdict\":\"reject\",\"upheld\":[\"c1\"]}"}}),
+                    ),
+                    integrated("u1"),
+                ],
+                vec![note("c1", &["c.rs:2"], "wording")],
             ),
             (
                 "a unit that never integrated carries nothing",
