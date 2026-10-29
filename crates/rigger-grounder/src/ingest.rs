@@ -805,9 +805,10 @@ impl std::fmt::Display for EntryFailure {
 impl std::error::Error for EntryFailure {}
 
 /// THE ONE HASH FUNCTION as a sink is handed it (spec 107): a file's bytes to the object id git
-/// gives them, the hash writing the object it hashes into the repository's object database
-/// (spec 124, THE BLOB IS WRITTEN), so another process re-extracting the entry reads its blob from
-/// there; or the failure of the hash, a failed write included.
+/// gives them, the hash writing the object it hashes, inside a repository, into its object
+/// database before the call returns (spec 124, THE BLOB IS WRITTEN), so another process
+/// re-extracting the entry reads its blob from there, and writing nothing outside one; or the
+/// failure of the hash, a failed write included.
 #[cfg(feature = "symbols")]
 pub type HashBlob<'h> = dyn Fn(&[u8]) -> Result<String, rigger_domain::worktree::Error> + 'h;
 

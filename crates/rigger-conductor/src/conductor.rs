@@ -1918,11 +1918,12 @@ pub struct Deps<'a> {
     pub log: &'a (dyn Fn(&str) + Sync),
     /// THE ONE HASH FUNCTION (spec 107): a file's bytes to the object id git gives them, which
     /// the run's ingest sink names in each ledger entry it records. Inside a repository the hash
-    /// writes the object it hashes into that repository's object database (spec 124, THE BLOB IS
-    /// WRITTEN), so another process re-extracting the entry reads its blob from there; outside
-    /// one, where no object database stands, it hashes without writing; a hash that fails, a
-    /// failed write included, answers its error. Injected so the conductor spawns no process: the
-    /// composition root binds it to `git hash-object` in the run's tree.
+    /// writes the object it hashes into that repository's object database before the call
+    /// returns (spec 124, THE BLOB IS WRITTEN), so another process re-extracting the entry reads
+    /// its blob from there; outside one, where no object database stands, it hashes without
+    /// writing; a hash that fails, a failed write included, answers its error. Injected so the
+    /// conductor spawns no process: the composition root binds it to `git hash-object` in the
+    /// run's tree.
     pub hash_blob: &'a (dyn Fn(&[u8]) -> Result<String, worktree::Error> + Sync),
     /// THE ONE EMIT GUARD every emit surface runs: judges an event an agent's spawn emits, built
     /// with its stamps, against the store BEFORE it is appended, answering why it refuses a

@@ -442,9 +442,9 @@ pub(crate) fn stderr_line(line: &str) {
 /// THE ONE HASH FUNCTION as a run is handed it ([`conductor::Deps::hash_blob`]) at this
 /// composition root: `git hash-object` under `root`, the run's tree
 /// ([`rigger::worktree::hash_blob`]), which inside a repository writes the object it hashes into
-/// that repository's object database (spec 124, THE BLOB IS WRITTEN), so another process
-/// re-extracting the entry reads its blob from there, and outside one hashes without writing; a
-/// hash that fails, a failed write included, answers its error.
+/// that repository's object database before the call returns (spec 124, THE BLOB IS WRITTEN), so
+/// another process re-extracting the entry reads its blob from there, and outside one hashes
+/// without writing; a hash that fails, a failed write included, answers its error.
 pub(crate) fn hash_blob_in(
     root: &str,
 ) -> impl Fn(&[u8]) -> Result<String, rigger::worktree::Error> + Sync + '_ {
