@@ -8689,6 +8689,27 @@ mod tests {
         }
     }
 
+    /// Spec 124, A LOG SWITCHED UNDER A STANDING GRAPH: a cursor recorded beside the log the
+    /// projector folds is kept, and one recorded beside another log - the embedded one at another
+    /// path, or a server's - or beside none is switched under its file.
+    #[test]
+    fn a_cursor_recorded_beside_another_log_or_none_is_switched_and_beside_the_selected_one_kept() {
+        const SELECTED: &str = "local:/p/.rigger/events.db";
+        let cases = [
+            (Some(SELECTED), false),
+            (Some("local:/q/.rigger/events.db"), true),
+            (Some("shared:5cfaa9387d2839e1"), true),
+            (None, true),
+        ];
+        for (recorded, switched) in cases {
+            assert_eq!(
+                log_switched(recorded, SELECTED),
+                switched,
+                "a cursor recorded beside {recorded:?}"
+            );
+        }
+    }
+
     /// Spec 124, A LOG SWITCHED UNDER A STANDING GRAPH: a cursored file's seeding reads the
     /// identity of the log its cursor was recorded beside, and no log row: beside the log this
     /// projector folds it loses nothing, and beside another one, or beside none - a cursor whose
