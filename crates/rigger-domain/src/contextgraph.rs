@@ -735,8 +735,8 @@ pub enum Fold {
     /// not wired), owes its rebuild ([`REBUILD_OWED`]), or did not fold them - its fold failed, or
     /// another writer's write lock or its catch-up held them past the appender's ceiling (spec
     /// 124). A projection that records positions it passed over may also answer here an
-    /// event of its own already recorded passed over, with that position's cause: that event is
-    /// not in the graph, while the events of its batch that fold are committed.
+    /// event of its own recorded passed over, before or by this fold, with that position's cause:
+    /// that event is not in the graph, while the events of its batch that fold are committed.
     NotFolded(String),
 }
 
@@ -746,15 +746,16 @@ pub enum Fold {
 #[must_use = "the outcome says whether the entry's batch was asked for"]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryFold {
-    /// The projection had already folded the entry's position: nothing was written and the batch
-    /// was never asked for.
+    /// The projection had already folded the entry's position when the fold reached it: nothing
+    /// was written at that position, and the batch, asked for or not, folded nothing.
     AlreadyApplied,
-    /// The entry names the generation its identity already holds: only its position was recorded
-    /// and the batch was never asked for.
+    /// The entry names the generation its identity already holds: only its position was recorded,
+    /// and the batch, asked for or not, folded nothing.
     ReRecording,
     /// The entry's position was recorded and its batch was asked for, once. A resolved batch
-    /// folded at the entry's position and installed its generation; an unresolved one folded
-    /// nothing and left the identity's facts and current generation as they stood.
+    /// folded at the entry's position and installed its generation; an unresolved one, answered
+    /// so rather than passed over ([`Projection::apply_generation`]), folded nothing and left the
+    /// identity's facts and current generation as they stood.
     BatchAsked,
 }
 
@@ -783,10 +784,11 @@ impl Fold {
         Self::settle(graph.and_then(|g| g.apply(event, FoldAccess(()))))
     }
 
-    /// Fold `events` in one transaction into the graph `graph` yields, or say why they were not
-    /// folded - the graph could not be had, or refused them, or one of them is a position the graph
-    /// already recorded passed over, whose cause is answered after the batch's other events
-    /// commit. No events is nothing to fold, so it is folded without opening the graph.
+    /// Fold `events` into the graph `graph` yields through [`Projection::apply_batch`], at its
+    /// transaction cadence, or say why they were not folded - the graph could not be had, or
+    /// refused them, or one of them is a position the graph recorded passed over, whose cause is
+    /// answered after the batch's other events commit. No events is nothing to fold, so it is
+    /// folded without opening the graph.
     pub fn of_batch<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
         graph: impl FnOnce() -> Result<G, Error>,
         events: &[Event],
@@ -884,20 +886,22 @@ pub trait Projection: Send + Sync {
     /// [`Fold::of`], which holds the [`FoldAccess`] it takes.
     fn apply(&self, e: &Event, access: FoldAccess) -> Result<(), Error>;
 
-    /// Fold a whole batch of events into the graph in ONE transaction, idempotently per global
-    /// position - the batched analogue of [`apply`](Projection::apply). The graph it leaves is
-    /// exactly what applying each event in order would produce; the only difference is transaction
-    /// CADENCE. One exception to the answer: an implementation that records positions passed over
-    /// may meet one of the batch's own positions already recorded so, and then commits the batch's
-    /// other events and answers the first such position's cause, where the default loop stops at
-    /// it.
+    /// Fold a whole batch of events into the graph, idempotently per global position - the
+    /// batched analogue of [`apply`](Projection::apply). The graph it leaves is exactly what
+    /// applying each event in order would produce; the only difference is transaction CADENCE,
+    /// which the implementation chooses. One exception to the answer: an implementation that
+    /// records positions passed over may meet one of the batch's own positions recorded so, and
+    /// then commits the batch's other events and answers the first such position's cause, where
+    /// the default loop stops at it.
     ///
     /// The default folds each event through [`apply`](Projection::apply) (one transaction per
     /// event), so an implementation with no cheaper batch path is unaffected and every `apply`
-    /// still runs. The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it to
-    /// open ONE transaction for the whole batch: that is what lets an ingest sink fold a file's
-    /// whole batch at the store's transaction cost of ONE commit instead of one per event (spec 49
-    /// - the measured cold-build throughput was transaction-cadence bound, not parse-bound).
+    /// still runs. The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it:
+    /// folding the batch directly it opens ONE transaction for the whole batch, and folding it by
+    /// its catch-up calls one per call (spec 124). That ONE transaction is what lets a writer fold
+    /// a file's whole batch at the store's transaction cost of ONE commit instead of one per event
+    /// (spec 49 - the measured cold-build throughput was transaction-cadence bound, not
+    /// parse-bound).
     fn apply_batch(&self, events: &[Event], access: FoldAccess) -> Result<(), Error> {
         for e in events {
             self.apply(e, access)?;
@@ -906,20 +910,22 @@ pub trait Projection: Send + Sync {
     }
 
     /// Fold one ledger entry of perception - `entry`, a `GenerationIngested` event - with its
-    /// batch, in ONE transaction, and answer which of three things happened ([`EntryFold`]): an
-    /// entry whose position this projection already folded folds nothing - or, when it recorded
-    /// that position passed over, answers that position's cause as its error; one naming the
-    /// generation its identity already holds records only its position; any other records its
-    /// position and asks `batch` for the entry's batch, once. A batch `batch` answers folds event
-    /// by event at the entry's position and valid-time, every event asserted under the entry's
-    /// identity and generation, never under a key the event carries, and installs that
-    /// generation; an entry `batch` answers `None` for folds nothing; an error from `batch` fails
-    /// the fold. `batch` runs inside that transaction, while this projection is held for the
-    /// write, or just before it opens: it must not read or fold this projection, and must do no
-    /// slow work there. A ledger
-    /// entry folds only here: an implementor that folds refuses one on
-    /// [`apply`](Projection::apply) and [`apply_batch`](Projection::apply_batch). It takes no
-    /// [`FoldAccess`].
+    /// batch, and answer which of three things happened ([`EntryFold`]): an entry whose position
+    /// this projection already folded folds nothing - or, when it recorded that position passed
+    /// over, answers that position's cause as its error; one naming the generation its identity
+    /// already holds records only its position; any other records its position and asks `batch`
+    /// for the entry's batch, once. A batch `batch` answers folds event by event at the entry's
+    /// position and valid-time, every event asserted under the entry's identity and generation,
+    /// never under a key the event carries, and installs that generation, all in the ONE
+    /// transaction that records the entry's position; an entry `batch` answers `None` for folds
+    /// nothing; an error from `batch` fails the fold. A projection that records positions passed
+    /// over may instead record the entry's position so - its own payload or an event of its batch
+    /// rejected, or its batch `None` - and answer that cause as its error. `batch` runs inside
+    /// that transaction, while this projection is held for the write, or just before it opens: it
+    /// must not read or fold this projection, and must do no slow work there. A ledger entry folds
+    /// with a batch it is handed only here: an implementor that folds refuses one handed to
+    /// [`apply`](Projection::apply) or [`apply_batch`](Projection::apply_batch), or folds it there
+    /// with the batch its own source derives for it. It takes no [`FoldAccess`].
     fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error>;
 
     /// The generation this projection currently holds for the `<prefix>/<file>` identity

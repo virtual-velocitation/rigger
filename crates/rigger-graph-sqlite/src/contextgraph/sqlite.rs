@@ -2708,9 +2708,10 @@ fn extracted_batch(
 }
 
 /// The failure of a ledger entry's fold at `position` that asked a batch it was not handed
-/// ([`EntryOutcome::Unread`]): a fold pass meets it when the entry's retry misses too
-/// ([`fold_entry_alone`]), and the live fold ([`Projection::apply_generation`]) would answer it
-/// for that outcome, which its batch function, always answering a batch, never meets.
+/// ([`EntryOutcome::Unread`]): a fold pass - a rebuild's, or a catch-up call's, an appender's own
+/// entry included - meets it when the entry's retry misses too ([`fold_entry_alone`]), and an
+/// appender's direct fold ([`Projection::apply_generation`]) would answer it for that outcome,
+/// which its batch function, always answering a batch, never meets.
 fn unread_entry(position: Position) -> Error {
     Error(format!(
         "the {TYPE_GENERATION_INGESTED} entry at position {position} asked for a batch it was \
@@ -3131,19 +3132,26 @@ impl Projection for Projector {
         Ok(!self.owed_because()?.is_empty())
     }
 
-    /// Fold a whole batch of events in ONE transaction (spec 49's batched-fold cadence): the store's
-    /// transaction cost is paid ONCE for the whole file batch instead of once per event, which is the
-    /// load-bearing fix for a cold `graph build` whose measured throughput was transaction-cadence
-    /// bound. The result is IDENTICAL to folding each event with [`apply`](Projection::apply) in
-    /// order - same per-position idempotency guard (`applied`), same fold - so batching alters
-    /// CADENCE only, never the graph. Atomic: a fold error rolls the whole batch back (the events are
-    /// still durable in the log, and the sink folds best-effort), never a half-applied batch.
+    /// Fold a whole batch of events as THE APPENDER of them ([`Projector::guarded`], spec 124):
+    /// refused on a file that owes its rebuild, and a batch that does not fold returns its cause
+    /// and writes no mark. The result is IDENTICAL to folding each event with
+    /// [`apply`](Projection::apply) in order - same per-position idempotency guard (`applied`),
+    /// same fold - so batching alters CADENCE only, never the graph.
     ///
-    /// It folds as THE APPENDER of `events` ([`Projector::guarded`], spec 124): refused on a file
-    /// that owes its rebuild, folded by its calls or directly, and a batch that does not fold
-    /// returns its cause and writes no mark. A batch one of whose positions the file already
-    /// recorded passed over still commits its other positions, and then answers the first such
-    /// position's cause ([`FrameError::Recorded`]).
+    /// Folded directly, the batch folds in ONE transaction (spec 49's batched-fold cadence): the
+    /// store's transaction cost is paid ONCE for the whole file batch instead of once per event,
+    /// which is the load-bearing fix for a cold `graph build` whose measured throughput was
+    /// transaction-cadence bound. Atomic: a fold error rolls the whole batch back (the events are
+    /// still durable in the log), never a half-applied batch - save that a batch one of whose
+    /// positions the file already recorded passed over still commits its other positions, and
+    /// then answers the first such position's cause ([`FrameError::Recorded`]).
+    ///
+    /// Folded by its calls ([`Projector::fold_by_calls`]), the batch folds in the calls'
+    /// transactions, one per call, each a cut of a page that may hold other writers' positions:
+    /// an event whose payload the judge rejects is passed over with [`PAYLOAD_REJECTED`] while the
+    /// cut's other events commit, and the batch answers the first own position recorded passed
+    /// over's cause; any other failure rolls back only its call's cut, the cuts before it
+    /// committed.
     fn apply_batch(&self, events: &[Event], _access: FoldAccess) -> Result<(), Error> {
         self.guarded(events, None, |tx| {
             match fold_new(tx, events, &self.project)? {
@@ -3155,18 +3163,27 @@ impl Projection for Projector {
     }
 
     /// Fold `entry` with its batch as THE APPENDER of it ([`Projector::guarded`], spec 124),
-    /// holding the batch as its own entry ([`OwnEntry`]): refused before folding, its batch never
-    /// asked for, on a file that owes its rebuild. Folded directly, it folds in ONE transaction
-    /// ([`fold_entry`]); folded by its calls, a call whose cut is the entry alone folds it from the
-    /// same batch, and the appender answers the outcome that call folded it with, or
-    /// [`EntryFold::AlreadyApplied`] when another writer folded it first. The batch function is
-    /// asked at most once, whichever fold asks first. A fold that fails - an entry whose payload
-    /// does not parse, a batch function that fails, a batch event the fold rejects - rolls back
-    /// whole, its `applied` row included, and returns its cause, writing no mark.
+    /// holding the batch as its own entry ([`OwnEntry`]), whose batch function is asked at most
+    /// once, whichever fold asks first: refused before folding, its batch never asked for, on a
+    /// file that owes its rebuild, and writing no mark for any failure.
     ///
-    /// A batch function answering no batch folds nothing ([`EntryFold::BatchAsked`]). An entry
-    /// whose position the file already recorded passed over answers that cause
-    /// ([`FrameError::Recorded`]).
+    /// Folded directly, it folds in ONE transaction ([`fold_entry`]) and answers the outcome that
+    /// transaction folded it with: an entry the file already folded answers
+    /// [`EntryFold::AlreadyApplied`], or, recorded passed over, that cause
+    /// ([`FrameError::Recorded`]); a batch function answering no batch folds nothing past the
+    /// entry's `applied` row ([`EntryFold::BatchAsked`]); and a fold that fails - an entry whose
+    /// payload does not parse, a batch function that fails, a batch event the fold rejects - rolls
+    /// back whole, its `applied` row included, and returns its cause.
+    ///
+    /// Folded by its calls, a call whose cut is the entry alone folds it from the same batch, in
+    /// that cut's transaction ([`fold_entry_alone`]), and the appender answers the outcome that
+    /// call folded it with, or [`EntryFold::AlreadyApplied`] when another writer folded it first,
+    /// its batch asked for or not. An entry whose own payload the judge rejects is passed over with
+    /// [`PAYLOAD_REJECTED`], one whose batch holds an event the judge rejects with
+    /// [`FOLD_FAILED`], and one whose batch function answers no batch with
+    /// [`RESOLVED_TO_NOTHING`], its `applied` and `passed_over` rows committing, and the appender
+    /// answers that cause; a batch function that fails is waited out under the ceiling, and past
+    /// it the appender answers that failure ([`Projector::fold_by_calls`]).
     fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error> {
         let own = OwnEntry::new(entry.position, batch);
         let folded = self.guarded(
@@ -3479,8 +3496,10 @@ enum BatchAnswer {
 
 /// What became of a ledger entry's fold ([`fold_entry`]): one of the three outcomes of
 /// [`EntryFold`] (`Folded`); `Unresolved` - its batch function answered no batch, no source
-/// resolving the entry, so it wrote nothing past its `applied` row, which the live fold answers as
-/// [`EntryFold::BatchAsked`] and a fold pass passes over with [`RESOLVED_TO_NOTHING`] (spec 124);
+/// resolving the entry, so it wrote nothing past its `applied` row, which an appender's direct
+/// fold ([`Projection::apply_generation`]) answers as [`EntryFold::BatchAsked`] and a fold pass -
+/// a rebuild's, or a catch-up call's, an appender's own entry included - passes over with
+/// [`RESOLVED_TO_NOTHING`] (spec 124);
 /// or `Unread` - it asked a batch its batch function answered [`BatchAnswer::Unread`] for, and
 /// wrote nothing past its `applied` row.
 enum EntryOutcome {
@@ -6858,8 +6877,9 @@ mod tests {
         );
     }
 
-    /// spec 49 criterion 2 (graph side): `apply_batch` is ONE transaction - a fold error partway
-    /// through rolls the WHOLE batch back, so it is never half-applied. This distinguishes the
+    /// spec 49 criterion 2 (graph side): `apply_batch` folding directly, on a projector handed no
+    /// log, is ONE transaction - a fold error partway through rolls the WHOLE batch back, so it is
+    /// never half-applied. This distinguishes the
     /// single-transaction override from a per-event loop (which would have committed the earlier
     /// events before the later one failed), pinning the batched cadence itself, not just its result.
     #[test]

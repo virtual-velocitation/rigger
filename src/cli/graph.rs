@@ -795,8 +795,9 @@ fn cmd_graph_communities(args: &[String]) -> Res {
 /// `run` do (create-or-open under the cwd's `.rigger/`), and read the WHOLE live projection - the
 /// same direct, project-scoped, sorted read the dash's `/api/graph` provider consults. `derive`
 /// turns it into the pass's events plus its summary line; the events are appended in ONE store
-/// append and folded in ONE transaction (the shared batched append-and-fold authority), then the
-/// summary is printed.
+/// append and folded through the shared batched append-and-fold authority - in ONE transaction
+/// where the graph folds them directly, one per catch-up call where it folds them by its calls -
+/// then the summary is printed.
 fn run_graph_pass(
     verb: &str,
     args: &[String],

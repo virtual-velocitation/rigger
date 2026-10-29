@@ -112,9 +112,11 @@ where
 {
     /// THE APPEND-THEN-FOLD BODY of every event but a ledger entry: append `events` to `stream` under the caller's `expected`
     /// revision in ONE store append, then fold exactly what the store placed, at the positions it
-    /// issued, in ONE graph transaction - the batched-fold cadence spec 49 needs (one store
-    /// transaction per file's batch, not per event). The append goes to the log first and the
-    /// graph is opened only after it (spec 101: a verb whose job is to append never opens
+    /// issued, through ONE [`Fold::of_batch`] - one graph transaction where the graph folds the
+    /// batch directly, one per catch-up call where it folds it by its calls (spec 124) - the
+    /// batched-fold cadence spec 49 needs (one store transaction per file's batch, not per
+    /// event). The append goes to the log first and the graph is opened only after it (spec
+    /// 101: a verb whose job is to append never opens
     /// `graph.db` before its append). A fold failure never fails the append, which already landed
     /// durably: it is returned as the batch's [`Fold`] beside the store's own report, for the caller
     /// to report. A store wired with no graph folds nothing and says so in that [`Fold`]. An empty
@@ -157,12 +159,14 @@ where
         Ok(AppendedAndFolded { appended, fold })
     }
 
-    /// THE LEDGER FORM (spec 107), the only fold a ledger entry reaches outside a rebuild: append
-    /// `entry`, a `GenerationIngested` event, to `stream` in ONE store append, then fold it with
-    /// `batch`, the batch it records, through [`Projection::apply_generation`] at the position
-    /// the store issued, in ONE graph transaction. `batch` is already extracted: the function the
-    /// fold is handed only moves it out, so nothing is read, extracted or hashed while the graph
-    /// is held for the write.
+    /// THE LEDGER FORM (spec 107), the one fold that hands a ledger entry the batch its appender
+    /// extracted - a rebuild and a catch-up call fold one from its re-extraction: append `entry`,
+    /// a `GenerationIngested` event, to `stream` in ONE store append, then fold it with `batch`,
+    /// the batch it records, through [`Projection::apply_generation`] at the position the store
+    /// issued, the entry and its batch committing in ONE graph transaction whether the graph folds
+    /// it directly or by its catch-up calls. `batch` is already extracted: the function the fold
+    /// is handed only moves it out, so nothing is read, extracted or hashed while the graph is
+    /// held for the write.
     ///
     /// The append goes to the log first and the graph is opened only after it, as
     /// [`append_and_fold`](FoldingStore::append_and_fold) opens it. A fold failure never fails
@@ -367,7 +371,8 @@ pub struct IngestStats {
 /// The flag beside a batch says whether the walk excluded its identity as an out-of-line
 /// test module's: set for the `gc` batch of a file [`walk_exclusions`] names and clear for every
 /// other batch, so a sink never computes it or loads an index. A sink records the file's batch
-/// in ONE store append and folds it in ONE graph transaction ([`FoldingStore`]'s two forms) - the
+/// in ONE store append and folds it with its ledger entry in ONE graph transaction (the ledger
+/// form, [`FoldingStore::append_entry_and_fold`]) - the
 /// batched-fold cadence spec 49 needs, since the measured cold-build throughput was
 /// transaction-cadence bound.
 ///

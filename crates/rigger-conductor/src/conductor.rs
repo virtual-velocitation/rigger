@@ -1851,8 +1851,12 @@ pub struct Deps<'a> {
     /// wired graph it could not make. The composition root wires it to stderr.
     pub log: &'a (dyn Fn(&str) + Sync),
     /// THE ONE HASH FUNCTION (spec 107): a file's bytes to the object id git gives them, which
-    /// the run's ingest sink names in each ledger entry it records. Injected so the conductor
-    /// spawns no process: the composition root binds it to `git hash-object` in the run's tree.
+    /// the run's ingest sink names in each ledger entry it records. Inside a repository the hash
+    /// writes the object it hashes into that repository's object database (spec 124, THE BLOB IS
+    /// WRITTEN), so another process re-extracting the entry reads its blob from there; outside
+    /// one, where no object database stands, it hashes without writing; a hash that fails, a
+    /// failed write included, answers its error. Injected so the conductor spawns no process: the
+    /// composition root binds it to `git hash-object` in the run's tree.
     pub hash_blob: &'a (dyn Fn(&[u8]) -> Result<String, worktree::Error> + Sync),
 }
 
@@ -3206,9 +3210,11 @@ impl RunCtx<'_> {
     }
 
     /// The conductor's batched event-mutation authority: append a whole slice of already-built
-    /// events to the run stream in ONE append and fold them into the live graph in ONE transaction
-    /// (spec 49's batched-fold cadence - one transaction per file's batch, not per event, since the
-    /// measured cold-build throughput was transaction-cadence bound). Run-id stamping is
+    /// events to the run stream in ONE append and fold them into the live graph in ONE batched
+    /// fold - one transaction where the graph folds them directly, one per catch-up call where it
+    /// folds them by its calls (spec 124) - spec 49's batched-fold cadence, one transaction per
+    /// file's batch rather than per event, since the measured cold-build throughput was
+    /// transaction-cadence bound. Run-id stamping is
     /// [`stamped`](RunCtx::stamped) (spec 06, unit 1), which this and the ingest sink's ledger
     /// entry both go through, and the batched append-and-fold + position assignment is
     /// the shared [`crate::ingest::FoldingStore`]'s, whose fold is the one a cold `rigger graph
@@ -3355,7 +3361,8 @@ impl RunCtx<'_> {
     ///
     /// The entry is built by its one constructor, stamped with the run id as every event this run
     /// appends is, and appended and folded with its extraction through the ledger form of the
-    /// folding store, in ONE store append and ONE graph transaction. Everything slow happened
+    /// folding store, in ONE store append, the entry and its extraction committing in ONE graph
+    /// transaction. Everything slow happened
     /// before the append: the fold only moves the extraction in. A failed append fails the emit;
     /// a fold that could not be made - the graph owes its rebuild, or refused the write - leaves
     /// the entry on the log and is said through [`Deps::log`], as every lost fold of the run is.
