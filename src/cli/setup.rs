@@ -1897,7 +1897,11 @@ isolation: none\n\
 recurse: true\n\
 ---\n\
 You decompose the spec into a DAG of small, independently-verifiable units, each\n\
-serving one acceptance criterion. Emit each as a UnitProposed decision. Do not write code.\n",
+serving one acceptance criterion. Emit each as a UnitProposed decision. Do not write code.\n\
+Add a `needs` edge only for a real dependency: a file one unit edits that another\n\
+reads or edits, or an API one unit adds that another calls. Units with no such\n\
+dependency carry no edge between them and run in parallel; never chain units in\n\
+order by default.\n",
     ),
     (
         "rust-engineer.md",
@@ -4069,6 +4073,33 @@ mod tests {
                     "{at} carries the stray tool markup {token:?}"
                 );
             }
+        }
+    }
+
+    /// Units run in parallel unless one depends on another: the committed planner and its scaffold
+    /// seed add a `needs` edge only for a real dependency - a file one unit edits that another
+    /// reads or edits, or an API one unit adds that another calls - and never chain units by
+    /// default.
+    #[test]
+    fn the_planner_adds_a_needs_edge_only_for_a_real_dependency() {
+        const RULE: &str = "Add a `needs` edge only for a real dependency: a file one unit edits \
+                            that another reads or edits, or an API one unit adds that another \
+                            calls. Units with no such dependency carry no edge between them and \
+                            run in parallel; never chain units in order by default.";
+        let planners: Vec<(String, String)> = every_shipped_persona()
+            .into_iter()
+            .filter(|(at, _)| at.ends_with("planner.md"))
+            .collect();
+        assert_eq!(
+            planners.len(),
+            2,
+            "the committed planner and its scaffold seed"
+        );
+        for (at, text) in planners {
+            assert!(
+                rigger::wave::normalize_ws(&text).contains(RULE),
+                "{at} must say {RULE:?}"
+            );
         }
     }
 

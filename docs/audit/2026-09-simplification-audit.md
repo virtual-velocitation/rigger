@@ -2001,8 +2001,8 @@ mandatory sweep: Command::new call sites - 91 site(s), collected mechanically re
 - `src/cli/run.rs:3308-3308` `Command::new`
 - `src/cli/run.rs:3352-3352` `Command::new`
 - `src/cli/run.rs:3421-3421` `Command::new`
-- `src/cli/setup.rs:3751-3751` `Command::new`
-- `src/cli/setup.rs:3780-3780` `Command::new`
+- `src/cli/setup.rs:3755-3755` `Command::new`
+- `src/cli/setup.rs:3784-3784` `Command::new`
 - `src/cli/validate.rs:1456-1456` `Command::new`
 - `src/cli/validate.rs:1735-1735` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -2421,48 +2421,48 @@ __END__
              package-lock.json and ran npm install)"`
 - `src/cli/setup.rs:1495-1495` `"kept existing .rigger/agents/{name} (import never overwrites)"`
 - `src/cli/setup.rs:1523-1523` `"imported .rigger/agents/{name} (id: {id})"`
-- `src/cli/setup.rs:2420-2420` `"nothing is written - no .rigger, no .claude, no .gitignore"`
-- `src/cli/setup.rs:2487-2487` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2492-2492` `"no gate template set matches this project (rust: Cargo.toml at the project \
+- `src/cli/setup.rs:2424-2424` `"nothing is written - no .rigger, no .claude, no .gitignore"`
+- `src/cli/setup.rs:2491-2491` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2496-2496` `"no gate template set matches this project (rust: Cargo.toml at the project \
                   root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2518-2518` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
-- `src/cli/setup.rs:2546-2546` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2547-2547` `"no gate template set matches this project (demo: a or b; other: c at the project \
+- `src/cli/setup.rs:2522-2522` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
+- `src/cli/setup.rs:2550-2550` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2551-2551` `"no gate template set matches this project (demo: a or b; other: c at the project \
                  root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2564-2564` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:2884-2884` `".rigger/agents/"`
-- `src/cli/setup.rs:2938-2938` `".rigger/dash.url"`
-- `src/cli/setup.rs:2939-2939` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2940-2940` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2949-2949` `".rigger/store.conn"`
-- `src/cli/setup.rs:2966-2966` `".rigger/\n"`
-- `src/cli/setup.rs:2972-2972` `".rigger/dash.url"`
-- `src/cli/setup.rs:2975-2975` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2978-2978` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2979-2979` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
+- `src/cli/setup.rs:2568-2568` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:2888-2888` `".rigger/agents/"`
+- `src/cli/setup.rs:2942-2942` `".rigger/dash.url"`
+- `src/cli/setup.rs:2943-2943` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2944-2944` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2953-2953` `".rigger/store.conn"`
+- `src/cli/setup.rs:2970-2970` `".rigger/\n"`
+- `src/cli/setup.rs:2976-2976` `".rigger/dash.url"`
+- `src/cli/setup.rs:2979-2979` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2982-2982` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2983-2983` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
              even when .rigger/ broadly covers them, so the committed .gitignore stays \
              self-contained, got: {:?}"`
-- `src/cli/setup.rs:2987-2987` `".rigger/dash.url"`
-- `src/cli/setup.rs:2988-2988` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2989-2989` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2990-2990` `"all three explicit per-file dash ignore lines are present in the committed \
+- `src/cli/setup.rs:2991-2991` `".rigger/dash.url"`
+- `src/cli/setup.rs:2992-2992` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2993-2993` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2994-2994` `"all three explicit per-file dash ignore lines are present in the committed \
              .gitignore even though .rigger/ already covers them, got:\n{content}"`
-- `src/cli/setup.rs:3000-3000` `".rigger/dash.url"`
-- `src/cli/setup.rs:3003-3003` `".rigger/dash.marker"`
-- `src/cli/setup.rs:3006-3006` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3359-3359` `".rigger/agents/researcher.md"`
-- `src/cli/setup.rs:3388-3388` `".rigger/agents/planner.md"`
-- `src/cli/setup.rs:3418-3418` `".rigger/agents/newcomer.md"`
-- `src/cli/setup.rs:3496-3496` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:3726-3726` `".rigger"`
-- `src/cli/setup.rs:4004-4004` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:4188-4188` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
-- `src/cli/setup.rs:4190-4190` `"`sh .rigger/gates/content.sh style`"`
-- `src/cli/setup.rs:4191-4191` `"`sh .rigger/gates/content.sh no-os-kill`"`
-- `src/cli/setup.rs:4192-4192` `"`sh .rigger/gates/red-before-green.sh`"`
-- `src/cli/setup.rs:4212-4212` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
-- `src/cli/setup.rs:4215-4215` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
-- `src/cli/setup.rs:4217-4217` `"`sh .rigger/gates/lanes.sh <lane>`"`
+- `src/cli/setup.rs:3004-3004` `".rigger/dash.url"`
+- `src/cli/setup.rs:3007-3007` `".rigger/dash.marker"`
+- `src/cli/setup.rs:3010-3010` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3363-3363` `".rigger/agents/researcher.md"`
+- `src/cli/setup.rs:3392-3392` `".rigger/agents/planner.md"`
+- `src/cli/setup.rs:3422-3422` `".rigger/agents/newcomer.md"`
+- `src/cli/setup.rs:3500-3500` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:3730-3730` `".rigger"`
+- `src/cli/setup.rs:4008-4008` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:4219-4219` `"`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty"`
+- `src/cli/setup.rs:4221-4221` `"`sh .rigger/gates/content.sh style`"`
+- `src/cli/setup.rs:4222-4222` `"`sh .rigger/gates/content.sh no-os-kill`"`
+- `src/cli/setup.rs:4223-4223` `"`sh .rigger/gates/red-before-green.sh`"`
+- `src/cli/setup.rs:4243-4243` `"`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`"`
+- `src/cli/setup.rs:4246-4246` `"`git ls-files src crates tests docs skills scaffold .rigger | xargs awk"`
+- `src/cli/setup.rs:4248-4248` `"`sh .rigger/gates/lanes.sh <lane>`"`
 - `src/cli/validate.rs:854-854` `"warning: tracked .rigger/ files have uncommitted modifications:"`
 - `src/cli/validate.rs:1296-1296` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\
@@ -4085,7 +4085,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/liveness.rs:924-938` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
-- `src/cli/setup.rs:2709-2723` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
+- `src/cli/setup.rs:2713-2727` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-3be22153e14f` (semantic, 66 sites)
 
@@ -5375,7 +5375,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10284 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10285 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:5109-5150` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15263-15285` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
