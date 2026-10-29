@@ -446,13 +446,23 @@ pub(crate) fn stderr_line(line: &str) {
 /// another process re-extracting the entry reads its blob from there, and outside one hashes
 /// without writing; a hash that fails, a failed write included, answers its error. The binding
 /// detects whether `root` is inside a repository once, at its first hash, and keeps the answer
-/// ([`rigger::worktree::BlobHasher`]), so each hash is one process.
+/// ([`rigger::worktree::BlobHasher`]), so each hash is one process. A binding handed no root (an
+/// empty `root`, as a replay's run is) hashes nothing: asked, it answers a failure naming why
+/// ([`NO_TREE_TO_HASH_UNDER`]), never a hash under the working directory, whose repository it
+/// would otherwise write into.
 pub(crate) fn hash_blob_in(
     root: &str,
 ) -> impl Fn(&[u8]) -> Result<String, rigger::worktree::Error> + Sync + '_ {
-    let hasher = rigger::worktree::BlobHasher::new(root);
-    move |bytes| hasher.hash(bytes)
+    let hasher = (!root.is_empty()).then(|| rigger::worktree::BlobHasher::new(root));
+    move |bytes| match &hasher {
+        Some(hasher) => hasher.hash(bytes),
+        None => Err(rigger::worktree::Error(NO_TREE_TO_HASH_UNDER.to_string())),
+    }
 }
+
+/// What a hash binding handed no root answers when asked ([`hash_blob_in`]).
+const NO_TREE_TO_HASH_UNDER: &str =
+    "no tree to hash under: a binding handed no root, as a replay's run is, hashes no blob";
 
 /// Open the embedded sqlite event log at `path`. This is the ONE sqlite event-log constructor
 /// (§48, the single authority): [`resolve_store`] boxes it as the port for every command, and
@@ -2736,7 +2746,8 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
         //    results, and ReplayRunner guarantees a candidate-config-only gate never shells out.
         //    No worker ever touches a liveness marker here, so no marker root is recorded.
         let driver = ReplayDriver::new(&iso, "");
-        // A replay walks no tree (`repo` is empty), so its hash is never asked.
+        // A replay walks no tree (`repo` is empty), so its hash is never asked; asked, it fails
+        // naming why rather than hash under the working directory.
         let hash_blob = hash_blob_in("");
         let deps = Deps {
             store: &iso,
