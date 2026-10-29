@@ -877,8 +877,8 @@ pub const BOTH_CAUSES_REBUILD_LINE: &str = "rebuilding graph.db from the event l
      under an older fold rule, and it misses an event the log holds, so the log's live selection \
      is refolded once";
 
-/// What a command whose answer depends on the fold prints after its name when it refuses because
-/// `graph.db` owes its rebuild
+/// What a command or tool whose answer depends on the fold answers after its name when it refuses
+/// because `graph.db` owes its rebuild
 /// ([`rebuild_owed_refusal`](rigger::contextgraph::rebuild_owed_refusal)): spec 124's MARK LINES
 /// text, its one cause the older fold rule the file records - the lost fold is the seeding's
 /// verdict, never named here.
