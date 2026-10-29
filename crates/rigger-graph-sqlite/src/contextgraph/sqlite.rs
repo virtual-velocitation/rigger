@@ -9696,7 +9696,8 @@ mod tests {
         // call reads the log, the appender's ceiling, how it folds, and where the cursor stands
         // after the fold.
         type Stands = &'static [Stand];
-        let cases: [(&str, Stands, Stands, Duration, Folding, Option<u64>); 5] = [
+        type Case = (&'static str, Stands, Stands, Duration, Folding, Option<u64>);
+        let cases: [Case; 5] = [
             ("its call", &[], &[], FOLD_LOCK_CEILING, alone, Some(1)),
             (
                 "its call with its ceiling already passed",
