@@ -1038,6 +1038,21 @@ fn each_append_and_open_token_is_reported_by_file_and_item() {
             &[],
         ),
         (
+            "a run::STREAM outside a use declaration imports nothing",
+            "src/lib.rs",
+            "use crate::canary::Probe;\n\nfn later() {\n    store.append(STREAM, &events);\n    \
+             tag(run::STREAM);\n}\n",
+            &[],
+            &[],
+        ),
+        (
+            "a free append( is no method append",
+            "src/lib.rs",
+            "fn free() {\n    append(conductor::STREAM, &events);\n}\n",
+            &[],
+            &[],
+        ),
+        (
             "an append naming no stream",
             "src/lib.rs",
             "fn plain() {\n    events.append(&mut more);\n}\n",
