@@ -775,10 +775,10 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
 /// `file:item`: a call to an [`APPEND_CALLS`] name or a method `.append(` whose argument list,
 /// read to its matching `)`, holds `STREAM` right after a [`STREAM_MODULES`] segment
 /// (`run::STREAM`, `conductor::STREAM`) or a bare `STREAM` in a file that imports it from one of
-/// them. An appender that holds the stream by reference is no entry: the MCP server's emit (`crates/rigger-dash/src/mcpserver.rs:431`), handed
-/// `conductor::STREAM` at `src/cli/dashboard.rs:853`, is reached through its graph open,
-/// `src/cli/dashboard.rs:cmd_mcp` in [`GRAPH_OPENS`]. Spec 124's THE APPENDER AUDIT names the
-/// store each one's call reaches.
+/// them. An appender that holds the stream by reference is no entry: the MCP server's emit
+/// (`crates/rigger-dash/src/mcpserver.rs:431`), handed `conductor::STREAM` at
+/// `src/cli/dashboard.rs:853`, is reached through its graph open, `src/cli/dashboard.rs:cmd_mcp`
+/// in [`GRAPH_OPENS`]. Spec 124's THE APPENDER AUDIT names the store each one's call reaches.
 const PROJECT_STREAM_APPENDS: &[&str] = &[
     "crates/rigger-conductor/src/conductor.rs:append_and_fold_batch",
     "crates/rigger-conductor/src/conductor.rs:emit_keyed_batch",
