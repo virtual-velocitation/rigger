@@ -69,6 +69,15 @@ pub fn setup_owes((causes, seeding): &(Vec<&'static str>, Seeding)) -> bool {
     !causes.is_empty() || *seeding == Seeding::Ran { lost: true }
 }
 
+/// What [`owed_once_seeded`] reads of a graph file that records no cause and whose seeding finds
+/// nothing lost: setup owes it nothing.
+pub const NOTHING_OWED_ONCE_SEEDED: (Vec<&str>, Seeding) =
+    (Vec::new(), Seeding::Ran { lost: false });
+
+/// What [`owed_once_seeded`] reads of a graph file that records no cause and whose seeding finds
+/// the prefix it folded violated: setup owes it the lost fold alone.
+pub const LOST_FOLD_ONCE_SEEDED: (Vec<&str>, Seeding) = (Vec::new(), Seeding::Ran { lost: true });
+
 /// Run `run` while the seeding `rigger setup` runs of the cursor of the graph file `open` opens
 /// holds that file's write lock: the seeding's source streams the positions of `log`, then waits
 /// `held` inside the seeding's transaction, `run` starting once they are streamed, each missing

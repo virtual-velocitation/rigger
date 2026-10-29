@@ -7508,7 +7508,7 @@ mod tests {
                 owed_once_seeded_against(&p, log),
                 crate::test_support::caught_up_at(Path::new(path)),
             ),
-            ((Vec::<&str>::new(), Seeding::Ran { lost: true }), None),
+            (crate::test_support::LOST_FOLD_ONCE_SEEDED, None),
             "the file records nothing, and the ledger's old hole is the debt, seeding no cursor"
         );
         drop(p);
@@ -7525,7 +7525,7 @@ mod tests {
                 true,
                 true,
                 crate::test_support::head_of(log),
-                (Vec::<&str>::new(), Seeding::Ran { lost: false })
+                crate::test_support::NOTHING_OWED_ONCE_SEEDED
             ),
             "the rebuild folds the lost position, seeds the cursor at the log's last position and \
              pays the debt"
@@ -7676,7 +7676,7 @@ mod tests {
         crate::test_support::folds(&p, &log[..2]);
         assert_eq!(
             owed_once_seeded_against(&p, &log[..2]),
-            (Vec::<&str>::new(), Seeding::Ran { lost: false })
+            crate::test_support::NOTHING_OWED_ONCE_SEEDED
         );
         crate::test_support::folds(&p, &log[3..]);
         let seeding = seeded_unread(&p, crate::test_support::head_of(&log));
@@ -7727,7 +7727,7 @@ mod tests {
                 owed_once_seeded_against(&p, &log),
                 crate::test_support::caught_up_at(Path::new(&path))
             ),
-            ((Vec::<&str>::new(), Seeding::Ran { lost: false }), Some(4)),
+            (crate::test_support::NOTHING_OWED_ONCE_SEEDED, Some(4)),
             "the next seeding, the lock released, seeds the file"
         );
     }
@@ -7871,6 +7871,12 @@ mod tests {
             }
         }
         answers
+    }
+
+    /// What [`answers`] reads of a file whose catch-up folds the one position past its cursor and
+    /// then meets the log's head.
+    fn folds_one_then_meets_the_head() -> Vec<Result<CatchUp, String>> {
+        vec![Ok(CatchUp::Advanced { recorded: 1 }), Ok(CatchUp::AtHead)]
     }
 
     /// The page read of the log a catch-up call makes from `from`, handed `materialized` events of
@@ -8184,21 +8190,13 @@ mod tests {
     fn catch_up_beside_the_owed_mark_folds_past_the_cursor() {
         let (_dir, path, p, log) = catching_up();
         carrying_an_owed_mark(&path);
-        appended_to(
-            &*log,
-            "test",
-            rigger_domain::run::STREAM,
-            &decisions_at([1]),
-        );
+        logged(&*log, &decisions_at([1]));
         assert_eq!(
             (
                 answers(&p),
                 crate::test_support::caught_up_at(Path::new(&path))
             ),
-            (
-                vec![Ok(CatchUp::Advanced { recorded: 1 }), Ok(CatchUp::AtHead)],
-                Some(1)
-            ),
+            (folds_one_then_meets_the_head(), Some(1)),
             "the marked file catches up past its cursor"
         );
     }
@@ -8282,10 +8280,7 @@ mod tests {
                 answers(&p),
                 crate::test_support::caught_up_at(Path::new(&path)),
             ),
-            (
-                vec![Ok(CatchUp::Advanced { recorded: 1 }), Ok(CatchUp::AtHead)],
-                Some(1),
-            ),
+            (folds_one_then_meets_the_head(), Some(1)),
             "the handed log's unprefixed run event folds, the cursor past it"
         );
     }
@@ -8435,7 +8430,7 @@ mod tests {
         );
         assert_eq!(
             answers(&p),
-            vec![Ok(CatchUp::Advanced { recorded: 1 }), Ok(CatchUp::AtHead)],
+            folds_one_then_meets_the_head(),
             "the next call, the lock released, folds"
         );
     }
@@ -8826,7 +8821,7 @@ mod tests {
                 (
                     refused_at_its_owed_mark(&path),
                     ((true, true), (true, true), false),
-                    (Vec::<&str>::new(), Seeding::Ran { lost: false }),
+                    crate::test_support::NOTHING_OWED_ONCE_SEEDED,
                     reads,
                     crate::test_support::positions_of(&window),
                     crate::test_support::owned_ids(&kept),
@@ -9012,7 +9007,7 @@ mod tests {
             (
                 Err(crate::test_support::graph_error(TAIL_INTERRUPTED)),
                 Some(0),
-                (Vec::<&str>::new(), Seeding::Ran { lost: false }),
+                crate::test_support::NOTHING_OWED_ONCE_SEEDED,
                 vec![5, 6],
                 Some(Rebuilt {
                     pruned: PruneStats {
@@ -9020,7 +9015,7 @@ mod tests {
                         superseded_edges: 0
                     }
                 }),
-                (Vec::<&str>::new(), Seeding::Ran { lost: false }),
+                crate::test_support::NOTHING_OWED_ONCE_SEEDED,
                 Some(6),
                 (false, false),
             ),
@@ -9046,8 +9041,8 @@ mod tests {
                 owed_once_seeded_against(&p, &backdated)
             ),
             (
-                (Vec::<&str>::new(), Seeding::Ran { lost: false }),
-                (Vec::<&str>::new(), Seeding::Ran { lost: true })
+                crate::test_support::NOTHING_OWED_ONCE_SEEDED,
+                crate::test_support::LOST_FOLD_ONCE_SEEDED
             ),
             "an old tail position missing below a later fold is the tail's debt, and the swapped-in \
              cursor's own position missing from the ledger is a lost fold"
@@ -10122,7 +10117,7 @@ mod tests {
                 owed_once_seeded_against(&p, &log),
                 crate::test_support::caught_up_at(&path)
             ),
-            ((Vec::<&str>::new(), Seeding::Ran { lost: true }), None),
+            (crate::test_support::LOST_FOLD_ONCE_SEEDED, None),
             "the seeding names the lost fold, and the mark is no cause"
         );
         let at_an_older_rule = |folded: &[Event]| {
@@ -18811,11 +18806,7 @@ mod tests {
                             generation_of_f(&p),
                             crate::test_support::passed_over_rows(&path),
                         ),
-                        (
-                            vec![Ok(CatchUp::Advanced { recorded: 1 }), Ok(CatchUp::AtHead)],
-                            generation,
-                            passed,
-                        ),
+                        (folds_one_then_meets_the_head(), generation, passed),
                         "{case}: the calls' answers, the generation installed and what was passed \
                          over"
                     );

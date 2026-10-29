@@ -668,7 +668,7 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
 #[test]
 fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_each_event_once() {
     use common::fixtures::{CountedRead, ReadCountingStore};
-    use rigger::contextgraph::sqlite::{stream_positions, stream_source, Projector, Seeding};
+    use rigger::contextgraph::sqlite::{stream_positions, stream_source, Projector};
     let dir = tempfile::tempdir().unwrap();
     let (backend, _) = store_with(
         dir.path(),
@@ -710,7 +710,7 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
     assert_eq!(
         (owed, rebuilt, counting.reads()),
         (
-            (Vec::<&str>::new(), Seeding::Ran { lost: true }),
+            common::fixtures::LOST_FOLD_ONCE_SEEDED,
             Some(Rebuilt::default()),
             vec![
                 CountedRead::StreamPositions {
