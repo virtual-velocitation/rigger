@@ -9503,7 +9503,7 @@ mod tests {
                 (
                     folded,
                     applied_through(&p, 2),
-                    owed_mark(&path).unwrap().exists()
+                    crate::test_support::mark_stands_beside(Path::new(&path))
                 ),
                 (Fold::NotFolded(text), vec![false, false], false),
                 "{case}: the write-lock text with its path's suffix, nothing folded and no mark"
@@ -9550,7 +9550,7 @@ mod tests {
                 (
                     crate::test_support::fold_of(&p, &copies),
                     applied(&p, copies[0].position),
-                    owed_mark(&path).unwrap().exists(),
+                    crate::test_support::mark_stands_beside(Path::new(&path)),
                 ),
                 (Fold::NotFolded(text), false, false),
                 "{case}: the last call's cause with the call-run suffix, nothing folded, no mark"
@@ -9583,7 +9583,7 @@ mod tests {
                 asked.get(),
                 answered_past(&copies, ceiling),
                 applied(&p, 1),
-                owed_mark(&path).unwrap().exists(),
+                crate::test_support::mark_stands_beside(Path::new(&path)),
             ),
             (
                 Err(lost_fold(BLOB_UNREAD, CATCH_UP_PAYS)),
@@ -9668,7 +9668,7 @@ mod tests {
                 (
                     crate::test_support::fold_of(&p, &copies),
                     answered_past(&copies, ceiling),
-                    owed_mark(&path).unwrap().exists(),
+                    crate::test_support::mark_stands_beside(Path::new(&path)),
                 ),
                 (answer(&copies), false, false),
                 "{case}: answered at once, inside the ceiling, writing no mark"
@@ -9716,7 +9716,7 @@ mod tests {
                 (
                     crate::test_support::fold_of(&p, &copies),
                     answered_past(&copies, ceiling),
-                    owed_mark(&path).unwrap().exists(),
+                    crate::test_support::mark_stands_beside(Path::new(&path)),
                 ),
                 (
                     Fold::NotFolded(lost_by_calls(UNFINISHED_REBUILD)),
@@ -9805,7 +9805,7 @@ mod tests {
                     folding(&path, &p, &copies),
                     applied(&p, 1),
                     crate::test_support::caught_up_at(Path::new(&path)),
-                    owed_mark(&path).unwrap().exists(),
+                    crate::test_support::mark_stands_beside(Path::new(&path)),
                 ),
                 (Fold::Folded, true, cursor, false),
                 "{case}: folded, the cursor where it stands, no mark"
@@ -9854,7 +9854,7 @@ mod tests {
                     folded,
                     asked.get(),
                     crate::test_support::caught_up_at(Path::new(&path)),
-                    owed_mark(&path).unwrap().exists(),
+                    crate::test_support::mark_stands_beside(Path::new(&path)),
                 ),
                 (Ok(outcome), asks, Some(1), false),
                 "{case}: the entry's outcome, its batch's asks, the cursor past it, no mark"
