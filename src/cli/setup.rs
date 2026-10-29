@@ -4520,8 +4520,8 @@ mod tests {
         format!("{}{}'", &OPEN[1..], author_awk_program(OPEN, "'`"))
     }
 
-    /// The author block's by-shape generator, spelled byte for byte by the second author role
-    /// and the architecture lens, lists each line the walk's range adds to a production source
+    /// The author block's by-shape generator, spelled byte for byte by the second author role,
+    /// lists each line the walk's range adds to a production source
     /// that carries a predicate's shape - an `if` condition, an `&&` operand on its own
     /// continuation line, a `filter` closure - and passes by a doc comment, a line the base
     /// already held, every line of the file's test module and every line of a root test; a
@@ -4530,12 +4530,10 @@ mod tests {
     fn the_added_predicate_generator_lists_each_production_shape_and_no_test_line() {
         use crate::test_support::{git_commit_all, git_ok, temp_git_project_with_commit};
         let generator = added_predicate_generator();
-        for persona in ["sdet-author.md", "architecture-reviewer.md"] {
-            assert!(
-                committed_persona(persona).contains(&format!("`{generator}`")),
-                "{persona} spells the author block's generator byte for byte"
-            );
-        }
+        assert!(
+            committed_persona("sdet-author.md").contains(&format!("`{generator}`")),
+            "sdet-author.md spells the author block's generator byte for byte"
+        );
         const PRODUCTION: [&str; 9] = [
             "#[cfg(test)]",
             "use std::fmt::Debug;",
@@ -4806,54 +4804,45 @@ mod tests {
         );
     }
 
-    /// The architecture lens is the enforcement of the built-in rule that every fact the
-    /// production delta states has one home: it derives the added items itself from the
-    /// production hunks by shape as well as by name, a SQL conjunct inside a query string
-    /// included, reading that set with the authors' generator byte for byte, reads the walk
-    /// record's one-home line for each, the record keeping no heading of its own for predicates,
-    /// and a missing line, two lines for two predicates of one fact or one false at head is
-    /// BLOCKING; for every added set of named members it runs the
-    /// member search itself, and a second spelling the line does not name is BLOCKING.
+    /// The architecture lens raises each structural defect as a finding the adjudicator weighs by
+    /// the built-in review rule - wrong code when it breaks something, a note when it bends a
+    /// principle and nothing breaks - and a second spelling of a fact the production delta states
+    /// as a note citing both spellings, read from the hunks itself: it requires and reads no
+    /// author record, spells no generator and blocks on no one-home line.
     #[test]
-    fn the_architecture_lens_reads_the_one_home_line_of_every_added_item() {
+    fn the_architecture_lens_raises_a_second_spelling_as_a_note_and_reads_no_record() {
         let flat = rigger::wave::normalize_ws(&committed_persona("architecture-reviewer.md"));
         for wanted in [
-            "you derive the set of constants, statics, lists, closures and predicates the unit \
-             adds yourself from its production hunks by shape as well as by name - every \
-             boolean expression of the shapes the built-in rule lists, a boolean expression or \
-             SQL conjunct inside a query string, format string or macro argument included - and \
-             read the `<unit>-sentence-walk` record's one-home lines for every item of it, and an \
-             added item with no line, two added predicates of one fact with two lines, or a line \
-             false at head (the fact has another spelling the line does not name, or the named \
-             derivation or pin does not exist), is BLOCKING (DRY, single responsibility), cited \
-             with both spellings' `file:line`.",
-            "You read that set with the authors' generator, byte for byte the command their \
-             persona spells, run from your own worktree's root at the review tree's head",
-            "you read each hit, and a hit that holds no boolean expression is passed over.",
-            "For every added set of named members, of the forms the built-in rule names, you run \
-             the member search yourself, the count of each member's name, every statement, \
-             `match` or macro call holding two or more of them read as a second spelling of the \
-             set, and a second spelling the one-home line does not name is BLOCKING on its own.",
+            "Raise as a finding: an adapter imported by the domain, a use case reaching for a \
+             concrete type, a new parallel abstraction where one already exists, a dependency \
+             that isn't injected, a trait port that leaks its implementation.",
+            "Cite file:line, and say whether it breaks something - wrong code, which blocks - or \
+             bends a principle and breaks nothing, a note.",
+            "A fact the unit's production delta spells a second time - a constant, list, closure \
+             or predicate the tree already states - is a DRY finding raised as a note, citing \
+             both spellings' `file:line`: you read the unit's production hunks for it yourself, \
+             and no author record of it is owed or read.",
         ] {
             assert!(
                 flat.contains(wanted),
                 "architecture-reviewer.md must say {wanted:?}"
             );
         }
-        // The predicate shapes and the set forms are listed once, in the working discipline's
-        // one-home rule; the lens names that list and carries no copy of it.
-        for copied in ["`retain`, `position`", "an `||` chain of equalities"] {
+        for retired in [
+            "<unit>-sentence-walk",
+            "one-home line",
+            "BLOCKING",
+            "Reject:",
+            "git diff -U0",
+            "member search",
+            "ADDED PREDICATES",
+        ] {
             assert!(
-                !flat.contains(copied),
-                "architecture-reviewer.md names the built-in's list instead of copying {copied:?}"
+                !flat.contains(retired),
+                "architecture-reviewer.md requires no record and blocks on no one-home line: \
+                 {retired:?}"
             );
         }
-        // The walk record carries each added item's one-home line with no heading of its own
-        // for predicates, so the lens reads no such list.
-        assert!(
-            !flat.contains("ADDED PREDICATES"),
-            "architecture-reviewer.md reads no predicate heading the bounded record does not keep"
-        );
     }
 
     /// The adjudicator's tools carry no MCP tool, so its persona sends its reasoning record
