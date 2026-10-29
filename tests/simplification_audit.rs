@@ -10529,6 +10529,14 @@ mod tests {
         );
     }
 
+    /// `distiller`'s `rebuild`, one of two unrelated top-level free fns sharing the bare name.
+    const DISTILLER_REBUILD: (&str, &str) =
+        ("src/distiller.rs", "pub fn rebuild() -> u32 {\n    1\n}\n");
+
+    /// `playbooks`'s `rebuild`, the other sharer of [`DISTILLER_REBUILD`]'s bare name.
+    const PLAYBOOKS_REBUILD: (&str, &str) =
+        ("src/playbooks.rs", "pub fn rebuild() -> u32 {\n    2\n}\n");
+
     /// Over the `files` fixture tree, exactly one `rebuild` is flagged (ambiguous) - the one in
     /// `file`. Returns it.
     fn the_one_flagged_rebuild(files: &[(&str, &str)], file: &str) -> DeadCodeCandidate {
@@ -10547,8 +10555,8 @@ mod tests {
         a_free_fn_bare_name_collision_where_only_one_sharer_has_a_real_caller_flags_the_other: assert_eq!(
             the_one_flagged_rebuild(
             &[
-                ("src/distiller.rs", "pub fn rebuild() -> u32 {\n    1\n}\n"),
-                ("src/playbooks.rs", "pub fn rebuild() -> u32 {\n    2\n}\n"),
+                DISTILLER_REBUILD,
+                PLAYBOOKS_REBUILD,
                 ("src/main.rs", "fn main() {\n    let _ = playbooks::rebuild();\n}\n"),
             ],
                 "src/distiller.rs",
@@ -10572,11 +10580,22 @@ mod tests {
         /// attributes to that specific definition, same as a `module::rebuild()` call site would.
         a_bare_call_resolved_through_a_use_import_attributes_to_the_imported_definition: the_one_flagged_rebuild(
             &[
-                ("src/distiller.rs", "pub fn rebuild() -> u32 {\n    1\n}\n"),
-                ("src/playbooks.rs", "pub fn rebuild() -> u32 {\n    2\n}\n"),
+                DISTILLER_REBUILD,
+                PLAYBOOKS_REBUILD,
                 ("src/main.rs", "use crate::playbooks::rebuild;\nfn main() {\n    let _ = rebuild();\n}\n"),
             ],
             "src/distiller.rs",
+        );
+        /// The same attribution through a group import: a bare `rebuild()` call in a file whose
+        /// `use` names it inside a `playbooks::{..}` group nested in another group attributes to
+        /// `playbooks`'s definition, the module of the group that holds it.
+        a_bare_call_resolved_through_a_group_use_import_attributes_to_the_imported_definition: the_one_flagged_rebuild(
+            &[
+                DISTILLER_REBUILD,
+                PLAYBOOKS_REBUILD,
+                ("src/main.rs", "use crate::{distiller::Report, playbooks::{rebuild, Playbook}};\nfn main() {\n    let _ = rebuild();\n}\n"),
+            ],
+            DISTILLER_REBUILD.0,
         );
     }
 
