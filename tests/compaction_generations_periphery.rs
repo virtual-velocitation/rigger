@@ -5096,8 +5096,8 @@ fn a_setup_rerun_after_its_rebuild_stopped_past_its_prune_reports_the_same_count
 
 /// Run a `rigger setup` in `root` whose rebuild stops right after its prune and its swap - the owed
 /// mark it must then drop is a directory it cannot remove, and its failure names that mark - then
-/// `meanwhile`, while that mark still says `graph.db` owes its rebuild, and clear the mark: what
-/// the stopped setup printed, and whether it exited successfully.
+/// `meanwhile`, while the rebuild's state stands in `graph.db` with no setup to finish it, and
+/// clear the mark: what the stopped setup printed, and whether it exited successfully.
 fn stop_setup_past_its_prune(root: &Path, meanwhile: fn(&Path)) -> (String, bool) {
     let mark = rigger_file(root, "graph.db.owed");
     std::fs::create_dir(&mark).unwrap();
@@ -5127,26 +5127,24 @@ fn stop_setup_in_its_tail(root: &Path) -> (String, bool) {
 }
 
 /// Given a `rigger setup` whose rebuild stopped past its prune and its swap, when the log gains
-/// events before setup runs again - a decision the active run records with `rigger emit`, which
-/// the owed graph does not fold, a run another writer of the log starts, closing the run that was
-/// active, or a closed run's decision id the active run records again about another file - or a
-/// swap cut short left its private pruned copy behind, then the rerun names no cause - the shadow
-/// is the rebuild's own unfinished work, which the swapped-in ledger owes nothing for - and resumes
-/// its unpruned shadow, folding only what the log gained past it - its one progress line counts
-/// exactly those events, and a rerun the log gained nothing for folds none - and prunes a fresh
-/// copy of it from the whole run attribution it gathered, the first pass's included, never reading
-/// a stale copy and leaving none behind: it keeps the active run's decision, prunes the run that
-/// closed, keeps the id the active run re-recorded governing both files its two recordings name,
-/// folds every event the log gained, keeps no rebuild state and leaves `rigger reset --runs`
-/// nothing to prune; and a cold rebuild of the same log yields the same graph, every node and edge,
-/// and the same report - the one prune of the whole log, never the sum of two: when the run that
-/// closed is the one that was active, `shared` is dropped with the retired edge it owns, 5 nodes
-/// and no edge left to reclaim.
+/// events before setup runs again - a decision the active run records, which no fold makes, a run
+/// another writer of the log starts, closing the run that was active, or a closed run's decision id
+/// the active run records again about another file - or a swap cut short left its private pruned
+/// copy behind, then the rerun names no cause - the shadow is the rebuild's own unfinished work,
+/// which the swapped-in ledger owes nothing for - and resumes its unpruned shadow, folding only
+/// what the log gained past it - its one progress line counts exactly those events, and a rerun the
+/// log gained nothing for folds none - and prunes a fresh copy of it from the whole run attribution
+/// it gathered, the first pass's included, never reading a stale copy and leaving none behind: it
+/// keeps the active run's decision, prunes the run that closed, keeps the id the active run
+/// re-recorded governing both files its two recordings name, folds every event the log gained,
+/// keeps no rebuild state and leaves `rigger reset --runs` nothing to prune; and a cold rebuild of
+/// the same log yields the same graph, every node and edge, and the same report - the one prune of
+/// the whole log, never the sum of two: when the run that closed is the one that was active,
+/// `shared` is dropped with the retired edge it owns, 5 nodes and no edge left to reclaim.
 #[test]
 fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run_that_closed() {
     let active_run_decides: fn(&Path) = |root| {
-        let (out, err, ok) = emit_decision(root, "d-window");
-        assert!(ok, "the emit appends; stdout: {out} stderr: {err}");
+        append_unfolded_decision_named(root, "d-window");
     };
     let another_writer_starts_a_run: fn(&Path) = |root| {
         common::cli::with_run_store(root, |store| {
@@ -5167,15 +5165,10 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
         });
     };
     let active_run_re_records_a_closed_runs_decision: fn(&Path) = |root| {
-        let (out, err, ok) = run_rigger(
+        append_unfolded_decision(
             root,
-            &[
-                "emit",
-                "DecisionMade",
-                r#"{"id":"d-dead","summary":"s","governs":["src/h.rs"],"supersedes":""}"#,
-            ],
+            br#"{"id":"d-dead","summary":"s","governs":["src/h.rs"],"supersedes":""}"#,
         );
-        assert!(ok, "the emit appends; stdout: {out} stderr: {err}");
     };
     let a_swap_cut_short_left_its_copy: fn(&Path) = |root| {
         std::fs::write(
