@@ -785,7 +785,7 @@ impl Projector {
         let mut live = self.conn.lock().unwrap();
         let live = &mut *live;
         let shadow_path = shadow_of(path);
-        match shadow_pay(path, live, owed)? {
+        match shadow_pay(path, live, owed, store)? {
             ShadowPay::Skip => {
                 if !rebuild_tail_owed(live)? {
                     return Ok(None);
@@ -885,7 +885,7 @@ impl Projector {
     /// as any read of it does.
     pub fn rebuild_starts_fresh(&self, _held: &RebuildLock, owed: bool) -> Result<bool, Error> {
         let live = self.conn.lock().unwrap();
-        Ok(shadow_pay(&self.path, &live, owed)?.starts_fresh())
+        Ok(shadow_pay(&self.path, &live, owed, &self.store)?.starts_fresh())
     }
 
     /// Why this file says it owes its rebuild (spec 101): the older fold rule it records
@@ -937,10 +937,14 @@ impl Projector {
     /// another writer's lock past the busy timeout is [`Seeding::Skipped`], having read and written
     /// nothing; any other failure is the error. A file already carrying `caught_up` keeps its
     /// cursor and its ledger is read no further: nothing at or below the cursor is missing from
-    /// it. Its verdict is lost only against `log_head`, the log's head its caller read once
-    /// ([`EventStore::log_head`]): a head below the cursor, or no head beside a cursor above 0 - a
-    /// log shorter than the prefix the cursor claims, as when the log is replaced under the file;
-    /// beside a head at or above the cursor, or no head beside a cursor at 0, it loses nothing.
+    /// it. Its verdict is lost when the cursor was recorded beside another log than the one this
+    /// projector folds ([`Projector::with_store_identity`]), or beside none - a cursor whose table
+    /// predates that identity - as when the event store is switched under the file (spec 124, A
+    /// LOG SWITCHED UNDER A STANDING GRAPH), and otherwise only against `log_head`, the log's head
+    /// its caller read once ([`EventStore::log_head`]): a head below the cursor, or no head beside
+    /// a cursor above 0 - a log shorter than the prefix the cursor claims, as when the log is
+    /// replaced under the file; beside a head at or above the cursor, or no head beside a cursor
+    /// at 0, it loses nothing. Neither reads a log row.
     ///
     /// On a file without it the ledger is read against the positions `live` streams - the log's
     /// live selection, whose last position is the log's head - at or below the highest position
@@ -963,9 +967,10 @@ impl Projector {
         now: SystemTime,
     ) -> Result<Seeding, Error> {
         let seeded = self.transact(|tx| -> Result<Seeding, Error> {
-            if let Some(cursor) = cursor_at(tx, CAUGHT_UP)? {
+            if let Some((cursor, recorded)) = caught_up_beside(tx)? {
                 return Ok(Seeding::Ran {
-                    lost: log_head.map_or(cursor > 0, |head| head < cursor),
+                    lost: log_switched(recorded.as_deref(), &self.store)
+                        || log_head.map_or(cursor > 0, |head| head < cursor),
                 });
             }
             let highest = highest_applied(tx)?;
@@ -2207,13 +2212,20 @@ fn shadow_stands(path: &str) -> bool {
     Path::new(&shadow_of(path)).exists()
 }
 
-/// Whether the standing shadow behind `shadow` can be resumed: it holds the run attribution the
-/// rebuild gathered, from which the prune is derived whole, and records the current fold rule
-/// ([`PROJECTION_VERSION`]), under which it was folded. A shadow without that attribution - one
-/// whose rebuild state was never opened, or was torn - or folded under another rule (a rule-1
-/// binary recorded none) is not.
-fn shadow_resumable(shadow: &Connection) -> Result<bool, Error> {
-    Ok(has_table(shadow, "rebuild_run_closure")? && fold_rule(shadow)? == PROJECTION_VERSION)
+/// Whether the standing shadow behind `shadow` can be resumed by a rebuild folding the log whose
+/// identity is `store`: it holds the run attribution the rebuild gathered, from which the prune is
+/// derived whole, records the current fold rule ([`PROJECTION_VERSION`]), under which it was
+/// folded, and was folded from that log - its `caught_up` cursor recorded beside it, or carrying
+/// none, as a binary before the cursor left it, which the shadow open creates ([`create_cursor`]).
+/// A shadow without that attribution - one whose rebuild state was never opened, or was torn -
+/// folded under another rule (a rule-1 binary recorded none), or whose cursor was recorded beside
+/// another log or beside none ([`log_switched`], spec 124, A LOG SWITCHED UNDER A STANDING GRAPH)
+/// is not.
+fn shadow_resumable(shadow: &Connection, store: &str) -> Result<bool, Error> {
+    Ok(has_table(shadow, "rebuild_run_closure")?
+        && fold_rule(shadow)? == PROJECTION_VERSION
+        && caught_up_beside(shadow)?
+            .is_none_or(|(_, recorded)| !log_switched(recorded.as_deref(), store)))
 }
 
 /// What a [`Projector::rebuild`] of a graph file pays with its shadow (spec 124).
@@ -2234,21 +2246,22 @@ impl ShadowPay {
     }
 }
 
-/// What a rebuild of the graph file at `path`, live on `live` and owed by its caller when `owed`,
-/// pays with its shadow: a standing shadow ([`shadow_stands`]) is resumed when it is resumable
-/// ([`shadow_resumable`]) and replaced by a fresh one otherwise; with none standing, a fresh one is
-/// started when a cause is owed - `owed`, or the older fold rule the file records
-/// ([`owed_by_file`]) - whether or not a swapped-in tail stands, and none otherwise. A standing
-/// shadow is opened without being created and only read. The one classification
-/// [`Projector::rebuild`] pays by and [`Projector::rebuild_starts_fresh`] answers.
-fn shadow_pay(path: &str, live: &Connection, owed: bool) -> Result<ShadowPay, Error> {
+/// What a rebuild of the graph file at `path`, live on `live`, owed by its caller when `owed` and
+/// folding the log whose identity is `store`, pays with its shadow: a standing shadow
+/// ([`shadow_stands`]) is resumed when it is resumable from that log ([`shadow_resumable`]) and
+/// replaced by a fresh one otherwise; with none standing, a fresh one is started when a cause is
+/// owed - `owed`, or the older fold rule the file records ([`owed_by_file`]) - whether or not a
+/// swapped-in tail stands, and none otherwise. A standing shadow is opened without being created
+/// and only read. The one classification [`Projector::rebuild`] pays by and
+/// [`Projector::rebuild_starts_fresh`] answers.
+fn shadow_pay(path: &str, live: &Connection, owed: bool, store: &str) -> Result<ShadowPay, Error> {
     if shadow_stands(path) {
         let shadow = Connection::open_with_flags(
             shadow_of(path),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
         )
         .map_err(be)?;
-        return Ok(if shadow_resumable(&shadow)? {
+        return Ok(if shadow_resumable(&shadow, store)? {
             ShadowPay::Resume
         } else {
             ShadowPay::Fresh
@@ -2882,6 +2895,26 @@ fn rebuild_tail_owed(conn: &Connection) -> Result<bool, Error> {
 /// that rebuild's tail - or `None` for a file holding no rebuild state, which owes no tail.
 fn rebuild_tail_from(conn: &Connection) -> Result<Option<Position>, Error> {
     cursor_at(conn, "rebuild_cursor")
+}
+
+/// Where the `caught_up` cursor of the file behind `conn` stands and the identity of the log it
+/// was recorded beside ([`create_cursor`]) - none for a cursor whose table predates that identity,
+/// read as it stands and never an error - or `None` on a file without the cursor ([`cursor_row`]).
+fn caught_up_beside(conn: &Connection) -> Result<Option<(Position, Option<String>)>, Error> {
+    cursor_row(conn, CAUGHT_UP, ", *", [], |position, r| {
+        match r.get::<_, Option<String>>("store") {
+            Err(rusqlite::Error::InvalidColumnName(_)) => Ok((position, None)),
+            recorded => Ok((position, recorded?)),
+        }
+    })
+}
+
+/// Whether the log a cursor was recorded beside, `recorded` - none for a cursor whose table
+/// predates that identity - is not the log `selected` its projector folds (spec 124, A LOG
+/// SWITCHED UNDER A STANDING GRAPH): the event store was switched under the file, so the prefix
+/// its cursor claims is of another log, or of a log it cannot name.
+fn log_switched(recorded: Option<&str>, selected: &str) -> bool {
+    recorded != Some(selected)
 }
 
 /// Whether the file behind `conn` carries its `caught_up` cursor ([`cursor_at`]).
