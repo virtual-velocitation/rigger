@@ -446,6 +446,15 @@ pub fn mark_owed_in(dir: &std::path::Path) -> std::path::PathBuf {
     mark
 }
 
+/// Stand a directory at the path of the owed mark of the graph file `graph_db` ([`owed_mark_in`]),
+/// a mark no removal can remove - its removal is refused naming it ([`directory_refusal`]) - and
+/// answer its path.
+pub fn unremovable_mark_beside(graph_db: &std::path::Path) -> std::path::PathBuf {
+    let mark = owed_mark_in(graph_db.parent().unwrap());
+    std::fs::create_dir(&mark).unwrap();
+    mark
+}
+
 /// Whether the owed mark of the graph file `graph_db` ([`owed_mark_in`]) stands beside it.
 pub fn mark_stands_beside(graph_db: &std::path::Path) -> bool {
     owed_mark_in(graph_db.parent().unwrap()).exists()

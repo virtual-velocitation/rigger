@@ -7817,16 +7817,22 @@ mod tests {
         move || open().map(scoped_to_test)
     }
 
-    /// A fresh graph file under the project `test` whose `caught_up` cursor is seeded at 0 beside
-    /// an empty log, as `rigger setup` seeds a new file: the directory that keeps it, its path and
-    /// a projector on it, handed no log.
-    fn seeded_graph() -> (tempfile::TempDir, String, Projector) {
-        let (dir, path) = crate::test_support::temp_graph_db();
-        let p = Projector::open(&path, "test").unwrap();
+    /// A projector on the graph file at `path` under the project `test`, handed no log, whose
+    /// `caught_up` cursor is seeded at 0 beside an empty log, as `rigger setup` seeds a new file.
+    fn seeded_at(path: &str) -> Projector {
+        let p = Projector::open(path, "test").unwrap();
         assert_eq!(
             seeded_against(&p, &[], recorded()),
             Seeding::Ran { lost: false }
         );
+        p
+    }
+
+    /// A fresh graph file seeded as `rigger setup` seeds a new file ([`seeded_at`]): the directory
+    /// that keeps it, its path and the projector on it.
+    fn seeded_graph() -> (tempfile::TempDir, String, Projector) {
+        let (dir, path) = crate::test_support::temp_graph_db();
+        let p = seeded_at(&path);
         (dir, path, p)
     }
 
@@ -10230,25 +10236,33 @@ mod tests {
         Projector::forget_orphaned_mark(":memory:").unwrap();
     }
 
-    /// An owed mark that cannot be removed - a directory stands at its path - fails its forgetting
-    /// naming the mark, and stands.
-    #[test]
-    fn an_orphaned_mark_that_cannot_be_removed_fails_naming_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("graph.db");
-        let mark = crate::test_support::owed_mark_in(dir.path());
-        std::fs::create_dir(&mark).unwrap();
+    /// An owed mark beside the graph file at a path that cannot be removed - a directory stands at
+    /// its path ([`unremovable_mark_beside`](crate::test_support::unremovable_mark_beside)) - fails
+    /// its forgetting by `forget` naming the mark, and stands.
+    fn a_mark_that_cannot_be_removed_fails_naming_it(forget: fn(&str) -> Result<(), Error>) {
+        let (_dir, path) = crate::test_support::temp_graph_db();
+        let mark = crate::test_support::unremovable_mark_beside(Path::new(&path));
         assert_eq!(
-            (
-                Projector::forget_orphaned_mark(path.to_str().unwrap()).map_err(|e| e.to_string()),
-                mark.is_dir()
-            ),
+            (forget(&path).map_err(|e| e.to_string()), mark.is_dir()),
             (
                 Err(crate::test_support::directory_refusal(mark.display())),
                 true
             ),
             "the mark that cannot be removed is named, and stands"
         );
+    }
+
+    crate::test_cases! {
+        /// The graph file is gone: its orphaned mark is forgotten
+        /// ([`Projector::forget_orphaned_mark`]).
+        an_orphaned_mark_that_cannot_be_removed_fails_naming_it:
+            a_mark_that_cannot_be_removed_fails_naming_it(Projector::forget_orphaned_mark);
+        /// The graph file carries its `caught_up` cursor ([`seeded_at`]): its mark is forgotten as
+        /// a cursored file's ([`Projector::forget_cursored_mark`]).
+        a_cursored_graph_files_mark_that_cannot_be_removed_fails_naming_it:
+            a_mark_that_cannot_be_removed_fails_naming_it(|path| {
+                seeded_at(path).forget_cursored_mark()
+            });
     }
 
     /// A stale pruned copy is forgotten - removed, answering that it was - whenever no one holds

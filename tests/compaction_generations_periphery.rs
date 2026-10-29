@@ -120,7 +120,7 @@ use common::fixtures::STEP_LOCK_REASON;
 use common::fixtures::{catch_up_failed_line, the_disk_gives_out_at_d_boom, the_disk_recovers};
 use common::fixtures::{graph_error, not_folded, not_folded_suffix, NOT_A_DATABASE};
 use common::fixtures::{lost_by_calls, UNFINISHED_REBUILD};
-use common::fixtures::{mark_owed_in, mark_stands_beside};
+use common::fixtures::{mark_owed_in, mark_stands_beside, unremovable_mark_beside};
 use common::fixtures::{source_interrupted, SOURCE_INTERRUPTED};
 use common::fixtures::{under_a_seedings_lock, with_graph_locked, with_graph_locked_for};
 use common::fixtures::{HELD_PAST_THE_BUSY_TIMEOUT, HELD_WITHIN_THE_BUSY_TIMEOUT};
@@ -2482,15 +2482,17 @@ fn setup_folds_a_cursored_graph_db_forward_over_a_gap_longer_than_a_page() {
 }
 
 /// Given a `graph.db` carrying its `caught_up` cursor that misses an event appended behind every
-/// fold, beside which the owed mark stands as an older binary's lost fold left it when `marked`
-/// says so, when the operator runs `rigger setup` while the file's storage refuses that event's
-/// node ([`the_disk_gives_out_at_d_boom`]), then setup's catch-up stops at the cursor and setup
-/// fails naming that position and the storage error, leaving the event missing and the cursor
-/// where it stood, and no owed mark beside the file - setup removes a standing one from a file
-/// carrying `caught_up` even when its catch-up stops (spec 124, THE MARK); once the storage
-/// recovers, the next `rigger setup` folds the event forward from the cursor and moves the cursor
-/// to it.
-fn setup_whose_catch_up_meets_a_storage_error(marked: bool) {
+/// fold, beside which `stand` leaves the owed mark's path as the row finds it, when the operator
+/// runs `rigger setup` while the file's storage refuses that event's node
+/// ([`the_disk_gives_out_at_d_boom`]), then setup's catch-up stops at the cursor and setup fails
+/// naming that position and the storage error whatever its removal of the mark answered, leaving
+/// the event missing and the cursor where it stood; setup removes a standing mark from a file
+/// carrying `caught_up` even when its catch-up stops, so the mark stands after it only when `kept`
+/// says no removal can remove it (spec 124, THE MARK). Once the storage recovers, the next `rigger
+/// setup` folds the event forward from the cursor and moves the cursor to it, and fails naming the
+/// mark only when `kept` says it still stands: its catch-up did not stop, so its failed removal of
+/// the mark is its failure.
+fn setup_whose_catch_up_meets_a_storage_error(stand: fn(&Path), kept: bool) {
     let dir = temp_store_project();
     let root = dir.path();
     emit_the_first_decision_after_setup(root);
@@ -2498,9 +2500,7 @@ fn setup_whose_catch_up_meets_a_storage_error(marked: bool) {
     let cursor = caught_up_at(&graph_db).unwrap();
     let lost = append_unfolded_decision_named(root, D_BOOM);
     the_disk_gives_out_at_d_boom(&graph_db);
-    if marked {
-        mark_owed_in(graph_db.parent().unwrap());
-    }
+    stand(&graph_db);
 
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     let refused = refusal_line(&catch_up_failed_line(cursor, DISK_GAVE_OUT));
@@ -2519,33 +2519,91 @@ fn setup_whose_catch_up_meets_a_storage_error(marked: bool) {
             Vec::<String>::new(),
             false,
             Some(cursor),
-            false
+            kept
         ),
         "setup fails naming where its catch-up stopped and why, and leaves the event missing, the \
-         cursor where it stood and no owed mark; stdout: {out} stderr: {err}"
+         cursor where it stood and the owed mark only where no removal can remove it; stdout: \
+         {out} stderr: {err}"
     );
 
     the_disk_recovers(&graph_db);
-    let out = setup_ok(root, &[("RIGGER_NPM", "true")]);
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert_eq!(
         (
+            (!ok).then(|| err.lines().last().map(str::to_owned)),
             common::cli::rebuild_lines(&out),
             applied(&graph_db, lost),
-            caught_up_at(&graph_db)
+            caught_up_at(&graph_db),
+            mark_stands_beside(&graph_db)
         ),
-        (vec![caught_up_line(1)], true, Some(lost)),
-        "once the storage recovers, setup folds the event forward from the cursor; stdout: {out}"
+        (
+            kept.then(|| Some(common::cli::unremovable_mark_refusal())),
+            vec![caught_up_line(1)],
+            true,
+            Some(lost),
+            kept
+        ),
+        "once the storage recovers, setup folds the event forward from the cursor, and fails \
+         naming the mark only where it still stands; stdout: {out} stderr: {err}"
     );
 }
 
 rigger::test_cases! {
     /// No owed mark stands beside the file: setup's stopped catch-up writes none.
     setup_whose_catch_up_meets_a_storage_error_fails_at_the_cursor_and_the_next_setup_folds_on:
-        setup_whose_catch_up_meets_a_storage_error(false);
+        setup_whose_catch_up_meets_a_storage_error(|_| {}, false);
     /// The owed mark stands beside the file: setup removes it before failing at the cursor, the
     /// file carrying `caught_up`.
     setup_whose_catch_up_meets_a_storage_error_beside_an_owed_mark_still_removes_the_mark:
-        setup_whose_catch_up_meets_a_storage_error(true);
+        setup_whose_catch_up_meets_a_storage_error(
+            |graph_db| {
+                mark_owed_in(graph_db.parent().unwrap());
+            },
+            false,
+        );
+    /// A directory stands at the owed mark's path ([`unremovable_mark_beside`]): setup's removal
+    /// of it fails, yet setup fails naming where its catch-up stopped and the mark stands; once the
+    /// storage recovers, the next setup catches up and fails naming the mark.
+    setup_whose_catch_up_meets_a_storage_error_beside_a_mark_it_cannot_remove_names_the_stop:
+        setup_whose_catch_up_meets_a_storage_error(
+            |graph_db| {
+                unremovable_mark_beside(graph_db);
+            },
+            true,
+        );
+}
+
+/// Given a `graph.db` carrying its `caught_up` cursor at the log's head, owing nothing, beside
+/// which a directory stands at the owed mark's path ([`unremovable_mark_beside`]), when the
+/// operator runs `rigger setup`, then its catch-up does not stop, so its failed removal of the
+/// mark is its failure: setup exits non-zero naming the mark, which stands, and the cursor stays
+/// where it stood (spec 124, THE MARK).
+#[test]
+fn setup_beside_a_cursored_graph_db_owing_nothing_fails_naming_a_mark_it_cannot_remove() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    emit_the_first_decision_after_setup(root);
+    let graph_db = rigger_file(root, "graph.db");
+    let cursor = caught_up_at(&graph_db);
+    unremovable_mark_beside(&graph_db);
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (
+            ok,
+            err.lines().last(),
+            mark_stands_beside(&graph_db),
+            caught_up_at(&graph_db)
+        ),
+        (
+            false,
+            Some(common::cli::unremovable_mark_refusal().as_str()),
+            true,
+            cursor
+        ),
+        "setup fails naming the mark it cannot remove, which stands, and leaves the cursor where \
+         it stood; stdout: {out} stderr: {err}"
+    );
 }
 
 /// Given a `graph.db` without the `caught_up` cursor that folded the log, on a project whose
@@ -4705,9 +4763,10 @@ fn a_fresh_runs_mint_is_folded(args: &[&str]) {
 }
 
 /// Given a project whose `graph.db` owes its rebuild (it records an older fold rule), when the
-/// operator begins a new run with `args`, then it refuses naming `rigger setup` before it appends
-/// anything: no boundary is minted that the graph would miss, and neither the log nor `graph.db`
-/// changes.
+/// operator begins a new run with `args`, then it refuses as `command`, saying spec 124's MARK
+/// LINES text ([`REBUILD_OWED_TEXT`](common::cli::REBUILD_OWED_TEXT)) naming `rigger setup`, before
+/// it appends anything: no boundary is minted that the graph would miss, and neither the log nor
+/// `graph.db` changes.
 fn a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
     args: &[&str],
     command: &str,
@@ -4725,10 +4784,11 @@ fn a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
         (
             ok,
             err.trim_end()
-                .ends_with(&rigger::contextgraph::rebuild_owed_refusal(command))
+                .ends_with(&format!("{command}: {}", common::cli::REBUILD_OWED_TEXT))
         ),
         (false, true),
-        "the fresh run refuses naming `rigger setup`; stdout: {out} stderr: {err}"
+        "the fresh run refuses saying the graph owes its rebuild for the older fold rule alone, \
+         naming `rigger setup`; stdout: {out} stderr: {err}"
     );
     assert_eq!(
         (run_log(root), std::fs::read(&graph_db).unwrap() == graph),
@@ -5213,17 +5273,11 @@ fn a_setup_rerun_after_its_rebuild_stopped_past_its_prune_reports_the_same_count
 /// `meanwhile`, while the rebuild's state stands in `graph.db` with no setup to finish it, and
 /// clear the mark: what the stopped setup printed, and whether it exited successfully.
 fn stop_setup_past_its_prune(root: &Path, meanwhile: fn(&Path)) -> (String, bool) {
-    let mark = rigger_file(root, "graph.db.owed");
-    std::fs::create_dir(&mark).unwrap();
+    let mark = unremovable_mark_beside(&rigger_file(root, "graph.db"));
     let (stopped, err, stopped_ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     assert_eq!(
         err.lines().last(),
-        Some(
-            common::cli::refusal_line(&common::fixtures::directory_refusal(
-                Path::new(".rigger").join("graph.db.owed").display()
-            ))
-            .as_str()
-        ),
+        Some(common::cli::unremovable_mark_refusal().as_str()),
         "the stopped setup names the mark it could not remove; stdout: {stopped} stderr: {err}"
     );
     meanwhile(root);
