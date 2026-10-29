@@ -182,6 +182,11 @@ CREATE TABLE IF NOT EXISTS rebuild_run_closure (
 );
 ";
 
+/// The name of the one-row cursor table saying how far the file's prefix of the log reaches (spec
+/// 124, THE CURSOR AND ITS SEEDING): what its creation ([`create_cursor`]), every read of it
+/// ([`cursor_row`]) and every move of it ([`set_cursor`]) name it by.
+const CAUGHT_UP: &str = "caught_up";
+
 /// The bound [`CATCH_UP_HORIZON`] adds its margin to (spec 124, THE CLOCKS): ten minutes, the
 /// longest an appender ([`Projector::guarded`]) waits, counted from its lowest own position's
 /// stamp, for its positions to fold - by its calls, or by its direct fold's retried opens past
@@ -817,7 +822,7 @@ impl Projector {
         in_transaction(live, project, |tx| {
             let through = rebuild_cursor(tx)?;
             create_cursor(tx, through)?;
-            set_cursor(tx, "caught_up", through)?;
+            set_cursor(tx, CAUGHT_UP, through)?;
             tx.execute_batch(DROP_REBUILD_STATE).map_err(be)
         })
         .map_err(FrameError::unframed)?;
@@ -950,7 +955,7 @@ impl Projector {
         now: SystemTime,
     ) -> Result<Seeding, Error> {
         let seeded = self.transact(|tx| -> Result<Seeding, Error> {
-            if let Some(cursor) = cursor_at(tx, "caught_up")? {
+            if let Some(cursor) = cursor_at(tx, CAUGHT_UP)? {
                 return Ok(Seeding::Ran {
                     lost: log_head.map_or(cursor > 0, |head| head < cursor),
                 });
@@ -1316,7 +1321,7 @@ impl Projector {
     /// was handed the log ([`Projector::with_log`]), the events are all of the project's run
     /// stream (`streamed`), and the file behind `conn` carries the `caught_up` cursor.
     fn folds_by_calls(&self, conn: &Connection, streamed: bool) -> Result<bool, Error> {
-        Ok(self.log.is_some() && streamed && cursor_at(conn, "caught_up")?.is_some())
+        Ok(self.log.is_some() && streamed && cursor_at(conn, CAUGHT_UP)?.is_some())
     }
 
     /// THE APPENDER's calls (spec 124): call [`Projector::catch_up`] - with `own`, the appender's
@@ -2523,7 +2528,7 @@ fn own_standing(
 ) -> Result<Option<(Position, Option<String>)>, Error> {
     cursor_row(
         conn,
-        "caught_up",
+        CAUGHT_UP,
         &format!(", ({FIRST_PASSED_OVER})"),
         [positions],
         |cursor, r| Ok((cursor, r.get(1)?)),
@@ -2793,7 +2798,7 @@ impl FoldCursor for CatchUpCut {
     }
 
     fn close(&mut self, tx: &Transaction, through: Position) -> Result<(), FrameError> {
-        set_cursor(tx, "caught_up", through)?;
+        set_cursor(tx, CAUGHT_UP, through)?;
         self.recorded = applied_between(tx, self.lock_at, through)? - self.before;
         Ok(())
     }
@@ -2814,7 +2819,7 @@ fn standing_cursor(
     Ok(match owed_by_file(conn, mark)?.first() {
         Some(&OWED_OLDER_RULE) => Err(Inert::OlderRule),
         Some(_) => Err(Inert::Marked),
-        None => cursor_at(conn, "caught_up")?.ok_or(Inert::NoCursor),
+        None => cursor_at(conn, CAUGHT_UP)?.ok_or(Inert::NoCursor),
     })
 }
 
@@ -2901,15 +2906,15 @@ fn rebuild_cursor(conn: &Connection) -> Result<Position, Error> {
 /// ([`Projector::seed_cursor`]) and a rebuild's shadow open and drop ([`Projector::rebuild`])
 /// create it through.
 fn create_cursor(tx: &Transaction, at: Position) -> Result<(), Error> {
-    tx.execute_batch(
-        "CREATE TABLE IF NOT EXISTS caught_up (
+    tx.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS {CAUGHT_UP} (
             id INTEGER PRIMARY KEY CHECK (id = 0),
             position INTEGER NOT NULL
-        )",
-    )
+        )"
+    ))
     .map_err(be)?;
     tx.execute(
-        "INSERT OR IGNORE INTO caught_up (id, position) VALUES (0, ?1)",
+        &format!("INSERT OR IGNORE INTO {CAUGHT_UP} (id, position) VALUES (0, ?1)"),
         [at as i64],
     )
     .map(drop)
