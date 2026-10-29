@@ -9324,9 +9324,7 @@ mod tests {
         assert_eq!(
             (folded, p.owed_because().unwrap(), mark.exists()),
             (
-                Fold::NotFolded(crate::test_support::graph_error(
-                    &crate::test_support::lock_held_past("0 s")
-                )),
+                Fold::NotFolded(crate::test_support::graph_error(&held_past_a_zero_ceiling())),
                 Vec::<&str>::new(),
                 false,
             ),
@@ -9409,6 +9407,12 @@ mod tests {
         crate::test_support::fold_of(p, copies)
     }
 
+    /// The cause a fold answers past a zero ceiling (`with_lock_ceiling(Duration::ZERO)`) while
+    /// another writer holds the write lock ([`lock_held_past`](crate::test_support::lock_held_past)).
+    fn held_past_a_zero_ceiling() -> String {
+        crate::test_support::lock_held_past("0 s")
+    }
+
     /// Spec 124, CAUSE TEXTS: a ceiling reads in whole minutes at or above one minute and in whole
     /// seconds below it, each rounded down.
     #[test]
@@ -9456,7 +9460,7 @@ mod tests {
     fn an_appender_held_off_past_its_ceiling_answers_the_write_lock_text_and_marks_nothing() {
         use crate::contextgraph::Fold;
         use crate::test_support::{graph_error, lost_by_calls, lost_fold, SETUP_PAYS};
-        let reason = crate::test_support::lock_held_past("0 s");
+        let reason = held_past_a_zero_ceiling();
         let held = graph_error(&reason);
         // Each case: what stands in the file, whether the projector is handed the log, whether both
         // the appender's copies keep the stream the log gave them - else the first names none - and
