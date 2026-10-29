@@ -5,9 +5,10 @@
 //! source reading those audits and `tests/boundary_audit.rs` share: which lines are test code,
 //! and which function encloses a line. And the one Rust lexer, [`tokenize`], that
 //! `tests/simplification_audit.rs` scans by, rule 4 of `tests/boundary_audit.rs` finds string
-//! literals with and its appender audit finds calls with, and the token readers those two suites
-//! read its tokens with ([`ref_punct`], [`ref_token`], [`qualifier_before`], [`follows_keyword`],
-//! [`is_definition_site`], [`close_of`], [`imported_names`]). Each
+//! literals with and its appender audit finds calls with, and the binary's unit tests (mounted by
+//! `src/main.rs`) read `tests/common`'s functions by; and the token readers the simplification and
+//! boundary audits read its tokens with ([`ref_punct`], [`ref_token`], [`qualifier_before`],
+//! [`follows_keyword`], [`is_definition_site`], [`close_of`], [`imported_names`]). Each
 //! suite uses the subset it needs (hence the module-wide `dead_code` allowance, as in
 //! `tests/common/mod.rs`).
 

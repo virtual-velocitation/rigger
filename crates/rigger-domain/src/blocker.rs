@@ -40,6 +40,15 @@ use crate::safety;
 /// - every existing call site is unchanged.
 pub const TYPE_BUDGET_EXHAUSTED: &str = "BudgetExhausted";
 
+/// The reject-recurrence diagnose threshold (spec 69 Design: "reject-recurrence at the diagnose
+/// threshold (>= 3 ...")): the count at which a failing unit stops reading as remediating on its
+/// own and needs an operator's look. Fixed by the spec text, independent of the run's configured
+/// `defaults.max_retries` (a different bound, for a different purpose - when the conductor
+/// escalates, not when an operator should look). It lives here, beside the `reject-recurrence`
+/// kind, rather than in the store-gated `watch` module whose reject-recurrence-trend signal
+/// alerts on it, so the console's always-compiled needs-you dock reads the same constant.
+pub const REJECT_RECURRENCE_DIAGNOSE_THRESHOLD: u32 = 3;
+
 /// The run's spawn-budget halt, folded from the durable `BudgetExhausted` fact:
 /// `spent` spawns against a `cap` (`defaults.budget`). Surfaced as the run-level
 /// [`Kind::Budget`] blocker.

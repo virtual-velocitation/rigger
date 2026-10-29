@@ -9397,7 +9397,7 @@
     "is_test": false,
     "proposed_module": "main::provenance",
     "reason": "name contains \"docs_\" (docs overlay); grouped under `main::provenance`.",
-    "content_hash": "b9f5ea38d00288e3"
+    "content_hash": "81131dfef7b3064e"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9597,7 +9597,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "25fd7198b66c85b6"
+    "content_hash": "5615401ac0f011d3"
   },
   {
     "file": "src/cli/mod.rs",

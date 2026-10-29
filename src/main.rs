@@ -26,6 +26,9 @@ use cli::*;
 #[allow(dead_code)]
 mod gitsemver;
 #[cfg(test)]
+#[path = "../tests/common/source_audit.rs"]
+mod source_audit;
+#[cfg(test)]
 #[path = "../tests/common/fixtures/mod.rs"]
 mod test_support;
 
