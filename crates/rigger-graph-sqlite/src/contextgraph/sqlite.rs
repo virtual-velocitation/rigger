@@ -19,7 +19,7 @@ use super::{
     Graph, Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT,
     KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
     KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE,
-    LEAF_REF_KINDS, MODULE_CANDIDATE_SEPARATOR, NON_TARGET_KINDS, OWED_OLDER_RULE,
+    LEAF_REF_KINDS, MODULE_CANDIDATE_SEPARATOR, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
     PLACEHOLDER_SIGIL, REBUILD_OWED, REF_KIND_MODULE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS,
     REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS,
     REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
@@ -548,9 +548,20 @@ pub enum Seeding {
     /// It ran under the write lock. `lost` is its prefix-violation verdict, a verdict of this
     /// seeding alone and no record of the file: the file misses an event of the log, or records
     /// one past the log's end, that only a rebuild repairs in order, so `rigger setup` names the
-    /// lost fold ([`OWED_LOST_FOLD`](super::OWED_LOST_FOLD)) as a cause beside the ones the file
-    /// records ([`Projector::owed_because`]) and pays it with a rebuild.
+    /// lost fold ([`OWED_LOST_FOLD`]) as a cause beside the ones the file records
+    /// ([`causes_once_seeded`]) and pays it with a rebuild.
     Ran { lost: bool },
+}
+
+/// The causes `rigger setup` names for the rebuild of a graph file that records the causes
+/// `recorded` ([`Projector::owed_because`]) and whose seeding answered `seeding`: those, then the
+/// lost fold ([`OWED_LOST_FOLD`]) when the seeding ran and found the prefix it folded violated
+/// (spec 124, THE MARK). Setup owes the file its rebuild whenever it names a cause.
+pub fn causes_once_seeded(mut recorded: Vec<&'static str>, seeding: &Seeding) -> Vec<&'static str> {
+    if *seeding == (Seeding::Ran { lost: true }) {
+        recorded.push(OWED_LOST_FOLD);
+    }
+    recorded
 }
 
 /// What one [`Projector::catch_up`] call answered (spec 124, ONE PROCEDURE).

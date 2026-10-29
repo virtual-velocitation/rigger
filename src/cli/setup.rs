@@ -1104,8 +1104,9 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// Seed the `caught_up` cursor of `graph`, the `graph.db` whose rebuild lock is `held`, against the
 /// log through `seeding`, handed the head of `log` read once here and its missing positions aged
 /// against the clock read once here ([`Projector::seed_cursor`]); read why the file owes its
-/// rebuild - the older fold rule the file records ([`Projector::owed_because`]), and the lost
-/// fold ([`contextgraph::OWED_LOST_FOLD`]) when the seeding ran and found the prefix violated;
+/// rebuild ([`contextgraph::sqlite::causes_once_seeded`]) - the older fold rule the file records
+/// ([`Projector::owed_because`]), and the lost fold ([`contextgraph::OWED_LOST_FOLD`]) when the
+/// seeding ran and found the prefix violated;
 /// when the pay starts a NEW rebuild, a fresh shadow the log is folded into from its start
 /// ([`Projector::rebuild_starts_fresh`]) - a cause owed beside no standing shadow, a swapped-in
 /// tail standing or not, or a standing shadow that is not resumable - ask `refuse_if_live` of `log`
@@ -1146,10 +1147,7 @@ fn pay_owed_rebuild<'t>(
         log.log_head()?,
         std::time::SystemTime::now(),
     )?;
-    let mut causes = graph.owed_because()?;
-    if seeded == (contextgraph::sqlite::Seeding::Ran { lost: true }) {
-        causes.push(contextgraph::OWED_LOST_FOLD);
-    }
+    let causes = contextgraph::sqlite::causes_once_seeded(graph.owed_because()?, &seeded);
     let owed = !causes.is_empty();
     // A NEW rebuild - one whose pay starts a fresh shadow and folds the log from its start - is
     // refused while the run is live, and the step lock the probe took is held until the rebuild
