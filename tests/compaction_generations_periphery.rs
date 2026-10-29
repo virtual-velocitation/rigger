@@ -2430,6 +2430,28 @@ fn replace_the_log_below_a_cursored_graph_db(root: &Path) {
     std::fs::rename(shorter, rigger_file(root, "events.db")).unwrap();
 }
 
+/// Replace `root`'s `graph.db` by the one another checkout of the same project made, through
+/// `rigger setup` and a fold of the decision `d-other` its log alone holds ([`emit_folding`]): a
+/// file whose cursor stands at or below the head of `root`'s log and was recorded beside another
+/// log, as when the operator switches the event store under a standing graph file.
+fn fold_another_log_into_a_cursored_graph_db(root: &Path) {
+    let other = temp_store_project();
+    pin_identity(other.path(), &run_stream_identity(root));
+    setup_ok(other.path(), &[("RIGGER_NPM", "true")]);
+    emit_folding(other.path(), "d-other");
+    remove_the_store_file(root, "graph.db");
+    rigger_db(other.path(), "graph.db")
+        .execute(
+            "VACUUM INTO ?1",
+            [rigger_file(root, "graph.db").to_str().unwrap()],
+        )
+        .unwrap();
+    assert!(
+        caught_up_at(&rigger_file(root, "graph.db")).is_some_and(|at| at <= run_log_head(root)),
+        "the other checkout's cursor stands at or below the head of root's log"
+    );
+}
+
 rigger::test_cases! {
     /// The operator removes `graph.db`: setup creates the file afresh, its empty ledger beside the
     /// log's events.
@@ -2448,6 +2470,13 @@ rigger::test_cases! {
     setup_rebuilds_a_graph_db_whose_cursor_stands_past_a_shorter_log_s_head_into_the_graph_it_holds:
         setup_rebuilds_a_lost_fold_into_the_graph_the_log_holds(
             replace_the_log_below_a_cursored_graph_db
+        );
+    /// The operator switches the event store under a file carrying its cursor, which another log
+    /// folded: the cursor stands at or below the selected log's head, recorded beside that other
+    /// log.
+    setup_rebuilds_a_graph_db_another_log_folded_into_the_graph_the_selected_log_holds:
+        setup_rebuilds_a_lost_fold_into_the_graph_the_log_holds(
+            fold_another_log_into_a_cursored_graph_db
         );
 }
 
@@ -4499,6 +4528,79 @@ fn setup_rebuilds_a_graph_db_missing_an_event_another_writer_appended_to_the_ser
              cursor to it, rebuilding nothing; stdout: {out} stderr: {err}"
         );
         owes_nothing("the cursor stands at the server's head, so setup folds nothing more");
+    });
+}
+
+/// Given a project whose `graph.db` folded its embedded log, its cursor at that log's head, when
+/// the operator switches the event store to a KurrentDB server whose log holds a decision of its
+/// own above that cursor and runs `rigger setup`, then setup finds the cursor recorded beside
+/// another log, rebuilds `graph.db` from the server's run stream alone - the embedded log's
+/// decision gone - with its cursor at the stream's head, and a second setup owes nothing (spec 124,
+/// A LOG SWITCHED UNDER A STANDING GRAPH). Gracefully skipped when no container runtime is
+/// reachable.
+#[test]
+fn setup_rebuilds_a_graph_db_whose_store_was_switched_to_a_server_from_the_server_s_log() {
+    common::fixtures::with_kurrentdb(|conn| {
+        let dir = temp_store_project();
+        let root = dir.path();
+        emit_the_first_decision_after_setup(root);
+        let graph_db = rigger_file(root, "graph.db");
+        let embedded = caught_up_at(&graph_db).unwrap();
+        let project = run_stream_identity(root);
+        let backend = rigger::eventstore::kurrentdb::Store::open(conn).unwrap();
+        let log = Namespaced::new(&backend, &project);
+        let on_the_server = log
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    "DecisionMade",
+                    r#"{"id":"d-server","summary":"s","governs":["src/f.rs"],"supersedes":""}"#
+                        .as_bytes()
+                        .to_vec(),
+                )],
+            )
+            .unwrap()
+            .one("the server's decision")
+            .unwrap();
+        assert!(
+            on_the_server >= embedded,
+            "the server's decision stands at or above the embedded log's cursor"
+        );
+
+        let server = [("KURRENTDB_CONN", conn), ("RIGGER_NPM", "true")];
+        let out = setup_ok(root, &server);
+        let stream = log
+            .read_stream(
+                rigger::conductor::STREAM,
+                0,
+                rigger::eventstore::Direction::Forward,
+            )
+            .unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let folded = fold_in_batches(
+            &scratch.path().join("graph.db"),
+            &project,
+            std::slice::from_ref(&stream),
+        );
+        assert_eq!(
+            (
+                common::cli::rebuild_lines(&out),
+                whole_graph(root),
+                caught_up_at(&graph_db)
+            ),
+            (
+                rebuilt_for_a_lost_fold(),
+                folded,
+                stream.last().map(|e| e.position)
+            ),
+            "setup rebuilds the file from the server's run stream alone; stdout: {out}"
+        );
+        let out = setup_ok(root, &server);
+        assert!(
+            !out.contains("graph.db"),
+            "the rebuilt file owes nothing; stdout: {out}"
+        );
     });
 }
 

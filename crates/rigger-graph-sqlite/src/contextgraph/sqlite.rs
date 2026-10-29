@@ -8689,6 +8689,46 @@ mod tests {
         }
     }
 
+    /// Spec 124, A LOG SWITCHED UNDER A STANDING GRAPH: a cursored file's seeding reads the
+    /// identity of the log its cursor was recorded beside, and no log row: beside the log this
+    /// projector folds it loses nothing, and beside another one, or beside none - a cursor whose
+    /// table predates the identity - it is lost, never an error, the cursor standing where it
+    /// stood for the rebuild to seed anew.
+    #[test]
+    fn a_cursored_file_s_seeding_is_lost_beside_another_log_or_none() {
+        const SELECTED: &str = "local:/p/.rigger/events.db";
+        let cases: [(&str, fn(&Path), bool); 3] = [
+            (
+                "the log this projector folds",
+                |db| crate::test_support::record_the_cursor_beside(db, SELECTED),
+                false,
+            ),
+            (
+                "a server's log",
+                |db| crate::test_support::record_the_cursor_beside(db, "shared:5cfaa9387d2839e1"),
+                true,
+            ),
+            ("no log", crate::test_support::drop_the_cursor_s_log, true),
+        ];
+        for (case, recorded, lost) in cases {
+            let (_dir, path, seeded) = seeded_graph();
+            drop(seeded);
+            crate::test_support::move_the_cursor(Path::new(&path), 2);
+            recorded(Path::new(&path));
+            let p = Projector::open(&path, "test")
+                .unwrap()
+                .with_store_identity(SELECTED.to_string());
+            assert_eq!(
+                (
+                    seeded_unread(&p, Some(3)),
+                    crate::test_support::caught_up_at(Path::new(&path)),
+                ),
+                (Seeding::Ran { lost }, Some(2)),
+                "a cursor recorded beside {case}"
+            );
+        }
+    }
+
     /// Whether `p`'s applied ledger records each position from 1 through `last`, in order
     /// ([`applied`]).
     fn applied_through(p: &Projector, last: u64) -> Vec<bool> {
@@ -10516,9 +10556,12 @@ mod tests {
     /// what it folded - starts one, a swapped-in tail standing or not, and no cause starts none:
     /// the owed mark an older binary's lost fold left beside the file is none. A standing shadow is
     /// resumed, cause or not, when it holds the run attribution it gathered under the current fold
-    /// rule, and replaced otherwise: one folded under an older or a newer rule, one without that
-    /// attribution, or one whose rebuild state was never opened. Asking makes no shadow and leaves
-    /// a standing one byte for byte.
+    /// rule from the log the rebuild folds - its cursor recorded beside that log, or carrying no
+    /// cursor, as a binary before the cursor left it - and replaced otherwise: one folded under an
+    /// older or a newer rule, one without that attribution, one whose rebuild state was never
+    /// opened, or one whose cursor was recorded beside another log or beside none (spec 124, A LOG
+    /// SWITCHED UNDER A STANDING GRAPH). Asking makes no shadow and leaves a standing one byte for
+    /// byte.
     #[test]
     fn a_rebuild_starts_a_fresh_shadow_for_a_cause_beside_none_or_a_shadow_it_cannot_resume() {
         // A rebuild of the graph file at `path` stopped past its first batch: the resumable
@@ -10534,7 +10577,7 @@ mod tests {
         // The graph file at `path` with nothing standing beside it.
         fn nothing_stands(_: &str) {}
         // Each case: what stands, the `owed` it is asked with, and whether the pay starts fresh.
-        let cases: [(&str, Stand, bool, bool); 12] = [
+        let cases: [(&str, Stand, bool, bool); 15] = [
             ("nothing owed", nothing_stands, false, false),
             ("a cause the caller owes", nothing_stands, true, true),
             (
@@ -10577,6 +10620,36 @@ mod tests {
             (
                 "a shadow a newer-rule binary left",
                 |path| a_shadow_folded_under(path, PROJECTION_VERSION + 1),
+                false,
+                true,
+            ),
+            (
+                "a shadow carrying no cursor, as a binary before the cursor left it",
+                |path| {
+                    a_resumable_shadow(path);
+                    crate::test_support::drop_the_cursor(Path::new(&shadow_of(path)))
+                },
+                false,
+                false,
+            ),
+            (
+                "a shadow whose cursor was recorded beside another log",
+                |path| {
+                    a_resumable_shadow(path);
+                    crate::test_support::record_the_cursor_beside(
+                        Path::new(&shadow_of(path)),
+                        "local:/elsewhere/.rigger/events.db",
+                    )
+                },
+                false,
+                true,
+            ),
+            (
+                "a shadow whose cursor was recorded beside no log",
+                |path| {
+                    a_resumable_shadow(path);
+                    crate::test_support::drop_the_cursor_s_log(Path::new(&shadow_of(path)))
+                },
                 false,
                 true,
             ),

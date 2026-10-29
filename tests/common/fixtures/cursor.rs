@@ -147,6 +147,25 @@ pub fn drop_the_cursor(graph_db: &Path) {
         .unwrap();
 }
 
+/// Record `store` as the identity of the log beside the `caught_up` cursor of the graph file at
+/// `graph_db`, through a connection of its own: the cursor as a fold of that log left it.
+pub fn record_the_cursor_beside(graph_db: &Path, store: &str) {
+    rusqlite::Connection::open(graph_db)
+        .unwrap()
+        .execute("UPDATE caught_up SET store = ?1", [store])
+        .unwrap();
+}
+
+/// Drop the column of the `caught_up` cursor of the graph file at `graph_db` that records the
+/// identity of its log, through a connection of its own, the position kept: the cursor as a binary
+/// that recorded no identity left it.
+pub fn drop_the_cursor_s_log(graph_db: &Path) {
+    rusqlite::Connection::open(graph_db)
+        .unwrap()
+        .execute_batch("ALTER TABLE caught_up DROP COLUMN store")
+        .unwrap();
+}
+
 /// The line `rigger setup` prints once its catch-up of `graph.db` reached the log's head with `n`
 /// positions recorded by its calls (spec 124, CATCH-UP LINES).
 pub fn caught_up_line(n: usize) -> String {
