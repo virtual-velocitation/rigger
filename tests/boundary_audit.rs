@@ -8,7 +8,10 @@
 //!    may construct adapters below.
 //! 2. ADAPTERS ARE WIRED ONLY IN THE COMPOSITION ROOT. An adapter constructor (a store opener,
 //!    a graph opener, an agent driver) is named in production code only inside the composition
-//!    root or inside that adapter's own files. Anything else reaches past a port.
+//!    root or inside that adapter's own files. Anything else reaches past a port. Beside it,
+//!    THE APPENDER AUDIT lists every production site that appends to the project stream and
+//!    every one that opens the context graph, as `file:item`: a new site fails the suite until
+//!    it is listed, and a listed site that vanished fails it until it is deleted.
 //! 3. THE PRINCIPLE LINTS CARRY NO EXEMPTION. No item opts out of a lint the root manifest
 //!    denies.
 //! 4. THE CORE NAMES NO GATE. A gate is a command a project's workflow wires into a stage, so no
@@ -16,7 +19,8 @@
 //!
 //! Rules 1 and 2 each carry an allowlist of today's offenders that may only shrink: an entry that no
 //! longer matches an offender fails the suite until it is deleted, so the list is the follow-up
-//! work queue and never outlives the work.
+//! work queue and never outlives the work. The appender audit's two lists are no offender queue:
+//! each is the whole set of its family's sites, compared both ways.
 
 mod common;
 use common::repo::{
@@ -729,8 +733,9 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
         "crates/rigger-dash/src/lib.rs",
         "fn serve() {\n    let g = Projector::open(p, q);\n}\n",
     );
+    let constructors = misplaced_constructors(root);
     assert_eq!(
-        misplaced_constructors(root),
+        constructors,
         vec![
             (
                 "crates/rigger-dash/src/lib.rs:serve".to_string(),
@@ -739,6 +744,249 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
             ("src/conductor.rs:wave".to_string(), "event store"),
         ]
     );
+    assert_eq!(
+        stream_sites(root),
+        StreamSites {
+            appends: BTreeSet::new(),
+            opens: site_set(&[constructors[0].0.as_str()]),
+        },
+        "the appender audit's Projector::open( is Rule 2's graph projection constructor"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rule 2, beside it: the appender audit
+// ---------------------------------------------------------------------------------------------
+
+/// Every production site that appends to the project stream, as `file:item`: a call
+/// `.append(`, `append_and_fold(`, `append_entry_and_fold(` or `emit_event(` whose argument
+/// list names `conductor::STREAM`, `run::STREAM`, or a bare `STREAM` in a file whose `use` of
+/// `run` names `STREAM`. Spec 124's THE APPENDER AUDIT names the store each one's call reaches.
+const PROJECT_STREAM_APPENDS: &[&str] = &[
+    "crates/rigger-conductor/src/conductor.rs:append_and_fold_batch",
+    "crates/rigger-conductor/src/conductor.rs:emit_keyed_batch",
+    "crates/rigger-store-sqlite/src/run_store.rs:record_rebase",
+    "crates/rigger-store-sqlite/src/run_store.rs:start_fresh",
+    "crates/rigger-store-sqlite/src/spawn_store.rs:one_position",
+    "crates/rigger-store-sqlite/src/spawn_store.rs:record_result_if_absent",
+    "src/cli/critique.rs:copy_findings",
+    "src/cli/graph.rs:cmd_emit",
+    "src/cli/graph.rs:record_batch",
+    "src/cli/graph.rs:run_graph_pass",
+    "src/cli/hygiene.rs:close_landed_units",
+    "src/cli/mod.rs:cmd_replay",
+    "src/cli/mod.rs:migrate_project_identity",
+    "src/cli/run.rs:cmd_resume_unit",
+];
+
+/// Every production site that opens the context graph, as `file:item`: a call
+/// `Projector::open(`, `open_graph_for_write(`, `open_graph(` or `.graph(`.
+const GRAPH_OPENS: &[&str] = &[
+    "src/cli/critique.rs:cmd_critique",
+    "src/cli/dashboard.rs:cmd_mcp",
+    "src/cli/dashboard.rs:dash_read_calls",
+    "src/cli/dashboard.rs:dash_read_graph",
+    "src/cli/dashboard.rs:dash_read_whole_graph",
+    "src/cli/graph.rs:cmd_emit",
+    "src/cli/graph.rs:cmd_graph_build",
+    "src/cli/graph.rs:run_graph_pass",
+    "src/cli/hygiene.rs:reset_derived",
+    "src/cli/hygiene.rs:reset_menu",
+    "src/cli/hygiene.rs:reset_runs",
+    "src/cli/mod.rs:graph",
+    "src/cli/mod.rs:migrate_identity_at",
+    "src/cli/mod.rs:open_graph",
+    "src/cli/mod.rs:open_graph_for_write",
+    "src/cli/mod.rs:open_graph_to_read",
+    "src/cli/mod.rs:standing_graph",
+    "src/cli/run.rs:cmd_resume_unit",
+    "src/cli/run.rs:cmd_step",
+    "src/cli/run.rs:fold_recorded_result",
+    "src/cli/run.rs:run_cli",
+    "src/cli/run.rs:run_workflow",
+    "src/cli/setup.rs:rebuild_owed_graph",
+];
+
+/// The appender audit's two token families as a tree spells them, each a set of `file:item`
+/// sites.
+#[derive(Debug, Default, PartialEq)]
+struct StreamSites {
+    appends: BTreeSet<String>,
+    opens: BTreeSet<String>,
+}
+
+/// `sites` as a set.
+fn site_set(sites: &[&str]) -> BTreeSet<String> {
+    sites.iter().map(|s| (*s).to_string()).collect()
+}
+
+/// Every production site under `root` that appends to the project stream or opens the context
+/// graph ([`PROJECT_STREAM_APPENDS`] and [`GRAPH_OPENS`] name the two families).
+fn stream_sites(_root: &Path) -> StreamSites {
+    StreamSites::default()
+}
+
+#[test]
+fn the_project_stream_appenders_and_graph_opens_are_the_listed_sites() {
+    let found = stream_sites(&repo_root());
+    for (list, listed, found) in [
+        (
+            "PROJECT_STREAM_APPENDS",
+            PROJECT_STREAM_APPENDS,
+            &found.appends,
+        ),
+        ("GRAPH_OPENS", GRAPH_OPENS, &found.opens),
+    ] {
+        let listed = site_set(listed);
+        let new: Vec<&String> = found.difference(&listed).collect();
+        let vanished: Vec<&String> = listed.difference(found).collect();
+        assert_eq!(
+            (new, vanished),
+            (vec![], vec![]),
+            "{list} differs from the tree: list each new site (the first set) in it and delete \
+             each vanished site (the second set) from it"
+        );
+    }
+}
+
+#[test]
+fn each_append_and_open_token_is_reported_by_file_and_item() {
+    /// (case, file, its source, the appends it holds, the opens it holds)
+    type Case = (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static [&'static str],
+        &'static [&'static str],
+    );
+    let cases: &[Case] = &[
+        (
+            "a conductor::STREAM argument of .append(",
+            "src/lib.rs",
+            "fn wave() {\n    store.append(conductor::STREAM, &events);\n}\n",
+            &["src/lib.rs:wave"],
+            &[],
+        ),
+        (
+            "a run::STREAM argument of append_and_fold(, read across lines to its close",
+            "src/lib.rs",
+            "fn fold() {\n    store.append_and_fold(\n        key(&unit),\n        run::STREAM,\n    \
+             );\n}\n",
+            &["src/lib.rs:fold"],
+            &[],
+        ),
+        (
+            "a STREAM after the call's close parenthesis is outside its arguments",
+            "src/lib.rs",
+            "fn later() {\n    store.append(other(), &events).tag(run::STREAM);\n}\n",
+            &[],
+            &[],
+        ),
+        (
+            "a bare STREAM of append_entry_and_fold( under a use of run's group naming STREAM",
+            "crates/rigger-conductor/src/lib.rs",
+            "use crate::run::{Event, STREAM};\n\nfn keyed() {\n    \
+             store.append_entry_and_fold(STREAM, entry);\n}\n",
+            &["crates/rigger-conductor/src/lib.rs:keyed"],
+            &[],
+        ),
+        (
+            "a bare STREAM of emit_event( under a use of run::STREAM",
+            "src/lib.rs",
+            "use crate::run::STREAM;\n\nfn emit() {\n    emit_event(&store, STREAM, event);\n}\n",
+            &["src/lib.rs:emit"],
+            &[],
+        ),
+        (
+            "a bare STREAM imported from another module's group",
+            "src/lib.rs",
+            "use crate::canary::{Probe, STREAM};\n\nfn probe() {\n    \
+             store.append(STREAM, &events);\n}\n",
+            &[],
+            &[],
+        ),
+        (
+            "a bare STREAM imported from another module beside a use of run",
+            "src/lib.rs",
+            "use crate::{canary::STREAM, run::Event};\n\nfn probe() {\n    \
+             store.append(STREAM, &events);\n}\n",
+            &[],
+            &[],
+        ),
+        (
+            "another module's qualified STREAM",
+            "src/lib.rs",
+            "fn other() {\n    store.append(canary::STREAM, &events);\n}\n",
+            &[],
+            &[],
+        ),
+        (
+            "an append naming no stream",
+            "src/lib.rs",
+            "fn plain() {\n    events.append(&mut more);\n}\n",
+            &[],
+            &[],
+        ),
+        (
+            "a comment and a string literal",
+            "src/lib.rs",
+            "// store.append(conductor::STREAM, &events);\nfn text() -> &'static str {\n    \
+             \"emit_event(run::STREAM) open_graph(p)\"\n}\n",
+            &[],
+            &[],
+        ),
+        (
+            "a cfg(test) item",
+            "src/lib.rs",
+            "#[cfg(test)]\nfn helper() {\n    store.append(conductor::STREAM, &events);\n    \
+             open_graph(p);\n}\n",
+            &[],
+            &[],
+        ),
+        (
+            "each open token",
+            "src/lib.rs",
+            "fn opens() {\n    let a = Projector::open(p, q);\n}\nfn writes() {\n    \
+             let b = open_graph_for_write(p, q, s);\n}\nfn reads() {\n    \
+             let c = open_graph(p, q, s);\n}\nfn located() {\n    \
+             let d = location.graph(&selection);\n}\n",
+            &[],
+            &[
+                "src/lib.rs:located",
+                "src/lib.rs:opens",
+                "src/lib.rs:reads",
+                "src/lib.rs:writes",
+            ],
+        ),
+        (
+            "near misses of an open token and a declaration",
+            "src/lib.rs",
+            "fn misses() {\n    let a = Store::open(p);\n    let b = location.with_graph(&s);\n    \
+             let c = graph(&s);\n    let d = Projector::opened(p);\n}\n\
+             fn open_graph(p: &Path) -> Graph {\n    build(p)\n}\n",
+            &[],
+            &[],
+        ),
+        (
+            "a site outside any function",
+            "src/lib.rs",
+            "static GRAPH: Graph = open_graph(PATH);\n",
+            &[],
+            &["src/lib.rs:<top level>"],
+        ),
+    ];
+    for (case, file, source, appends, opens) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(dir.path(), file, source);
+        assert_eq!(
+            stream_sites(dir.path()),
+            StreamSites {
+                appends: site_set(appends),
+                opens: site_set(opens),
+            },
+            "{case}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
