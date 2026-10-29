@@ -774,9 +774,8 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
 /// Every production append call whose arguments name the project stream's constant, as
 /// `file:item`: a call to an [`APPEND_CALLS`] name or a method `.append(` whose argument list,
 /// read to its matching `)`, holds `STREAM` right after a [`STREAM_MODULES`] segment
-/// (`run::STREAM`, `conductor::STREAM`) or a bare `STREAM` in a file that imports it from
-/// [`STREAM_HOME`]. An appender that holds the stream by reference
-/// is no entry: the MCP server's emit (`crates/rigger-dash/src/mcpserver.rs:431`), handed
+/// (`run::STREAM`, `conductor::STREAM`) or a bare `STREAM` in a file that imports it from one of
+/// them. An appender that holds the stream by reference is no entry: the MCP server's emit (`crates/rigger-dash/src/mcpserver.rs:431`), handed
 /// `conductor::STREAM` at `src/cli/dashboard.rs:853`, is reached through its graph open,
 /// `src/cli/dashboard.rs:cmd_mcp` in [`GRAPH_OPENS`]. Spec 124's THE APPENDER AUDIT names the
 /// store each one's call reaches.
@@ -856,12 +855,9 @@ const APPEND_CALLS: &[&str] = &["append_and_fold", "append_entry_and_fold", "emi
 /// `graph` does too as a method `.graph(` only, and `open` as `Projector::open(` only.
 const OPEN_CALLS: &[&str] = &["open_graph_for_write", "open_graph"];
 
-/// The module that defines the project stream's constant, `STREAM`.
-const STREAM_HOME: &str = "run";
-
-/// The modules whose `STREAM` is the project stream's constant: [`STREAM_HOME`] defines it and
+/// The modules whose `STREAM` is the project stream's constant: `run` defines it and
 /// `conductor` re-exports it.
-const STREAM_MODULES: &[&str] = &["conductor", STREAM_HOME];
+const STREAM_MODULES: &[&str] = &["conductor", "run"];
 
 /// The name of the project stream's constant.
 const STREAM_NAME: &str = "STREAM";
@@ -878,21 +874,24 @@ fn called_at(toks: &[RawTok], at: usize) -> Option<&str> {
 }
 
 /// Whether the token at `at` is the project stream's constant: `STREAM` qualified by a
-/// [`STREAM_MODULES`] segment, or bare in a file that imports it from [`STREAM_HOME`]
-/// (`bare_is_run`).
-fn is_project_stream(toks: &[RawTok], at: usize, bare_is_run: bool) -> bool {
+/// [`STREAM_MODULES`] segment, or bare in a file that imports it from one of them
+/// (`bare_is_project_stream`).
+fn is_project_stream(toks: &[RawTok], at: usize, bare_is_project_stream: bool) -> bool {
     names_stream(&toks[at])
-        && qualifier_before(toks, at).map_or(bare_is_run, |m| STREAM_MODULES.contains(&m.as_str()))
+        && qualifier_before(toks, at).map_or(bare_is_project_stream, |m| {
+            STREAM_MODULES.contains(&m.as_str())
+        })
 }
 
-/// Whether a `use` declaration among `toks` imports [`STREAM_NAME`] owned by [`STREAM_HOME`],
-/// as [`imported_names`] reads each import's owner: a path ending `run::STREAM`, in a group or
-/// not, or a `STREAM` member of a `run::{..}` group with no path of its own. A rename on either
-/// side of `as` (`run::STREAM as S`, `run::{Event as STREAM}`) is neither.
-fn imports_run_stream(toks: &[RawTok]) -> bool {
+/// Whether a `use` declaration among `toks` imports [`STREAM_NAME`] owned by a
+/// [`STREAM_MODULES`] segment, as [`imported_names`] reads each import's owner: a path ending
+/// `run::STREAM` or `conductor::STREAM`, in a group or not, or a `STREAM` member of a `run::{..}`
+/// or `conductor::{..}` group with no path of its own. A rename on either side of `as`
+/// (`run::STREAM as S`, `run::{Event as STREAM}`) is neither.
+fn imports_project_stream(toks: &[RawTok]) -> bool {
     imported_names(toks)
         .iter()
-        .any(|(name, owner)| name == STREAM_NAME && owner == STREAM_HOME)
+        .any(|(name, owner)| name == STREAM_NAME && STREAM_MODULES.contains(&owner.as_str()))
 }
 
 /// The production sites under `root` of the appender audit's two token families: each append
@@ -909,7 +908,7 @@ fn stream_sites(root: &Path) -> StreamSites {
             .into_iter()
             .filter(|tok| !file.in_test(tok.line - 1))
             .collect();
-        let bare_is_run = imports_run_stream(&toks);
+        let bare_is_project_stream = imports_project_stream(&toks);
         for at in 0..toks.len() {
             let Some(name) = called_at(&toks, at) else {
                 continue;
@@ -921,7 +920,7 @@ fn stream_sites(root: &Path) -> StreamSites {
                 || name == "open" && qualifier_before(&toks, at).as_deref() == Some("Projector");
             if append
                 && (at + 2..close_of(&toks, at + 1, ")"))
-                    .any(|arg| is_project_stream(&toks, arg, bare_is_run))
+                    .any(|arg| is_project_stream(&toks, arg, bare_is_project_stream))
             {
                 sites.appends.insert(file.site(&rel, toks[at].line - 1));
             }
