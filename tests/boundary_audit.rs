@@ -35,7 +35,8 @@ use std::path::{Path, PathBuf};
 mod source_audit;
 use source_audit::{
     assert_real_tree_clean, cfg_test_ranges, enclosing_fn_line, fn_sig_lines, gate_name_in,
-    holds_whole_word, in_ranges, tokenize, write_file, Finding, RawKind, RawTok, GATE_WORD,
+    holds_whole_word, in_ranges, is_definition_site, qualifier_before, ref_punct, tokenize,
+    write_file, Finding, RawKind, RawTok, GATE_WORD,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -835,44 +836,31 @@ const APPEND_CALLS: &[&str] = &["append_and_fold", "append_entry_and_fold", "emi
 /// `.graph(` do too.
 const OPEN_CALLS: &[&str] = &["open_graph_for_write", "open_graph"];
 
-/// The modules whose `STREAM` is the project stream's constant: `run` defines it and
+/// The module that defines the project stream's constant, `STREAM`.
+const STREAM_HOME: &str = "run";
+
+/// The modules whose `STREAM` is the project stream's constant: [`STREAM_HOME`] defines it and
 /// `conductor` re-exports it.
-const STREAM_MODULES: &[&str] = &["conductor", "run"];
+const STREAM_MODULES: &[&str] = &["conductor", STREAM_HOME];
 
-/// Whether `tok` is the punctuation `p`.
-fn is_punct(tok: &RawTok, p: &str) -> bool {
-    tok.kind == RawKind::Punct && tok.text == p
+/// Whether `tok` is the identifier `STREAM`.
+fn names_stream(tok: &RawTok) -> bool {
+    tok.kind == RawKind::Ident && tok.text == "STREAM"
 }
 
-/// The path segment before the `::` that precedes the token at `at`, as in `run` of
-/// `run::STREAM`, or `None` when no `::` precedes it.
-fn segment_before(toks: &[RawTok], at: usize) -> Option<&str> {
-    let lead = toks.get(at.checked_sub(3)?..at)?;
-    (is_punct(&lead[1], ":") && is_punct(&lead[2], ":")).then_some(lead[0].text.as_str())
-}
-
-/// The name called at `at`: an identifier followed by `(` that is no `fn` declaration.
+/// The name called at `at`: an identifier followed by `(` that is no definition site.
 fn called_at(toks: &[RawTok], at: usize) -> Option<&str> {
-    let declared = at
-        .checked_sub(1)
-        .is_some_and(|b| toks[b].kind == RawKind::Keyword && toks[b].text == "fn");
-    let call =
-        toks[at].kind == RawKind::Ident && toks.get(at + 1).is_some_and(|t| is_punct(t, "("));
-    (call && !declared).then_some(toks[at].text.as_str())
-}
-
-/// Whether the call at `at` is a method call, its name after a `.`.
-fn is_method(toks: &[RawTok], at: usize) -> bool {
-    at.checked_sub(1).is_some_and(|b| is_punct(&toks[b], "."))
+    let call = toks[at].kind == RawKind::Ident && ref_punct(toks.get(at + 1), "(");
+    (call && !is_definition_site(toks, at)).then_some(toks[at].text.as_str())
 }
 
 /// The index of the `)` that closes the `(` at `open`, or the end of `toks` when none does.
 fn close_of(toks: &[RawTok], open: usize) -> usize {
     let mut depth = 0usize;
-    for (at, tok) in toks.iter().enumerate().skip(open) {
-        if is_punct(tok, "(") {
+    for at in open..toks.len() {
+        if ref_punct(toks.get(at), "(") {
             depth += 1;
-        } else if is_punct(tok, ")") {
+        } else if ref_punct(toks.get(at), ")") {
             depth -= 1;
             if depth == 0 {
                 return at;
@@ -882,19 +870,19 @@ fn close_of(toks: &[RawTok], open: usize) -> usize {
     toks.len()
 }
 
-/// Whether the `STREAM` at `at` is the project stream's constant: qualified by a
-/// [`STREAM_MODULES`] segment, or bare in a file that imports it from `run` (`bare_is_run`).
+/// Whether the token at `at` is the project stream's constant: `STREAM` qualified by a
+/// [`STREAM_MODULES`] segment, or bare in a file that imports it from [`STREAM_HOME`]
+/// (`bare_is_run`).
 fn is_project_stream(toks: &[RawTok], at: usize, bare_is_run: bool) -> bool {
-    toks[at].kind == RawKind::Ident
-        && toks[at].text == "STREAM"
-        && segment_before(toks, at).map_or(bare_is_run, |m| STREAM_MODULES.contains(&m))
+    names_stream(&toks[at])
+        && qualifier_before(toks, at).map_or(bare_is_run, |m| STREAM_MODULES.contains(&m.as_str()))
 }
 
-/// Whether a `use` declaration among `toks` imports `STREAM` from a `run` path segment: as
-/// `run::STREAM`, or as a member at the top of a `run::{..}` group.
+/// Whether a `use` declaration among `toks` imports `STREAM` from a [`STREAM_HOME`] path
+/// segment: as `run::STREAM`, or as a member at the top of a `run::{..}` group.
 fn imports_run_stream(toks: &[RawTok]) -> bool {
     // Inside a `use` declaration, the segment that owns each open group, innermost last.
-    let mut owners: Option<Vec<&str>> = None;
+    let mut owners: Option<Vec<String>> = None;
     for (at, tok) in toks.iter().enumerate() {
         let Some(groups) = owners.as_mut() else {
             if tok.kind == RawKind::Keyword && tok.text == "use" {
@@ -902,15 +890,15 @@ fn imports_run_stream(toks: &[RawTok]) -> bool {
             }
             continue;
         };
-        if is_punct(tok, ";") {
+        if ref_punct(Some(tok), ";") {
             owners = None;
-        } else if is_punct(tok, "{") {
-            groups.push(segment_before(toks, at).unwrap_or_default());
-        } else if is_punct(tok, "}") {
+        } else if ref_punct(Some(tok), "{") {
+            groups.push(qualifier_before(toks, at).unwrap_or_default());
+        } else if ref_punct(Some(tok), "}") {
             groups.pop();
-        } else if tok.kind == RawKind::Ident && tok.text == "STREAM" {
-            let owner = segment_before(toks, at).or(groups.last().copied());
-            if owner == Some("run") {
+        } else if names_stream(tok) {
+            let owner = qualifier_before(toks, at).or_else(|| groups.last().cloned());
+            if owner.as_deref() == Some(STREAM_HOME) {
                 return true;
             }
         }
@@ -936,10 +924,11 @@ fn stream_sites(root: &Path) -> StreamSites {
             let Some(name) = called_at(&toks, at) else {
                 continue;
             };
-            let append = APPEND_CALLS.contains(&name) || name == "append" && is_method(&toks, at);
+            let method = ref_punct(at.checked_sub(1).and_then(|b| toks.get(b)), ".");
+            let append = APPEND_CALLS.contains(&name) || name == "append" && method;
             let open = OPEN_CALLS.contains(&name)
-                || name == "graph" && is_method(&toks, at)
-                || name == "open" && segment_before(&toks, at) == Some("Projector");
+                || name == "graph" && method
+                || name == "open" && qualifier_before(&toks, at).as_deref() == Some("Projector");
             if append
                 && (at + 2..close_of(&toks, at + 1))
                     .any(|arg| is_project_stream(&toks, arg, bare_is_run))

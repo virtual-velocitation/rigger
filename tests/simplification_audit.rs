@@ -99,7 +99,8 @@ use common::repo::repo_root;
 #[path = "common/source_audit.rs"]
 mod source_audit;
 use source_audit::{
-    char_literal_len, is_ident_char, skip_string_literal, tokenize, RawKind, RawTok,
+    char_literal_len, is_definition_site, is_ident_char, qualifier_before, ref_punct,
+    skip_string_literal, tokenize, RawKind, RawTok,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -5774,30 +5775,6 @@ struct RefSite {
     tok_idx: usize,
 }
 
-fn ref_punct(tok: Option<&RawTok>, text: &str) -> bool {
-    tok.map(|t| t.kind == RawKind::Punct && t.text == text)
-        .unwrap_or(false)
-}
-
-/// The identifier immediately in front of a `qualifier::name`-shaped occurrence at `toks[i]`,
-/// or `None` when `toks[i]` is not `::`-preceded at all. Spec 87 round-1 addendum
-/// (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): "the tokenizer's existing
-/// `preceded_by_coloncolon` signal" carried one step further, to name WHICH qualifier a
-/// `::`-qualified reference names, so a bare-name collision between two `Free`/`ImplAssoc` fns
-/// can attribute a qualified call site to the one it actually means.
-fn qualifier_before(toks: &[RawTok], i: usize) -> Option<String> {
-    if i < 3 {
-        return None;
-    }
-    if ref_punct(toks.get(i - 1), ":") && ref_punct(toks.get(i - 2), ":") {
-        let q = toks.get(i - 3)?;
-        if q.kind == RawKind::Ident || q.kind == RawKind::Keyword {
-            return Some(q.text.clone());
-        }
-    }
-    None
-}
-
 /// Index ranges into `tokens` (half-open `[start, end)`) occupied by the CONTENT of a `#[...]`
 /// attribute - every token strictly between the `#`/`[` that opens it and its own matching `]`,
 /// the `#` and both brackets themselves excluded. Spec 87 round-1 fix, class 2 of
@@ -6125,9 +6102,7 @@ fn all_ident_ref_sites(
             // real tree (`new`/`drop` before this fix) and pinned by this criterion's own
             // ambiguous-associated-fn fixtures. THE RULE (round 3): every OTHER `Ident` token
             // is a reference to its own text, unconditionally - no shape test of any kind.
-            let is_definition_site =
-                i > 0 && f.tokens[i - 1].kind == RawKind::Keyword && f.tokens[i - 1].text == "fn";
-            if is_definition_site {
+            if is_definition_site(&f.tokens, i) {
                 continue;
             }
             let production = is_production_line(t.line);

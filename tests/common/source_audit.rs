@@ -4,9 +4,11 @@
 //! each suite through `#[path]`, never through `tests/common/mod.rs`. Also the line-level
 //! source reading those audits and `tests/boundary_audit.rs` share: which lines are test code,
 //! and which function encloses a line. And the one Rust lexer, [`tokenize`], that
-//! `tests/simplification_audit.rs` scans by and rule 4 of `tests/boundary_audit.rs` finds string
-//! literals with. Each suite uses the subset it needs (hence the module-wide `dead_code`
-//! allowance, as in `tests/common/mod.rs`).
+//! `tests/simplification_audit.rs` scans by, rule 4 of `tests/boundary_audit.rs` finds string
+//! literals with and its appender audit finds calls with, and the token readers those two suites
+//! share over its tokens ([`ref_punct`], [`qualifier_before`], [`is_definition_site`]). Each
+//! suite uses the subset it needs (hence the module-wide `dead_code` allowance, as in
+//! `tests/common/mod.rs`).
 
 #![allow(dead_code)]
 
@@ -551,4 +553,35 @@ pub fn tokenize(chars: &[char]) -> Vec<RawTok> {
         i += 1;
     }
     out
+}
+
+/// Whether `tok` is the punctuation `text`; `false` when there is no token.
+pub fn ref_punct(tok: Option<&RawTok>, text: &str) -> bool {
+    tok.map(|t| t.kind == RawKind::Punct && t.text == text)
+        .unwrap_or(false)
+}
+
+/// The identifier immediately in front of a `qualifier::name`-shaped occurrence at `toks[i]`,
+/// or `None` when `toks[i]` is not `::`-preceded at all. Spec 87 round-1 addendum
+/// (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): "the tokenizer's existing
+/// `preceded_by_coloncolon` signal" carried one step further, to name WHICH qualifier a
+/// `::`-qualified reference names, so a bare-name collision between two `Free`/`ImplAssoc` fns
+/// can attribute a qualified call site to the one it actually means.
+pub fn qualifier_before(toks: &[RawTok], i: usize) -> Option<String> {
+    if i < 3 {
+        return None;
+    }
+    if ref_punct(toks.get(i - 1), ":") && ref_punct(toks.get(i - 2), ":") {
+        let q = toks.get(i - 3)?;
+        if q.kind == RawKind::Ident || q.kind == RawKind::Keyword {
+            return Some(q.text.clone());
+        }
+    }
+    None
+}
+
+/// Whether `toks[i]` is a function's DEFINITION site, the name token immediately preceded by the
+/// `fn` keyword (`fn name(`), rather than a reference to the name.
+pub fn is_definition_site(toks: &[RawTok], i: usize) -> bool {
+    i > 0 && toks[i - 1].kind == RawKind::Keyword && toks[i - 1].text == "fn"
 }
