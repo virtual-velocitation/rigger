@@ -70,7 +70,7 @@ The prompts that work share a shape. Study `.rigger/agents/adversary.md` for the
 
 ## Reviewer agents specifically
 
-A review panel needs *diverse lenses*, not redundant ones. Give each lens one lane (architecture adherence; correctness and test rigor; domain-specific invariants) and keep panel prompts scoped to defects, not taste: a finding must be a contradiction, a factual error, a spec deviation, or a demonstrable bug - "I would have named this differently" is not a finding.
+A review panel needs *diverse lenses*, not redundant ones. Give each lens one lane (architecture adherence; correctness and test rigor; domain-specific invariants) and keep panel prompts scoped to defects, not taste: a finding must be a contradiction, a factual error, a spec deviation, or a demonstrable bug - "I would have named this differently" is not a finding. Which findings block is the built-in review rule's call, never a persona's: wrong code, an unmet Done-when criterion and a missing test for a behaviour a Done-when criterion names block, and every other finding is a note recorded for the operator.
 
 The adversary must stay strict to stay useful. Calibrate it in one direction only: it may refute a lens finding as overreach solely when the finding is out of lane, describes an unreachable state, or is factually wrong on cited evidence. "Minor" or "inconvenient" never qualify. A softened adversary is worse than none - it launders defects as reviewed.
 
