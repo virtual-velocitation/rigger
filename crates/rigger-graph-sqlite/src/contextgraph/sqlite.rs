@@ -9454,13 +9454,14 @@ mod tests {
     #[test]
     fn an_appender_held_off_past_its_ceiling_answers_the_write_lock_text_and_marks_nothing() {
         use crate::contextgraph::Fold;
-        use crate::test_support::{graph_error, lost_fold, CATCH_UP_PAYS, SETUP_PAYS};
-        let held = graph_error(&crate::test_support::lock_held_past("0 s"));
+        use crate::test_support::{graph_error, lost_by_calls, lost_fold, SETUP_PAYS};
+        let reason = crate::test_support::lock_held_past("0 s");
+        let held = graph_error(&reason);
         // Each case: what stands in the file, whether the projector is handed the log, whether both
         // the appender's copies keep the stream the log gave them - else the first names none - and
         // what its fold answers.
         let cases: [(&str, &[Stand], bool, bool, String); 4] = [
-            ("a call", &[], true, true, lost_fold(&held, CATCH_UP_PAYS)),
+            ("a call", &[], true, true, lost_by_calls(&reason)),
             (
                 "a direct fold on a file without the cursor",
                 &[without_a_cursor],
