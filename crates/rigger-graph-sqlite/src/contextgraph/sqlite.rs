@@ -418,6 +418,10 @@ pub struct Projector {
     /// from, once installed ([`Projector::with_reextraction`]): with none a call re-extracts
     /// nothing.
     reextraction: Option<ReextractionFactory>,
+    /// The identity of the event log this projector folds ([`Projector::with_store_identity`]):
+    /// what the seeding and a rebuild record beside the `caught_up` cursor they create; empty for a
+    /// projector told none.
+    store: String,
     /// The longest an appender in [`Projector::guarded`] waits for its own positions to fold
     /// (spec 124, THE APPENDER): [`FOLD_LOCK_CEILING`], unless a test injects another
     /// ([`Projector::with_lock_ceiling`]).
@@ -680,6 +684,7 @@ impl Projector {
             owed_mark: owed_mark(path),
             log: None,
             reextraction: None,
+            store: String::new(),
             lock_ceiling: FOLD_LOCK_CEILING,
             holds_rebuild_lock: false,
         })
@@ -771,8 +776,11 @@ impl Projector {
         source: &mut RebuildSource,
         progress: &mut dyn FnMut(RebuildProgress),
     ) -> Result<Option<Rebuilt>, Error> {
-        let path = self.path.as_str();
-        let project = self.project.as_str();
+        let (path, project, store) = (
+            self.path.as_str(),
+            self.project.as_str(),
+            self.store.as_str(),
+        );
         let mut reextract = self.reextraction();
         let mut live = self.conn.lock().unwrap();
         let live = &mut *live;
@@ -788,7 +796,7 @@ impl Projector {
                 schema(&shadow, project)?;
                 in_transaction(&mut shadow, project, |tx| {
                     tx.execute_batch(REBUILD_STATE).map_err(be)?;
-                    create_cursor(tx, rebuild_cursor(tx)?)
+                    create_cursor(tx, rebuild_cursor(tx)?, store)
                 })
                 .map_err(FrameError::unframed)?;
                 fold_source(
@@ -836,7 +844,7 @@ impl Projector {
             .map_err(be)?;
         in_transaction(live, project, |tx| {
             let through = rebuild_cursor(tx)?;
-            create_cursor(tx, through)?;
+            create_cursor(tx, through, store)?;
             set_cursor(tx, CAUGHT_UP, through)?;
             tx.execute_batch(DROP_REBUILD_STATE).map_err(be)
         })
@@ -998,7 +1006,7 @@ impl Projector {
                 _ => None,
             };
             if let Some(at) = cursor {
-                create_cursor(tx, at)?;
+                create_cursor(tx, at, &self.store)?;
             }
             Ok(Seeding::Ran {
                 lost: cursor.is_none(),
@@ -1035,6 +1043,15 @@ impl Projector {
         factory: impl Fn() -> Box<Reextract<'static>> + Send + Sync + 'static,
     ) -> Self {
         self.reextraction = Some(Box::new(factory));
+        self
+    }
+
+    /// This projector, folding the event log whose identity is `store` (spec 124, A LOG SWITCHED
+    /// UNDER A STANDING GRAPH): the text its seeding ([`Projector::seed_cursor`]) and its rebuild's
+    /// shadow open and drop ([`Projector::rebuild`]) record beside the `caught_up` cursor they
+    /// create ([`create_cursor`]).
+    pub fn with_store_identity(mut self, store: String) -> Self {
+        self.store = store;
         self
     }
 
@@ -2907,23 +2924,25 @@ fn rebuild_cursor(conn: &Connection) -> Result<Position, Error> {
         .ok_or_else(|| Error("the graph file holds no rebuild state".to_string()))
 }
 
-/// Create the `caught_up` cursor in `tx` where its file carries none, seeded at `at` (spec 124, THE
-/// CURSOR AND ITS SEEDING): how far the file's prefix of the log reaches, every live position at
+/// Create the `caught_up` cursor in `tx` where its file carries none, seeded at `at` beside the
+/// identity `store` of the log it folds (spec 124, THE CURSOR AND ITS SEEDING, A LOG SWITCHED
+/// UNDER A STANDING GRAPH): how far the file's prefix of that log reaches, every live position at
 /// or below it applied or passed over. One row, its id pinned to 0, written by `INSERT OR IGNORE`,
-/// so a file already carrying the cursor keeps where it stands. What the seeding
-/// ([`Projector::seed_cursor`]) and a rebuild's shadow open and drop ([`Projector::rebuild`])
-/// create it through.
-fn create_cursor(tx: &Transaction, at: Position) -> Result<(), Error> {
+/// so a file already carrying the cursor keeps where it stands and the identity it records. What
+/// the seeding ([`Projector::seed_cursor`]) and a rebuild's shadow open and drop
+/// ([`Projector::rebuild`]) create it through.
+fn create_cursor(tx: &Transaction, at: Position, store: &str) -> Result<(), Error> {
     tx.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS {CAUGHT_UP} (
             id INTEGER PRIMARY KEY CHECK (id = 0),
-            position INTEGER NOT NULL
+            position INTEGER NOT NULL,
+            store TEXT
         )"
     ))
     .map_err(be)?;
     tx.execute(
-        &format!("INSERT OR IGNORE INTO {CAUGHT_UP} (id, position) VALUES (0, ?1)"),
-        [at as i64],
+        &format!("INSERT OR IGNORE INTO {CAUGHT_UP} (id, position, store) VALUES (0, ?1, ?2)"),
+        rusqlite::params![at as i64, store],
     )
     .map(drop)
     .map_err(be)
@@ -8615,7 +8634,7 @@ mod tests {
     fn set_cursor_moves_a_cursor_forward_only() {
         let mut conn = Connection::open_in_memory().unwrap();
         let tx = conn.transaction().unwrap();
-        create_cursor(&tx, 5).unwrap();
+        create_cursor(&tx, 5, "").unwrap();
         let stands = [3, 5, 7].map(|at| {
             set_cursor(&tx, "caught_up", at).unwrap();
             cursor_at(&tx, "caught_up").unwrap().unwrap()

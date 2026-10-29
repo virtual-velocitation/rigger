@@ -479,7 +479,9 @@ fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
 /// for the `events.db` beside the file ([`resolve_store`]), scoped to `project`
 /// ([`Namespaced::owning`]), opened at the projector's first catch-up and held for its life; an
 /// embedded log whose file does not exist yet is read as the empty one it is
-/// ([`StoreSelection::log_file`]), so no open makes `events.db`. Its re-extraction
+/// ([`StoreSelection::log_file`]), so no open makes `events.db`; the identity it records of that
+/// log ([`Projector::with_store_identity`]) is the store's own ([`store_identity`]), the embedded
+/// log's path or a digest of the server's endpoint. Its re-extraction
 /// ([`Projector::with_reextraction`]) is a fresh one each catch-up or rebuild call builds for
 /// itself and drops as it returns, resolving each ledger entry it is handed through
 /// [`reextract_entry`] under THE ONE ROOT of the directory holding the file, read from the one cell
@@ -497,6 +499,7 @@ fn open_graph_for_write(
         .map_or_else(cwd, Path::to_path_buf);
     let tree = std::sync::Arc::new(TreeRoot::of(store_dir.clone()));
     let (selection, events_db) = (selection.clone(), store_file(&store_dir, "events.db"));
+    let store = store_identity(&selection, events_db.clone()).log_identity();
     let scope = project.to_string();
     let log = move || {
         resolve_store(&selection, selection.log_file(&events_db))
@@ -513,7 +516,8 @@ fn open_graph_for_write(
     };
     let graph = Projector::open(graph_db, project)?
         .with_log(log)
-        .with_reextraction(reextraction);
+        .with_reextraction(reextraction)
+        .with_store_identity(store);
     Ok((graph, tree))
 }
 
@@ -929,14 +933,17 @@ fn resolve_store(
 /// registry - the dash re-resolves it through the store-resolution authority exactly as every
 /// command does.
 fn registry_store_identity(sel: &StoreSelection, root: &Path) -> rigger::registry::StoreIdentity {
+    store_identity(sel, store_file(&root.join(RIGGER_DIR), "events.db"))
+}
+
+/// The CREDENTIAL-FREE identity of the store `sel` selects, its embedded log the file at
+/// `events_db`: that path for sqlite, or the shared server's endpoint
+/// ([`rigger::eventstore::endpoint_label`]) - what the instance registry records
+/// ([`registry_store_identity`]) and what a graph file records of the log it folds
+/// ([`open_graph_for_write`]).
+fn store_identity(sel: &StoreSelection, events_db: String) -> rigger::registry::StoreIdentity {
     match sel {
-        StoreSelection::Sqlite => rigger::registry::StoreIdentity::Local {
-            path: root
-                .join(RIGGER_DIR)
-                .join("events.db")
-                .to_string_lossy()
-                .into_owned(),
-        },
+        StoreSelection::Sqlite => rigger::registry::StoreIdentity::Local { path: events_db },
         StoreSelection::Server(conn) => rigger::registry::StoreIdentity::Shared {
             endpoint: rigger::eventstore::endpoint_label(conn),
         },

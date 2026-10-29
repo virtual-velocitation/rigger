@@ -1028,10 +1028,25 @@ pub fn exists(db: &Path, sql: &str, param: impl rusqlite::ToSql) -> bool {
 /// What a rebuild that reports nothing hands its progress callback.
 pub fn no_progress(_: rigger::contextgraph::sqlite::RebuildProgress) {}
 
-/// The graph projection of `root`'s own `.rigger/graph.db`, under its run-stream identity.
+/// The graph projection of `root`'s own `.rigger/graph.db`, under its run-stream identity, folding
+/// the log the binary's open of it folds there ([`local_log_identity`]).
 pub fn open_graph(root: &Path) -> Projector {
     let id = run_stream_identity(root);
-    Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id).unwrap()
+    Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id)
+        .unwrap()
+        .with_store_identity(local_log_identity(root))
+}
+
+/// The identity of `root`'s own `.rigger/events.db` as a binary run in `root` records it beside a
+/// graph's cursor: the path under the directory the binary's working directory resolves `root` to.
+pub fn local_log_identity(root: &Path) -> String {
+    let resolved = root.canonicalize().unwrap();
+    rigger::registry::StoreIdentity::Local {
+        path: rigger_file(&resolved, "events.db")
+            .to_string_lossy()
+            .into_owned(),
+    }
+    .log_identity()
 }
 
 /// [`open_graph`] folding forward from `root`'s own project namespace of its `.rigger/events.db`
