@@ -695,7 +695,7 @@
     ]
   },
   {
-    "id": "dup-04900f58b78e",
+    "id": "dup-2b3843316743",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -821,11 +821,6 @@
         "file": "src/cli/setup.rs",
         "start_line": 3780,
         "end_line": 3780
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 4603,
-        "end_line": 4603
       },
       {
         "file": "src/cli/validate.rs",
@@ -1160,7 +1155,7 @@
     ]
   },
   {
-    "id": "dup-9701ca5fcf49",
+    "id": "dup-beb4e5be1b10",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1954,18 +1949,28 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4005,
-        "end_line": 4005
+        "start_line": 4004,
+        "end_line": 4004
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4209,
-        "end_line": 4209
+        "start_line": 4188,
+        "end_line": 4188
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4211,
-        "end_line": 4211
+        "start_line": 4190,
+        "end_line": 4190
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 4191,
+        "end_line": 4191
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 4192,
+        "end_line": 4192
       },
       {
         "file": "src/cli/setup.rs",
@@ -1974,28 +1979,13 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4213,
-        "end_line": 4213
+        "start_line": 4215,
+        "end_line": 4215
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4233,
-        "end_line": 4233
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 4236,
-        "end_line": 4236
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 4248,
-        "end_line": 4248
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 4318,
-        "end_line": 4318
+        "start_line": 4217,
+        "end_line": 4217
       },
       {
         "file": "src/cli/validate.rs",
