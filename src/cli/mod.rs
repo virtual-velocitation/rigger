@@ -2745,6 +2745,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
             criteria,
             log: &stderr_line,
             hash_blob: &hash_blob,
+            check_emit: &rigger::contextgraph::check_emit,
         };
         let drive = conductor::run(&candidate_cfg, &deps);
 

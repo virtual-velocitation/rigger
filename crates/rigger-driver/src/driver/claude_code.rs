@@ -211,7 +211,7 @@ impl Driver<'_> {
         // operator's own credential rides through untouched and unread. The harness
         // environment every headless worker gets ([`harness_env`]) goes first, so the build
         // environment overrides it under the same key.
-        for (k, v) in harness_env() {
+        for (k, v) in harness_env(&opts.id) {
             cmd.env(k, v);
         }
         for (k, v) in &opts.env {
@@ -1787,6 +1787,32 @@ mod tests {
             )]),
             "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=900000",
             "an opts.env value under the same key wins"
+        );
+    }
+
+    /// The worker is told the spawn it runs as (`RIGGER_SPAWN`), so its own `rigger emit` is
+    /// stamped with its author exactly as a `rigger_emit` call through its spawn-bound MCP
+    /// server is.
+    #[test]
+    fn launch_exports_the_spawn_id_to_the_worker() {
+        let driver = Driver {
+            bin: fixture_bin(),
+            rigger_bin: "rigger".to_string(),
+            ..Driver::default()
+        };
+        let store = Store::open(":memory:").unwrap();
+        let mut launch = driver
+            .launch(
+                &AgentDef::default(),
+                "task",
+                &opts("u/implementer#2"),
+                &store,
+            )
+            .unwrap();
+        let lines = read_fixture_lines(&mut launch.child);
+        assert!(
+            lines.iter().any(|l| l == "RIGGER_SPAWN=u/implementer#2"),
+            "the worker sees its spawn id: {lines:?}"
         );
     }
 

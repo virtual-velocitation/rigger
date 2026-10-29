@@ -176,6 +176,7 @@ impl Files {
             criteria: criteria.iter().map(|c| c.to_string()).collect(),
             log: &log,
             hash_blob: &hash_blob,
+            check_emit: &rigger::contextgraph::check_emit,
         };
         run(cfg, &deps).unwrap()
     }

@@ -1036,9 +1036,9 @@ pub(crate) fn cmd_symbols_index(args: &[String]) -> Res {
 /// EXACTLY as the MCP `rigger_emit` tool does (both call [`mcpserver::emit_event`]).
 /// The store and graph are opened the way `serve` opens them - the namespaced
 /// per-project event store and the `graph.db` projector on the `conductor::STREAM`.
-/// A bad / non-object JSON payload, or one whose shape the context-graph fold cannot apply
-/// (checked by the shared core before the append), is a clear error to stderr with a non-zero
-/// exit.
+/// A bad / non-object JSON payload, one whose shape the context-graph fold cannot apply, or a
+/// record whose id another author's kept record holds (both checked by the shared core before
+/// the append), is a clear error to stderr with a non-zero exit.
 pub(crate) fn cmd_emit(args: &[String]) -> Res {
     // Optional `--spawn <id>`: stamp the emit with the EMITTING spawn's id
     // ([`META_SPAWN`](conductor::META_SPAWN)) at RECORD time. A native courier's `rigger emit`
@@ -1048,7 +1048,10 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
     // threads the worker's own spawn id here, exactly as the cli emit callback and the workflow
     // MCP server stamp their emits, so the recording the ReplayDriver later folds already
     // names its emitting spawn and is correlated by identity, never a shared-stream position.
-    let mut spawn: Option<&str> = None;
+    // Without the flag, the spawn id the host exported to its worker
+    // ([`SPAWN_ENV`](rigger::driver::SPAWN_ENV)) stamps the emit, so an agent session's emit is
+    // attributed even when it never passes the flag; the operator's own shell exports none.
+    let mut spawn: Option<String> = None;
     let mut positional: Vec<&String> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -1056,12 +1059,13 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
             spawn = Some(
                 it.next()
                     .ok_or("emit: --spawn expects a spawn id: rigger emit --spawn <id> <type> '<json-object>'")?
-                    .as_str(),
+                    .clone(),
             );
         } else {
             positional.push(a);
         }
     }
+    let spawn = spawn.or_else(|| std::env::var(rigger::driver::SPAWN_ENV).ok());
     let typ = positional
         .first()
         .ok_or("emit: expected a type: rigger emit [--spawn <id>] <type> '<json-object>'")?;
@@ -1097,14 +1101,15 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
 
     // Same args shape the MCP tool receives, so the append - the shared core both surfaces
-    // call - behaves identically here and over MCP. A non-empty `--spawn <id>` rides in
-    // `meta.spawn`, the same key the MCP server's `stamp_current_spawn` writes.
+    // call - behaves identically here and over MCP. A non-empty spawn id (the flag's, else the
+    // exported one) rides in `meta.spawn`, the same key the MCP server's `stamp_current_spawn`
+    // writes.
     let mut tool_args = serde_json::json!({ "type": typ, "data": data });
     if let Some(spawn) = spawn.filter(|s| !s.is_empty()) {
         let mut meta = serde_json::Map::new();
         meta.insert(
             conductor::META_SPAWN.to_string(),
-            serde_json::Value::String(spawn.to_string()),
+            serde_json::Value::String(spawn),
         );
         tool_args
             .as_object_mut()

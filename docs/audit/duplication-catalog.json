@@ -466,7 +466,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3cef2636c610",
+    "id": "dup-9be551da3036",
     "classification": "semantic",
     "sites": [
       {
@@ -477,7 +477,7 @@
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker",
-        "content_hash": "ea999bb38f84fe93"
+        "content_hash": "f3ef6a1fc794314b"
       },
       {
         "file": "crates/rigger-domain/src/agent.rs",
@@ -1232,7 +1232,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b5a6a4dd40e0",
+    "id": "dup-641bad5b9be4",
     "classification": "semantic",
     "sites": [
       {
@@ -2374,6 +2374,11 @@
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
         "content_hash": "b4f6780144fa9e9f"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "fab45089dfff5214"
       },
       {
         "file": "tests/cli.rs",
@@ -4207,7 +4212,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 594 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 595 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

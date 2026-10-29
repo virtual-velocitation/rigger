@@ -130,6 +130,7 @@ fn run_over(
         criteria: criteria.to_vec(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     run(cfg, &deps).unwrap()
 }

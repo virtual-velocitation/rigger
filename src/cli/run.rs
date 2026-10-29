@@ -838,6 +838,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         criteria,
         log: &stderr_line,
         hash_blob: &hash_blob,
+        check_emit: &rigger::contextgraph::check_emit,
     };
     let rs = conductor::run(&cfg, &deps)?;
 
@@ -1494,6 +1495,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
         criteria,
         log: &stderr_line,
         hash_blob: &hash_blob,
+        check_emit: &rigger::contextgraph::check_emit,
     };
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run before
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
@@ -1871,6 +1873,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
                 criteria,
                 log: &stderr_line,
                 hash_blob: &hash_blob,
+                check_emit: &rigger::contextgraph::check_emit,
             };
             // The halt reason goes to stderr, never stdout: stdout is the MCP transport.
             match conductor::run(&cfg, &deps) {

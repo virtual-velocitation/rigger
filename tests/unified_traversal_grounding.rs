@@ -217,24 +217,32 @@ fn run_and_capture_prompts_grounded(
     grounder: &dyn Grounder,
     coverage: &str,
 ) -> Vec<String> {
+    let cfg = single_stage_cfg(Stage {
+        name: "s".into(),
+        agent: "impl".into(),
+        coverage: coverage.into(),
+        ..Default::default()
+    });
+    capture_prompts(&cfg, graph, grounder)
+}
+
+/// A config of the one stage `stage`, run by an agent whose id is the stage's own `agent`.
+fn single_stage_cfg(stage: Stage) -> Config {
     let mut cfg = Config::default();
     cfg.agents.insert(
-        "impl".into(),
+        stage.agent.clone(),
         AgentDef {
-            id: "impl".into(),
+            id: stage.agent.clone(),
             ..Default::default()
         },
     );
-    cfg.workflow.stages.insert(
-        "s".into(),
-        Stage {
-            name: "s".into(),
-            agent: "impl".into(),
-            coverage: coverage.into(),
-            ..Default::default()
-        },
-    );
+    cfg.workflow.stages.insert(stage.name.clone(), stage);
+    cfg
+}
 
+/// Drive `conductor::run` over `cfg`, grounded by `grounder` over `graph`, and return every prompt
+/// the driver was asked to spawn: the one run every capturing helper here shares.
+fn capture_prompts(cfg: &Config, graph: &Projector, grounder: &dyn Grounder) -> Vec<String> {
     let store = Store::open(":memory:").unwrap();
     let driver = CapturingDriver::default();
     let deps = Deps {
@@ -247,10 +255,11 @@ fn run_and_capture_prompts_grounded(
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition
     // (integrate / not) is irrelevant to what this periphery layer observes.
-    let _ = run(&cfg, &deps);
+    let _ = run(cfg, &deps);
     let prompts = driver.prompts.lock().unwrap().clone();
     prompts
 }
@@ -275,41 +284,14 @@ fn run_and_capture_producer_prompts(graph: &Projector) -> Vec<String> {
     let grounder = SeedGrounder {
         file: "core.rs".into(),
     };
-    let mut cfg = Config::default();
-    cfg.agents.insert(
-        "plan".into(),
-        AgentDef {
-            id: "plan".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "p".into(),
-        Stage {
-            name: "p".into(),
-            agent: "plan".into(),
-            // A non-empty `produces` marks this a PRODUCER (planner) stage: it emits a DAG, not code.
-            produces: "unit".into(),
-            ..Default::default()
-        },
-    );
-
-    let store = Store::open(":memory:").unwrap();
-    let driver = CapturingDriver::default();
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: Some(&grounder),
-        graph: Some(graph),
-        criteria: Vec::new(),
-        log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
-    };
-    let _ = run(&cfg, &deps);
-    let prompts = driver.prompts.lock().unwrap().clone();
-    prompts
+    let cfg = single_stage_cfg(Stage {
+        name: "p".into(),
+        agent: "plan".into(),
+        // A non-empty `produces` marks this a PRODUCER (planner) stage: it emits a DAG, not code.
+        produces: "unit".into(),
+        ..Default::default()
+    });
+    capture_prompts(&cfg, graph, &grounder)
 }
 
 /// A fresh in-memory unified graph, the fixture every prompt-boundary test folds its seed into.
@@ -690,6 +672,7 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition is
     // irrelevant to what this periphery layer observes.
@@ -769,6 +752,7 @@ fn run_and_capture_review_spawns(
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     // Prompts are captured before each spawn returns, so the run's terminal disposition is irrelevant
     // to what this periphery layer observes.

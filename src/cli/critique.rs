@@ -254,7 +254,7 @@ fn remove_critique_scratch(scratch_root: &str) {
 
 /// Append one `ReviewFinding` to the project run stream for each finding of `critique` that the
 /// stream does not already hold by id, folding them into the graph as they land, so `rigger
-/// peers <spec>` shows them. Each payload passes the fold's own payload check first.
+/// peers <spec>` shows them. Each copy passes the one emit guard first.
 fn copy_findings(
     store: &dyn EventStore,
     graph: &dyn contextgraph::Projection,
@@ -274,8 +274,9 @@ fn copy_findings(
     let mut copies = Vec::new();
     for finding in critique.findings.iter().filter(|f| !held.contains(&f.id)) {
         let data = serde_json::to_vec(&review::finding_copy(finding, spec))?;
-        contextgraph::check_fold_payload(contextgraph::TYPE_REVIEW_FINDING, &data)?;
-        copies.push(Event::new(contextgraph::TYPE_REVIEW_FINDING, data));
+        let copy = Event::new(contextgraph::TYPE_REVIEW_FINDING, data);
+        contextgraph::check_emit(store, conductor::STREAM, &copy)?;
+        copies.push(copy);
     }
     if copies.is_empty() {
         return Ok(());
