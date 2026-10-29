@@ -3316,6 +3316,45 @@ mod tests {
         }
     }
 
+    /// The batch process's start under a repository the detection answered: a `git` that started
+    /// is the batch, and one that could not start fails the start, naming the batch's command, the
+    /// root and the cause - never none, which would read every entry of a rebuild from the tree
+    /// with an object database standing there to ask.
+    #[test]
+    fn the_batch_start_inside_a_repository_fails_naming_a_git_that_could_not_start() {
+        use crate::test_support::temp_git_project_with_commit;
+        use std::process::Stdio;
+
+        let inside = temp_git_project_with_commit();
+        let root = inside.path();
+        let started = crate::subprocess::git_in(root)
+            .args(BLOB_BATCH)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn();
+        let could_not_start = || std::io::Error::from(std::io::ErrorKind::WouldBlock);
+        let rows = [
+            (started, Ok(true)),
+            (
+                Err(could_not_start()),
+                Err(format!(
+                    "git cat-file --batch in {}: {}",
+                    root.display(),
+                    could_not_start()
+                )),
+            ),
+        ];
+        for (spawned, answer) in rows {
+            assert_eq!(
+                batch_answer(root, spawned)
+                    .map(|batch| batch.is_some())
+                    .map_err(|e| e.0),
+                answer
+            );
+        }
+    }
+
     /// Test-only recomposition of [`Worktree::merge_into_worktree`] + [`Worktree::land`] into
     /// the single combined call this file's OWN pre-round-4 tests were written against (spec
     /// 88, criterion 1 round 4): a plain merge-then-land, matching the production shape
