@@ -8751,7 +8751,9 @@ mod tests {
     #[test]
     fn a_cursored_file_s_seeding_is_lost_beside_another_log_or_none() {
         const SELECTED: &str = "local:/p/.rigger/events.db";
-        let cases: [(&str, fn(&Path), bool); 3] = [
+        /// What a case records beside the cursor of the graph file at its path.
+        type Recording = fn(&Path);
+        let cases: [(&str, Recording, bool); 3] = [
             (
                 "the log this projector folds",
                 |db| crate::test_support::record_the_cursor_beside(db, SELECTED),
