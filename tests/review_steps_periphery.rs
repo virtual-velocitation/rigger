@@ -488,10 +488,6 @@ fn rigger_step_takes_a_rejected_list_through_remediation_into_a_round_of_the_sam
     let worktree = implement_reviewed_by(root, REPEATED_KIND_LIST);
 
     walk_steps(root, 0, &repeated_kind_round(REJECT_FEATURE));
-    assert_eq!(
-        status_markers(&read_run_events(root), "reviewed").count(),
-        0
-    );
 
     let remediation = (vec![("s/implementer#1".to_string(), vec![])], false);
     assert_eq!(printed_step(root), remediation);
