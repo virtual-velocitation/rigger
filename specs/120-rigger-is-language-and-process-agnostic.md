@@ -68,7 +68,12 @@ declaring agents a, b, c, x and z and one stage, runs `config_store::parse_workf
 testing from the core instruction layer and the personas) is merged to main and merged into
 `rigger-run`. PR #122 (the review profile) is merged into `rigger-run` before the run's next unit
 spawns; the Design's citations that Global constraints reads on PR #122's tree point into that
-tree. On that tree the bodies name no gate's procedure: the rules they keep (the hand-over's
+tree. The five-sentence and PR #117 checks below bind only the first run's launch record (4466864).
+A later run of this spec launches at the `rigger-run` tip with the landed-criteria fix (branch
+`fix/landed-criteria`) in its base; its launch record confirms that criteria 12, 13, 14, 2, 3 and 5
+are integrated and that `REVIEWER_DISCIPLINE` holds the three sentences criterion 13's test pins,
+and the units planned for those six criteria reach Integrated through the landed-criteria skip with
+no spawn. On that tree the bodies name no gate's procedure: the rules they keep (the hand-over's
 outcomes under `## Hand over a tree the gates only confirm`, `working-discipline.md:30-84`, each
 with the check that proves it and none owing a record, and the review method and review rule under
 `## When you review`, :86-104) are guidance to authors and reviewers, none a procedure standing in
@@ -149,7 +154,7 @@ command as the gate runs it, directly or through a verify helper: the gate evide
 that gate's verdict, and a reviewer's run only repeats it at review cost; the one targeted
 reproduction above is not a gate run." A gate's own tool means its command as the gate runs it (its
 whole battery or sweep); the one targeted reproduction through the project's test command is the
-stated exception, so the two moved sentences agree. Any mismatch with the quoted text stops the launch for a Design amendment
+stated exception, so the two moved sentences agree. Any mismatch with the quoted text stops the first run's launch for a Design amendment
 before a unit spawns. Criterion 13 then moves three sentences verbatim into
 `working-discipline.md` under a `## When you review` heading, the section sitting after `## Hand
 over a tree the gates only confirm` and before `## Fan out the mechanical work`, in this order: "Never re-run the gate
@@ -235,7 +240,9 @@ lists it under the operator heading, which is how an operator sees it did not sh
 - `instructions_in_force_line` (`src/cli/setup.rs:1410-1426`), the first line `rigger prime` prints,
   reads `resolve_layers`: it lists only the built-ins in force, in `BUILTIN` order, a replaced one as
   `<name> (replaced)`, a switched-off one omitted (`none` when no built-in is in force), and counts
-  only the unshadowed operator files in its `(+N operator files)` suffix.
+  only the unshadowed operator files in its `(+N operator files)` suffix. For this reporter a
+  built-in left out of the in-force list is how it names the switched-off state, and its test
+  asserts that absence.
 - Unchanged, decided: the tests reading `BUILTIN` that pin no reworded phrase
   (`src/cli/setup.rs:3484`, `crates/rigger-domain/src/docs.rs:2525`);
   `load_instructions` (`crates/rigger-config-files/src/config_store.rs:92-123`). Criterion 14 removes
@@ -583,6 +590,7 @@ Every production site at 1185c8c6 that mints, compares or classifies `ROLE_ADVER
 | `workflows/rigger.js:325-343` `roleOf`/`phaseOf`, :365 `PERSONA_VERB`, :384 `ROSTER_VERB` | classifies | 9 |
 | `canary_store.rs:175`, :443, :460, :479, :490, :549, :551 | mints and keys tiers | 10 |
 | `conductor.rs:13777` `recorded_session` | compares a whole token for equality | unchanged: one session per step token is the design |
+| `unit_role_of` (`spawn.rs:261` at 7004d93f) and the emit guard keyed by it (`check_emit`'s `refuse_another_authors_id`, `crates/rigger-graph-sqlite/src/contextgraph/mod.rs:165-199` at 7004d93f) | keys a record's author by the token | unchanged: each step token is its own author seat, as for `recorded_session`; a later step replacing an earlier step's record names it in `supersedes` under a new id |
 | `metrics.rs:1024` spawn timing, :1289 tier seeds | keys by whole token; seeds kind names | unchanged: `adversary@2` is its own timing row |
 | `conductor.rs:8228`, :8235, :8250 (plan-critique gate), `review.rs:393` `critique_spawn_id` | mints | unchanged: out of scope |
 | `src/cli/eval.rs:94` | parses `--model` tier names | unchanged |
@@ -617,8 +625,9 @@ finding on it.
   (`docs.rs:552-553`) is reworded as OUT OF SCOPE decides.
 - The canary: `canary_store::apply_model_pins` (`crates/rigger-conductor/src/canary_store.rs:168`)
   pins every agent of every step of the pinned kind; `run_canary` (:245) refuses a panel with no
-  adjudicator step, runs the steps in order under their step tokens, each canary spawn carrying
-  `step_roster(steps, index, review_step_role)`, the adjudicator's reversed run reversing the whole
+  adjudicator step, runs the steps in order under their step tokens, each canary spawn keeping the
+  empty roster as at HEAD (spec 67's decision: canary ids `canary:{item}:{role}` are not unit spawn
+  ids a roster could name, so criterion 10 owns no roster), the adjudicator's reversed run reversing the whole
   ordered finding list across steps as at HEAD, scores the lens tier over
   every lens step and the adversary tier over every adversary step, and judges the one adjudicator
   step as today (`adjudicate`, :541). `--model <tier>=<id>` keeps its three tier names (`src/cli/eval.rs:94`).
@@ -674,7 +683,7 @@ the module-doc sentence criterion 2 wrote are criterion 3's; `:93` (appended aft
 and the `instructions.rs:10-14` sentence (reaches every agent anywhere, no configuration removes it, at 1185c8c6)
 are criterion 2's. That split (2: `:93`; 3: `:85`'s "reaches every agent"
 wording, `:91`; 4: `:95`'s report states, not its count phrase; 12: `:87-88`; 14: the entry count on `:85`, the
-entry count on `:95` ("the two built-in entries first" at 1185c8c6 becoming "the built-in entries first"), the third item (`:89`),
+entry count on `:95` ("the two built-in entries first" at 1185c8c6, its outcome the launch-base wording "the three built-in entries first", which stays true after criterion 4 because `render` lists every built-in with its state), the third item (`:89`),
 and the layer diagram at `:82`) is the one authority over those named phrases of
 `authoring-agents.md:82-97`, not over whole lines. The `rigger instructions` help text (`src/main.rs:359-362`, "the built-in law
 and working discipline, then each operator file") is criterion 4's, reworded to "each built-in with
