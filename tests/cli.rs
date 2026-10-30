@@ -28728,16 +28728,31 @@ fn validate_warns_of_no_built_in_for_a_near_named_or_other_operator_file() {
 rigger::test_cases! {
     /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from a unit worktree: given a committed
     /// project whose `.rigger/instructions/` holds the named-entry fixture, uncommitted, and a
-    /// worktree nested under its `.rigger/` that therefore checks none of that layer out, when the
-    /// operator runs `rigger prime` or `rigger instructions` in the worktree, with a store and
-    /// before any store exists, then each reports the main checkout's layer, never the worktree's
-    /// own.
+    /// worktree nested under its `.rigger/` that therefore checks none of that layer out and holds
+    /// another layer of its own, when the operator runs `rigger prime` or `rigger instructions` in
+    /// the worktree, with a store and before any store exists, then each reports the main
+    /// checkout's layer, never the worktree's own.
     prime_and_instructions_from_a_nested_worktree_report_the_main_checkout_s_instruction_layer: {
         use common::cli::{
-            assert_each_reporter_with_and_without_a_store,
-            assert_reported_from_a_nested_worktree,
+            assert_each_reporter_with_and_without_a_store, assert_reported_from_a_worktree,
         };
-        assert_each_reporter_with_and_without_a_store(assert_reported_from_a_nested_worktree)
+        assert_each_reporter_with_and_without_a_store(|root: &Path, report| {
+            assert_reported_from_a_worktree(root, report, common::git::nested_worktree)
+        })
+    };
+    /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from a unit worktree where a run spawns it
+    /// by default: given a committed project whose `.rigger/instructions/` holds the named-entry
+    /// fixture, uncommitted, and a worktree relocated outside the project, under the cache-home
+    /// scratch root, holding another layer of its own, when the operator runs `rigger prime` or
+    /// `rigger instructions` in the worktree, with a store and before any store exists, then each
+    /// reports the main checkout's layer, which no ancestor of the worktree holds.
+    prime_and_instructions_from_a_relocated_worktree_report_the_main_checkout_s_instruction_layer: {
+        use common::cli::{
+            assert_each_reporter_with_and_without_a_store, assert_reported_from_a_worktree,
+        };
+        assert_each_reporter_with_and_without_a_store(|root: &Path, report| {
+            assert_reported_from_a_worktree(root, report, common::git::relocated_worktree)
+        })
     };
     /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from below the project root: given a project
     /// whose `.rigger/instructions/` holds the named-entry fixture - a file replacing the

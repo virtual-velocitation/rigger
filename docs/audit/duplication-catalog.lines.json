@@ -919,8 +919,8 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 542,
-        "end_line": 542
+        "start_line": 548,
+        "end_line": 548
       },
       {
         "file": "tests/common/fixtures/conductor.rs",
@@ -3119,78 +3119,78 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28813,
-        "end_line": 28813
+        "start_line": 28828,
+        "end_line": 28828
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28876,
-        "end_line": 28876
+        "start_line": 28891,
+        "end_line": 28891
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28914,
-        "end_line": 28914
+        "start_line": 28929,
+        "end_line": 28929
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 29377,
-        "end_line": 29377
+        "start_line": 29392,
+        "end_line": 29392
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 29395,
-        "end_line": 29395
+        "start_line": 29410,
+        "end_line": 29410
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 507,
-        "end_line": 507
+        "start_line": 513,
+        "end_line": 513
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 518,
-        "end_line": 518
+        "start_line": 524,
+        "end_line": 524
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 552,
-        "end_line": 552
+        "start_line": 558,
+        "end_line": 558
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 596,
-        "end_line": 596
+        "start_line": 602,
+        "end_line": 602
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1408,
-        "end_line": 1408
+        "start_line": 1414,
+        "end_line": 1414
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1499,
-        "end_line": 1499
+        "start_line": 1505,
+        "end_line": 1505
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1721,
-        "end_line": 1721
+        "start_line": 1727,
+        "end_line": 1727
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1722,
-        "end_line": 1722
+        "start_line": 1728,
+        "end_line": 1728
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1835,
-        "end_line": 1835
+        "start_line": 1841,
+        "end_line": 1841
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1932,
-        "end_line": 1932
+        "start_line": 1938,
+        "end_line": 1938
       },
       {
         "file": "tests/common/fixtures/config.rs",
@@ -5599,8 +5599,8 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1498,
-        "end_line": 1500
+        "start_line": 1504,
+        "end_line": 1506
       },
       {
         "file": "tests/common/fixtures/cursor.rs",
@@ -5934,23 +5934,23 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 940,
-        "end_line": 940
+        "start_line": 946,
+        "end_line": 946
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1156,
-        "end_line": 1156
+        "start_line": 1162,
+        "end_line": 1162
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1166,
-        "end_line": 1166
+        "start_line": 1172,
+        "end_line": 1172
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1943,
-        "end_line": 1943
+        "start_line": 1949,
+        "end_line": 1949
       },
       {
         "file": "tests/common/fixtures/cursor.rs",
@@ -6899,28 +6899,28 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1041,
-        "end_line": 1043
-      },
-      {
-        "file": "tests/common/cli.rs",
         "start_line": 1047,
-        "end_line": 1052
+        "end_line": 1049
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1318,
-        "end_line": 1325
+        "start_line": 1053,
+        "end_line": 1058
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1332,
-        "end_line": 1337
+        "start_line": 1324,
+        "end_line": 1331
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1996,
-        "end_line": 2001
+        "start_line": 1338,
+        "end_line": 1343
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "start_line": 2002,
+        "end_line": 2007
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -7614,13 +7614,13 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 401,
-        "end_line": 405
+        "start_line": 407,
+        "end_line": 411
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 409,
-        "end_line": 413
+        "start_line": 415,
+        "end_line": 419
       },
       {
         "file": "tests/courier_registry_refresh_boundary_periphery.rs",
@@ -7634,13 +7634,13 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1059,
-        "end_line": 1061
+        "start_line": 1065,
+        "end_line": 1067
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1358,
-        "end_line": 1360
+        "start_line": 1364,
+        "end_line": 1366
       },
       {
         "file": "tests/common/fixtures/cursor.rs",
@@ -7654,23 +7654,23 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1343,
-        "end_line": 1345
+        "start_line": 1349,
+        "end_line": 1351
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1348,
-        "end_line": 1350
+        "start_line": 1354,
+        "end_line": 1356
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1990,
-        "end_line": 1992
+        "start_line": 1996,
+        "end_line": 1998
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 2005,
-        "end_line": 2007
+        "start_line": 2011,
+        "end_line": 2013
       }
     ]
   },
@@ -7679,8 +7679,8 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1536,
-        "end_line": 1538
+        "start_line": 1542,
+        "end_line": 1544
       },
       {
         "file": "tests/common/fixtures/cursor.rs",
@@ -7699,8 +7699,8 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1781,
-        "end_line": 1788
+        "start_line": 1787,
+        "end_line": 1794
       },
       {
         "file": "tests/common/workflow_probe.rs",
@@ -7714,13 +7714,13 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1817,
-        "end_line": 1837
+        "start_line": 1823,
+        "end_line": 1843
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1841,
-        "end_line": 1857
+        "start_line": 1847,
+        "end_line": 1863
       },
       {
         "file": "tests/store_secrets.rs",
