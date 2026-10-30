@@ -698,6 +698,7 @@ mod tests {
             lenses: vec!["sdet".into()],
             adversary: "adv".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         }
     }

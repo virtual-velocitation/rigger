@@ -102,6 +102,7 @@ fn model_pinning_takes_effect_through_run_canary_and_the_header_round_trips_and_
         lenses: vec!["lens-a".into()],
         adversary: "adv".into(),
         adjudicator: "adj".into(),
+        steps: None,
         tiers: None,
     };
 

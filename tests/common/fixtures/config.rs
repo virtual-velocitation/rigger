@@ -57,6 +57,7 @@ pub fn panel_of(lenses: &[&str], adversary: &str, adjudicator: &str) -> ReviewPa
         lenses: lenses.iter().map(|s| (*s).to_string()).collect(),
         adversary: adversary.into(),
         adjudicator: adjudicator.into(),
+        steps: None,
         tiers: None,
     }
 }
@@ -97,6 +98,7 @@ pub fn lens_only_panel() -> ReviewPanel {
         lenses: vec!["lens".to_string()],
         adversary: String::new(),
         adjudicator: "adj".to_string(),
+        steps: None,
         tiers: None,
     }
 }

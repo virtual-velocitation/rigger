@@ -4404,7 +4404,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a8dadbc19895",
+    "id": "dup-16e1b74fc5bd",
     "classification": "semantic",
     "sites": [
       {
@@ -4415,7 +4415,7 @@
       {
         "file": "crates/rigger-domain/src/config.rs",
         "name": "gating_agent_ids",
-        "content_hash": "da849794923a5497"
+        "content_hash": "8c5d4ed969fefc1b"
       }
     ],
     "proposed_home": "one shared `gating_agent_ids` helper (e.g. relocated into `tests/common`) rather than each file defining its own",

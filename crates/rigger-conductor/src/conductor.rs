@@ -25375,6 +25375,7 @@ mod tests {
                     lenses: vec!["lens".into()],
                     adversary: adversary.into(),
                     adjudicator: "judge".into(),
+                    steps: None,
                     tiers: None,
                 },
                 ..Default::default()
@@ -27484,6 +27485,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -27941,6 +27943,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -28004,6 +28007,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers,
         }
     }
@@ -28577,6 +28581,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -30059,6 +30064,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -30210,6 +30216,7 @@ mod tests {
             lenses: vec!["lensA".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -30274,6 +30281,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: String::new(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -30348,6 +30356,7 @@ mod tests {
                     lenses: vec!["lens".into()],
                     adversary: "adversary".into(),
                     adjudicator: "adjudicator".into(),
+                    steps: None,
                     tiers: None,
                 },
                 ..Default::default()
@@ -31155,6 +31164,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         if let Some(bound) = max_retries {
@@ -31954,6 +31964,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -32106,6 +32117,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         // NOTE: defaults.max_retries deliberately left unset (0 -> falls back to 3).
@@ -32160,6 +32172,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.defaults.max_retries = 2;
@@ -32436,6 +32449,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.defaults.max_retries = CAP;
@@ -34043,6 +34057,7 @@ mod tests {
                     lenses: vec!["lensA".into(), "lensB".into()],
                     adversary: "adversary".into(),
                     adjudicator: "judge".into(),
+                    steps: None,
                     tiers: Some(Box::new(crate::config::ReviewDepth {
                         light,
                         // One grounded file, well under threshold, no high-risk path: every
@@ -36302,6 +36317,7 @@ mod tests {
                     lenses: vec!["lens".into()],
                     adversary: "adversary".into(),
                     adjudicator: "judge".into(),
+                    steps: None,
                     tiers: None,
                 },
                 ..Default::default()
@@ -39947,6 +39963,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: String::new(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         cfg.workflow.stages.insert(
@@ -45628,6 +45645,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            steps: None,
             tiers: None,
         };
         // `s` passes its inline gate but the adjudicator ALWAYS rejects, so it remediates

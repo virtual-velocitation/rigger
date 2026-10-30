@@ -16,7 +16,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::config::{
-    err, find_cycle, index_agents, parse_agent, parse_yaml_naming_unknown_keys,
+    check_agent_id, err, find_cycle, index_agents, parse_agent, parse_yaml_naming_unknown_keys,
     resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig, Workflow, RIGGER_DIR,
 };
 use crate::gate::GateRequirements;
@@ -281,8 +281,9 @@ pub fn read_scratch_defaults(rigger_dir: &Path) -> Result<Defaults, Error> {
 }
 
 impl Config {
-    /// Validate checks that every reference resolves and the stage graph is acyclic, then,
-    /// last, resolves every declared gate's `requires` on `PATH` and answers that resolution.
+    /// Validate checks that every agent id and review step sequence is well formed, every
+    /// reference resolves and the stage graph is acyclic, then, last, resolves every declared
+    /// gate's `requires` on `PATH` and answers that resolution.
     pub fn validate(&self) -> Result<Vec<GateRequirements>, Error> {
         let wf = &self.workflow;
         // Build-environment resolution (spec 65 unit 2, NO SILENT DEGRADE): a CONFIGURED
@@ -301,9 +302,16 @@ impl Config {
         // still sets it fails loudly at the exact line to delete rather than carrying a setting
         // the operator believes does something.
         reject_retired_key(&wf.name, "name", "the `name:` line", "nothing reads it")?;
-        // The default review panel (applied to every unit) must reference real agents,
-        // including its light-tier roster, and its depth policy must be structurally
-        // sound (a configured light tier names an adjudicator).
+        for id in self.agents.keys() {
+            check_agent_id(id).map_err(|m| err(format!("agents {m}")))?;
+        }
+        // The default review panel (applied to every unit) must declare a well-formed step
+        // sequence, reference real agents, including its light-tier roster, and carry a
+        // structurally sound depth policy (a configured light tier names an adjudicator step).
+        wf.defaults
+            .review
+            .validate_steps()
+            .map_err(|m| err(format!("defaults.{m}")))?;
         for aid in wf.defaults.review.agent_ids() {
             if !self.agents.contains_key(&aid) {
                 return Err(err(format!(
@@ -321,6 +329,11 @@ impl Config {
                     return Err(err(format!("stage {name:?} needs unknown stage {need:?}")));
                 }
             }
+            st.validate_agent_ids()
+                .map_err(|m| err(format!("stage {name:?} {m}")))?;
+            st.review
+                .validate_steps()
+                .map_err(|m| err(format!("stage {name:?} {m}")))?;
             for aid in st.agent_ids() {
                 if !self.agents.contains_key(&aid) {
                     return Err(err(format!(
@@ -334,7 +347,7 @@ impl Config {
                 }
             }
             // A per-stage `review` override that declares a depth policy must satisfy the
-            // same light-tier-names-an-adjudicator invariant as the default panel.
+            // same light-tier-names-an-adjudicator-step invariant as the default panel.
             st.review
                 .validate_depth()
                 .map_err(|m| err(format!("stage {name:?} {m}")))?;
@@ -1929,6 +1942,7 @@ agent: worker\n";
             lenses: vec!["arch".into(), "tech".into()],
             adversary: "adv".into(),
             adjudicator: "judge".into(),
+            steps: None,
             tiers: Some(Box::new(ReviewDepth {
                 light: ReviewPanel {
                     lenses: vec!["arch".into()],
