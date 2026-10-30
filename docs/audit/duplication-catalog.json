@@ -6555,6 +6555,30 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-b7996d22b4c4",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "without_a_cursor",
+        "content_hash": "be203444bdaee5ba"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "beside_another_log",
+        "content_hash": "cb0df4af5c8ca40f"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "beside_no_log",
+        "content_hash": "be203444bdaee5ba"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 3 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-e45a2413a3f0",
     "classification": "near",
     "sites": [

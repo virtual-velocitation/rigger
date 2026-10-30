@@ -110,6 +110,11 @@
     "reason": "Three one-line named fixtures over two different shared helpers: `plant_stale_marker` passes an hour's age to `plant_marker`, and `drop_the_cursor` and `drop_the_cursor_s_log` pass two different schema changes (the cursor table, the column recording its log) to `change_the_schema`."
   },
   {
+    "id": "dup-b7996d22b4c4",
+    "disposition": "not-a-duplicate",
+    "reason": "Three one-line named row fixtures of the catch-up's cause tables, each handing the row's path to a different shared helper: `without_a_cursor` drops the cursor table, `beside_another_log` records the cursor beside another log's identity, and `beside_no_log` drops the column recording its log."
+  },
+  {
     "id": "dup-e45a74e51e8a",
     "disposition": "not-a-duplicate",
     "reason": "Four builder setters on three different types setting different fields (`valid_from` on an event, `meta` on a spawn result, `store` (the identity of the log it folds) and `lock_ceiling` on the graph projector, the last compiled for the graph crate's tests alone)."
