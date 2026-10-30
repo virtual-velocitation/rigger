@@ -1091,6 +1091,169 @@ pub(crate) mod tests {
         );
     }
 
+    /// AN EXTRACTION CHANGE SHIPS WITH A BUMP: the golden fixtures, a source for each registered
+    /// grammar and query and a malformed Rust file, extract to one serialized form whose digest
+    /// is pinned beside the `GRAMMAR_TAGS_VERSION` it was taken under, so a change to what
+    /// extraction records fails here until the tag is bumped and the pair re-pinned, and an index
+    /// persisted before the change loads as absent. The fixtures set every part a persisted index
+    /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
+    /// kind included, so a change to any of them moves the digest.
+    #[test]
+    fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
+        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
+        use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
+        use crate::grounder::symbols::store;
+        const PINNED: (&str, &str) = ("ts-tags-v4", "fc5e234cbf5253a5");
+        const GOLDEN: [(&str, &str); 8] = [
+            (
+                "rs",
+                "\
+use crate::store::Ledger;
+pub const QUOTA_CAP: u32 = 3;
+pub struct Kestrel { size: u32 }
+trait Grow { fn grow(&self) -> u32; }
+impl Grow for Kestrel {
+    fn grow(&self) -> u32 { helper(QUOTA_CAP) + Limits::DEPTH_CAP + self.size }
+}
+fn helper(n: u32) -> u32 { n }
+mod x;
+#[path = \"gen/real.rs\"]
+mod y;
+mod outer {
+    mod z;
+}
+#[cfg(test)]
+mod tests {
+    use super::Ledger;
+    #[test]
+    fn t() { super::helper(1); }
+}
+",
+            ),
+            ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
+            (
+                "cs",
+                "\
+class Box {
+    const int Cap = 3;
+    int Width() { return Calc(Cap); }
+    static int Calc(int n) { return n; }
+}
+",
+            ),
+            (
+                "ts",
+                "\
+const LIMIT = 3;
+class Box {
+    width(): number { return calc(LIMIT); }
+}
+function calc(n: number): number { return n; }
+",
+            ),
+            (
+                "tsx",
+                "\
+const LABEL = \"x\";
+function View() { return <div>{label(LABEL)}</div>; }
+function label(s: string) { return s; }
+",
+            ),
+            (
+                "js",
+                "\
+const LIMIT = 3;
+class Box {
+    width() { return calc(LIMIT); }
+}
+function calc(n) { return n; }
+",
+            ),
+            (
+                "go",
+                "\
+package p
+const Limit = 3
+type T struct{}
+func (T) Width() int { return calc(Limit) }
+func calc(n int) int { return n }
+",
+            ),
+            (
+                "py",
+                "\
+LIMIT = 3
+class Box:
+    def width(self):
+        return calc(LIMIT)
+def calc(n):
+    return n
+",
+            ),
+        ];
+        let extracted: Vec<(&str, FileSymbols)> = GOLDEN
+            .iter()
+            .map(|(ext, src)| (*ext, crate::symbol_index::extracted(ext, src)))
+            .collect();
+        let defs: Vec<_> = extracted.iter().flat_map(|(_, fs)| &fs.defs).collect();
+        let refs: Vec<_> = extracted.iter().flat_map(|(_, fs)| &fs.refs).collect();
+        let tagged = |kind: &str| refs.iter().any(|r| r.ref_kind.as_deref() == Some(kind));
+        let langs = [
+            Lang::Rust,
+            Lang::CSharp,
+            Lang::Js,
+            Lang::Ts,
+            Lang::Go,
+            Lang::Python,
+        ];
+        for (part, covered) in [
+            (
+                "every language",
+                langs
+                    .iter()
+                    .all(|lang| extracted.iter().any(|(_, fs)| fs.lang == *lang)),
+            ),
+            (
+                "a definition's parent",
+                defs.iter().any(|d| d.parent.is_some()),
+            ),
+            ("a test definition", defs.iter().any(|d| d.is_test)),
+            (
+                "an out-of-line module",
+                defs.iter().any(|d| d.is_out_of_line_module),
+            ),
+            (
+                "a #[path] override",
+                defs.iter().any(|d| d.path_override.is_some()),
+            ),
+            (
+                "an enclosing inline module",
+                defs.iter()
+                    .any(|d| d.enclosing_inline_module_path.is_some()),
+            ),
+            (
+                "a reference's caller",
+                refs.iter().any(|r| r.enclosing.is_some()),
+            ),
+            ("a test reference", refs.iter().any(|r| r.is_test)),
+            ("a const read", tagged(REF_KIND_CONST)),
+            ("a type reference", tagged(REF_KIND_TYPE)),
+            ("a use", tagged(REF_KIND_USE)),
+            ("a partial file", extracted.iter().any(|(_, fs)| fs.partial)),
+        ] {
+            assert!(covered, "the golden fixtures set {part}");
+        }
+        let digest = store::content_hash(&serde_json::to_string(&extracted).unwrap());
+        assert_eq!(
+            (GRAMMAR_TAGS_VERSION, digest.as_str()),
+            PINNED,
+            "this build's extraction generation and golden digest (left) differ from the pinned \
+             pair: a change to what extraction records ships with a bump, so bump \
+             `GRAMMAR_TAGS_VERSION` and re-pin this pair to the new tag and this build's digest \
+             together"
+        );
+    }
+
     /// THE NAME FILTER DROPS A NAMELESS DEFINITION (spec 116 criterion 3), under the registered Go
     /// query: a function, a method and a type named `_`, Go's blank identifier, make no
     /// definition, while the named type and function beside them keep theirs; the call inside

@@ -234,8 +234,11 @@ impl FileSymbols {
 /// change to what extraction records under an unchanged query, the caller a reference carries
 /// (`SymRef::enclosing`) and a definition's parent (`Def::parent`) included: `ts-tags-v4` is
 /// spec 119's one bump, at the index's last shape change (GENERATIONS), so a `ts-tags-v3` index -
-/// callers by leaf, or by path with no parent - loads as absent and is rebuilt.
-/// Parser-free, so it lives in the model both feature lanes compile.
+/// callers by leaf, or by path with no parent - loads as absent and is rebuilt. The registry's
+/// golden test `an_extraction_change_ships_with_a_grammar_tags_version_bump` pins this tag beside
+/// the digest of a fixed extraction, so a change to what extraction records fails it until the
+/// tag is bumped and the pair re-pinned together. Parser-free, so it lives in the model both
+/// feature lanes compile.
 pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v4";
 
 /// The whole-project index. Deterministic containers only (`BTreeMap`): iterating it for
