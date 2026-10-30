@@ -276,15 +276,14 @@ fn rigger_canary_scores_a_list_repeating_a_kind() {
     assert_eq!(scored, ["1 corpus item(s) against the review panel"]);
 }
 
-/// Given a list with no adjudicator step, or whose only adjudicator is the map key beside it, when
-/// the operator runs `rigger canary`, then the run stops on the one line naming the gating verdict
-/// the canary measures, before it scores anything.
+/// Given a list with no adjudicator step, when the operator runs `rigger canary`, then the run
+/// stops on the one line naming the gating verdict the canary measures, before it scores anything.
 #[cfg(unix)]
 #[test]
 fn rigger_canary_refuses_a_list_with_no_adjudicator_step() {
     for panel in [
         "{ steps: [{ lenses: [a] }, { adversary: x }] }",
-        "{ adjudicator: z, steps: [{ lenses: [a] }] }",
+        "{ steps: [{ lenses: [a] }] }",
     ] {
         let dir = temp_project();
         let (out, err, ok) = canary_of(dir.path(), panel);

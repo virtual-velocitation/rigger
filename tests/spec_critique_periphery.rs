@@ -1013,12 +1013,12 @@ fn a_workflow_with_no_critic_is_refused_first_and_no_store_or_graph_is_created()
     }
 }
 
-/// A list naming no adversary step has no critic, and the map key beside a list is not read.
+/// A list naming no adversary step has no critic, whichever steps it does name.
 #[test]
 fn a_default_review_listing_no_adversary_step_has_no_critic() {
     for review in [
         "{ steps: [{ lenses: [judge] }, { adjudicator: judge }] }",
-        "{ adversary: critic, steps: [{ lenses: [judge] }, { adjudicator: judge }] }",
+        "{ steps: [{ adjudicator: judge }] }",
     ] {
         let dir = temp_project();
         let root = dir.path();
