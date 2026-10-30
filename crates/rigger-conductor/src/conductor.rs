@@ -5185,10 +5185,10 @@ impl RunCtx<'_> {
     /// tier), is residue: a reviewer's own tooling breaking protocol, or an out-of-band actor,
     /// never legitimate implementer work (the implementer already committed and gated before
     /// the round began). Called from `review_unit` on EVERY exit (spec 103 criterion 6, round 2,
-    /// adv-u103c6-guard-skipped-on-tier-err): directly, at each point the round's LAST
-    /// tier result is recorded on the SUCCESS path (whichever of the adjudicator, the
-    /// adversary, or the lenses actually ran last), before the verdict is acted on either
-    /// way; and via [`Self::guard_review_round_tree_on_tier_err`] on the ERROR path, when
+    /// adv-u103c6-guard-skipped-on-tier-err): directly, once after the step loop on the
+    /// SUCCESS path (whichever of the adjudicator, the adversary, or the lenses actually ran
+    /// last), before the verdict is acted on either way; and via
+    /// [`Self::guard_review_round_tree_on_tier_err`] on the ERROR path, when
     /// any tier's own spawn returns a genuine (non-parked) error - so residue an EARLIER
     /// tier left behind before a LATER tier's crash is still named and restored rather than
     /// surviving on the kept branch for the next attempt to silently inherit. The
