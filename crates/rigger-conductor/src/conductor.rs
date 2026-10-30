@@ -2407,23 +2407,20 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         // already integrated, `ready_stages` would otherwise surface the gate (it needs
         // plan) and `run_wave` would run it through the wrong path (`run_single_stage`).
         let gate = critique_gate_name(&stages);
-        let ready = wave_ready(
-            &stages,
-            &integrated,
-            &terminal,
-            gate.as_deref(),
-            &fanout_criteria,
-        );
+        let frontier = Frontier {
+            critique_gate: gate.as_deref(),
+            fanout_criteria: &fanout_criteria,
+            fanout_template_gates: &fanout_template_gates,
+        };
+        let ready = frontier.ready(&stages, &integrated, &terminal);
         if !ready.is_empty() {
-            assert_no_ungated_fanout_unit(
-                &stages,
-                &ready,
-                &fanout_criteria,
-                &fanout_template_gates,
-            )?;
+            frontier.check(&stages, &ready)?;
+            // No frontier for the wave itself: the units a `plan` landing makes ready are
+            // harvested and critiqued below before any of them may start.
             ctx.run_wave(
                 &stages,
                 &ready,
+                None,
                 &mut integrated,
                 &mut terminal,
                 &mut in_flight,
@@ -2522,14 +2519,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         // without this the seeded rollback would never re-drive. On a fresh run (or a resume
         // with nothing pending) the queue is empty and this is a no-op.
         ctx.drain_compensations(&mut integrated, &mut terminal)?;
+        let frontier = Frontier {
+            critique_gate: gate.as_deref(),
+            fanout_criteria: &fanout_criteria,
+            fanout_template_gates: &fanout_template_gates,
+        };
         loop {
-            let ready = wave_ready(
-                &stages,
-                &integrated,
-                &terminal,
-                gate.as_deref(),
-                &fanout_criteria,
-            );
+            let ready = frontier.ready(&stages, &integrated, &terminal);
             if ready.is_empty() {
                 break;
             }
@@ -2540,18 +2536,14 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                 ctx.trip_budget_breaker()?;
                 break;
             }
-            assert_no_ungated_fanout_unit(
-                &stages,
-                &ready,
-                &fanout_criteria,
-                &fanout_template_gates,
-            )?;
+            frontier.check(&stages, &ready)?;
             // A wave that admits nothing is a fixpoint for this process: every slot is held
             // by a unit still in flight off-process, and nothing below can free one, so the
             // step ends and a later step offers the refused stages again.
             if !ctx.run_wave(
                 &stages,
                 &ready,
+                Some(&frontier),
                 &mut integrated,
                 &mut terminal,
                 &mut in_flight,
@@ -3179,16 +3171,18 @@ struct RunCtx<'a> {
     /// [`Worktree::diff_names`] (merge-base mode) against the OLDER base this landing merged from.
     pending_landing: Mutex<HashMap<String, (u32, String, String)>>,
     /// Every durably-recorded `integrate-landed` row (spec 103, criterion 3 - RE-GATE WHAT
-    /// LANDED), per `(unit, attempt)`: `(pass, sha, pre_merge)`. Seeded ONCE at run start
-    /// from the prior log ([`landings_from_log`]) and never removed - unlike
-    /// [`pending_landing`](RunCtx::pending_landing), which stops tracking a landing the
-    /// instant it closes. Consulted at the TOP of
+    /// LANDED), per `(unit, attempt)`: `(pass, sha, pre_merge)`. Seeded at run start from
+    /// the prior log ([`landings_from_log`]) and kept in step live by
+    /// [`RunCtx::record_landed`], so it always holds what a fresh process would fold from the
+    /// same log; never removed - unlike [`pending_landing`](RunCtx::pending_landing), which
+    /// stops tracking a landing the instant it closes. Consulted at the TOP of
     /// [`integrate_and_emit`](RunCtx::integrate_and_emit) exactly when the `pending_landing` lookup
     /// finds nothing pending and nothing is owed: that combination alone cannot distinguish
     /// "never landed anything" from "landed for real, crashed before the post-merge re-gate
     /// that must follow it ever ran" - this map is the durable fact that can, so a real
     /// merge's re-gate still runs on resume instead of the unit silently reaching
-    /// `UnitIntegrated` ungated.
+    /// `UnitIntegrated` ungated. Also the fallback [`RunCtx::landed_at`] reads when the merge
+    /// loop's last pass landed nothing new.
     landed: Mutex<HashMap<String, (u32, String, String)>>,
     /// The declarative failure taxonomy (spec 10, unit 2): the SINGLE authority the
     /// conductor folds its gate-failure classification from, built once from
@@ -4161,6 +4155,13 @@ impl RunCtx<'_> {
     /// by a unit in flight off-process) is left neither integrated nor terminal, so a later
     /// wave (or a resumed step) offers it again.
     ///
+    /// With a `frontier`, a landing also widens the wave: once a stage integrates, every stage
+    /// the frontier now finds ready that the wave has not offered joins `waiting`
+    /// ([`Self::landing_joins`]), so a unit whose need just landed takes a free slot at once
+    /// instead of waiting for the slowest stage of the wave. The run loop passes its own
+    /// frontier; the planning prelude passes `None`, because the proposed units a `plan`
+    /// landing would make ready must first be harvested and pass the plan-critique gate.
+    ///
     /// The width bound (spec 102, criterion 1): `defaults.max_parallel_units` caps how many
     /// units are in flight AT ONCE across the WHOLE run, `0` being unbounded, and never more
     /// than [`MAX_CONCURRENCY`] run in this process at once. `in_flight` is seeded from the log
@@ -4173,12 +4174,14 @@ impl RunCtx<'_> {
         &self,
         stages: &BTreeMap<String, Stage>,
         ready: &[String],
+        frontier: Option<&Frontier<'_>>,
         integrated: &mut HashSet<String>,
         terminal: &mut HashSet<String>,
         in_flight: &mut HashSet<String>,
     ) -> Result<bool, Error> {
         let width = self.cfg.workflow.defaults.max_parallel_units as usize;
-        let radii = self.wave_radii(stages, ready, in_flight)?;
+        let mut radii = self.wave_radii(stages, ready, in_flight)?;
+        let mut offered: HashSet<String> = ready.iter().cloned().collect();
         let mut waiting: Vec<String> = ready.to_vec();
         let mut running: HashSet<String> = HashSet::new();
         let mut admitted_any = false;
@@ -4215,12 +4218,63 @@ impl RunCtx<'_> {
                 .expect("a running stage always reports before the wave ends");
             running.remove(&name);
             let r = r.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            let landed = matches!(r, Ok(true));
             self.settle_stage(name, r, integrated, terminal, in_flight, &mut first_err);
+            if !landed || first_err.is_some() {
+                continue;
+            }
+            let Some(frontier) = frontier else {
+                continue;
+            };
+            match self.landing_joins(frontier, stages, &offered, integrated, terminal, in_flight) {
+                Ok(Some((joined, joined_radii))) => {
+                    radii = joined_radii;
+                    offered.extend(joined.iter().cloned());
+                    waiting.extend(joined);
+                }
+                Ok(None) => {}
+                Err(e) => first_err = Some(e),
+            }
         });
         match first_err {
             Some(e) => Err(e),
             None => Ok(admitted_any),
         }
+    }
+
+    /// The stages a landing in a running wave made ready, to join that wave at once: those
+    /// `frontier` now finds ready that the wave has not `offered`, checked against the fan-out
+    /// gate invariant, with the co-scheduling radii recomputed over every ready stage the way
+    /// [`Self::wave_radii`] computes them at a wave's start. `None` when nothing joins: no new
+    /// stage is ready, the spawn budget is spent (the run loop trips the breaker once the wave
+    /// ends), or a review queued a compensation (the run loop drains it once the wave ends, and
+    /// a stage that needs the condemned unit must not start before that).
+    fn landing_joins(
+        &self,
+        frontier: &Frontier<'_>,
+        stages: &BTreeMap<String, Stage>,
+        offered: &HashSet<String>,
+        integrated: &HashSet<String>,
+        terminal: &HashSet<String>,
+        in_flight: &HashSet<String>,
+    ) -> Result<Option<(Vec<String>, WaveRadii)>, Error> {
+        if self.budget_tripped()
+            || self.budget_broke.load(Ordering::SeqCst)
+            || !self.compensations.lock().unwrap().is_empty()
+        {
+            return Ok(None);
+        }
+        let ready = frontier.ready(stages, integrated, terminal);
+        let joined: Vec<String> = ready
+            .iter()
+            .filter(|name| !offered.contains(*name))
+            .cloned()
+            .collect();
+        if joined.is_empty() {
+            return Ok(None);
+        }
+        frontier.check(stages, &joined)?;
+        Ok(Some((joined, self.wave_radii(stages, &ready, in_flight)?)))
     }
 
     /// Record one resolved stage of a wave: it is terminal for this process and frees its slot,
@@ -4343,7 +4397,7 @@ impl RunCtx<'_> {
         stages: &BTreeMap<String, Stage>,
         ready: &[String],
         in_flight: &HashSet<String>,
-    ) -> Result<Option<HashMap<String, Vec<String>>>, Error> {
+    ) -> Result<WaveRadii, Error> {
         if self.deps.grounder.is_none() || !self.partition_requested(stages, ready) {
             return Ok(None);
         }
@@ -9842,7 +9896,7 @@ impl RunCtx<'_> {
         // genuinely never ran (or failed) instead leaves `files` non-empty, `already_landed`
         // `None`, and this loop runs for real - it durably re-records row 4 itself once
         // `land` actually succeeds, same as any other resumed pass.
-        let (commit, pre_merge) = if let Some((landed_pass, unit_tip, run_tip)) = already_landed {
+        let (merged, merged_from) = if let Some((landed_pass, unit_tip, run_tip)) = already_landed {
             self.record_landed(&st.name, attempt, landed_pass, &unit_tip, &run_tip)?;
             clear_attempt(&self.pending_landing, &st.name, attempt);
             (unit_tip, run_tip)
@@ -9880,14 +9934,17 @@ impl RunCtx<'_> {
                         // TABLE row 1's after-record: clean (nothing conflicted).
                         self.record_merge_outcome(&st.name, attempt, pass, &[])?;
                         if c.is_empty() {
-                            // A true no-op pass within a LIVE loop iteration (e.g. the follow-up
-                            // check after a confined/owed regenerate round found nothing further
-                            // to land): the already-landed-but-uncrecorded case this function's
-                            // OWN entry already special-cased before this loop ever starts (see
-                            // `pending_landing` above) never reaches here - a resumed call whose
-                            // FIRST pass would otherwise hit this exact branch takes that earlier
-                            // fast path instead, recording row 4's after-record without ever
-                            // re-attempting `merge_into_worktree`/`land` at all.
+                            // A pass that merged nothing new (e.g. the follow-up check after a
+                            // confined/owed regenerate round found nothing further to land, or
+                            // a resumed catch-up whose regeneration was already committed): the
+                            // empty commit is not the result - `Self::landed_at`, below the
+                            // loop, resolves it to the attempt's latest recorded landing. The
+                            // already-landed-but-unrecorded case this function's OWN entry
+                            // special-cases before this loop ever starts (see `pending_landing`
+                            // above) never reaches here - a resumed call whose FIRST pass would
+                            // otherwise hit this exact branch takes that earlier fast path
+                            // instead, recording row 4's after-record without ever re-attempting
+                            // `merge_into_worktree`/`land` at all.
                             break (c, pre_merge);
                         }
                         // TABLE row 4: land this pass's resolved commit onto the run branch,
@@ -10092,6 +10149,7 @@ impl RunCtx<'_> {
                 }
             }
         };
+        let (commit, pre_merge) = self.landed_at(&st.name, attempt, merged, merged_from);
         // spec 12, unit 5: re-run the FULL gate suite against the MERGED run-branch tree
         // BEFORE emitting UnitIntegrated. A unit's pre-merge gates ran in its OWN worktree, so
         // an UNPREDICTED overlap - two batch-mates the grounder placed together that edit the
@@ -10897,7 +10955,9 @@ impl RunCtx<'_> {
     /// `integrate-landing-intent` recorded as `run_tip` - carried here too so a LATER resume,
     /// after the `pending_landing` lookup has stopped seeing this landing (matched, no longer
     /// pending), can still recover both the landed sha AND the pre-landing tip from this row
-    /// alone via [`landed`](RunCtx::landed), never from live process state.
+    /// alone via [`landed`](RunCtx::landed), never from live process state. The live
+    /// [`landed`](RunCtx::landed) entry is updated in the same step, so this process reads the
+    /// landing exactly as a resumed one folds it from the log.
     fn record_landed(
         &self,
         unit: &str,
@@ -10912,7 +10972,43 @@ impl RunCtx<'_> {
             unit,
             attempt,
             json!({"sha": sha, "pre_merge": pre_merge}),
-        )
+        )?;
+        self.landed.lock().unwrap().insert(
+            conflict_regenerate_key(unit, attempt),
+            (pass, sha.to_string(), pre_merge.to_string()),
+        );
+        Ok(())
+    }
+
+    /// The ONE place that decides the `(commit, pre_merge)` `unit`'s `attempt` integrates at:
+    /// the commit `UnitIntegrated` records, the post-merge re-gate covers and a red re-gate
+    /// rolls back to `pre_merge` from. `merged`/`merged_from` are what the merge loop's final
+    /// pass produced; when that pass landed something they stand. When it merged nothing new
+    /// (`merged` empty: the follow-up pass after an owed regeneration whose tree the
+    /// resolver's own commit already carried, or a resumed catch-up's), the attempt's latest
+    /// recorded landing ([`landed`](RunCtx::landed)) is what the unit landed at, never an
+    /// empty commit that reads as a unit that landed nothing. An attempt with no landing at
+    /// all keeps the empty commit: a stage with nothing to land.
+    ///
+    /// The fallback's `pre_merge` is safe to roll back to: an empty pass means the worktree's
+    /// HEAD equals the run branch's tip ([`Worktree::merge_into_worktree`]), so nothing landed
+    /// after the recorded landing, and a reset to its `pre_merge` undoes this unit alone. A
+    /// sibling that landed while the lock was dropped for the regeneration makes that pass
+    /// merge its tip, a non-empty commit that lands and stands.
+    fn landed_at(
+        &self,
+        unit: &str,
+        attempt: u32,
+        merged: String,
+        merged_from: String,
+    ) -> (String, String) {
+        if !merged.is_empty() {
+            return (merged, merged_from);
+        }
+        match cached(&self.landed, &conflict_regenerate_key(unit, attempt)) {
+            Some((_, sha, pre_merge)) => (sha, pre_merge),
+            None => (merged, merged_from),
+        }
     }
 
     /// The ONE mutation authority every spec 88 criterion 1 round 4 TABLE row-record above
@@ -14474,6 +14570,48 @@ fn integrates(st: &Stage) -> bool {
 pub use crate::metrics::partition_by_blast_radius;
 
 pub use crate::metrics::radii_conflict;
+
+/// Each stage's safe radius for a wave's co-scheduling rule, or `None` when the rule does not
+/// apply ([`RunCtx::wave_radii`]).
+type WaveRadii = Option<HashMap<String, Vec<String>>>;
+
+/// The rule that says which stages may run next: the plan-critique gate no wave schedules and
+/// the fan-out tables [`wave_ready`] and [`assert_no_ungated_fanout_unit`] read. The run loop
+/// asks it before each wave, and [`RunCtx::run_wave`] asks it again after each landing, so a
+/// stage a landing makes ready is found by the one rule either way.
+struct Frontier<'a> {
+    critique_gate: Option<&'a str>,
+    fanout_criteria: &'a HashMap<String, HashSet<String>>,
+    fanout_template_gates: &'a HashMap<String, Vec<String>>,
+}
+
+impl Frontier<'_> {
+    /// The stages whose needs are met and that are not yet terminal, in name order.
+    fn ready(
+        &self,
+        stages: &BTreeMap<String, Stage>,
+        integrated: &HashSet<String>,
+        terminal: &HashSet<String>,
+    ) -> Vec<String> {
+        wave_ready(
+            stages,
+            integrated,
+            terminal,
+            self.critique_gate,
+            self.fanout_criteria,
+        )
+    }
+
+    /// Refuse to start any of `ready` that is a fan-out unit missing its template's gates.
+    fn check(&self, stages: &BTreeMap<String, Stage>, ready: &[String]) -> Result<(), Error> {
+        assert_no_ungated_fanout_unit(
+            stages,
+            ready,
+            self.fanout_criteria,
+            self.fanout_template_gates,
+        )
+    }
+}
 
 /// Whether a wave may start `name` now (§3.2, §6, §8, spec 102 criterion 1): a thread is free
 /// (fewer than [`MAX_CONCURRENCY`] stages `running` here), and either `name` already holds a slot
@@ -37269,6 +37407,7 @@ mod tests {
         ctx.run_wave(
             &stages,
             &all_ready,
+            None,
             &mut integrated,
             &mut terminal,
             &mut in_flight,
@@ -37284,6 +37423,54 @@ mod tests {
             "every stage resolved (none parked), so in_flight must drain back to empty: \
              {in_flight:?}"
         );
+    }
+
+    /// A stage a landing makes ready joins the wave the landing happened in: `a` (fast) and `b`
+    /// (slow) start side by side at `max_parallel_units: 2`, and `c` needs one of them. When `c`
+    /// needs `a`, `a` landing frees a slot and makes `c` ready while `b` still runs, so `c`
+    /// starts before `b` ends instead of waiting for the next wave; when `c` needs `b`, it waits
+    /// for `b`. Driven through `run`, the wave loop `rigger run` drives.
+    #[test]
+    fn a_stage_a_landing_makes_ready_starts_in_that_wave_under_max_parallel_units() {
+        // (what `c` needs, whether `c` starts before `b` ends)
+        for (c_needs, starts_before_b_ends) in [("a", true), ("b", false)] {
+            let probe = OverlapProbe::new(&[("a", 50), ("b", 1500), ("c", 50)]);
+            let mut cfg = Config::default();
+            cfg.workflow.defaults.max_parallel_units = 2;
+            cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+            for (name, needs) in [("a", None), ("b", None), ("c", Some(c_needs))] {
+                cfg.agents.insert(name.into(), agent(name));
+                cfg.workflow.stages.insert(
+                    name.into(),
+                    Stage {
+                        name: name.into(),
+                        agent: name.into(),
+                        needs: needs.into_iter().map(String::from).collect(),
+                        gates: vec!["ok".into()],
+                        ..Default::default()
+                    },
+                );
+            }
+            let (rs, _) = run_logged(&cfg, &probe);
+            for name in ["a", "b", "c"] {
+                assert_eq!(
+                    rs.units[name].status,
+                    ledger::Status::Integrated,
+                    "c needs {c_needs}: {name} integrates"
+                );
+            }
+            let (_, b_end) = probe.window("b");
+            let (c_start, _) = probe.window("c");
+            assert_eq!(
+                c_start < b_end,
+                starts_before_b_ends,
+                "c needs {c_needs}: c starts while b still runs exactly when its need lands first"
+            );
+            assert!(
+                probe.peak() <= 2,
+                "c needs {c_needs}: the width bound holds"
+            );
+        }
     }
 
     #[test]
@@ -37323,6 +37510,7 @@ mod tests {
             .run_wave(
                 &stages,
                 &ready,
+                None,
                 &mut integrated,
                 &mut terminal,
                 &mut in_flight,
@@ -37343,6 +37531,7 @@ mod tests {
         ctx.run_wave(
             &stages,
             &ready,
+            None,
             &mut integrated,
             &mut terminal,
             &mut in_flight,
@@ -41798,6 +41987,7 @@ mod tests {
         ctx.run_wave(
             &stages,
             &ready,
+            None,
             &mut integrated,
             &mut terminal,
             &mut in_flight,

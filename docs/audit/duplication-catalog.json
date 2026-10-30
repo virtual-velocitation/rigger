@@ -540,7 +540,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-edcfd444cd88",
+    "id": "dup-6f3fb4f23036",
     "classification": "near",
     "sites": [
       {
@@ -551,11 +551,6 @@
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "record_landing_intent",
-        "content_hash": "063993e2bd4a1d95"
-      },
-      {
-        "file": "crates/rigger-conductor/src/conductor.rs",
-        "name": "record_landed",
         "content_hash": "063993e2bd4a1d95"
       }
     ],
@@ -8605,30 +8600,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-4f6fb68b58e5",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "tests/common/mcp.rs",
-        "name": "start",
-        "content_hash": "d99774b4d1591d27"
-      },
-      {
-        "file": "tests/common/mcp.rs",
-        "name": "start_with",
-        "content_hash": "50209220bd3a8ade"
-      },
-      {
-        "file": "tests/common/mcp.rs",
-        "name": "from_command",
-        "content_hash": "b6620111544c2d31"
-      }
-    ],
-    "proposed_home": "mcp::mcp_session - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field",
-    "note": "mandatory sweep: parallel constructor functions - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-c99581d3e41e",
     "classification": "near",
     "sites": [
@@ -9201,40 +9172,6 @@
     ],
     "proposed_home": "step_sheds_the_freshen::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-ece604793e18",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "tests/store_content_identity_periphery.rs",
-        "name": "new",
-        "content_hash": "0572f240ba4b9140"
-      },
-      {
-        "file": "tests/store_content_identity_periphery.rs",
-        "name": "built",
-        "content_hash": "82e7d324509412bb"
-      },
-      {
-        "file": "tests/store_content_identity_periphery.rs",
-        "name": "miscounting",
-        "content_hash": "bb17c51b3198dde1"
-      },
-      {
-        "file": "tests/store_content_identity_periphery.rs",
-        "name": "over_an_empty_stream",
-        "content_hash": "8ce275c04aea1f90"
-      },
-      {
-        "file": "tests/store_content_identity_periphery.rs",
-        "name": "over_a_stream",
-        "content_hash": "230d5e00888dc309"
-      }
-    ],
-    "proposed_home": "store_content_identity_periphery::port_double - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field",
-    "note": "mandatory sweep: parallel constructor functions - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
