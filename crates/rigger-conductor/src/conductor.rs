@@ -2407,23 +2407,20 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         // already integrated, `ready_stages` would otherwise surface the gate (it needs
         // plan) and `run_wave` would run it through the wrong path (`run_single_stage`).
         let gate = critique_gate_name(&stages);
-        let ready = wave_ready(
-            &stages,
-            &integrated,
-            &terminal,
-            gate.as_deref(),
-            &fanout_criteria,
-        );
+        let frontier = Frontier {
+            critique_gate: gate.as_deref(),
+            fanout_criteria: &fanout_criteria,
+            fanout_template_gates: &fanout_template_gates,
+        };
+        let ready = frontier.ready(&stages, &integrated, &terminal);
         if !ready.is_empty() {
-            assert_no_ungated_fanout_unit(
-                &stages,
-                &ready,
-                &fanout_criteria,
-                &fanout_template_gates,
-            )?;
+            frontier.check(&stages, &ready)?;
+            // No frontier for the wave itself: the units a `plan` landing makes ready are
+            // harvested and critiqued below before any of them may start.
             ctx.run_wave(
                 &stages,
                 &ready,
+                None,
                 &mut integrated,
                 &mut terminal,
                 &mut in_flight,
@@ -2522,14 +2519,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         // without this the seeded rollback would never re-drive. On a fresh run (or a resume
         // with nothing pending) the queue is empty and this is a no-op.
         ctx.drain_compensations(&mut integrated, &mut terminal)?;
+        let frontier = Frontier {
+            critique_gate: gate.as_deref(),
+            fanout_criteria: &fanout_criteria,
+            fanout_template_gates: &fanout_template_gates,
+        };
         loop {
-            let ready = wave_ready(
-                &stages,
-                &integrated,
-                &terminal,
-                gate.as_deref(),
-                &fanout_criteria,
-            );
+            let ready = frontier.ready(&stages, &integrated, &terminal);
             if ready.is_empty() {
                 break;
             }
@@ -2540,18 +2536,14 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                 ctx.trip_budget_breaker()?;
                 break;
             }
-            assert_no_ungated_fanout_unit(
-                &stages,
-                &ready,
-                &fanout_criteria,
-                &fanout_template_gates,
-            )?;
+            frontier.check(&stages, &ready)?;
             // A wave that admits nothing is a fixpoint for this process: every slot is held
             // by a unit still in flight off-process, and nothing below can free one, so the
             // step ends and a later step offers the refused stages again.
             if !ctx.run_wave(
                 &stages,
                 &ready,
+                Some(&frontier),
                 &mut integrated,
                 &mut terminal,
                 &mut in_flight,
@@ -4161,6 +4153,13 @@ impl RunCtx<'_> {
     /// by a unit in flight off-process) is left neither integrated nor terminal, so a later
     /// wave (or a resumed step) offers it again.
     ///
+    /// With a `frontier`, a landing also widens the wave: once a stage integrates, every stage
+    /// the frontier now finds ready that the wave has not offered joins `waiting`
+    /// ([`Self::landing_joins`]), so a unit whose need just landed takes a free slot at once
+    /// instead of waiting for the slowest stage of the wave. The run loop passes its own
+    /// frontier; the planning prelude passes `None`, because the proposed units a `plan`
+    /// landing would make ready must first be harvested and pass the plan-critique gate.
+    ///
     /// The width bound (spec 102, criterion 1): `defaults.max_parallel_units` caps how many
     /// units are in flight AT ONCE across the WHOLE run, `0` being unbounded, and never more
     /// than [`MAX_CONCURRENCY`] run in this process at once. `in_flight` is seeded from the log
@@ -4173,12 +4172,14 @@ impl RunCtx<'_> {
         &self,
         stages: &BTreeMap<String, Stage>,
         ready: &[String],
+        frontier: Option<&Frontier<'_>>,
         integrated: &mut HashSet<String>,
         terminal: &mut HashSet<String>,
         in_flight: &mut HashSet<String>,
     ) -> Result<bool, Error> {
         let width = self.cfg.workflow.defaults.max_parallel_units as usize;
-        let radii = self.wave_radii(stages, ready, in_flight)?;
+        let mut radii = self.wave_radii(stages, ready, in_flight)?;
+        let mut offered: HashSet<String> = ready.iter().cloned().collect();
         let mut waiting: Vec<String> = ready.to_vec();
         let mut running: HashSet<String> = HashSet::new();
         let mut admitted_any = false;
@@ -4215,12 +4216,63 @@ impl RunCtx<'_> {
                 .expect("a running stage always reports before the wave ends");
             running.remove(&name);
             let r = r.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            let landed = matches!(r, Ok(true));
             self.settle_stage(name, r, integrated, terminal, in_flight, &mut first_err);
+            if !landed || first_err.is_some() {
+                continue;
+            }
+            let Some(frontier) = frontier else {
+                continue;
+            };
+            match self.landing_joins(frontier, stages, &offered, integrated, terminal, in_flight) {
+                Ok(Some((joined, joined_radii))) => {
+                    radii = joined_radii;
+                    offered.extend(joined.iter().cloned());
+                    waiting.extend(joined);
+                }
+                Ok(None) => {}
+                Err(e) => first_err = Some(e),
+            }
         });
         match first_err {
             Some(e) => Err(e),
             None => Ok(admitted_any),
         }
+    }
+
+    /// The stages a landing in a running wave made ready, to join that wave at once: those
+    /// `frontier` now finds ready that the wave has not `offered`, checked against the fan-out
+    /// gate invariant, with the co-scheduling radii recomputed over every ready stage the way
+    /// [`Self::wave_radii`] computes them at a wave's start. `None` when nothing joins: no new
+    /// stage is ready, the spawn budget is spent (the run loop trips the breaker once the wave
+    /// ends), or a review queued a compensation (the run loop drains it once the wave ends, and
+    /// a stage that needs the condemned unit must not start before that).
+    fn landing_joins(
+        &self,
+        frontier: &Frontier<'_>,
+        stages: &BTreeMap<String, Stage>,
+        offered: &HashSet<String>,
+        integrated: &HashSet<String>,
+        terminal: &HashSet<String>,
+        in_flight: &HashSet<String>,
+    ) -> Result<Option<(Vec<String>, WaveRadii)>, Error> {
+        if self.budget_tripped()
+            || self.budget_broke.load(Ordering::SeqCst)
+            || !self.compensations.lock().unwrap().is_empty()
+        {
+            return Ok(None);
+        }
+        let ready = frontier.ready(stages, integrated, terminal);
+        let joined: Vec<String> = ready
+            .iter()
+            .filter(|name| !offered.contains(*name))
+            .cloned()
+            .collect();
+        if joined.is_empty() {
+            return Ok(None);
+        }
+        frontier.check(stages, &joined)?;
+        Ok(Some((joined, self.wave_radii(stages, &ready, in_flight)?)))
     }
 
     /// Record one resolved stage of a wave: it is terminal for this process and frees its slot,
@@ -4343,7 +4395,7 @@ impl RunCtx<'_> {
         stages: &BTreeMap<String, Stage>,
         ready: &[String],
         in_flight: &HashSet<String>,
-    ) -> Result<Option<HashMap<String, Vec<String>>>, Error> {
+    ) -> Result<WaveRadii, Error> {
         if self.deps.grounder.is_none() || !self.partition_requested(stages, ready) {
             return Ok(None);
         }
@@ -14474,6 +14526,48 @@ fn integrates(st: &Stage) -> bool {
 pub use crate::metrics::partition_by_blast_radius;
 
 pub use crate::metrics::radii_conflict;
+
+/// Each stage's safe radius for a wave's co-scheduling rule, or `None` when the rule does not
+/// apply ([`RunCtx::wave_radii`]).
+type WaveRadii = Option<HashMap<String, Vec<String>>>;
+
+/// The rule that says which stages may run next: the plan-critique gate no wave schedules and
+/// the fan-out tables [`wave_ready`] and [`assert_no_ungated_fanout_unit`] read. The run loop
+/// asks it before each wave, and [`RunCtx::run_wave`] asks it again after each landing, so a
+/// stage a landing makes ready is found by the one rule either way.
+struct Frontier<'a> {
+    critique_gate: Option<&'a str>,
+    fanout_criteria: &'a HashMap<String, HashSet<String>>,
+    fanout_template_gates: &'a HashMap<String, Vec<String>>,
+}
+
+impl Frontier<'_> {
+    /// The stages whose needs are met and that are not yet terminal, in name order.
+    fn ready(
+        &self,
+        stages: &BTreeMap<String, Stage>,
+        integrated: &HashSet<String>,
+        terminal: &HashSet<String>,
+    ) -> Vec<String> {
+        wave_ready(
+            stages,
+            integrated,
+            terminal,
+            self.critique_gate,
+            self.fanout_criteria,
+        )
+    }
+
+    /// Refuse to start any of `ready` that is a fan-out unit missing its template's gates.
+    fn check(&self, stages: &BTreeMap<String, Stage>, ready: &[String]) -> Result<(), Error> {
+        assert_no_ungated_fanout_unit(
+            stages,
+            ready,
+            self.fanout_criteria,
+            self.fanout_template_gates,
+        )
+    }
+}
 
 /// Whether a wave may start `name` now (§3.2, §6, §8, spec 102 criterion 1): a thread is free
 /// (fewer than [`MAX_CONCURRENCY`] stages `running` here), and either `name` already holds a slot
@@ -37269,6 +37363,7 @@ mod tests {
         ctx.run_wave(
             &stages,
             &all_ready,
+            None,
             &mut integrated,
             &mut terminal,
             &mut in_flight,
@@ -37371,6 +37466,7 @@ mod tests {
             .run_wave(
                 &stages,
                 &ready,
+                None,
                 &mut integrated,
                 &mut terminal,
                 &mut in_flight,
@@ -37391,6 +37487,7 @@ mod tests {
         ctx.run_wave(
             &stages,
             &ready,
+            None,
             &mut integrated,
             &mut terminal,
             &mut in_flight,
@@ -41846,6 +41943,7 @@ mod tests {
         ctx.run_wave(
             &stages,
             &ready,
+            None,
             &mut integrated,
             &mut terminal,
             &mut in_flight,
