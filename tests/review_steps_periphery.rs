@@ -20,15 +20,23 @@
 //! process per step, each step printed under its own token with the roster of every earlier one.
 //! The walk runs through an adjudicator's reject into a next round, the log it leaves parses back
 //! through `review_step_of`, and a map-form run rebased onto its canonical list keeps its ids.
+//!
+//! Past a run sits the canary, spec 120's criterion 10 (PANEL READERS READ EVERY STEP): the
+//! compiled `rigger canary` scores a corpus item over a list, or refuses one with no adjudicator
+//! step.
 
 mod common;
 
+#[cfg(unix)]
+use common::cli::run_rigger_envs;
 use common::cli::{
     cargo_project, loaded_config, read_run_events, rigger_file, run_rigger, run_rigger_ok,
     temp_project, write_scaffold,
 };
 #[cfg(feature = "symbols")]
 use common::cli::{edge_lines, run_around};
+#[cfg(unix)]
+use common::fixtures::PROMPT_CAPTURE_DIR;
 use common::fixtures::{
     adversary_first_steps, agent, count_status_marker, lenses, light_of, panel_of,
     panel_rule_refusals, repeated_kind_lists, repo_review_panel, separator_refusal,
@@ -37,6 +45,8 @@ use common::fixtures::{
 };
 use common::git::{commit_files, temp_git_project_with_commit};
 use common::repo::repo_root;
+#[cfg(unix)]
+use common::repo::stub_path;
 use rigger::conductor::{run, Deps, META_REPLAY_KEY, STREAM};
 use rigger::config::ReviewStep::{self, Adjudicator, Adversary};
 use rigger::config::{AgentDef, ReviewPanel};
@@ -217,6 +227,76 @@ fn write_panel_project(root: &Path, workflow: &str) {
 /// `template` of [`PANEL_SCOPES`] declaring the flow mapping `panel`.
 fn declaring(template: &str, panel: &str) -> String {
     template.replace("{panel}", panel)
+}
+
+/// `rigger canary` run in `root`, a one-item corpus beside `panel` as its `defaults.review`, over
+/// the real subprocess driver standing on a stub agent.
+#[cfg(unix)]
+fn canary_of(root: &Path, panel: &str) -> (String, String, bool) {
+    write_panel_project(
+        root,
+        &format!(
+            "defaults:\n  grounder: nop\n  review: {panel}\nstages:\n  solo:\n    agent: a\n    \
+             on_pass: none\n"
+        ),
+    );
+    let corpus = root.join("corpus");
+    std::fs::create_dir_all(&corpus).unwrap();
+    std::fs::write(
+        corpus.join("control.md"),
+        "---\nid: control\ndefect_class: none\nplanted: false\nanchor: src/lib.rs\n\
+         expected_verdict: approve\n---\nfn control() {}\n",
+    )
+    .unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let path = stub_path(work.path(), "claude", Some("prompt-capture-agent.sh"));
+    run_rigger_envs(
+        root,
+        &["canary", "--corpus", "corpus"],
+        &[
+            ("PATH", &path),
+            (PROMPT_CAPTURE_DIR, work.path().to_str().unwrap()),
+        ],
+    )
+}
+
+/// Given a corpus and a panel declared as a list repeating a kind, when the operator runs
+/// `rigger canary`, then the item is scored against that panel.
+#[cfg(unix)]
+#[test]
+fn rigger_canary_scores_a_list_repeating_a_kind() {
+    let dir = temp_project();
+    let (out, err, ok) = canary_of(dir.path(), REPEATED_KIND_LIST);
+    assert!(ok, "a list with an adjudicator step scores; stderr:\n{err}");
+    let scored: Vec<&str> = out
+        .lines()
+        .filter_map(|line| line.split_once(": scored "))
+        .map(|(_batch, scored)| scored)
+        .collect();
+    assert_eq!(scored, ["1 corpus item(s) against the review panel"]);
+}
+
+/// Given a list with no adjudicator step, or whose only adjudicator is the map key beside it, when
+/// the operator runs `rigger canary`, then the run stops on the one line naming the gating verdict
+/// the canary measures, before it scores anything.
+#[cfg(unix)]
+#[test]
+fn rigger_canary_refuses_a_list_with_no_adjudicator_step() {
+    for panel in [
+        "{ steps: [{ lenses: [a] }, { adversary: x }] }",
+        "{ adjudicator: z, steps: [{ lenses: [a] }] }",
+    ] {
+        let dir = temp_project();
+        let (out, err, ok) = canary_of(dir.path(), panel);
+        assert!(!ok, "{panel} is refused; stdout:\n{out}");
+        assert_eq!(out, "", "{panel}");
+        assert_eq!(
+            err,
+            "rigger: conductor: canary: the review panel names no adjudicator - the canary \
+             measures the gating verdict, so an adjudicator is required\n",
+            "{panel}"
+        );
+    }
 }
 
 /// `rigger <verb>` run in `root` fails and prints `line` as all of its stderr.

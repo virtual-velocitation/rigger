@@ -692,6 +692,8 @@ mod tests {
     use crate::test_support::cfg_for;
     use crate::test_support::item;
     use crate::test_support::panel_with_lenses;
+    use crate::test_support::PANEL_AGENTS as STEP_AGENTS;
+    use crate::test_support::{anchor_of, ADVERSARY_FIRST_LIST, REPEATED_KIND_LIST};
 
     fn panel() -> ReviewPanel {
         ReviewPanel {
@@ -1013,8 +1015,8 @@ mod tests {
     #[test]
     fn score_item_asks_the_adjudicator_once_when_there_are_no_findings_to_reorder() {
         let driver = CountingAdjudicator::default();
-        // No lenses, no adversary: TIER 1's loop is empty and TIER 2 is skipped by its
-        // own `is_empty()` guard, so zero findings are ever raised and `ordered` is empty.
+        // The adjudicator is the panel's only step, so zero findings are ever raised and
+        // `ordered` is empty.
         let panel = ReviewPanel {
             adjudicator: "adj".into(),
             ..Default::default()
@@ -1715,6 +1717,551 @@ mod tests {
         assert_eq!(pinned.agents["sdet"].model, c.agents["sdet"].model);
         assert_eq!(pinned.agents["adv"].model, c.agents["adv"].model);
         assert_eq!(pinned.agents["adj"].model, c.agents["adj"].model);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // PANEL READERS READ EVERY STEP (spec 120): a pin reaches every step of its kind, and the
+    // runner walks a panel's steps in order under their step tokens, a tier scored over every
+    // step of its kind.
+    // -----------------------------------------------------------------------------------
+
+    /// The panel the flow mapping `yaml` declares, through the workflow file's own deserialize.
+    fn declared_panel(yaml: &str) -> ReviewPanel {
+        serde_yaml::from_str(yaml).unwrap_or_else(|e| panic!("parse {yaml}: {e}"))
+    }
+
+    /// `a`, `b`, `x`, `y` and `z` each on their own model and one ladder rung, and what
+    /// [`apply_model_pins`] leaves of them: an id's `(model, ladder)`.
+    fn pinned_agents(
+        panel: &str,
+        pins: &[(&str, &str)],
+    ) -> BTreeMap<String, (String, Vec<String>)> {
+        let mut cfg = cfg_for(&STEP_AGENTS);
+        for agent in cfg.agents.values_mut() {
+            agent.model = format!("{}-default", agent.id);
+            agent.model_ladder = vec!["haiku".into()];
+        }
+        let pins: ModelPins = pins
+            .iter()
+            .map(|(tier, id)| (tier.to_string(), id.to_string()))
+            .collect();
+        apply_model_pins(&cfg, &declared_panel(panel), &pins)
+            .agents
+            .into_iter()
+            .map(|(id, agent)| (id, (agent.model, agent.model_ladder)))
+            .collect()
+    }
+
+    /// [`pinned_agents`] holds exactly: each id of `pinned` on its model with its ladder cleared,
+    /// and every other agent as it was configured.
+    fn assert_pinned(panel: &str, pins: &[(&str, &str)], pinned: &[(&str, &str)]) {
+        let expected: BTreeMap<String, (String, Vec<String>)> = STEP_AGENTS
+            .iter()
+            .map(|id| {
+                let held = pinned.iter().find(|(agent, _)| agent == id);
+                let state = match held {
+                    Some((_, model)) => (model.to_string(), Vec::new()),
+                    None => (format!("{id}-default"), vec!["haiku".to_string()]),
+                };
+                (id.to_string(), state)
+            })
+            .collect();
+        assert_eq!(
+            pinned_agents(panel, pins),
+            expected,
+            "{panel} under {pins:?}"
+        );
+    }
+
+    /// Two steps of the lens kind and two of the adversary kind, each naming its own agent.
+    const SPREAD_LIST: &str = "{ steps: [{ adversary: x }, { lenses: [a] }, { adversary: y }, \
+         { lenses: [b] }, { adjudicator: z }] }";
+    /// The map form of the same three tiers.
+    const MAP_PANEL: &str = "{ lenses: [a, b], adversary: x, adjudicator: z }";
+
+    crate::test_cases! {
+        a_lens_pin_reaches_every_lens_step: assert_pinned(
+            SPREAD_LIST,
+            &[(TIER_LENS, "m")],
+            &[("a", "m"), ("b", "m")],
+        );
+        an_adversary_pin_reaches_every_adversary_step: assert_pinned(
+            SPREAD_LIST,
+            &[(TIER_ADVERSARY, "m")],
+            &[("x", "m"), ("y", "m")],
+        );
+        an_adjudicator_pin_reaches_the_adjudicator_step: assert_pinned(
+            SPREAD_LIST,
+            &[(ROLE_ADJUDICATOR, "m")],
+            &[("z", "m")],
+        );
+        three_pins_reach_their_three_kinds: assert_pinned(
+            SPREAD_LIST,
+            &[(TIER_LENS, "l"), (TIER_ADVERSARY, "v"), (ROLE_ADJUDICATOR, "j")],
+            &[("a", "l"), ("b", "l"), ("x", "v"), ("y", "v"), ("z", "j")],
+        );
+        a_lens_pin_reaches_the_lenses_of_a_map: assert_pinned(
+            MAP_PANEL,
+            &[(TIER_LENS, "m")],
+            &[("a", "m"), ("b", "m")],
+        );
+        an_adversary_pin_reaches_the_adversary_of_a_map: assert_pinned(
+            MAP_PANEL,
+            &[(TIER_ADVERSARY, "m")],
+            &[("x", "m")],
+        );
+        an_adjudicator_pin_reaches_the_adjudicator_of_a_map: assert_pinned(
+            MAP_PANEL,
+            &[(ROLE_ADJUDICATOR, "m")],
+            &[("z", "m")],
+        );
+        /// Pins apply in key order and the last applied wins: `adversary` before `lens`.
+        an_agent_in_two_kinds_ends_on_the_lens_pin_over_the_adversary_pin: assert_pinned(
+            "{ steps: [{ adversary: x }, { lenses: [x] }, { adjudicator: z }] }",
+            &[(TIER_LENS, "late"), (TIER_ADVERSARY, "early")],
+            &[("x", "late")],
+        );
+        /// `adjudicator` sorts ahead of `lens`.
+        an_agent_in_two_kinds_ends_on_the_lens_pin_over_the_adjudicator_pin: assert_pinned(
+            "{ steps: [{ lenses: [z] }, { adjudicator: z }] }",
+            &[(ROLE_ADJUDICATOR, "early"), (TIER_LENS, "late")],
+            &[("z", "late")],
+        );
+        /// `adjudicator` sorts ahead of `adversary`.
+        an_agent_in_two_kinds_ends_on_the_adversary_pin_over_the_adjudicator_pin: assert_pinned(
+            "{ steps: [{ adversary: z }, { adjudicator: z }] }",
+            &[(ROLE_ADJUDICATOR, "early"), (TIER_ADVERSARY, "late")],
+            &[("z", "late")],
+        );
+        a_pin_of_a_kind_the_panel_has_no_step_of_pins_nothing: assert_pinned(
+            "{ steps: [{ lenses: [a] }, { adjudicator: z }] }",
+            &[(TIER_ADVERSARY, "m")],
+            &[],
+        );
+        a_pin_skips_a_step_agent_the_config_does_not_define: assert_pinned(
+            "{ steps: [{ lenses: [ghost, a] }, { adjudicator: z }] }",
+            &[(TIER_LENS, "m")],
+            &[("a", "m")],
+        );
+        an_unknown_tier_pins_no_agent_of_a_list: assert_pinned(
+            SPREAD_LIST,
+            &[("bogus-tier", "m")],
+            &[],
+        );
+    }
+
+    /// The prefix of every spawn id on [`step_item`], the rest of the id being its role token.
+    const STEP_SPAWN_PREFIX: &str = "canary:it:";
+
+    /// One spawn a [`RecordingPanel`] received.
+    struct PanelSpawn {
+        role: String,
+        agent: String,
+        prompt: String,
+        roster: Vec<String>,
+    }
+
+    /// A driver recording every spawn it receives, in order. A reviewer raises one finding whose
+    /// summary is its role token, about the item's anchor when that token is one of `catching` and
+    /// about `other.rs` otherwise. Every spawn reports its role token as its resolved model and an
+    /// adjudicator approves, so which step of a kind a recorded value came from stays visible.
+    struct RecordingPanel {
+        catching: Vec<&'static str>,
+        spawns: std::sync::Mutex<Vec<PanelSpawn>>,
+    }
+
+    impl RecordingPanel {
+        /// A panel catching at the role tokens `catching`.
+        fn catching_at(catching: &[&'static str]) -> Self {
+            RecordingPanel {
+                catching: catching.to_vec(),
+                spawns: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        /// The spawns received so far, in order.
+        fn spawns(&self) -> std::sync::MutexGuard<'_, Vec<PanelSpawn>> {
+            self.spawns.lock().unwrap()
+        }
+
+        /// The role tokens spawned so far, in order.
+        fn spawned_roles(&self) -> Vec<String> {
+            self.spawns().iter().map(|s| s.role.clone()).collect()
+        }
+    }
+
+    impl AgentDriver for RecordingPanel {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let role = opts
+                .id
+                .strip_prefix(STEP_SPAWN_PREFIX)
+                .unwrap_or_else(|| panic!("a canary spawn id on the item: {}", opts.id))
+                .to_string();
+            self.spawns().push(PanelSpawn {
+                role: role.clone(),
+                agent: a.id.clone(),
+                prompt: prompt.to_string(),
+                roster: opts.reviews.clone(),
+            });
+            if role.starts_with(ROLE_ADJUDICATOR) {
+                return Ok(AgentResult {
+                    output: "{\"verdict\":\"approve\"}".into(),
+                    resolved_model: role,
+                    ..Default::default()
+                });
+            }
+            let about = if self.catching.contains(&role.as_str()) {
+                anchor_of(prompt)
+            } else {
+                "other.rs".to_string()
+            };
+            emit(
+                TYPE_REVIEW_FINDING,
+                json!({"summary": role, "about": [about]}),
+            )?;
+            Ok(AgentResult {
+                output: "reviewed".into(),
+                resolved_model: role,
+                ..Default::default()
+            })
+        }
+    }
+
+    /// The item every step test scores.
+    fn step_item() -> CanaryItem {
+        item("it", "off-by-one", true, "reject", "lens")
+    }
+
+    /// `panel` scored serially over [`STEP_AGENTS`] by `driver`.
+    fn scored_steps(
+        driver: &RecordingPanel,
+        panel: &str,
+    ) -> (CanaryOutcome, BTreeMap<String, String>) {
+        let cfg = cfg_for(&STEP_AGENTS);
+        score_item(driver, &cfg, &declared_panel(panel), &step_item(), 1).unwrap()
+    }
+
+    /// `panel` spawns exactly `expected`, in that order: each `(role token, agent)`, every roster
+    /// empty and every reviewer's prompt naming its own token.
+    fn assert_spawn_order(panel: &str, expected: &[(&str, &str)]) {
+        let driver = RecordingPanel::catching_at(&[]);
+        scored_steps(&driver, panel);
+        let spawns = driver.spawns();
+        let spawned: Vec<(&str, &str)> = spawns
+            .iter()
+            .map(|s| (s.role.as_str(), s.agent.as_str()))
+            .collect();
+        assert_eq!(spawned, expected, "{panel}");
+        for spawn in spawns.iter() {
+            assert_eq!(spawn.roster, Vec::<String>::new(), "{}", spawn.role);
+            if !spawn.role.starts_with(ROLE_ADJUDICATOR) {
+                assert_eq!(
+                    spawn.prompt,
+                    format!(
+                        "{}\n\n{}",
+                        review_header(&step_item()),
+                        review_protocol(&spawn.role)
+                    ),
+                    "{}",
+                    spawn.role
+                );
+            }
+        }
+    }
+
+    crate::test_cases! {
+        a_map_spawns_its_canonical_sequence: assert_spawn_order(
+            MAP_PANEL,
+            &[
+                ("lens:a", "a"),
+                ("lens:b", "b"),
+                ("adversary", "x"),
+                ("adjudicator:a", "z"),
+                ("adjudicator:b", "z"),
+            ],
+        );
+        a_list_spawns_in_its_declared_order: assert_spawn_order(
+            ADVERSARY_FIRST_LIST,
+            &[
+                ("adversary", "x"),
+                ("lens:a", "a"),
+                ("adjudicator:a", "z"),
+                ("adjudicator:b", "z"),
+            ],
+        );
+        a_repeated_kind_spawns_each_later_step_under_its_ordinal: assert_spawn_order(
+            REPEATED_KIND_LIST,
+            &[
+                ("lens:a", "a"),
+                ("lens:b", "b"),
+                ("adversary", "x"),
+                ("lens:y@2", "y"),
+                ("adversary@2", "x"),
+                ("adjudicator:a", "z"),
+                ("adjudicator:b", "z"),
+            ],
+        );
+        one_lens_in_two_steps_spawns_under_two_tokens: assert_spawn_order(
+            "{ steps: [{ lenses: [a] }, { lenses: [a] }, { adjudicator: z }] }",
+            &[
+                ("lens:a", "a"),
+                ("lens:a@2", "a"),
+                ("adjudicator:a", "z"),
+                ("adjudicator:b", "z"),
+            ],
+        );
+        two_adversaries_spawn_each_under_their_steps_ordinal: assert_spawn_order(
+            "{ steps: [{ adversary: x }, { lenses: [a] }, { adversary: y }, { adjudicator: z }] }",
+            &[
+                ("adversary", "x"),
+                ("lens:a", "a"),
+                ("adversary@2", "y"),
+                ("adjudicator:a", "z"),
+                ("adjudicator:b", "z"),
+            ],
+        );
+        one_finding_has_nothing_to_reverse: assert_spawn_order(
+            "{ steps: [{ adversary: x }, { adjudicator: z }] }",
+            &[("adversary", "x"), ("adjudicator:a", "z")],
+        );
+        an_adjudicator_step_alone_is_asked_once: assert_spawn_order(
+            "{ steps: [{ adjudicator: z }] }",
+            &[("adjudicator:a", "z")],
+        );
+    }
+
+    /// The numbered finding lines of an adjudicator's `prompt`.
+    fn finding_lines(prompt: &str) -> Vec<&str> {
+        let numbered = |line: &&str| line.starts_with(|c: char| c.is_ascii_digit());
+        prompt.lines().filter(numbered).collect()
+    }
+
+    #[test]
+    fn the_reversed_probe_reverses_the_whole_finding_list_across_steps() {
+        let driver = RecordingPanel::catching_at(&[]);
+        scored_steps(&driver, REPEATED_KIND_LIST);
+        let spawns = driver.spawns();
+        let (natural, reversed) = (&spawns[spawns.len() - 2], &spawns[spawns.len() - 1]);
+        assert_eq!(natural.role, "adjudicator:a");
+        assert_eq!(
+            finding_lines(&natural.prompt),
+            [
+                "1. [other.rs] lens:a",
+                "2. [other.rs] lens:b",
+                "3. [other.rs] adversary",
+                "4. [other.rs] lens:y@2",
+                "5. [other.rs] adversary@2",
+            ]
+        );
+        assert_eq!(reversed.role, "adjudicator:b");
+        assert_eq!(
+            finding_lines(&reversed.prompt),
+            [
+                "1. [other.rs] adversary@2",
+                "2. [other.rs] lens:y@2",
+                "3. [other.rs] adversary",
+                "4. [other.rs] lens:b",
+                "5. [other.rs] lens:a",
+            ]
+        );
+    }
+
+    /// A catch at the role tokens `catching` of [`REPEATED_KIND_LIST`] scores exactly the tiers
+    /// `caught_by`.
+    fn assert_caught_by(catching: &[&'static str], caught_by: &[&str]) {
+        let driver = RecordingPanel::catching_at(catching);
+        let (outcome, _resolved) = scored_steps(&driver, REPEATED_KIND_LIST);
+        assert_eq!(outcome.caught_by, caught_by, "caught at {catching:?}");
+    }
+
+    crate::test_cases! {
+        a_catch_in_the_first_lens_step_scores_the_lens_tier:
+            assert_caught_by(&["lens:b"], &[TIER_LENS]);
+        a_catch_in_a_later_lens_step_scores_the_lens_tier:
+            assert_caught_by(&["lens:y@2"], &[TIER_LENS]);
+        a_catch_in_the_first_adversary_step_scores_the_adversary_tier:
+            assert_caught_by(&["adversary"], &[TIER_ADVERSARY]);
+        a_catch_in_a_later_adversary_step_scores_the_adversary_tier:
+            assert_caught_by(&["adversary@2"], &[TIER_ADVERSARY]);
+        catches_in_two_kinds_score_both_tiers_sorted:
+            assert_caught_by(&["adversary@2", "lens:y@2"], &[TIER_ADVERSARY, TIER_LENS]);
+        no_catch_in_any_step_scores_no_tier: assert_caught_by(&[], &[]);
+    }
+
+    /// `panel`'s tiers raise exactly `lens` and `adversary` findings over all their steps and
+    /// resolve exactly the last spawn's model of each tier that ran: `resolved` by tier, role
+    /// tokens for values.
+    fn assert_tier_totals(panel: &str, lens: u64, adversary: u64, resolved: &[(&str, &str)]) {
+        let driver = RecordingPanel::catching_at(&[]);
+        let (outcome, models) = scored_steps(&driver, panel);
+        let raised = BTreeMap::from([
+            (TIER_ADVERSARY.to_string(), adversary),
+            (TIER_LENS.to_string(), lens),
+        ]);
+        assert_eq!(outcome.findings_raised, raised, "{panel}");
+        let want: BTreeMap<String, String> = resolved
+            .iter()
+            .map(|(tier, role)| (tier.to_string(), role.to_string()))
+            .collect();
+        assert_eq!(models, want, "{panel}");
+    }
+
+    crate::test_cases! {
+        a_repeated_kind_sums_its_tier_over_every_step: assert_tier_totals(
+            REPEATED_KIND_LIST,
+            3,
+            2,
+            &[
+                (TIER_LENS, "lens:y@2"),
+                (TIER_ADVERSARY, "adversary@2"),
+                (ROLE_ADJUDICATOR, "adjudicator:b"),
+            ],
+        );
+        a_kind_with_no_step_keeps_its_zero_and_resolves_nothing: assert_tier_totals(
+            "{ steps: [{ lenses: [a] }, { lenses: [b] }, { adjudicator: z }] }",
+            2,
+            0,
+            &[(TIER_LENS, "lens:b@2"), (ROLE_ADJUDICATOR, "adjudicator:b")],
+        );
+        a_list_of_the_adjudicator_alone_raises_nothing: assert_tier_totals(
+            "{ steps: [{ adjudicator: z }] }",
+            0,
+            0,
+            &[(ROLE_ADJUDICATOR, "adjudicator:a")],
+        );
+    }
+
+    /// `missing` undefined, [`REPEATED_KIND_LIST`] errors with `error` having spawned exactly the
+    /// role tokens `spawned`: a step's lenses all run, and no later step spends a spawn.
+    fn assert_stops_at(missing: &str, error: &str, spawned: &[&str]) {
+        let driver = RecordingPanel::catching_at(&[]);
+        let mut cfg = cfg_for(&STEP_AGENTS);
+        cfg.agents.remove(missing);
+        let panel = declared_panel(REPEATED_KIND_LIST);
+        let failure = score_item(&driver, &cfg, &panel, &step_item(), 1).unwrap_err();
+        assert_eq!(failure.0, error);
+        assert_eq!(driver.spawned_roles(), spawned);
+    }
+
+    crate::test_cases! {
+        an_unknown_lens_stops_the_item_at_its_step_after_the_steps_other_lenses: assert_stops_at(
+            "a",
+            "canary: panel lens:a references unknown agent \"a\"",
+            &["lens:b"],
+        );
+        an_unknown_adversary_stops_the_item_before_any_later_step: assert_stops_at(
+            "x",
+            "canary: panel adversary references unknown agent \"x\"",
+            &["lens:a", "lens:b"],
+        );
+        an_unknown_lens_of_a_later_step_stops_the_item_at_that_step: assert_stops_at(
+            "y",
+            "canary: panel lens:y@2 references unknown agent \"y\"",
+            &["lens:a", "lens:b", "adversary"],
+        );
+        an_unknown_adjudicator_stops_the_item_after_every_reviewer: assert_stops_at(
+            "z",
+            "canary: panel adjudicator references unknown agent \"z\"",
+            &["lens:a", "lens:b", "adversary", "lens:y@2", "adversary@2"],
+        );
+    }
+
+    #[test]
+    fn every_lens_step_fans_out_concurrently() {
+        // A barrier of two across two lens steps of two: each step's lenses must be in flight
+        // together, the later step as much as the first, or this deadlocks.
+        let driver = BarrierGatedLenses {
+            barrier: std::sync::Barrier::new(2),
+            inner: Scripted {
+                catching_tier: TIER_LENS,
+                planted_anchors: vec!["fanout.rs".into()],
+                adjudicator_order_sensitive: false,
+                resolved_model: String::new(),
+            },
+        };
+        let p = declared_panel(
+            "{ steps: [{ lenses: [lens-a, lens-b] }, { adversary: adv }, \
+             { lenses: [lens-c, lens-d] }, { adjudicator: adj }] }",
+        );
+        let c = cfg_for(&["lens-a", "lens-b", "lens-c", "lens-d", "adv", "adj"]);
+        let it = item("fanout", "off-by-one", true, "reject", "lens");
+        let (outcome, _resolved) = score_item(&driver, &c, &p, &it, 2).unwrap();
+        assert_eq!(outcome.caught_by, vec![TIER_LENS.to_string()]);
+    }
+
+    /// `run_canary` refuses `panel` before it spawns or records anything.
+    fn assert_refused_for_no_adjudicator_step(panel: &ReviewPanel) {
+        let store = Store::open(":memory:").unwrap();
+        let driver = RecordingPanel::catching_at(&[]);
+        let refused = run_canary(
+            &store,
+            &driver,
+            &cfg_for(&STEP_AGENTS),
+            panel,
+            &[step_item()],
+            1,
+            &|_, _| {},
+        );
+        let Err(refusal) = refused else {
+            panic!("a panel with no adjudicator step is refused: {panel:?}");
+        };
+        assert_eq!(
+            refusal.0,
+            "canary: the review panel names no adjudicator - the canary measures the gating \
+             verdict, so an adjudicator is required"
+        );
+        assert_eq!(driver.spawned_roles(), Vec::<String>::new());
+        let recorded = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(recorded.len(), 0, "{panel:?}");
+    }
+
+    crate::test_cases! {
+        a_map_naming_no_adjudicator_is_refused: assert_refused_for_no_adjudicator_step(
+            &declared_panel("{ lenses: [a], adversary: x }"),
+        );
+        a_list_with_no_adjudicator_step_is_refused: assert_refused_for_no_adjudicator_step(
+            &declared_panel("{ steps: [{ lenses: [a] }, { adversary: x }] }"),
+        );
+        an_empty_list_is_refused: assert_refused_for_no_adjudicator_step(
+            &declared_panel("{ steps: [] }"),
+        );
+        the_adjudicator_key_beside_a_list_names_no_step_and_is_refused:
+            assert_refused_for_no_adjudicator_step(
+                &declared_panel("{ adjudicator: z, steps: [{ lenses: [a] }] }"),
+            );
+    }
+
+    #[test]
+    fn run_canary_records_the_score_of_a_repeated_kind_list() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = RecordingPanel::catching_at(&["adversary@2"]);
+        let report = run_canary(
+            &store,
+            &driver,
+            &cfg_for(&STEP_AGENTS),
+            &declared_panel(REPEATED_KIND_LIST),
+            &[step_item()],
+            1,
+            &|_, _| {},
+        )
+        .unwrap();
+        assert_eq!(report.outcomes[0].caught_by, [TIER_ADVERSARY]);
+        assert_eq!(
+            report.resolved_models,
+            BTreeMap::from([
+                (ROLE_ADJUDICATOR.to_string(), "adjudicator:b".to_string()),
+                (TIER_ADVERSARY.to_string(), "adversary@2".to_string()),
+                (TIER_LENS.to_string(), "lens:y@2".to_string()),
+            ])
+        );
+        let recorded = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(recorded.len(), 2, "the batch marker and the one outcome");
     }
 
     #[test]
