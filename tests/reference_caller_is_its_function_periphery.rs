@@ -117,7 +117,7 @@ fn graph_build_hangs_a_method_s_calls_off_the_method_s_path() {
 /// symbol index, stamped `ts-tags-v3`, was saved before spec 119 criterion 8 named a caller by
 /// its path: the method at its path `T::new`, the call attributed to the method's leaf `new`,
 /// WHEN the production whole-project ingest emits the project and the graph folds its events,
-/// THEN the index is not served, `ts-tags-v4` being current since criterion 9: it is rebuilt
+/// THEN the index is not served, criterion 9 having bumped the generation past it: it is rebuilt
 /// from the tree, so the call's `CALLS` edges fold from the method's path `a.rs::T::new`, never
 /// from the flat id `a.rs::new` the persisted index names.
 #[cfg(feature = "symbols")]
@@ -187,23 +187,23 @@ fn opened_over_an_index_stamped(grammar: &str) -> (Vec<String>, String) {
     (names, persisted["grammar"].as_str().unwrap().to_string())
 }
 
-/// A persisted index stamped `ts-tags-v2` or `ts-tags-v3` is not served: opening the grounder
-/// over it rebuilds the index from the tree and persists the rebuild under `ts-tags-v4`. One
-/// already stamped `ts-tags-v4` is served as persisted, the tree unread.
+/// A persisted index stamped `ts-tags-v2`, `ts-tags-v3` or `ts-tags-v4` is not served: opening
+/// the grounder over it rebuilds the index from the tree and persists the rebuild under
+/// `ts-tags-v5`. One already stamped `ts-tags-v5` is served as persisted, the tree unread.
 #[cfg(feature = "symbols")]
 #[test]
-fn opening_the_grounder_over_an_older_index_rebuilds_it_under_ts_tags_v4() {
-    for older in ["ts-tags-v2", "ts-tags-v3"] {
+fn opening_the_grounder_over_an_older_index_rebuilds_it_under_ts_tags_v5() {
+    for older in ["ts-tags-v2", "ts-tags-v3", "ts-tags-v4"] {
         assert_eq!(
             opened_over_an_index_stamped(older),
-            (vec!["real".to_string()], "ts-tags-v4".to_string()),
+            (vec!["real".to_string()], "ts-tags-v5".to_string()),
             "a {older} index is rebuilt from the tree and re-stamped"
         );
     }
     assert_eq!(
-        opened_over_an_index_stamped("ts-tags-v4"),
-        (vec!["ghost".to_string()], "ts-tags-v4".to_string()),
-        "a ts-tags-v4 index is served as persisted"
+        opened_over_an_index_stamped("ts-tags-v5"),
+        (vec!["ghost".to_string()], "ts-tags-v5".to_string()),
+        "a ts-tags-v5 index is served as persisted"
     );
 }
 

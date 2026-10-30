@@ -1061,7 +1061,8 @@ pub(crate) mod tests {
     /// A persisted index stamped `ts-tags-v2`, the generation before the caller rule changed
     /// what `SymRef.enclosing` holds, is not current and loads as absent, as is one stamped
     /// `ts-tags-v3`, the generation before a definition carried its parent (spec 119, CONTAINS IS
-    /// STRUCTURE); one stamped `ts-tags-v4` is current and loads.
+    /// STRUCTURE), and one stamped `ts-tags-v4`, the generation before a reference carried its
+    /// `ref_kind` (spec 117); one stamped `ts-tags-v5` is current and loads.
     #[test]
     fn a_persisted_ts_tags_v2_index_is_not_current() {
         use crate::grounder::symbols::model::SymbolIndex;
@@ -1074,21 +1075,23 @@ pub(crate) mod tests {
                 serde_json::from_slice(&std::fs::read(store::index_path(root)).unwrap()).unwrap();
             (index.is_current(), store::load(root).is_some())
         };
-        assert_eq!(
-            persisted("ts-tags-v2"),
-            (false, false),
-            "a ts-tags-v2 index is not current and loads as absent"
-        );
-        assert_eq!(
-            persisted("ts-tags-v3"),
-            (false, false),
-            "a ts-tags-v3 index is not current and loads as absent"
-        );
-        assert_eq!(
-            persisted("ts-tags-v4"),
-            (true, true),
-            "a ts-tags-v4 index is current and loads"
-        );
+        for (grammar, current) in [
+            ("ts-tags-v2", false),
+            ("ts-tags-v3", false),
+            ("ts-tags-v4", false),
+            ("ts-tags-v5", true),
+        ] {
+            let reading = if current {
+                "is current and loads"
+            } else {
+                "is not current and loads as absent"
+            };
+            assert_eq!(
+                persisted(grammar),
+                (current, current),
+                "a {grammar} index {reading}"
+            );
+        }
     }
 
     /// AN EXTRACTION CHANGE SHIPS WITH A BUMP: the golden fixtures, a source for each registered
@@ -1103,7 +1106,7 @@ pub(crate) mod tests {
         use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
         use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
         use crate::grounder::symbols::store;
-        const PINNED: (&str, &str) = ("ts-tags-v4", "fc5e234cbf5253a5");
+        const PINNED: (&str, &str) = ("ts-tags-v5", "fc5e234cbf5253a5");
         const GOLDEN: [(&str, &str); 8] = [
             (
                 "rs",
