@@ -7,10 +7,10 @@
 //! `tests/simplification_audit.rs` scans by, rule 4 of `tests/boundary_audit.rs` finds string
 //! literals with and its appender audit finds calls with, and the binary's unit tests (mounted by
 //! `src/main.rs`) read `tests/common`'s functions by; and the token readers the simplification and
-//! boundary audits read its tokens with ([`ref_punct`], [`ref_token`], [`qualifier_before`],
-//! [`follows_keyword`], [`is_definition_site`], [`close_of`], [`imported_names`]). Each
-//! suite uses the subset it needs (hence the module-wide `dead_code` allowance, as in
-//! `tests/common/mod.rs`).
+//! boundary audits read its tokens with ([`ref_punct`], [`ref_token`], [`lone_colon_at`],
+//! [`qualifier_before`], [`follows_keyword`], [`is_definition_site`], [`close_of`],
+//! [`imported_names`]). Each suite uses the subset it needs (hence the module-wide `dead_code`
+//! allowance, as in `tests/common/mod.rs`).
 
 #![allow(dead_code)]
 
@@ -566,6 +566,14 @@ pub fn ref_punct(tok: Option<&RawTok>, text: &str) -> bool {
 pub fn ref_token(tok: Option<&RawTok>, kind: RawKind, text: &str) -> bool {
     tok.map(|t| t.kind == kind && t.text == text)
         .unwrap_or(false)
+}
+
+/// Whether `toks[i]` is a single `:` (a field, binding-type or argument-type separator) rather
+/// than either half of a `::` path separator, which the tokenizer splits into two `:` tokens.
+pub fn lone_colon_at(toks: &[RawTok], i: usize) -> bool {
+    ref_punct(toks.get(i), ":")
+        && !ref_punct(toks.get(i + 1), ":")
+        && !(i > 0 && ref_punct(toks.get(i - 1), ":"))
 }
 
 /// The identifier or keyword (such as `crate`, `self` or `super`) in front of the `::` that

@@ -100,8 +100,8 @@ use common::repo::repo_root;
 mod source_audit;
 use source_audit::{
     char_literal_len, close_of, follows_keyword, imported_names, is_definition_site, is_ident_char,
-    is_keyword, qualifier_before, ref_punct, ref_token, skip_string_literal, tokenize, RawKind,
-    RawTok,
+    is_keyword, lone_colon_at, qualifier_before, ref_punct, ref_token, skip_string_literal,
+    tokenize, RawKind, RawTok,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -3049,10 +3049,12 @@ fn constructs_own_type_literal(toks: &[RawTok], self_type: &str) -> bool {
         }
         // The token right after the field name distinguishes a struct-literal field from a
         // block merely starting with an identifier expression (`{ ident.method() }`): an
-        // explicit `field: value` (`:`) or a SHORTHAND field (`,` between fields, or `}` for a
-        // single-field literal) - `.`/`(` etc. never start a struct-literal field.
-        if toks[i + 3].kind == RawKind::Punct
-            && matches!(toks[i + 3].text.as_str(), ":" | "," | "}")
+        // explicit `field: value` (a lone `:`, never the first half of the `::` a delegating
+        // `{ Type::ctor(..) }` body opens with) or a SHORTHAND field (`,` between fields, or `}`
+        // for a single-field literal) - `.`/`(` etc. never start a struct-literal field.
+        if lone_colon_at(toks, i + 3)
+            || (toks[i + 3].kind == RawKind::Punct
+                && matches!(toks[i + 3].text.as_str(), "," | "}"))
         {
             return true;
         }
@@ -6396,7 +6398,7 @@ fn local_binding_type(
         } else {
             j - 1
         };
-        let typed = ref_punct(toks.get(j + 1), ":") && !ref_punct(toks.get(j + 2), ":");
+        let typed = lone_colon_at(toks, j + 1);
         if ref_token(toks.get(before), RawKind::Keyword, "let") {
             found = Some(if typed {
                 type_named_at(toks, j + 2, self_type)
