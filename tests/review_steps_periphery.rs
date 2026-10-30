@@ -1,6 +1,6 @@
 //! Spec 120, criteria 6 (THE MAP FORM IS THE CANONICAL SEQUENCE), 7 (THE LIST FORM DECLARES ANY
-//! SEQUENCE), 8 (A LIST-FORM SEQUENCE RUNS) and 9 (TOKEN READERS CLASSIFY EVERY STEP BY ITS KIND),
-//! from outside the conductor.
+//! SEQUENCE), 8 (A LIST-FORM SEQUENCE RUNS), 9 (TOKEN READERS CLASSIFY EVERY STEP BY ITS KIND) and
+//! 10 (PANEL READERS READ EVERY STEP), from outside the conductor.
 //!
 //! The conductor's own tests pin `ReviewPanel::steps` over hand-built panels and pin the
 //! review identity surface over a recording driver. Four facts sit past their reach: the
@@ -25,9 +25,17 @@
 //! Past that sit the token readers: a walked round's own spawn ids and findings, a real respawn
 //! among them, read back through the compiled `rigger stats` and `rigger dash --export` by kind,
 //! the map form folding as ever.
+//!
+//! Past a run sits the canary, spec 120's criterion 10 (PANEL READERS READ EVERY STEP): the
+//! compiled `rigger canary` walks every step of a panel under its token, each spawn's argv carrying
+//! its tier's `--model` pin, shows the adjudicator every finding in order and reversed, scores a
+//! corpus item into the tier of the step that caught it, and refuses a list with no adjudicator
+//! step.
 
 mod common;
 
+#[cfg(unix)]
+use common::cli::run_rigger_envs;
 use common::cli::{
     cargo_project, loaded_config, read_run_events, rigger_file, run_rigger, run_rigger_ok,
     temp_project, write_scaffold,
@@ -40,8 +48,12 @@ use common::fixtures::{
     speculation_regen_door_cfg, status_markers, WriteAndApprove, ADVERSARY_FIRST_LIST, EMIT_ONLY,
     LIGHT_PANEL_FORMS, PANEL_AGENTS, PANEL_SCOPES, REJECT_FEATURE, REPEATED_KIND_LIST,
 };
+#[cfg(unix)]
+use common::fixtures::{read_text, PROMPT_CAPTURE_DIR};
 use common::git::{commit_files, temp_git_project_with_commit};
 use common::repo::repo_root;
+#[cfg(unix)]
+use common::repo::stub_path;
 use rigger::conductor::{run, Deps, META_REPLAY_KEY, STREAM};
 use rigger::config::ReviewStep::{self, Adjudicator, Adversary};
 use rigger::config::{AgentDef, ReviewPanel};
@@ -223,6 +235,403 @@ fn write_panel_project(root: &Path, workflow: &str) {
 /// `template` of [`PANEL_SCOPES`] declaring the flow mapping `panel`.
 fn declaring(template: &str, panel: &str) -> String {
     template.replace("{panel}", panel)
+}
+
+/// A corpus file for a known-good control.
+#[cfg(unix)]
+const CONTROL_ITEM: &str = "---\nid: control\ndefect_class: none\nplanted: false\nanchor: \
+     src/lib.rs\nexpected_verdict: approve\n---\nfn control() {}\n";
+
+/// `root` as a project declaring `panel` as its `defaults.review`, with `item` its one corpus file.
+#[cfg(unix)]
+fn write_canary_project(root: &Path, panel: &str, item: &str) {
+    write_panel_project(
+        root,
+        &format!(
+            "defaults:\n  grounder: nop\n  review: {panel}\nstages:\n  solo:\n    agent: a\n    \
+             on_pass: none\n"
+        ),
+    );
+    let corpus = root.join("corpus");
+    std::fs::create_dir_all(&corpus).unwrap();
+    std::fs::write(corpus.join("item.md"), item).unwrap();
+}
+
+/// `rigger canary` plus `flags`, run in `root` over the real subprocess driver with the checked-in
+/// `stub` standing as `claude` and `capture` naming the path `target` in its environment.
+#[cfg(unix)]
+fn canary_on_stub(
+    root: &Path,
+    (stub, capture): (&str, &str),
+    target: &Path,
+    flags: &[&str],
+) -> (String, String, bool) {
+    let work = tempfile::tempdir().unwrap();
+    let path = stub_path(work.path(), "claude", Some(stub));
+    let args: Vec<&str> = ["canary", "--corpus", "corpus"]
+        .iter()
+        .chain(flags)
+        .copied()
+        .collect();
+    run_rigger_envs(
+        root,
+        &args,
+        &[("PATH", &path), (capture, target.to_str().unwrap())],
+    )
+}
+
+/// `rigger canary` run in `root`, a one-item corpus beside `panel` as its `defaults.review`, over
+/// the real subprocess driver standing on a stub agent.
+#[cfg(unix)]
+fn canary_of(root: &Path, panel: &str) -> (String, String, bool) {
+    write_canary_project(root, panel, CONTROL_ITEM);
+    let capture = tempfile::tempdir().unwrap();
+    canary_on_stub(
+        root,
+        ("prompt-capture-agent.sh", PROMPT_CAPTURE_DIR),
+        capture.path(),
+        &[],
+    )
+}
+
+/// Given a corpus and a panel declared as a list repeating a kind, when the operator runs
+/// `rigger canary`, then the item is scored against that panel.
+#[cfg(unix)]
+#[test]
+fn rigger_canary_scores_a_list_repeating_a_kind() {
+    let dir = temp_project();
+    let (out, err, ok) = canary_of(dir.path(), REPEATED_KIND_LIST);
+    assert!(ok, "a list with an adjudicator step scores; stderr:\n{err}");
+    let scored: Vec<&str> = out
+        .lines()
+        .filter_map(|line| line.split_once(": scored "))
+        .map(|(_batch, scored)| scored)
+        .collect();
+    assert_eq!(scored, ["1 corpus item(s) against the review panel"]);
+}
+
+/// Given a list with no adjudicator step, when the operator runs `rigger canary`, then the run
+/// stops on the one line naming the gating verdict the canary measures, before it scores anything.
+#[cfg(unix)]
+#[test]
+fn rigger_canary_refuses_a_list_with_no_adjudicator_step() {
+    for panel in [
+        "{ steps: [{ lenses: [a] }, { adversary: x }] }",
+        "{ steps: [{ lenses: [a] }] }",
+    ] {
+        let dir = temp_project();
+        let (out, err, ok) = canary_of(dir.path(), panel);
+        assert!(!ok, "{panel} is refused; stdout:\n{out}");
+        assert_eq!(out, "", "{panel}");
+        assert_eq!(
+            err,
+            "rigger: conductor: canary: the review panel names no adjudicator - the canary \
+             measures the gating verdict, so an adjudicator is required\n",
+            "{panel}"
+        );
+    }
+}
+
+/// The `--model` value a spawn's argv carries when the run pins nothing on it: the stub's word for
+/// no flag.
+#[cfg(unix)]
+const NO_MODEL: &str = "none";
+
+/// Each reviewer of [`REPEATED_KIND_LIST`], in its order, unpinned.
+#[cfg(unix)]
+const REPEATED_KIND_REVIEWERS: &[(&str, &str)] = &[
+    ("lens:a", NO_MODEL),
+    ("lens:b", NO_MODEL),
+    ("adversary", NO_MODEL),
+    ("lens:y@2", NO_MODEL),
+    ("adversary@2", NO_MODEL),
+];
+
+/// A list whose later step of each kind names an agent no earlier step does, so a tier pin that
+/// stops at the first step of its kind leaves that agent on no pin.
+#[cfg(unix)]
+const DISTINCT_AGENTS_LIST: &str =
+    "{ steps: [{ adversary: x }, { lenses: [a] }, { adversary: y }, \
+     { lenses: [b] }, { adjudicator: z }] }";
+
+/// One agent in a lens step and an adversary step.
+#[cfg(unix)]
+const ONE_AGENT_TWO_KINDS_LIST: &str =
+    "{ steps: [{ lenses: [x] }, { adversary: x }, { adjudicator: z }] }";
+
+/// The file no reviewer raises a finding about, as its anchor token.
+#[cfg(unix)]
+const UNREVIEWED: &str = "unreviewed";
+
+/// The stub that logs a canary's walk, and the variable naming its log.
+#[cfg(unix)]
+const WALK_STUB: (&str, &str) = ("canary-panel-agent.sh", "CANARY_WALK");
+
+/// A `rigger canary --jobs 1` over a panel, the serial walk the stub's one log records in order.
+#[cfg(unix)]
+struct CanaryWalk {
+    /// What the row proves.
+    why: &'static str,
+    /// The `defaults.review` the project declares.
+    panel: &'static str,
+    /// The value of each `--model` flag the run passes, in flag order.
+    pins: &'static [&'static str],
+    /// The role token whose `<token>.rs` the planted item is anchored at.
+    anchor: &'static str,
+    /// Each reviewer spawned, in order: its role token and its argv's `--model` value.
+    reviewers: &'static [(&'static str, &'static str)],
+    /// The `--model` value on each adjudicator spawn's argv.
+    adjudicator: &'static str,
+    /// The item's progress line up to its duration.
+    line: &'static str,
+    /// The findings the adversary tier then the lens tier raised.
+    raised: [u32; 2],
+}
+
+/// The rows of [`rigger_canary_walks_every_step_of_a_panel_under_its_token_and_its_tiers_pin`].
+#[cfg(unix)]
+const CANARY_WALKS: [CanaryWalk; 13] = [
+    CanaryWalk {
+        why: "a later lens step scores the lens tier",
+        panel: REPEATED_KIND_LIST,
+        pins: &[],
+        anchor: "lens:y@2",
+        reviewers: REPEATED_KIND_REVIEWERS,
+        adjudicator: NO_MODEL,
+        line: "canary: planted verdict correct caught lens",
+        raised: [2, 3],
+    },
+    CanaryWalk {
+        why: "a later adversary step scores the adversary tier",
+        panel: REPEATED_KIND_LIST,
+        pins: &[],
+        anchor: "adversary@2",
+        reviewers: REPEATED_KIND_REVIEWERS,
+        adjudicator: NO_MODEL,
+        line: "canary: planted verdict correct caught adversary",
+        raised: [2, 3],
+    },
+    CanaryWalk {
+        why: "no finding names the anchor",
+        panel: REPEATED_KIND_LIST,
+        pins: &[],
+        anchor: UNREVIEWED,
+        reviewers: REPEATED_KIND_REVIEWERS,
+        adjudicator: NO_MODEL,
+        line: "canary: planted verdict correct caught none",
+        raised: [2, 3],
+    },
+    CanaryWalk {
+        why: "the list's order, the adversary ahead of the lenses",
+        panel: ADVERSARY_FIRST_LIST,
+        pins: &[],
+        anchor: "adversary",
+        reviewers: &[("adversary", NO_MODEL), ("lens:a", NO_MODEL)],
+        adjudicator: NO_MODEL,
+        line: "canary: planted verdict correct caught adversary",
+        raised: [1, 1],
+    },
+    CanaryWalk {
+        why: "the map form walks its canonical list under bare tokens",
+        panel: "{ adjudicator: z, adversary: x, lenses: [a, b] }",
+        pins: &[],
+        anchor: "lens:b",
+        reviewers: &[
+            ("lens:a", NO_MODEL),
+            ("lens:b", NO_MODEL),
+            ("adversary", NO_MODEL),
+        ],
+        adjudicator: NO_MODEL,
+        line: "canary: planted verdict correct caught lens",
+        raised: [1, 2],
+    },
+    CanaryWalk {
+        why: "an adversary pin reaches every adversary step and no other",
+        panel: DISTINCT_AGENTS_LIST,
+        pins: &["adversary=pin-adversary"],
+        anchor: UNREVIEWED,
+        reviewers: &[
+            ("adversary", "pin-adversary"),
+            ("lens:a", NO_MODEL),
+            ("adversary@2", "pin-adversary"),
+            ("lens:b@2", NO_MODEL),
+        ],
+        adjudicator: NO_MODEL,
+        line: "canary: planted verdict correct caught none",
+        raised: [2, 2],
+    },
+    CanaryWalk {
+        why: "a lens pin reaches every lens step and no other",
+        panel: DISTINCT_AGENTS_LIST,
+        pins: &["lens=pin-lens"],
+        anchor: UNREVIEWED,
+        reviewers: &[
+            ("adversary", NO_MODEL),
+            ("lens:a", "pin-lens"),
+            ("adversary@2", NO_MODEL),
+            ("lens:b@2", "pin-lens"),
+        ],
+        adjudicator: NO_MODEL,
+        line: "canary: planted verdict correct caught none",
+        raised: [2, 2],
+    },
+    CanaryWalk {
+        why: "an adjudicator pin reaches both probes and no reviewer",
+        panel: DISTINCT_AGENTS_LIST,
+        pins: &["adjudicator=pin-adjudicator"],
+        anchor: UNREVIEWED,
+        reviewers: &[
+            ("adversary", NO_MODEL),
+            ("lens:a", NO_MODEL),
+            ("adversary@2", NO_MODEL),
+            ("lens:b@2", NO_MODEL),
+        ],
+        adjudicator: "pin-adjudicator",
+        line: "canary: planted verdict correct caught none",
+        raised: [2, 2],
+    },
+    CanaryWalk {
+        why: "one agent under two pins takes the last key, the lens",
+        panel: ONE_AGENT_TWO_KINDS_LIST,
+        pins: &["lens=pin-lens", "adversary=pin-adversary"],
+        anchor: UNREVIEWED,
+        reviewers: &[("lens:x", "pin-lens"), ("adversary", "pin-lens")],
+        adjudicator: NO_MODEL,
+        line: "canary: planted verdict correct caught none",
+        raised: [1, 1],
+    },
+    CanaryWalk {
+        why: "the flags' order does not change which key applies last",
+        panel: ONE_AGENT_TWO_KINDS_LIST,
+        pins: &["adversary=pin-adversary", "lens=pin-lens"],
+        anchor: UNREVIEWED,
+        reviewers: &[("lens:x", "pin-lens"), ("adversary", "pin-lens")],
+        adjudicator: NO_MODEL,
+        line: "canary: planted verdict correct caught none",
+        raised: [1, 1],
+    },
+    CanaryWalk {
+        why: "one finding has no reversed probe, and the adversary key follows the adjudicator's",
+        panel: "{ steps: [{ adversary: x }, { adjudicator: x }] }",
+        pins: &["adjudicator=pin-adjudicator", "adversary=pin-adversary"],
+        anchor: "adversary",
+        reviewers: &[("adversary", "pin-adversary")],
+        adjudicator: "pin-adversary",
+        line: "canary: planted verdict correct caught adversary",
+        raised: [1, 0],
+    },
+    CanaryWalk {
+        why: "two findings across two steps are the fewest with a reversed probe",
+        panel: "{ steps: [{ adversary: x }, { adversary: y }, { adjudicator: z }] }",
+        pins: &[],
+        anchor: "adversary@2",
+        reviewers: &[("adversary", NO_MODEL), ("adversary@2", NO_MODEL)],
+        adjudicator: NO_MODEL,
+        line: "canary: planted verdict correct caught adversary",
+        raised: [2, 0],
+    },
+    CanaryWalk {
+        why: "an adjudicator step alone judges no findings once",
+        panel: "{ steps: [{ adjudicator: z }] }",
+        pins: &[],
+        anchor: UNREVIEWED,
+        reviewers: &[],
+        adjudicator: NO_MODEL,
+        line: "canary: planted verdict WRONG caught none",
+        raised: [0, 0],
+    },
+];
+
+/// The log the stub leaves for `row`: each reviewer spawn in order, the adjudicator's first probe
+/// with every finding in the order the steps raised them, and with two or more findings its
+/// second probe, the whole list reversed.
+#[cfg(unix)]
+fn expected_walk(row: &CanaryWalk) -> String {
+    let spawn = |role: &str, model: &str| format!("canary:planted:{role} {model}\n");
+    let numbered = |roles: &[&str]| -> String {
+        let lines = roles.iter().enumerate();
+        lines
+            .map(|(index, role)| format!("{}. [{role}.rs] {role}\n", index + 1))
+            .collect()
+    };
+    let mut roles: Vec<&str> = row.reviewers.iter().map(|(role, _)| *role).collect();
+    let mut walk: String = row
+        .reviewers
+        .iter()
+        .map(|(role, model)| spawn(role, model))
+        .collect();
+    walk += &spawn("adjudicator:a", row.adjudicator);
+    walk += &numbered(&roles);
+    if roles.len() >= 2 {
+        roles.reverse();
+        walk += &spawn("adjudicator:b", row.adjudicator);
+        walk += &numbered(&roles);
+    }
+    walk
+}
+
+/// Given a panel, a corpus item and `--model` pins, when the operator runs `rigger canary`, then
+/// every step spawns in the panel's order under its own token, each spawn's argv carries its
+/// tier's pin, the adjudicator is shown every finding in order and then reversed, and the item is
+/// scored into the tier of the step that caught it.
+#[cfg(unix)]
+#[test]
+fn rigger_canary_walks_every_step_of_a_panel_under_its_token_and_its_tiers_pin() {
+    for row in &CANARY_WALKS {
+        let why = row.why;
+        let dir = temp_project();
+        let root = dir.path();
+        let item = format!(
+            "---\nid: planted\ndefect_class: off-by-one\nplanted: true\nanchor: \"{}.rs\"\n\
+             expected_verdict: reject\n---\nfn planted() {{}}\n",
+            row.anchor
+        );
+        write_canary_project(root, row.panel, &item);
+        let scratch = tempfile::tempdir().unwrap();
+        let walk = scratch.path().join("walk");
+        let mut flags = vec!["--jobs", "1"];
+        for pin in row.pins {
+            flags.extend(["--model", pin]);
+        }
+        let (out, err, ok) = canary_on_stub(root, WALK_STUB, &walk, &flags);
+        assert!(ok, "{why}; stderr:\n{err}");
+        assert_eq!(read_text(&walk), expected_walk(row), "{why}");
+        let progress = out.lines().next().and_then(|line| line.split_once(" in "));
+        assert_eq!(progress.map(|(line, _took)| line), Some(row.line), "{why}");
+        let raised: Vec<&str> = out
+            .lines()
+            .skip_while(|line| !line.starts_with("  findings raised by tier"))
+            .skip(1)
+            .take_while(|line| line.starts_with("    "))
+            .collect();
+        assert_eq!(
+            raised,
+            [
+                format!("    adversary        {}", row.raised[0]),
+                format!("    lens             {}", row.raised[1]),
+            ],
+            "{why}"
+        );
+    }
+}
+
+/// Given a list with no adjudicator step, when the operator runs `rigger canary`, then the refusal
+/// comes ahead of the panel: no step of the list ever spawns.
+#[cfg(unix)]
+#[test]
+fn a_canary_refused_for_no_adjudicator_step_spawns_no_agent() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_canary_project(
+        root,
+        "{ steps: [{ lenses: [a] }, { adversary: x }] }",
+        CONTROL_ITEM,
+    );
+    let scratch = tempfile::tempdir().unwrap();
+    let walk = scratch.path().join("walk");
+    let (out, _err, ok) = canary_on_stub(root, WALK_STUB, &walk, &[]);
+    assert!(!ok, "the list is refused; stdout:\n{out}");
+    assert!(!walk.exists(), "no agent spawned: {}", read_text(&walk));
 }
 
 /// `rigger <verb>` run in `root` fails and prints `line` as all of its stderr.

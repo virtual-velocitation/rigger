@@ -199,8 +199,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/canary_store.rs",
-        "start_line": 829,
-        "end_line": 831
+        "start_line": 832,
+        "end_line": 834
       },
       {
         "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
@@ -3949,13 +3949,13 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 358,
-        "end_line": 358
+        "start_line": 359,
+        "end_line": 359
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 604,
-        "end_line": 604
+        "start_line": 616,
+        "end_line": 616
       },
       {
         "file": "tests/statusline_command_periphery.rs",
@@ -7119,8 +7119,8 @@
       },
       {
         "file": "src/main.rs",
-        "start_line": 388,
-        "end_line": 390
+        "start_line": 389,
+        "end_line": 391
       }
     ]
   },

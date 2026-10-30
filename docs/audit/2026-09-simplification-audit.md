@@ -1824,7 +1824,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-conductor
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-conductor/src/canary_store.rs:829-831` `any_finding_is_critical`
+- `crates/rigger-conductor/src/canary_store.rs:832-834` `any_finding_is_critical`
 - `crates/rigger-grounder/src/grounder/design/extract.rs:162-164` `is_handbook_path`
 
 #### `dup-0a7aeeeffe48` (near, 15 sites)
@@ -2674,10 +2674,11 @@ placed root; this is the explicit on-demand form. Reports\n                     
 the number of roots reclaimed; composes with the others\n  \
 rigger critique <spec>      critique the spec before any run: the workflow's critic\n                              \
 (the plan-critique gate's adversary, else\n                              \
-defaults.review.adversary) reads the spec text and its\n                              \
-findings and verdict are recorded keyed on the text's\n                              \
-content hash, so unchanged text is answered from the\n                              \
-record with no spawn; takes --eventstore/--conn as run does\n  \
+an adversary step in defaults.review) reads the spec\n                              \
+text and its findings and verdict are recorded keyed on\n                              \
+the text's content hash, so unchanged text is answered\n                              \
+from the record with no spawn; takes --eventstore/--conn\n                              \
+as run does\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
@@ -3198,8 +3199,8 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:54-54` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:189-189` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:200-200` `".rigger"`
-- `tests/spec_critique_periphery.rs:358-358` `".rigger/workflow.yml"`
-- `tests/spec_critique_periphery.rs:604-604` `".rigger"`
+- `tests/spec_critique_periphery.rs:359-359` `".rigger/workflow.yml"`
+- `tests/spec_critique_periphery.rs:616-616` `".rigger"`
 - `tests/statusline_command_periphery.rs:118-118` `".rigger"`
 - `tests/step_sheds_the_freshen.rs:67-67` `".rigger/grounding"`
 - `tests/step_sheds_the_freshen.rs:216-216` `".rigger/symbols/index.json"`
@@ -4733,7 +4734,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/setup.rs, src/m
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/setup.rs:312-319` `print_scaffold_pointer`
-- `src/main.rs:388-390` `usage`
+- `src/main.rs:389-391` `usage`
 
 #### `dup-3f04af8603ff` (semantic, 2 sites)
 
@@ -5412,7 +5413,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10485 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10516 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:5146-5187` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15517-15539` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5442,10 +5443,10 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `tests/concepts_labels_membership.rs:240-267` `label_of_the_documentless_hub` - no duplicate found by reading
 - `tests/event_classes_are_one_table.rs:386-400` `a_right_side_that_is_neither_a_literal_nor_a_type_alias_fails_the_scan_naming_it` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/one_shot_reads_periphery.rs:87-140` `a_project_namespace_over_a_shared_events_file_reads_its_run_as_one_typed_read_per_selection` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `tests/simplification_audit.rs:7023-7027` `a_bare_test_attribute_on_a_free_function_marks_it_test_without_a_cfg_test_mod` - duplicate found by reading and closed: it and five sibling scanner tests re-rolled `scan_single`; all now call it or its name and span assertions
+- `tests/spec_critique_periphery.rs:1018-1043` `a_default_review_listing_no_adversary_step_has_no_critic` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/worker_persona_label_periphery.rs:246-267` `the_subject_is_the_titles_first_sentence_passed_whole_with_no_truncation` - duplicate found by reading and closed: it re-rolled `assert_worker_label` inline; it now calls it
 
-Reading pass 2026-09-27: 5 of the 30 drawn functions read by hand (a caught row too, to judge whether its duplicate reaches past the cluster); 23 duplicate(s) found by reading, each closed.
+Reading pass 2026-09-27: 4 of the 30 drawn functions read by hand (a caught row too, to judge whether its duplicate reaches past the cluster); 22 duplicate(s) found by reading, each closed.
 - closed before the redraw: `tests/kurrentdb_always_available.rs` `architecture_blueprint_has_no_retired_kurrentdb_feature_reference` re-rolled the manifest-relative read `common::repo::repo_text` owns, as did thirteen sibling reads across eleven suites; every one now calls `repo_text`
 - closed before the redraw: `tests/replan_episode_identity.rs` `serving` had two inline copies of its scan in its own file; both now call it
 - closed before the redraw: `crates/rigger-conductor/src/conductor.rs` `integrate_and_emit` repeated `catch_up_owed_regeneration`'s regenerate/record/clear sequence twice; all three now call `regenerate_and_record`
@@ -5477,7 +5478,7 @@ FOUND, one violation:
 
 Violation 1 (`Grounder`): `crates/rigger-grounder/src/ingest.rs:412-444` (`walk_batches`, called from production `conductor::RunCtx::ingest_project_batches` at `crates/rigger-conductor/src/conductor.rs:11473`, itself called from `crates/rigger-conductor/src/conductor.rs:11455` above the `14648` `#[cfg(test)]` boundary) calls `crate::grounder::symbols::events::project_batches_paced` directly by concrete module path at line 418 to reuse the `symbols` grounder's already-persisted index for a one-time whole-project ingest walk, then at line 424 - same function, same missing-port defect, not a separate third violation - calls `crate::grounder::design::events::project_batches` directly by concrete module path for the design-doc half of the same walk. These two calls are two of the three named sites of section 2's own catalogued duplicate cluster (`dup-f2eee0c78cd6`: `crates/rigger-grounder/src/grounder/design/events.rs:97-99`, `crates/rigger-grounder/src/grounder/symbols/events.rs:66-68`, and `crates/rigger-grounder/src/grounder/workflowdef.rs:233-240` - all three named `project_batches`), so this boundary violation and that duplication finding are two symptoms of one root cause - `ingest.rs` naming each concrete grounder submodule because no port exposes either. The `Grounder` port (`crates/rigger-domain/src/grounder.rs:56`: `ground`, `reindex`, `blast_radius`, `index_stamp`) serves real-time per-query grounding of an agent's prompt; none of its methods exposes "hand me every indexed file's projected events for a whole-project batch ingest," so `ingest.rs` - itself a domain ingest authority, not an adapter and not the composition root - has no port to depend on for either call and reaches the concrete `symbols` module (418) and the concrete `design` module (424) directly. Fix direction for a follow-up spec: add an ingest-shaped port method (e.g. a `Grounder::project_batches` or a standalone `SymbolProjector` trait) covering both concrete modules, so `ingest.rs` depends on one abstraction instead of either concrete grounder module for its whole-project walk.
 
-Also reaching `grounder::symbols::store::content_hash` from `crates/rigger-grounder/src/ingest.rs:667` and `crates/rigger-conductor/src/canary_store.rs:153`: DISPOSITIONED as legitimate shared-primitive reuse, not a third violation. `content_hash` (`crates/rigger-grounder/src/grounder/symbols/store.rs:47-57`) is documented at its own definition as the content-identity primitive the `symbols` grounder's reindex freshening gate keys on, and `canary_store.rs`'s own doc comment (`crates/rigger-conductor/src/canary_store.rs:131`) reuses it by deliberate author intent rather than growing another open-coded FNV-1a copy - a generic hashing utility that happens to live in the `symbols` module, not a grounding operation reached through the port. The broader duplication this primitive is meant to fix (the open-coded FNV-1a copies elsewhere in the crate, per `crates/rigger-domain/src/community.rs:69`'s own comment) is a separately tracked cross-cutting refactor (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's concern.
+Also reaching `grounder::symbols::store::content_hash` from `crates/rigger-grounder/src/ingest.rs:667` and `crates/rigger-conductor/src/canary_store.rs:154`: DISPOSITIONED as legitimate shared-primitive reuse, not a third violation. `content_hash` (`crates/rigger-grounder/src/grounder/symbols/store.rs:47-57`) is documented at its own definition as the content-identity primitive the `symbols` grounder's reindex freshening gate keys on, and `canary_store.rs`'s own doc comment (`crates/rigger-conductor/src/canary_store.rs:132`) reuses it by deliberate author intent rather than growing another open-coded FNV-1a copy - a generic hashing utility that happens to live in the `symbols` module, not a grounding operation reached through the port. The broader duplication this primitive is meant to fix (the open-coded FNV-1a copies elsewhere in the crate, per `crates/rigger-domain/src/community.rs:69`'s own comment) is a separately tracked cross-cutting refactor (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's concern.
 
 CHECKED AND CLEAN (four of five ports fully clean; the fifth, `Grounder`, is this section's violation above - each search recorded so a clean result is not merely assumed):
 - `conductor::AgentDriver` concretion reach (`crate::driver::*`): production `conductor.rs` depends only on the port (`crates/rigger-domain/src/agent.rs:213`), held as `dyn AgentDriver` (`crates/rigger-conductor/src/conductor.rs:1906`); every one of its 16 `crate::driver::` hits sits inside `#[cfg(test)] mod tests`, where the tests construct a concrete driver directly.

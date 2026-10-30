@@ -25,7 +25,7 @@ Criterion 6 needs all five. The spec is launched on a tree carrying spec 101's t
 **THE CRITIC IS THE PLAN-CRITIQUE ADVERSARY, SPAWNED THROUGH THE HEADLESS HOST, decided here.**
 `rigger critique <spec>` resolves the persona the workflow names as the `adversary` of the
 plan-critique gate, the stage `wave::critique_gate_name` returns (this repository:
-`.rigger/agents/adversary.md`), falling back to `defaults.review.adversary`; that persona is the
+`.rigger/agents/adversary.md`), falling back to the first adversary step of `defaults.review`; that persona is the
 critic, and this lookup is one pure function. A workflow naming neither has no critic, a new run
 under it is not refused (A NEW RUN IS REFUSED), and there is no built-in critic. The critic lookup
 runs on every call, before any store or graph is opened or migrated (*The store* orders it): under a
@@ -563,7 +563,7 @@ The no-critic line, printed on stderr by a command that would begin a new run un
 no critic, which then proceeds:
 
 ```
-<command>: no spec critique for <spec>: the workflow names neither the plan-critique gate's adversary nor defaults.review.adversary
+<command>: no spec critique for <spec>: the workflow names neither the plan-critique gate's adversary nor an adversary step in defaults.review
 ```
 
 A copy of a skill named `spec-preflight` outside the project is never touched by rigger; retiring
@@ -659,10 +659,10 @@ Worked example (an identity claim over a compacted log):
 ## Step 3: the adversary pass
 
 Run `rigger critique <spec>`. It runs the workflow's critic (the plan-critique gate's adversary,
-else `defaults.review.adversary`) against the spec text, records its findings and verdict keyed on
-the text's content hash, and prints them; unchanged text is answered from the record, and any edit
-is critiqued afresh. Under a workflow naming neither, `rigger critique` refuses and runs are not
-gated, so skip Steps 3 and 4.2. Each finding is one line:
+else an adversary step in `defaults.review`) against the spec text, records its findings and
+verdict keyed on the text's content hash, and prints them; unchanged text is answered from the
+record, and any edit is critiqued afresh. Under a workflow naming neither, `rigger critique`
+refuses and runs are not gated, so skip Steps 3 and 4.2. Each finding is one line:
 
     <id> | BLOCKING or NON-BLOCKING | <criterion or Design block> | <exact reading that breaks> | <smallest Design change that closes it>
 

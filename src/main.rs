@@ -341,10 +341,11 @@ placed root; this is the explicit on-demand form. Reports\n                     
 the number of roots reclaimed; composes with the others\n  \
 rigger critique <spec>      critique the spec before any run: the workflow's critic\n                              \
 (the plan-critique gate's adversary, else\n                              \
-defaults.review.adversary) reads the spec text and its\n                              \
-findings and verdict are recorded keyed on the text's\n                              \
-content hash, so unchanged text is answered from the\n                              \
-record with no spawn; takes --eventstore/--conn as run does\n  \
+an adversary step in defaults.review) reads the spec\n                              \
+text and its findings and verdict are recorded keyed on\n                              \
+the text's content hash, so unchanged text is answered\n                              \
+from the record with no spawn; takes --eventstore/--conn\n                              \
+as run does\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
