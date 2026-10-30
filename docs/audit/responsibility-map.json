@@ -9381,7 +9381,15 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "e7f687aebc5e5bfd"
+    "content_hash": "d6c880cf48bc6998"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "ci_probe_from_gh_read",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "5365297ce3deec30"
   },
   {
     "file": "src/cli/mod.rs",
