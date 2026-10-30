@@ -28,13 +28,14 @@ use crate::canary::{is_batch_marker, latest_run};
 use crate::conductor::{
     review_protocol, verdict_approves, AgentDriver, AgentResult, Error, SpawnOpts,
 };
-use crate::config::{split_frontmatter, AgentDef, Config, ReviewPanel};
+use crate::config::{split_frontmatter, AgentDef, Config, ReviewPanel, ReviewStep};
 use crate::contextgraph::query::referenced_id;
 use crate::contextgraph::TYPE_REVIEW_FINDING;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::instructions::Instruction;
 use crate::ledger::TYPE_UNIT_STATUS;
-use crate::spawn::{lens_role, ROLE_ADJUDICATOR, ROLE_ADVERSARY};
+use crate::spawn::{review_step_role, ReviewKind, ROLE_ADJUDICATOR};
+use rigger_domain::review::step_ordinal;
 
 /// A single canary corpus item: a micro-unit under review with its GROUND TRUTH. Parsed
 /// from a `canaries/<id>.md` file - YAML frontmatter (these fields) plus a markdown body
@@ -158,32 +159,24 @@ pub fn corpus_hash(corpus: &[CanaryItem]) -> String {
 /// that tier's agent(s) to for this run only.
 pub type ModelPins = BTreeMap<String, String>;
 
-/// Apply `pins` to a CLONE of `cfg`: every agent `panel` names for a pinned tier gets its
-/// `model` forced to the pinned id and `model_ladder` CLEARED (so [`AgentDef::model_for_attempt`]
-/// cannot shadow the pin - canary always spawns at attempt 0, but clearing the ladder keeps the
-/// invariant obvious by construction rather than accidental-by-attempt-number). Every other
-/// tier's agent is untouched, and so is the ORIGINAL `cfg` (and the file it was loaded from) -
-/// the pin exists for THIS run only, never persisted. An unrecognized tier key (arg parsing
-/// already rejects one before this is called) resolves no agent ids and is a no-op.
+/// Apply `pins` to a CLONE of `cfg`: every agent of every [`ReviewPanel::steps`] step of a pinned
+/// tier's kind ([`ReviewKind::tier`]) gets its `model` forced to the pinned id and `model_ladder`
+/// CLEARED (so [`AgentDef::model_for_attempt`] cannot shadow the pin - canary always spawns at
+/// attempt 0, but clearing the ladder keeps the invariant obvious by construction rather than
+/// accidental-by-attempt-number). Every other tier's agent is untouched, and so is the ORIGINAL
+/// `cfg` (and the file it was loaded from) - the pin exists for THIS run only, never persisted.
+/// An unrecognized tier key (arg parsing already rejects one before this is called) matches no
+/// step and is a no-op.
 pub fn apply_model_pins(cfg: &Config, panel: &ReviewPanel, pins: &ModelPins) -> Config {
     let mut pinned = cfg.clone();
+    let steps = panel.steps();
     for (tier, model_id) in pins {
-        let ids: Vec<&str> = if tier == TIER_LENS {
-            panel.lenses.iter().map(String::as_str).collect()
-        } else if tier == TIER_ADVERSARY {
-            vec![panel.adversary.as_str()]
-        } else if tier == ROLE_ADJUDICATOR {
-            vec![panel.adjudicator.as_str()]
-        } else {
-            Vec::new()
-        };
-        for id in ids {
-            if id.is_empty() {
-                continue;
-            }
-            if let Some(agent) = pinned.agents.get_mut(id) {
-                agent.model = model_id.clone();
-                agent.model_ladder.clear();
+        for step in steps.iter().filter(|step| step.kind().tier() == tier) {
+            for id in step.agents() {
+                if let Some(agent) = pinned.agents.get_mut(id) {
+                    agent.model = model_id.clone();
+                    agent.model_ladder.clear();
+                }
             }
         }
     }
@@ -220,13 +213,13 @@ pub fn record_header(
 }
 
 /// Run the review panel against every corpus item and RECORD the scored outcomes to the
-/// canary [`STREAM`] (spec 13, unit 5). Each item is judged by the SAME three tiers the
-/// live loop runs, over the injected [`AgentDriver`]; the scores ride fold-neutral
-/// `UnitStatus` events under one batch marker.
+/// canary [`STREAM`] (spec 13, unit 5). Each item is judged by the SAME [`ReviewPanel::steps`],
+/// in the same order, as the live loop runs, over the injected [`AgentDriver`]; the scores ride
+/// fold-neutral `UnitStatus` events under one batch marker.
 ///
-/// The panel MUST name an adjudicator - the canary measures the gating verdict, so a
+/// The panel MUST carry an adjudicator step - the canary measures the gating verdict, so a
 /// panel with none has nothing to judge and is a configuration error (mirroring
-/// `validate_depth`'s mandate that every review tier name an adjudicator).
+/// `validate_depth`'s mandate that every review tier name an adjudicator step).
 ///
 /// `jobs` is the TOTAL concurrent-spawn budget (spec 61, ITEM SHARDING AND THE JOBS CAP):
 /// [`spawn_budget`] splits it between this function's own OUTER per-item sharding and the
@@ -251,13 +244,7 @@ pub fn run_canary(
     jobs: usize,
     on_item: &(dyn Fn(&CanaryOutcome, Duration) + Sync),
 ) -> Result<CanaryReport, Error> {
-    if panel.adjudicator.is_empty() {
-        return Err(Error(
-            "canary: the review panel names no adjudicator - the canary measures the \
-             gating verdict, so an adjudicator is required"
-                .into(),
-        ));
-    }
+    adjudicator_of(&panel.steps())?;
     let batch = uuid::Uuid::new_v4().to_string();
     // Open the batch with its marker so the fold can scope to this run.
     append(
@@ -269,7 +256,7 @@ pub fn run_canary(
         )
         .with_meta(META_CANARY_BATCH, &batch),
     )?;
-    // Independent corpus items shard across item_workers; each item's tier-1 lens fan-out
+    // Independent corpus items shard across item_workers; each step's fan-out within an item
     // (score_item's own, already-built concurrency) gets lens_workers - a CONSUMER
     // relationship: this call site decides the width, score_item only accepts whatever it
     // is given. map_ordered is index-preserving (chunk-order concatenation), so `scored`
@@ -329,9 +316,10 @@ pub fn default_jobs() -> usize {
 
 /// Split a total `jobs` spawn-concurrency budget between [`run_canary`]'s two concurrency
 /// dimensions - `item_workers` (independent corpus items sharded across this function's
-/// caller) and `lens_workers` (each item's tier-1 lens fan-out, the LENS FAN-OUT
-/// criterion's inner `score_item` seam) - so their PRODUCT, the worst-case count of
-/// review-panel spawns ever in flight at once, never exceeds `jobs`.
+/// caller) and `lens_workers` (the fan-out of each step of an item, the LENS FAN-OUT
+/// criterion's inner `score_item` seam, the steps running one after another) - so their
+/// PRODUCT, the worst-case count of review-panel spawns ever in flight at once, never
+/// exceeds `jobs`.
 ///
 /// `item_workers` is `min(jobs, corpus_len)` (never more items sharded than exist - a
 /// `--jobs` value larger than the corpus must not spawn idle item threads, the "sane for
@@ -403,11 +391,29 @@ fn paths_match(about: &str, anchor: &str) -> bool {
                 .is_some_and(|prefix| prefix.ends_with('/')))
 }
 
-/// Score one canary item: run the lenses (tier 1) and the adversary (tier 2) collecting
-/// their findings, then the adjudicator (tier 3) twice - once with the findings in
-/// natural order and once reversed - to judge the verdict AND probe it for position bias.
+/// The agent id of the adjudicator step of `steps`, the one refusal of a panel with none: the
+/// canary judges nothing without the gating verdict, so [`run_canary`] refuses before it opens
+/// a batch.
+fn adjudicator_of(steps: &[ReviewStep]) -> Result<&str, Error> {
+    steps
+        .iter()
+        .find_map(ReviewStep::adjudicator)
+        .ok_or_else(|| {
+            Error(
+                "canary: the review panel names no adjudicator - the canary measures the \
+                 gating verdict, so an adjudicator is required"
+                    .into(),
+            )
+        })
+}
+
+/// Score one canary item: run the lens and adversary steps of [`ReviewPanel::steps`] in order,
+/// each agent under its step's [`review_step_role`] token, collecting their findings, then the
+/// adjudicator twice - once with the findings in natural order and once reversed - to judge
+/// the verdict AND probe it for position bias. Every lens step scores the lens tier and every
+/// adversary step the adversary tier ([`ReviewKind::tier`]).
 ///
-/// `lens_workers` is the pool width `crate::parallel::map_ordered` fans the tier-1 lenses
+/// `lens_workers` is the pool width `crate::parallel::map_ordered` fans each step's agents
 /// out over - the scheduling seam the LENS FAN-OUT criterion pins with a barrier-gated
 /// test driver. It is index-preserving (chunk-order concatenation), so the aggregation
 /// below reads in the SAME order the serial walk it replaces would have produced, and a
@@ -421,6 +427,8 @@ fn score_item(
     item: &CanaryItem,
     lens_workers: usize,
 ) -> Result<(CanaryOutcome, BTreeMap<String, String>), Error> {
+    let steps = panel.steps();
+    let adjudicator = adjudicator_of(&steps)?;
     let mut caught = BTreeSet::new();
     let mut findings: Vec<Finding> = Vec::new();
     // The findings-volume measure (FINDINGS VOLUME criterion): how many findings each tier
@@ -438,48 +446,40 @@ fn score_item(
     // empty" apart cleanly.
     let mut resolved_models: BTreeMap<String, String> = BTreeMap::new();
 
-    // TIER 1: the expert lenses, collectively one tier, run CONCURRENTLY over
-    // lens_workers. Any lens raising a finding about the anchor catches the defect for
-    // the lens tier; aggregation reads the (order-preserved) results in the same order
-    // the serial for-loop it replaces did, so the scored outcome cannot depend on which
-    // lens spawn happened to finish first.
-    let (lens_results, _engaged) =
-        crate::parallel::map_ordered(&panel.lenses, lens_workers, |lens| {
-            run_review_tier(driver, cfg, item, lens, &lens_role(lens))
-        });
-    for raised in lens_results {
-        let (raised, resolved) = raised?;
-        if raised.iter().any(|f| f.catches(item)) {
-            caught.insert(TIER_LENS.to_string());
+    // The lens and adversary steps in the panel's order, the agents of a step running
+    // CONCURRENTLY over lens_workers. Any agent raising a finding about the anchor catches the
+    // defect for its step's tier; aggregation reads the (order-preserved) results in the order
+    // the step lists its agents, so the scored outcome cannot depend on which spawn happened
+    // to finish first.
+    for (index, step) in steps.iter().enumerate() {
+        let kind = step.kind();
+        if kind == ReviewKind::Adjudicator {
+            continue;
         }
-        *findings_raised.entry(TIER_LENS.to_string()).or_insert(0) += raised.len() as u64;
-        findings.extend(raised);
-        if !resolved.is_empty() {
-            resolved_models.insert(TIER_LENS.to_string(), resolved);
-        }
-    }
-
-    // TIER 2: the adversary, holding the lenses to a higher bar.
-    if !panel.adversary.is_empty() {
-        let (raised, resolved) =
-            run_review_tier(driver, cfg, item, &panel.adversary, ROLE_ADVERSARY)?;
-        if raised.iter().any(|f| f.catches(item)) {
-            caught.insert(TIER_ADVERSARY.to_string());
-        }
-        *findings_raised
-            .entry(TIER_ADVERSARY.to_string())
-            .or_insert(0) += raised.len() as u64;
-        findings.extend(raised);
-        if !resolved.is_empty() {
-            resolved_models.insert(TIER_ADVERSARY.to_string(), resolved);
+        let tier = kind.tier();
+        let k = step_ordinal(&steps, index);
+        let (results, _engaged) =
+            crate::parallel::map_ordered(step.agents(), lens_workers, |agent| {
+                run_review_tier(driver, cfg, item, agent, &review_step_role(kind, agent, k))
+            });
+        for raised in results {
+            let (raised, resolved) = raised?;
+            if raised.iter().any(|f| f.catches(item)) {
+                caught.insert(tier.to_string());
+            }
+            *findings_raised.entry(tier.to_string()).or_insert(0) += raised.len() as u64;
+            findings.extend(raised);
+            if !resolved.is_empty() {
+                resolved_models.insert(tier.to_string(), resolved);
+            }
         }
     }
 
-    // TIER 3: the adjudicator renders the gating verdict, judged through the SAME
-    // fail-closed authority the live loop uses. Position-bias probe: re-present the same
-    // findings reversed - a verdict that flips on order alone is unstable.
+    // The adjudicator step renders the gating verdict, judged through the SAME fail-closed
+    // authority the live loop uses. Position-bias probe: re-present the same findings, the
+    // whole list across steps, reversed - a verdict that flips on order alone is unstable.
     let ordered: Vec<&Finding> = findings.iter().collect();
-    let (approved, resolved) = adjudicate(driver, cfg, panel, item, &ordered, "a")?;
+    let (approved, resolved) = adjudicate(driver, cfg, adjudicator, item, &ordered, "a")?;
     if !resolved.is_empty() {
         resolved_models.insert(ROLE_ADJUDICATOR.to_string(), resolved);
     }
@@ -490,7 +490,8 @@ fn score_item(
     } else {
         let mut reversed: Vec<&Finding> = ordered.clone();
         reversed.reverse();
-        let (approved_reversed, resolved) = adjudicate(driver, cfg, panel, item, &reversed, "b")?;
+        let (approved_reversed, resolved) =
+            adjudicate(driver, cfg, adjudicator, item, &reversed, "b")?;
         if !resolved.is_empty() {
             resolved_models.insert(ROLE_ADJUDICATOR.to_string(), resolved);
         }
@@ -518,12 +519,12 @@ fn score_item(
     ))
 }
 
-/// Run one review TIER (a lens or the adversary) against a canary item and collect the
-/// findings it emits. The reviewer receives the item's code under review plus the SAME
+/// Run one agent of a lens or adversary step against a canary item under its step's `role`
+/// token and collect the findings it emits. The reviewer receives the item's code under review plus the SAME
 /// [`review_protocol`] the live loop appends, so it attributes each finding by its role
 /// token; the emit callback captures every `ReviewFinding` it emits (the cli driver
 /// bridges a subprocess reviewer's stdout findings through the same callback). The second
-/// element of the returned pair is the tier's ACTUALLY-resolved model id (MODEL PINNING
+/// element of the returned pair is the spawn's ACTUALLY-resolved model id (MODEL PINNING
 /// criterion), sourced from `AgentResult::resolved_model`.
 fn run_review_tier(
     driver: &dyn AgentDriver,
@@ -539,19 +540,19 @@ fn run_review_tier(
     Ok((findings, result.resolved_model))
 }
 
-/// Run the adjudicator against a canary item with the collected findings presented in the
-/// given order, and return whether it APPROVED (via the fail-closed [`verdict_approves`])
+/// Run the `adjudicator` agent against a canary item with the collected findings presented in
+/// the given order, and return whether it APPROVED (via the fail-closed [`verdict_approves`])
 /// plus the ACTUALLY-resolved model id (MODEL PINNING criterion). `ordinal` distinguishes
 /// the natural-order and reversed-order probe spawns by id.
 fn adjudicate(
     driver: &dyn AgentDriver,
     cfg: &Config,
-    panel: &ReviewPanel,
+    adjudicator: &str,
     item: &CanaryItem,
     findings: &[&Finding],
     ordinal: &str,
 ) -> Result<(bool, String), Error> {
-    let agent = agent_of(cfg, &panel.adjudicator, ROLE_ADJUDICATOR)?;
+    let agent = agent_of(cfg, adjudicator, ROLE_ADJUDICATOR)?;
     let prompt = adjudicator_prompt(item, findings);
     let mut opts = canary_opts(item, ROLE_ADJUDICATOR, agent, &cfg.instructions);
     // Distinguish the two probe spawns (natural vs reversed order) by id.

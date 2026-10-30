@@ -136,6 +136,24 @@ pub enum ReviewKind {
     Adjudicator,
 }
 
+impl ReviewKind {
+    /// The tier label this kind's spawns fold and group under, whichever step they sit in.
+    ///
+    /// ```
+    /// # use rigger_domain::spawn::ReviewKind;
+    /// assert_eq!(ReviewKind::Lens.tier(), "lens");
+    /// assert_eq!(ReviewKind::Adversary.tier(), "adversary");
+    /// assert_eq!(ReviewKind::Adjudicator.tier(), "adjudicator");
+    /// ```
+    pub fn tier(self) -> &'static str {
+        match self {
+            ReviewKind::Lens => crate::canary::TIER_LENS,
+            ReviewKind::Adversary => crate::canary::TIER_ADVERSARY,
+            ReviewKind::Adjudicator => ROLE_ADJUDICATOR,
+        }
+    }
+}
+
 /// The role token of `agent` in the `k`-th step of `kind`, `k` being 1-based and counted among
 /// the steps of that kind in [`ReviewPanel::steps`](crate::config::ReviewPanel::steps): the kind's
 /// own token, [`lens_role`], [`ROLE_ADVERSARY`] or [`ROLE_ADJUDICATOR`], at `k == 1`, and from

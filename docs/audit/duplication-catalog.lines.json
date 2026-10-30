@@ -64,8 +64,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 298,
-        "end_line": 300
+        "start_line": 316,
+        "end_line": 318
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -199,8 +199,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/canary_store.rs",
-        "start_line": 831,
-        "end_line": 833
+        "start_line": 832,
+        "end_line": 834
       },
       {
         "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
@@ -254,8 +254,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 226,
-        "end_line": 228
+        "start_line": 244,
+        "end_line": 246
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
@@ -384,8 +384,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 332,
-        "end_line": 334
+        "start_line": 350,
+        "end_line": 352
       }
     ]
   },
@@ -5234,8 +5234,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 721,
-        "end_line": 724
+        "start_line": 739,
+        "end_line": 742
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -5424,8 +5424,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 727,
-        "end_line": 729
+        "start_line": 745,
+        "end_line": 747
       }
     ]
   },
@@ -5519,13 +5519,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 489,
-        "end_line": 491
+        "start_line": 507,
+        "end_line": 509
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 495,
-        "end_line": 497
+        "start_line": 513,
+        "end_line": 515
       }
     ]
   },
@@ -5534,8 +5534,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 712,
-        "end_line": 718
+        "start_line": 730,
+        "end_line": 736
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
@@ -7119,8 +7119,8 @@
       },
       {
         "file": "src/main.rs",
-        "start_line": 388,
-        "end_line": 390
+        "start_line": 389,
+        "end_line": 391
       }
     ]
   },

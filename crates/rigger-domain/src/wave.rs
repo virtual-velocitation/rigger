@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::config::{Stage, Workflow};
+use crate::config::{ReviewStep, Stage, Workflow};
 use crate::playbooks::fnv1a_64;
 
 /// Normalize a criterion string for the supersede match (the duplication fix): trim,
@@ -205,17 +205,27 @@ pub fn critique_gate_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
 /// What a workflow with no critic names neither of (spec 112): the one clause every message
 /// about a missing critic carries.
 pub const NO_CRITIC_CLAUSE: &str =
-    "the workflow names neither the plan-critique gate's adversary nor defaults.review.adversary";
+    "the workflow names neither the plan-critique gate's adversary nor an adversary step in defaults.review";
 
 /// The workflow's spec critic (spec 112): the adversary persona of the plan-critique gate
-/// ([`critique_gate_name`]), else `defaults.review.adversary`, else `None` - a workflow naming
-/// neither has no critic, and there is no built-in one.
+/// ([`critique_gate_name`]), else the first adversary step of `defaults.review`, read in the
+/// order [`ReviewPanel::steps`](crate::config::ReviewPanel::steps) gives, else `None` - a
+/// workflow naming neither has no critic, and there is no built-in one.
 pub fn critic(workflow: &Workflow) -> Option<String> {
     critique_gate_name(&workflow.stages)
         .map(|gate| workflow.stages[&gate].adversary.clone())
         .filter(|adversary| !adversary.is_empty())
-        .or_else(|| Some(workflow.defaults.review.adversary.clone()))
-        .filter(|adversary| !adversary.is_empty())
+        .or_else(|| {
+            workflow
+                .defaults
+                .review
+                .steps()
+                .into_iter()
+                .find_map(|step| match step {
+                    ReviewStep::Adversary(id) => Some(id),
+                    _ => None,
+                })
+        })
 }
 
 /// A stable, unique, human-legible unit id derived from a criterion's text plus its
