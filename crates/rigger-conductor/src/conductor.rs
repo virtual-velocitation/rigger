@@ -18436,34 +18436,52 @@ mod tests {
     /// The spec both runs of a landed-criterion row run under, unless the row moves run 1.
     const LANDED_SPEC: &str = "specs/7-landed-criteria.md";
 
+    /// The commit run 1's integrate of criterion A records.
+    #[derive(Clone, Copy)]
+    enum Run1Commit {
+        /// A commit in the history of the branch the new run integrates into.
+        OnBranch,
+        /// A commit the repository holds that the branch's history does not, as after a reset.
+        OffBranch,
+        /// The no-artifact marker, with no `landed_from` commit behind it: nothing to check.
+        Marker,
+    }
+
     /// One row of the landed-criterion table: run 1 ran under `run1_spec` and integrated criterion
-    /// A as `u-a-1`, a compensation reverting that integrate when `compensated`, and, when `split`,
-    /// left a second part of A (`u-a-2`) failed beside it; run 2 is driven as one step or, when
-    /// `resumed`, as two (the first parks `u-b`'s implementer); `lands` says whether run 2's `u-a`
-    /// reaches Integrated with no spawn.
+    /// A as `u-a-1` at `run1_commit`, a compensation reverting that integrate when `compensated`,
+    /// and, when `split`, left a second part of A (`u-a-2`) failed beside it; when `relanded`, a
+    /// run 2 landed A through the skip and the run driven is run 3; that run is driven as one step
+    /// or, when `resumed`, as two (the first parks `u-b`'s implementer); `lands` says whether its
+    /// `u-a` reaches Integrated with no spawn.
     #[derive(Clone, Copy)]
     struct LandedRow {
         run1_spec: &'static str,
+        run1_commit: Run1Commit,
         compensated: bool,
         split: bool,
+        relanded: bool,
         resumed: bool,
         lands: bool,
     }
 
-    /// The base row: run 1 of the same spec integrated A, nothing reverted it, so run 2's A lands.
+    /// The base row: run 1 of the same spec integrated A on the run branch, nothing reverted it,
+    /// so run 2's A lands.
     const LANDS: LandedRow = LandedRow {
         run1_spec: LANDED_SPEC,
+        run1_commit: Run1Commit::OnBranch,
         compensated: false,
         split: false,
+        relanded: false,
         resumed: false,
         lands: true,
     };
 
     /// A CRITERION AN EARLIER RUN OF THE SAME SPEC INTEGRATED IS NOT BUILT AGAIN: over a seeded
     /// log where run 1 integrated criterion A and left criterion B failed, run 2 plans `u-a` for A
-    /// and `u-b` for B, `u-b` needing `u-a`. Per `row`, `u-a` either reaches Integrated with no
-    /// spawn - recorded once, with the no-artifact marker, naming run 1's `u-a-1` - or takes the
-    /// full lifecycle; `u-b` always spawns and integrates.
+    /// and `u-b` for B, `u-b` needing `u-a`, in a repository whose checked-out branch is the run
+    /// branch. Per `row`, `u-a` either reaches Integrated with no spawn - recorded once, with the
+    /// no-artifact marker, naming the earlier unit and run 1's commit - or takes the full
+    /// lifecycle; `u-b` always spawns and integrates.
     fn assert_landed_criterion(row: LandedRow) {
         let crit_a = "criterion A: the metrics module is implemented";
         let crit_b = "criterion B: the stats endpoint is implemented";
@@ -18479,10 +18497,37 @@ mod tests {
                     .unwrap(),
             )
         };
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        git_ok(
+            &repo_path,
+            &["commit", "--allow-empty", "-q", "-m", "run 1 integrates A"],
+        );
+        let run1_commit = match row.run1_commit {
+            Run1Commit::OnBranch => git_out(&repo_path, &["rev-parse", "HEAD"]),
+            Run1Commit::OffBranch => git_out(
+                &repo_path,
+                &[
+                    "commit-tree",
+                    "HEAD^{tree}",
+                    "-p",
+                    "HEAD",
+                    "-m",
+                    "off the run branch",
+                ],
+            ),
+            Run1Commit::Marker => REVIEW_ONLY_NO_ARTIFACT.to_string(),
+        };
+        let integrate = |data: Value| {
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&data).unwrap(),
+            )
+        };
         let mut log = vec![
             run_started("run-1", row.run1_spec),
             started_with_criterion("u-a-1", &cid_a),
-            integrated("u-a-1"),
+            integrate(json!({"id": "u-a-1", "commit": run1_commit})),
         ];
         if row.compensated {
             log.push(compensated("u-a-1"));
@@ -18496,8 +18541,31 @@ mod tests {
         log.extend([
             started_with_criterion("u-b-1", &cid_b),
             plain_failure("u-b-1", 1),
-            run_started("run-2", LANDED_SPEC),
         ]);
+        if row.relanded {
+            log.extend([
+                run_started("run-2", LANDED_SPEC),
+                started_with_criterion("u-a", &cid_a),
+                integrate(json!({
+                    "id": "u-a",
+                    "commit": REVIEW_ONLY_NO_ARTIFACT,
+                    "landed_from": {
+                        "unit": "u-a-1",
+                        "run": "run-1",
+                        "spec": LANDED_SPEC,
+                        "commit": run1_commit,
+                    },
+                })),
+                started_with_criterion("u-b", &cid_b),
+                plain_failure("u-b", 1),
+            ]);
+        }
+        let (current, from) = if row.relanded {
+            ("run-3", ("u-a", "run-2"))
+        } else {
+            ("run-2", ("u-a-1", "run-1"))
+        };
+        log.push(run_started(current, LANDED_SPEC));
         let st = Store::open(":memory:").unwrap();
         st.append(STREAM, ExpectedRevision::Any, &log).unwrap();
 
@@ -18525,7 +18593,11 @@ mod tests {
                     park_spawn_ids: park.into_iter().cloned().collect(),
                     ..Stub::new()
                 };
-                let rs = run_isolated(&cfg, &stub_deps(&st, &driver, criteria.clone())).unwrap();
+                let deps = Deps {
+                    repo: repo_path.clone(),
+                    ..stub_deps(&st, &driver, criteria.clone())
+                };
+                let rs = run_isolated(&cfg, &deps).unwrap();
                 (rs, driver.spawn_ids())
             })
             .collect();
@@ -18557,8 +18629,13 @@ mod tests {
         let landed_from = &integrates[0]["landed_from"];
         if row.lands {
             assert_eq!(integrates[0]["commit"], REVIEW_ONLY_NO_ARTIFACT);
-            assert_eq!(landed_from["unit"], "u-a-1", "names run 1's unit");
-            assert_eq!(landed_from["run"], "run-1", "names run 1");
+            assert_eq!(landed_from["unit"], from.0, "names the earlier unit");
+            assert_eq!(landed_from["run"], from.1, "names the earlier run");
+            assert_eq!(
+                landed_from["commit"],
+                run1_commit.as_str(),
+                "carries run 1's commit"
+            );
         } else {
             assert!(
                 landed_from.is_null(),
@@ -18588,6 +18665,26 @@ mod tests {
         /// A resumed step of run 2 agrees with its first: A lands once and never spawns.
         a_resumed_step_of_the_new_run_never_spawns_the_landed_criterion:
             assert_landed_criterion(LandedRow { resumed: true, ..LANDS });
+        /// Run 1's integrate commit is not in the run branch's history (the branch was reset
+        /// since): the log alone never lands A, so it is built again.
+        a_criterion_whose_earlier_commit_is_off_the_run_branch_is_built_again:
+            assert_landed_criterion(LandedRow {
+                run1_commit: Run1Commit::OffBranch,
+                lands: false,
+                ..LANDS
+            });
+        /// A run 3 over a run 2 that landed A through the skip lands A again, its `landed_from`
+        /// naming run 2's unit and carrying run 1's commit.
+        a_third_run_lands_the_criterion_again_on_the_first_runs_commit:
+            assert_landed_criterion(LandedRow { relanded: true, ..LANDS });
+        /// Run 1's integrate records the no-artifact marker with no earlier commit behind it:
+        /// with nothing to check on the run branch, A is built again.
+        an_earlier_integrate_with_no_commit_to_check_is_built_again:
+            assert_landed_criterion(LandedRow {
+                run1_commit: Run1Commit::Marker,
+                lands: false,
+                ..LANDS
+            });
     }
 
     /// Two planner proposals for `criterion` - `u-ep1` from an earlier episode, then `u-ep2` from
