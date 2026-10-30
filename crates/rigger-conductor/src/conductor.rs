@@ -14674,6 +14674,7 @@ mod tests {
     use crate::test_support::git_out;
     use crate::test_support::has_status_marker as has_status;
     use crate::test_support::one_gated_stage_cfg;
+    use crate::test_support::repo_review_panel;
     use crate::test_support::run_git;
     use crate::test_support::run_isolated;
     use crate::test_support::temp_git_project_with_commit;
@@ -34131,16 +34132,6 @@ mod tests {
             "run_fan_out_review_loop's adjudicator spawn must carry the lens roster plus \
              the adversary token"
         );
-    }
-
-    /// The panel this repository's `.rigger/workflow.yml` declares for its implement stage.
-    fn repo_review_panel() -> crate::config::ReviewPanel {
-        crate::config::ReviewPanel {
-            lenses: vec!["architecture-reviewer".into(), "sdet".into()],
-            adversary: "adversary".into(),
-            adjudicator: "adjudicator".into(),
-            tiers: None,
-        }
     }
 
     /// Run unit `s`, implemented by `worker` and reviewed by `review`, through the per-unit
