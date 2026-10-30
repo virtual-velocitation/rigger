@@ -16329,6 +16329,8 @@ mod tests {
         /// carries the unit's ACTUALLY-routed lens roster (plus the adversary, for the
         /// adjudicator), never a guessed or stale one.
         reviews_by_agent: Mutex<HashMap<String, Vec<String>>>,
+        /// The routed review roster of each spawn, by id, so two steps of one agent read apart.
+        reviews_by_spawn_id: Mutex<HashMap<String, Vec<String>>>,
         /// Every prompt each agent was spawned with, in order, keyed by agent id.
         /// Used to assert the cross-tier findings block (item 1) and the prior-failure
         /// block on a retry (items 3 + 5) reached the right agent's prompt.
@@ -16418,6 +16420,7 @@ mod tests {
                 system_prompt_by_agent: Mutex::new(HashMap::new()),
                 titles_by_agent: Mutex::new(HashMap::new()),
                 reviews_by_agent: Mutex::new(HashMap::new()),
+                reviews_by_spawn_id: Mutex::new(HashMap::new()),
                 prompts_by_agent: Mutex::new(HashMap::new()),
                 call_order: Mutex::new(Vec::new()),
                 targets_by_agent: Mutex::new(HashMap::new()),
@@ -16535,6 +16538,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(a.id.clone(), opts.reviews.clone());
+            self.reviews_by_spawn_id
+                .lock()
+                .unwrap()
+                .insert(opts.id.clone(), opts.reviews.clone());
             self.prompts_by_agent
                 .lock()
                 .unwrap()
@@ -31302,6 +31309,14 @@ mod tests {
 
     /// [`run_review_rounds`] over [`session_stub`] and [`session_cfg`].
     fn run_session_rounds(verdicts: &[(String, &str)]) -> (RunState, Vec<Event>, Stub) {
+        run_session_rounds_of(&session_cfg(), verdicts)
+    }
+
+    /// [`run_review_rounds`] over [`session_stub`] and `cfg`.
+    fn run_session_rounds_of(
+        cfg: &Config,
+        verdicts: &[(String, &str)],
+    ) -> (RunState, Vec<Event>, Stub) {
         let repo = temp_git_project_with_commit();
         let driver = session_stub(verdicts);
         let st = Store::open(":memory:").unwrap();
@@ -31309,7 +31324,7 @@ mod tests {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run_isolated(&session_cfg(), &deps).unwrap();
+        let rs = run_isolated(cfg, &deps).unwrap();
         let events = st
             .read_all(0, Direction::Forward, &Filter::default())
             .unwrap();
@@ -31423,6 +31438,248 @@ mod tests {
             implementer.contains(item) && implementer.contains("do not start over"),
             "the implementer is sent its prior-failure block:\n{implementer}"
         );
+    }
+
+    /// A list repeating the lens kind and the adversary kind, one agent in both adversary steps,
+    /// the adjudicator step last: every shape a step token tells apart.
+    fn repeated_kind_panel() -> config::ReviewPanel {
+        serde_json::from_value(json!({"steps": [
+            {"lenses": ["a", "b"]},
+            {"adversary": "x"},
+            {"lenses": ["c"]},
+            {"adversary": "x"},
+            {"adjudicator": "judge"},
+        ]}))
+        .expect("a list panel")
+    }
+
+    /// The reviewers of [`repeated_kind_panel`] short of its adjudicator.
+    const REPEATED_KIND_REVIEWERS: [&str; 4] = ["a", "b", "c", "x"];
+
+    /// A repo-less stage `s` of `worker` reviewed by `panel`, which names no agent but
+    /// [`REPEATED_KIND_REVIEWERS`] and `judge`: `on_pass: none` stops it short of integrate.
+    fn listed_panel_cfg(panel: config::ReviewPanel) -> Config {
+        let mut ids = vec!["worker", "judge"];
+        ids.extend(REPEATED_KIND_REVIEWERS);
+        workflow_cfg(
+            &ids,
+            &[],
+            vec![Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                on_pass: "none".into(),
+                review: panel,
+                ..Default::default()
+            }],
+        )
+    }
+
+    /// `driver` runs [`listed_panel_cfg`] of `panel`: the run's result and its log.
+    fn run_listed_panel(
+        panel: config::ReviewPanel,
+        driver: &Stub,
+    ) -> (Result<RunState, Error>, Vec<Event>) {
+        let store = Store::open(":memory:").unwrap();
+        let deps = stub_deps(&store, driver, Vec::new());
+        let run = run_isolated(&listed_panel_cfg(panel), &deps);
+        let events = store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        (run, events)
+    }
+
+    /// STEP ROLE TOKENS: each step of a list spawns under its own token, the second step of a
+    /// kind under `@2`, one step at a time, and each adversary and adjudicator step is handed the
+    /// tokens of every spawn before it while a lens step, whatever its index, is handed none.
+    #[test]
+    fn a_list_repeating_a_kind_spawns_each_step_under_its_token_with_its_roster() {
+        let driver = approving_panel_stub(&REPEATED_KIND_REVIEWERS);
+        let (run, _) = run_listed_panel(repeated_kind_panel(), &driver);
+        run.expect("the panel approves");
+
+        let mut ids = driver.spawn_ids();
+        ids[1..3].sort(); // The one step that runs concurrently: lenses a and b.
+        assert_eq!(
+            ids,
+            [
+                "s/implementer#0",
+                "s/lens:a#0",
+                "s/lens:b#0",
+                "s/adversary#0",
+                "s/lens:c@2#0",
+                "s/adversary@2#0",
+                "s/adjudicator#0",
+            ]
+        );
+        for (id, roster) in [
+            ("s/lens:a#0", vec![]),
+            ("s/lens:b#0", vec![]),
+            ("s/adversary#0", vec!["lens:a", "lens:b"]),
+            ("s/lens:c@2#0", vec![]),
+            (
+                "s/adversary@2#0",
+                vec!["lens:a", "lens:b", "adversary", "lens:c@2"],
+            ),
+            (
+                "s/adjudicator#0",
+                vec!["lens:a", "lens:b", "adversary", "lens:c@2", "adversary@2"],
+            ),
+        ] {
+            assert_eq!(
+                cached(&driver.reviews_by_spawn_id, id),
+                Some(roster.iter().map(|r| r.to_string()).collect()),
+                "{id}"
+            );
+        }
+    }
+
+    /// THE ROUND'S VERDICT: the adjudicator step's approve stamps `reviewed`, after every repeat
+    /// of a kind ran, and a list with no adjudicator step approves when its last step ends, with
+    /// no stamp.
+    #[test]
+    fn a_repeated_list_is_judged_by_its_adjudicator_step_and_stamped_only_by_one() {
+        let no_adjudicator_step: config::ReviewPanel = serde_json::from_value(json!({"steps": [
+            {"adversary": "x"},
+            {"adversary": "x"},
+        ]}))
+        .expect("a list panel");
+        for (panel, last_spawn, stamped) in [
+            (repeated_kind_panel(), "s/adjudicator#0", true),
+            (no_adjudicator_step, "s/adversary@2#0", false),
+        ] {
+            let driver = approving_panel_stub(&REPEATED_KIND_REVIEWERS);
+            let (run, events) = run_listed_panel(panel, &driver);
+            run.expect("the panel approves");
+            assert_eq!(driver.spawn_ids().last().unwrap(), last_spawn);
+            assert_eq!(has_status(&events, "reviewed"), stamped, "{last_spawn}");
+        }
+    }
+
+    /// `repeated_kind_panel` as the panel of [`session_cfg`], every agent of it declared.
+    fn repeated_kind_session_cfg() -> Config {
+        let mut cfg = session_cfg();
+        for id in REPEATED_KIND_REVIEWERS.into_iter().chain(["judge"]) {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.defaults.review = repeated_kind_panel();
+        cfg
+    }
+
+    /// The adjudicator step's reject is the round's, as at HEAD, and the next round resumes one
+    /// session per step token: one agent in two adversary steps holds two sessions, each
+    /// continued by its own token and never by the other's.
+    #[test]
+    fn a_rejected_list_runs_a_next_round_and_each_step_token_resumes_its_own_session() {
+        let (rs, _, driver) = run_session_rounds_of(
+            &repeated_kind_session_cfg(),
+            &[
+                (adjudicator_at(0, 0), REJECT_FEATURE),
+                (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+            ],
+        );
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        for role in [
+            "lens:a",
+            "lens:b",
+            "adversary",
+            "lens:c@2",
+            "adversary@2",
+            ROLE_ADJUDICATOR,
+        ] {
+            let first = spawn_id("implement", role, 0);
+            let (from, _) = driver.resume_of(&first).expect("round 0 spawns every step");
+            assert_eq!(from, "", "{first} starts a fresh session");
+            let (from, _) = driver
+                .resume_of(&spawn_id("implement", role, 1))
+                .expect("round 1 spawns every step");
+            assert_eq!(from, format!("sess-{first}"), "{role}");
+        }
+    }
+
+    /// The token is the step's label: the `by` a reviewer is told to write and the actor its
+    /// findings are recorded under are the token of the step, never the kind's first step's.
+    #[test]
+    fn a_step_token_is_the_by_of_its_protocol_and_the_actor_of_its_findings() {
+        let finding = |id: &str| {
+            let finding_type = contextgraph::TYPE_REVIEW_FINDING.to_string();
+            (finding_type, json!({"id": id}))
+        };
+        let driver = Stub {
+            emits_by_spawn_id: HashMap::from([
+                ("s/adversary#0".to_string(), vec![finding("one")]),
+                ("s/lens:c@2#0".to_string(), vec![finding("two")]),
+                ("s/adversary@2#0".to_string(), vec![finding("three")]),
+            ]),
+            ..approving_panel_stub(&REPEATED_KIND_REVIEWERS)
+        };
+        let (run, events) = run_listed_panel(repeated_kind_panel(), &driver);
+        run.expect("the panel approves");
+
+        for (agent_id, spawn, by) in [
+            ("x", 0, r#""by":"adversary""#),
+            ("x", 1, r#""by":"adversary@2""#),
+            ("c", 0, r#""by":"lens:c@2""#),
+        ] {
+            let prompts = driver.prompts_for(agent_id);
+            assert_eq!(
+                prompts[spawn].matches(r#""by":"#).count(),
+                prompts[spawn].matches(by).count(),
+                "every `by` {agent_id}'s spawn {spawn} is told to write is its token:\n{}",
+                prompts[spawn]
+            );
+            assert!(prompts[spawn].contains(by), "{agent_id} spawn {spawn}");
+        }
+        let mut actors: Vec<(String, &str)> = events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_REVIEW_FINDING)
+            .map(|e| {
+                let id = serde_json::from_slice::<Value>(&e.data).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                (id, e.meta[contextgraph::META_ACTOR].as_str())
+            })
+            .collect();
+        actors.sort();
+        assert_eq!(
+            actors,
+            [
+                ("one".to_string(), "adversary"),
+                ("three".to_string(), "adversary@2"),
+                ("two".to_string(), "lens:c@2"),
+            ]
+        );
+    }
+
+    /// A step of a repeated kind that only answers degenerately spawns its respawns under its
+    /// own token, and the halt keeps the kind's label while naming the step's retry id.
+    #[test]
+    fn a_degenerate_later_step_respawns_and_halts_under_its_token() {
+        let retries = [
+            "s/adversary@2#0",
+            "s/adversary@2#0~retry1",
+            "s/adversary@2#0~retry2",
+        ];
+        let driver = Stub {
+            output_by_spawn_id: retries
+                .iter()
+                .map(|id| (id.to_string(), " \n".to_string()))
+                .collect(),
+            ..approving_panel_stub(&REPEATED_KIND_REVIEWERS)
+        };
+        let (run, _) = run_listed_panel(repeated_kind_panel(), &driver);
+        let Err(Error(halt)) = run else {
+            panic!("an all-degenerate step halts the run");
+        };
+        assert!(
+            halt.starts_with(r#"stage "s" adversary "x" returned empty/whitespace-only output"#),
+            "the halt keeps the kind's label: {halt}"
+        );
+        assert!(
+            halt.contains(r#"`rigger result "s/adversary@2#0~retry2" --supersede"#),
+            "the recovery names the step's own retry id: {halt}"
+        );
+        assert_eq!(driver.spawn_ids()[5..], retries);
     }
 
     /// A RESUMED review tier judges a new commit too: its later-round task carries the gate

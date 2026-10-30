@@ -14,7 +14,7 @@ use crate::eventstore::{Error as StoreError, Event, EventStore, Position, TypeSe
 use crate::ledger;
 use crate::playbooks::fnv1a_64;
 use crate::spawn::{
-    attempt_of, bare_review_role, requests, result_of, spawn_id, Adjudication, ReviewKind,
+    attempt_of, requests, result_of, review_step_role, spawn_id, Adjudication, ReviewKind,
     SpawnEvent, SpawnResult, ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT,
 };
 
@@ -281,6 +281,12 @@ pub fn step_roster(
     roster
 }
 
+/// The 1-based ordinal of `steps[index]` among the steps of its kind: stub until the green
+/// commit.
+pub fn step_ordinal(_steps: &[ReviewStep], _index: usize) -> u32 {
+    1
+}
+
 /// The adversary's routed review roster: the [`step_roster`] of an adversary step after a lens
 /// step of `lenses`, so each lens agent's [`lens_role`](crate::spawn::lens_role) token, the one
 /// a `ReviewFinding.by` already carries. It is [`adjudicator_roster`] with no adversary.
@@ -288,7 +294,7 @@ pub fn review_roster(lenses: &[String]) -> Vec<String> {
     adjudicator_roster(lenses, "")
 }
 
-/// The adjudicator's routed review roster: the [`step_roster`], minted by [`bare_review_role`],
+/// The adjudicator's routed review roster: the [`step_roster`], minted by [`review_step_role`],
 /// of an adjudicator step after a lens step of `lenses` and an adversary step when
 /// `adversary_id` is set, so [`review_roster`]'s lens roster plus [`ROLE_ADVERSARY`] only when
 /// an adversary ran - never a fabricated entry for a panel with no adversary (e.g. a reduced
@@ -300,7 +306,7 @@ pub fn adjudicator_roster(lenses: &[String], adversary_id: &str) -> Vec<String> 
         ..Default::default()
     }
     .steps();
-    step_roster(&steps, steps.len(), bare_review_role)
+    step_roster(&steps, steps.len(), review_step_role)
 }
 
 /// The plan-critique rules both critique prompts read (spec 112): the Rule 7 and Rule 8 bullets
@@ -1556,24 +1562,24 @@ mod tests {
         let one_step: &[ReviewStep] = &[z()];
         let five: &[ReviewStep] = &[lens_step(&["a", "b"]), x(), lens_step(&["c"]), x(), z()];
         let lens_twice: &[ReviewStep] = &[lens_step(&["a"]), lens_step(&["a"]), z()];
-        let bare: fn(ReviewKind, &str, u32) -> String = bare_review_role;
+        let token: fn(ReviewKind, &str, u32) -> String = review_step_role;
         let ordinal: fn(ReviewKind, &str, u32) -> String = ordinal_mint;
         let rows = [
-            (canonical, 0, bare, vec![]),
-            (canonical, 1, bare, vec!["lens:a", "lens:b"]),
-            (canonical, 2, bare, vec!["lens:a", "lens:b", "adversary"]),
+            (canonical, 0, token, vec![]),
+            (canonical, 1, token, vec!["lens:a", "lens:b"]),
+            (canonical, 2, token, vec!["lens:a", "lens:b", "adversary"]),
             // One past the last step: the roster a step appended after them would carry.
             (
                 canonical,
                 3,
-                bare,
+                token,
                 vec!["lens:a", "lens:b", "adversary", "adjudicator"],
             ),
             // The DROPPED adversary: the adjudicator's roster names the lenses alone.
-            (dropped, 1, bare, vec!["lens:a", "lens:b"]),
-            (no_lenses, 0, bare, vec![]),
-            (no_lenses, 1, bare, vec!["adversary"]),
-            (one_step, 0, bare, vec![]),
+            (dropped, 1, token, vec!["lens:a", "lens:b"]),
+            (no_lenses, 0, token, vec![]),
+            (no_lenses, 1, token, vec!["adversary"]),
+            (one_step, 0, token, vec![]),
             (five, 0, ordinal, vec![]),
             (five, 1, ordinal, vec!["Lens:a:1", "Lens:b:1"]),
             // A lens step after the adversary still carries no roster.
@@ -1611,8 +1617,28 @@ mod tests {
             ),
             // A lens agent in two lens steps is rostered once per step, under each step's token.
             (lens_twice, 2, ordinal, vec!["Lens:a:1", "Lens:a:2"]),
-            (lens_twice, 2, bare, vec!["lens:a", "lens:a"]),
+            (lens_twice, 2, token, vec!["lens:a", "lens:a@2"]),
             (lens_twice, 1, ordinal, vec![]),
+            // Each token of a repeated kind, the second adversary agent the first's.
+            (
+                five,
+                3,
+                token,
+                vec!["lens:a", "lens:b", "adversary", "lens:c@2"],
+            ),
+            (
+                five,
+                5,
+                token,
+                vec![
+                    "lens:a",
+                    "lens:b",
+                    "adversary",
+                    "lens:c@2",
+                    "adversary@2",
+                    "adjudicator",
+                ],
+            ),
         ];
         for (steps, index, mint, roster) in rows {
             assert_eq!(
@@ -1623,10 +1649,27 @@ mod tests {
         }
     }
 
+    /// A step's ordinal counts the steps of its own kind up to and including it, a pure function
+    /// of the sequence and the index: the other kinds between two steps of a kind add nothing.
+    #[test]
+    fn a_step_ordinal_counts_the_steps_of_its_kind_up_to_it() {
+        let x = || ReviewStep::Adversary("x".into());
+        let z = || ReviewStep::Adjudicator("z".into());
+        let five = [lens_step(&["a", "b"]), x(), lens_step(&["c"]), x(), z()];
+        for (index, ordinal) in [(0, 1), (1, 1), (2, 2), (3, 2), (4, 1)] {
+            assert_eq!(step_ordinal(&five, index), ordinal, "step {index}");
+        }
+        let three = [lens_step(&["a"]), lens_step(&["a"]), lens_step(&["b"])];
+        for (index, ordinal) in [(0, 1), (1, 2), (2, 3)] {
+            assert_eq!(step_ordinal(&three, index), ordinal, "step {index}");
+        }
+        assert_eq!(step_ordinal(&[z()], 0), 1, "a lone adjudicator step");
+    }
+
     #[test]
     fn the_review_and_adjudicator_rosters_are_the_canonical_sequences_step_rosters() {
         // (lenses, adversary, review_roster, adjudicator_roster): the rows the step-roster
-        // table above pins for the same canonical sequences under the bare minter.
+        // table above pins for the same canonical sequences under the real minter.
         let ab: Vec<String> = vec!["a".into(), "b".into()];
         for (lenses, adversary, review, adjudicator) in [
             (

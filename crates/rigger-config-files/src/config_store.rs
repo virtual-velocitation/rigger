@@ -375,9 +375,9 @@ mod tests {
     use crate::test_support::agent_with_prompt;
     use crate::test_support::instructions_dir;
     use crate::test_support::{
-        adversary_first_steps, cfg_for, lenses, light_of, panel_rule_refusals, separator_refusal,
-        PanelRead, ADVERSARY_FIRST_LIST, EMIT_ONLY, LIGHT_PANEL_FORMS, NO_FULL_ADJUDICATOR_STEP,
-        NO_LIGHT_ADJUDICATOR_STEP, PANEL_AGENTS, PANEL_SCOPES,
+        adversary_first_steps, cfg_for, lenses, light_of, panel_rule_refusals, repeated_kind_lists,
+        separator_refusal, PanelRead, ADVERSARY_FIRST_LIST, EMIT_ONLY, LIGHT_PANEL_FORMS,
+        NO_FULL_ADJUDICATOR_STEP, NO_LIGHT_ADJUDICATOR_STEP, PANEL_AGENTS, PANEL_SCOPES,
     };
 
     // ---- instruction injection: the operator layer loader ----
@@ -2070,6 +2070,15 @@ agent: worker\n";
         );
         /// The empty list is the panel of no steps.
         validate_accepts_an_empty_list: assert_accepted_in(&PANEL_SCOPES[..2], "{ steps: [] }", &[]);
+    }
+
+    /// A list may name any kind but the adjudicator more than once, in every scope: each step
+    /// runs under its own token.
+    #[test]
+    fn validate_accepts_a_list_repeating_a_step_kind() {
+        for (panel, steps) in repeated_kind_lists() {
+            assert_accepted_in(&PANEL_SCOPES, panel, &steps);
+        }
     }
 
     /// Each panel rule refuses its panels with its exact message in every scope the rule applies

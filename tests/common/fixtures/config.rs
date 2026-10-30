@@ -115,6 +115,48 @@ pub fn light_of(panel: &ReviewPanel) -> &ReviewPanel {
     &panel.depth().expect("the scope declares tiers").light
 }
 
+/// A list repeating the lens kind and the adversary kind, one agent in both adversary steps,
+/// declaring [`repeated_kind_steps`].
+pub const REPEATED_KIND_LIST: &str = "{ steps: [{ lenses: [a, b] }, { adversary: x }, \
+     { lenses: [y] }, { adversary: x }, { adjudicator: z }] }";
+
+/// The steps of [`REPEATED_KIND_LIST`], in its order.
+pub fn repeated_kind_steps() -> Vec<ReviewStep> {
+    vec![
+        lenses(&["a", "b"]),
+        ReviewStep::Adversary("x".into()),
+        lenses(&["y"]),
+        ReviewStep::Adversary("x".into()),
+        ReviewStep::Adjudicator("z".into()),
+    ]
+}
+
+/// Every list naming two steps of one kind, each with the steps it declares. Each step runs
+/// under its own token, so a kind repeats freely: only the adjudicator step is one at most.
+pub fn repeated_kind_lists() -> [(&'static str, Vec<ReviewStep>); 4] {
+    let adjudicator = || ReviewStep::Adjudicator("z".into());
+    [
+        (
+            "{ steps: [{ lenses: [a] }, { lenses: [b] }, { adjudicator: z }] }",
+            vec![lenses(&["a"]), lenses(&["b"]), adjudicator()],
+        ),
+        (
+            "{ steps: [{ lenses: [a] }, { lenses: [a] }, { adjudicator: z }] }",
+            vec![lenses(&["a"]), lenses(&["a"]), adjudicator()],
+        ),
+        (
+            "{ steps: [{ adversary: x }, { lenses: [a] }, { adversary: y }, { adjudicator: z }] }",
+            vec![
+                ReviewStep::Adversary("x".into()),
+                lenses(&["a"]),
+                ReviewStep::Adversary("y".into()),
+                adjudicator(),
+            ],
+        ),
+        (REPEATED_KIND_LIST, repeated_kind_steps()),
+    ]
+}
+
 /// A list running the adversary ahead of the lenses, declaring [`adversary_first_steps`].
 pub const ADVERSARY_FIRST_LIST: &str =
     "{ steps: [{ adversary: x }, { lenses: [a] }, { adjudicator: z }] }";
@@ -258,9 +300,8 @@ fn panel_separator_refusals() -> Vec<(&'static str, String)> {
 }
 
 /// The panels with a second adjudicator step or a step after the adjudicator, each with its
-/// refusal after the name of the scope. A panel has at most one adjudicator step, last: a second
-/// adjudicator is refused at its own index ahead of the repeated-kind refusal, so this refusal
-/// outlives that one.
+/// refusal after the name of the scope. A panel has at most one adjudicator step, last, the one
+/// kind no list repeats.
 fn adjudicator_placement_refusals() -> Vec<(&'static str, String)> {
     let second =
         |i: usize| format!("steps[{i}] is a second adjudicator step: a panel has at most one");
@@ -290,24 +331,6 @@ fn adjudicator_placement_refusals() -> Vec<(&'static str, String)> {
         (
             "{ steps: [{ lenses: [a] }, { adjudicator: z }, { adversary: x }] }",
             followed(1),
-        ),
-    ]
-}
-
-/// The lists naming two steps of one kind, each with its refusal at the repeat after the name
-/// of the scope, until the runner can tell two steps of one kind apart.
-fn repeated_step_kind_refusals() -> Vec<(&'static str, String)> {
-    let repeats = |i: usize, kind: &str| {
-        format!("steps[{i}] repeats the {kind} step kind: a list names one step of each kind")
-    };
-    vec![
-        (
-            "{ steps: [{ lenses: [a] }, { lenses: [b] }, { adjudicator: z }] }",
-            repeats(1, "lenses"),
-        ),
-        (
-            "{ steps: [{ adversary: x }, { lenses: [a] }, { adversary: y }] }",
-            repeats(2, "adversary"),
         ),
     ]
 }
@@ -392,7 +415,6 @@ pub fn panel_rule_refusals() -> Vec<(String, String)> {
         lens_named_twice_refusals(),
         panel_separator_refusals(),
         adjudicator_placement_refusals(),
-        repeated_step_kind_refusals(),
     ]
     .concat();
     let mut rows = tier_adjudicator_refusals();

@@ -1,1 +1,40 @@
-[]
+[
+  {
+    "name": "step_ordinal",
+    "file": "crates/rigger-domain/src/review.rs",
+    "content_hash": "d5452f12ac79f503",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-domain/src/review.rs",
+        "content_hash": "5e2af9eb30571daf"
+      },
+      {
+        "file": "crates/rigger-domain/src/review.rs",
+        "content_hash": "5e2af9eb30571daf"
+      },
+      {
+        "file": "crates/rigger-domain/src/review.rs",
+        "content_hash": "dfc332024a0425ce"
+      }
+    ]
+  },
+  {
+    "name": "review_step_of",
+    "file": "crates/rigger-domain/src/spawn.rs",
+    "content_hash": "3bfa9c184ef9d244",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-domain/src/spawn.rs",
+        "content_hash": "861ff64775d4d586"
+      },
+      {
+        "file": "crates/rigger-domain/src/spawn.rs",
+        "content_hash": "5955a7eb1ffc1046"
+      }
+    ]
+  }
+]

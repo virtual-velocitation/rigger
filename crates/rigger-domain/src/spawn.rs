@@ -87,6 +87,16 @@ pub fn unit_scratch_slug(name: &str) -> Option<&str> {
 /// stepwise driver needs. It is deliberately NOT one of the run-lifecycle events the
 /// ledger folds, so an unknown-event-ignoring projection (the ledger, the context
 /// graph) skips it and only [`recorded`] and the replay driver read it.
+/// The role token of `agent` in the `k`-th step of `kind`: stub until the green commit.
+pub fn review_step_role(kind: ReviewKind, agent: &str, k: u32) -> String {
+    bare_review_role(kind, agent, k)
+}
+
+/// The kind and the step ordinal a review role token spells: stub until the green commit.
+pub fn review_step_of(_role: &str) -> Option<(ReviewKind, u32)> {
+    None
+}
+
 pub const TYPE_SPAWN_REQUESTED: &str = "SpawnRequested";
 
 /// The role token for the unit's implementer (the stage's own `agent`).
@@ -1238,6 +1248,110 @@ mod tests {
             ),
             ("spec-ambiguity", true, false, false, false, false)
         );
+    }
+
+    /// STEP ROLE TOKENS (spec 120): a step spells its kind's token, and from the second step of
+    /// that kind `@<k>` after it, while the adjudicator, one step at most, never spells `@k`.
+    #[test]
+    fn a_review_step_role_spells_its_kinds_token_and_an_ordinal_from_the_second_step() {
+        for (kind, agent, k, token) in [
+            (ReviewKind::Lens, "c", 1, "lens:c"),
+            (ReviewKind::Lens, "c", 2, "lens:c@2"),
+            (ReviewKind::Lens, "c", 10, "lens:c@10"),
+            (ReviewKind::Adversary, "x", 1, "adversary"),
+            (ReviewKind::Adversary, "x", 2, "adversary@2"),
+            (ReviewKind::Adversary, "x", 3, "adversary@3"),
+            (ReviewKind::Adjudicator, "z", 1, "adjudicator"),
+            (ReviewKind::Adjudicator, "z", 2, "adjudicator"),
+        ] {
+            assert_eq!(review_step_role(kind, agent, k), token, "{kind:?} {k}");
+        }
+    }
+
+    /// The one parser of a review token: a bare token is step 1, the suffix is `@` and an ASCII
+    /// decimal of at least 2 that fits a `u32`, with no leading zero and no sign, and `@k` exists
+    /// for the lens and adversary kinds only.
+    #[test]
+    fn review_step_of_reads_each_token_and_refuses_every_other_spelling() {
+        use ReviewKind::{Adjudicator, Adversary, Lens};
+        for (role, read) in [
+            ("lens:a", Some((Lens, 1))),
+            ("adversary", Some((Adversary, 1))),
+            ("adjudicator", Some((Adjudicator, 1))),
+            ("lens:", Some((Lens, 1))),
+            ("lens:c@2", Some((Lens, 2))),
+            ("adversary@2", Some((Adversary, 2))),
+            ("adversary@10", Some((Adversary, 10))),
+            ("adversary@4294967295", Some((Adversary, u32::MAX))),
+            ("adversary@4294967296", None),
+            ("lens:a@4294967296", None),
+            ("adversary@1", None),
+            ("adversary@0", None),
+            ("adversary@01", None),
+            ("adversary@+2", None),
+            ("adversary@-2", None),
+            ("adversary@", None),
+            ("adversary@x", None),
+            ("adversary@2x", None),
+            ("lens:a@1", None),
+            ("lens:a@01", None),
+            ("lens:a@x", None),
+            ("lens:a@2@3", None),
+            ("lens:a@@2", None),
+            ("adjudicator@2", None),
+            ("adjudicator@1", None),
+            ("implementer", None),
+            ("implementer@2", None),
+            ("sdet-author", None),
+            ("lensing", None),
+            ("@2", None),
+            ("", None),
+        ] {
+            assert_eq!(review_step_of(role), read, "{role:?}");
+        }
+    }
+
+    /// `review_step_of` is the inverse of `review_step_role` over `spawn_role`'s output, a
+    /// `~retry{n}` respawn suffix trimmed: a token survives the spawn id it rides.
+    #[test]
+    fn a_minted_review_token_reads_back_through_its_spawn_id() {
+        for (kind, k) in [
+            (ReviewKind::Lens, 1),
+            (ReviewKind::Lens, 2),
+            (ReviewKind::Lens, u32::MAX),
+            (ReviewKind::Adversary, 1),
+            (ReviewKind::Adversary, 2),
+            (ReviewKind::Adversary, u32::MAX),
+            (ReviewKind::Adjudicator, 1),
+        ] {
+            let role = review_step_role(kind, "agent", k);
+            for id in [spawn_id("u", &role, 3), spawn_retry_id("u", &role, 3, 2)] {
+                assert_eq!(spawn_role(&id), role, "{id}");
+                assert_eq!(review_step_of(spawn_role(&id)), Some((kind, k)), "{id}");
+            }
+        }
+    }
+
+    /// Only the adjudicator's token carries a gating verdict: a retry of it still does, and no
+    /// other token reads as one, an `adjudicator@k` no minter spells included.
+    #[test]
+    fn is_adjudicator_reads_the_token_of_the_spawn_id() {
+        for (id, adjudicator) in [
+            ("u/adjudicator#0", true),
+            ("u/adjudicator#0~retry2", true),
+            ("u/adjudicator@2#0", false),
+            ("u/adversary#0", false),
+            ("u/adversary@2#0", false),
+            ("u/lens:adjudicator#0", false),
+            ("u/lens:a@2#0", false),
+            ("u/implementer#0", false),
+        ] {
+            assert_eq!(
+                SpawnResult::ok(id, "").is_adjudicator(),
+                adjudicator,
+                "{id}"
+            );
+        }
     }
 
     #[test]

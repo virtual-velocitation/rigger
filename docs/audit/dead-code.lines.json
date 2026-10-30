@@ -1,1 +1,36 @@
-[]
+[
+  {
+    "file": "crates/rigger-domain/src/review.rs",
+    "name": "step_ordinal",
+    "line": 286,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-domain/src/review.rs",
+        "line": 1660
+      },
+      {
+        "file": "crates/rigger-domain/src/review.rs",
+        "line": 1664
+      },
+      {
+        "file": "crates/rigger-domain/src/review.rs",
+        "line": 1666
+      }
+    ]
+  },
+  {
+    "file": "crates/rigger-domain/src/spawn.rs",
+    "name": "review_step_of",
+    "line": 96,
+    "test_only_references": [
+      {
+        "file": "crates/rigger-domain/src/spawn.rs",
+        "line": 1310
+      },
+      {
+        "file": "crates/rigger-domain/src/spawn.rs",
+        "line": 1330
+      }
+    ]
+  }
+]

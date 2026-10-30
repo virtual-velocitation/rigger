@@ -1,5 +1,5 @@
-//! Spec 120, criteria 6 (THE MAP FORM IS THE CANONICAL SEQUENCE) and 7 (THE LIST FORM DECLARES
-//! ANY SEQUENCE), from outside the conductor.
+//! Spec 120, criteria 6 (THE MAP FORM IS THE CANONICAL SEQUENCE), 7 (THE LIST FORM DECLARES ANY
+//! SEQUENCE) and 8 (A LIST-FORM SEQUENCE RUNS), from outside the conductor.
 //!
 //! The conductor's own tests pin `ReviewPanel::steps` over hand-built panels and pin the
 //! review identity surface over a recording driver. Four facts sit past their reach: the
@@ -15,6 +15,9 @@
 //! advisory, the graph's review edges and the agents `rigger init` scaffolds, each driven here
 //! off a real workflow file, and the workflows `rigger init` renders, which keep loading as the
 //! canonical sequence.
+//!
+//! Past those sits a list running: the compiled `rigger step` walks one repeating a kind, a fresh
+//! process per step, each step printed under its own token with the roster of every earlier one.
 
 mod common;
 
@@ -26,11 +29,11 @@ use common::cli::{
 use common::cli::{edge_lines, run_around};
 use common::fixtures::{
     adversary_first_steps, agent, count_status_marker, lenses, light_of, panel_of,
-    panel_rule_refusals, repo_review_panel, separator_refusal, speculation_regen_door_cfg,
-    WriteAndApprove, ADVERSARY_FIRST_LIST, EMIT_ONLY, LIGHT_PANEL_FORMS, PANEL_AGENTS,
-    PANEL_SCOPES,
+    panel_rule_refusals, repeated_kind_lists, repo_review_panel, separator_refusal,
+    speculation_regen_door_cfg, WriteAndApprove, ADVERSARY_FIRST_LIST, EMIT_ONLY,
+    LIGHT_PANEL_FORMS, PANEL_AGENTS, PANEL_SCOPES, REPEATED_KIND_LIST,
 };
-use common::git::temp_git_project_with_commit;
+use common::git::{commit_files, temp_git_project_with_commit};
 use common::repo::repo_root;
 use rigger::conductor::{run, Deps, STREAM};
 use rigger::config::ReviewStep::{self, Adjudicator, Adversary};
@@ -351,6 +354,95 @@ fn rigger_validate_accepts_a_list_in_every_scope_and_it_loads_as_declared() {
         );
         assert_eq!(read(&workflow).steps(), adversary_first_steps(), "{scope}");
     }
+}
+
+/// Given a list naming a kind twice, in each scope a panel is declared in, when the operator
+/// validates it, it passes and the workflow loads that very sequence.
+#[test]
+fn rigger_validate_accepts_a_list_repeating_a_step_kind_and_it_loads_as_declared() {
+    let project = temp_project();
+    for (panel, steps) in repeated_kind_lists() {
+        for (scope, template, read) in PANEL_SCOPES {
+            write_panel_project(project.path(), &declaring(template, panel));
+            run_rigger_ok(project.path(), &["validate"]);
+            let workflow = loaded_config(project.path()).workflow;
+            assert_eq!(read(&workflow).steps(), steps, "{scope}: {panel}");
+        }
+    }
+}
+
+/// One `rigger step` run in `root`: the wave it prints, each spawn's id with the roster its item
+/// carries, in id order since a lens step's spawns race, and whether it printed the run done.
+fn printed_step(root: &Path) -> (Vec<(String, Vec<String>)>, bool) {
+    let out = run_rigger_ok(root, &["step"]);
+    let step: serde_json::Value = serde_json::from_str(&out).expect("the step prints json");
+    let mut wave: Vec<(String, Vec<String>)> = step["wave"]
+        .as_array()
+        .expect("the step prints a wave")
+        .iter()
+        .map(|item| {
+            let roster = item["reviews"].as_array().map_or(Vec::new(), |roster| {
+                let tokens = roster
+                    .iter()
+                    .map(|token| token.as_str().unwrap().to_string());
+                tokens.collect()
+            });
+            (item["id"].as_str().unwrap().to_string(), roster)
+        })
+        .collect();
+    wave.sort();
+    (wave, step["done"] == serde_json::json!(true))
+}
+
+/// Given a list repeating the lens and adversary kinds, when the operator drives it through
+/// `rigger step`, a process per step answered by `rigger result`, then each step parks under its
+/// own token with the roster of every earlier spawn, and the adjudicator's approve ends the run.
+#[test]
+fn rigger_step_walks_a_list_repeating_a_kind_under_each_steps_token_and_roster() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_panel_project(
+        root,
+        &format!(
+            "defaults:\n  grounder: nop\n  budget: 60\ngates:\n  ok: {{ run: \"true\", kind: \
+             core }}\nstages:\n  s:\n    agent: a\n    gates: [ok]\n    on_pass: none\n    \
+             review: {REPEATED_KIND_LIST}\n"
+        ),
+    );
+
+    let (wave, done) = printed_step(root);
+    assert_eq!(wave, [("s/implementer#0".to_string(), vec![])]);
+    assert!(!done);
+    let worktree = common::default_scratch_root(root).join("rigger-wt-s");
+    commit_files(&worktree, &[("work.rs", "pub fn work() {}\n")], "wip");
+    run_rigger_ok(root, &["result", "s/implementer#0", "implemented the unit"]);
+
+    let no_blocker = "reviewed: no blocker";
+    for (ids, roster, answer) in [
+        (&["s/lens:a#0", "s/lens:b#0"][..], &[][..], no_blocker),
+        (&["s/adversary#0"], &["lens:a", "lens:b"], no_blocker),
+        (&["s/lens:y@2#0"], &[], no_blocker),
+        (
+            &["s/adversary@2#0"],
+            &["lens:a", "lens:b", "adversary", "lens:y@2"],
+            no_blocker,
+        ),
+        (
+            &["s/adjudicator#0"],
+            &["lens:a", "lens:b", "adversary", "lens:y@2", "adversary@2"],
+            r#"{"verdict":"approve"}"#,
+        ),
+    ] {
+        let (wave, done) = printed_step(root);
+        let roster: Vec<String> = roster.iter().map(|token| token.to_string()).collect();
+        let parked = ids.iter().map(|id| (id.to_string(), roster.clone()));
+        assert_eq!(wave, parked.collect::<Vec<_>>(), "{ids:?}");
+        assert!(!done, "{ids:?}");
+        for id in ids {
+            run_rigger_ok(root, &["result", id, answer]);
+        }
+    }
+    assert_eq!(printed_step(root), (vec![], true));
 }
 
 /// Given a full panel over a light panel in any pairing of the two forms, when the operator
