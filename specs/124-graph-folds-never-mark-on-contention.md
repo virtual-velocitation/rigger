@@ -155,11 +155,12 @@ One call:
 - reads, with no write transaction open, whether the file holds rebuild state, owes a rebuild for an
   older fold rule, or (until criterion 6) carries the mark (`owed_by_file` naming `OWED_LOST_FOLD`):
   any of them and the call does nothing (INERT, its outcome carrying the cause - rebuild state, an
-  older fold rule, the mark or no cursor - as a variant of its outcome type, no text); this read is
-  only the fast path that avoids taking the lock, and the transaction below re-reads rebuild state
-  and the older-rule debt under the lock, rolling back and returning INERT if either stands, and a
-  call that finds no `caught_up` under the lock rolls back and returns INERT with the cause variant
-  "no cursor";
+  older fold rule, the mark, a cursor recorded beside another log or none (A LOG SWITCHED UNDER A
+  STANDING GRAPH, CONSTRAINTS WALK) or no cursor - as a variant of its outcome type, no text); this
+  read is only the fast path that avoids taking the lock, and the transaction below re-reads rebuild
+  state, the older-rule debt and the cursor's log under the lock, rolling back and returning INERT
+  if any stands, and a call that finds no `caught_up` under the lock rolls back and returns INERT
+  with the cause variant "no cursor";
 - reads one page past `caught_up` through `read_all_page` (at most `FOLD_BATCH` events, forwards,
   filtered to the project's stream prefix, then to the project stream), outside any transaction; an
   empty store page, and only that, is AT HEAD and opens no transaction, and a page the narrowing
@@ -600,8 +601,8 @@ folded only when every own position folded. The courier's not-folded line (`not_
 its batch, exactly as SKIPPED is: one busy-timeout interval with the connection mutex released, then
 another call, the fast-path read taking no lock, so the wait never contends with the tail; its first
 call after the drop folds from the cursor the drop set, its own entry from its batch through the
-own-entry arm. INERT on an older-rule debt or, until criterion 6, the
-mark returns at once, since only setup repairs those; INERT on rebuild state returns at once too, with
+own-entry arm. INERT on an older-rule debt, on a cursor recorded beside another log or none, or,
+until criterion 6, on the mark returns at once, since only setup repairs those; INERT on rebuild state returns at once too, with
 the INERT text and the call-run suffix, when the appender's own process holds that file's rebuild
 lock, since only that process's tail folds the event and it runs next, joining that arm. The tell is
 the `RebuildLock` `Projector::lock_rebuild` (`sqlite.rs:426`) returns: `migrate_local_identity`
@@ -662,12 +663,18 @@ IF NOT EXISTS`, so the upgrade bumps no fold rule.
   file folds, the store selection: its backend kind and locator, the embedded store's path or, for
   the server-backed store, a digest of its connection target (the registry's FNV-1a, stable across
   toolchains), never the connection string, which may carry credentials. The seeding and the
-  rebuild's shadow open and drop write it with the position. At every setup the seeding compares it
-  with the selected store's, reading no log row: a cursor recorded beside another log, or beside
-  none (a `caught_up` table that predates the column reads as none, never an error), is a prefix
-  violation, so the rebuild pays it from the selected log, its shadow seeding the cursor and the
-  identity anew; a standing shadow whose cursor was recorded beside another log, or beside none, is
-  not resumed but replaced by a fresh one. A hand-replaced `events.db` at the same path holding a
+  rebuild's shadow open and drop write it with the position. Both reads of the cursor compare it
+  with the selected store's through one comparison, reading no log row: the seeding at every setup,
+  and every catch-up call, at its first read and again at its cut's read under the write lock. A
+  cursor recorded beside another log, or beside none (a `caught_up` table that predates the column
+  reads as none, never an error), is a prefix violation at the seeding, so the rebuild pays it from
+  the selected log, its shadow seeding the cursor and the identity anew; a catch-up meeting it folds
+  nothing and is INERT on it, so the file is never folded forward from that cursor and an appender's
+  calls answer the lost fold's refusal (`REBUILD_OWED_FOR_LOST_FOLD`, naming `OWED_LOST_FOLD`) at
+  once, before their success test, which would read that log's prefix as the selected one's, until
+  the next setup's seeding pays the rebuild. A standing shadow
+  whose cursor was recorded beside another log, or beside none, is not resumed but replaced by a
+  fresh one. A hand-replaced `events.db` at the same path holding a
   longer foreign log is outside what setup can see, since its identity is that path, and no reset
   verb replaces `events.db` (`src/cli/hygiene.rs`).
 - Repeated fold of one position: `applied` makes it a no-op in every path; an appender whose own
