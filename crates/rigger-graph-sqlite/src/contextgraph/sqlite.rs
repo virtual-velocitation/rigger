@@ -2405,11 +2405,11 @@ fn fold_source(
 /// own payload the judge ([`super::check_fold_payload`] - deterministic, so no fold will ever hold
 /// it) rejects is passed over with the class [`PAYLOAD_REJECTED`]. An entry folds as
 /// [`Projection::apply_generation`] folds it ([`fold_entry`]), in its own transaction
-/// ([`fold_entry_alone`]), with the batch `reextract` answers for it before that transaction opens
-/// ([`extracted_batch`], spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION), so no extraction
-/// holds the write lock - with the batch `batches` names for it ([`EntryBatches`]), recording on
-/// an appender's own entry what became of its fold ([`OwnEntry::settle`]): one whose own payload
-/// the judge rejects is passed over with
+/// ([`fold_entry_alone`]), with the batch `reextract` answers for it when its fold asks one,
+/// before that transaction opens ([`extracted_batch`], spec 122, EXTRACTION OUTSIDE THE WRITE
+/// TRANSACTION), so no extraction holds the write lock - with the batch `batches` names for it
+/// ([`EntryBatches`]), recording on an appender's own entry what became of its fold
+/// ([`OwnEntry::settle`]): one whose own payload the judge rejects is passed over with
 /// [`PAYLOAD_REJECTED`], one whose re-extracted batch holds an event the judge rejects with
 /// [`FOLD_FAILED`], and one whose re-extraction resolves to nothing with [`RESOLVED_TO_NOTHING`]
 /// (CONTENT). Any other failure (ENVIRONMENT) - a re-extraction that fails, before the entry's
