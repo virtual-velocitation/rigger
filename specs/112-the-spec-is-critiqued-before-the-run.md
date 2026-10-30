@@ -25,7 +25,7 @@ Criterion 6 needs all five. The spec is launched on a tree carrying spec 101's t
 **THE CRITIC IS THE PLAN-CRITIQUE ADVERSARY, SPAWNED THROUGH THE HEADLESS HOST, decided here.**
 `rigger critique <spec>` resolves the persona the workflow names as the `adversary` of the
 plan-critique gate, the stage `wave::critique_gate_name` returns (this repository:
-`.rigger/agents/adversary.md`), falling back to `defaults.review.adversary`; that persona is the
+`.rigger/agents/adversary.md`), falling back to the first adversary step of `defaults.review`; that persona is the
 critic, and this lookup is one pure function. A workflow naming neither has no critic, a new run
 under it is not refused (A NEW RUN IS REFUSED), and there is no built-in critic. The critic lookup
 runs on every call, before any store or graph is opened or migrated (*The store* orders it): under a
