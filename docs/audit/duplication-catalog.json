@@ -306,7 +306,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-fe96e15d8fa3",
+    "id": "dup-40a2fbf5983e",
     "classification": "near",
     "sites": [
       {
@@ -360,6 +360,11 @@
         "content_hash": "5d23ae9ae3e76aee"
       },
       {
+        "file": "tests/common/fixtures/config.rs",
+        "name": "separator_refusal",
+        "content_hash": "7963312db697b9f4"
+      },
+      {
         "file": "tests/common/fixtures/plan_critique.rs",
         "name": "spec_defect_halt_text",
         "content_hash": "7963312db697b9f4"
@@ -380,7 +385,7 @@
         "content_hash": "5d23ae9ae3e76aee"
       }
     ],
-    "proposed_home": "a new shared module (sites span 10 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/review.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/common/fixtures/plan_critique.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
+    "proposed_home": "a new shared module (sites span 11 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/review.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/common/fixtures/config.rs, tests/common/fixtures/plan_critique.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

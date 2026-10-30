@@ -1743,7 +1743,7 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 
 ## 2. Duplication Catalog
 
-216 clusters (1481 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+216 clusters (1482 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
@@ -1837,9 +1837,9 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/postmerge_gate_error_cleanup_periphery.rs:59-61` `expected_postmerge_branch`
 - `tests/simplification_audit.rs:5656-5658` `sample_key`
 
-#### `dup-fe96e15d8fa3` (near, 14 sites)
+#### `dup-40a2fbf5983e` (near, 15 sites)
 
-Proposed home: `a new shared module (sites span 10 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/review.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/common/fixtures/plan_critique.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)`
+Proposed home: `a new shared module (sites span 11 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph/query.rs, crates/rigger-domain/src/review.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/common/fixtures/config.rs, tests/common/fixtures/plan_critique.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
@@ -1853,6 +1853,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:6661-6669` `declaration_sql`
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:73-75` `what`
+- `tests/common/fixtures/config.rs:382-384` `separator_refusal`
 - `tests/common/fixtures/plan_critique.rs:29-34` `spec_defect_halt_text`
 - `tests/compaction_generations_periphery.rs:5103-5108` `closed_unit_line`
 - `tests/new_run_critique_refusal_periphery.rs:138-140` `no_critic_line`
@@ -2105,20 +2106,20 @@ mandatory sweep: .rigger-path string literals - 602 site(s), collected mechanica
 - `crates/rigger-conductor/src/conductor.rs:19920-19920` `"the repo's own .rigger config must load"`
 - `crates/rigger-conductor/src/conductor.rs:41496-41496` `"{root}/.rigger/project.id"`
 - `crates/rigger-conductor/src/conductor.rs:41498-41498` `"{root}/.rigger/graph.db"`
-- `crates/rigger-config-files/src/config_store.rs:430-430` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:431-431` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:455-455` `"../../examples/demo/.rigger"`
-- `crates/rigger-config-files/src/config_store.rs:456-456` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:1515-1515` `".rigger/agents/sdet-author.md"`
-- `crates/rigger-config-files/src/config_store.rs:1516-1516` `"the shipped .rigger/agents/sdet-author.md must exist"`
-- `crates/rigger-config-files/src/config_store.rs:1543-1543` `".rigger/agents/sdet.md"`
-- `crates/rigger-config-files/src/config_store.rs:1544-1544` `"the shipped .rigger/agents/sdet.md must exist"`
-- `crates/rigger-config-files/src/config_store.rs:2431-2431` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:2432-2432` `"create .rigger dir"`
-- `crates/rigger-config-files/src/config_store.rs:2464-2464` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:2465-2465` `"create .rigger dir"`
-- `crates/rigger-config-files/src/config_store.rs:2486-2486` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:2487-2487` `"create .rigger dir"`
+- `crates/rigger-config-files/src/config_store.rs:434-434` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:435-435` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:459-459` `"../../examples/demo/.rigger"`
+- `crates/rigger-config-files/src/config_store.rs:460-460` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:1512-1512` `".rigger/agents/sdet-author.md"`
+- `crates/rigger-config-files/src/config_store.rs:1513-1513` `"the shipped .rigger/agents/sdet-author.md must exist"`
+- `crates/rigger-config-files/src/config_store.rs:1540-1540` `".rigger/agents/sdet.md"`
+- `crates/rigger-config-files/src/config_store.rs:1541-1541` `"the shipped .rigger/agents/sdet.md must exist"`
+- `crates/rigger-config-files/src/config_store.rs:2149-2149` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:2150-2150` `"create .rigger dir"`
+- `crates/rigger-config-files/src/config_store.rs:2182-2182` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:2183-2183` `"create .rigger dir"`
+- `crates/rigger-config-files/src/config_store.rs:2204-2204` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:2205-2205` `"create .rigger dir"`
 - `crates/rigger-dash/src/dash.rs:3935-3935` `"{root}/.rigger/events.db"`
 - `crates/rigger-dash/src/dash.rs:3986-3986` `"/.rigger/events.db"`
 - `crates/rigger-domain/src/config.rs:20-20` `".rigger"`
@@ -2956,7 +2957,7 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/common/cli.rs:1756-1756` `"create .rigger/agents"`
 - `tests/common/cli.rs:1869-1869` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
 - `tests/common/cli.rs:1966-1966` `".rigger"`
-- `tests/common/fixtures/config.rs:142-142` `"{repo_path}/.rigger-test-scratch"`
+- `tests/common/fixtures/config.rs:473-473` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/fixtures/extraction_tree.rs:76-76` `".rigger/workflow.yml"`
 - `tests/common/fixtures/instructions.rs:156-156` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
 - `tests/common/fixtures/instructions.rs:209-209` `"\n## communication (replaced by .rigger/instructions/communication.md)\n{printed}\n"`
@@ -3326,7 +3327,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-config-fi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-config-files/src/config_store.rs:753-786` `literal_is_emit_payload_binds_only_an_abutting_payload_or_emit_word`
+- `crates/rigger-config-files/src/config_store.rs:750-783` `literal_is_emit_payload_binds_only_an_abutting_payload_or_emit_word`
 - `src/cli/mod.rs:6704-6710` `is_uuid8_accepts_exactly_eight_hex_digits`
 - `tests/simplification_audit.rs:8452-8460` `looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring`
 
@@ -3336,8 +3337,8 @@ Proposed home: `config_store::support (consolidate these 2 sites into one functi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-config-files/src/config_store.rs:948-955` `parses_agent_frontmatter_and_body`
-- `crates/rigger-config-files/src/config_store.rs:1303-1312` `model_ladder_parses_from_frontmatter`
+- `crates/rigger-config-files/src/config_store.rs:945-952` `parses_agent_frontmatter_and_body`
+- `crates/rigger-config-files/src/config_store.rs:1300-1309` `model_ladder_parses_from_frontmatter`
 
 #### `dup-360e8b87398d` (exact, 4 sites)
 
@@ -3345,7 +3346,7 @@ Proposed home: `a new shared module (sites span 4 files: crates/rigger-config-fi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-config-files/src/config_store.rs:958-960` `rejects_missing_frontmatter`
+- `crates/rigger-config-files/src/config_store.rs:955-957` `rejects_missing_frontmatter`
 - `crates/rigger-domain/src/contextgraph/query.rs:2096-2098` `graph_load_rejects_malformed_json_without_panicking`
 - `crates/rigger-domain/src/spec.rs:1275-1277` `empty_when_no_criteria`
 - `src/cli/validate.rs:1325-1327` `dirty_tracked_paths_on_a_clean_tree_is_empty`
@@ -4062,7 +4063,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/driver/replay.rs:281-288` `sonnet_agent`
-- `tests/common/fixtures/config.rs:213-223` `fan_out_stage`
+- `tests/common/fixtures/config.rs:544-554` `fan_out_stage`
 - `tests/model_pinning_periphery.rs:62-69` `agent`
 
 #### `dup-7ce260b96af1` (near, 3 sites)
@@ -4091,7 +4092,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/driver/replay.rs:935-944` `stage`
-- `tests/common/fixtures/config.rs:32-38` `agent_with_prompt`
+- `tests/common/fixtures/config.rs:33-39` `agent_with_prompt`
 
 #### `dup-4cf25824ad00` (near, 2 sites)
 
@@ -5399,7 +5400,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10415 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10419 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:5134-5175` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15525-15547` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

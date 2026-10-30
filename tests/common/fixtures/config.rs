@@ -1,7 +1,8 @@
-//! Workflow-configuration fixtures: agents, review panels and gates, and the project
-//! directories a test creates, the operator instruction directory among them.
+//! Workflow-configuration fixtures: agents, review panels and gates, the scopes a panel is
+//! declared in with the refusals its rules give there, and the project directories a test
+//! creates, the operator instruction directory among them.
 
-use rigger::config::{AgentDef, Config, Gate, ReviewPanel, ReviewStep, Stage};
+use rigger::config::{AgentDef, Config, Gate, ReviewPanel, ReviewStep, Stage, Workflow};
 use std::path::{Path, PathBuf};
 
 /// `dir`, created with its parents.
@@ -75,6 +76,336 @@ pub fn repo_review_panel() -> ReviewPanel {
         "adversary",
         "adjudicator",
     )
+}
+
+/// The ids of the agents a panel of the tables below names.
+pub const PANEL_AGENTS: [&str; 5] = ["a", "b", "x", "y", "z"];
+
+/// A read of one scope's panel out of a parsed workflow.
+pub type PanelRead = fn(&Workflow) -> &ReviewPanel;
+
+/// The four scopes a panel is declared in, each as the name its refusal gives the scope, a
+/// workflow declaring the flow mapping `{panel}` there and the read of that panel. The two
+/// full scopes come first: only a light panel owes an adjudicator step of itself, so a row
+/// with none runs over `PANEL_SCOPES[..2]`.
+pub const PANEL_SCOPES: [(&str, &str, PanelRead); 4] = [
+    ("defaults.review", "defaults:\n  review: {panel}\n", |wf| {
+        &wf.defaults.review
+    }),
+    (
+        "stage \"s\" review",
+        "stages:\n  s:\n    agent: a\n    review: {panel}\n",
+        |wf| &wf.stages["s"].review,
+    ),
+    (
+        "defaults.review.tiers.light",
+        "defaults:\n  review:\n    adjudicator: z\n    tiers:\n      light: {panel}\n",
+        |wf| light_of(&wf.defaults.review),
+    ),
+    (
+        "stage \"s\" review.tiers.light",
+        "stages:\n  s:\n    agent: a\n    review:\n      adjudicator: z\n      tiers:\n        \
+         light: {panel}\n",
+        |wf| light_of(&wf.stages["s"].review),
+    ),
+];
+
+/// The light panel of `panel`'s tiers policy.
+pub fn light_of(panel: &ReviewPanel) -> &ReviewPanel {
+    &panel.depth().expect("the scope declares tiers").light
+}
+
+/// A list running the adversary ahead of the lenses, declaring [`adversary_first_steps`].
+pub const ADVERSARY_FIRST_LIST: &str =
+    "{ steps: [{ adversary: x }, { lenses: [a] }, { adjudicator: z }] }";
+
+/// The steps of [`ADVERSARY_FIRST_LIST`], in its order.
+pub fn adversary_first_steps() -> [ReviewStep; 3] {
+    [
+        ReviewStep::Adversary("x".into()),
+        lenses(&["a"]),
+        ReviewStep::Adjudicator("z".into()),
+    ]
+}
+
+/// A full panel of the one step `Adjudicator(z)` over a light panel of the steps
+/// `Adversary(x)`, `Adjudicator(y)`, in each form that pairing takes beyond map over map.
+pub const LIGHT_PANEL_FORMS: [&str; 3] = [
+    "{ steps: [{ adjudicator: z }], tiers: { light: { adversary: x, adjudicator: y } } }",
+    "{ adjudicator: z, tiers: { light: { steps: [{ adversary: x }, { adjudicator: y }] } } }",
+    "{ steps: [{ adjudicator: z }], tiers: { light: { steps: [{ adversary: x }, { adjudicator: y }] } } }",
+];
+
+/// The refusal of a tiers policy whose enclosing full panel has no adjudicator step.
+pub const NO_FULL_ADJUDICATOR_STEP: &str = "a review.tiers policy requires its enclosing (full) \
+    panel to name an adjudicator step (the gating verdict is mandatory on every review tier \
+    - a high-risk unit routes to the full panel, so an empty/adjudicator-less full panel \
+    would approve it with no verdict)";
+
+/// The refusal of a tiers policy whose light panel has no adjudicator step.
+pub const NO_LIGHT_ADJUDICATOR_STEP: &str = "review.tiers.light must name an adjudicator step \
+    (the gating verdict is mandatory on every review tier - only the adversary flexes)";
+
+/// What the refusal of an agent id holding `@` says after naming the agent.
+const SEPARATOR_RULE: &str =
+    "an agent id never contains '@', the separator of a step token; rename the agent";
+
+/// An adjudicator persona whose ONLY verdict path is `rigger_emit`: the guaranteed
+/// stall the verdict-line lint targets (the gate reads the result channel and finds no verdict).
+pub const EMIT_ONLY: &str = "You are the Adjudicator. Weigh the lenses against the adversary \
+    and decide. Record your verdict the moment you reach it via the rigger_emit tool with \
+    type Verdict and data {\"verdict\":\"approve\"} to approve or {\"verdict\":\"reject\"} \
+    to reject. Do not add anything after you emit.";
+
+/// The panels that set `steps` and a map key, each with its refusal after the name of the scope:
+/// the keys it set are named, an empty list is set, and this refusal comes ahead of the entries
+/// it would otherwise read.
+fn steps_beside_a_map_key_refusals() -> Vec<(&'static str, String)> {
+    let both = |keys: &str| {
+        format!(
+            "sets steps and {keys}: a panel declares its steps as a list or as a map, \
+             never both"
+        )
+    };
+    vec![
+        ("{ steps: [], lenses: [a] }", both("lenses")),
+        ("{ steps: [], adversary: x }", both("adversary")),
+        ("{ steps: [], adjudicator: z }", both("adjudicator")),
+        (
+            "{ steps: [{ adjudicator: z }], lenses: [a], adjudicator: z }",
+            both("lenses, adjudicator"),
+        ),
+        (
+            "{ steps: [{ adjudicator: z }], lenses: [a], adversary: x, adjudicator: z }",
+            both("lenses, adversary, adjudicator"),
+        ),
+        ("{ steps: [{}], lenses: [a] }", both("lenses")),
+    ]
+}
+
+/// The panels with an entry setting no key or several, each with its refusal after the name of
+/// the scope: at the entry's 0-based index, a key being set when non-empty, and ahead of what its
+/// keys name.
+fn entry_key_count_refusals() -> Vec<(&'static str, String)> {
+    let keys = |i: usize, n: usize| {
+        format!(
+            "steps[{i}] sets {n} keys: an entry sets exactly one of lenses, adversary, \
+             adjudicator"
+        )
+    };
+    vec![
+        ("{ steps: [{}, { adjudicator: z }] }", keys(0, 0)),
+        ("{ steps: [{ adjudicator: z }, {}] }", keys(1, 0)),
+        ("{ steps: [{ lenses: [] }] }", keys(0, 0)),
+        ("{ steps: [{ adversary: \"\" }] }", keys(0, 0)),
+        ("{ steps: [{ lenses: [a], adversary: x }] }", keys(0, 2)),
+        (
+            "{ steps: [{ adjudicator: z }, { lenses: [a], adversary: x, adjudicator: z }] }",
+            keys(1, 3),
+        ),
+        ("{ steps: [{ lenses: [a, a], adversary: x }] }", keys(0, 2)),
+    ]
+}
+
+/// The panels naming an agent twice in one lens step, in either form, each with its refusal
+/// after the name of the scope, a list naming the step's index.
+fn lens_named_twice_refusals() -> Vec<(&'static str, String)> {
+    let twice = |step: &str, id: &str| {
+        format!("{step} names agent {id:?} twice: a lens step runs each agent once")
+    };
+    vec![
+        ("{ lenses: [a, a], adjudicator: z }", twice("lenses", "a")),
+        (
+            "{ lenses: [a, b, b], adjudicator: z }",
+            twice("lenses", "b"),
+        ),
+        (
+            "{ steps: [{ lenses: [a, a] }, { adjudicator: z }] }",
+            twice("steps[0]", "a"),
+        ),
+        (
+            "{ steps: [{ adversary: x }, { lenses: [a, b, a] }, { adjudicator: z }] }",
+            twice("steps[1]", "a"),
+        ),
+    ]
+}
+
+/// The panels naming an agent id holding `@`, in either form, each with its refusal after the
+/// name of the scope, ahead of the unknown-agent refusal its id would otherwise draw.
+fn panel_separator_refusals() -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "{ lenses: [a, \"l@k\"], adjudicator: z }",
+            separator_refusal("lenses", "l@k"),
+        ),
+        (
+            "{ adversary: \"@k\", adjudicator: z }",
+            separator_refusal("adversary", "@k"),
+        ),
+        (
+            "{ adjudicator: \"k@\" }",
+            separator_refusal("adjudicator", "k@"),
+        ),
+        (
+            "{ steps: [{ lenses: [\"l@k\"] }, { adjudicator: z }] }",
+            separator_refusal("steps[0]", "l@k"),
+        ),
+        (
+            "{ steps: [{ adversary: x }, { adjudicator: \"j@k\" }] }",
+            separator_refusal("steps[1]", "j@k"),
+        ),
+    ]
+}
+
+/// The panels with a second adjudicator step or a step after the adjudicator, each with its
+/// refusal after the name of the scope. A panel has at most one adjudicator step, last: a second
+/// adjudicator is refused at its own index ahead of the repeated-kind refusal, so this refusal
+/// outlives that one.
+fn adjudicator_placement_refusals() -> Vec<(&'static str, String)> {
+    let second =
+        |i: usize| format!("steps[{i}] is a second adjudicator step: a panel has at most one");
+    let followed = |i: usize| {
+        format!(
+            "steps[{i}] is an adjudicator step with a step after it: the adjudicator step \
+             is the last step"
+        )
+    };
+    vec![
+        (
+            "{ steps: [{ adjudicator: y }, { adjudicator: z }] }",
+            second(1),
+        ),
+        (
+            "{ steps: [{ lenses: [a] }, { adjudicator: y }, { adjudicator: z }] }",
+            second(2),
+        ),
+        (
+            "{ steps: [{ adjudicator: y }, { lenses: [a] }, { adjudicator: z }] }",
+            second(2),
+        ),
+        (
+            "{ steps: [{ adjudicator: z }, { lenses: [a] }] }",
+            followed(0),
+        ),
+        (
+            "{ steps: [{ lenses: [a] }, { adjudicator: z }, { adversary: x }] }",
+            followed(1),
+        ),
+    ]
+}
+
+/// The lists naming two steps of one kind, each with its refusal at the repeat after the name
+/// of the scope, until the runner can tell two steps of one kind apart.
+fn repeated_step_kind_refusals() -> Vec<(&'static str, String)> {
+    let repeats = |i: usize, kind: &str| {
+        format!("steps[{i}] repeats the {kind} step kind: a list names one step of each kind")
+    };
+    vec![
+        (
+            "{ steps: [{ lenses: [a] }, { lenses: [b] }, { adjudicator: z }] }",
+            repeats(1, "lenses"),
+        ),
+        (
+            "{ steps: [{ adversary: x }, { lenses: [a] }, { adversary: y }] }",
+            repeats(2, "adversary"),
+        ),
+    ]
+}
+
+/// A workflow declaring `panel` in each of the two full [`PANEL_SCOPES`], with `refusal` after
+/// the prefix each of them gives a tier refusal.
+fn tier_refusal_rows(panel: &str, refusal: &str) -> [(String, String); 2] {
+    let [(_, defaults, _), (_, stage, _), ..] = PANEL_SCOPES;
+    [(defaults, "defaults."), (stage, "stage \"s\" ")].map(|(template, prefix)| {
+        (
+            template.replace("{panel}", panel),
+            format!("{prefix}{refusal}"),
+        )
+    })
+}
+
+/// The workflows whose tiers policy leaves a tier short of an adjudicator step, in either form,
+/// each with its exact refusal: a policy owes one on both its tiers, read from `steps()` so
+/// either form answers.
+fn tier_adjudicator_refusals() -> Vec<(String, String)> {
+    let light = "tiers: { light: { adjudicator: z } }";
+    [
+        (
+            format!("{{ lenses: [a], {light} }}"),
+            NO_FULL_ADJUDICATOR_STEP,
+        ),
+        (
+            format!("{{ steps: [{{ lenses: [a] }}], {light} }}"),
+            NO_FULL_ADJUDICATOR_STEP,
+        ),
+        (
+            format!("{{ steps: [], {light} }}"),
+            NO_FULL_ADJUDICATOR_STEP,
+        ),
+        (
+            "{ adjudicator: z, tiers: { light: { lenses: [a] } } }".to_string(),
+            NO_LIGHT_ADJUDICATOR_STEP,
+        ),
+        (
+            "{ adjudicator: z, tiers: { light: { steps: [{ lenses: [a] }] } } }".to_string(),
+            NO_LIGHT_ADJUDICATOR_STEP,
+        ),
+        (
+            "{ steps: [{ adjudicator: z }], tiers: { light: { steps: [] } } }".to_string(),
+            NO_LIGHT_ADJUDICATOR_STEP,
+        ),
+    ]
+    .iter()
+    .flat_map(|(panel, refusal)| tier_refusal_rows(panel, refusal))
+    .collect()
+}
+
+/// The workflows naming an id holding `@` in each agent field of a stage, each with its exact
+/// refusal naming that field.
+fn stage_separator_refusals() -> Vec<(String, String)> {
+    [
+        ("agent", "agent: \"w@k\""),
+        ("agents", "agents: [a, \"w@k\"]"),
+        ("adversary", "adversary: \"w@k\""),
+        ("adjudicator", "adjudicator: \"w@k\""),
+    ]
+    .map(|(field, declaration)| {
+        (
+            format!("stages:\n  s:\n    {declaration}\n"),
+            separator_refusal(&format!("stage \"s\" {field}"), "w@k"),
+        )
+    })
+    .to_vec()
+}
+
+/// The refusal of the agent id `id`, holding `@`, where `owner` names it.
+pub fn separator_refusal(owner: &str, id: &str) -> String {
+    format!("{owner} names agent {id:?}: {SEPARATOR_RULE}")
+}
+
+/// Every workflow the panel rules refuse, in every scope each rule applies to, with its exact
+/// refusal.
+pub fn panel_rule_refusals() -> Vec<(String, String)> {
+    let panels = [
+        steps_beside_a_map_key_refusals(),
+        entry_key_count_refusals(),
+        lens_named_twice_refusals(),
+        panel_separator_refusals(),
+        adjudicator_placement_refusals(),
+        repeated_step_kind_refusals(),
+    ]
+    .concat();
+    let mut rows = tier_adjudicator_refusals();
+    rows.extend(stage_separator_refusals());
+    for (panel, message) in panels {
+        rows.extend(PANEL_SCOPES.map(|(scope, template, _)| {
+            (
+                template.replace("{panel}", panel),
+                format!("{scope} {message}"),
+            )
+        }));
+    }
+    rows
 }
 
 /// A `core` gate running `run` with no declared inputs.
