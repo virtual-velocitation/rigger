@@ -20,14 +20,15 @@ use super::{
     KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
     KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE,
     LEAF_REF_KINDS, MODULE_CANDIDATE_SEPARATOR, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
-    PLACEHOLDER_SIGIL, REBUILD_OWED, REF_KIND_MODULE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS,
-    REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS,
-    REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
-    REL_SPECIFIES, REL_SUPERSEDES, STAGED_RELS, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
-    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
-    TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
-    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    PLACEHOLDER_SIGIL, REBUILD_OWED, REBUILD_OWED_FOR_LOST_FOLD, REF_KIND_MODULE, REL_ABOUT,
+    REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS,
+    REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS,
+    REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES, STAGED_RELS, TIER_AMBIGUOUS,
+    TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED,
+    TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
+    TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
+    TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Filter, Position, Revision};
 use crate::lockfile::HeldLock;
@@ -1108,7 +1109,8 @@ impl Projector {
     ///
     /// The call first reads, with no transaction open, whether the file folds no catch-up of its
     /// own, each cause in order: it holds a rebuild's state, records an older fold rule over what
-    /// it folded, or carries no cursor ([`Inert`]); the first standing is the answer, read without
+    /// it folded, carries no cursor, or carries one recorded beside another log than the one this
+    /// projector folds, or beside none ([`Inert`]); the first standing is the answer, read without
     /// opening the log, and the [`owed_mark`] an older binary's lost fold left beside it is none. A
     /// projector handed no log answers [`CatchUp::AtHead`]. Otherwise the call reads one page of
     /// the log past the cursor - the first [`FOLD_BATCH`] events of the project's own log as it is
@@ -1126,8 +1128,9 @@ impl Projector {
     /// events alone moves it there folding nothing - and the call answers [`CatchUp::Advanced`],
     /// counting the positions that transaction itself recorded in the `applied` ledger.
     ///
-    /// Under the write lock the cut answers a rebuild's state, an older fold rule or a dropped
-    /// cursor that another writer brought about after the first read as [`CatchUp::Inert`],
+    /// Under the write lock the cut answers a rebuild's state, an older fold rule, a dropped
+    /// cursor or one recorded beside another log or none that another writer brought about after
+    /// the first read as [`CatchUp::Inert`],
     /// folding nothing. A cursor that another writer moved to or past the position the cut would
     /// move it to, or that a swap lowered below where the page was read from, rolls the cut back
     /// and the call reads one page again from that cursor; the second such page answers
@@ -1154,7 +1157,7 @@ impl Projector {
     /// the call's re-extraction ([`decide_step`]); with none, every entry folds from the
     /// re-extraction.
     fn catch_up_with(&self, own: Option<&OwnEntry>) -> Result<CatchUp, Error> {
-        let mut from = match standing_cursor(&self.conn.lock().unwrap())? {
+        let mut from = match standing_cursor(&self.conn.lock().unwrap(), &self.store)? {
             Ok(at) => at,
             Err(inert) => return Ok(CatchUp::Inert(inert)),
         };
@@ -1192,6 +1195,7 @@ impl Projector {
                 _ => last,
             };
             let mut cut = CatchUpCut {
+                store: &self.store,
                 from,
                 lock_at: from,
                 before: 0,
@@ -1368,11 +1372,14 @@ impl Projector {
     /// success test passes, and answer true then, or false when a call or the test meets no
     /// `caught_up` cursor, the direct fold folding the events instead.
     ///
-    /// After every call but one meeting no cursor, the success test reads the cursor and the first
-    /// own position recorded passed over in one statement outside any transaction
-    /// ([`own_standing`]): such a row answers its cause at once, with no suffix, since no later
-    /// fold folds it; the last own position at or below the cursor is folded. Still short, the
-    /// call's answer decides. An older fold rule answers [`REBUILD_OWED`] at once, the file's
+    /// A call meeting a cursor recorded beside another log or none ([`Inert::LogSwitched`])
+    /// answers the lost fold's refusal ([`REBUILD_OWED_FOR_LOST_FOLD`]) at once, before the
+    /// success test, which would read that log's prefix as this one's. After every other call but
+    /// one meeting no cursor, the success test reads the cursor and the first own position
+    /// recorded passed over in one statement outside any transaction ([`own_standing`]): such a
+    /// row answers its cause at once, with no suffix, since no later fold folds it; the last own
+    /// position at or below the cursor is folded. Still short, the call's answer decides. An older
+    /// fold rule answers [`REBUILD_OWED`] at once, the file's
     /// rebuild state the unfinished-rebuild text at once when this projector's process holds its
     /// rebuild lock ([`Projector::with_rebuild_lock`]), and a failure anywhere but at the own entry
     /// its error at once; otherwise, past the ceiling ([`Projector::past_ceiling`]), it answers
@@ -1392,8 +1399,12 @@ impl Projector {
         let positions = serde_json::to_string(&positions).map_err(be)?;
         loop {
             let call = self.catch_up_with(own)?;
-            if call == CatchUp::Inert(Inert::NoCursor) {
-                return Ok(false);
+            match call {
+                CatchUp::Inert(Inert::NoCursor) => return Ok(false),
+                CatchUp::Inert(Inert::LogSwitched) => {
+                    return Err(Error(REBUILD_OWED_FOR_LOST_FOLD.to_string()))
+                }
+                _ => {}
             }
             let standing = own_standing(&self.conn.lock().unwrap(), &positions)?;
             match standing {
@@ -1417,7 +1428,8 @@ impl Projector {
                     }
                     (unfinished, true)
                 }
-                // An older fold rule; a call meeting no cursor turned direct above.
+                // An older fold rule; a call meeting no cursor turned direct above, and one
+                // meeting a cursor of another log answered there.
                 CatchUp::Inert(_) => return Err(Error(REBUILD_OWED.to_string())),
                 CatchUp::Failed { error, .. } => {
                     let failed = Error(format!("{error}{CALL_PAYS}"));
@@ -2813,24 +2825,26 @@ impl FoldCursor for RebuildCursor {
     }
 }
 
-/// The cut of one [`Projector::catch_up`] call, its page read from `from` (spec 124, ONE
-/// PROCEDURE). It opens by reading the file's standing again under the write lock
-/// ([`standing_cursor`]): a rebuild's state, an older fold rule or no `caught_up` cursor declines
-/// it as [`FrameError::Inert`], and a cursor at or past the cut's last position, or below `from`,
-/// as [`FrameError::Reread`] at that cursor; otherwise `lock_at` is that cursor and `before` the
+/// The cut of one [`Projector::catch_up`] call, its page read from `from` by a projector folding
+/// the log `store` names (spec 124, ONE PROCEDURE). It opens by reading the file's standing again
+/// under the write lock ([`standing_cursor`]): a rebuild's state, an older fold rule, no
+/// `caught_up` cursor or one recorded beside another log or none declines it as
+/// [`FrameError::Inert`], and a cursor at or past the cut's last position, or below `from`, as
+/// [`FrameError::Reread`] at that cursor; otherwise `lock_at` is that cursor and `before` the
 /// positions the `applied` ledger records past it through the cut's last ([`applied_between`]).
 /// It closes by setting `caught_up` at the cut's last position ([`set_cursor`]) and counting in
 /// `recorded` the positions that ledger gained there in the cut's own transaction.
-struct CatchUpCut {
+struct CatchUpCut<'s> {
+    store: &'s str,
     from: Position,
     lock_at: Position,
     before: usize,
     recorded: usize,
 }
 
-impl FoldCursor for CatchUpCut {
+impl FoldCursor for CatchUpCut<'_> {
     fn open(&mut self, tx: &Transaction, through: Position) -> Result<(), FrameError> {
-        let at = standing_cursor(tx)?.map_err(FrameError::Inert)?;
+        let at = standing_cursor(tx, self.store)?.map_err(FrameError::Inert)?;
         if !(self.from <= at && at < through) {
             return Err(FrameError::Reread(at));
         }
@@ -2847,17 +2861,23 @@ impl FoldCursor for CatchUpCut {
 }
 
 /// Where the `caught_up` cursor of the file behind `conn` stands for a catch-up of its own
-/// ([`Projector::catch_up`]), or the first cause, in this order, that it folds none ([`Inert`]):
-/// it holds a rebuild's state ([`rebuild_tail_owed`]), it owes its rebuild for an older fold rule
-/// over what it folded ([`rebuild_owed`]), or it carries no cursor.
-fn standing_cursor(conn: &Connection) -> Result<Result<Position, Inert>, Error> {
+/// ([`Projector::catch_up`]) by a projector folding the log `store` names, or the first cause, in
+/// this order, that it folds none ([`Inert`]): it holds a rebuild's state ([`rebuild_tail_owed`]),
+/// it owes its rebuild for an older fold rule over what it folded ([`rebuild_owed`]), it carries no
+/// cursor, or its cursor was recorded beside another log than `store`, or beside none
+/// ([`log_switched`]).
+fn standing_cursor(conn: &Connection, store: &str) -> Result<Result<Position, Inert>, Error> {
     if rebuild_tail_owed(conn)? {
         return Ok(Err(Inert::RebuildState));
     }
     if rebuild_owed(conn)? {
         return Ok(Err(Inert::OlderRule));
     }
-    Ok(cursor_at(conn, CAUGHT_UP)?.ok_or(Inert::NoCursor))
+    Ok(match caught_up_beside(conn)? {
+        None => Err(Inert::NoCursor),
+        Some((_, recorded)) if log_switched(recorded.as_deref(), store) => Err(Inert::LogSwitched),
+        Some((at, _)) => Ok(at),
+    })
 }
 
 /// How many positions the `applied` ledger of the file behind `conn` records past `after`, up to
@@ -2915,7 +2935,9 @@ fn caught_up_beside(conn: &Connection) -> Result<Option<(Position, Option<String
 /// Whether the log a cursor was recorded beside, `recorded` - none for a cursor whose table
 /// predates that identity - is not the log `selected` its projector folds (spec 124, A LOG
 /// SWITCHED UNDER A STANDING GRAPH): the event store was switched under the file, so the prefix
-/// its cursor claims is of another log, or of a log it cannot name.
+/// its cursor claims is of another log, or of a log it cannot name. The one comparison both reads
+/// of the cursor apply: setup's seeding ([`Projector::seed_cursor`]) and every catch-up's standing
+/// ([`standing_cursor`]).
 fn log_switched(recorded: Option<&str>, selected: &str) -> bool {
     recorded != Some(selected)
 }
