@@ -132,6 +132,10 @@ mod host_fixtures;
 #[allow(dead_code)]
 #[path = "../../../tests/common/fixtures/ledger.rs"]
 mod ledger_fixtures;
+/// The whitespace normalizer the instruction fixtures name as `rigger::wave`, which this import
+/// makes resolve in this crate.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_domain::wave;
 #[cfg(all(
     test,
     feature = "symbols",

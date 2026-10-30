@@ -103,6 +103,21 @@ pub fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     run_rigger_envs(cwd, args, &[])
 }
 
+/// Post one `UnitProposed` decision for the currently-parked spawn `spawn`, through the
+/// real `rigger emit --spawn` CLI courier (`cmd_emit`, `src/main.rs`) - the established
+/// native-courier idiom for a scripted (non-MCP) agent to record a decision, threading its
+/// OWN spawn id into `META_SPAWN` exactly as a live MCP-tooled planner's stamped emit does.
+pub fn propose_unit_via_rigger_emit(root: &Path, spawn: &str, body: &serde_json::Value) {
+    let (_out, err, ok) = run_rigger(
+        root,
+        &["emit", "--spawn", spawn, "UnitProposed", &body.to_string()],
+    );
+    assert!(
+        ok,
+        "rigger emit --spawn {spawn} UnitProposed {body} must succeed; stderr:\n{err}"
+    );
+}
+
 /// Run `rigger <args...>` in `cwd`, asserting it exits 0 (naming its stderr when it does not),
 /// and return its stdout.
 pub fn run_rigger_ok(cwd: &Path, args: &[&str]) -> String {

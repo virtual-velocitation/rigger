@@ -2095,8 +2095,9 @@ mod tests {
     use crate::test_support::tool_available;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{
+        assert_holds_its_critique_method, critique_method_by_persona, persona_section,
         ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, CRITIQUE_METHOD, FAN_OUT_HEADING,
-        HAND_OVER_HEADING, WHEN_YOU_CRITIQUE_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
+        HAND_OVER_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
 
     /// Spec 101: a graph rebuild reports its progress in tenths of the log positions it covers -
@@ -4110,16 +4111,7 @@ mod tests {
     /// adversary's, the judging rule the adjudicator's.
     #[test]
     fn each_critiquing_persona_holds_its_method_under_when_you_critique() {
-        let adversary = [CRITIQUE_METHOD.as_slice(), &ADVERSARY_CRITIQUE_METHOD].concat();
-        let adjudicator = [CRITIQUE_METHOD.as_slice(), &ADJUDICATOR_JUDGING_RULE].concat();
-        for (persona, holds, leaves) in [
-            ("adversary.md", adversary, &ADJUDICATOR_JUDGING_RULE[..]),
-            (
-                "adjudicator.md",
-                adjudicator,
-                &ADVERSARY_CRITIQUE_METHOD[..],
-            ),
-        ] {
+        for (persona, holds, leaves) in critique_method_by_persona() {
             let shipped: Vec<(String, String)> = every_shipped_persona()
                 .into_iter()
                 .filter(|(at, _)| at.rsplit(['/', ' ']).next() == Some(persona))
@@ -4136,26 +4128,7 @@ mod tests {
                 "the committed persona and its scaffold template"
             );
             for (at, text) in shipped {
-                let whole = rigger::wave::normalize_ws(&text);
-                let section =
-                    rigger::wave::normalize_ws(persona_section(&text, WHEN_YOU_CRITIQUE_HEADING));
-                for sentence in &holds {
-                    assert_eq!(
-                        (
-                            section.matches(sentence).count(),
-                            whole.matches(sentence).count()
-                        ),
-                        (1, 1),
-                        "{at} holds {sentence:?} once, under its critique section:\n{section}"
-                    );
-                }
-                for sentence in leaves {
-                    assert_eq!(
-                        whole.matches(sentence).count(),
-                        0,
-                        "{at} leaves {sentence:?} to the other role"
-                    );
-                }
+                assert_holds_its_critique_method(&at, &text, &holds, leaves);
             }
         }
     }
@@ -4196,17 +4169,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// The section of a persona `text` that opens at `heading`, up to the next `## ` heading or
-    /// the end of the file.
-    fn persona_section<'a>(text: &'a str, heading: &str) -> &'a str {
-        let from = text.find(heading).expect("the persona carries the heading");
-        let rest = &text[from + heading.len()..];
-        let to = rest
-            .find("\n## ")
-            .map_or(text.len(), |at| from + heading.len() + at);
-        &text[from..to]
     }
 
     /// Every agent text rigger ships: the committed personas and the scaffold seeds, each

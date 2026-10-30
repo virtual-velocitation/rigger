@@ -14664,9 +14664,10 @@ mod tests {
         assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
     };
     use crate::test_support::{
-        critique_reject, keyed_index, keyed_payload, payloads_of_type, run_log,
-        spec_defect_halt_text, stop_records, the_stop_records, wave_lessons,
-        DAG_CRITIQUE_VERDICT_PARAGRAPH, STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY,
+        critique_reject, dag_critique_prompt, keyed_index, keyed_payload, payloads_of_type,
+        run_log, spec_defect_halt_text, stop_records, the_stop_records, wave_lessons,
+        DAG_CRITIQUE_VERDICT_PARAGRAPH, DAG_DISJOINT_OVERLAP, DAG_PRIOR_REJECT_HEADER,
+        STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY, UNIT_SIZE_CAP_SENTENCE,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -47746,46 +47747,22 @@ mod tests {
     fn the_dag_critique_prompt_is_only_its_framing_and_its_verdict_contract() {
         const WIDGET: &str = "the widget renderer is implemented";
         const GADGET: &str = "the gadget renderer is implemented";
-        let unit = |id: &str, criterion: &str, file: &str| {
-            format!(
-                "- `{id}`: criterion={criterion:?}; needs=[plan-critique]; \
-                 blast radius=[{file}]\n"
-            )
-        };
         let table = [
             (
                 [("u-a", "a.rs", WIDGET), ("u-b", "b.rs", GADGET)],
-                format!(
-                    "{}{}\nBlast-radius overlap (informational): every proposed unit has a \
-                     DISJOINT blast radius.\n",
-                    unit("u-a", WIDGET, "a.rs"),
-                    unit("u-b", GADGET, "b.rs"),
-                ),
+                DAG_DISJOINT_OVERLAP,
             ),
             (
                 [("u-a", "a.rs", WIDGET), ("u-b", "a.rs", GADGET)],
-                format!(
-                    "{}{}\nBlast-radius overlap (informational - the partitioner serializes \
-                     these into sequential batches):\n- units `u-a` and `u-b` both touch: a.rs\n",
-                    unit("u-a", WIDGET, "a.rs"),
-                    unit("u-b", GADGET, "a.rs"),
-                ),
+                "\nBlast-radius overlap (informational - the partitioner serializes these into \
+                 sequential batches):\n- units `u-a` and `u-b` both touch: a.rs\n",
             ),
         ];
-        for (units, list) in table {
+        for (units, overlap) in table {
             let driver = critique_over(&units);
             let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
-            assert_eq!(
-                prompt,
-                format!(
-                    "You are the plan-critique gate. Review the PROPOSED unit DAG below - the \
-                     decomposition the planner produced - BEFORE any implementer runs, and judge \
-                     it against the decomposition rules in your persona: the CROSS-UNIT rules \
-                     that per-unit review cannot see.\n\n{cap}\n\nProposed units:\n{list}\n\
-                     {DAG_CRITIQUE_VERDICT_PARAGRAPH}\n",
-                    cap = unit_size_cap(),
-                )
-            );
+            let rows = units.map(|(id, file, criterion)| [id, criterion, "plan-critique", file]);
+            assert_eq!(prompt, dag_critique_prompt(&rows, overlap));
         }
     }
 
@@ -47798,14 +47775,9 @@ mod tests {
         let driver = one_unit_critique();
         let planner = driver.planner_prompts.lock().unwrap()[0].clone();
         let critique = driver.adj_prompts.lock().unwrap()[0].clone();
-        let cap = format!(
-            "A unit is too large when it is expected to add more than {MAX_UNIT_ADDED_LINES} \
-             lines. The cap measures review scope - how much one review round must read - never \
-             code shape."
-        );
         for (who, prompt) in [("planner", &planner), ("plan critique", &critique)] {
             assert!(
-                prompt.contains(&cap),
+                prompt.contains(UNIT_SIZE_CAP_SENTENCE),
                 "the {who} prompt carries the one cap sentence:\n{prompt}"
             );
         }
@@ -48329,9 +48301,7 @@ mod tests {
         );
         let retry_round = &rounds[1];
         assert!(
-            retry_round.starts_with(&format!(
-                "A prior plan-critique REJECTED this decomposition:\n{OWNERSHIP_REJECT}\n\n"
-            )),
+            retry_round.starts_with(&format!("{DAG_PRIOR_REJECT_HEADER}{OWNERSHIP_REJECT}\n\n")),
             "premise: the in-process retry round opens with the reject; got:\n{retry_round}"
         );
 

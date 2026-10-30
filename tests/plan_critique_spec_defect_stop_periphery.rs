@@ -29,8 +29,8 @@
 mod common;
 
 use common::cli::{
-    read_run_events, record_clean_critique, refused_new_run, run_payloads, run_rigger,
-    run_rigger_ok, temp_repoless_project, with_run_store, write_scaffold,
+    propose_unit_via_rigger_emit, read_run_events, record_clean_critique, refused_new_run,
+    run_payloads, run_rigger, run_rigger_ok, temp_repoless_project, with_run_store, write_scaffold,
 };
 use common::fixtures::{
     critique_reject, keyed_index, keyed_payload, spec_defect_halt_text, stop_records,
@@ -151,10 +151,7 @@ fn plan(root: &Path, spawn: &str) {
         "criterion": CRITERION,
         "needs": [],
     });
-    run_rigger_ok(
-        root,
-        &["emit", "--spawn", spawn, "UnitProposed", &unit.to_string()],
-    );
+    propose_unit_via_rigger_emit(root, spawn, &unit);
     run_rigger_ok(root, &["result", spawn, "proposed the DAG"]);
 }
 

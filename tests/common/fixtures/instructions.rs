@@ -2,7 +2,8 @@
 //! prompt tests, the binary's shipped-text tests and the integration suites: the working-discipline
 //! body's section headings and the review method its `## When you review` section holds; the
 //! critique method the adversary and adjudicator personas hold under their
-//! `## When you critique a spec or a plan` section; the
+//! `## When you critique a spec or a plan` section, each persona's share of it and the check that
+//! a persona's text holds that share; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
 //! and their checked-in sources, each entry's body by name, a near name that shadows no
 //! built-in, the non-empty bodies that still switch a built-in off, two operator files that shadow
@@ -112,6 +113,58 @@ pub const ADJUDICATOR_JUDGING_RULE: [&str; 3] = [
     "The fix is the cause rule's: a re-plan for `decomposition-conflict`, the run stopping for \
      `spec-ambiguity`.",
 ];
+
+/// Each critiquing persona's agent file, the critique sentences it holds and those it leaves to
+/// the other role.
+pub fn critique_method_by_persona(
+) -> [(&'static str, Vec<&'static str>, &'static [&'static str]); 2] {
+    [
+        (
+            "adversary.md",
+            [CRITIQUE_METHOD.as_slice(), &ADVERSARY_CRITIQUE_METHOD].concat(),
+            &ADJUDICATOR_JUDGING_RULE,
+        ),
+        (
+            "adjudicator.md",
+            [CRITIQUE_METHOD.as_slice(), &ADJUDICATOR_JUDGING_RULE].concat(),
+            &ADVERSARY_CRITIQUE_METHOD,
+        ),
+    ]
+}
+
+/// The section of `text` that `heading` opens, up to the next `## ` heading or the end of `text`.
+pub fn persona_section<'a>(text: &'a str, heading: &str) -> &'a str {
+    let from = text.find(heading).expect("the persona carries the heading");
+    let rest = &text[from + heading.len()..];
+    let to = rest
+        .find("\n## ")
+        .map_or(text.len(), |at| from + heading.len() + at);
+    &text[from..to]
+}
+
+/// The persona `text`, which `at` names, holds each sentence of `holds` once, under its critique
+/// section, and none of `leaves`.
+pub fn assert_holds_its_critique_method(at: &str, text: &str, holds: &[&str], leaves: &[&str]) {
+    let whole = rigger::wave::normalize_ws(text);
+    let section = rigger::wave::normalize_ws(persona_section(text, WHEN_YOU_CRITIQUE_HEADING));
+    for sentence in holds {
+        assert_eq!(
+            (
+                section.matches(sentence).count(),
+                whole.matches(sentence).count()
+            ),
+            (1, 1),
+            "{at} holds {sentence:?} once, under its critique section:\n{section}"
+        );
+    }
+    for sentence in leaves {
+        assert_eq!(
+            whole.matches(sentence).count(),
+            0,
+            "{at} leaves {sentence:?} to the other role"
+        );
+    }
+}
 
 /// The review `tier`'s task `prompt` carries the reviewer `discipline` exactly once and none of the
 /// review method `## When you review` holds, the method reaching the tier through its system prompt
