@@ -307,12 +307,14 @@ const ATTENTION_RESPONSE = {
 // entirely on a clean step (criterion 5's `skip_serializing_if`), so the `|| []` guard only
 // ever normalizes that shape - it never manufactures an anomaly the wire did not report, and
 // an entry-less step renders nothing, keeping a clean run's log exactly as quiet as before
-// this criterion.
+// this criterion. A detail that already names its response (the reject-recurrence entry's own
+// text names its skill) gets no response suffix, so every line names its response once.
 function relayAttention(step) {
   for (const a of step.attention || []) {
     const subject = a.unit || 'run'
     const respond = ATTENTION_RESPONSE[a.kind] || 'rigger-watch-a-run'
-    log(`attention - ${a.kind}: ${subject} - ${a.detail} (respond: ${respond})`)
+    const suffix = a.detail.includes(respond) ? '' : ` (respond: ${respond})`
+    log(`attention - ${a.kind}: ${subject} - ${a.detail}${suffix}`)
   }
 }
 
