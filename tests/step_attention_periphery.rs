@@ -627,7 +627,7 @@ fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
         lines,
         vec![
             format!(
-                "attention - reject-recurrence: u - {} (respond: rigger-diagnose-churn)",
+                "attention - reject-recurrence: u - {}",
                 rigger::ledger::AttentionEntry::reject_recurrence("u", 3).detail
             ),
             "attention - stalled-frontier: u - 3 recorded results, still parked (respond: stop \
@@ -635,7 +635,8 @@ fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
                 .to_string(),
         ],
         "round 4's real TWO-entry wire must render as two narrator lines in the SAME order the \
-         wire carries them, each with its own mapped response; got {lines:?}"
+         wire carries them, each naming its own mapped response once - the reject-recurrence \
+         detail already names it, so no suffix repeats it; got {lines:?}"
     );
 }
 
