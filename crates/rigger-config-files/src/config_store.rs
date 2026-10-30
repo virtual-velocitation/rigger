@@ -1982,13 +1982,16 @@ agent: worker\n";
         );
     }
 
-    /// A config of [`PANEL_AGENTS`] whose workflow is `template` declaring the flow mapping
-    /// `panel`, parsed and not yet validated.
-    fn config_declaring(template: &str, panel: &str) -> Config {
-        let body = template.replace("{panel}", panel);
+    /// A config of [`PANEL_AGENTS`] whose workflow is `body`, parsed and not yet validated.
+    fn config_of(body: &str) -> Config {
         let mut cfg = cfg_for(&PANEL_AGENTS);
-        cfg.workflow = parse_workflow(&body).unwrap_or_else(|e| panic!("parse {body}: {e}"));
+        cfg.workflow = parse_workflow(body).unwrap_or_else(|e| panic!("parse {body}: {e}"));
         cfg
+    }
+
+    /// [`config_of`] the workflow `template` declaring the flow mapping `panel`.
+    fn config_declaring(template: &str, panel: &str) -> Config {
+        config_of(&template.replace("{panel}", panel))
     }
 
     /// Each of `scopes` accepts the flow mapping `panel`, which steps through exactly `steps`.
@@ -2074,7 +2077,7 @@ agent: worker\n";
     #[test]
     fn validate_refuses_each_panel_rule_with_its_exact_message_in_every_scope() {
         for (workflow, refusal) in panel_rule_refusals() {
-            let validated = config_declaring(&workflow, "").validate();
+            let validated = config_of(&workflow).validate();
             assert_eq!(validated.expect_err(&refusal).0, refusal, "{workflow}");
         }
     }

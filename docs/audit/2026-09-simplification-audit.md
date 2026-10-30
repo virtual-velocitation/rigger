@@ -2114,12 +2114,12 @@ mandatory sweep: .rigger-path string literals - 602 site(s), collected mechanica
 - `crates/rigger-config-files/src/config_store.rs:1513-1513` `"the shipped .rigger/agents/sdet-author.md must exist"`
 - `crates/rigger-config-files/src/config_store.rs:1540-1540` `".rigger/agents/sdet.md"`
 - `crates/rigger-config-files/src/config_store.rs:1541-1541` `"the shipped .rigger/agents/sdet.md must exist"`
-- `crates/rigger-config-files/src/config_store.rs:2149-2149` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:2150-2150` `"create .rigger dir"`
-- `crates/rigger-config-files/src/config_store.rs:2182-2182` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:2183-2183` `"create .rigger dir"`
-- `crates/rigger-config-files/src/config_store.rs:2204-2204` `".rigger"`
-- `crates/rigger-config-files/src/config_store.rs:2205-2205` `"create .rigger dir"`
+- `crates/rigger-config-files/src/config_store.rs:2152-2152` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:2153-2153` `"create .rigger dir"`
+- `crates/rigger-config-files/src/config_store.rs:2185-2185` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:2186-2186` `"create .rigger dir"`
+- `crates/rigger-config-files/src/config_store.rs:2207-2207` `".rigger"`
+- `crates/rigger-config-files/src/config_store.rs:2208-2208` `"create .rigger dir"`
 - `crates/rigger-dash/src/dash.rs:3935-3935` `"{root}/.rigger/events.db"`
 - `crates/rigger-dash/src/dash.rs:3986-3986` `"/.rigger/events.db"`
 - `crates/rigger-domain/src/config.rs:20-20` `".rigger"`
@@ -5400,7 +5400,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10435 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 10436 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:5134-5175` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15525-15547` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
