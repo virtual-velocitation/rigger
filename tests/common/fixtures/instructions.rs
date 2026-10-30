@@ -143,7 +143,9 @@ pub fn persona_section<'a>(text: &'a str, heading: &str) -> &'a str {
 }
 
 /// The persona `text`, which `at` names, holds each sentence of `holds` once, under its critique
-/// section, and none of `leaves`.
+/// section, and none of `leaves`. Gated as `wave` is, since the core lane compiles this fixture
+/// without it.
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub fn assert_holds_its_critique_method(at: &str, text: &str, holds: &[&str], leaves: &[&str]) {
     let whole = rigger::wave::normalize_ws(text);
     let section = rigger::wave::normalize_ws(persona_section(text, WHEN_YOU_CRITIQUE_HEADING));
