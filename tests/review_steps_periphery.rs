@@ -1,5 +1,6 @@
 //! Spec 120, criteria 6 (THE MAP FORM IS THE CANONICAL SEQUENCE), 7 (THE LIST FORM DECLARES ANY
-//! SEQUENCE) and 8 (A LIST-FORM SEQUENCE RUNS), from outside the conductor.
+//! SEQUENCE), 8 (A LIST-FORM SEQUENCE RUNS) and 9 (TOKEN READERS CLASSIFY EVERY STEP BY ITS KIND),
+//! from outside the conductor.
 //!
 //! The conductor's own tests pin `ReviewPanel::steps` over hand-built panels and pin the
 //! review identity surface over a recording driver. Four facts sit past their reach: the
@@ -20,6 +21,10 @@
 //! process per step, each step printed under its own token with the roster of every earlier one.
 //! The walk runs through an adjudicator's reject into a next round, the log it leaves parses back
 //! through `review_step_of`, and a map-form run rebased onto its canonical list keeps its ids.
+//!
+//! Past that sit the token readers: a walked round's own spawn ids and findings, a real respawn
+//! among them, read back through the compiled `rigger stats` and `rigger dash --export` by kind,
+//! the map form folding as ever.
 
 mod common;
 
@@ -48,6 +53,7 @@ use rigger::metrics::META_MODEL_ALIAS;
 use rigger::spawn::{
     requests, review_step_of, spawn_role, ReviewKind, SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT,
 };
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
 /// The panel a stage named `s` carries when its `review:` key is the flow mapping `panel`, read
@@ -404,6 +410,12 @@ const NO_BLOCKER: &str = "reviewed: no blocker";
 /// The adjudicator verdict that lands a walk's round.
 const APPROVE: &str = r#"{"verdict":"approve"}"#;
 
+/// The map-form panel a walk declares.
+const MAP_PANEL: &str = "{ lenses: [a, b], adversary: x, adjudicator: z }";
+
+/// A finding a walked round raises: its id, the id of the spawn raising it and the file it flags.
+type RaisedFinding<'a> = (&'a str, &'a str, &'a str);
+
 /// One step of a walk: its tokens, the roster each of them parks with and the answer each gets.
 type WalkedStep<'a> = (&'a [&'a str], &'a [&'a str], &'a str);
 
@@ -427,8 +439,20 @@ fn implement_reviewed_by(root: &Path, panel: &str) -> PathBuf {
 }
 
 /// Walks `steps` of stage `s` at `attempt`, a process per step: each parks exactly its tokens
-/// under its roster and `rigger result` answers every one of them.
-fn walk_steps(root: &Path, attempt: u32, steps: &[WalkedStep]) {
+/// under its roster and `rigger result` answers every one of them. `attempt` is what follows the
+/// `#` of each spawn id, so `0~retry1` walks a respawn of attempt 0.
+fn walk_steps(root: &Path, attempt: impl Display, steps: &[WalkedStep]) {
+    walk_raising(root, attempt, steps, &[]);
+}
+
+/// [`walk_steps`], each parked spawn first raising, through `rigger emit` under its step token,
+/// the `raised` findings that name its id.
+fn walk_raising(
+    root: &Path,
+    attempt: impl Display,
+    steps: &[WalkedStep],
+    raised: &[RaisedFinding],
+) {
     for (tokens, roster, answer) in steps {
         let ids: Vec<String> = tokens
             .iter()
@@ -440,6 +464,15 @@ fn walk_steps(root: &Path, attempt: u32, steps: &[WalkedStep]) {
         assert_eq!(wave, parked.collect::<Vec<_>>(), "{ids:?}");
         assert!(!done, "{ids:?}");
         for id in &ids {
+            let own = raised.iter().filter(|(_, raiser, _)| raiser == id);
+            for (finding, _, file) in own {
+                let by = spawn_role(id);
+                let data = serde_json::json!({
+                    "id": finding, "by": by, "summary": "a finding", "about": [file],
+                });
+                let data = data.to_string();
+                run_rigger_ok(root, &["emit", "--spawn", id, "ReviewFinding", &data]);
+            }
             run_rigger_ok(root, &["result", id, answer]);
         }
     }
@@ -585,7 +618,7 @@ fn rigger_step_takes_a_rejected_list_through_remediation_into_a_round_of_the_sam
 fn rigger_step_rebased_from_a_map_onto_its_canonical_list_keeps_the_rounds_ids() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    implement_reviewed_by(root, "{ lenses: [a, b], adversary: x, adjudicator: z }");
+    implement_reviewed_by(root, MAP_PANEL);
     walk_steps(root, 0, &[(&["lens:a", "lens:b"], &[], NO_BLOCKER)]);
 
     write_panel_project(
@@ -627,6 +660,222 @@ fn rigger_step_rebased_from_a_map_onto_its_canonical_list_keeps_the_rounds_ids()
             "s/lens:b#0",
         ]
     );
+}
+
+/// Walks `round` at attempt 0, the one spawn of step `respawned` dying with a recorded error, so
+/// the conductor re-parks that step as `~retry1`, which gives the answer `round` spells.
+fn walk_respawning(root: &Path, round: &[WalkedStep], respawned: usize, raised: &[RaisedFinding]) {
+    let (before, rest) = round.split_at(respawned);
+    walk_raising(root, 0, before, raised);
+    let (died, after) = rest
+        .split_first()
+        .expect("the respawned step is in the round");
+    run_rigger_ok(root, &["step"]);
+    let id = format!("s/{}#0", died.0[0]);
+    run_rigger_ok(root, &["result", &id, "--error", "the reviewer died"]);
+    walk_raising(root, "0~retry1", std::slice::from_ref(died), raised);
+    walk_raising(root, 0, after, raised);
+}
+
+/// The line `rigger stats` opens its spawn timing rows with.
+const SPAWN_TIMING_HEADER: &str = "  spawn timing per agent (mean / count / total):";
+
+/// What `rigger stats` prints of a run: every line of its review-quality panel, then each spawn
+/// timing row as its role and its spawn count, timing's durations being the clock's.
+fn stats_read_back(root: &Path) -> (Vec<String>, Vec<(String, String)>) {
+    let out = run_rigger_ok(root, &["stats"]);
+    let quality = out
+        .lines()
+        .skip_while(|line| *line != "  review quality:")
+        .skip(1)
+        .take_while(|line| *line != SPAWN_TIMING_HEADER)
+        .map(str::to_string);
+    let timing = out
+        .lines()
+        .skip_while(|line| *line != SPAWN_TIMING_HEADER)
+        .skip(1)
+        .take_while(|line| line.starts_with("    "))
+        .map(|line| {
+            let columns: Vec<&str> = line.split(" / ").collect();
+            let role = columns[0].split_whitespace().next().unwrap();
+            (role.to_string(), columns[1].to_string())
+        });
+    (quality.collect(), timing.collect())
+}
+
+/// The Review stage of unit `s` in the state `rigger dash --export` embeds in its snapshot: each
+/// role group beside its agent labels, in the tree's order.
+fn exported_review_stage(root: &Path) -> Vec<(String, Vec<String>)> {
+    run_rigger_ok(root, &common::cli::DASH_SNAPSHOT_ARGS);
+    let html = std::fs::read_to_string(root.join("snapshot.html")).unwrap();
+    let state = html
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("const EMBEDDED_STATE = "))
+        .and_then(|state| state.strip_suffix(';'))
+        .expect("the snapshot embeds the state on one line");
+    let state: serde_json::Value = serde_json::from_str(state).unwrap();
+    fn label(node: &serde_json::Value) -> String {
+        node["label"].as_str().unwrap().to_string()
+    }
+    fn children(node: &serde_json::Value) -> &[serde_json::Value] {
+        node["children"].as_array().unwrap()
+    }
+    let unit = &state["tree"][0]["children"][0];
+    assert_eq!(label(unit), "s");
+    let review = children(unit)
+        .iter()
+        .find(|stage| label(stage) == "Review")
+        .expect("the unit has a Review stage");
+    children(review)
+        .iter()
+        .map(|role| (label(role), children(role).iter().map(label).collect()))
+        .collect()
+}
+
+/// One round the compiled binary walks and the readers read back, every expected value spelled.
+struct ReadBack<'a> {
+    /// The `review:` panel the workflow declares.
+    panel: &'a str,
+    /// The round's steps, in the order they park.
+    round: &'a [WalkedStep<'a>],
+    /// The index in `round` of the one-token step whose first spawn dies.
+    respawned: usize,
+    /// The findings the round's reviewers raise, by the spawn id that raises each.
+    raised: &'a [RaisedFinding<'a>],
+    /// Every line of the `rigger stats` review-quality panel, in print order.
+    quality: &'a [&'a str],
+    /// Each `rigger stats` spawn timing row: its role and its spawn count.
+    timing: &'a [(&'a str, &'a str)],
+    /// The dash's Review stage: each role group and its agent labels.
+    review: &'a [(&'a str, &'a [&'a str])],
+}
+
+/// Walks `read_back`'s round to the adjudicator's approve through the compiled binary, then
+/// asserts each operator surface over the spawn ids and findings that walk left on the log.
+fn assert_read_back(read_back: ReadBack) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    implement_reviewed_by(root, read_back.panel);
+    walk_respawning(root, read_back.round, read_back.respawned, read_back.raised);
+    assert_eq!(printed_step(root), (vec![], true));
+
+    let (quality, timing) = stats_read_back(root);
+    assert_eq!(quality, read_back.quality);
+    let timing_of = |(role, spawns): &(&str, &str)| (role.to_string(), spawns.to_string());
+    let expected_timing: Vec<_> = read_back.timing.iter().map(timing_of).collect();
+    assert_eq!(timing, expected_timing);
+
+    let review_of = |(role, agents): &(&str, &[&str])| {
+        let agents = agents.iter().map(|agent| agent.to_string()).collect();
+        (role.to_string(), agents)
+    };
+    let expected_review: Vec<_> = read_back.review.iter().map(review_of).collect();
+    assert_eq!(exported_review_stage(root), expected_review);
+}
+
+rigger::test_cases! {
+    /// Given a map-form panel, whose every token is bare, when its round runs through the
+    /// compiled binary with its adversary respawned once, then `rigger stats` folds cost and the
+    /// adversary-only findings by kind with a row per token, and the dash groups each token
+    /// under its kind in Review, no agent label naming a step.
+    the_readers_fold_a_map_forms_bare_tokens_as_ever: assert_read_back(ReadBack {
+        panel: MAP_PANEL,
+        round: &[
+            (&["lens:a", "lens:b"], &[], NO_BLOCKER),
+            (&["adversary"], &["lens:a", "lens:b"], NO_BLOCKER),
+            (
+                &["adjudicator"],
+                &["lens:a", "lens:b", "adversary"],
+                r#"{"verdict":"approve","upheld":["a1","l1"],"discarded":["a2","l2"]}"#,
+            ),
+        ],
+        respawned: 1,
+        raised: &[
+            ("l1", "s/lens:a#0", "src/lens.rs"),
+            ("l2", "s/lens:b#0", "src/lens.rs"),
+            ("a1", "s/adversary#0~retry1", "src/only.rs"),
+            ("a2", "s/adversary#0~retry1", "src/lens.rs"),
+        ],
+        quality: &[
+            "    flip-flop rate     0.0% (0/0 rejects reversed on the same sha)",
+            "    lens overlap       50.0% (1/2 flagged files hit by 2+ actors)",
+            "    adversary precision 100.0% (1/1 adversary-only findings upheld)",
+            "    finding survival per actor (upheld/raised):",
+            "      adversary            1/2 (50%)",
+            "      lens:a               1/1 (100%)",
+            "      lens:b               0/1 (0%)",
+            "    rejections by cause (none recorded)",
+            "    cost per upheld finding per tier (spawns/upheld):",
+            "      adjudicator  1 spawns / 0 upheld (-)",
+            "      adversary    2 spawns / 1 upheld (2.0)",
+            "      lens         2 spawns / 1 upheld (2.0)",
+        ],
+        timing: &[
+            ("adjudicator", "1 spawns"),
+            ("adversary", "2 spawns"),
+            ("implementer", "1 spawns"),
+            ("lens:a", "1 spawns"),
+            ("lens:b", "1 spawns"),
+        ],
+        review: &[
+            ("adjudicator", &["attempt#0"]),
+            ("adversary", &["attempt#0", "attempt#0 retry1"]),
+            ("lens", &["a", "b"]),
+        ],
+    });
+    /// Given a list repeating the lens and adversary kinds, when its round runs through the
+    /// compiled binary with `adversary@2` respawned once, then `rigger stats` keys cost and the
+    /// adversary-only fold on each token's kind while finding survival and spawn timing give
+    /// each token its own row: a1, a2 and a4 are adversary-only, and a3 is not, since `lens:y@2`
+    /// flags its file after the adversary ran. The dash groups every token under its kind in
+    /// Review, an agent label naming its step from the second on.
+    the_readers_fold_each_step_of_a_repeated_list_by_its_kind: assert_read_back(ReadBack {
+        panel: REPEATED_KIND_LIST,
+        round: &repeated_kind_round(
+            r#"{"verdict":"approve","upheld":["a1","a3","a4","l2"],"discarded":["a2","l1"]}"#,
+        ),
+        respawned: 3,
+        raised: &[
+            ("l1", "s/lens:a#0", "src/lens.rs"),
+            ("a1", "s/adversary#0", "src/only.rs"),
+            ("a3", "s/adversary#0", "src/late.rs"),
+            ("l2", "s/lens:y@2#0", "src/late.rs"),
+            ("a2", "s/adversary@2#0~retry1", "src/only.rs"),
+            ("a4", "s/adversary@2#0~retry1", "src/own.rs"),
+        ],
+        quality: &[
+            "    flip-flop rate     0.0% (0/0 rejects reversed on the same sha)",
+            "    lens overlap       50.0% (2/4 flagged files hit by 2+ actors)",
+            "    adversary precision 66.7% (2/3 adversary-only findings upheld)",
+            "    finding survival per actor (upheld/raised):",
+            "      adversary            2/2 (100%)",
+            "      adversary@2          1/2 (50%)",
+            "      lens:a               0/1 (0%)",
+            "      lens:y@2             1/1 (100%)",
+            "    rejections by cause (none recorded)",
+            "    cost per upheld finding per tier (spawns/upheld):",
+            "      adjudicator  1 spawns / 0 upheld (-)",
+            "      adversary    3 spawns / 3 upheld (1.0)",
+            "      lens         3 spawns / 1 upheld (3.0)",
+        ],
+        timing: &[
+            ("adjudicator", "1 spawns"),
+            ("adversary", "1 spawns"),
+            ("adversary@2", "2 spawns"),
+            ("implementer", "1 spawns"),
+            ("lens:a", "1 spawns"),
+            ("lens:b", "1 spawns"),
+            ("lens:y@2", "1 spawns"),
+        ],
+        review: &[
+            ("adjudicator", &["attempt#0"]),
+            (
+                "adversary",
+                &["attempt#0", "attempt#0 step 2", "attempt#0 step 2 retry1"],
+            ),
+            ("lens", &["a", "b", "y step 2"]),
+        ],
+    });
 }
 
 /// Given a full panel over a light panel in any pairing of the two forms, when the operator
