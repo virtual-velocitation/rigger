@@ -287,7 +287,7 @@ ONLY for" (:7927-7931), which lands in the adjudicator's judging rule only, and 
 (:7913-7914); the opener's citation of `docs/handbook/authoring-loops.md` rules 7-8 becomes "the
 decomposition rules in your persona", since a consumer repository has no such page.
 `PLAN_PROTOCOL`'s copy of the cap and `MAX_UNIT_ADDED_LINES` are spec 121's. The binary keeps, in both prompts, the task framing (what is
-under critique: the spec path and text verbatim, or the proposed DAG and the cap framing `unit_size_cap()` renders; the sentence "In
+under critique: the spec path and text verbatim, or the proposed DAG and the cap framing `unit_size_cap()` renders; in `spec_critique_prompt` only, the sentence "In
 your persona's critique rules a unit reads as a criterion, and a reject as a BLOCKING finding"
 replacing `CRITIQUE_STANCE`'s "In the rules below ..." sentence, with its trailing "The rules:"
 header dropped), the voided-duties clause in `spec_critique_prompt` only (the DAG prompt never had
@@ -304,8 +304,10 @@ criteria, written before any run builds them." is task framing, and "Read the sp
 repository; the finding lines and the verdict line of your final message are the only output." is
 part of the voided-duties clause. The moved constants are deleted; pins of their sentences move
 to the template's section through the shipped-text helper; the critic's spawn path and
-`NO_CRITIC_CLAUSE` stay criterion 10's. Criterion 15's test reads the scaffold templates only,
-through the shipped-text helper; the repository personas' sections are the unit's edit with no test. A persona without the section still critiques: the binary's
+`NO_CRITIC_CLAUSE` stay criterion 10's. Criterion 15's test reads the scaffold templates through
+the shipped-text helper and asserts that `.rigger/agents/adversary.md` and
+`.rigger/agents/adjudicator.md` carry the moved sentences under `## When you critique a spec or a
+plan`. A persona without the section still critiques: the binary's
 prompt stands alone, and the output contract decides the verdict. The DAG critique prompt reaches
 two spawns, the adversary (`conductor.rs:8235`) and the gate's adjudicator (:8257), whose verdict
 gates the fan-out. Criterion 15 therefore lands the method in both personas and both scaffold
@@ -321,16 +323,19 @@ unit over the cap the prompt states, or a defect in a criterion's own text that 
 remove; mechanical file overlap alone never does), its fix being the kept cause rule's: a re-plan for
 `decomposition-conflict`, the run stopping for `spec-ambiguity`; the ban on criterion edits stays in
 the adversary's section only, where it belongs to the spec critique. Each section also states that
-in a plan critique a unit reads as a criterion, and names its scope, beside the moved text: in a
-spec or plan critique its rules decide which finding blocks, and
+in a plan critique the moved text's criterion reads as a unit (twin and bundled criteria are twin
+and bundled units) and Rules 7 and 8 and the unit-size rule read as written. Each section also
+names its scope, beside the moved text: in a spec or plan critique its rules decide which finding
+blocks, and
 the working discipline's review rule (`working-discipline.md:96-104`), against which the
 adjudicator persona weighs every finding it upholds (`.rigger/agents/adjudicator.md:11`, its
 template's at `src/cli/setup.rs:1977-1980`), decides a unit diff's findings. Two role-voiced sections are not a duplicate under the one-home
 rule: the home of a method is the persona of the role that applies it. This
 repository's `.rigger/agents/*.md` are a consumer's copies of the scaffold, outside the one-home
 rule: the template is the shipped default and the repository's persona is its owner's
-configuration, free to diverge (this repository's already do), so no test holds a repository
-persona's section equal to its template's.
+configuration, free to diverge in text outside `## When you critique a spec or a plan` (this
+repository's already do), so the only repository-persona text a test holds is the moved sentences
+under that heading.
 `.rigger/agents/adjudicator.md` has no plan-critique passage: its verdict-channel paragraph (`:28-30`, the
 result-line rule that holds for every adjudication, a plan-critique decomposition included) stays
 where it is, word for word, and criterion 15 adds `## When you critique a spec or a plan` as a new
@@ -821,7 +826,7 @@ TEST PLACEMENT (criterion -> test homes; the fixtures each test uses):
 | 12 | `src/cli/setup.rs` tests iterating `BUILTIN` and `REVIEWER_DISCIPLINE` under the MARKERS rule (the root crate reaches both; the shipped-text helper PR #117 adds is the one home of the texts); the existing tests BASE names, edited |
 | 13 | `conductor.rs` tests pinning the constant's three sentences; `src/cli/setup.rs` tests pinning the `## When you review` heading and its sentences in the working-discipline body; the pins that move, edited |
 | 14 | `instructions.rs` tests (the third entry's name and body); `conductor.rs` tests (the spawn path's prompt equals `compose`'s output, the `## communication` section once, no "(non-negotiable)"); `canary_store.rs`'s prompt test; `src/cli/critique.rs` tests (the critic's `SpawnOpts.system_prompt` equal to `compose`'s output); the existing pins of the constant, edited |
-| 15 | `review.rs` tests for `spec_critique_prompt`'s sections; `conductor.rs` tests for the DAG critique prompt; `src/cli/setup.rs` tests through the shipped-text helper for the template's section; the existing pins of the moved sentences, edited |
+| 15 | `review.rs` tests for `spec_critique_prompt`'s sections; `conductor.rs` tests for the DAG critique prompt; `src/cli/setup.rs` tests through the shipped-text helper for the template's section, and reading `.rigger/agents/adversary.md` and `.rigger/agents/adjudicator.md` for the moved sentences under that heading; the existing pins of the moved sentences, edited |
 
 ARTIFACT OWNERSHIP (owner = the criterion of the first production caller):
 
