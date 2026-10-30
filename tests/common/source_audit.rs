@@ -4,9 +4,13 @@
 //! each suite through `#[path]`, never through `tests/common/mod.rs`. Also the line-level
 //! source reading those audits and `tests/boundary_audit.rs` share: which lines are test code,
 //! and which function encloses a line. And the one Rust lexer, [`tokenize`], that
-//! `tests/simplification_audit.rs` scans by and rule 4 of `tests/boundary_audit.rs` finds string
-//! literals with. Each suite uses the subset it needs (hence the module-wide `dead_code`
-//! allowance, as in `tests/common/mod.rs`).
+//! `tests/simplification_audit.rs` scans by, rule 4 of `tests/boundary_audit.rs` finds string
+//! literals with and its appender audit finds calls with, and the binary's unit tests (mounted by
+//! `src/main.rs`) read `tests/common`'s functions by; and the token readers the simplification and
+//! boundary audits read its tokens with ([`ref_punct`], [`ref_token`], [`qualifier_before`],
+//! [`follows_keyword`], [`is_definition_site`], [`close_of`], [`imported_names`]). Each
+//! suite uses the subset it needs (hence the module-wide `dead_code` allowance, as in
+//! `tests/common/mod.rs`).
 
 #![allow(dead_code)]
 
@@ -551,4 +555,109 @@ pub fn tokenize(chars: &[char]) -> Vec<RawTok> {
         i += 1;
     }
     out
+}
+
+/// Whether `tok` is the punctuation `text`; `false` when there is no token.
+pub fn ref_punct(tok: Option<&RawTok>, text: &str) -> bool {
+    ref_token(tok, RawKind::Punct, text)
+}
+
+/// Whether `tok` is the token `text` of kind `kind`; `false` when there is no token.
+pub fn ref_token(tok: Option<&RawTok>, kind: RawKind, text: &str) -> bool {
+    tok.map(|t| t.kind == kind && t.text == text)
+        .unwrap_or(false)
+}
+
+/// The identifier or keyword (such as `crate`, `self` or `super`) in front of the `::` that
+/// precedes `toks[i]`, the qualifier of a `qualifier::name`-shaped occurrence; `None` when fewer
+/// than three tokens precede `toks[i]`, when `toks[i]` is not `::`-preceded, or when the token in
+/// front of the `::` is neither an identifier nor a keyword. Spec 87 round-1 addendum
+/// (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): "the tokenizer's existing
+/// `preceded_by_coloncolon` signal" carried one step further, to name WHICH qualifier a
+/// `::`-qualified reference names, first so a bare-name collision between two `Free`/`ImplAssoc`
+/// fns can attribute a qualified call site to the one it actually means.
+pub fn qualifier_before(toks: &[RawTok], i: usize) -> Option<String> {
+    if i < 3 {
+        return None;
+    }
+    if ref_punct(toks.get(i - 1), ":") && ref_punct(toks.get(i - 2), ":") {
+        let q = toks.get(i - 3)?;
+        if q.kind == RawKind::Ident || q.kind == RawKind::Keyword {
+            return Some(q.text.clone());
+        }
+    }
+    None
+}
+
+/// Whether `toks[i]` is a function's DEFINITION site, the name token immediately preceded by the
+/// `fn` keyword (`fn name(`), rather than a reference to the name.
+pub fn is_definition_site(toks: &[RawTok], i: usize) -> bool {
+    follows_keyword(toks, i, "fn")
+}
+
+/// Whether the token in front of `toks[i]` is the keyword `keyword`; `false` at the first token.
+pub fn follows_keyword(toks: &[RawTok], i: usize, keyword: &str) -> bool {
+    i > 0 && ref_token(toks.get(i - 1), RawKind::Keyword, keyword)
+}
+
+/// The index of the `close` punctuation that closes the opening bracket at `toks[open]`, depth
+/// counted on that bracket and `close` alone, or the end of `toks` when none does.
+pub fn close_of(toks: &[RawTok], open: usize, close: &str) -> usize {
+    let opener = toks[open].text.as_str();
+    let mut depth = 0usize;
+    for at in open..toks.len() {
+        if ref_punct(toks.get(at), opener) {
+            depth += 1;
+        } else if ref_punct(toks.get(at), close) {
+            depth -= 1;
+            if depth == 0 {
+                return at;
+            }
+        }
+    }
+    toks.len()
+}
+
+/// The names read from the `use` declarations among `toks`, each paired with its owner, in source
+/// order. A declaration runs from any `use` keyword to the next `;`, so a precise-capturing bound
+/// (`impl Sized + use<'a>`) opens one too. A name is an identifier that ends a path: a `,`, `}`
+/// or `;` follows it and no `as` precedes it. Its owner is the identifier or keyword in front of
+/// the `::` before it (`use a::b::c;` imports `c` owned by `b`). A name with no such owner of its
+/// own is owned by the innermost open group, whose owner is read the same way in front of its
+/// `{`, the empty string when there is none (`use a::{b, c::{d}};` imports `b` owned by `a` and
+/// `d` owned by `c`; `use {a, b::c};` imports `a` owned by `""` and `c` owned by `b`). These
+/// imports are read for no name: a glob (`a::*`), a renamed import (`b as c`), a path ending in a
+/// keyword (a `self` group member, which imports the `a` of `use a::{self, b};`) and a name with
+/// no owner outside any group (a one-segment path, `use serde;`).
+pub fn imported_names(toks: &[RawTok]) -> Vec<(String, String)> {
+    let mut names = Vec::new();
+    // Inside a `use` declaration, each open group's owner, innermost last.
+    let mut owners: Option<Vec<String>> = None;
+    for (at, tok) in toks.iter().enumerate() {
+        let Some(groups) = owners.as_mut() else {
+            if ref_token(Some(tok), RawKind::Keyword, "use") {
+                owners = Some(Vec::new());
+            }
+            continue;
+        };
+        if ref_punct(Some(tok), ";") {
+            owners = None;
+        } else if ref_punct(Some(tok), "{") {
+            groups.push(qualifier_before(toks, at).unwrap_or_default());
+        } else if ref_punct(Some(tok), "}") {
+            groups.pop();
+        } else if tok.kind == RawKind::Ident && ends_a_use_path(toks, at) {
+            let owner = qualifier_before(toks, at).or_else(|| groups.last().cloned());
+            names.extend(owner.map(|owner| (tok.text.clone(), owner)));
+        }
+    }
+    names
+}
+
+/// Whether the identifier at `toks[at]` is the last segment of a `use` path that imports it by
+/// its own name: a `,`, `}` or `;` follows it, and it is no `as` rename's target.
+fn ends_a_use_path(toks: &[RawTok], at: usize) -> bool {
+    let next = toks.get(at + 1);
+    let ends = [",", "}", ";"].iter().any(|end| ref_punct(next, end));
+    ends && !follows_keyword(toks, at, "as")
 }

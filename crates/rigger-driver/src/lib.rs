@@ -19,7 +19,7 @@ pub mod sidecar;
 // The modules the moved code names by their historical `crate::` paths.
 #[cfg(all(not(test), any(feature = "store", not(feature = "core"))))]
 use rigger_domain::config;
-#[cfg(any(feature = "store", not(feature = "core")))]
+#[cfg(all(not(test), any(feature = "store", not(feature = "core"))))]
 use rigger_domain::contextgraph;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::retention;
@@ -48,7 +48,7 @@ use rigger_domain::{ledger, test_cases};
 // The root-crate vocabulary the tests and the shared fixtures name (see the manifest's
 // `rigger-root` dev-dependency).
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_root::{conductor, config, gate};
+use rigger_root::{conductor, config, contextgraph, gate};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_store_sqlite::run_store;
 

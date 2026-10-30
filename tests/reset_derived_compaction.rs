@@ -16,7 +16,7 @@ use common::cli::run_rigger_envs;
 use common::cli::seed_derived_duplicates;
 use common::cli::stream_shape;
 use common::cli::temp_rigger_project;
-use common::cli::{LOG_LEFT_AS_IT_STANDS_LINE, SERVER_BACKED_DERIVED_REFUSAL};
+use common::cli::{server_backed_derived_refusal, LOG_LEFT_AS_IT_STANDS_LINE};
 use rigger::retention::TYPE_GENERATION_INGESTED;
 
 #[test]
@@ -42,7 +42,7 @@ fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backen
             err.as_str(),
             log_and_graph_files(root) == found
         ),
-        (false, "", SERVER_BACKED_DERIVED_REFUSAL, true),
+        (false, "", server_backed_derived_refusal().as_str(), true),
         "the refusal names the mode, the backend the migration needs, the backend the project is \
          configured for and what to do instead, advises no pruning of the server store, and \
          leaves the local log and graph files byte for byte"

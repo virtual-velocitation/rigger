@@ -308,47 +308,75 @@ pub fn ledger_head_read(stream: &str) -> super::CountedRead {
 }
 
 /// A REBUILD FROM THE TREE ALONE: [`rebuild_from_the_log`], one event to a committed batch,
-/// re-extracting each ledger entry from the tree at `root` with no object database to ask. An
-/// entry whose file the tree holds at another generation resolves from no source, so its identity
-/// is left behind.
+/// re-extracting from the tree at `root`, with no object database to ask, each ledger entry its
+/// fold asks a batch for. An entry whose file the tree holds at another generation resolves from no
+/// source, so its identity is left behind.
 #[cfg(feature = "symbols")]
 pub fn rebuild_from_the_tree(graph_db: &std::path::Path, log: &[Event], root: &std::path::Path) {
-    rebuild_from_the_log(graph_db, log, 1, &mut |entry| {
-        rigger::ingest::resolve_entry(root, entry, None)
-    });
+    let root = root.to_path_buf();
+    rebuild_from_the_log(
+        graph_db,
+        log,
+        1,
+        super::resolving(move |entry| rigger::ingest::resolve_entry(&root, entry, None)),
+    );
 }
 
 /// A COLD REBUILD OF `log`: rebuild the graph file `graph_db` under the project `test`, owed, from
 /// `log` in batches of at most `batch` events, each one committed transaction, re-extracting each
-/// ledger entry with `reextract`. It insists the rebuild ran.
+/// ledger entry its fold asks a batch for through the re-extraction `reextraction` builds for the
+/// rebuild ([`super::resolving`]). It insists the rebuild ran.
 pub fn rebuild_from_the_log(
     graph_db: &std::path::Path,
     log: &[Event],
     batch: usize,
-    reextract: &mut rigger::contextgraph::sqlite::Reextract,
+    reextraction: impl Fn() -> Box<rigger::contextgraph::sqlite::Reextract<'static>>
+        + Send
+        + Sync
+        + 'static,
 ) {
     use rigger::contextgraph::sqlite::{stream_past, Projector, RebuildSink};
 
-    let rebuilt = Projector::rebuild(
-        &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
-        "test",
-        true,
-        &mut |after, sink: &mut RebuildSink| stream_past(log, after, batch, sink),
-        reextract,
-        &mut |_| {},
-    )
-    .unwrap();
+    let rebuilt = Projector::open(graph_db.to_str().unwrap(), "test")
+        .unwrap()
+        .with_reextraction(reextraction)
+        .rebuild(
+            &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
+            true,
+            &mut |after, sink: &mut RebuildSink| stream_past(log, after, batch, sink),
+            &mut |_| {},
+        )
+        .unwrap();
     assert!(rebuilt.is_some(), "premise: the rebuild ran");
 }
 
-/// LEAVE `graph` OWING ITS REBUILD: the generic fold refuses a ledger entry and marks the graph
-/// it refused, so every fold after it is refused for that debt.
-pub fn owe_a_rebuild(graph: &dyn rigger::contextgraph::Projection) {
-    use rigger::contextgraph::{wired, Fold};
+/// The graph file `name` under `dir` rebuilt from `log` alone ([`rebuild_from_the_log`] in batches
+/// of at most `batch` events, re-extracting no ledger entry), opened as its fold left it.
+pub fn rebuilt_graph_file(
+    dir: &std::path::Path,
+    name: &str,
+    log: &[Event],
+    batch: usize,
+) -> rigger::contextgraph::sqlite::Projector {
+    rebuild_from_the_log(&dir.join(name), log, batch, super::resolving(|_| Ok(None)));
+    super::graph_file_in(dir, name)
+}
 
-    let mut stray = super::generation_ingested("gc", "src/stray.rs", "h0", "", false).event(1);
-    stray.position = 1;
-    assert_ne!(Fold::of(wired(Some(graph)), &stray), Fold::Folded);
+/// LEAVE `graph`, open on the graph file `graph_db`, OWING ITS REBUILD by an older fold rule: it
+/// folds one decision, then the file records the rule before the current one, so every fold after
+/// it is refused for that debt. The rule is stamped through the store's own opener, the one sqlite
+/// connection every crate that mounts this fixture reaches.
+pub fn owe_a_rebuild(graph: &dyn rigger::contextgraph::Projection, graph_db: &std::path::Path) {
+    let decision = super::event_of("DecisionMade", super::decision_json("d-owed", "s", &[], ""));
+    super::folds(graph, &[super::placed_at(decision, 1, 1)]);
+    rigger_store_sqlite::sqlite::open_connection(graph_db.to_str().unwrap())
+        .unwrap()
+        .pragma_update(
+            None,
+            "user_version",
+            rigger::contextgraph::sqlite::PROJECTION_VERSION - 1,
+        )
+        .unwrap();
     assert!(graph.rebuild_owed().unwrap());
 }
 

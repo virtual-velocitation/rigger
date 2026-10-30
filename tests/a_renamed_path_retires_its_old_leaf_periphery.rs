@@ -19,12 +19,10 @@
 
 mod common;
 
-use std::path::Path;
-
 use common::fixtures::{
     a_call_from, attrs_of, cross_file_call_and_proof, definition, ev_at, f_rs_batch_def, folds,
-    landed, proven_by_attr, rebuild_from_the_log, DefRow, NEW_LEAF_MODULE, OLD_LEAF_FN,
-    RENAMED_NODE, RENAMED_PATH,
+    folds_each, graph_file_in, landed, proven_by_attr, rebuilt_graph_file, DefRow, NEW_LEAF_MODULE,
+    OLD_LEAF_FN, RENAMED_NODE, RENAMED_PATH,
 };
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{TIER_AMBIGUOUS, TIER_INFERRED};
@@ -53,11 +51,6 @@ fn the_references_at(tier: &str) -> Vec<(String, String, String, String)> {
     a_call_from("src/b.rs", "g", "src/b.rs::%B", tier)
 }
 
-/// The graph file `name` under `dir`, opened under the project `test` the rebuild folds into.
-fn graph_file(dir: &Path, name: &str) -> Projector {
-    Projector::open(dir.join(name).to_str().unwrap(), "test").unwrap()
-}
-
 /// `p` holds [`RENAMED_NODE`] carrying exactly the attrs of the definition `settled` - no
 /// `proven_by` - and the reference and the call to `B` ambiguous: what a graph holding no call
 /// target of the leaf `B` gives.
@@ -83,10 +76,8 @@ fn a_fn_refolded_as_another_leaf_at_its_path_retires_the_old_leaf_live_and_in_a_
     log.push(at_the_path(5, "h2", 0, NEW_LEAF_MODULE));
     let dir = tempfile::tempdir().unwrap();
 
-    let live = graph_file(dir.path(), "live.db");
-    for e in &log[..4] {
-        folds(&live, std::slice::from_ref(e));
-    }
+    let live = graph_file_in(dir.path(), "live.db");
+    folds_each(&live, &log[..4]);
     assert_eq!(
         landed(&live),
         the_references_at(TIER_INFERRED),
@@ -100,9 +91,8 @@ fn a_fn_refolded_as_another_leaf_at_its_path_retires_the_old_leaf_live_and_in_a_
     folds(&live, std::slice::from_ref(&log[4]));
     the_old_leaf_resolves_onto_nothing(&live, NEW_LEAF_MODULE, "the live fold of generation 2");
 
-    rebuild_from_the_log(&dir.path().join("rebuilt.db"), &log, 1, &mut |_| Ok(None));
     the_old_leaf_resolves_onto_nothing(
-        &graph_file(dir.path(), "rebuilt.db"),
+        &rebuilt_graph_file(dir.path(), "rebuilt.db", &log, 1),
         NEW_LEAF_MODULE,
         "a cold rebuild of the log, one event to a batch",
     );
@@ -125,23 +115,20 @@ fn a_differing_name_pair_in_one_batch_retires_the_first_leaf_live_and_in_a_cold_
     let settled = (NEW_LEAF_MODULE.0, OLD_LEAF_FN.1, OLD_LEAF_FN.2);
     let dir = tempfile::tempdir().unwrap();
 
-    let before = graph_file(dir.path(), "before.db");
+    let before = graph_file_in(dir.path(), "before.db");
     folds(&before, &the_references_from(1));
     folds(&before, &pair(4));
     the_old_leaf_resolves_onto_nothing(&before, settled, "the references, then the one-batch pair");
 
     let mut log = pair(1);
     log.extend(the_references_from(3));
-    let after = graph_file(dir.path(), "after.db");
+    let after = graph_file_in(dir.path(), "after.db");
     folds(&after, &log[..2]);
     folds(&after, &log[2..]);
     the_old_leaf_resolves_onto_nothing(&after, settled, "the one-batch pair, then the references");
 
-    rebuild_from_the_log(&dir.path().join("rebuilt.db"), &log, log.len(), &mut |_| {
-        Ok(None)
-    });
     the_old_leaf_resolves_onto_nothing(
-        &graph_file(dir.path(), "rebuilt.db"),
+        &rebuilt_graph_file(dir.path(), "rebuilt.db", &log, log.len()),
         settled,
         "a cold rebuild of the log as one batch",
     );

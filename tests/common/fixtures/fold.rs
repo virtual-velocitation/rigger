@@ -4,10 +4,19 @@
 //! reference folds read, the canonical spec-53 two-subsystem coupling seed, the spec-119
 //! show-renderer seed with the oracles its `rigger_graph` `show` and `around` objects are checked
 //! by, the live edges and calls a projector serves with the spec-119 enum's `CONTAINS` edges they
-//! are checked against, the module declarations' `CONTAINS` edges it serves, and the read-backs
-//! suites take of a folded `Graph`. `apply` returns `Err` on a fold failure, so every helper
-//! unwraps it - a successful call is itself evidence the payload folded - but
-//! [`fold_entry_result`], which answers the error text a failing fold meets.
+//! are checked against, the module declarations' `CONTAINS` edges it serves, the read-backs
+//! suites take of a folded `Graph`, the two read batches a rebuild source hands with a writer
+//! between them, a rebuild whose extraction a writer meets, the texts a lost or refused fold
+//! answers, the payload no judge accepts with the decision and the re-extracted batch built on it,
+//! an entry a test's re-extraction resolves to nothing and one it answers with that batch, what a
+//! test's rebuild source answers when it stops, the owed
+//! mark's path and the note a read-only surface prints while the file owes its rebuild. `apply`
+//! returns `Err` on a fold failure, so every helper that folds unwraps it - a
+//! successful call is itself evidence the payload folded - but [`fold_entry_result`], which
+//! answers the error text a failing fold meets, [`fold_of`] and [`rebuild_meeting_a_writer`],
+//! which answer what became of a public fold ([`rigger::contextgraph::Fold`]), [`rebuild_answer`],
+//! which answers what a rebuild did or its error as text, and the rebuild sources [`one_read`] and
+//! [`two_read_batches`], which hand on what their sink answers.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, UNIX_EPOCH};
@@ -97,6 +106,39 @@ pub fn entry_at(prefix: &str, file: &str, generation: &str, pos: u64, secs: u64)
     )
 }
 
+/// A payload no type's judge accepts ([`rigger::contextgraph::check_fold_payload`]): malformed
+/// JSON.
+pub const POISON: &[u8] = b"{ not valid json";
+
+/// The ledger entry of `gc/src/a.rs` at generation `g-a`, at log position `position` and valid
+/// from `position` seconds past the epoch, which a test's re-extraction resolves to nothing
+/// ([`entry_at`]).
+pub fn unresolved_entry_at(position: u64) -> Event {
+    entry_at("gc", "src/a.rs", "g-a", position, position)
+}
+
+/// A decision at log position `position`, valid from `position` seconds past the epoch, whose
+/// payload is [`POISON`].
+pub fn poisoned_decision_at(position: u64) -> Event {
+    let poisoned = Event::new(rigger::contextgraph::TYPE_DECISION_MADE, POISON.to_vec());
+    placed_at(poisoned, position, position)
+}
+
+/// The ledger entries of `gc/src/b.rs` at generation `g-b`, one at each log position of
+/// `positions`, in order, each valid from its position in seconds past the epoch, which a test's
+/// re-extraction answers with [`poisoned_batch`] ([`entry_at`]).
+pub fn rejected_batch_entries(positions: impl IntoIterator<Item = u64>) -> Vec<Event> {
+    positions
+        .into_iter()
+        .map(|at| entry_at("gc", "src/b.rs", "g-b", at, at))
+        .collect()
+}
+
+/// A re-extracted batch whose one event, an extracted code entity, carries [`POISON`].
+pub fn poisoned_batch() -> Vec<Event> {
+    vec![Event::new(TYPE_CODE_ENTITY_EXTRACTED, POISON.to_vec())]
+}
+
 /// The `gc` identity a code file `file` keys its batch under, as its ledger entry names it.
 pub fn gc_identity(file: &str) -> String {
     generation_ingested("gc", file, "", "", false).identity()
@@ -114,6 +156,12 @@ pub fn placed_at(e: Event, pos: u64, secs: u64) -> Event {
 pub fn temp_graph_db() -> (tempfile::TempDir, String) {
     let (dir, root) = super::temp_root();
     (dir, format!("{root}/graph.db"))
+}
+
+/// The graph file `name` under `dir`, opened under the project `test`, the one a rebuild from a
+/// hand-built log folds into.
+pub fn graph_file_in(dir: &std::path::Path, name: &str) -> Projector {
+    Projector::open(dir.join(name).to_str().unwrap(), "test").unwrap()
 }
 
 /// Two projects, `ours` and `theirs`, sharing one fresh `graph.db` ([`temp_graph_db`]), with the
@@ -164,6 +212,11 @@ pub fn fold_asked(
     batch: Vec<Event>,
 ) {
     entry_asked(p, &entry_at("gc", file, generation, pos, secs), batch);
+}
+
+/// Everything `p` serves - every node and edge of its whole graph - as one comparable JSON text.
+pub fn whole_json(p: &Projector) -> String {
+    serde_json::to_string(&p.whole().unwrap()).unwrap()
 }
 
 /// Every live edge `p` serves as `(from, rel, to, valid_from, source)`, sorted.
@@ -276,13 +329,339 @@ pub fn reference(from: &str, to: &str, tier: &str) -> (String, String, String, S
     (from.into(), REL_REFERENCES.into(), to.into(), tier.into())
 }
 
-/// Fold `events` into `p` through the public fold, and insist they landed: the one spelling of
-/// seeding a graph a test then reads.
-pub fn folds(p: &dyn Projection, events: &[Event]) {
-    assert_eq!(
-        rigger::contextgraph::Fold::of_batch(|| rigger::contextgraph::wired(Some(p)), events),
-        rigger::contextgraph::Fold::Folded
+/// The text of a graph error whose reason is `reason`: the domain error's own display.
+pub fn graph_error(reason: &str) -> String {
+    rigger::contextgraph::Error(reason.to_string()).to_string()
+}
+
+/// What a fold on a surface wired with no context graph answers: the domain's own refusal
+/// ([`rigger::contextgraph::wired`]) as the fold displays it.
+pub fn unwired() -> String {
+    let Err(refused) = rigger::contextgraph::wired(None) else {
+        panic!("a surface wired with no graph refuses the fold");
+    };
+    refused.to_string()
+}
+
+/// The text of the graph error a fold meets on `path` when a directory stands where it writes a
+/// file.
+pub fn directory_refusal(path: impl std::fmt::Display) -> String {
+    graph_error(&(path.to_string() + ": Is a directory (os error 21)"))
+}
+
+/// What SQLite answers when the file a connection opens holds no database.
+pub const NOT_A_DATABASE: &str = "file is not a database";
+
+/// The clause a report line spells for events the graph did not fold, for `why`.
+pub fn not_folded(why: &str) -> String {
+    ["not folded into the context graph: ", why].concat()
+}
+
+/// The suffix a report line ends with when the graph did not fold the event it reports, for
+/// `why`: the [`not_folded`] clause after a `; `.
+pub fn not_folded_suffix(why: &str) -> String {
+    format!("; {}", not_folded(why))
+}
+
+/// The line a run surface prints when it recorded `events` run events whose fold the graph did
+/// not make, for `reason` - a graph error's reason, its `graph: ` prefix added ([`graph_error`]).
+pub fn recorded_not_folded(events: usize, reason: &str) -> String {
+    let recorded = format!("rigger: recorded {events} run event(s); ");
+    recorded + &not_folded(&graph_error(reason))
+}
+
+/// The tail a direct fold's not-folded error ends with, for events all of the project's run
+/// stream (spec 124, CAUSE TEXTS): a fold into a file without the `caught_up` cursor, or through a
+/// projector handed no log.
+pub const SETUP_PAYS: &str =
+    " - the next rigger setup finds the event missing from graph.db and folds it";
+
+/// The tail a call-run fold's not-folded error ends with (spec 124, CAUSE TEXTS): a fold of events
+/// all of the project's run stream into a file carrying the `caught_up` cursor, through a
+/// projector handed the log.
+pub const CATCH_UP_PAYS: &str = " - the next fold through the folding store catches it up";
+
+/// The error text of a fold not made for `reason`: the reason, then `pays`, the tail of the
+/// fold's path naming what folds the event later ([`SETUP_PAYS`] after a direct fold of the run
+/// stream, [`CATCH_UP_PAYS`] after a call).
+pub fn lost_fold(reason: &str, pays: &str) -> String {
+    [reason, pays].concat()
+}
+
+/// The error text of a call-run fold not made for `reason` (spec 124, CAUSE TEXTS): the graph
+/// error of `reason` ([`graph_error`]), then [`CATCH_UP_PAYS`] ([`lost_fold`]).
+pub fn lost_by_calls(reason: &str) -> String {
+    lost_fold(&graph_error(reason), CATCH_UP_PAYS)
+}
+
+/// The cause a fold answers past its ceiling `held` while another writer holds the write lock
+/// (spec 124, CAUSE TEXTS), `held` as the ceiling reads.
+pub fn lock_held_past(held: &str) -> String {
+    format!("graph.db's write lock stayed held past {held}")
+}
+
+/// The cause a call-run fold answers past its ceiling `held` after a call that advanced short of
+/// its position or met the log's head below it (spec 124, CAUSE TEXTS), `held` as the ceiling
+/// reads.
+pub fn catch_up_short_after(held: &str) -> String {
+    format!("graph.db's catch-up had not reached this event after {held}")
+}
+
+/// The cause a call-run fold answers while the file holds a rebuild's state (spec 124, CAUSE
+/// TEXTS).
+pub const UNFINISHED_REBUILD: &str = "graph.db holds an unfinished rebuild";
+
+/// What the generic fold answers a ledger entry, the reason of its refusal.
+pub const ENTRY_REFUSED: &str =
+    "a GenerationIngested entry folds only with its batch, through `Projection::apply_generation`";
+
+/// What the public fold answers a batch holding a ledger entry the constructor built, naming no
+/// stream: the generic fold's refusal ([`ENTRY_REFUSED`]), with no tail, since no later fold
+/// re-derives an event of no stream.
+pub fn entry_refusal() -> rigger::contextgraph::Fold {
+    rigger::contextgraph::Fold::NotFolded(graph_error(ENTRY_REFUSED))
+}
+
+/// What a test's rebuild source answers when it stops a rebuild mid-read.
+pub const SOURCE_INTERRUPTED: &str = "interrupted";
+
+/// A test's rebuild source, or the sink a source hands to, stopping a rebuild mid-read
+/// ([`SOURCE_INTERRUPTED`]).
+pub fn source_interrupted<T>() -> Result<T, rigger::contextgraph::Error> {
+    Err(rigger::contextgraph::Error(SOURCE_INTERRUPTED.to_string()))
+}
+
+/// The owed mark of the graph file `graph.db` in the directory `dir`: the file an older binary's
+/// lost fold left beside it, no cause of its rebuild (spec 124, THE MARK).
+pub fn owed_mark_in(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join("graph.db.owed")
+}
+
+/// Write the owed mark of the graph file `graph.db` in the directory `dir` ([`owed_mark_in`]),
+/// empty, as a fold that lost its event once left it, and answer its path: no fold writes it now
+/// (spec 124, AN APPENDER WAITS UNDER THE CEILING AND NEVER MARKS).
+pub fn mark_owed_in(dir: &std::path::Path) -> std::path::PathBuf {
+    let mark = owed_mark_in(dir);
+    std::fs::write(&mark, b"").unwrap();
+    mark
+}
+
+/// Stand a directory at the path of the owed mark of the graph file `graph_db` ([`owed_mark_in`]),
+/// a mark no removal can remove - its removal is refused naming it ([`directory_refusal`]) - and
+/// answer its path.
+pub fn unremovable_mark_beside(graph_db: &std::path::Path) -> std::path::PathBuf {
+    let mark = owed_mark_in(graph_db.parent().unwrap());
+    std::fs::create_dir(&mark).unwrap();
+    mark
+}
+
+/// Whether the owed mark of the graph file `graph_db` ([`owed_mark_in`]) stands beside it.
+pub fn mark_stands_beside(graph_db: &std::path::Path) -> bool {
+    owed_mark_in(graph_db.parent().unwrap()).exists()
+}
+
+/// The one note every read-only surface prints while `graph.db` owes its rebuild.
+pub fn rebuild_owed_note() -> String {
+    format!(
+        "note: {} - until then the context graph answers as it stands",
+        rigger::contextgraph::REBUILD_OWED
+    )
+}
+
+/// What the public fold answers on a graph that owes its rebuild: refused, naming the debt.
+pub fn owed_refusal() -> rigger::contextgraph::Fold {
+    rigger::contextgraph::Fold::NotFolded(graph_error(rigger::contextgraph::REBUILD_OWED))
+}
+
+/// What the emit tool answers for the event it appended at `position`: folded, or - given the
+/// `reason` its fold failed for - not folded, and why.
+pub fn emit_answer(position: u64, reason: Option<&str>) -> serde_json::Value {
+    match reason {
+        None => serde_json::json!({ "position": position, "folded": true }),
+        Some(reason) => {
+            serde_json::json!({ "position": position, "folded": false, "reason": reason })
+        }
+    }
+}
+
+/// The reason a failing batch function gives ([`blob_unread`]).
+pub const BLOB_UNREAD: &str = "the blob could not be read";
+
+/// A batch function's failing answer: the entry's blob could not be read ([`BLOB_UNREAD`]).
+pub fn blob_unread() -> Result<Option<Vec<Event>>, rigger::contextgraph::Error> {
+    Err(rigger::contextgraph::Error(BLOB_UNREAD.to_string()))
+}
+
+/// Fold `events` into `p` through the public fold, answering what became of them.
+pub fn fold_of(p: &dyn Projection, events: &[Event]) -> rigger::contextgraph::Fold {
+    rigger::contextgraph::Fold::of_batch(|| rigger::contextgraph::wired(Some(p)), events)
+}
+
+/// A REBUILD MEETING A WRITER (spec 122, EXTRACTION OUTSIDE THE WRITE TRANSACTION): rebuild the
+/// graph file `graph_db` under the project `test` from `source`, owed when `owed` says so, while
+/// `writer` folds `events` through the public fold ([`fold_of`]) between two waits on a barrier
+/// whose other party is the rebuild's first ask of its re-extraction, which answers `batch` only
+/// once the writer's fold has returned. A rebuild that ends or panics without asking meets the
+/// writer's two waits itself once it has returned, and a writer whose fold panics still meets the
+/// rebuild's second wait, so either goes red - the panic resumed once both have returned - rather
+/// than hangs. It insists the rebuild ran, pruning nothing ([`clean_rebuild`]), and asked its
+/// re-extraction once, and answers what became of the writer's fold.
+pub fn rebuild_meeting_a_writer(
+    graph_db: &str,
+    owed: bool,
+    source: &mut rigger::contextgraph::sqlite::RebuildSource,
+    writer: &(dyn Projection + Sync),
+    events: &[Event],
+    batch: &[Event],
+) -> rigger::contextgraph::Fold {
+    use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    let barrier = Arc::new(Barrier::new(2));
+    let asked = Arc::new(AtomicUsize::new(0));
+    let (written, rebuilt) = std::thread::scope(|s| {
+        let folding = s.spawn(|| {
+            barrier.wait();
+            let written = catch_unwind(AssertUnwindSafe(|| fold_of(writer, events)));
+            barrier.wait();
+            written
+        });
+        let rebuilt = catch_unwind(AssertUnwindSafe(|| {
+            let (barrier, asked, batch) =
+                (Arc::clone(&barrier), Arc::clone(&asked), batch.to_vec());
+            rebuild_answer(
+                graph_db,
+                owed,
+                source,
+                resolving(move |_| {
+                    if asked.fetch_add(1, Ordering::SeqCst) == 0 {
+                        barrier.wait();
+                        barrier.wait();
+                    }
+                    Ok(Some(batch.clone()))
+                }),
+            )
+        }));
+        if asked.load(Ordering::SeqCst) == 0 {
+            barrier.wait();
+            barrier.wait();
+        }
+        (folding.join().unwrap(), rebuilt)
+    });
+    let (written, rebuilt) = (
+        written.unwrap_or_else(|panic| resume_unwind(panic)),
+        rebuilt.unwrap_or_else(|panic| resume_unwind(panic)),
     );
+    assert_eq!(rebuilt, clean_rebuild());
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "the rebuild asks the entry's batch once"
+    );
+    written
+}
+
+/// What a rebuild that ran answers ([`rebuild_answer`]) when it pruned nothing.
+pub fn clean_rebuild() -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, String> {
+    Ok(Some(rigger::contextgraph::sqlite::Rebuilt::default()))
+}
+
+/// The factory a test installs as a projector's re-extraction ([`Projector::with_reextraction`]):
+/// each re-extraction a rebuild or catch-up call builds from it is a fresh copy of `answer`, so
+/// state `answer` shares - a counter, a log of what it was asked - is shared through what it
+/// captures.
+pub fn resolving(
+    answer: impl FnMut(&Event) -> Result<Option<Vec<Event>>, rigger::contextgraph::Error>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+) -> impl Fn() -> Box<rigger::contextgraph::sqlite::Reextract<'static>> + Send + Sync + 'static {
+    move || Box::new(answer.clone())
+}
+
+/// Rebuild the graph file `graph_db` under the project `test` from `source`, owed when `owed` says
+/// so, re-extracting each ledger entry its fold asks a batch for through the re-extraction
+/// `reextraction` builds for the rebuild ([`resolving`]) and reporting no progress, and answer
+/// what the rebuild did, its error as text.
+pub fn rebuild_answer(
+    graph_db: &str,
+    owed: bool,
+    source: &mut rigger::contextgraph::sqlite::RebuildSource,
+    reextraction: impl Fn() -> Box<rigger::contextgraph::sqlite::Reextract<'static>>
+        + Send
+        + Sync
+        + 'static,
+) -> Result<Option<rigger::contextgraph::sqlite::Rebuilt>, String> {
+    Projector::open(graph_db, "test")
+        .unwrap()
+        .with_reextraction(reextraction)
+        .rebuild(
+            &Projector::lock_rebuild(graph_db).unwrap(),
+            owed,
+            source,
+            &mut |_| {},
+        )
+        .map_err(|e| e.0)
+}
+
+/// Rebuild the graph file `graph_db` as [`rebuild_answer`] does, and insist the rebuild ran,
+/// pruning nothing ([`clean_rebuild`]).
+pub fn rebuild_clean(
+    graph_db: &str,
+    owed: bool,
+    source: &mut rigger::contextgraph::sqlite::RebuildSource,
+    reextraction: impl Fn() -> Box<rigger::contextgraph::sqlite::Reextract<'static>>
+        + Send
+        + Sync
+        + 'static,
+) {
+    assert_eq!(
+        rebuild_answer(graph_db, owed, source, reextraction),
+        clean_rebuild()
+    );
+}
+
+/// Fold `events` into `p` through the public fold ([`fold_of`]), and insist they landed: the one
+/// spelling of seeding a graph a test then reads.
+pub fn folds(p: &dyn Projection, events: &[Event]) {
+    assert_eq!(fold_of(p, events), rigger::contextgraph::Fold::Folded);
+}
+
+/// Fold each of `events` into `p` alone, in order, each in a transaction of its own ([`folds`]).
+pub fn folds_each(p: &dyn Projection, events: &[Event]) {
+    for e in events {
+        folds(p, std::slice::from_ref(e));
+    }
+}
+
+/// A rebuild source's one read past `after`: the events of `log` past it handed to `sink` as one
+/// read batch.
+pub fn one_read(
+    log: &[Event],
+    after: u64,
+    sink: &mut rigger::contextgraph::sqlite::RebuildSink,
+) -> Result<(), rigger::contextgraph::Error> {
+    rigger::contextgraph::sqlite::stream_past(log, after, usize::MAX, sink)
+}
+
+/// A rebuild source's one read past `after`: the events of `log` handed to `sink` as two read
+/// batches ([`one_read`] each), split before `log[split]`, with `between` run once the first is
+/// handed and before the second - where a fold pass holds no transaction, so a writer's commit
+/// lands there (spec 122, THE SEAM).
+pub fn two_read_batches(
+    log: &[Event],
+    split: usize,
+    after: u64,
+    sink: &mut rigger::contextgraph::sqlite::RebuildSink,
+    between: impl FnOnce(),
+) -> Result<(), rigger::contextgraph::Error> {
+    let (first, second) = log.split_at(split);
+    one_read(first, after, sink)?;
+    between();
+    one_read(second, after, sink)
 }
 
 /// Fold `e` onto `p` at log position `pos`.
@@ -595,6 +974,36 @@ pub fn marked_partial(mut head: serde_json::Value) -> serde_json::Value {
     head
 }
 
+/// `payload` marked the head of its file's batch when `fresh`, and not when not: the flag on which
+/// the fold supersedes what the file's prior batch recorded.
+pub fn marked_fresh(mut payload: serde_json::Value, fresh: bool) -> serde_json::Value {
+    payload["fresh"] = fresh.into();
+    payload
+}
+
+/// `tests/t.rs`'s test reference to `name` at `line` heading its batch ([`marked_fresh`]), as
+/// event 0 of its generation `k1` (replay-keyed `gc/tests/t.rs@k1#0`), valid from `secs`, at no
+/// log position yet ([`t_rs_batch_reference`]).
+pub fn fresh_test_reference(name: &str, line: u32, secs: u64) -> Event {
+    t_rs_batch_reference(0, "k1", 0, name, line, secs)
+}
+
+/// `tests/t.rs`'s test reference to `name` at `line` at log position `pos`: event `index` of
+/// generation `generation`'s batch ([`code_batch_key`]), its head ([`test_reference_json`]) when
+/// `index` is 0, valid from `secs` ([`keyed_event`]).
+pub fn t_rs_batch_reference(
+    pos: u64,
+    generation: &str,
+    index: usize,
+    name: &str,
+    line: u32,
+    secs: u64,
+) -> Event {
+    let payload = test_reference_json("tests/t.rs", name, line, index == 0);
+    let key = code_batch_key("tests/t.rs", generation, index);
+    keyed_event(pos, TYPE_EDGE_INFERRED, payload, &key, secs)
+}
+
 /// The Rust definition of `name`, a `kind` at `line` in `file` ([`kind_def_json`]), as an unkeyed
 /// batch event, its batch's head when `fresh`.
 pub fn definition_event(file: &str, name: &str, kind: &str, line: u64, fresh: bool) -> Event {
@@ -821,6 +1230,12 @@ pub fn apply_ref(p: &Projector, pos: u64, file: &str, name: &str) {
 /// the evidence a test's reference to a definition records.
 pub fn edge_inferred_evidence_json(file: &str, name: &str, line: u32) -> serde_json::Value {
     serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true })
+}
+
+/// The test-origin reference of `file` to `name` at line `line` ([`edge_inferred_evidence_json`]),
+/// marked the head of its file's batch when `fresh`, and not when not ([`marked_fresh`]).
+pub fn test_reference_json(file: &str, name: &str, line: u32, fresh: bool) -> serde_json::Value {
+    marked_fresh(edge_inferred_evidence_json(file, name, line), fresh)
 }
 
 /// Fold into `p`, at log position `pos`, one test-origin reference from `file` line `line` to
@@ -1224,6 +1639,24 @@ pub fn proven_by_attr(p: &Projector, id: &str) -> Option<String> {
 /// carrying a proof is not equal to them.
 pub fn definition(name: &str, kind: &str, line: u64) -> BTreeMap<String, String> {
     definition_in("rust", name, kind, line)
+}
+
+/// The attrs of a Rust definition `name`, a `kind` at `line` ([`definition`]), proven by the test
+/// references at the `file:line`s of `evidence`, in the order the proof lists them: their count as
+/// `proven_by` and their JSON list as `proof_evidence`.
+pub fn proven_definition(
+    name: &str,
+    kind: &str,
+    line: u64,
+    evidence: &[&str],
+) -> BTreeMap<String, String> {
+    let mut attrs = definition(name, kind, line);
+    attrs.insert("proven_by".to_string(), evidence.len().to_string());
+    attrs.insert(
+        "proof_evidence".to_string(),
+        serde_json::to_string(evidence).unwrap(),
+    );
+    attrs
 }
 
 /// The attrs of a definition `name` in the language `lang`, a `kind` at `line`, and of nothing

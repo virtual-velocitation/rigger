@@ -28,7 +28,9 @@ use crate::eventstore::{
 pub use rigger_domain::ingest::*;
 
 /// Exactly the events `appended` reports the store placed, each stamped with the position the
-/// store issued for it (see [`FoldingStore::append_and_fold`]): what a fold of that append folds.
+/// store issued for it (see [`FoldingStore::append_and_fold`]) and with `stream`, the stream it
+/// was appended to, so a fold of the copy reads it as the log does (spec 124, THE APPENDER):
+/// what a fold of that append folds.
 fn placed(stream: &str, events: &[Event], appended: &Appended) -> Result<Vec<Event>, Error> {
     // The port promises ONE slot per event handed in, and this authority folds by ZIPPING
     // the report against the batch - so a report of a different length is not a smaller
@@ -47,11 +49,9 @@ fn placed(stream: &str, events: &[Event], appended: &Appended) -> Result<Vec<Eve
     Ok(appended
         .placed()
         .filter_map(|(i, position)| {
-            events.get(i).map(|e| {
-                let mut e = e.clone();
-                e.position = position;
-                e
-            })
+            events
+                .get(i)
+                .map(|e| e.clone().appended_at(stream, position))
         })
         .collect())
 }
@@ -62,8 +62,10 @@ fn placed(stream: &str, events: &[Event], appended: &Appended) -> Result<Vec<Eve
 /// the caller's own expectation and goes to the log FIRST; only then is the graph opened, through
 /// the `graph` opener the store was wired with (spec 101: a verb whose job is to append never opens
 /// `graph.db` before its append), and the append folded at the positions the store issued. A fold
-/// it could not make - the graph could not be had, owes its rebuild, or refused the write - is said
-/// through `log`, never swallowed: the events are on the log whatever became of the fold. Wired
+/// it could not make - the graph could not be had, owes its rebuild, or did not fold the events
+/// inside the appender's ceiling (spec 124) - is said through `log`, never swallowed: the events
+/// are on the log whatever became of the fold, and their positions missing from the graph's
+/// `applied` ledger are what the next fold through a folding store reads. Wired
 /// with no opener (an offline replay's isolated re-drive) it folds nothing by design and has
 /// nothing to say. Every read passes through untouched.
 pub struct FoldingStore<'a, O> {
@@ -107,9 +109,10 @@ where
 {
     /// THE APPEND-THEN-FOLD BODY of every event but a ledger entry: append `events` to `stream` under the caller's `expected`
     /// revision in ONE store append, then fold exactly what the store placed, at the positions it
-    /// issued, in ONE graph transaction - the batched-fold cadence spec 49 needs (one store
-    /// transaction per file's batch, not per event). The append goes to the log first and the
-    /// graph is opened only after it (spec 101: a verb whose job is to append never opens
+    /// issued, through ONE [`Fold::of_batch`], at the transaction cadence
+    /// [`Projection::apply_batch`] states - the batched fold spec 49 needs, rather than one fold
+    /// per event. The append goes to the log first and the graph is opened only after it (spec
+    /// 101: a verb whose job is to append never opens
     /// `graph.db` before its append). A fold failure never fails the append, which already landed
     /// durably: it is returned as the batch's [`Fold`] beside the store's own report, for the caller
     /// to report. A store wired with no graph folds nothing and says so in that [`Fold`]. An empty
@@ -152,12 +155,13 @@ where
         Ok(AppendedAndFolded { appended, fold })
     }
 
-    /// THE LEDGER FORM (spec 107), the only fold a ledger entry reaches outside a rebuild: append
-    /// `entry`, a `GenerationIngested` event, to `stream` in ONE store append, then fold it with
-    /// `batch`, the batch it records, through [`Projection::apply_generation`] at the position
-    /// the store issued, in ONE graph transaction. `batch` is already extracted: the function the
-    /// fold is handed only moves it out, so nothing is read, extracted or hashed while the graph
-    /// is held for the write.
+    /// THE LEDGER FORM (spec 107), the one fold that hands a ledger entry the batch its appender
+    /// extracted - a rebuild and a catch-up call fold one from its re-extraction: append `entry`,
+    /// a `GenerationIngested` event, to `stream` in ONE store append, then fold it with `batch`,
+    /// the batch it records, through [`Projection::apply_generation`] at the position the store
+    /// issued, which states the transaction the entry and its batch commit in. `batch` is already
+    /// extracted: the function the fold is handed only moves it out, so nothing is read, extracted
+    /// or hashed while the graph is held for the write.
     ///
     /// The append goes to the log first and the graph is opened only after it, as
     /// [`append_and_fold`](FoldingStore::append_and_fold) opens it. A fold failure never fails
@@ -255,6 +259,19 @@ where
         self.store.read_all(from, dir, filter)
     }
 
+    fn read_all_page(
+        &self,
+        from: Position,
+        filter: &Filter,
+        max: usize,
+    ) -> Result<Vec<Event>, Error> {
+        self.store.read_all_page(from, filter, max)
+    }
+
+    fn log_head(&self) -> Result<Option<Position>, Error> {
+        self.store.log_head()
+    }
+
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
         self.store.subscribe_all(from, filter)
     }
@@ -349,9 +366,10 @@ pub struct IngestStats {
 /// The flag beside a batch says whether the walk excluded its identity as an out-of-line
 /// test module's: set for the `gc` batch of a file [`walk_exclusions`] names and clear for every
 /// other batch, so a sink never computes it or loads an index. A sink records the file's batch
-/// in ONE store append and folds it in ONE graph transaction ([`FoldingStore`]'s two forms) - the
-/// batched-fold cadence spec 49 needs, since the measured cold-build throughput was
-/// transaction-cadence bound.
+/// in ONE store append and folds it with its ledger entry through the ledger form
+/// ([`FoldingStore::append_entry_and_fold`]), at the transaction cadence
+/// [`Projection::apply_generation`] states - the batched fold spec 49 needs, since the measured
+/// cold-build throughput was transaction-cadence bound.
 ///
 /// "Content" here is the batch this walk LOWERED, which is not always the file on disk, and the two
 /// halves differ: the design half reads the live tree, while the code half reuses the `symbols`
@@ -784,7 +802,10 @@ impl std::fmt::Display for EntryFailure {
 impl std::error::Error for EntryFailure {}
 
 /// THE ONE HASH FUNCTION as a sink is handed it (spec 107): a file's bytes to the object id git
-/// gives them, or the failure of the hash.
+/// gives them, the hash writing the object it hashes, inside a repository, into its object
+/// database before the call returns (spec 124, THE BLOB IS WRITTEN), so another process
+/// re-extracting the entry reads its blob from there, and writing nothing outside one; or the
+/// failure of the hash, a failed write included.
 #[cfg(feature = "symbols")]
 pub type HashBlob<'h> = dyn Fn(&[u8]) -> Result<String, rigger_domain::worktree::Error> + 'h;
 
@@ -2305,15 +2326,14 @@ mod entry_of_batch_tests {
                 tree.path(),
                 source(),
                 Ok(None),
-                (Err("the mark is unreadable"), Ok(None)),
+                (Err("graph.db is unreadable"), Ok(None)),
                 never
             ),
             (
-                Err(
-                    "whether graph.db owes its rebuild could not be read: graph: the mark is \
-                     unreadable"
-                        .to_string()
-                ),
+                Err(format!(
+                    "whether graph.db owes its rebuild could not be read: {}",
+                    crate::test_support::graph_error("graph.db is unreadable")
+                )),
                 asked(&["gc/src/lib.rs"], &["owed"])
             )
         );
@@ -2327,11 +2347,10 @@ mod entry_of_batch_tests {
                     never
                 ),
                 (
-                    Err(
-                        "graph.db's current generation of gc/src/lib.rs could not be read: \
-                         graph: the table is locked"
-                            .to_string()
-                    ),
+                    Err(format!(
+                        "graph.db's current generation of gc/src/lib.rs could not be read: {}",
+                        crate::test_support::graph_error("the table is locked")
+                    )),
                     asked(&["gc/src/lib.rs"], &["owed", "current gc/src/lib.rs"])
                 ),
                 "on a graph whose owed answer is {owed}"

@@ -106,12 +106,13 @@ pub struct Coupling {
 }
 
 impl Coupling {
-    /// Build the coupling graph from the WHOLE projection graph (as [`crate::contextgraph::sqlite::Projector::whole`]
-    /// returns it - live edges only, project-scoped, sorted). Keeps only the `CALLS` / `REFERENCES`
-    /// / `CONTAINS` structural edges at resolvable tiers (never [`TIER_AMBIGUOUS`]), but a module
-    /// declaration's `CONTAINS` onto a `file` node ([`declares_a_module`]), collapses each
-    /// unordered node pair to one undirected edge weighted by how many such edges join it, and drops
-    /// self-loops. A node with no surviving coupling edge is excluded (it joins no community).
+    /// Build the coupling graph from the WHOLE projection graph (as
+    /// `rigger_graph_sqlite::contextgraph::sqlite::Projector::whole` returns it - live edges only,
+    /// project-scoped, sorted). Keeps only the `CALLS` / `REFERENCES` / `CONTAINS` structural edges
+    /// at resolvable tiers (never [`TIER_AMBIGUOUS`]), but a module declaration's `CONTAINS` onto a
+    /// `file` node ([`declares_a_module`]), collapses each unordered node pair to one undirected
+    /// edge weighted by how many such edges join it, and drops self-loops. A node with no surviving
+    /// coupling edge is excluded (it joins no community).
     pub fn from_graph(g: &Graph) -> Self {
         // Index real DEFINITIONS by leaf so a cross-file reference that folded onto a bare
         // same-file placeholder can be redirected to the definition it actually reaches. A

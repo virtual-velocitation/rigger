@@ -57,7 +57,6 @@
 mod common;
 
 use common::repo::committed_json;
-use common::repo::repo_root;
 use common::repo::{assert_committed_json_round_trips, assert_committed_ledger_is_nonempty};
 use serde::Deserialize;
 
@@ -87,7 +86,7 @@ struct ConsumedDupCluster {
     disposition: Option<String>,
 }
 
-const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
+use common::repo::DUPLICATION_CATALOG_PATH as CATALOG_PATH;
 /// The documented contract a downstream consumer decodes [`CATALOG_PATH`] as.
 const CATALOG_CONTRACT: &str =
     "DupCluster contract (id/classification/sites/proposed_home/note, sites as file/name/content_hash)";
@@ -349,7 +348,7 @@ fn the_committed_catalog_and_its_lines_sibling_are_position_joined_by_id_and_sit
     }
 }
 
-const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
+use common::repo::AUDIT_REPORT_PATH as REPORT_PATH;
 
 /// One cited site's `(file, start_line, end_line)`.
 type CitedSite = (String, usize, usize);
@@ -405,8 +404,7 @@ fn section_2_cluster_site_citations(report: &str) -> Vec<(String, Vec<CitedSite>
 #[test]
 fn the_committed_report_section_2_cites_file_line_exactly_as_the_lines_sibling_records_them_in_order(
 ) {
-    let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
-        .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"));
+    let report = common::repo::repo_text(REPORT_PATH);
     let cited = section_2_cluster_site_citations(&report);
     assert!(
         !cited.is_empty(),

@@ -100,8 +100,7 @@ fn extract_criteria_never_merges_two_checkbox_items_across_the_committed_corpus(
 
     for path in &entries {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let text = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let text = common::fixtures::read_text(path);
         let criteria = rigger::spec::extract_criteria(&text);
 
         for (i, criterion) in criteria.iter().enumerate() {

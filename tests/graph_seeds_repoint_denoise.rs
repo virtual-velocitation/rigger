@@ -94,9 +94,7 @@ fn a_runs_seeds_land_on_a_real_neighborhood_through_the_public_projection() {
     // content/code the unit produced, not via a (gone) unit node.
     let run = a_run();
     let p = Projector::open(":memory:", "test").unwrap();
-    for e in &run {
-        common::fixtures::folds(&p, std::slice::from_ref(e));
-    }
+    common::fixtures::folds_each(&p, &run);
 
     let seeds = graph_seeds(&run);
     let g = p.subgraph(&seeds, 2).unwrap();

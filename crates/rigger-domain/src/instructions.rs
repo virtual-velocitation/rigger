@@ -34,7 +34,9 @@ pub struct Instruction {
 /// BDD where relevant. The second is the working discipline every agent follows: one pass by
 /// excellence, a turn's end being the session's end (every job waited on inside the turn), the
 /// hand-over an author's tree meets before it reports (each outcome with the
-/// check that proves it), and fanning mechanical work out to the `lookup` and `verify` helpers.
+/// check that proves it), the review method with the rule that only wrong code, an unmet
+/// Done-when criterion or a missing test for a behaviour one names blocks, every other finding
+/// a note, and fanning mechanical work out to the `lookup` and `verify` helpers.
 /// The third is the communication discipline: each decision and finding recorded the moment it
 /// is made, peers checked between actions, a peer's decision superseded explicitly.
 /// A harness-wide rule lives here once,
@@ -633,63 +635,27 @@ mod tests {
     }
 
     /// The hand-over section states each outcome an author's tree must meet before it reports,
-    /// with the check that proves it: the gates green in the author's worktree, generated files
-    /// committed with their inputs, a test-side shape spelled once - any token two tests could
-    /// spell, a named inline spelling included - with every added or named shape recorded in a
-    /// whole-tree audit whether merged or not, the audit one search per distinguishing
-    /// expression of each statement of every test-side body added and of each edited statement
-    /// of a body edited, the hunks of the unit's whole range inside it, a twin among untouched
-    /// statements named to the operator as the tree's debt - each string
-    /// literal alone and in full, however short, and each outside call with its first argument,
-    /// never the body's name nor an expression wrapping a literal, the record organised by
-    /// statement, each added or edited statement quoted with its `file:line` above its terms -
-    /// whose command and hits the record carries and the reviewing lens whose persona assigns the
-    /// duty re-runs and re-derives from
-    /// the test hunks over the same statements, comparing the record statement by statement, a
-    /// missing term or an unlisted statement blocking, one search per literal alone, a literal of an
-    /// untouched statement named to the operator as debt and never blocking, every
-    /// sentence about the changed behaviour true at head over a walked set the author enumerates
-    /// from its generators (an item's callers read from the graph at depth 1) over the unit's
-    /// whole range on every round, never a round's delta, and records on every change, the name
-    /// count and the depth-1 caller read paired with every item of the hunk list, each new
-    /// or FIXED sentence with the `file:line` witness that makes it true, a claim quantified over
-    /// a set witnessed once per case the code splits it into, a failing case making it false, a
-    /// sentence CHECKED as a
-    /// different rule shown to answer that rule's question and one answering a rewritten rule's
-    /// question a spelling of it, each spelling of a rule the change rewrites found by a
-    /// recorded search per pair of short terms - the feature's name as the code spells it and
-    /// the rule's noun phrase, both on one joined line, a sentence fragment as one term a record
-    /// the author cannot write - for its old statement and each label its cases carried, a
-    /// boolean term a production hunk adds to or removes from a filter, guard or predicate
-    /// rewriting the rule its function answers, whose old statement its depth-1 callers' notes,
-    /// Returns paragraphs, variant docs and oracles spell and are searched by in the same pair
-    /// form (the function's name and the old answer's noun), the reviewing lens whose persona
-    /// assigns the duty re-deriving each
-    /// generator's set over that range, reading every witness, re-running each search and
-    /// re-reading every hit against head, deriving the changed-condition set itself and reading
-    /// every consumer sentence against it, running the two-term search itself for each
-    /// rewritten rule and changed condition, and reading every sentence it
-    /// re-reads claim by claim against the unit's change with a witness per claim at head, a
-    /// sentence it cannot witness blocking on its own, a quantified claim's cases enumerated by
-    /// the lens and listed each with its witness, one witnessed case or a failing case blocking
-    /// on its own, its record listing every sentence it
-    /// reads, the CHECKED members included, never a grouped verdict, with a renamed name's old
-    /// spelling counted to zero, nothing added that nothing reads, the red test's body untouched
-    /// by the green commit, every constant, static, list, closure or predicate the delta adds - a
-    /// SQL conjunct inside a query string included - naming its one home in the sentence-walk
-    /// record - no other spelling, its distinguishing literal searched over the whole tree, derived
-    /// from or pinned to the existing one, a fact spelled twice lifted at all three sites - every
-    /// boolean expression the hunks add listed by shape under `ADDED PREDICATES` with its line, a
-    /// changed condition among them in both lists, two predicates of one fact lifted to one home
-    /// or pinned to each other, an added set of named members searched by each member's name,
-    /// with the reviewing lens whose persona assigns the duty deriving the added set itself by
-    /// the same shapes from the
-    /// production hunks, query strings included, running the member search itself, and blocking
-    /// on a missing or false line, and a probe that edits the tree - the
-    /// sharpest case of a turn's end being the session's end - run to completion and restored
-    /// before the turn ends; the gates'
-    /// check names each gate command run to completion inside the turn. Read by its words, so
-    /// a rewrap never moves a verdict.
+    /// with the check that proves it, and no check owes a record: the gates green in the author's
+    /// worktree, each run to completion inside the turn; generated files committed with their
+    /// inputs; tests table-driven - the cases of one behaviour over different values rows of one
+    /// table, never copies of a test function - and each table, fixture, helper, builder or
+    /// oracle added existing once, looked up where the test helpers live and moved to the shared
+    /// home when a second test home needs it, duplication the author did not write named as the
+    /// tree's debt and never lifted, a lift's call-site rewrite never making a statement the
+    /// author's, checked by the duplication gate and each behaviour reading as one table; every
+    /// sentence about the changed behaviour true at head, checked by reading the changed files'
+    /// module docs and the docs of the changed items and of their callers, read from the graph at
+    /// depth 1, against head, a renamed or retired name's old spelling counted to zero or each
+    /// remaining occurrence named; nothing added that nothing reads; the red test's body
+    /// untouched by the green commit; every fact the production delta states - a SQL conjunct
+    /// inside a query string included - with one home the author names; a whole-tree audit a
+    /// rejection's pattern item requires fixing every site of the shape, its record bounded to
+    /// each search with its hit count and each site fixed, never every hit listed or
+    /// dispositioned, a search term found inside a longer identifier no hit; and a probe that
+    /// edits the tree - the sharpest case of a turn's end being the session's end - run to
+    /// completion and restored before the turn ends. No sentence-walk record, witness, rule
+    /// search, one-home line or lens re-derivation is owed, and no hand mutation rule or
+    /// per-literal shape search is carried. Read by its words, so a rewrap never moves a verdict.
     #[test]
     fn the_working_discipline_states_each_hand_over_outcome_and_its_check() {
         let body = working_discipline();
@@ -700,214 +666,31 @@ mod tests {
         );
         let words = body.split_whitespace().collect::<Vec<_>>().join(" ");
         for phrase in [
+            "run each check yourself, in your worktree, before you report; the checks owe no \
+             record.",
             "The gates confirm, never discover.",
             "Every gate the stage names is green on your committed tree before you report.",
             "regenerated and committed in the same commit that changed its inputs",
             "`git status --porcelain` is empty at head",
-            "exists once across every test home, as production code does",
-            "look it up where the project's test helpers live before you write it",
-            "move it to the shared home and have both call it, changing no assertion or \
-             expected value",
-            "A table, fixture, helper, builder, seeder, expected value or oracle you add",
-            "the list is open - a shape is any test-side token two tests could spell",
-            "a const or id literal, a hand-built event or fixture row, a closure or a query \
-             string",
-            "The record is owed for every test-side shape you add, merged or not:",
-            "one whole-tree audit DecisionMade naming every site of its shape FIXED or CHECKED",
-            "FIXED when moved to the shared home with both calling it and no assertion or \
-             expected value changed, CHECKED when kept apart, with the reason",
-            "Naming a shape adds it: a builder, fixture or helper that gives an existing inline \
-             spelling a name exists once across every test home afterwards",
-            "every site that already spelled it inline calls it, the shared home itself and any \
-             file you edit included",
-            "The search is an instrument, not a claim:",
-            "its unit is the statement, never the body's name",
-            "Walk every test-side body you add or edit - a test function, a helper, a fixture \
-             builder, a table row's closure - statement by statement",
-            "each statement that is not a single call into the shared test home is a shape of \
-             its own",
-            "A body you add is walked whole, every statement; a body you edit is walked in its \
-             edited statements, the hunks of the unit's whole range inside it - the merge base \
-             with the run branch to head, the range the sentence walk uses - since a statement you did not touch carries no shape you added.",
-            "A twin the search surfaces only among statements you did not touch, spelling no \
-             literal or call of yours, is the tree's duplication debt: your hand-over names it to \
-             the operator, and you do not lift it.",
-            "every string literal it spells, in full (an assertion, expect or panic message, a \
-             fixture path, a query text)",
-            "every call it makes outside the shared home with its first argument token",
-            "A literal's term is the literal alone - its text complete, quotes included, and \
-             nothing around it - never the call that passes it, a format string that embeds it, \
-             the statement that spells it or two literals joined; an expression wrapping a \
-             literal is a term of its own only where this rule names it, the outside call with \
-             its first argument token.",
-            "One search per literal, however short or conventional it reads - a one-letter \
-             name, `\":memory:\"`, a fixture path - and every hit dispositioned; hits may share \
-             one named reason, each hit still listed.",
-            "A statement searched whole finds only a twin spelled identically, while the literal \
-             finds the twin spelled differently around the same value, which is the twin this \
-             rule exists for.",
-            "A literal set aside as a convention, a fixture name or an argument style, with no \
-             search of its own and no hit list, is a search you did not run.",
-            "The lens compares the record's terms with the literals of the bodies it derives, \
-             one search per literal alone: a literal with no search of its own, or a term that \
-             is an expression wrapping a literal where the literal's own search is owed, is a \
-             BLOCKING finding on its own.",
-            "run one search for each over every test home",
-            "a hit in another home - an existing helper's body or another test's inline \
-             statement - is a twin, lifted to the shared home and called from both",
-            "A record whose expressions are names only - a function name, the callee a helper \
-             wraps - for a body that spells a literal or an outside call is a record you cannot \
-             write either.",
-            "A statement listed with a literal or call it spells absent from its terms is a \
-             record you cannot write.",
-            "The record is organised by statement: each statement of a body you add and each \
-             edited statement of a body you edit is quoted with its `file:line`, followed by its \
-             terms - every string literal it spells, alone, and every call it makes outside the \
-             shared home with its first argument token - each term with its search, or the \
-             statement is marked as a single call into the shared home with the callee named.",
-            "The lens derives the expression set itself from the unit's test hunks at head - \
-             every string literal and every outside call with its first argument in every \
-             statement of each test-side body the unit adds and in the edited statements of each \
-             body it edits, over the unit's whole range - and runs each over every test home: a \
-             hit the record does not carry, or a record whose expressions are names only for a \
-             body that spells either, is a BLOCKING finding on its own.",
-            "The lens derives each statement's terms itself and compares the record statement by \
-             statement: a statement whose record terms lack a literal or call the statement \
-             spells, or a statement the hunks touch that the record does not list, is a BLOCKING \
-             finding on its own, citing the statement and the term.",
-            "A literal of a statement the unit did not touch is the tree's duplication debt, \
-             which the lens names to the operator, never a BLOCKING finding.",
-            "carrying each search's command, its hit count and every hit",
-            "CHECKED when kept apart, with the reason: the named way its shape differs",
-            "A CHECKED hit whose shape does not differ is a twin.",
-            "A search you did not run is a record you cannot write.",
-            "The reviewing lens whose persona assigns the duty re-runs each recorded search on the \
-             review tree: a hit the record does not carry, or a CHECKED hit whose reason does not \
-             hold, is a BLOCKING finding on its own.",
+            "Tests are table-driven, and a test-side shape you add exists once.",
+            "Cases that check one behaviour over different values are rows of one table run by \
+             one body, never copies of a test function that differ only in their values; a case \
+             for a behaviour an existing table covers is a row added to that table.",
+            "A table, fixture, helper, builder or oracle you add is looked up first where the \
+             project's test helpers live and reused when it exists; when a second test home \
+             needs one the first already spells, it moves to the shared home and both call it, \
+             no assertion or expected value changed.",
+            "Duplication you did not write is the tree's debt: your hand-over names it and you \
+             do not lift it, and a lift's call-site rewrite does not make a statement yours.",
+            "Check: the project's duplication gate is green, and each behaviour your tests check \
+             over several values reads as one table.",
+            "Every sentence about the changed behaviour is true at head.",
             "module docs, test names, test docs, assertion messages and operator docs say what \
              the code at head does",
-            "enumerate the walked set, each member from what generates it",
-            "the module doc of every file the change touches (the changed-file list)",
-            "the doc comment and every comment in the body of each item the change touches \
-             (the hunks)",
-            "the doc of the interface item a changed function or any caller of one implements \
-             and of the interface a changed implementation is for (the implementation headers)",
-            "the doc of every item a changed hunk names, callee, constant or type returned (the \
-             hunk's identifiers)",
-            "the doc of every caller of a changed item, read from the project's graph at depth \
-             1 (`rigger graph --around <file>::<item> --depth 1`, the lines naming callers; the \
-             default depth returns the item's whole file neighbourhood and is not the caller \
-             set), or your persona's fallback",
-            "every tracked line outside the hunks that spells a changed item's name",
-            "read each against the code at head, leaving it true or fixing it",
-            "The record is owed on every change: one whole-tree DecisionMade naming the set \
-             walked by its generators",
-            "every sentence FIXED with its location",
-            "a member whose generator returned nothing is named as empty",
-            "The name count and the depth-1 caller read run once per item the hunks touch, new or \
-             pre-existing, its body or its doc changed, and the record pairs each item of its \
-             hunk list with its count, the lines read and its callers or the named fallback; an \
-             item the hunk list names without its count, or without its callers or the named \
-             fallback, is a record you cannot write.",
-            "each sentence the change writes marked new with its location",
-            "The walk's range is the unit's whole range, the merge base with the run branch to \
-             head, on every round, never a round's delta alone",
-            "a sentence you wrote in an earlier round is a member again whenever a later round \
-             changes the behaviour it states",
-            "a record, or a round's addendum, whose sets are re-derived over a round's delta is \
-             a record you cannot write",
-            "Every sentence the record marks new or FIXED carries its witness, the `file:line` \
-             of the code at head that makes it true",
-            "the arm, the guard, the call, the constant; two witnesses when one would not make \
-             the whole sentence true",
-            "a sentence with no witness is a claim, not a record",
-            "a claim that quantifies over a set - every, all, always, any, a plural subject with a \
-             predicate - is witnessed once per case the code splits that set into (each arm that \
-             assigns the value, each component of a key or comparator, each condition of a filter \
-             or guard, each branch of a case statement), the record naming the cases and a witness \
-             per case",
-            "a case the claim does not hold for makes the sentence false, to be narrowed or \
-             FIXED, never witnessed at the case it does hold for",
-            "a CHECKED sentence whose truth rests on code names its witness the same way, and \
-             one CHECKED as a different rule sharing the words names that rule instead",
-            "names that rule instead and shows the sentence's claim is that rule's question, \
-             the question the sentence answers read claim by claim as the lens reads it; a \
-             sentence whose claim is the question a rule the change rewrites answers is a \
-             spelling of that rule, whatever other rule its words also fit.",
-            "has spellings no generator above reaches: prose that states it without naming a \
-             changed item",
-            "every spelling of each rewritten rule is walked too",
-            "write down, for the rule's OLD statement and for each label its cases carried, a \
-             pair of short terms: the feature's name as the code spells it (the flag \
-             `--around`, the function, field, variant or table the rule concerns) and the rule's \
-             shortest distinguishing noun phrase (`exact id`, `import`, `collision`)",
-            "the words a sentence stating it cannot be written without, and each name the docs, \
-             test names and comments give a case the old rule decided",
-            "run one recorded search for each pair over every tracked text line: code, doc \
-             comments, body comments, test names and docs, assertion messages, specs and \
-             operator docs",
-            "a hit is a line, joined with the line before, that holds both terms, in either \
-             order and with any words, names or code spans between them",
-            "A term is a name or a noun phrase of at most three words: a search whose one term is \
-             a sentence fragment of more than three words misses the sentence that puts the \
-             feature's name or a qualifier between its words, and is a record you cannot write.",
-            "The record carries each search's command, its hit count and every hit",
-            "CHECKED with the named way it is not a spelling of the retired rule (a spec's \
-             account of the pre-change state, a history note, a different rule sharing the \
-             words)",
-            "A rewritten rule with no search is a record you cannot write; a change that \
-             rewrites no rule names the set empty.",
-            "A rule is rewritten whenever a condition of it changes - a boolean term your \
-             production hunks add to or remove from a filter, guard, case-arm guard or \
-             predicate a function applies - even when no sentence of yours moves",
-            "its old statement is what the function's consumers spell: the notes they print, \
-             their Returns paragraphs, the docs of the variants the answer maps to and the \
-             oracles that assert them",
-            "read from the function's callers at depth 1 in the project's graph and their \
-             callers' output sentences",
-            "For each changed condition write down the rule it changes - the question the \
-             function answers - and, for each phrase of the old answer as the consumers spell \
-             it, the pair of the function's name as the code spells it and the old answer's \
-             noun, and run the rule search for each pair",
-            "every hit is FIXED, carrying the new qualifier, or CHECKED with the named reason \
-             the qualifier does not reach it (a call that passes no path, say)",
-            "The reviewing lens whose persona assigns the duty re-derives each generator's set on \
-             the review tree from the diff and the graph",
-            "each hunk's identifiers, cross-references and constants included",
-            "the body comments of each changed item",
-            "the depth-1 callers",
-            "the tracked lines spelling a changed item's name",
-            "compares it with the walk record, and re-runs each recorded rule-spelling search \
-             and re-reads every hit, CHECKED ones included, against the code at head: a member \
-             the record omits, a hit the record does not carry, or a CHECKED hit whose reason \
-             does not hold at head, is a BLOCKING finding on its own.",
-            "The lens derives every set over the unit's whole range, as the record does, never \
-             the round's delta its prompt carries, and reads every witness the record carries \
-             against the code at head: a sentence whose witness no longer makes it true, a new \
-             or FIXED sentence with no witness, or a record whose sets are re-derived over a \
-             round's delta, is a BLOCKING finding on its own.",
-            "The lens derives the changed-condition set itself from the unit's production hunks \
-             over the whole range - every added or removed boolean term inside a filter, guard \
-             or predicate - names the rule each changes, and reads every consumer sentence of \
-             that function - its depth-1 callers' notes, Returns paragraphs, variant docs and \
-             oracles - against the condition at head: a consumer sentence stating the \
-             pre-change answer that the record does not carry FIXED or CHECKED is a BLOCKING \
-             finding on its own.",
-            "The lens runs the two-term search itself - the feature's name AND the rule's noun \
-             phrase for each rule the change rewrites, the function's name AND the old answer's \
-             noun for each changed condition it derives, both terms on one joined line with any \
-             words between them: a hit the record lacks, or a hit CHECKED with a reason that does \
-             not hold at head, is a BLOCKING finding on its own.",
-            "The lens reads every sentence it re-reads claim by claim against the unit's \
-             change, with a witness per claim at head, and a sentence it cannot witness is a \
-             BLOCKING finding on its own.",
-            "For a quantified claim the lens enumerates the cases itself from the code at head \
-             and its record lists them beside the claim, each with its witness",
-            "a quantified claim witnessed at one case, or a case the claim does not hold for, is \
-             a BLOCKING finding on its own.",
-            "The lens's record lists every sentence it reads, the record's CHECKED members \
-             included, each with its claims and a witness per claim; a grouped verdict over any \
-             of them is a record the lens cannot write.",
+            "Check: read the module doc of each file the change touches, and the doc of each item \
+             it touches and of each caller of that item, which the project's graph names at depth \
+             1 (`rigger graph --around <file>::<item> --depth 1`), against the code at head, \
+             leaving each true or fixing it",
             "when you rename or retire a name, walk every spelling of the old term through the \
              tree",
             "The old spelling occurs zero times in the tree outside git history, counted over \
@@ -920,58 +703,14 @@ mod tests {
             "Every fact your production delta states has one home.",
             "A predicate is a boolean expression or a SQL conjunct, one inside a query string, a \
              format string or a macro argument the production code executes included, read as \
-             the code's own expression, each operator and literal of it.",
-            "The `<unit>-sentence-walk` record carries, beside the count of each constant, \
-             static, list, closure or predicate your production hunks add, its one-home line in \
-             one of three forms: `no other spelling` with the terms searched - the name count and \
-             the graph lookup the walk already runs, and the fact's distinguishing literal (a \
-             table name, a kind string); `derived from <file:line>`, the hunk reading the \
-             existing spelling; or `pinned to <file:line> by <test>`, where a derivation is \
-             impossible and a test holds the two spellings equal.",
-            "The `no other spelling` search runs the fragment's distinguishing literal (the column \
-             with its operator, the subquery's table) over the whole tree, pre-existing spellings \
-             included; a fact the tree already spells is `derived from` that spelling, the hunk \
-             and the existing sites reading one function, or `pinned to` it, and a fact the tree \
-             already spells twice is lifted at all three sites - the pre-existing pair is the \
-             tree's debt, and the unit's third spelling makes it the unit's.",
-            "The walk's item list is derived from the production hunks by shape as well as by \
-             name, since a predicate has no name the count could list: every boolean expression \
-             the hunks add - an `if`, `else if` or `while` condition or a pattern guard, each \
-             operand of an `&&` or `||` chain inside one, the body of a closure passed to \
-             `filter`, `any`, `all`, `retain`, `position` or `find`, and every conjunct inside a \
-             query string, format string or macro argument the production code executes - is an \
-             item, quoted with its `file:line` under the record's `ADDED PREDICATES` heading with \
-             its one-home line.",
-            "A predicate that is also a changed condition appears in both lists, its rule search \
-             in one and its one-home line in the other, and neither entry stands in for the \
-             other.",
-            "Two added predicates stating one fact - the same condition at two sites, or one \
-             condition and its negation - are one fact spelled twice: lifted to one home both \
-             sites read (a function or a value) or `pinned to` each other by a test that holds \
-             them equal, never two `no other spelling` lines.",
-            "An added set of named members - an array or slice of constants, an `IN (..)` list, a \
-             pattern test or a case statement with an arm per member, an `||` chain of equalities \
-             - runs its `no other spelling` search as the name count of EACH member, and every \
-             site where two or more of the members occur within one statement, one case statement \
-             or one macro call is read as a candidate second spelling of the set: one found makes \
-             the set `derived from` a single named home both sites read (a const list or a \
-             function), or the hunk's spelling is a DRY defect lifted before hand-over, and the \
-             one-home line names the member sites it read.",
-            "The reviewing lens whose persona assigns the duty derives the set of added constants, \
-             statics, lists, closures and predicates itself from the production hunks, query \
-             strings included, and compares it with the record's one-home lines: an added item the \
-             record has no line for is a BLOCKING finding on its own.",
-            "The reviewing lens whose persona assigns the duty reads the walk record's one-home \
-             lines for every item the unit adds: an added item with no line, or a line false at \
-             head - the fact has another spelling the line does not name, or the named derivation \
-             or pin does not exist - is a BLOCKING finding on its own (DRY, single \
-             responsibility).",
-            "The reviewing lens whose persona assigns the duty derives the added set by the same \
-             shapes, the `ADDED \
-             PREDICATES` list and every added set of named members included, and runs the member \
-             search itself for every added set: an added predicate with no line, two added \
-             predicates of one fact with two lines, or a second spelling of a set the line does \
-             not name, is a BLOCKING finding on its own.",
+             the code's own expression, each operator and literal of it. Check: name its home.",
+            "A whole-tree audit a rejection requires is bounded.",
+            "When a rejection's required items name a pattern - one defect shape recurring across \
+             sites - every site of that shape is fixed.",
+            "Check: the audit record the rejection asks for names each search command you ran \
+             with its hit count and each site you fixed with its location at head, and counts the \
+             rest; it never lists or dispositions every hit, and a search term found inside a \
+             longer identifier is not a hit.",
             "A probe that edits your tree is over before your turn is.",
             "runs to completion and restores the tree before your turn ends, never as a \
              detached or background job",
@@ -984,6 +723,25 @@ mod tests {
                 "the hand-over section must say {phrase:?}"
             );
         }
+        // No check owes a record: the walk, its witnesses, its rule searches, its one-home lines
+        // and a reviewing lens's re-derivation of them are gone from the built-in layer, which
+        // carries the review rule that makes a misstated sentence or a second spelling a note.
+        for retired in [
+            "<unit>-sentence-walk",
+            "one-home line",
+            "witness",
+            "rule search",
+            "walked set",
+            "re-derive",
+            "BLOCKING",
+            "The record is owed on every change",
+            "review-complete record",
+        ] {
+            assert!(
+                !words.contains(retired),
+                "the working discipline owes no per-unit record or lens re-derivation: {retired:?}"
+            );
+        }
         // The hand-over owes no record of hand-applied mutations; rigger's core is agnostic to
         // the mutation testing a project may wire as a gate of its own.
         assert!(
@@ -991,22 +749,17 @@ mod tests {
             "the hand-over section carries no hand mutation rule"
         );
         // The item's callers come from the graph at depth 1; a bare `--around` answers the
-        // item's whole file neighbourhood, so the generator never names the graph undepthed.
+        // item's whole file neighbourhood, so the check never names the graph undepthed.
         assert!(
             !words.contains("(the project's graph, or your persona's fallback)"),
-            "the caller generator must name the graph's depth"
+            "the caller read must name the graph's depth"
         );
-        // A shape's search terms are its statements' literals and outside calls, never the
-        // body's name, so the rule no longer sends the author to a whole-body token sequence.
+        // Tests are table-driven and the duplication gate is the instrument for twins, so the
+        // hand-over owes no per-literal shape search and no per-statement shape record.
         assert!(
-            !words.contains("the token sequence its body cannot be written without"),
-            "the shape search's unit is the statement, not the whole body"
-        );
-        // A rule-spelling search conjoins the feature's name with the rule's noun phrase, so
-        // the rule no longer offers a single phrase as the search's one term.
-        assert!(
-            !words.contains("two phrases when one would miss a spelling"),
-            "the rule search runs a term pair, not one phrase or two"
+            !words.contains("One search per literal")
+                && !words.contains("The record is owed for every test-side shape"),
+            "the hand-over owes no per-literal shape search and no per-statement shape record"
         );
     }
 

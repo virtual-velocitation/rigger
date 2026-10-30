@@ -141,6 +141,11 @@ pub fn spawn_id(unit: &str, role: &str, attempt: u32) -> String {
     format!("{unit}/{role}#{attempt}")
 }
 
+/// The metadata key carrying the id of the spawn that emitted an event - a [`spawn_id`], or its
+/// respawn form. Defined beside the id grammar so every emit surface, and the one emit guard they
+/// all run, read the key the conductor stamps without naming the conductor, which re-exports it.
+pub const META_SPAWN: &str = "spawn";
+
 /// Derive the spawn id for a reviewer RESPAWN (Gap 18, spec 07). A reviewer spawn
 /// (lens, adversary, or adjudicator) whose recorded result is empty or whitespace-only
 /// is an INFRASTRUCTURE fault, not a verdict, so the conductor respawns the SAME
@@ -240,6 +245,21 @@ pub fn spawn_role(id: &str) -> &str {
 /// ```
 pub fn unit_of(id: &str) -> Option<&str> {
     id.rsplit_once('/').map(|(unit, _)| unit)
+}
+
+/// The `{unit}/{role}` SEAT of a spawn id `{unit}/{role}#{attempt}` - the `#{attempt}` ordinal and
+/// a `~retry{n}` respawn suffix both trimmed - the companion of [`unit_of`] and [`spawn_role`].
+/// Every attempt and respawn of one unit's role shares it, so it names a record's author across
+/// the remediation attempts that re-emit the record.
+///
+/// ```
+/// # use rigger_domain::spawn::unit_role_of;
+/// assert_eq!(unit_role_of("u1/implementer#0"), "u1/implementer");
+/// assert_eq!(unit_role_of("u1/adjudicator#1~retry2"), "u1/adjudicator");
+/// assert_eq!(unit_role_of("u1/lens:sdet#3"), "u1/lens:sdet");
+/// ```
+pub fn unit_role_of(id: &str) -> &str {
+    id.split(['#', '~']).next().unwrap_or(id)
 }
 
 /// The remediation ATTEMPT ordinal of a spawn id `{unit}/{role}#{attempt}` (a `~retry{n}`
@@ -944,8 +964,8 @@ pub struct Step {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub escalated: Vec<String>,
     /// The push-side anomalies THIS step surfaced (spec 69: the watching discipline's step
-    /// wire) - unit ESCALATED, run HALTED, a worker's death RECURRED, the budget crossed
-    /// into its final tenth, and STALLED FRONTIER. Empty on a clean step, and OMITTED from
+    /// wire) - unit ESCALATED, run HALTED, REJECT RECURRENCE at the diagnose threshold, the
+    /// budget crossed into its final tenth, and STALLED FRONTIER. Empty on a clean step, and OMITTED from
     /// the wire then, so a converged run still prints `{"wave":[],"done":true}` unchanged;
     /// when non-empty a later criterion's driver renders one narrator line per entry naming
     /// its event, unit, and response skill. Like [`escalated`](Step::escalated) this is

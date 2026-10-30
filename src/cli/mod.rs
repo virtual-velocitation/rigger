@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use rigger::blocker;
 use rigger::budget::BuildBudget;
 use rigger::canary;
 use rigger::canary_store;
@@ -14,7 +15,7 @@ use rigger::config_store;
 use rigger::console;
 use rigger::contextgraph::{
     self, fold_clause, fold_loss_clause, not_folded,
-    sqlite::{Projector, PruneStats},
+    sqlite::{Projector, PruneStats, RebuildLock},
     Located, Projection,
 };
 use rigger::dash;
@@ -403,6 +404,24 @@ impl StoreSelection {
         matches!(self, StoreSelection::Sqlite)
     }
 
+    /// Whether this selection is the embedded sqlite backend and its log file at `path` does not
+    /// exist yet: a project with no run recorded, whose file a store open would create. Asked
+    /// before any open, so a read never makes the file.
+    fn log_absent(&self, path: &str) -> bool {
+        self.is_sqlite() && !Path::new(path).exists()
+    }
+
+    /// What a store open under this selection opens for the log file at `path`: `path` itself,
+    /// unless that is an embedded log whose file does not exist yet ([`Self::log_absent`]), which
+    /// is read as the empty in-memory log it is, so the open never makes the file.
+    fn log_file<'p>(&self, path: &'p str) -> &'p str {
+        if self.log_absent(path) {
+            ":memory:"
+        } else {
+            path
+        }
+    }
+
     /// The environment that hands this selection to a child rigger process: a server's
     /// connection string as [`CONN_ENV`], the rung of [`store_selection`] that outranks the
     /// secret file and the configured store, so the child resolves the same server whichever
@@ -421,12 +440,29 @@ pub(crate) fn stderr_line(line: &str) {
 }
 
 /// THE ONE HASH FUNCTION as a run is handed it ([`conductor::Deps::hash_blob`]) at this
-/// composition root: `git hash-object` under `root`, the run's tree.
+/// composition root: `git hash-object` under `root`, the run's tree
+/// ([`rigger::worktree::hash_blob`]), which inside a repository writes the object it hashes into
+/// that repository's object database before the call returns (spec 124, THE BLOB IS WRITTEN), so
+/// another process re-extracting the entry reads its blob from there, and outside one hashes
+/// without writing; a hash that fails, a failed write included, answers its error. The binding
+/// detects whether `root` is inside a repository once, at its first hash, and keeps the answer
+/// ([`rigger::worktree::BlobHasher`]), so each hash is one process. A binding handed no root (an
+/// empty `root`, as a replay's run is) hashes nothing: asked, it answers a failure naming why
+/// ([`NO_TREE_TO_HASH_UNDER`]), never a hash under the working directory, whose repository it
+/// would otherwise write into.
 pub(crate) fn hash_blob_in(
     root: &str,
 ) -> impl Fn(&[u8]) -> Result<String, rigger::worktree::Error> + Sync + '_ {
-    move |bytes| rigger::worktree::hash_blob(std::path::Path::new(root), bytes)
+    let hasher = (!root.is_empty()).then(|| rigger::worktree::BlobHasher::new(root));
+    move |bytes| match &hasher {
+        Some(hasher) => hasher.hash(bytes),
+        None => Err(rigger::worktree::Error(NO_TREE_TO_HASH_UNDER.to_string())),
+    }
 }
+
+/// What a hash binding handed no root answers when asked ([`hash_blob_in`]).
+const NO_TREE_TO_HASH_UNDER: &str =
+    "no tree to hash under: a binding handed no root, as a replay's run is, hashes no blob";
 
 /// Open the embedded sqlite event log at `path`. This is the ONE sqlite event-log constructor
 /// (§48, the single authority): [`resolve_store`] boxes it as the port for every command, and
@@ -437,16 +473,110 @@ fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
     Ok(Store::open(path)?)
 }
 
-/// Open this project's `graph.db` for `command`, whose answer depends on the fold (spec 101): a
-/// file that says it owes its rebuild - folded under an older fold rule, or marked by a fold into it that failed - is
-/// refused at once, naming `rigger setup` - the one command that rebuilds it - never waited on,
-/// rebuilt or folded into here. The open itself writes nothing to such a file.
+/// Open the `graph.db` at `graph_db` for write, under `project` (spec 124, WIRING): the one open
+/// that may write to a graph file, making it where none stands ([`Projector::open`]), with the
+/// catch-up wiring installed. Its log ([`Projector::with_log`]) is the store `selection` resolves
+/// for the `events.db` beside the file ([`resolve_store`]), scoped to `project`
+/// ([`Namespaced::owning`]), opened at the projector's first catch-up and held for its life; an
+/// embedded log whose file does not exist yet is read as the empty one it is
+/// ([`StoreSelection::log_file`]), so no open makes `events.db`; the identity it records of that
+/// log ([`Projector::with_store_identity`]) is the store's own ([`store_identity`]), the embedded
+/// log's path or a digest of the server's endpoint. Its re-extraction
+/// ([`Projector::with_reextraction`]) is a fresh one each catch-up or rebuild call builds for
+/// itself and drops as it returns, resolving each ledger entry it is handed through
+/// [`reextract_entry`] under THE ONE ROOT of the directory holding the file, read from the one cell
+/// the open returns beside the projector ([`TreeRoot`]): asked of git at the first entry any
+/// re-extraction of this open is handed, resolved or not, or by the first other reader of the cell
+/// before it, and once among them.
+fn open_graph_for_write(
+    graph_db: &str,
+    project: &str,
+    selection: &StoreSelection,
+) -> Result<(Projector, std::sync::Arc<TreeRoot>), contextgraph::Error> {
+    let store_dir = cwd()
+        .join(graph_db)
+        .parent()
+        .map_or_else(cwd, Path::to_path_buf);
+    let tree = std::sync::Arc::new(TreeRoot::of(store_dir.clone()));
+    let (selection, events_db) = (selection.clone(), store_file(&store_dir, "events.db"));
+    let store = store_identity(&selection, events_db.clone()).log_identity();
+    let scope = project.to_string();
+    let log = move || {
+        resolve_store(&selection, selection.log_file(&events_db))
+            .map(|store| {
+                std::sync::Arc::new(Namespaced::owning(std::sync::Arc::from(store), &scope))
+                    as std::sync::Arc<dyn EventStore>
+            })
+            .map_err(|e| contextgraph::Error(e.to_string()))
+    };
+    let rooted = std::sync::Arc::clone(&tree);
+    let reextraction = move || -> Box<contextgraph::sqlite::Reextract<'static>> {
+        let (tree, mut batch) = (std::sync::Arc::clone(&rooted), None);
+        Box::new(move |entry: &Event| reextract_entry(tree.get(), &mut batch, entry))
+    };
+    let graph = Projector::open(graph_db, project)?
+        .with_log(log)
+        .with_reextraction(reextraction)
+        .with_store_identity(store);
+    Ok((graph, tree))
+}
+
+/// Re-extract the batch of the ledger entry of perception `entry` (spec 107,
+/// `ingest::resolve_entry`) for the tree under `root`: from the entry's blob in the repository's
+/// object database, read through the batch process `batch` holds - started at the first entry it
+/// is handed, resolved or not ([`entry_blobs`]), and none outside a git repository, when the
+/// detection's process cannot start, or in the lane compiled without an extraction - else from the
+/// tree's file, else from no bytes. A batch process that cannot start inside a repository fails the
+/// entry, naming its command, and is kept for none, so the next entry starts it again. An entry no
+/// source resolves answers none, and in the lane compiled without an extraction no source resolves
+/// any.
+fn reextract_entry(
+    root: &Path,
+    batch: &mut Option<Option<rigger::worktree::BlobBatch>>,
+    entry: &Event,
+) -> Result<Option<Vec<Event>>, contextgraph::Error> {
+    let started = match batch.take() {
+        Some(started) => started,
+        None => entry_blobs(root)?,
+    };
+    let mut held = batch
+        .insert(started)
+        .as_mut()
+        .map(|batch| |id: &str| batch.blob(id).map_err(|e| contextgraph::Error(e.0)));
+    rigger::ingest::resolve_entry(
+        root,
+        entry,
+        held.as_mut()
+            .map(|source| source as &mut rigger::ingest::BlobSource),
+    )
+}
+
+/// The batch process a re-extraction reads its entries' blobs from, over the repository holding
+/// `root` ([`rigger::worktree::BlobBatch::start`]): none outside a git repository or when the
+/// detection's process cannot start, a failure naming the command when the batch's own cannot
+/// start inside one, and none in the lane that compiles no extraction, where no entry resolves and
+/// no process is started.
+fn entry_blobs(root: &Path) -> Result<Option<rigger::worktree::BlobBatch>, contextgraph::Error> {
+    if cfg!(feature = "symbols") {
+        rigger::worktree::BlobBatch::start(root).map_err(|e| contextgraph::Error(e.0))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Open this project's `graph.db` for write ([`open_graph_for_write`], under `selection`) for
+/// `command`, whose answer depends on the fold (spec 101): a file that says it owes its rebuild -
+/// folded under an older fold rule, never for the mark an older binary's lost fold left beside it
+/// (spec 124, THE MARK) - is refused at once, naming `rigger setup` - the one command that
+/// rebuilds it - never waited on, rebuilt or folded into here. The open itself writes nothing to
+/// such a file.
 fn open_graph(
     graph_db: &str,
     project: &str,
+    selection: &StoreSelection,
     command: &str,
 ) -> Result<Projector, Box<dyn std::error::Error>> {
-    let graph = Projector::open(graph_db, project)?;
+    let (graph, _) = open_graph_for_write(graph_db, project, selection)?;
     if graph.rebuild_owed()? {
         return Err(contextgraph::rebuild_owed_refusal(command).into());
     }
@@ -477,6 +607,40 @@ fn graph_rebuild_owed_note(graph_db: &str, project: &str) -> Option<String> {
         )
     })
 }
+
+/// What `rigger validate` says, after any owed note ([`graph_rebuild_owed_note`]), when this
+/// project's `graph.db` records events passed over (spec 124, CATCH-UP LINES): how many, by cause
+/// ([`Projector::passed_over`]), and that a rebuild under a later fold rule retries them. `None`
+/// when there is no file (never creating one), when it passed nothing over - a file without the
+/// `passed_over` table included - or when it cannot be read.
+fn graph_passed_over_note(graph_db: &str, project: &str) -> Option<String> {
+    let passed = standing_graph(graph_db, project)?.passed_over().ok()?;
+    passed_over_by_cause(&passed).map(|by_cause| {
+        format!(
+            "note: graph.db passed over {} event(s) {by_cause}; {PASSED_OVER_RETRIED}",
+            passed.total()
+        )
+    })
+}
+
+/// How many events a `graph.db` passed over, by cause (spec 124, CATCH-UP LINES), as `rigger
+/// setup`'s passed-over line and `rigger validate`'s note ([`graph_passed_over_note`]) both spell
+/// it; `None` when it passed none over, so neither line is printed.
+fn passed_over_by_cause(passed: &contextgraph::sqlite::PassedOver) -> Option<String> {
+    (passed.total() > 0).then(|| {
+        format!(
+            "({} rejected payload(s), {} fold failure(s), {} {})",
+            passed.rejected,
+            passed.failed,
+            passed.unresolved,
+            contextgraph::sqlite::RESOLVED_TO_NOTHING
+        )
+    })
+}
+
+/// What `rigger setup`'s passed-over line and `rigger validate`'s note ([`graph_passed_over_note`])
+/// both end by saying of the events a `graph.db` passed over (spec 124, CATCH-UP LINES).
+const PASSED_OVER_RETRIED: &str = "a rebuild under a later fold rule retries them";
 
 /// Open this project's `graph.db` for a read-only inspection: it answers from the projection as
 /// it stands, saying on stderr first when that projection owes its rebuild
@@ -768,14 +932,17 @@ fn resolve_store(
 /// registry - the dash re-resolves it through the store-resolution authority exactly as every
 /// command does.
 fn registry_store_identity(sel: &StoreSelection, root: &Path) -> rigger::registry::StoreIdentity {
+    store_identity(sel, store_file(&root.join(RIGGER_DIR), "events.db"))
+}
+
+/// The CREDENTIAL-FREE identity of the store `sel` selects, its embedded log the file at
+/// `events_db`: that path for sqlite, or the shared server's endpoint
+/// ([`rigger::eventstore::endpoint_label`]) - what the instance registry records
+/// ([`registry_store_identity`]) and what a graph file records of the log it folds
+/// ([`open_graph_for_write`]).
+fn store_identity(sel: &StoreSelection, events_db: String) -> rigger::registry::StoreIdentity {
     match sel {
-        StoreSelection::Sqlite => rigger::registry::StoreIdentity::Local {
-            path: root
-                .join(RIGGER_DIR)
-                .join("events.db")
-                .to_string_lossy()
-                .into_owned(),
-        },
+        StoreSelection::Sqlite => rigger::registry::StoreIdentity::Local { path: events_db },
         StoreSelection::Server(conn) => rigger::registry::StoreIdentity::Shared {
             endpoint: rigger::eventstore::endpoint_label(conn),
         },
@@ -1139,12 +1306,16 @@ fn migrate_project_identity(
 /// not distinct from the legacy basename (no `project.id` minted). Refuses loudly (Err) when
 /// both namespaces hold history. Self-contained: it opens its own short-lived store + graph
 /// connections and drops them before the caller opens the real ones, so it wires into any
-/// run-driver entry point in a single call and never touches the injected backend.
-fn migrate_local_identity() -> Res {
+/// run-driver entry point in a single call and never touches the injected backend. `held` is the
+/// rebuild lock the caller holds on that store's `graph.db`, or none ([`migrate_identity_at`]).
+fn migrate_local_identity(held: Option<&RebuildLock>) -> Res {
     let cwd = std::env::current_dir()?;
-    migrate_identity_at(&StoreLocation {
-        dir: cwd.join(RIGGER_DIR),
-    })
+    migrate_identity_at(
+        &StoreLocation {
+            dir: cwd.join(RIGGER_DIR),
+        },
+        held,
+    )
 }
 
 /// The spec-09 open-time identity migration against an ALREADY-RESOLVED store
@@ -1157,7 +1328,13 @@ fn migrate_local_identity() -> Res {
 /// which store it is about to touch - a courier, or a maintenance prune walked up from a nested
 /// worktree - calls THIS rather than re-deriving the store from the process cwd, which is how a
 /// walked-up command would otherwise migrate one store and mutate another.
-fn migrate_identity_at(loc: &StoreLocation) -> Res {
+///
+/// The projector it folds its decision through is told the rebuild lock `held` its caller holds
+/// ([`Projector::with_rebuild_lock`], which states what its fold answers on meeting the file's
+/// unfinished rebuild then): `rigger setup`, holding that lock across its pay, passes it, its own
+/// tail the only one that folds the decision (spec 124, THE APPENDER); every other caller holds
+/// none.
+fn migrate_identity_at(loc: &StoreLocation, held: Option<&RebuildLock>) -> Res {
     let store_path = loc.file("events.db");
     if !Path::new(&store_path).is_file() {
         return Ok(()); // a fresh project: no history to migrate
@@ -1175,7 +1352,8 @@ fn migrate_identity_at(loc: &StoreLocation) -> Res {
         return Ok(()); // no minted identity distinct from the basename
     }
     let backend = open_sqlite_store(&store_path)?;
-    let graph = Projector::open(&loc.file("graph.db"), &minted)?;
+    let (graph, _) = open_graph_for_write(&loc.file("graph.db"), &minted, &StoreSelection::Sqlite)?;
+    let graph = graph.with_rebuild_lock(held);
     if let Some((n, decision)) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))?
     {
         eprintln!(
@@ -1426,10 +1604,14 @@ impl StoreLocation {
     /// This store's context graph, opened for one fold: the one opener every command that appends
     /// and then folds hands [`contextgraph::Fold::of`] (directly or through
     /// [`mcpserver::emit_event`]), so each folds into the `graph.db` its store owns, under the
-    /// store's identity.
-    fn graph(&self) -> Result<Box<dyn Projection>, contextgraph::Error> {
-        Projector::open(&self.file("graph.db"), &self.identity())
-            .map(|g| Box::new(g) as Box<dyn Projection>)
+    /// store's identity, opened for write ([`open_graph_for_write`]) under the store `selection`
+    /// the command resolved.
+    fn graph(
+        &self,
+        selection: &StoreSelection,
+    ) -> Result<Box<dyn Projection>, contextgraph::Error> {
+        open_graph_for_write(&self.file("graph.db"), &self.identity(), selection)
+            .map(|(g, _)| Box::new(g) as Box<dyn Projection>)
     }
 
     /// A store file path (`events.db` / `graph.db`) under the resolved `.rigger/`, as the
@@ -1923,7 +2105,7 @@ fn with_project_store<T>(
     sel: &StoreSelection,
     read: impl FnOnce(&dyn EventStore) -> Result<T, rigger::eventstore::Error>,
 ) -> Result<Option<T>, Box<dyn std::error::Error>> {
-    if sel.is_sqlite() && !Path::new(path).exists() {
+    if sel.log_absent(path) {
         return Ok(None);
     }
     let backend = resolve_store(sel, path)?;
@@ -2525,7 +2707,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
     //    requested run. `metrics::project` folds it into the recorded baseline.
     let db = db_path("events.db");
     let selection = store_selection(None, None)?;
-    if selection.is_sqlite() && !Path::new(&db).exists() {
+    if selection.log_absent(&db) {
         return Err(format!(
             "rigger replay: no runs recorded yet for this project (no {db}); run `rigger run` first"
         )
@@ -2603,7 +2785,8 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
         //    results, and ReplayRunner guarantees a candidate-config-only gate never shells out.
         //    No worker ever touches a liveness marker here, so no marker root is recorded.
         let driver = ReplayDriver::new(&iso, "");
-        // A replay walks no tree (`repo` is empty), so its hash is never asked.
+        // A replay walks no tree (`repo` is empty), so its hash is never asked; asked, it fails
+        // naming why rather than hash under the working directory.
         let hash_blob = hash_blob_in("");
         let deps = Deps {
             store: &iso,
@@ -2615,6 +2798,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
             criteria,
             log: &stderr_line,
             hash_blob: &hash_blob,
+            check_emit: &rigger::contextgraph::check_emit,
         };
         let drive = conductor::run(&candidate_cfg, &deps);
 
@@ -2943,13 +3127,14 @@ fn liveness_ages_for_wave(
 /// The scratch root a store's runs stamp their spawns' liveness markers under, for `repo` - the
 /// store's resolved OWNING root ([`StoreLocation::repo_root`], see [`liveness_ages_for_wave`] for
 /// why never the process cwd) - and its configured `workdir`: the ONE resolution every marker
-/// reader outside `rigger step` (status, watch, the `reset` liveness probe) shares, as the
+/// reader outside `rigger step` (status, watch, the liveness probe of `rigger reset` and of
+/// `rigger setup`'s new rebuild) shares, as the
 /// fallback for a spawn whose request recorded no root of its own
 /// ([`rigger::liveness::MarkerRoots`]). Read-only: it
 /// resolves the root without creating it, so a report never conjures a scratch root nor runs the
 /// orphan-root reclaim that creating one does. An empty `repo` (no owning root resolved) yields
-/// an empty root, which status and watch degrade to "no marker" and `rigger reset` refuses
-/// ([`hygiene::ResetEnv`]).
+/// an empty root, which status and watch degrade to "no marker" and `rigger reset` and `rigger
+/// setup`'s new rebuild refuse ([`hygiene::ResetEnv`]).
 fn marker_root(repo: &str, workdir: &str) -> String {
     if repo.is_empty() {
         return String::new();
@@ -5034,7 +5219,7 @@ fn docs_context() -> rigger::docs::DocsContext {
             response: signal.response().to_string(),
         }),
         watch_poll_interval_secs: watch::DEFAULT_INTERVAL_SECS,
-        reject_recurrence_diagnose_threshold: watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD,
+        reject_recurrence_diagnose_threshold: blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD,
         // Spec 92, criterion 4 (IN EVERY SESSION'S HAND): the discipline docs' "Looking
         // things up" section states the graph-first rule for a human reader by
         // interpolating the SAME message `rigger grep-guard` (the installed hook's
@@ -5162,6 +5347,30 @@ fn tree_root(store_dir: &Path) -> PathBuf {
     }
 }
 
+/// THE ONE ROOT ([`tree_root`]) of the store at a `.rigger/`, as one write open hands it to every
+/// reader of its tree ([`open_graph_for_write`]): asked of git by the first read, and held for the
+/// cell's life, so the readers sharing the cell ask git for it once among them and never when none
+/// reads it.
+struct TreeRoot {
+    store_dir: PathBuf,
+    root: std::sync::OnceLock<PathBuf>,
+}
+
+impl TreeRoot {
+    /// The root of the store at `store_dir`, asked of git by the first [`TreeRoot::get`].
+    fn of(store_dir: PathBuf) -> Self {
+        TreeRoot {
+            store_dir,
+            root: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The root, asked of git at this cell's first read and held for every later one.
+    fn get(&self) -> &Path {
+        self.root.get_or_init(|| tree_root(&self.store_dir))
+    }
+}
+
 /// The graph-first lookup hook's stated bounce message (spec 92, criterion 4's Design
 /// text), naming the escape hatch in the one spelling that survives a sibling PreToolUse
 /// hook's rewrite: `--literal` inside a trailing shell comment, which the shell discards
@@ -5183,6 +5392,35 @@ mod tests {
     use crate::test_support::write_file;
     use crate::test_support::CwdGuard;
     use std::process::Command;
+
+    /// The hash bound to no tree - an empty root, as a replay's run is handed - fails naming why
+    /// when asked, and writes nothing into the repository of the working directory, which a
+    /// `git -C ""` would operate on.
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn the_hash_bound_to_no_tree_fails_naming_why_and_writes_into_no_repository() {
+        let _restore = CwdGuard(std::env::current_dir().unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        git_init_quiet(dir.path());
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let hashed = hash_blob_in("")(b"bytes no tree holds\n").map_err(|e| e.0);
+
+        assert_eq!(
+            (
+                hashed,
+                crate::test_support::git_out(dir.path(), &["count-objects"])
+            ),
+            (
+                Err(
+                    "no tree to hash under: a binding handed no root, as a replay's run is, \
+                     hashes no blob"
+                        .to_string()
+                ),
+                "0 objects, 0 kilobytes".to_string()
+            )
+        );
+    }
 
     /// Spec 101: the note a read-only surface prints names `rigger setup` exactly when `graph.db`
     /// owes its rebuild - never for a current file, and never by creating an absent one.
@@ -5217,10 +5455,60 @@ mod tests {
         crate::test_support::stamp_user_version(&path, 0);
         assert_eq!(
             graph_rebuild_owed_note(graph_db, "p"),
-            Some(format!(
-                "note: {} - until then the context graph answers as it stands",
-                contextgraph::REBUILD_OWED
-            ))
+            Some(crate::test_support::rebuild_owed_note())
+        );
+    }
+
+    /// Spec 124, CATCH-UP LINES: the note `rigger validate` prints says how many events
+    /// `graph.db` passed over, by cause, read from the `passed_over` rows the file holds - a note
+    /// of its own beside the rebuild note when the file also owes its rebuild, which says nothing
+    /// of them - and never from a file without the table, which reads as none.
+    #[test]
+    fn the_passed_over_note_counts_by_cause_the_rows_graph_db_holds() {
+        let (_dir, graph_db) = crate::test_support::temp_graph_db();
+        let log = [
+            crate::test_support::unresolved_entry_at(1),
+            crate::test_support::poisoned_decision_at(2),
+        ];
+        assert_eq!(
+            crate::test_support::rebuild_answer(
+                &graph_db,
+                true,
+                &mut |after, sink| contextgraph::sqlite::stream_past(&log, after, 10, sink),
+                crate::test_support::resolving(|_| Ok(None)),
+            ),
+            crate::test_support::clean_rebuild()
+        );
+        let passed_over = crate::test_support::passed_over_note(1, 0, 1);
+        assert_eq!(
+            (
+                graph_rebuild_owed_note(&graph_db, "test"),
+                graph_passed_over_note(&graph_db, "test")
+            ),
+            (None, Some(passed_over.clone()))
+        );
+
+        let path = Path::new(&graph_db);
+        crate::test_support::stamp_user_version(path, 0);
+        assert_eq!(
+            (
+                graph_rebuild_owed_note(&graph_db, "test"),
+                graph_passed_over_note(&graph_db, "test")
+            ),
+            (
+                Some(crate::test_support::rebuild_owed_note()),
+                Some(passed_over)
+            ),
+            "a file that owes its rebuild still says what it passed over, in a note of its own"
+        );
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch("DROP TABLE passed_over")
+            .unwrap();
+        assert_eq!(
+            graph_passed_over_note(&graph_db, "test"),
+            None,
+            "a file without the table passed nothing over"
         );
     }
 
@@ -5784,7 +6072,7 @@ mod tests {
         assert_eq!(ctx.watch_poll_interval_secs, watch::DEFAULT_INTERVAL_SECS);
         assert_eq!(
             ctx.reject_recurrence_diagnose_threshold,
-            watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD
+            blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD
         );
         // Spec 92, criterion 4: the discipline docs' lookup-hook message is read from the
         // SAME const `rigger grep-guard` decides against, not a hand copy.
@@ -6073,8 +6361,7 @@ mod tests {
             checks.push((manifest.join(rel), body.render(&ctx)));
         }
         for (path, fresh) in checks {
-            let committed = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+            let committed = crate::test_support::read_text(&path);
             assert_eq!(
                 committed,
                 fresh,
@@ -8965,7 +9252,7 @@ mod tests {
             moved.map(|(n, decision)| (n, decision.fold)),
             Some((
                 1,
-                contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string())
+                contextgraph::Fold::NotFolded(crate::test_support::unwired())
             )),
             "one legacy stream renamed; with no graph wired its decision says it was not folded"
         );
@@ -10163,7 +10450,7 @@ mod tests {
     /// response`'s convention for the pull-side watchdog (decision
     /// d-u69c6-attention-response-mapping): `escalated` and `halted` resolve to the two
     /// existing spec-68 skills the Design's own Notes point at by name ("resume and escalation
-    /// response protocols are spec 68's skills, referenced by name"), `worker-death-recurred`
+    /// response protocols are spec 68's skills, referenced by name"), `reject-recurrence`
     /// to the churn skill, `budget-final-tenth` to the resume skill (a preemptive warning for
     /// the same halt), and `stalled-frontier` and `spec-defect` each name their Design's own
     /// literal directive instead of inventing another skill - exactly as `Signal::FrontierStall`
@@ -10216,10 +10503,7 @@ mod tests {
             (ledger::ATTENTION_ESCALATED, "rigger-handle-an-escalation"),
             (ledger::ATTENTION_SPEC_DEFECT, "amend the spec and relaunch"),
             (ledger::ATTENTION_HALTED, "rigger-resume-a-run"),
-            (
-                ledger::ATTENTION_WORKER_DEATH_RECURRED,
-                "rigger-diagnose-churn",
-            ),
+            (ledger::ATTENTION_REJECT_RECURRENCE, "rigger-diagnose-churn"),
             (ledger::ATTENTION_BUDGET_FINAL_TENTH, "rigger-resume-a-run"),
             (
                 ledger::ATTENTION_STALLED_FRONTIER,

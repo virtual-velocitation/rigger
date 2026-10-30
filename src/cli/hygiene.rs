@@ -35,7 +35,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
     if args.is_empty() {
         let (loc, selection) = require_store_dir()?;
         if selection.is_sqlite() {
-            migrate_identity_at(&loc)?;
+            migrate_identity_at(&loc, None)?;
         }
         return reset_menu(&loc, &selection);
     }
@@ -58,7 +58,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
     // command's whole design refuses. Anchored at the RESOLVED store root, not the process cwd, so
     // a reset run from a nested worktree migrates the store it is about to prune.
     if selection.is_sqlite() {
-        migrate_identity_at(&loc)?;
+        migrate_identity_at(&loc, None)?;
     }
     if modes.runs {
         reset_runs(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?;
@@ -114,19 +114,22 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         } else {
             refuse_derived_reset_if_live(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?
         };
-        reset_derived(&loc, &|root, bytes| {
-            Ok(rigger::worktree::hash_blob(root, bytes)?)
+        reset_derived(&loc, &|root| {
+            let hasher = rigger::worktree::BlobHasher::new(root);
+            Box::new(move |bytes| Ok(hasher.hash(bytes)?))
         })?;
     }
     Ok(())
 }
 
-/// What `rigger reset`'s modes read from outside the store: resolved ONCE by [`cmd_reset`], the
-/// composition root, when a selected mode reads it ([`ResetModes::reads_env`]), and handed to the
-/// live-writer probe (`--derived` without `--force-live`, and `--runs`) and to `--build-cache`'s
-/// shared-cache reclaim, so the probe reads no configuration, environment or clock of its own and
-/// judges every signal at one instant under one scratch root.
-struct ResetEnv {
+/// What `rigger reset`'s modes and `rigger setup`'s new rebuild read from outside the store:
+/// resolved ONCE by its composition root - [`cmd_reset`] when a selected mode reads it
+/// ([`ResetModes::reads_env`]), setup's `rebuild_owed_graph` only once a new rebuild is owed - and
+/// handed to the live-writer probe (`--derived` without `--force-live`, `--runs`, and setup's
+/// live-run refusal) and to `--build-cache`'s shared-cache reclaim, so the probe reads no
+/// configuration, environment or clock of its own and judges every signal at one instant under
+/// one scratch root.
+pub(super) struct ResetEnv {
     /// The store's configured `defaults.workdir` (empty when unset).
     workdir: String,
     /// The scratch root this store's runs write under ([`marker_root`]), resolved from this
@@ -146,15 +149,17 @@ impl ResetEnv {
     /// `defaults` block [`config_store::read_scratch_workdir`] cannot parse fails the command with
     /// the config's own error, and a store whose owning root has no UTF-8 path - which resolves
     /// no scratch root at all - is refused, because the live-writer guard may only refuse: a root
-    /// it cannot resolve must never read as "no spawn marker, so nothing is live".
-    fn resolve(loc: &StoreLocation) -> Result<Self, Box<dyn std::error::Error>> {
+    /// it cannot resolve must never read as "no spawn marker, so nothing is live". The refusal
+    /// names no command, since `rigger reset`'s modes and `rigger setup`'s new rebuild both reach
+    /// it.
+    pub(super) fn resolve(loc: &StoreLocation) -> Result<Self, Box<dyn std::error::Error>> {
         let workdir = config_store::read_scratch_workdir(&loc.dir)?;
         let scratch_root = marker_root(&loc.repo_root(), &workdir);
         if scratch_root.is_empty() {
             return Err(format!(
-                "reset: the store at {} has no UTF-8 owning root, so the scratch root its runs \
-                 write their liveness markers and build caches under cannot be resolved; \
-                 refusing rather than reading that as no live spawn",
+                "the store at {} has no UTF-8 owning root, so the scratch root its runs write \
+                 their liveness markers and build caches under cannot be resolved; refusing \
+                 rather than reading that as no live spawn",
                 loc.dir.display()
             )
             .into());
@@ -476,8 +481,9 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
 /// every namespaced read and write of this project uses (`StoreLocation::run_stream`). Before that
 /// transaction opens it reads what the stream holds ([`Store::count_derived`]) and answers, for
 /// every identity holding a derived event, the blob and the flag its entry records
-/// ([`tree_entries`]) under THE ONE ROOT ([`tree_root`]); `hash` is the one hash function, handed
-/// in by the composition root, and a hash that fails fails the command before any row changes.
+/// ([`tree_entries`]) under THE ONE ROOT ([`tree_root`]); `hash` is the one hash function
+/// ([`HashBlob`]), handed in by the composition root, which writes the object it hashes when the
+/// root is inside a repository, and a hash that fails fails the command before any row changes.
 /// A store holding no derived event has nothing to shed and says so.
 ///
 /// Either way it then reclaims the space the log's file holds free
@@ -512,7 +518,12 @@ fn reset_derived(loc: &StoreLocation, hash: &HashBlob) -> Res {
     // A `graph.db` that owes its rebuild is refused here as every command that depends on the
     // fold refuses it (spec 101): the migration runs once `rigger setup` has paid the rebuild.
     if Path::new(&graph_db).exists() {
-        open_graph(&graph_db, &loc.identity(), "reset --derived")?;
+        open_graph(
+            &graph_db,
+            &loc.identity(),
+            &StoreSelection::Sqlite,
+            "reset --derived",
+        )?;
     }
     let store = open_sqlite_store(&loc.file("events.db"))?;
     // THE OPERATOR'S BEFORE, taken before the migration's transaction opens: what the
@@ -546,11 +557,18 @@ fn reset_derived(loc: &StoreLocation, hash: &HashBlob) -> Res {
     Ok(())
 }
 
-/// The one hash function as [`reset_derived`] takes it: the object id of `bytes` under a root.
-type HashBlob<'h> = dyn Fn(&Path, &[u8]) -> Result<String, Box<dyn std::error::Error>> + 'h;
+/// The one hash function as [`reset_derived`] takes it: bound to a root, the object id of `bytes`
+/// under it, which the composition root binds through [`rigger::worktree::BlobHasher`], so the
+/// binding detects the root's repository once, and inside a repository the hash writes the object
+/// it hashes into that repository's object database (spec 124, THE BLOB IS WRITTEN) and outside
+/// one hashes without writing; or the failure of the hash, a failed write included.
+type HashBlob<'h> = dyn Fn(&Path) -> Box<BoundHash<'h>> + 'h;
+
+/// [`HashBlob`] bound to one root: the object id of `bytes` under it, or the failure of the hash.
+type BoundHash<'h> = dyn Fn(&[u8]) -> Result<String, Box<dyn std::error::Error>> + 'h;
 
 /// What the ledger entry of each of `identities` records of the tree at `root` (spec 107): the
-/// blob `hash` gives the bytes the tree's one read rule ([`rigger::grounder::tree_bytes`]) hands
+/// blob `hash`, bound to `root` once, gives the bytes the tree's one read rule ([`rigger::grounder::tree_bytes`]) hands
 /// for the identity's path - none for a path it hands no bytes for - and whether the walk
 /// excludes the identity as an out-of-line test module's ([`rigger::ingest::walk_exclusions`]).
 /// A hash that fails fails the whole answer.
@@ -560,13 +578,14 @@ fn tree_entries(
     hash: &HashBlob,
 ) -> Result<std::collections::BTreeMap<String, (String, bool)>, Box<dyn std::error::Error>> {
     let (_, excluded) = rigger::ingest::walk_exclusions(&root.to_string_lossy());
+    let hash = hash(root);
     identities
         .iter()
         .map(|identity| {
             let bytes = rigger::retention::GenerationIngested::identity_parts(identity)
                 .and_then(|(prefix, file)| rigger::grounder::tree_bytes(root, prefix, file));
             let blob = match bytes {
-                Some(bytes) => hash(root, &bytes)?,
+                Some(bytes) => hash(&bytes)?,
                 None => String::new(),
             };
             Ok((identity.clone(), (blob, excluded.contains(identity))))
@@ -708,13 +727,14 @@ fn live_spawn_named(s: &rigger::liveness::LiveSpawn) -> String {
     }
 }
 
-/// The loud refusal `rigger reset --derived` prints for a non-empty [`live_writer_reasons`]:
-/// names every reason, the concrete risk, and the override. `--force-live` is named here and in
-/// its own help text (spec 71: "an explicit override flag whose help text owns the risk") so an
-/// operator reads the same risk-owning sentence wherever they meet the flag.
-fn live_writer_refusal(reasons: &[String]) -> String {
+/// The loud refusal `rigger reset --derived` prints for a non-empty [`live_writer_reasons`],
+/// `reasons` being them as [`refuse_if_live`] joins them: names every reason, the concrete risk,
+/// and the override. `--force-live` is named here and in its own help text (spec 71: "an explicit
+/// override flag whose help text owns the risk") so an operator reads the same risk-owning
+/// sentence wherever they meet the flag.
+fn live_writer_refusal(reasons: &str) -> String {
     format!(
-        "reset --derived: refusing to migrate the event log while the run is live - {}. The \
+        "reset --derived: refusing to migrate the event log while the run is live - {reasons}. The \
          migration rewrites each file's latest derived batch into a ledger entry and deletes \
          every other derived event, which leaves REVISION GAPS by design; a writer whose append \
          cursor was built before this migration ran can reissue one of those gap revisions, and \
@@ -722,45 +742,14 @@ fn live_writer_refusal(reasons: &[String]) -> String {
          exists to prevent, and the corruption forcing past a genuinely live writer would risk. \
          Stop the run machinery named above and retry, or pass \
          --force-live to migrate anyway if you are certain no writer is using this store \
-         (--force-live checks nothing; it trusts you with that risk).",
-        reasons.join("; "),
+         (--force-live checks nothing; it trusts you with that risk)."
     )
 }
 
-/// Gather [`live_writer_reasons`]'s three facts and refuse `rigger reset --derived` (spec 71,
-/// criterion 2) when any applies. IMPURE (a lock probe, a store read, marker reads, an optional
-/// registry read) so the decision composition itself stays pure and unit-tested without any of
-/// the three. When nothing is live it returns the step lock its probe took, still held, for the
-/// caller to hold until the compaction returns ([`LiveWriterProbe`]).
-///
-/// The registry directory, the marker root and the instant are INJECTED through `env` (mirrors
-/// [`dash_resolve_attach`]'s existing DI shape) rather than read ambiently in here: the
-/// composition root (`cmd_reset`) resolves them once ([`ResetEnv::resolve`], the marker root
-/// fail-closed), exactly as every other ambient-environment read in this crate is pushed to a
-/// caller rather than repeated inside a callee. A `None` registry directory (a homeless
-/// environment) degrades to zero registrations - the same degrade `register_run_instance` itself
-/// takes for the identical reason: the registry's loss is harmless discovery metadata, never a
-/// signal this guard can invent.
-///
-/// This probe is read-only in effect, not just in name: it reads via
-/// [`rigger::registry::read_live_no_prune`], never [`rigger::registry::read_live`], so checking
-/// for live writers here never deletes a stale registry entry as a side effect - `reset
-/// --derived` performs no registry hygiene of its own; deletion stays reserved exclusively to
-/// the dashboard's self-reap watcher tick (see `read_live_no_prune`'s doc for why a prune here
-/// would be unsafe).
-///
-/// FAIL-SAFE in two different ways for two different faults:
-///   - a run-stream read failure (a malformed spawn request, or a malformed result where a
-///     marker inside its bound needs it read) propagates as a command error rather than folding
-///     into "no in-flight spawns" - this guard may only REFUSE a prune, never approve one it
-///     could not actually verify was safe (mirrors
-///     [`rigger::liveness::terminal_and_no_live_worker`]'s convention on the opposite rail: an
-///     unreadable stream is never read as "nobody is here").
-///   - a step-lock probe error that is NOT the lock actually being held (e.g. a permission
-///     fault) also propagates as a command error rather than being misread as "a step is
-///     running": only [`STEP_BUSY_TOKEN`] in the probe's own error names a genuinely held lock,
-///     so an operator troubleshooting an unrelated IO fault gets that fault's own message
-///     instead of a misdiagnosis pointing them at a `rigger step` that is not actually running.
+/// Refuse `rigger reset --derived` (spec 71, criterion 2) while the run is live: [`refuse_if_live`]
+/// over this store's log, in the words of [`live_writer_refusal`]. When nothing is live it returns
+/// the step lock its probe took, still held, for the caller to hold until the compaction returns
+/// ([`LiveWriterProbe`]).
 fn refuse_derived_reset_if_live(
     loc: &StoreLocation,
     selection: &StoreSelection,
@@ -768,18 +757,61 @@ fn refuse_derived_reset_if_live(
 ) -> Result<Option<HeldLock>, Box<dyn std::error::Error>> {
     let backend = resolve_store(selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let probe = live_writer_facts(loc, selection, env, &events)?;
-    let reasons = probe.facts.reasons();
-    if reasons.is_empty() {
-        return Ok(probe.step_lock);
-    }
-    Err(live_writer_refusal(&reasons).into())
+    refuse_if_live(loc, selection, env, &store, live_writer_refusal)
 }
 
-/// The three facts [`live_writer_reasons`] composes, gathered once so both consumers read the
-/// same liveness: `reset --derived`'s refusal ([`refuse_derived_reset_if_live`]) and `reset
-/// --runs`'s dead-driver test ([`close_landed_units`]).
+/// Gather [`live_writer_reasons`]'s three facts over `log`'s run stream and refuse when any
+/// applies, failing with the text `refusal` words for the reasons joined with "; ": the one
+/// live-run refusal, of `rigger reset --derived` ([`refuse_derived_reset_if_live`]) and of the new
+/// rebuild of `graph.db` `rigger setup` pays (`pay_owed_rebuild`, spec 124). IMPURE (a lock probe,
+/// a store read, marker reads, an optional registry read) so the decision composition itself stays
+/// pure and unit-tested without any of the three. When nothing is live it returns the step lock
+/// its probe took, still held, for the caller to hold while it acts ([`LiveWriterProbe`]).
+///
+/// The registry directory, the marker root and the instant are INJECTED through `env` (mirrors
+/// [`dash_resolve_attach`]'s existing DI shape) rather than read ambiently in here: each
+/// composition root (`cmd_reset`, and setup's `rebuild_owed_graph`) resolves them once
+/// ([`ResetEnv::resolve`], the marker root fail-closed), exactly as every other
+/// ambient-environment read in this crate is pushed to a caller rather than repeated inside a
+/// callee. A `None` registry directory (a homeless environment) degrades to zero registrations -
+/// the same degrade `register_run_instance` itself takes for the identical reason: the registry's
+/// loss is harmless discovery metadata, never a signal this guard can invent.
+///
+/// This probe is read-only in effect, not just in name: it reads via
+/// [`rigger::registry::read_live_no_prune`], never [`rigger::registry::read_live`], so checking
+/// for live writers here never deletes a stale registry entry as a side effect - neither command
+/// performs registry hygiene of its own; deletion stays reserved exclusively to the dashboard's
+/// self-reap watcher tick (see `read_live_no_prune`'s doc for why a prune here would be unsafe).
+///
+/// FAIL-SAFE in two different ways for two different faults:
+///   - a run-stream read failure (a malformed spawn request, or a malformed result where a
+///     marker inside its bound needs it read) propagates as a command error rather than folding
+///     into "no in-flight spawns" - this guard may only REFUSE, never approve an act it could not
+///     actually verify was safe (mirrors [`rigger::liveness::terminal_and_no_live_worker`]'s
+///     convention on the opposite rail: an unreadable stream is never read as "nobody is here").
+///   - a step-lock probe error that is NOT the lock actually being held (e.g. a permission
+///     fault) also propagates as a command error rather than being misread as "a step is
+///     running": only [`STEP_BUSY_TOKEN`] in the probe's own error names a genuinely held lock,
+///     so an operator troubleshooting an unrelated IO fault gets that fault's own message
+///     instead of a misdiagnosis pointing them at a `rigger step` that is not actually running.
+pub(super) fn refuse_if_live(
+    loc: &StoreLocation,
+    selection: &StoreSelection,
+    env: &ResetEnv,
+    log: &dyn EventStore,
+    refusal: fn(&str) -> String,
+) -> Result<Option<HeldLock>, Box<dyn std::error::Error>> {
+    let events = log.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let probe = live_writer_facts(loc, selection, env, &events)?;
+    if probe.facts.driver_dead() {
+        return Ok(probe.step_lock);
+    }
+    Err(refusal(&probe.facts.reasons().join("; ")).into())
+}
+
+/// The three facts [`live_writer_reasons`] composes, gathered once so every consumer reads the
+/// same liveness: the live-run refusal ([`refuse_if_live`]) of `reset --derived` and of `rigger
+/// setup`'s new rebuild, and `reset --runs`'s dead-driver test ([`close_landed_units`]).
 struct LiveWriterFacts {
     step_lock_held: bool,
     live_spawns: Vec<rigger::liveness::LiveSpawn>,
@@ -796,7 +828,8 @@ impl LiveWriterFacts {
     }
 
     /// Nothing is driving the run: none of the facts that make it live holds - the one
-    /// definition `reset --derived` refuses on. A non-terminal unit, a spawn with no marker, or a
+    /// definition the live-run refusal ([`refuse_if_live`]) passes on and `reset --runs` closes
+    /// by ([`close_landed_units`]). A non-terminal unit, a spawn with no marker, or a
     /// spawn whose marker has outlived its bound (whether it has no result or only the step's
     /// liveness fault) is not a driver - it is exactly what a dead driver leaves behind.
     fn driver_dead(&self) -> bool {
@@ -807,8 +840,8 @@ impl LiveWriterFacts {
 /// [`LiveWriterFacts`] as [`live_writer_facts`] probed them, with the step lock the probe took.
 /// The lock is HELD for as long as the probe lives, so the probe's verdict that no `rigger step`
 /// is running stays true while the caller acts on it: a step started meanwhile refuses with
-/// [`STEP_BUSY_TOKEN`] and its courier retries, never running against the close or the compaction
-/// the caller makes under the probe.
+/// [`STEP_BUSY_TOKEN`] and its courier retries, never running against the close, the compaction or
+/// the rebuild the caller makes under the probe.
 struct LiveWriterProbe {
     facts: LiveWriterFacts,
     /// The step lock this probe holds; `None` exactly when a `rigger step` already held it
@@ -832,7 +865,7 @@ fn live_writer_facts(
     // from a nested worktree just as every other courier is (see `require_store_dir`), and a
     // cwd-relative probe would open a `.rigger/step.lock` under the WRONG (or nonexistent)
     // directory there. Acquiring it proves nobody else holds it, and the probe keeps holding it
-    // so that stays true while the reset acts. A failure whose message names the busy token
+    // so that stays true while the caller acts. A failure whose message names the busy token
     // proves a step IS running; any OTHER failure (a permission fault, a read-only filesystem) is
     // a real fault this command cannot silently misdiagnose as "held", so it propagates instead.
     let step_lock = match acquire_step_lock(&loc.dir) {
@@ -948,7 +981,7 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
     // run) reclaims no edge, so LIVE and recent history are both untouched.
     let boundary = superseded_edge_boundary(&events);
 
-    let graph = open_graph(&graph_db, &loc.identity(), "reset --runs")?;
+    let graph = open_graph(&graph_db, &loc.identity(), selection, "reset --runs")?;
     // The probe's step lock is held until the close returns, so no `rigger step` starts against a
     // run this reset is closing; the graph prune below takes no part in it.
     let probe = live_writer_facts(loc, selection, env, &events)?;
@@ -1070,7 +1103,7 @@ fn landed_units(
 mod tests {
     use super::*;
     use crate::test_support::ev;
-    use rigger::registry::{Instance, StoreIdentity, Writer, DEFAULT_IDLE_MS};
+    use rigger::registry::{Writer, DEFAULT_IDLE_MS};
 
     /// Spec 21, unit 2: the drop-set derivation `rigger reset --runs` hands to the prune. It
     /// reuses the SINGLE run-attribution authority (`run_attribution` + `current_run_id`), so a
@@ -1368,9 +1401,7 @@ mod tests {
         // node), then run the real prune. It still drops exactly the dead-run content and keeps the
         // active run's decision plus the code it governs.
         let graph = Projector::open(":memory:", "test").unwrap();
-        for e in &stream {
-            crate::test_support::folds(&graph, std::slice::from_ref(e));
-        }
+        crate::test_support::folds_each(&graph, &stream);
         let boundary = superseded_edge_boundary(&stream);
         graph.prune(&drop, boundary).unwrap();
 
@@ -1583,11 +1614,12 @@ mod tests {
         let before = rows();
         let asked = std::cell::RefCell::new(Vec::new());
 
-        let failed = reset_derived(&loc, &|root, bytes| {
-            asked
-                .borrow_mut()
-                .push((root.canonicalize().unwrap(), bytes.to_vec()));
-            Err("no hash today".into())
+        let failed = reset_derived(&loc, &|root| {
+            let (asked, root) = (&asked, root.canonicalize().unwrap());
+            Box::new(move |bytes| {
+                asked.borrow_mut().push((root.clone(), bytes.to_vec()));
+                Err("no hash today".into())
+            })
         })
         .expect_err("a failed hash fails the migration");
 
@@ -1618,20 +1650,22 @@ mod tests {
         let graph_db = loc.file("graph.db");
         let second = std::cell::RefCell::new(Vec::new());
 
-        reset_derived(&loc, &|_, _| {
-            second.borrow_mut().push(
-                Projector::lock_rebuild(&graph_db)
-                    .map(drop)
-                    .map_err(|e| e.to_string()),
-            );
-            Ok("blob".to_string())
+        reset_derived(&loc, &|_| {
+            let (second, graph_db) = (&second, &graph_db);
+            Box::new(move |_| {
+                second.borrow_mut().push(
+                    Projector::lock_rebuild(graph_db)
+                        .map(drop)
+                        .map_err(|e| e.to_string()),
+                );
+                Ok("blob".to_string())
+            })
         })
         .expect("the migration runs");
 
         assert_eq!(
             second.into_inner(),
-            [Err(format!(
-                "graph: {}",
+            [Err(crate::test_support::graph_error(
                 rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS
             ))]
         );
@@ -1649,8 +1683,7 @@ mod tests {
         }
     }
 
-    const STEP_LOCK_REASON: &str =
-        "a `rigger step` is running right now (it holds .rigger/step.lock)";
+    use crate::test_support::{seed_registry, STEP_LOCK_REASON};
 
     /// The pure core: all three facts quiet is the only quiet state, and each fact alone draws
     /// exactly its own reason.
@@ -1670,24 +1703,15 @@ mod tests {
     /// override flag whose help text owns the risk").
     #[test]
     fn refusal_names_a_held_step_lock_and_the_force_live_override_owning_the_risk() {
-        let reasons = live_writer_reasons(true, &[], 0);
-        let out = live_writer_refusal(&reasons);
-        assert!(
-            out.contains("step.lock"),
-            "must name the held lock; got {out:?}"
-        );
-        assert!(
-            out.contains("--force-live"),
-            "must name the override; got {out:?}"
-        );
-        assert!(
-            out.contains("reset --derived"),
-            "must name the refused command; got {out:?}"
-        );
-        assert!(
-            out.contains("corruption"),
-            "must OWN the risk, not just name the flag; got {out:?}"
-        );
+        let out = live_writer_refusal(STEP_LOCK_REASON);
+        for (phrase, why) in [
+            ("step.lock", "must name the held lock"),
+            ("--force-live", "must name the override"),
+            ("reset --derived", "must name the refused command"),
+            ("corruption", "must OWN the risk, not just name the flag"),
+        ] {
+            assert!(out.contains(phrase), "{why}; got {out:?}");
+        }
     }
 
     /// Every live spawn is named by id with its marker's age and the bound keeping it live, in
@@ -1776,19 +1800,10 @@ mod tests {
         heartbeat_ms: u64,
         now_ms: u64,
     ) -> LiveWriterFacts {
-        let state = tempfile::tempdir().unwrap();
+        let root = "/home/dev/proj";
+        let (state, _entry) = seed_registry("proj", root, heartbeat_ms, writer);
         let dir = rigger::registry::instances_dir(state.path());
-        let store = StoreIdentity::Local {
-            path: "/home/dev/proj/.rigger/events.db".to_string(),
-        };
-        let entry = Instance {
-            project: "proj".to_string(),
-            root: "/home/dev/proj".to_string(),
-            store: store.clone(),
-            heartbeat_ms,
-            writer,
-        };
-        rigger::registry::write(&dir, &entry).unwrap();
+        let store = registry_store_identity(&StoreSelection::Sqlite, Path::new(root));
         LiveWriterFacts {
             step_lock_held: false,
             live_spawns: Vec::new(),
@@ -1845,6 +1860,55 @@ mod tests {
         );
     }
 
+    /// The `.rigger` directory made under `dir`, holding no log yet, and the [`ResetEnv`] a
+    /// live-writer probe of it judges by: no registry, a scratch root of its own under `dir`, and
+    /// now.
+    fn probed_store(dir: &Path) -> (StoreLocation, ResetEnv) {
+        let rigger_dir = dir.join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        let env = ResetEnv {
+            workdir: String::new(),
+            scratch_root: dir.join("scratch").to_string_lossy().into_owned(),
+            registry_dir: None,
+            now_ms: rigger::registry::now_ms(),
+        };
+        (StoreLocation { dir: rigger_dir }, env)
+    }
+
+    /// The live-run refusal names every live reason at once, in the order the probe lists them
+    /// and joined with "; ": with a `rigger step` holding the lock and a driver of this store
+    /// fresh in the registry, the text the refusal words is handed both reasons as one.
+    #[test]
+    fn the_live_run_refusal_joins_every_live_reason_in_the_order_the_probe_lists_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let (loc, env) = probed_store(dir.path());
+        let (state, _entry) = seed_registry(
+            "proj",
+            dir.path().to_str().unwrap(),
+            env.now_ms,
+            Writer::Driver,
+        );
+        let env = ResetEnv {
+            registry_dir: Some(rigger::registry::instances_dir(state.path())),
+            ..env
+        };
+        let log = rigger::eventstore::sqlite::Store::open(&loc.file("events.db")).unwrap();
+        let _step = acquire_step_lock(&loc.dir).unwrap();
+
+        let Err(err) = refuse_if_live(&loc, &StoreSelection::Sqlite, &env, &log, |reasons| {
+            reasons.to_string()
+        }) else {
+            panic!("a held step lock and a fresh driver registration must refuse");
+        };
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{STEP_LOCK_REASON}; {}",
+                live_writer_reasons(false, &[], 1)[0]
+            )
+        );
+    }
+
     /// The step lock the live-writer probe takes is held for as long as the probe lives - through
     /// the close and the compaction its caller runs under it - so a `rigger step` started
     /// meanwhile refuses with the busy token its courier retries on, and never runs against the
@@ -1852,15 +1916,7 @@ mod tests {
     #[test]
     fn the_live_writer_probe_holds_the_step_lock_until_it_drops() {
         let dir = tempfile::tempdir().unwrap();
-        let rigger_dir = dir.path().join(RIGGER_DIR);
-        std::fs::create_dir_all(&rigger_dir).unwrap();
-        let loc = StoreLocation { dir: rigger_dir };
-        let env = ResetEnv {
-            workdir: String::new(),
-            scratch_root: dir.path().join("scratch").to_string_lossy().into_owned(),
-            registry_dir: None,
-            now_ms: rigger::registry::now_ms(),
-        };
+        let (loc, env) = probed_store(dir.path());
 
         let probe = live_writer_facts(&loc, &StoreSelection::Sqlite, &env, &[]).unwrap();
         let racing = acquire_step_lock(&loc.dir).map(drop);
@@ -1879,14 +1935,9 @@ mod tests {
     #[test]
     fn refuse_derived_reset_if_live_fails_safe_on_a_malformed_spawn_event() {
         let dir = tempfile::tempdir().unwrap();
-        let rigger_dir = dir.path().join(RIGGER_DIR);
-        std::fs::create_dir_all(&rigger_dir).unwrap();
-        let loc = StoreLocation {
-            dir: rigger_dir.clone(),
-        };
+        let (loc, env) = probed_store(dir.path());
         let identity = loc.identity();
-        let db = rigger_dir.join("events.db").to_string_lossy().into_owned();
-        let backend = rigger::eventstore::sqlite::Store::open(&db).unwrap();
+        let backend = rigger::eventstore::sqlite::Store::open(&loc.file("events.db")).unwrap();
         let store = Namespaced::new(&backend, &identity);
         // A malformed SpawnRequested body: valid JSON but missing the fields `spawn::recorded`
         // needs, so decoding it fails and `spawn::recorded` returns `Err`.
@@ -1900,12 +1951,6 @@ mod tests {
         drop(store);
         drop(backend);
 
-        let env = ResetEnv {
-            workdir: String::new(),
-            scratch_root: dir.path().join("scratch").to_string_lossy().into_owned(),
-            registry_dir: None,
-            now_ms: rigger::registry::now_ms(),
-        };
         let err = refuse_derived_reset_if_live(&loc, &StoreSelection::Sqlite, &env)
             .expect_err("a malformed spawn event must refuse, never read as quiet");
         assert!(
@@ -1914,9 +1959,10 @@ mod tests {
         );
     }
 
-    /// A store whose owning root has no UTF-8 path resolves no scratch root, and `reset` refuses
-    /// rather than reading that as "no spawn marker, so nothing is live" (the guard may only
-    /// refuse) or reclaiming a build cache under a root it never resolved.
+    /// A store whose owning root has no UTF-8 path resolves no scratch root, and the env refuses
+    /// it, naming no command since `rigger reset` and `rigger setup` both resolve it, rather than
+    /// reading that as "no spawn marker, so nothing is live" (the guard may only refuse) or
+    /// reclaiming a build cache under a root it never resolved.
     #[cfg(unix)]
     #[test]
     fn reset_env_refuses_a_store_whose_owning_root_has_no_utf8_path() {
@@ -1929,12 +1975,7 @@ mod tests {
         };
         assert_eq!(
             err.to_string(),
-            format!(
-                "reset: the store at {} has no UTF-8 owning root, so the scratch root its runs \
-                 write their liveness markers and build caches under cannot be resolved; \
-                 refusing rather than reading that as no live spawn",
-                dir.display()
-            )
+            crate::test_support::unresolved_scratch_root_refusal(&dir)
         );
     }
 

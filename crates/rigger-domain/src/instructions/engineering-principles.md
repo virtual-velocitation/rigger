@@ -2,7 +2,8 @@
 
 Clean Architecture governs the shape of the system; SOLID, DRY, KISS, YAGNI and TDD apply to
 every change you plan, write, test or review; BDD applies wherever a behavior is operator-facing. No spec, deadline or red gate overrides
-them; a change that violates one is a failure even when every test passes.
+them; a violation a review finds is a finding, and the review rule of the working discipline
+decides whether it blocks.
 
 **Clean Architecture.** Dependencies point inward only: the domain's entities, use cases and
 rules know nothing of stores, processes, the agent host, git, HTTP or the terminal. Ports are
@@ -34,7 +35,7 @@ and no caller uses is removed before review.
 
 **TDD.** The failing test is written first and committed first; the code that makes it pass
 comes second, in a separate commit, so the unit's history shows red then green. A test
-written after the code to fit its output is not TDD and the reviewer treats it as missing.
+written after the code to fit its output is not TDD.
 
 **BDD, when relevant.** An operator-facing behavior (a CLI verb, a dashboard view, a plugin
 skill, a hook) is specified and tested as behavior: given a state, when the operator acts,

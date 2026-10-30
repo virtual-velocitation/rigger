@@ -26,8 +26,9 @@ defaults:
   # the expert lenses review the unit's diff in parallel and emit findings. TIER 2:
   # the adversary reviews THE LENSES' findings and tries to prove them wrong (higher
   # bar; refutes overreach; not a parallel lens). TIER 3: the adjudicator is the
-  # neutral final judge - it weighs the lenses against the adversary, is strict on
-  # adherence to the design, and its verdict GATES the unit's integration. Declared
+  # neutral final judge - it weighs the lenses against the adversary, blocks only on
+  # wrong code, an unmet Done-when criterion or a missing test for one (every other
+  # finding a note), and its verdict GATES the unit's integration. Declared
   # once; inherited by the implement stage and every planner-proposed unit.
   review:
     lenses: [reviewer.architecture, reviewer.correctness, reviewer.api-design]  # tier 1: lenses

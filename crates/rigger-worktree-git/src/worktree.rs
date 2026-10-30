@@ -1550,29 +1550,81 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
 }
 
 /// THE ONE HASH FUNCTION (spec 107): the object id git gives `bytes`, as `git hash-object --stdin`
-/// prints it under `root`. One process per call, waited to its exit: it writes no object and
-/// applies no filter, so the id is that of the bytes as they are, and it answers outside a
-/// repository too. A process that cannot start, or that fails, fails the hash, naming the
-/// command, the root and the cause.
+/// prints it under `root`. It applies no filter, so the id is that of the bytes as they are. Inside
+/// a repository ([`in_repository`]) it writes the object it hashes (`git hash-object -w`, spec 124,
+/// THE BLOB IS WRITTEN), so that repository's object database holds the bytes under the id it
+/// answers, and hardens it (`-c core.fsync=loose-object`), so the object is on disk when the call
+/// returns; outside one, where no object database stands, it hashes without writing. It starts at
+/// most two processes, each waited to its exit: the detection's, then the hash's. A detection whose
+/// `git` cannot start, which says nothing about whether the write is owed, and a hash process that
+/// cannot start, or that fails - a write that fails included - fail the hash, each naming the
+/// command line it ran or could not start with, the root and the cause ([`git_failure`]). A caller
+/// hashing more than once under one root binds it once ([`BlobHasher`]), so the detection runs once.
 pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> {
+    BlobHasher::new(root).hash(bytes)
+}
+
+/// [`hash_blob`] bound to one root for the binding's life: its repository detection
+/// ([`in_repository`]) is answered at the first hash and kept, so every later hash starts one
+/// process, the hash's own. A detection whose `git` could not start fails the hash that asked, as
+/// [`hash_blob`]'s does, and is kept for none: the next hash detects again.
+pub struct BlobHasher {
+    root: std::path::PathBuf,
+    inside: std::sync::OnceLock<bool>,
+}
+
+impl BlobHasher {
+    /// The binding of [`hash_blob`] to `root`, which has detected nothing yet.
+    pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            inside: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The object id git gives `bytes` under this binding's root, as [`hash_blob`] answers it.
+    pub fn hash(&self, bytes: &[u8]) -> Result<String, Error> {
+        let inside = match self.inside.get() {
+            Some(inside) => *inside,
+            None => {
+                let inside = in_repository(&self.root)?;
+                // Two hashes detecting at once answer the same root; the first kept stands.
+                let _ = self.inside.set(inside);
+                inside
+            }
+        };
+        hash_detected(&self.root, inside, bytes)
+    }
+}
+
+/// The hash [`hash_blob`] runs under `root` once its detection answered `inside`: writing the
+/// object inside a repository, hashing without a write outside one.
+fn hash_detected(root: &std::path::Path, inside: bool, bytes: &[u8]) -> Result<String, Error> {
     use std::io::Write;
     use std::process::Stdio;
 
-    let failed = |why: &str| {
-        Error(format!(
-            "git hash-object --stdin in {}: {why}",
-            root.display()
-        ))
+    let args: &[&str] = if inside {
+        &[
+            "-c",
+            "core.fsync=loose-object",
+            "hash-object",
+            "-w",
+            "--no-filters",
+            "--stdin",
+        ]
+    } else {
+        &["hash-object", "--no-filters", "--stdin"]
     };
+    let failed = |why: &str| git_failure(args, root, why);
     let mut process = crate::subprocess::git_in(root)
-        .args(["hash-object", "--no-filters", "--stdin"])
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| failed(&e.to_string()))?;
-    // A write that fails is a process that stopped reading, which its exit status then says:
-    // git prints an id only once it has read its whole input.
+    // A write to its input that fails is a process that stopped reading, which its exit status
+    // then says: git prints an id only once it has read its whole input.
     if let Some(mut input) = process.stdin.take() {
         let _ = input.write_all(bytes);
     }
@@ -1583,6 +1635,45 @@ pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> 
         return Err(failed(String::from_utf8_lossy(&out.stderr).trim()));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The arguments of the one repository detection: `git rev-parse --git-dir` succeeds under a root
+/// inside a git repository.
+const REPOSITORY_DETECTION: [&str; 2] = ["rev-parse", "--git-dir"];
+
+/// Whether `root` is inside a git repository, so an object database stands there to read from and
+/// write to ([`REPOSITORY_DETECTION`] run under it, read by [`repository_answer`]). The one
+/// repository detection [`hash_blob`] and [`BlobBatch::start`] apply.
+fn in_repository(root: &std::path::Path) -> Result<bool, Error> {
+    repository_answer(
+        root,
+        crate::subprocess::git_in(root)
+            .args(REPOSITORY_DETECTION)
+            .output(),
+    )
+}
+
+/// What the repository detection's run under `root` answers: inside for a `git` that ran and
+/// succeeded, outside for one that ran and failed, and for one that could not start a failure
+/// naming the detection's command, the root and the cause - a `git` that never ran says nothing
+/// about where `root` is.
+fn repository_answer(
+    root: &std::path::Path,
+    ran: std::io::Result<std::process::Output>,
+) -> Result<bool, Error> {
+    ran.map(|out| out.status.success())
+        .map_err(|e| git_failure(&REPOSITORY_DETECTION, root, &e.to_string()))
+}
+
+/// The failure of the git command whose arguments are `args`, run under `root`, for the cause
+/// `why`: `git <args> in <root>: <why>`, spelled from the argument vector the process ran or could
+/// not start with, so the text names the command that failed.
+fn git_failure(args: &[&str], root: &std::path::Path, why: &str) -> Error {
+    Error(format!(
+        "git {} in {}: {why}",
+        args.join(" "),
+        root.display()
+    ))
 }
 
 /// The one `git cat-file --batch` process a graph rebuild reads its ledger entries' blobs from
@@ -1598,29 +1689,28 @@ pub struct BlobBatch {
 }
 
 impl BlobBatch {
-    /// Start the batch process over the repository holding `root`, or answer none when there is
-    /// no object database to ask: `root` is outside a git repository, or the process cannot
-    /// start at all.
-    pub fn start(root: &std::path::Path) -> Option<Self> {
+    /// Start the batch process over the repository holding `root` ([`BLOB_BATCH`], its start read
+    /// by [`batch_answer`]), or answer none when there is no object database to ask: `root` is
+    /// outside a git repository, or the detection's `git` ([`in_repository`]) cannot start, which
+    /// says nothing about where `root` is. Inside a repository a batch `git` that cannot start
+    /// fails the start, naming its command, the root and the cause: an object database stands
+    /// there to ask.
+    pub fn start(root: &std::path::Path) -> Result<Option<Self>, Error> {
         use std::process::Stdio;
 
-        let in_repository = crate::subprocess::git_in(root)
-            .args(["rev-parse", "--git-dir"])
-            .output()
-            .is_ok_and(|out| out.status.success());
-        if !in_repository {
-            return None;
+        if in_repository(root).ok() != Some(true) {
+            return Ok(None);
         }
-        let mut process = crate::subprocess::git_in(root)
-            .args(["cat-file", "--batch"])
-            .env("GIT_NO_LAZY_FETCH", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        let answers = std::io::BufReader::new(process.stdout.take()?);
-        Some(BlobBatch { process, answers })
+        batch_answer(
+            root,
+            crate::subprocess::git_in(root)
+                .args(BLOB_BATCH)
+                .env("GIT_NO_LAZY_FETCH", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn(),
+        )
     }
 
     /// The bytes of the object `id` names, or none when the repository does not hold it:
@@ -1665,6 +1755,24 @@ impl BlobBatch {
         bytes.truncate(size);
         Some(Some(bytes))
     }
+}
+
+/// The arguments of the one batch process a [`BlobBatch`] reads its blobs from.
+const BLOB_BATCH: [&str; 2] = ["cat-file", "--batch"];
+
+/// What the start of the batch process under `root` - a repository, as the detection answered -
+/// answers, its spawn having answered `spawned`: the batch over a process that started, and for
+/// one that could not a failure naming the batch's command, the root and the cause
+/// ([`git_failure`]).
+fn batch_answer(
+    root: &std::path::Path,
+    spawned: std::io::Result<std::process::Child>,
+) -> Result<Option<BlobBatch>, Error> {
+    let mut process = spawned.map_err(|e| git_failure(&BLOB_BATCH, root, &e.to_string()))?;
+    Ok(process.stdout.take().map(|answers| BlobBatch {
+        answers: std::io::BufReader::new(answers),
+        process,
+    }))
 }
 
 impl Drop for BlobBatch {
@@ -2794,7 +2902,7 @@ mod blob_batch_tests {
     use std::path::Path;
 
     /// What `batch` answers for `id`: the bytes, none, or the error's text.
-    fn asked(batch: &mut BlobBatch, id: &str) -> Result<Option<Vec<u8>>, String> {
+    pub(super) fn asked(batch: &mut BlobBatch, id: &str) -> Result<Option<Vec<u8>>, String> {
         batch.blob(id).map_err(|e| e.0)
     }
 
@@ -2813,7 +2921,9 @@ mod blob_batch_tests {
         let empty = git_hash_object(root, "empty", true);
         let absent = "1111111111111111111111111111111111111111";
 
-        let mut batch = BlobBatch::start(root).expect("a repository starts the batch process");
+        let mut batch = BlobBatch::start(root)
+            .unwrap()
+            .expect("a repository starts the batch process");
         assert_eq!(
             asked(&mut batch, &text),
             Ok(Some(b"first line\nsecond line".to_vec()))
@@ -2850,7 +2960,7 @@ mod blob_batch_tests {
             .unwrap()
             .stdout;
 
-        let mut batch = BlobBatch::start(root).unwrap();
+        let mut batch = BlobBatch::start(root).unwrap().unwrap();
         for id in [
             "",
             "zz zz",
@@ -2876,7 +2986,7 @@ mod blob_batch_tests {
     fn outside_a_repository_no_batch_process_starts() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        assert!(BlobBatch::start(root).is_none());
+        assert!(matches!(BlobBatch::start(root), Ok(None)));
 
         git_init_quiet(root);
         write_file(
@@ -2884,7 +2994,9 @@ mod blob_batch_tests {
             b"held once the directory is a repository\n",
         );
         let id = git_hash_object(root, "a.txt", true);
-        let mut batch = BlobBatch::start(root).expect("a repository starts a batch process");
+        let mut batch = BlobBatch::start(root)
+            .unwrap()
+            .expect("a repository starts a batch process");
         assert_eq!(
             asked(&mut batch, &id),
             Ok(Some(b"held once the directory is a repository\n".to_vec()))
@@ -2906,7 +3018,7 @@ mod blob_batch_tests {
         let bytes = std::fs::read(&object).unwrap();
         std::fs::write(&object, &bytes[..bytes.len() - 6]).unwrap();
 
-        let mut batch = BlobBatch::start(root).unwrap();
+        let mut batch = BlobBatch::start(root).unwrap().unwrap();
         assert_eq!(
             asked(&mut batch, &whole),
             Ok(Some(b"an object git holds whole\n".to_vec()))
@@ -2935,7 +3047,7 @@ mod blob_batch_tests {
         let corrupt = git_hash_object(root, "b.txt", true);
         std::fs::write(loose_object(root, &corrupt), b"garbage").unwrap();
 
-        let mut batch = BlobBatch::start(root).unwrap();
+        let mut batch = BlobBatch::start(root).unwrap().unwrap();
         assert_eq!(asked(&mut batch, &corrupt), Ok(None));
         assert_eq!(
             asked(&mut batch, &whole),
@@ -2965,7 +3077,7 @@ mod blob_batch_tests {
         write_file(&root.join("a.txt"), b"the body\n");
         let text = git_hash_object(root, "a.txt", true);
 
-        let mut batch = BlobBatch::start(root).unwrap();
+        let mut batch = BlobBatch::start(root).unwrap().unwrap();
         assert_eq!(asked(&mut batch, &text), Ok(Some(b"the body\n".to_vec())));
         let running = processes_naming(root);
         assert_eq!(running.len(), 1, "one batch process: {running:?}");
@@ -2996,6 +3108,12 @@ mod tests {
         hash_blob(root, bytes).map_err(|e| e.0)
     }
 
+    /// One line of text, the bytes the outside-a-repository and the failure hash tests both hash.
+    const HELLO: &[u8] = b"hello\n";
+
+    /// The object id git gives [`HELLO`].
+    const HELLO_ID: &str = "ce013625030ba8dba906f756967f9e9ca394464a";
+
     /// THE ONE HASH FUNCTION outside a repository (spec 107): a tree that is no git repository
     /// still answers the object id git gives the bytes - the id `git hash-object` prints for a
     /// file holding them - for text, for the empty file and for bytes that are not UTF-8.
@@ -3006,18 +3124,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let binary = [0, 159, 146, 150, b'\n', 255];
-        write_file(&root.join("hello"), b"hello\n");
+        write_file(&root.join("hello"), HELLO);
         write_file(&root.join("empty"), b"");
         write_file(&root.join("binary"), &binary);
 
         assert_eq!(
             [
-                hashed(root, b"hello\n"),
+                hashed(root, HELLO),
                 hashed(root, b""),
                 hashed(root, &binary)
             ],
             [
-                Ok("ce013625030ba8dba906f756967f9e9ca394464a".to_string()),
+                Ok(HELLO_ID.to_string()),
                 Ok("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391".to_string()),
                 Ok(git_hash_object(root, "binary", false)),
             ]
@@ -3027,19 +3145,22 @@ mod tests {
                 git_hash_object(root, "hello", false),
                 git_hash_object(root, "empty", false)
             ],
-            [
-                "ce013625030ba8dba906f756967f9e9ca394464a",
-                "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
-            ]
+            [HELLO_ID, "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"]
         );
     }
 
-    /// The hash applies no filter and writes no object: in a repository whose attributes convert
-    /// line endings, bytes ending in CRLF hash as they are - not as the converted blob a path's
-    /// hash would name - and the object database does not hold the id afterwards.
+    /// The hash applies no filter and writes the object it hashes only inside a repository (spec
+    /// 124, THE BLOB IS WRITTEN): in a repository whose attributes convert line endings, bytes
+    /// ending in CRLF hash as they are - not as the converted blob a path's hash would name - and
+    /// the object database, which did not hold them before the hash, holds them under that id
+    /// afterwards; outside a repository, where no object database stands, the same bytes hash to
+    /// the same id and the directory is left as the hash found it.
     #[test]
-    fn hash_blob_applies_no_filter_and_writes_no_object() {
-        use crate::test_support::{git_hash_object, temp_git_project_with_commit, write_file};
+    fn hash_blob_applies_no_filter_and_writes_the_object_only_inside_a_repository() {
+        use super::blob_batch_tests::asked;
+        use crate::test_support::{
+            dir_snapshot, git_hash_object, temp_git_project_with_commit, write_file,
+        };
 
         let dir = temp_git_project_with_commit();
         let root = dir.path();
@@ -3047,39 +3168,192 @@ mod tests {
         write_file(&root.join("crlf.txt"), b"one\r\ntwo\r\n");
         let filtered = git_hash_object(root, "crlf.txt", false);
         let unfiltered = "4e349b596c5c9d38a82829fafbaf52281c21e319";
+        let held = || {
+            asked(
+                &mut BlobBatch::start(root)
+                    .unwrap()
+                    .expect("a repository starts the batch process"),
+                unfiltered,
+            )
+        };
+        assert_eq!(
+            held(),
+            Ok(None),
+            "the object database holds no such object yet"
+        );
 
         assert_eq!(hashed(root, b"one\r\ntwo\r\n"), Ok(unfiltered.to_string()));
         assert_ne!(filtered, unfiltered);
-        let mut held = BlobBatch::start(root).expect("a repository starts the batch process");
-        assert_eq!(held.blob(unfiltered).map_err(|e| e.0), Ok(None));
+        assert_eq!(held(), Ok(Some(b"one\r\ntwo\r\n".to_vec())));
+
+        let outside = tempfile::tempdir().unwrap();
+        assert!(
+            matches!(BlobBatch::start(outside.path()), Ok(None)),
+            "no object database stands outside a repository"
+        );
+        let found = dir_snapshot(outside.path(), "");
+        assert_eq!(
+            hashed(outside.path(), b"one\r\ntwo\r\n"),
+            Ok(unfiltered.to_string())
+        );
+        assert_eq!(
+            dir_snapshot(outside.path(), ""),
+            found,
+            "a hash outside a repository writes nothing"
+        );
     }
 
-    /// A hash process that fails fails the hash, naming the command, the root and what git said:
-    /// here a root whose `.git` is a file git cannot read as a repository.
+    /// A hash process that fails fails the hash, naming the command line it ran, the root and what
+    /// git said for that command line, on each of its two paths: outside a repository - a root
+    /// whose `.git` is a file git cannot read as one - the hash without a write fails; inside one
+    /// whose object database cannot take the object - a file stands where the object's directory
+    /// goes - the write, which hardens the loose object it writes, fails (spec 124, THE BLOB IS
+    /// WRITTEN), and the object database is left without the object.
     #[test]
     fn hash_blob_names_the_command_the_root_and_gits_own_failure() {
-        use crate::test_support::write_file;
+        use super::blob_batch_tests::asked;
+        use crate::test_support::{git_init_quiet, loose_object_directory, write_file};
+        use std::io::Write;
+        use std::process::Stdio;
 
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        write_file(&root.join(".git"), b"not a gitfile\n");
-        let said = crate::subprocess::git_in(root)
-            .args(["hash-object", "--no-filters", "--stdin"])
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
-        assert!(!said.status.success());
-        let said = String::from_utf8(said.stderr).unwrap();
-        assert!(!said.trim().is_empty());
-
-        assert_eq!(
-            hashed(root, b"hello\n"),
-            Err(format!(
-                "git hash-object --stdin in {}: {}",
-                root.display(),
-                said.trim()
-            ))
+        /// A row: how its root is laid out, the argument vector the hash's path runs there, and
+        /// what the object database under the root answers for the bytes' id after the hash - none
+        /// where none stands.
+        type Row = (
+            fn(&std::path::Path),
+            &'static [&'static str],
+            Option<Result<Option<Vec<u8>>, String>>,
         );
+        let rows: [Row; 2] = [
+            (
+                |root| write_file(&root.join(".git"), b"not a gitfile\n"),
+                &["hash-object", "--no-filters", "--stdin"],
+                None,
+            ),
+            (
+                |root| {
+                    git_init_quiet(root);
+                    write_file(&loose_object_directory(root, HELLO_ID), b"");
+                },
+                &[
+                    "-c",
+                    "core.fsync=loose-object",
+                    "hash-object",
+                    "-w",
+                    "--no-filters",
+                    "--stdin",
+                ],
+                Some(Ok(None)),
+            ),
+        ];
+        for (lay_out, args, held) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            lay_out(root);
+            let mut git = crate::subprocess::git_in(root)
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            // A git that fails before it reads its input may have closed it already.
+            let _ = git.stdin.take().unwrap().write_all(HELLO);
+            let said = git.wait_with_output().unwrap();
+            assert!(!said.status.success());
+            let said = String::from_utf8(said.stderr).unwrap();
+            assert!(!said.trim().is_empty());
+
+            assert_eq!(
+                hashed(root, HELLO),
+                Err(format!(
+                    "git {} in {}: {}",
+                    args.join(" "),
+                    root.display(),
+                    said.trim()
+                ))
+            );
+            assert_eq!(
+                BlobBatch::start(root)
+                    .unwrap()
+                    .map(|mut batch| asked(&mut batch, HELLO_ID)),
+                held
+            );
+        }
+    }
+
+    /// The one repository detection answers inside or outside only for a `git` that ran: run
+    /// under a repository it answers inside, run under a directory that is none it answers
+    /// outside, and a `git` that could not start - here inside a repository - answers neither:
+    /// its failure names the detection's command, the root and the cause, which [`hash_blob`]
+    /// fails on and [`BlobBatch::start`] reads as no object database to ask.
+    #[test]
+    fn the_repository_detection_tells_a_git_that_could_not_start_from_one_run_outside() {
+        use crate::test_support::temp_git_project_with_commit;
+
+        let inside = temp_git_project_with_commit();
+        let outside = tempfile::tempdir().unwrap();
+        let ran = |root: &std::path::Path| {
+            crate::subprocess::git_in(root)
+                .args(REPOSITORY_DETECTION)
+                .output()
+        };
+        let could_not_start = || std::io::Error::from(std::io::ErrorKind::WouldBlock);
+        let rows = [
+            (inside.path(), ran(inside.path()), Ok(true)),
+            (outside.path(), ran(outside.path()), Ok(false)),
+            (
+                inside.path(),
+                Err(could_not_start()),
+                Err(format!(
+                    "git rev-parse --git-dir in {}: {}",
+                    inside.path().display(),
+                    could_not_start()
+                )),
+            ),
+        ];
+        for (root, ran, answer) in rows {
+            assert_eq!(repository_answer(root, ran).map_err(|e| e.0), answer);
+        }
+    }
+
+    /// The batch process's start under a repository the detection answered: a `git` that started
+    /// is the batch, and one that could not start fails the start, naming the batch's command, the
+    /// root and the cause - never none, which would read every entry of a rebuild from the tree
+    /// with an object database standing there to ask.
+    #[test]
+    fn the_batch_start_inside_a_repository_fails_naming_a_git_that_could_not_start() {
+        use crate::test_support::temp_git_project_with_commit;
+        use std::process::Stdio;
+
+        let inside = temp_git_project_with_commit();
+        let root = inside.path();
+        let started = crate::subprocess::git_in(root)
+            .args(BLOB_BATCH)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn();
+        let could_not_start = || std::io::Error::from(std::io::ErrorKind::WouldBlock);
+        let rows = [
+            (started, Ok(true)),
+            (
+                Err(could_not_start()),
+                Err(format!(
+                    "git cat-file --batch in {}: {}",
+                    root.display(),
+                    could_not_start()
+                )),
+            ),
+        ];
+        for (spawned, answer) in rows {
+            assert_eq!(
+                batch_answer(root, spawned)
+                    .map(|batch| batch.is_some())
+                    .map_err(|e| e.0),
+                answer
+            );
+        }
     }
 
     /// Test-only recomposition of [`Worktree::merge_into_worktree`] + [`Worktree::land`] into

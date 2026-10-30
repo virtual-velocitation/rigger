@@ -168,6 +168,7 @@ fn max_parallel_units_bounds_real_concurrent_agent_spawns_through_a_real_conduct
         criteria: Vec::new(),
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
 
     run(&cfg, &deps)

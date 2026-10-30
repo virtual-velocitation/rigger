@@ -128,7 +128,7 @@ fn read_order_signatures(
     project: &str,
 ) -> Result<Vec<watch::OrderSignature>, Box<dyn std::error::Error>> {
     let sel = store_selection(None, None)?;
-    if sel.is_sqlite() && !Path::new(path).exists() {
+    if sel.log_absent(path) {
         return Ok(Vec::new());
     }
     let backend = resolve_store(&sel, path)?;
@@ -340,9 +340,13 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
         eprintln!("{advisory}");
     }
     // REBUILD OWED advisory (spec 101): a `graph.db` that owes its rebuild - folded under an older
-    // fold rule, or marked by a fold into it that failed - answers as it stands until `rigger setup` rebuilds it;
-    // validate says so and writes nothing to it.
+    // fold rule - answers as it stands until `rigger setup` rebuilds it; validate says so, and
+    // writes nothing to it. Validate alone then says how many events the file passed over, by
+    // cause (spec 124, CATCH-UP LINES).
     if let Some(note) = graph_rebuild_owed_note(&db_path("graph.db"), &project_identity()) {
+        eprintln!("{note}");
+    }
+    if let Some(note) = graph_passed_over_note(&db_path("graph.db"), &project_identity()) {
         eprintln!("{note}");
     }
     // Docs-drift GATE (spec 20, unit 2): the committed `using-rigger` skill and handbook
@@ -556,7 +560,7 @@ fn bloat_advisory(counted: &DerivedCount) -> Option<String> {
 /// order-signature advisories above.
 fn bloat_advisory_for(path: &str, project: &str) -> Option<String> {
     let sel = store_selection(None, None).ok()?;
-    if !sel.is_sqlite() || !Path::new(path).exists() {
+    if !sel.is_sqlite() || sel.log_absent(path) {
         return None;
     }
     let store = open_sqlite_store(path).ok()?;

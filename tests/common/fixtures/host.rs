@@ -14,6 +14,11 @@ pub fn tool_available(program: &str, version_arg: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The text of the file at `path`, a panic naming it when it cannot be read.
+pub fn read_text(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+}
+
 /// Write `bytes` to `path`, creating its parent directories first.
 pub fn write_file(path: &Path, bytes: &[u8]) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -225,12 +230,13 @@ pub fn cleanup(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// The brace-balanced JavaScript declaration in `src` that starts at `start_marker`, from the
-/// marker through its closing brace.
+/// The brace-balanced declaration in `src` that starts at `start_marker`, from the marker
+/// through its closing brace: a JavaScript declaration of the workflow, or a Rust item of a
+/// source, since the cut counts braces alone.
 pub fn js_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
     let start = src
         .find(start_marker)
-        .unwrap_or_else(|| panic!("workflow must contain `{start_marker}`"));
+        .unwrap_or_else(|| panic!("the source must contain `{start_marker}`"));
     let open = start
         + src[start..]
             .find('{')

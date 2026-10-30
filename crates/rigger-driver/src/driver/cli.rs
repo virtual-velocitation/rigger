@@ -77,7 +77,7 @@ impl Driver {
         )?);
         // The harness environment every headless worker gets ([`harness_env`]), applied
         // first so the build environment below overrides it under the same key.
-        for (k, v) in harness_env() {
+        for (k, v) in harness_env(&opts.id) {
             cmd.env(k, v);
         }
         // The ONE build-environment authority's second injection site (spec 65): every
@@ -214,8 +214,9 @@ fn is_emit_type(type_: &str) -> bool {
 /// EMIT_PROTOCOL prints the decision fields at the top level) is tolerated: the
 /// object minus `type` becomes the data.
 ///
-/// The first `emit` error is propagated (the event store is down, etc.); it is not
-/// swallowed, since a lost decision silently corrupts the cross-agent memory.
+/// The first `emit` error is propagated (the event store is down, the emit guard refused the
+/// record, etc.); it is not swallowed, since a lost decision silently corrupts the cross-agent
+/// memory.
 fn bridge_emits(
     stdout: &str,
     emit: &dyn Fn(&str, Value) -> Result<(), Error>,
@@ -566,6 +567,36 @@ thinking out loud, not json\n\
                 .contains("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=900000\n"),
             "an opts.env value under the same key wins: {:?}",
             overridden.output
+        );
+    }
+
+    /// The worker is told the spawn it runs as (`RIGGER_SPAWN`), so its own `rigger emit` is
+    /// stamped with its author on this host as on the headless one.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_exports_the_spawn_id_to_the_worker() {
+        let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/env-echo-agent.sh")
+            .to_string_lossy()
+            .into_owned();
+        let driver = Driver {
+            bin,
+            ..Driver::default()
+        };
+        let emit = |_: &str, _: Value| Ok(());
+        let agent = AgentDef {
+            id: "e".into(),
+            ..Default::default()
+        };
+        let opts = SpawnOpts {
+            id: "u/implementer#2".into(),
+            ..Default::default()
+        };
+        let result = driver.spawn(&agent, "task", &opts, &emit).unwrap();
+        assert!(
+            result.output.contains("RIGGER_SPAWN=u/implementer#2\n"),
+            "the worker sees its spawn id: {:?}",
+            result.output
         );
     }
 

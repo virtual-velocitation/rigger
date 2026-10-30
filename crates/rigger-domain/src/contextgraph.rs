@@ -412,16 +412,16 @@ pub struct CallGraph {
     pub referenced_not_called: Vec<Node>,
 }
 
-/// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup).
-/// A PORT-owned type (spec 92's fix round moved it here from the sqlite adapter, so
+/// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup). A
+/// PORT-owned type (spec 92's fix round moved it here from the sqlite adapter, so
 /// [`Projection::locate`] returns the same kind of type every sibling `Projection` method does,
-/// never a concrete adapter's own type): [`sqlite::Projector::locate`] resolves the query for the
-/// show surfaces (`rigger graph --show` and `rigger_graph`'s `show`) - a full `<file>::<path>` node
-/// id, a bare name matched as a definition's leaf, a path by its id suffix or a flat
-/// `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR PATH), where an
-/// `--around` seed is an exact id or an alias resolved to its canonical id (spec 117), never a bare
-/// name looked up by its leaf - and returns one of three honest outcomes, never a guess among
-/// candidates.
+/// never a concrete adapter's own type):
+/// `rigger_graph_sqlite::contextgraph::sqlite::Projector::locate` resolves the query for the show
+/// surfaces (`rigger graph --show` and `rigger_graph`'s `show`) - a full `<file>::<path>` node id,
+/// a bare name matched as a definition's leaf, a path by its id suffix or a flat `<file>::<name>`
+/// as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR PATH), where an `--around` seed is
+/// an exact id or an alias resolved to its canonical id (spec 117), never a bare name looked up by
+/// its leaf - and returns one of three honest outcomes, never a guess among candidates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Located {
     /// Exactly one entity resolved: its definition site and graph facts, from which the CLI reads
@@ -533,8 +533,9 @@ pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> 
         .collect()
 }
 
-/// One disambiguation candidate for an ambiguous query (spec 58): the full node id and its
-/// file. [`sqlite::Projector::locate`] returns these SORTED by id, so the listing is deterministic.
+/// One disambiguation candidate for an ambiguous query (spec 58): the full node id and its file.
+/// `rigger_graph_sqlite::contextgraph::sqlite::Projector::locate` returns these SORTED by id, so
+/// the listing is deterministic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
     /// The candidate's full `<file>::<path>` node id.
@@ -553,7 +554,8 @@ pub const TYPE_LESSON_LEARNED: &str = "LessonLearned";
 pub const TYPE_ALIAS_DEFINED: &str = "AliasDefined";
 pub const TYPE_ALIAS_UNRESOLVED: &str = "AliasUnresolved";
 /// A review finding a lens / adversary raised about a unit's files. Folded into a
-/// KIND_FINDING node ABOUT each file, plus a RAISED edge from the acting reviewer.
+/// KIND_FINDING node ABOUT each file it cites (a `path:line` citation names its file), the
+/// acting reviewer kept as the node's `by` attribute, never a RAISED edge (spec 43).
 pub const TYPE_REVIEW_FINDING: &str = "ReviewFinding";
 /// One definition extracted from a source file (spec 29a): the extraction pass emits one per
 /// path (spec 119, ONE PATH, ONE EVENT), and the always-compiled fold turns it into a
@@ -732,8 +734,12 @@ pub enum Fold {
     /// The events are in the graph.
     Folded,
     /// The events are not in the graph, for this reason: the graph could not be had (unopenable,
-    /// not wired), owes its rebuild ([`REBUILD_OWED`]), or refused the write (held past its
-    /// busy timeout).
+    /// not wired), owes its rebuild ([`REBUILD_OWED`]), or did not fold them - its fold failed, or
+    /// another writer's write lock or its catch-up held them past the appender's ceiling (spec
+    /// 124). A projection that records positions it passed over may also answer here an
+    /// event of its own recorded passed over, before or by this fold, with that position's cause:
+    /// that event is not in the graph, and which of its batch's other events are committed when
+    /// it answers is the projection's transaction cadence ([`Projection::apply_batch`]).
     NotFolded(String),
 }
 
@@ -743,22 +749,24 @@ pub enum Fold {
 #[must_use = "the outcome says whether the entry's batch was asked for"]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryFold {
-    /// The projection had already folded the entry's position: nothing was written and the batch
-    /// was never asked for.
+    /// The projection had already folded the entry's position when the fold reached it: nothing
+    /// was written at that position, and the batch, asked for or not, folded nothing.
     AlreadyApplied,
-    /// The entry names the generation its identity already holds: only its position was recorded
-    /// and the batch was never asked for.
+    /// The entry names the generation its identity already holds: only its position was recorded,
+    /// and the batch, asked for or not, folded nothing.
     ReRecording,
     /// The entry's position was recorded and its batch was asked for, once. A resolved batch
-    /// folded at the entry's position and installed its generation; an unresolved one folded
-    /// nothing and left the identity's facts and current generation as they stood.
+    /// folded at the entry's position and installed its generation; an unresolved one, answered
+    /// so rather than passed over ([`Projection::apply_generation`]), folded nothing and left the
+    /// identity's facts and current generation as they stood.
     BatchAsked,
 }
 
 /// The function [`Projection::apply_generation`] asks for an entry's batch, at most once: the
 /// batch's events, `None` when no source resolves the entry, or an error, which fails the fold.
-/// It runs inside the fold's transaction, while the projection is held for that write: it must
-/// not read or fold the projection it is handed to, and must do no slow work there.
+/// It runs inside the fold's transaction, while the projection is held for that write, or just
+/// before that transaction opens, as [`Projection::apply_generation`] says: it must not read or
+/// fold the projection it is handed to, and must do no slow work there.
 pub type EntryBatch<'a> = Box<dyn FnOnce() -> Result<Option<Vec<Event>>, Error> + 'a>;
 
 /// The permission to fold into a [`Projection`] through [`Projection::apply`] and
@@ -779,9 +787,12 @@ impl Fold {
         Self::settle(graph.and_then(|g| g.apply(event, FoldAccess(()))))
     }
 
-    /// Fold `events` in one transaction into the graph `graph` yields, or say why they were not
-    /// folded - the graph could not be had, or refused them. No events is nothing to fold, so it is
-    /// folded without opening the graph.
+    /// Fold `events` into the graph `graph` yields through [`Projection::apply_batch`], or say why
+    /// they were not folded - the graph could not be had, or refused them, or one of them is a
+    /// position the graph recorded passed over, whose cause is answered: which of the batch's
+    /// other events the graph has committed when it answers is its transaction cadence, as
+    /// [`Projection::apply_batch`] says. No events is nothing to fold, so it is folded without
+    /// opening the graph.
     pub fn of_batch<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
         graph: impl FnOnce() -> Result<G, Error>,
         events: &[Event],
@@ -839,30 +850,50 @@ macro_rules! owed_older_rule {
     };
 }
 
-/// The one spelling of [`OWED_LOST_FOLD`], a literal so [`REBUILD_OWED`] is composed from it.
+/// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it records an older fold rule.
+pub const OWED_OLDER_RULE: &str = owed_older_rule!();
+
+/// The one spelling of [`OWED_LOST_FOLD`], a literal so [`REBUILD_OWED_FOR_LOST_FOLD`] is composed
+/// from it.
 macro_rules! owed_lost_fold {
     () => {
         "it misses an event the log holds"
     };
 }
 
-/// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it records an older fold rule.
-pub const OWED_OLDER_RULE: &str = owed_older_rule!();
+/// The one spelling of the refusal of a graph that owes one rebuild for the cause its tokens name,
+/// a literal frame each such refusal is composed from ([`REBUILD_OWED`],
+/// [`REBUILD_OWED_FOR_LOST_FOLD`]), naming the one command that pays it.
+macro_rules! rebuild_owed_for {
+    ($($cause:tt)*) => {
+        concat!(
+            "graph.db owes one rebuild from the event log (",
+            $($cause)*,
+            ") - run `rigger setup` to rebuild it"
+        )
+    };
+}
 
-/// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it does not hold an event the log
-/// does - a fold into it failed, or its process died between the append and the fold.
+/// Why `rigger setup` rebuilds a graph from the log when the seeding of its catch-up cursor finds
+/// the prefix it folded violated (spec 124): it misses an event of the log that only a rebuild
+/// folds in order, or its record of what it folded runs past the log's end, as when the log is
+/// replaced beneath it, or that record is of another log, as when the event store is switched
+/// beneath it. Never a cause the graph records: the graph owes no rebuild for it
+/// ([`Projection::rebuild_owed`]), and the one fold refused for it is one meeting a record of
+/// another log ([`REBUILD_OWED_FOR_LOST_FOLD`]).
 pub const OWED_LOST_FOLD: &str = owed_lost_fold!();
 
 /// What a projection that owes its rebuild ([`Projection::rebuild_owed`]) answers in place of a
 /// fold, and what every command that depends on the fold says when it refuses: the one spelling of
-/// the refusal, naming both causes a rebuild is owed for and the one command that pays it.
-pub const REBUILD_OWED: &str = concat!(
-    "graph.db owes one rebuild from the event log (",
-    owed_older_rule!(),
-    ", or ",
-    owed_lost_fold!(),
-    ") - run `rigger setup` to rebuild it"
-);
+/// the refusal, naming the one cause the graph records a rebuild owed for, the older fold rule
+/// ([`OWED_OLDER_RULE`]), and the one command that pays it.
+pub const REBUILD_OWED: &str = rebuild_owed_for!(owed_older_rule!());
+
+/// What a fold answers in place of folding when the graph's record of what it folded is of
+/// another log than the one the fold reads, or of a log it cannot name (spec 124, A LOG SWITCHED
+/// UNDER A STANDING GRAPH): the refusal naming the lost fold ([`OWED_LOST_FOLD`]) that the next
+/// `rigger setup`'s seeding finds and pays with the rebuild.
+pub const REBUILD_OWED_FOR_LOST_FOLD: &str = rebuild_owed_for!(owed_lost_fold!());
 
 /// The refusal `command`, whose answer depends on the fold, gives while the graph owes its
 /// rebuild.
@@ -877,16 +908,21 @@ pub trait Projection: Send + Sync {
     /// [`Fold::of`], which holds the [`FoldAccess`] it takes.
     fn apply(&self, e: &Event, access: FoldAccess) -> Result<(), Error>;
 
-    /// Fold a whole batch of events into the graph in ONE transaction, idempotently per global
-    /// position - the batched analogue of [`apply`](Projection::apply). The result is exactly what
-    /// applying each event in order would produce; the only difference is transaction CADENCE.
+    /// Fold a whole batch of events into the graph, idempotently per global position - the
+    /// batched analogue of [`apply`](Projection::apply). The graph it leaves is exactly what
+    /// applying each event in order would produce; the only difference is transaction CADENCE,
+    /// which the implementation chooses. One exception to the answer: an implementation that
+    /// records positions passed over may meet one of the batch's own positions recorded so, and
+    /// then answers the first such position's cause where the default loop stops at it; which of
+    /// the batch's other events it has committed when it answers is its transaction cadence, which
+    /// the sqlite `Projector`'s own `apply_batch` doc states for each of its paths.
     ///
     /// The default folds each event through [`apply`](Projection::apply) (one transaction per
     /// event), so an implementation with no cheaper batch path is unaffected and every `apply`
-    /// still runs. The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it to
-    /// open ONE transaction for the whole batch: that is what lets an ingest sink fold a file's
-    /// whole batch at the store's transaction cost of ONE commit instead of one per event (spec 49
-    /// - the measured cold-build throughput was transaction-cadence bound, not parse-bound).
+    /// still runs. The sqlite `rigger_graph_sqlite::contextgraph::sqlite::Projector` OVERRIDES it,
+    /// at the transaction cadence its own `apply_batch` doc states: folding many events per commit
+    /// rather than one per event is what spec 49 needed, the measured cold-build throughput being
+    /// transaction-cadence bound, not parse-bound.
     fn apply_batch(&self, events: &[Event], access: FoldAccess) -> Result<(), Error> {
         for e in events {
             self.apply(e, access)?;
@@ -895,18 +931,23 @@ pub trait Projection: Send + Sync {
     }
 
     /// Fold one ledger entry of perception - `entry`, a `GenerationIngested` event - with its
-    /// batch, in ONE transaction, and answer which of three things happened ([`EntryFold`]): an
-    /// entry whose position this projection already folded folds nothing; one naming the
-    /// generation its identity already holds records only its position; any other records its
-    /// position and asks `batch` for the entry's batch, once. A batch `batch` answers folds event
-    /// by event at the entry's position and valid-time, every event asserted under the entry's
-    /// identity and generation, never under a key the event carries, and installs that
-    /// generation; an entry `batch` answers `None` for folds nothing; an error from `batch` fails
-    /// the fold. `batch` runs inside that transaction, while this projection is held for the
-    /// write: it must not read or fold this projection, and must do no slow work there. A ledger
-    /// entry folds only here: an implementor that folds refuses one on
-    /// [`apply`](Projection::apply) and [`apply_batch`](Projection::apply_batch). It takes no
-    /// [`FoldAccess`].
+    /// batch, and answer which of three things happened ([`EntryFold`]): an entry whose position
+    /// this projection already folded folds nothing - or, when it recorded that position passed
+    /// over, answers that position's cause as its error; one naming the generation its identity
+    /// already holds records only its position; any other records its position and asks `batch`
+    /// for the entry's batch, once. A batch `batch` answers folds event by event at the entry's
+    /// position and valid-time, every event asserted under the entry's identity and generation,
+    /// never under a key the event carries, and installs that generation, all in the ONE
+    /// transaction that records the entry's position; an entry `batch` answers `None` for folds
+    /// nothing; an error from `batch` fails the fold. A projection that records positions passed
+    /// over may instead record the entry's position so - its own payload or an event of its batch
+    /// rejected, or its batch `None` - and answer that cause as its error. `batch` runs inside
+    /// that transaction, while this projection is held for the write, or just before it opens: it
+    /// must not read or fold this projection, and must do no slow work there; which of the two the
+    /// sqlite `Projector` does on each of its paths its own `apply_generation` doc states. A ledger
+    /// entry folds with a batch it is handed only here: an implementor that folds refuses one
+    /// handed to [`apply`](Projection::apply) or [`apply_batch`](Projection::apply_batch), or
+    /// folds it there with the batch its own source derives for it. It takes no [`FoldAccess`].
     fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error>;
 
     /// The generation this projection currently holds for the `<prefix>/<file>` identity
@@ -915,11 +956,11 @@ pub trait Projection: Send + Sync {
     fn current_generation(&self, identity: &str) -> Result<Option<String>, Error>;
 
     /// Whether this projection says, without reading the log, that it owes one rebuild from it
-    /// (spec 101) - it was folded under an older fold rule, or a fold into it failed and marked it
-    /// as missing an event the log holds: until `rigger setup` pays it nothing folds into it, and
-    /// nothing whose answer depends on the fold may answer from it - it refuses with
-    /// [`REBUILD_OWED`]. An event it misses that nothing marked is found by `rigger setup`, which
-    /// reads the projection's record of what it folded against the log.
+    /// (spec 101) - it was folded under an older fold rule: until `rigger setup` pays it nothing
+    /// folds into it, and nothing whose answer depends on the fold may answer from it - it refuses
+    /// with [`REBUILD_OWED`]. A fold that fails never makes it owe one (spec 124): an event it
+    /// misses is found by `rigger setup`, or by the next fold through a folding store, which read
+    /// the projection's record of what it folded against the log.
     fn rebuild_owed(&self) -> Result<bool, Error>;
 
     /// The connected subgraph reachable from any seed within depth hops (the FEED arc / an
@@ -941,10 +982,10 @@ pub trait Projection: Send + Sync {
     /// layered DAG; a recursion edge is marked ([`CallEdge::back`]) rather than duplicated.
     ///
     /// The default returns an empty [`CallGraph`], so a projection with no directed-walk support (a
-    /// test double, or a not-yet-overriding adapter) degrades to an empty view rather than erroring.
-    /// The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it with the real
-    /// walk. Read-only over the projection; an empty graph or a seed with no calls yields an empty
-    /// [`CallGraph`], never an error.
+    /// test double, or a not-yet-overriding adapter) degrades to an empty view rather than
+    /// erroring. The sqlite `rigger_graph_sqlite::contextgraph::sqlite::Projector` OVERRIDES it
+    /// with the real walk. Read-only over the projection; an empty graph or a seed with no calls
+    /// yields an empty [`CallGraph`], never an error.
     fn calls(
         &self,
         _seed: &[String],
@@ -962,14 +1003,15 @@ pub trait Projection: Send + Sync {
     /// `graph --show <entity>` / `rigger_graph`'s `show` selector lookup, put on the trait so a
     /// caller holding only `&dyn Projection` (`mcpserver::Server`, wired via
     /// [`with_graph`](crate::mcpserver::Server::with_graph) exactly like [`subgraph`] already is)
-    /// can serve it without reaching for the concrete [`sqlite::Projector`] across the crate
-    /// boundary - the DI extension that retired the operator MCP surface's second read loop
-    /// rather than adding one. Mirrors [`sqlite::Projector::locate`]: a full `<file>::<path>` id
-    /// resolves directly (a nameless code entity's or artifact's only once nothing else does);
-    /// else a bare name matches as a definition's leaf, a path (`Struct.field`) by its id suffix
-    /// and a flat `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR
-    /// PATH); and the three outcomes ([`Located`], a port-owned type - see its doc) are never a
-    /// guess among candidates.
+    /// can serve it without reaching for the concrete
+    /// `rigger_graph_sqlite::contextgraph::sqlite::Projector` across the crate boundary - the DI
+    /// extension that retired the operator MCP surface's second read loop rather than adding one.
+    /// Mirrors `rigger_graph_sqlite::contextgraph::sqlite::Projector::locate`: a full
+    /// `<file>::<path>` id resolves directly (a nameless code entity's or artifact's only once
+    /// nothing else does); else a bare name matches as a definition's leaf, a path (`Struct.field`)
+    /// by its id suffix and a flat `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW
+    /// FINDS A LEAF OR PATH); and the three outcomes ([`Located`], a port-owned type - see its doc)
+    /// are never a guess among candidates.
     /// The default returns `Located::None`, so a projection with no locate support (a test double)
     /// degrades honestly rather than erroring - the sqlite `Projector` OVERRIDES it with the real
     /// lookup.
@@ -1708,9 +1750,9 @@ mod locate_default {
     use crate::test_support::MinimalProjection;
 
     /// A projection with no locate support degrades HONESTLY to `Located::None` rather than
-    /// erroring or panicking - the same honesty the [`crate::contextgraph::sqlite::Projector`]
-    /// override promises for a genuinely unmatched query, just for every query on a projection
-    /// that never indexed definitions at all.
+    /// erroring or panicking - the same honesty the
+    /// `rigger_graph_sqlite::contextgraph::sqlite::Projector` override promises for a genuinely
+    /// unmatched query, just for every query on a projection that never indexed definitions at all.
     #[test]
     fn a_projection_with_no_override_reports_none_never_errors() {
         assert_eq!(MinimalProjection.locate("anything").unwrap(), Located::None);

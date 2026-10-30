@@ -52,6 +52,22 @@ pub enum StoreIdentity {
     Shared { endpoint: String },
 }
 
+impl StoreIdentity {
+    /// The text a graph file records of the event log it folds, beside its `caught_up` cursor
+    /// (spec 124, A LOG SWITCHED UNDER A STANDING GRAPH): the backend's kind and its locator -
+    /// `local:` and the embedded log's path, or `shared:` and the [`fnv1a_64`] digest of the
+    /// server's credential-free endpoint as 16 lowercase hex digits - so another log reads as
+    /// another identity, and no part of a connection string is ever recorded.
+    pub fn log_identity(&self) -> String {
+        match self {
+            StoreIdentity::Local { path } => format!("local:{path}"),
+            StoreIdentity::Shared { endpoint } => {
+                format!("shared:{:016x}", fnv1a_64(endpoint.as_bytes()))
+            }
+        }
+    }
+}
+
 /// Which kind of process last wrote an [`Instance`] entry. A driver and a courier of the same
 /// project write the SAME entry file (its [`id`](Instance::id) keys on the root and store
 /// alone), so the entry carries two facts that must never be read as one:
@@ -389,6 +405,30 @@ mod tests {
             },
             heartbeat_ms: hb,
             writer: Writer::Driver,
+        }
+    }
+
+    /// A store's log identity names its kind and its locator: the embedded log's path verbatim,
+    /// and for a server the digest of its endpoint, a value fixed across toolchains, never the
+    /// endpoint itself.
+    #[test]
+    fn a_log_identity_is_the_kind_and_the_path_or_the_endpoints_digest() {
+        let rows = [
+            (
+                StoreIdentity::Local {
+                    path: "/p/.rigger/events.db".to_string(),
+                },
+                "local:/p/.rigger/events.db",
+            ),
+            (
+                StoreIdentity::Shared {
+                    endpoint: "kurrentdb://db.example:2113".to_string(),
+                },
+                "shared:5cfaa9387d2839e1",
+            ),
+        ];
+        for (store, identity) in rows {
+            assert_eq!(store.log_identity(), identity, "{store:?}");
         }
     }
 

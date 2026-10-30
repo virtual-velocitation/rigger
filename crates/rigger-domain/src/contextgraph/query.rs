@@ -169,6 +169,40 @@ pub fn file_of(id: &str) -> Option<&str> {
     names_a_file.then_some(file)
 }
 
+/// `path` without one trailing `:line` or `:line-line` suffix: a line, or a `from-to` span of
+/// lines, each a non-empty run of ASCII digits. A suffix of any other shape (`x.rs:`, `x.rs:-20`,
+/// `x.rs:12-`, `x.rs:1-2-3`, `x.rs:1a`) is part of the path as written. The one read of a line
+/// citation: [`referenced_id`] and the grounder's path a design-doc mention names both read it.
+pub fn sans_line_span(path: &str) -> &str {
+    let is_line_span = |s: &str| {
+        let (from, to) = s.split_once('-').unwrap_or((s, s));
+        [from, to]
+            .iter()
+            .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    match path.rsplit_once(':') {
+        Some((file, span)) if is_line_span(span) => file,
+        _ => path,
+    }
+}
+
+/// The node id a record's reference names - an entry of a decision's `governs` or of a lesson's or
+/// finding's `about`: the FILE when the reference cites a line or a span of lines of one
+/// (`tests/x.rs:12` and `tests/x.rs:12-20` give `tests/x.rs`), so a record citing `file:line` is
+/// about that file; the reference as written otherwise. A reference cites lines of a file only
+/// when [`sans_line_span`] leaves a path [`file_of`] reads as a whole file and holding no other
+/// `:`, so a code-entity path (`a.rs::f`), a record id, a section name or an extensionless name
+/// (`stage:12`) is never cut. Every reader matching a record's references against files reads it:
+/// the graph's record fold, the side-car's peer scope, the review metrics, the canary's catch, the
+/// playbook triggers, the dash's graph seeds and a critique resolution's spec.
+pub fn referenced_id(reference: &str) -> &str {
+    let path = sans_line_span(reference);
+    match file_of(path) {
+        Some(file) if file == path && !path.contains(':') => path,
+        _ => reference,
+    }
+}
+
 /// The ONE cut of a node id (spec 119): its file half, the text before its first `::` (the whole
 /// id when it holds none), and its rest half, the text after that `::` (`Some("")` for `a.rs::`,
 /// `None` when the id holds no `::`). The domain owns the id format `<file>::<path>`, and this is
@@ -2735,5 +2769,36 @@ mod file_half_tests {
         };
         assert_eq!(files_lens_keys(&g), vec![Some("Makefile".to_string()); 2]);
         assert_eq!(card_file(&g, "Makefile::all"), Some("Makefile".to_string()));
+    }
+}
+
+/// A record's reference citing a line or a span of lines of a file names that file; no other
+/// reference is cut, whatever other suffix it carries.
+#[cfg(test)]
+mod line_citation_tests {
+    use super::*;
+
+    #[test]
+    fn a_reference_citing_lines_of_a_file_names_the_file_and_no_other_is_cut() {
+        assert_eq!(
+            ["tests/x.rs:12", "tests/x.rs:12-20", "tests/x.rs"].map(referenced_id),
+            ["tests/x.rs"; 3]
+        );
+        let kept = [
+            "tests/x.rs:",
+            "tests/x.rs:-20",
+            "tests/x.rs:12-",
+            "tests/x.rs:1-2-3",
+            "tests/x.rs:1a",
+            "a.rs::f",
+            "a.rs::f:12",
+            "crate::path::name",
+            "adv-x",
+            "stage:12",
+            "Makefile:12",
+            "a.rs:12:5",
+            "docs/x.md#sec:12",
+        ];
+        assert_eq!(kept.map(referenced_id), kept);
     }
 }

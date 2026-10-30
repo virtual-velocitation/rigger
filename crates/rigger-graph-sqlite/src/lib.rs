@@ -30,6 +30,10 @@ use rigger_store_sqlite::{lockfile, sqlite};
 extern crate self as rigger;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/cursor.rs"]
+mod cursor_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/fold.rs"]
 mod fold_fixtures;
 // The scratch fixture the fold fixtures name through `super::`, compiled here from the same
@@ -39,6 +43,10 @@ mod fold_fixtures;
 mod scratch_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use scratch_fixtures::temp_root;
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/events.rs"]
+mod event_fixtures;
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/graph.rs"]
@@ -51,11 +59,33 @@ mod host_fixtures;
 // `rigger::holders`.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_process::{holders, reap};
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/passed_over.rs"]
+mod passed_over_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/sqlite.rs"]
+mod sqlite_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/write_lock.rs"]
+mod write_lock_fixtures;
 #[cfg(test)]
 mod test_support {
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    pub use crate::cursor_fixtures::*;
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    pub use crate::event_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::fold_fixtures::*;
     pub use crate::graph_fixtures::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::host_fixtures::*;
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    pub use crate::passed_over_fixtures::*;
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    pub use crate::sqlite_fixtures::*;
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    pub use crate::write_lock_fixtures::*;
 }

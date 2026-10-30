@@ -418,9 +418,9 @@ mod ingest_sinks {
             "a failed build reports no ingested count; stdout: {out}"
         );
         assert!(
-            err.starts_with(&format!(
-                "rigger: the log's latest generation of {broken} could not be read: event store: "
-            )) && err.contains("Invalid column type Blob"),
+            err.starts_with(&common::cli::refusal_line(&format!(
+                "the log's latest generation of {broken} could not be read: event store: "
+            ))) && err.contains("Invalid column type Blob"),
             "the build names the read that failed, then the store's error, once; stderr: {err}"
         );
 
@@ -480,11 +480,11 @@ mod ingest_sinks {
         );
         assert_eq!(out.trim(), "", "a failed step prints no step line");
         assert!(
-            err.contains(&format!(
-                "rigger: conductor: the log's latest generation of {} could not be read: event \
-                 store: no query solution",
+            err.contains(&common::cli::refusal_line(&format!(
+                "conductor: the log's latest generation of {} could not be read: event store: no \
+                 query solution",
                 now[0].0
-            )),
+            ))),
             "the step fails naming the read and the store's lookup error; stderr: {err}"
         );
         assert_eq!(
@@ -1037,14 +1037,8 @@ fn the_group_lookup_answers_each_project_namespace_only_its_own_recording() {
             .unwrap()
     };
     record("alpha", "h1");
-    let beta_at = record("beta", "h2")
-        .placed()
-        .map(|(_, p)| p)
-        .collect::<Vec<_>>();
-    let alpha_at = record("alpha", "h3")
-        .placed()
-        .map(|(_, p)| p)
-        .collect::<Vec<_>>();
+    let beta_at = common::fixtures::placed_positions(&record("beta", "h2"));
+    let alpha_at = common::fixtures::placed_positions(&record("alpha", "h3"));
 
     let head = |project: &str| {
         Namespaced::new(&backend, project)

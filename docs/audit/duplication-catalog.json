@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ba255c2222ab",
+    "id": "dup-f6fda65801a5",
     "classification": "near",
     "sites": [
       {
@@ -99,6 +99,11 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "proof_rows_by",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "refusing",
         "content_hash": "6fd90a8c2eed6379"
       },
@@ -138,6 +143,11 @@
         "content_hash": "b0b4170272f04fb7"
       },
       {
+        "file": "src/cli/hygiene.rs",
+        "name": "live_writer_refusal",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
         "file": "src/cli/mod.rs",
         "name": "skill_source_rel",
         "content_hash": "6fd90a8c2eed6379"
@@ -148,9 +158,24 @@
         "content_hash": "6fd90a8c2eed6379"
       },
       {
+        "file": "src/cli/setup.rs",
+        "name": "live_run_rebuild_refusal",
+        "content_hash": "6fd90a8c2eed6379"
+      },
+      {
         "file": "tests/canary_model_drift_periphery.rs",
         "name": "prose_claiming",
         "content_hash": "6fd90a8c2eed6379"
+      },
+      {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "lock_held_past",
+        "content_hash": "b0b4170272f04fb7"
+      },
+      {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "catch_up_short_after",
+        "content_hash": "b0b4170272f04fb7"
       },
       {
         "file": "tests/common/fixtures/instructions.rs",
@@ -173,7 +198,7 @@
         "content_hash": "6fd90a8c2eed6379"
       }
     ],
-    "proposed_home": "a new shared module (sites span 18 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/instructions.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/mod.rs, tests/canary_model_drift_periphery.rs, tests/common/fixtures/instructions.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 21 files: crates/rigger-conductor/src/blast_radius_eval.rs, crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/contextgraph.rs, crates/rigger-domain/src/instructions.rs, crates/rigger-domain/src/review.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-grounder/src/grounder/mod.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs, crates/rigger-worktree-git/src/worktree.rs, src/cli/hygiene.rs, src/cli/mod.rs, src/cli/setup.rs, tests/canary_model_drift_periphery.rs, tests/common/fixtures/fold.rs, tests/common/fixtures/instructions.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/native_driver_pipelining_behavior.rs, tests/regate_landed_on_resume_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -446,7 +471,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-2b8f802a2dc3",
+    "id": "dup-f66d1a9d9447",
     "classification": "semantic",
     "sites": [
       {
@@ -457,7 +482,7 @@
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker",
-        "content_hash": "ea999bb38f84fe93"
+        "content_hash": "f3ef6a1fc794314b"
       },
       {
         "file": "crates/rigger-domain/src/agent.rs",
@@ -468,11 +493,6 @@
         "file": "crates/rigger-domain/src/ingest.rs",
         "name": "a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error",
         "content_hash": "759be2b81949a05f"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it",
-        "content_hash": "42988f6041c63d74"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
@@ -497,7 +517,7 @@
       {
         "file": "tests/batched_fold_cadence.rs",
         "name": "append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch",
-        "content_hash": "5fb726832c6fe0ec"
+        "content_hash": "22258618be4ecac8"
       },
       {
         "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
@@ -508,6 +528,11 @@
         "file": "tests/cli.rs",
         "name": "run_workflow_prints_the_budget_halt_reason_on_stderr_when_its_conductor_returns",
         "content_hash": "c0f6e3d647f2a511"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_event",
+        "content_hash": "b3774553a56bb20d"
       },
       {
         "file": "tests/grounder_name_contract.rs",
@@ -568,7 +593,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-e2420edc22e9",
+    "id": "dup-cde89b281edb",
     "classification": "near",
     "sites": [
       {
@@ -577,12 +602,22 @@
         "content_hash": "9c80ca639aa5a725"
       },
       {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "proof_targets_sql",
+        "content_hash": "14b162c1828e22af"
+      },
+      {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
         "name": "key_expr",
         "content_hash": "14b162c1828e22af"
+      },
+      {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "not_folded_suffix",
+        "content_hash": "9c80ca639aa5a725"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs)",
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs, tests/common/fixtures/fold.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -1197,7 +1232,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-8e52b59bc5ed",
+    "id": "dup-1d1226659885",
     "classification": "semantic",
     "sites": [
       {
@@ -1342,6 +1377,26 @@
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\"local:/p/.rigger/events.db\"",
+        "content_hash": "072cce40fb047d0b"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\"local:/q/.rigger/events.db\"",
+        "content_hash": "0f9a789fd6d9cb74"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\"local:/p/.rigger/events.db\"",
+        "content_hash": "072cce40fb047d0b"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "\"local:/elsewhere/.rigger/events.db\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "\".rigger/workflow.yml\"",
         "content_hash": "e24c26c0d9d4cbdb"
       },
@@ -1454,6 +1509,16 @@
         "file": "crates/rigger-process/src/reap.rs",
         "name": "\"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \\\n             must still authorize the reap\"",
         "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/registry.rs",
+        "name": "\"/p/.rigger/events.db\"",
+        "content_hash": "c4bc3aea22d42434"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/registry.rs",
+        "name": "\"local:/p/.rigger/events.db\"",
+        "content_hash": "e24c26c0d9d4cbdb"
       },
       {
         "file": "crates/rigger-store-sqlite/src/registry.rs",
@@ -1579,16 +1644,6 @@
         "file": "src/cli/hygiene.rs",
         "name": "\"a `rigger step` is running right now (it holds .rigger/step.lock)\"",
         "content_hash": "052897e17aced00a"
-      },
-      {
-        "file": "src/cli/hygiene.rs",
-        "name": "\"a `rigger step` is running right now (it holds .rigger/step.lock)\"",
-        "content_hash": "e24c1bc0d9d4b92a"
-      },
-      {
-        "file": "src/cli/hygiene.rs",
-        "name": "\"/home/dev/proj/.rigger/events.db\"",
-        "content_hash": "c4bc3aea22d42434"
       },
       {
         "file": "src/cli/mod.rs",
@@ -2002,18 +2057,8 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "name": "\"The count and the caller lookup run once per item of the walk's hunk list - every \\\n             item the hunks touch, new or pre-existing, its body or its doc changed - each \\\n             item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \\\n             xargs awk -v t='<name>' 'index($0, t) { print FILENAME \\\":\\\" FNR }'` with its name, \\\n             and the record pairs each item of the hunk list with its count, the lines read and \\\n             its callers.\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "src/cli/setup.rs",
         "name": "\"`sh .rigger/gates/lanes.sh <lane>`\"",
         "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "name": "\"You find the sentences with the generators above, the count `git ls-files src \\\n             crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \\\n             { print FILENAME \\\":\\\" FNR }'` run once per name of every item the unit's hunks \\\n             change, and the rule-spelling searches\"",
-        "content_hash": "25597419b8dbb616"
       },
       {
         "file": "src/cli/validate.rs",
@@ -2344,6 +2389,11 @@
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
         "content_hash": "b4f6780144fa9e9f"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "fab45089dfff5214"
       },
       {
         "file": "tests/cli.rs",
@@ -2763,17 +2813,7 @@
       {
         "file": "tests/cli.rs",
         "name": "\".rigger/project.id\"",
-        "content_hash": "69179fb3070fab20"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/project.id\"",
         "content_hash": "cfbcbe47c2c581ac"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/project.id\"",
-        "content_hash": "69179fb3070fab20"
       },
       {
         "file": "tests/cli.rs",
@@ -2794,11 +2834,6 @@
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "fab45089dfff5214"
       },
       {
         "file": "tests/cli.rs",
@@ -3162,11 +3197,6 @@
       },
       {
         "file": "tests/cli.rs",
-        "name": "\".rigger/instructions/README.md\"",
-        "content_hash": "3fb4b4655dac6074"
-      },
-      {
-        "file": "tests/cli.rs",
         "name": "\"gw/.rigger/workflow.yml\"",
         "content_hash": "89bcb25e03467378"
       },
@@ -3207,7 +3237,7 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "name": "\"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \\\n     vacuums the file, which is a mechanic of the embedded .rigger/events.db store; this project \\\n     is configured for the server-backed store, where the migration does not run. Re-run it \\\n     against a project on the sqlite backend. Refusing rather than reporting a migration that did \\\n     not happen.\\n\"",
+        "name": "\"reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \\\n         file, which is a mechanic of the embedded .rigger/events.db store; this project is \\\n         configured for the server-backed store, where the migration does not run. Re-run it \\\n         against a project on the sqlite backend. Refusing rather than reporting a migration that \\\n         did not happen.\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -3266,9 +3296,9 @@
         "content_hash": "25597419b8dbb616"
       },
       {
-        "file": "tests/common/layer_cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "eb4fced0969e6c77"
+        "file": "tests/common/fixtures/liveness.rs",
+        "name": "\"a `rigger step` is running right now (it holds .rigger/step.lock)\"",
+        "content_hash": "e24c1bc0d9d4b92a"
       },
       {
         "file": "tests/common/layer_cli.rs",
@@ -3298,22 +3328,12 @@
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "\".rigger\"",
-        "content_hash": "175029481360777f"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "\".rigger\"",
         "content_hash": "0a68549443b7c66d"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "\"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \\\n         {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \\\n         decision (position {position}){fold}\\n\"",
         "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "7a7f99994acd24d9"
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
@@ -3747,7 +3767,7 @@
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "name": "\"the graph projection must be opened by the LOCAL sqlite Projector at the resolved \\\n         store's .rigger/graph.db (`Projector::open(&self.file(\\\"graph.db\\\") ...)`); the \\\n         canonical local construction is gone\"",
+        "name": "\"the graph projection must be opened for write at the resolved store's .rigger/graph.db \\\n         (`open_graph_for_write(&self.file(\\\"graph.db\\\") ...)`); the canonical local construction \\\n         is gone\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -3888,22 +3908,12 @@
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
         "name": "\".rigger\"",
-        "content_hash": "54c2f825b098dcb4"
-      },
-      {
-        "file": "tests/reset_derived_compaction_periphery.rs",
-        "name": "\".rigger\"",
         "content_hash": "5164efc064547d69"
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
         "name": "\"create .rigger\"",
         "content_hash": "5164efc064547d69"
-      },
-      {
-        "file": "tests/reset_derived_compaction_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "3681f8f62b9b02e3"
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
@@ -4004,11 +4014,6 @@
         "file": "tests/spec_critique_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
-      },
-      {
-        "file": "tests/spec_critique_periphery.rs",
-        "name": "\".rigger/project.id\"",
-        "content_hash": "69179fb3070fab20"
       },
       {
         "file": "tests/statusline_command_periphery.rs",
@@ -4237,7 +4242,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 607 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 601 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4682,7 +4687,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-99a8136efbc4",
+    "id": "dup-38e1ee983333",
     "classification": "semantic",
     "sites": [
       {
@@ -4861,6 +4866,16 @@
         "content_hash": "0a68549443b7c66d"
       },
       {
+        "file": "tests/proofs_settle_once_periphery.rs",
+        "name": "\"/proc/thread-self/schedstat\"",
+        "content_hash": "80b7f6cc644adb8f"
+      },
+      {
+        "file": "tests/proofs_settle_once_periphery.rs",
+        "name": "\"/proc/thread-self/schedstat names the thread's CPU time\"",
+        "content_hash": "6330ce3a5a38ef8d"
+      },
+      {
         "file": "tests/simplification_audit.rs",
         "name": "\"/proc/<pid>/stat or /proc/<pid>/status field-extraction functions\"",
         "content_hash": "e24c1bc0d9d4b92a"
@@ -4962,7 +4977,7 @@
       }
     ],
     "proposed_home": "crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 55 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4990,7 +5005,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a2973e00918e",
+    "id": "dup-2a4f88aea011",
     "classification": "near",
     "sites": [
       {
@@ -5009,17 +5024,12 @@
         "content_hash": "5150fcc6015ab76e"
       },
       {
-        "file": "tests/projections_stay_local.rs",
-        "name": "the_graph_and_progress_projections_open_via_the_local_sqlite_constructors",
-        "content_hash": "5150fcc6015ab76e"
-      },
-      {
         "file": "tests/store_resolution.rs",
         "name": "the_single_resolver_exists_and_the_old_per_command_helper_is_retired",
         "content_hash": "f3ff49e3f09ecb9d"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-dash/src/dash.rs, tests/console_palette_periphery.rs, tests/projections_stay_local.rs, tests/store_resolution.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-dash/src/dash.rs, tests/console_palette_periphery.rs, tests/store_resolution.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5451,8 +5461,8 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-bb7aa56f67d8",
-    "classification": "exact",
+    "id": "dup-e45a74e51e8a",
+    "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
@@ -5463,9 +5473,19 @@
         "file": "crates/rigger-domain/src/spawn.rs",
         "name": "with_meta",
         "content_hash": "9b5f8275cb17e75c"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "with_store_identity",
+        "content_hash": "9b5f8275cb17e75c"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "with_lock_ceiling",
+        "content_hash": "3e40e29c76dbbd85"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/spawn.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/eventstore.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5882,7 +5902,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-cc1f48bd7d99",
+    "id": "dup-3dc74f749a1a",
     "classification": "near",
     "sites": [
       {
@@ -5894,9 +5914,14 @@
         "file": "tests/common/cli.rs",
         "name": "graph_build_line",
         "content_hash": "38180b457a1c8e5d"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "catch_up_stopped",
+        "content_hash": "89bc7a8b68cb459b"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/spec.rs, tests/common/cli.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/spec.rs, tests/common/cli.rs, tests/common/fixtures/cursor.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -6139,9 +6164,14 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-6f7131d21aaa",
+    "id": "dup-3be22153e14f",
     "classification": "semantic",
     "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open_with_flags",
+        "content_hash": "c9fe8bd11b5e51a4"
+      },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open_with_flags",
@@ -6150,37 +6180,12 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
-        "content_hash": "35f31d57463e4054"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "Connection::open",
-        "content_hash": "c2fafa28e98b7a5d"
+        "content_hash": "fd7ee6cf1afd2aa1"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "a53e241130fed625"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "Connection::open",
-        "content_hash": "a53e241130fed625"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "Connection::open",
-        "content_hash": "1953385dcb5ae89a"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "Connection::open",
-        "content_hash": "a53e241130fed625"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "Connection::open",
-        "content_hash": "1953385dcb5ae89a"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -6195,7 +6200,27 @@
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "Connection::open",
-        "content_hash": "1103d16a349001ad"
+        "content_hash": "1953385dcb5ae89a"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "90e84efb036cf79e"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "b1ad5143fd332b66"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "1953385dcb5ae89a"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "fab1ba2a543fef66"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -6231,6 +6256,11 @@
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "51b969072f57b125"
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "src/cli/mod.rs",
@@ -6280,17 +6310,37 @@
       {
         "file": "tests/common/cli.rs",
         "name": "Connection::open",
-        "content_hash": "21e10304a9cde36f"
-      },
-      {
-        "file": "tests/common/cli.rs",
-        "name": "Connection::open",
         "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "tests/common/cli.rs",
         "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/fixtures/passed_over.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
       },
       {
         "file": "tests/common/fixtures/sqlite.rs",
@@ -6310,12 +6360,37 @@
       {
         "file": "tests/common/fixtures/sqlite.rs",
         "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/fixtures/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/fixtures/sqlite.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/fixtures/sqlite.rs",
+        "name": "Connection::open",
         "content_hash": "e4bfcfaa4e39b2d2"
+      },
+      {
+        "file": "tests/common/fixtures/write_lock.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
         "content_hash": "21e10304a9cde36f"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -6340,22 +6415,7 @@
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "21e10304a9cde36f"
+        "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -6425,11 +6485,6 @@
       {
         "file": "tests/run_boundary_lookup_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "a26e651ef0fda2a7"
-      },
-      {
-        "file": "tests/run_boundary_lookup_periphery.rs",
-        "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
@@ -6444,7 +6499,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 60 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 66 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6482,6 +6537,30 @@
       }
     ],
     "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-b7996d22b4c4",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "without_a_cursor",
+        "content_hash": "be203444bdaee5ba"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "beside_another_log",
+        "content_hash": "cb0df4af5c8ca40f"
+      },
+      {
+        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
+        "name": "beside_no_log",
+        "content_hash": "be203444bdaee5ba"
+      }
+    ],
+    "proposed_home": "sqlite::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -6973,6 +7052,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-e22da6af6331",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-grounder/src/ingest.rs",
+        "name": "log_head",
+        "content_hash": "754cbfeff6037d7f"
+      },
+      {
+        "file": "crates/rigger-store-sqlite/src/eventstore/namespace.rs",
+        "name": "log_head",
+        "content_hash": "754cbfeff6037d7f"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-grounder/src/ingest.rs, crates/rigger-store-sqlite/src/eventstore/namespace.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-e10b6988960c",
     "classification": "exact",
     "sites": [
@@ -7336,13 +7434,23 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ffc17308c029",
+    "id": "dup-db3e199dd312",
     "classification": "near",
     "sites": [
       {
         "file": "src/cli/hygiene.rs",
         "name": "derived_count_phrase",
         "content_hash": "b5bb3e7cbaf9fefe"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "rebuilt_through_the_head",
+        "content_hash": "abc61f9406535fc4"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "pruned_from_the_rebuilt_graph",
+        "content_hash": "abc61f9406535fc4"
       },
       {
         "file": "tests/common/cli.rs",
@@ -7581,6 +7689,25 @@
     ],
     "proposed_home": "a new shared module (sites span 2 files: src/cli/setup.rs, src/main.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-3f04af8603ff",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "src/cli/setup.rs",
+        "name": "catch_up_stopped",
+        "content_hash": "6207475a6d263499"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "catch_up_stopped",
+        "content_hash": "89bc7a8b68cb459b"
+      }
+    ],
+    "proposed_home": "one shared `catch_up_stopped` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -7954,7 +8081,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-751f1b83af79",
+    "id": "dup-9418a9e1c36a",
     "classification": "near",
     "sites": [
       {
@@ -7966,14 +8093,9 @@
         "file": "tests/cli.rs",
         "name": "step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less",
         "content_hash": "eed3d55535d62241"
-      },
-      {
-        "file": "tests/step_attention_periphery.rs",
-        "name": "recurrence_and_stalled_frontier_survive_real_process_boundaries",
-        "content_hash": "f2137133a2af6105"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/cli.rs, tests/step_attention_periphery.rs)",
+    "proposed_home": "cli::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -8016,7 +8138,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c72ffc4edd8c",
+    "id": "dup-3cfa6389efb7",
     "classification": "near",
     "sites": [
       {
@@ -8038,14 +8160,9 @@
         "file": "tests/cli.rs",
         "name": "workflow_with_no_spec_path_never_mentions_the_spec_lint",
         "content_hash": "222759f2ade2d565"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "init_scaffolds_the_instructions_readme_and_names_it",
-        "content_hash": "ac6ce8509142b691"
       }
     ],
-    "proposed_home": "cli::support (consolidate these 5 sites into one function in this file)",
+    "proposed_home": "cli::support (consolidate these 4 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -8193,12 +8310,41 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-065ac962b8cf",
+    "id": "dup-cb013976dcf4",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/common/cli.rs",
+        "name": "emit_folded_line",
+        "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "reclaimed_line",
+        "content_hash": "b051a6d6f4b01ca2"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "caught_up_line",
+        "content_hash": "b051a6d6f4b01ca2"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-90e32eb50d95",
     "classification": "exact",
     "sites": [
       {
         "file": "tests/common/cli.rs",
         "name": "derived_menu_lines",
+        "content_hash": "abcb3e0cce3666b0"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "decision_lines",
         "content_hash": "abcb3e0cce3666b0"
       },
       {
@@ -8212,7 +8358,31 @@
         "content_hash": "abcb3e0cce3666b0"
       }
     ],
-    "proposed_home": "cli::support (consolidate these 3 sites into one function in this file)",
+    "proposed_home": "cli::support (consolidate these 4 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-be2d1a3f8f8b",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/common/cli.rs",
+        "name": "plant_stale_marker",
+        "content_hash": "cf2875f4b5f0d6df"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "drop_the_cursor",
+        "content_hash": "cf2875f4b5f0d6df"
+      },
+      {
+        "file": "tests/common/fixtures/cursor.rs",
+        "name": "drop_the_cursor_s_log",
+        "content_hash": "cf2875f4b5f0d6df"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/common/cli.rs, tests/common/fixtures/cursor.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -8494,25 +8664,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/community_fold_periphery.rs, tests/concepts_fold_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-e3a49d3d408e",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "rebuild_owed_note",
-        "content_hash": "b10d50f791eb338a"
-      },
-      {
-        "file": "tests/product_binary_authority_periphery.rs",
-        "name": "product_file_name",
-        "content_hash": "214fd7349ebe59dd"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/compaction_generations_periphery.rs, tests/product_binary_authority_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

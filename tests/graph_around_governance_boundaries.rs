@@ -276,4 +276,10 @@ fn around_never_lets_a_superseded_decision_inherit_its_superseders_recency_and_c
         out.contains("+2") && out.contains("more"),
         "exactly two governing items (d1 and l1) must be capped out; got:\n{out}"
     );
+    // `rigger peers` keeps only the newest records under its byte budget, so the tail names
+    // reaching a capped-out record by id through the graph, never peers as the full history.
+    assert!(
+        out.contains("`rigger graph --show <id>`") && !out.contains("for the full history"),
+        "the capped-out tail names reading a record by id through the graph; got:\n{out}"
+    );
 }

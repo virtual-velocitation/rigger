@@ -52,6 +52,10 @@ use rigger_worktree_git::worktree;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod contextgraph {
     pub use rigger_domain::contextgraph::*;
+    /// The one emit guard the tests bind a run's `Deps::check_emit` to, as the composition root
+    /// does.
+    #[cfg(test)]
+    pub use rigger_graph_sqlite::contextgraph::check_emit;
     /// The SQLite projector the tests project the run's events through.
     #[cfg(test)]
     pub use rigger_graph_sqlite::contextgraph::sqlite;
@@ -93,13 +97,10 @@ mod config_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/events.rs"]
 mod event_fixtures;
-/// THE EXTRACTION TREE the run sink's tests walk, compiled here from the same file as the root
-/// crate's tests; only the default lane's tests plant it.
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
+/// THE EXTRACTION TREE the run sink's tests walk and the ledger fixtures name through `super::`,
+/// compiled here from the same file as the root crate's tests; only the default lane's tests
+/// plant it.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code)]
 #[path = "../../../tests/common/fixtures/extraction_tree.rs"]
 mod extraction_tree_fixtures;
@@ -125,13 +126,9 @@ use scratch_fixtures::temp_root;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/host.rs"]
 mod host_fixtures;
-/// The ledger fixtures the run sink's tests share with the root crate's tests, compiled here from
-/// the same file.
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
+/// The ledger fixtures the run sink's tests, and the fold report's test owing its rebuild, share
+/// with the root crate's tests, compiled here from the same file.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code)]
 #[path = "../../../tests/common/fixtures/ledger.rs"]
 mod ledger_fixtures;
@@ -179,15 +176,21 @@ mod spawn_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use config_fixtures::{agent, gate_def, gate_def_inputs};
 // The fixtures the ledger fixtures name through `super::`.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use {
+    event_fixtures::CountedRead,
+    extraction_tree_fixtures::WALKED,
+    fold_fixtures::{
+        decision_json, event_of, folds, generation_ingested, graph_file_in, placed_at, resolving,
+    },
+};
+// The git fixture the ledger fixtures' default-lane walk names through `super::`.
 #[cfg(all(
     test,
     feature = "symbols",
     any(feature = "store", not(feature = "core"))
 ))]
-use {
-    event_fixtures::CountedRead, extraction_tree_fixtures::WALKED,
-    fold_fixtures::generation_ingested, git_fixtures::git_hash_object,
-};
+use git_fixtures::git_hash_object;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::canary_fixtures::*;
@@ -203,7 +206,6 @@ mod test_support {
     pub use crate::host_fixtures::*;
     pub use crate::ingest_fixtures::*;
     pub use crate::instructions_fixtures::*;
-    #[cfg(feature = "symbols")]
     pub use crate::ledger_fixtures::*;
     pub use crate::plan_critique_fixtures::*;
     #[cfg(feature = "symbols")]

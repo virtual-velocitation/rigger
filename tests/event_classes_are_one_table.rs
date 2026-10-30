@@ -103,8 +103,7 @@ fn declared_types(root: &Path) -> BTreeMap<String, BTreeSet<String>> {
     collect_rs_files(&root.join("crates"), &mut files);
     let mut declared: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for file in files {
-        let text = std::fs::read_to_string(&file)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
+        let text = common::fixtures::read_text(&file);
         let rel = file
             .strip_prefix(root)
             .unwrap_or(&file)

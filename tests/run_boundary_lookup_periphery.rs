@@ -16,7 +16,7 @@
 
 mod common;
 
-use common::fixtures::{ev, CountedRead, ReadCountingStore};
+use common::fixtures::{drop_the_log, ev, CountedRead, ReadCountingStore};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore, ExpectedRevision, Filter};
@@ -34,14 +34,6 @@ fn index_columns(conn: &rusqlite::Connection, index: &str) -> Vec<String> {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     cols
-}
-
-/// Remove the log table out from under a store that holds `db` open, so its next read fails.
-fn drop_the_log(db: &std::path::Path) {
-    rusqlite::Connection::open(db)
-        .unwrap()
-        .execute_batch("DROP TABLE events;")
-        .unwrap();
 }
 
 /// Given an `events.db` written before the stream-and-type index existed, when the store opens it,
@@ -179,15 +171,12 @@ fn the_counting_double_records_every_read_exactly_and_forwards_it_unchanged() {
         stream_prefix: Some("t".to_string()),
     };
     let all_fwd = counted.read_all(0, Direction::Forward, &t_only).unwrap();
-    assert_eq!(
-        all_fwd.iter().map(|e| e.position).collect::<Vec<_>>(),
-        [5, 6]
-    );
+    assert_eq!(crate::common::fixtures::positions_of(&all_fwd), [5, 6]);
     let all_back = counted
         .read_all(1, Direction::Backward, &Filter::default())
         .unwrap();
     assert_eq!(
-        all_back.iter().map(|e| e.position).collect::<Vec<_>>(),
+        crate::common::fixtures::positions_of(&all_back),
         [6, 5, 4, 3, 2]
     );
     let sub = counted.subscribe_stream("s", 2).unwrap();

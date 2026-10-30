@@ -151,7 +151,6 @@ mod common;
 
 use common::repo::assert_committed_json_round_trips;
 use common::repo::committed_json;
-use common::repo::repo_root;
 use serde::{Deserialize, Serialize};
 
 /// Mirrors `tests/simplification_audit.rs`'s private `TestOnlyRefWire` shape field-for-field,
@@ -611,7 +610,7 @@ rigger::test_cases! {
 // stronger, already-covered check than a raw-key scan would add on its own.
 // -----------------------------------------------------------------------------------------
 
-const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
+use common::repo::AUDIT_REPORT_PATH as REPORT_PATH;
 
 /// Section 4.3's per-candidate citation shape (`render_dead_code_full_list`'s own template:
 /// `` - **{name}** (`{file}:{line}`, ... ``), extracted from the section between its own "### 4.3"
@@ -652,8 +651,7 @@ fn section_4_3_citations(report: &str) -> Vec<(String, String, usize)> {
 /// entry happens to come first.
 #[test]
 fn the_committed_report_cites_dead_code_file_line_exactly_as_the_lines_sibling_records_them() {
-    let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
-        .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"));
+    let report = common::repo::repo_text(REPORT_PATH);
     let citations = section_4_3_citations(&report);
     let lines = committed_json::<Vec<ConsumedDeadCodeCandidateLines>>(
         DEAD_CODE_LINES_PATH,
@@ -740,8 +738,7 @@ fn section_6_deletion_list_citations(report: &str) -> Vec<(String, String, usize
 #[test]
 fn the_committed_report_section_6_deletion_list_cites_dead_code_file_line_exactly_as_the_lines_sibling_records_them(
 ) {
-    let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
-        .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"));
+    let report = common::repo::repo_text(REPORT_PATH);
     let citations = section_6_deletion_list_citations(&report);
     let candidates =
         committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);

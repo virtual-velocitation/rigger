@@ -51,6 +51,22 @@ pub fn types_of(events: &[Event]) -> Vec<&str> {
     events.iter().map(|e| e.type_.as_str()).collect()
 }
 
+/// Each event's log position, in the order given.
+pub fn positions_of(events: &[Event]) -> Vec<Position> {
+    events.iter().map(|e| e.position).collect()
+}
+
+/// The positions `appended` placed its events at, in batch order.
+pub fn placed_positions(appended: &Appended) -> Vec<u64> {
+    appended.placed().map(|(_, at)| at).collect()
+}
+
+/// The head of a log holding `events` in order: the last one's position ([`positions_of`]), none
+/// for no events.
+pub fn head_of(events: &[Event]) -> Option<Position> {
+    positions_of(events).last().copied()
+}
+
 /// How many of `events` are of type `type_`.
 pub fn count_of_type(events: &[Event], type_: &str) -> usize {
     events.iter().filter(|e| e.type_ == type_).count()
@@ -62,6 +78,15 @@ pub fn payloads_of_type(events: &[Event], type_: &str) -> Vec<serde_json::Value>
         .iter()
         .filter(|e| e.type_ == type_)
         .map(|e| serde_json::from_slice(&e.data).unwrap())
+        .collect()
+}
+
+/// The summary of every lesson in `events` that records a stage failed in its wave, in order.
+pub fn wave_lessons(events: &[Event]) -> Vec<String> {
+    payloads_of_type(events, rigger::contextgraph::TYPE_LESSON_LEARNED)
+        .iter()
+        .filter_map(|lesson| lesson["summary"].as_str().map(str::to_string))
+        .filter(|summary| summary.contains("failed in its wave"))
         .collect()
 }
 
@@ -133,6 +158,19 @@ macro_rules! delegate_event_store_reads {
             filter: &rigger::eventstore::Filter,
         ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
             self.inner.read_all(from, dir, filter)
+        }
+        fn read_all_page(
+            &self,
+            from: rigger::eventstore::Position,
+            filter: &rigger::eventstore::Filter,
+            max: usize,
+        ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
+            self.inner.read_all_page(from, filter, max)
+        }
+        fn log_head(
+            &self,
+        ) -> Result<Option<rigger::eventstore::Position>, rigger::eventstore::Error> {
+            self.inner.log_head()
         }
         fn subscribe_all(
             &self,
@@ -224,6 +262,17 @@ impl EventStore for SilentStore {
     ) -> Result<Vec<Event>, Error> {
         Ok(Vec::new())
     }
+    fn read_all_page(
+        &self,
+        _from: Position,
+        _filter: &Filter,
+        _max: usize,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
+    fn log_head(&self) -> Result<Option<Position>, Error> {
+        Ok(None)
+    }
     fn subscribe_all(&self, _from: Position, _filter: &Filter) -> Result<Subscription, Error> {
         Err(Error::Backend(
             "the silent double answers appends only".into(),
@@ -286,6 +335,16 @@ macro_rules! refuse_event_store_calls {
     (@ $why:literal read_all) => {
         fn read_all(&self, _: Position, _: Direction, _: &Filter) -> Result<Vec<Event>, Error> {
             panic!(concat!($why, ": nothing reads the log"))
+        }
+    };
+    (@ $why:literal read_all_page) => {
+        fn read_all_page(&self, _: Position, _: &Filter, _: usize) -> Result<Vec<Event>, Error> {
+            panic!(concat!($why, ": nothing reads a page of the log"))
+        }
+    };
+    (@ $why:literal log_head) => {
+        fn log_head(&self) -> Result<Option<Position>, Error> {
+            panic!(concat!($why, ": nothing reads the log's head"))
         }
     };
     (@ $why:literal subscribe_all) => {
@@ -372,6 +431,8 @@ impl EventStore for GroupLookupOnly {
         append,
         read_stream,
         read_all,
+        read_all_page,
+        log_head,
         subscribe_all,
         subscribe_stream,
         last_position,
@@ -428,6 +489,8 @@ impl EventStore for HandBuiltLog {
         append,
         read_stream,
         read_all,
+        read_all_page,
+        log_head,
         subscribe_all,
         subscribe_stream,
         read_stream_positions,
@@ -510,6 +573,15 @@ pub enum CountedRead {
         forward: bool,
         materialized: usize,
     },
+    /// A page read of the log: `max` is the bound the caller asked for, `materialized` how many
+    /// events the page handed back.
+    AllPage {
+        from: Position,
+        max: usize,
+        materialized: usize,
+    },
+    /// A read of the log's head: it hands back no event, only a position.
+    LogHead,
     SubscribeStream {
         stream: String,
         from: Revision,
@@ -571,11 +643,13 @@ impl CountedRead {
         match self {
             CountedRead::Stream { materialized, .. }
             | CountedRead::All { materialized, .. }
+            | CountedRead::AllPage { materialized, .. }
             | CountedRead::Typed { materialized, .. } => *materialized,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered,
             CountedRead::StreamBatched { batches, .. } => batches.iter().sum(),
             CountedRead::LastPosition { .. }
+            | CountedRead::LogHead
             | CountedRead::StreamPositions { .. }
             | CountedRead::LatestInGroup { .. } => 0,
         }
@@ -587,10 +661,13 @@ impl CountedRead {
         match &mut read {
             CountedRead::Stream { materialized, .. }
             | CountedRead::All { materialized, .. }
+            | CountedRead::AllPage { materialized, .. }
             | CountedRead::Typed { materialized, .. } => *materialized = 0,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered = 0,
-            CountedRead::LastPosition { .. } | CountedRead::LatestInGroup { .. } => {}
+            CountedRead::LastPosition { .. }
+            | CountedRead::LogHead
+            | CountedRead::LatestInGroup { .. } => {}
             CountedRead::StreamPositions { handed, .. } => *handed = 0,
             CountedRead::StreamBatched { batches, .. } => batches.clear(),
         }
@@ -603,12 +680,15 @@ impl CountedRead {
         match self {
             CountedRead::Stream { materialized, .. }
             | CountedRead::All { materialized, .. }
+            | CountedRead::AllPage { materialized, .. }
             | CountedRead::Typed { materialized, .. } => *materialized += n,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered += n,
             CountedRead::StreamPositions { handed, .. } => *handed += n,
             CountedRead::StreamBatched { batches, .. } => batches.push(n),
-            CountedRead::LastPosition { .. } | CountedRead::LatestInGroup { .. } => {}
+            CountedRead::LastPosition { .. }
+            | CountedRead::LogHead
+            | CountedRead::LatestInGroup { .. } => {}
         }
     }
 }
@@ -622,27 +702,72 @@ type CallLog = std::sync::Arc<std::sync::Mutex<Vec<CountedRead>>>;
 /// The one shared instance of this instrument: every criterion that asserts a read cost uses it,
 /// and a new port method gains its forwarding and its [`CountedRead`] here.
 pub struct ReadCountingStore<'a> {
-    inner: &'a dyn EventStore,
+    inner: Held<'a>,
     reads: CallLog,
-    /// A write waiting to land in `inner` when a given call returns ([`Self::interleaving`]).
-    interleaved: std::sync::Mutex<Option<(usize, String, Vec<Event>)>>,
+    /// What waits to run against `inner` when a given call returns ([`Self::after_call`]).
+    after: std::sync::Mutex<Vec<(usize, AfterCall<'a>)>>,
 }
+
+/// The store a [`ReadCountingStore`] forwards to: one the test holds, or one the double owns, so
+/// a projector may hold the double for its life ([`ReadCountingStore::owning`]).
+enum Held<'a> {
+    Borrowed(&'a dyn EventStore),
+    Owned(Box<dyn EventStore + 'a>),
+}
+
+impl<'a> std::ops::Deref for Held<'a> {
+    type Target = dyn EventStore + 'a;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Held::Borrowed(inner) => *inner,
+            Held::Owned(inner) => inner.as_ref(),
+        }
+    }
+}
+
+/// What a test runs against a [`ReadCountingStore`]'s inner store once a given call returns
+/// ([`ReadCountingStore::after_call`]).
+type AfterCall<'a> = Box<dyn FnOnce(&dyn EventStore) + Send + 'a>;
 
 impl<'a> ReadCountingStore<'a> {
     /// Count the reads made through this decorator over `inner`.
     pub fn new(inner: &'a dyn EventStore) -> Self {
+        Self::holding(Held::Borrowed(inner))
+    }
+
+    /// Count the reads made through this decorator over `inner`, which it owns: a double a caller
+    /// holding the store for its life, as a projector holds its log, can be handed.
+    pub fn owning(inner: impl EventStore + 'static) -> ReadCountingStore<'static> {
+        ReadCountingStore::holding(Held::Owned(Box::new(inner)))
+    }
+
+    /// This double over `inner`, with nothing counted and nothing waiting.
+    fn holding(inner: Held<'a>) -> Self {
         ReadCountingStore {
             inner,
             reads: CallLog::default(),
-            interleaved: std::sync::Mutex::default(),
+            after: std::sync::Mutex::default(),
         }
     }
 
+    /// Run `hook` against the inner store once, the moment the call at index `at` of the call log
+    /// (0-based, in call order; a boundary lookup counts) returns, so a test places another
+    /// writer's act exactly between two calls of one command. Hooks waiting on one call run in the
+    /// order they were added, with no lock of this double held, so a hook may call through it.
+    pub fn after_call(&self, at: usize, hook: impl FnOnce(&dyn EventStore) + Send + 'a) {
+        self.after.lock().unwrap().push((at, Box::new(hook)));
+    }
+
     /// This double with a concurrent writer: `events` land on `stream` of the inner store the
-    /// moment the call at index `after` of the call log (0-based, in call order; a boundary lookup
-    /// counts) returns, so a test places an append exactly between two calls of one command.
+    /// moment the call at index `after` of the call log returns ([`Self::after_call`]).
     pub fn interleaving(self, after: usize, stream: &str, events: Vec<Event>) -> Self {
-        *self.interleaved.lock().unwrap() = Some((after, stream.to_string(), events));
+        let stream = stream.to_string();
+        self.after_call(after, move |inner| {
+            inner
+                .append(&stream, ExpectedRevision::Any, &events)
+                .expect("the interleaved write appends");
+        });
         self
     }
 
@@ -666,18 +791,23 @@ impl<'a> ReadCountingStore<'a> {
     /// Count the `events` call `at` handed back, then hand them on.
     fn handed_back(&self, at: usize, events: Vec<Event>) -> Vec<Event> {
         self.reads.lock().unwrap()[at].add(events.len());
-        self.land_interleaved(at);
+        self.returned(at);
         events
     }
 
-    /// Append the interleaved write when it waits on call `at`, once.
-    fn land_interleaved(&self, at: usize) {
-        let mut pending = self.interleaved.lock().unwrap();
-        if pending.as_ref().is_some_and(|(after, ..)| *after == at) {
-            let (_, stream, events) = pending.take().unwrap();
-            self.inner
-                .append(&stream, ExpectedRevision::Any, &events)
-                .expect("the interleaved write appends");
+    /// Run each hook waiting on call `at` ([`Self::after_call`]), once, in the order added, the
+    /// queue's lock released first.
+    fn returned(&self, at: usize) {
+        let due: Vec<(usize, AfterCall<'a>)> = {
+            let mut after = self.after.lock().unwrap();
+            let (due, waiting) = std::mem::take(&mut *after)
+                .into_iter()
+                .partition(|(on, _)| *on == at);
+            *after = waiting;
+            due
+        };
+        for (_, hook) in due {
+            hook(&*self.inner);
         }
     }
 
@@ -729,6 +859,26 @@ impl EventStore for ReadCountingStore<'_> {
         let events = self.inner.read_all(from, dir, filter)?;
         Ok(self.handed_back(at, events))
     }
+    fn read_all_page(
+        &self,
+        from: Position,
+        filter: &Filter,
+        max: usize,
+    ) -> Result<Vec<Event>, Error> {
+        let at = self.record(CountedRead::AllPage {
+            from,
+            max,
+            materialized: 0,
+        });
+        let events = self.inner.read_all_page(from, filter, max)?;
+        Ok(self.handed_back(at, events))
+    }
+    fn log_head(&self) -> Result<Option<Position>, Error> {
+        let at = self.record(CountedRead::LogHead);
+        let head = self.inner.log_head();
+        self.returned(at);
+        head
+    }
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
         let at = self.record(CountedRead::SubscribeAll { from, delivered: 0 });
         let sub = self.inner.subscribe_all(from, filter)?;
@@ -749,7 +899,7 @@ impl EventStore for ReadCountingStore<'_> {
             event_type: event_type.to_string(),
         });
         let boundary = self.inner.last_position(stream, event_type);
-        self.land_interleaved(at);
+        self.returned(at);
         boundary
     }
     fn read_stream_typed(
@@ -787,7 +937,7 @@ impl EventStore for ReadCountingStore<'_> {
                 self.reads.lock().unwrap()[at].add(positions.len());
                 sink(positions)
             })?;
-        self.land_interleaved(at);
+        self.returned(at);
         Ok(())
     }
     fn read_stream_batched(
@@ -807,7 +957,7 @@ impl EventStore for ReadCountingStore<'_> {
                 self.reads.lock().unwrap()[at].add(events.len());
                 sink(events, head)
             })?;
-        self.land_interleaved(at);
+        self.returned(at);
         Ok(())
     }
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
@@ -816,7 +966,7 @@ impl EventStore for ReadCountingStore<'_> {
             group: group.to_string(),
         });
         let head = self.inner.latest_in_group(stream, group);
-        self.land_interleaved(at);
+        self.returned(at);
         head
     }
 }

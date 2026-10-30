@@ -37,22 +37,23 @@ pub use rigger_domain::review::verdict_approves;
 pub use rigger_domain::review::VERDICT_APPROVE;
 use rigger_domain::review::{
     adjudicator_roster, emitted_verdict_approves, glob_matches, has_verdict_line, review_roster,
-    route_review_tier, verdict_compensates, TierRouting, PLAN_CRITIQUE_RULES,
+    route_review_tier, run_notes, verdict_compensates, RunNote, TierRouting, PLAN_CRITIQUE_RULES,
 };
 #[cfg(test)]
 use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
 use rigger_domain::wave::{
     baseline_units, coverage_gap, criterion_remainder, criterion_stable_id, critique_gate_name,
-    fan_out_lenses, first_stage_named, is_fan_out, is_fan_out_template, is_producer, wave_ready,
+    fan_out_lenses, first_stage_named, is_check_in, is_fan_out, is_fan_out_template, is_producer,
+    wave_ready,
 };
 pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_out_templates};
 // The agent-host port, moved inward to `rigger-domain` (workspace split) so the driver adapters
 // implement it without naming the conductor; re-exported so every `conductor::` path holds.
-use rigger_domain::agent::PARKED_MARKER;
 pub use rigger_domain::agent::{
     classify_failure, no_result_error, parked_spawn, spawn_request, strip_failure_marker,
     AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
 };
+use rigger_domain::agent::{EMIT_REFUSED_MARKER, PARKED_MARKER};
 #[cfg(test)]
 use rigger_domain::wave::{ready_stages, unit_slug};
 
@@ -151,7 +152,7 @@ pub use crate::metrics::META_MODEL_RESOLVED;
 /// identity stamp alone - an UNSTAMPED emit is never attributed, so the backstop FAILS SAFE
 /// to the ordinary reject - and the ambiguous position-window logic is retired entirely (see
 /// [`gating_spawn_emitted_approve`](RunCtx::gating_spawn_emitted_approve)).
-pub const META_SPAWN: &str = "spawn";
+pub use crate::spawn::META_SPAWN;
 
 pub use crate::metrics::META_WORKTREE_SHA;
 
@@ -1418,6 +1419,18 @@ impl PriorFailure {
     }
 }
 
+/// Commit unit `unit`'s worktree `wt` as its attempt `attempts + 1` checkpoint: the commit an
+/// attempt's edits land in whether it reached its gates (§3.2: they measure exactly the
+/// committed artifact) or the emit guard refused a record it printed, so a failed attempt's
+/// `UnitFailed` carries that sha either way and an escalation's teardown keeps the edits on the
+/// unit's branch. A no-op on the worktree-less path (`None`).
+fn checkpoint_attempt(wt: Option<&Worktree>, unit: &str, attempts: u32) -> Result<(), Error> {
+    if let Some(w) = wt {
+        w.commit_checkpoint(&format!("rigger: {unit} attempt {}", attempts + 1))?;
+    }
+    Ok(())
+}
+
 /// How a unit ENTERS its lifecycle on this run (resume-continuity). A unit that ran
 /// in a prior window CONTINUES from its recorded phase - its deterministic branch is
 /// the durable checkpoint carrying the committed work - instead of restarting from
@@ -1448,13 +1461,65 @@ pub fn is_parked(e: &Error) -> bool {
     carries_marker(e, PARKED_MARKER)
 }
 
-/// Whether `e` carries the halt sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
+/// Whether `e` carries the sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
 /// [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`], [`PLAN_LANDING_MARKER`] or
-/// [`LAND_REFUSED_MARKER`]) - that halt's signal rather than a real spawn or stage failure.
-/// Robust to the conductor's own `format!("... {}", e.0)` wrapping at every call site, since
-/// each marker survives as a substring.
+/// [`LAND_REFUSED_MARKER`], each a halt's signal, or [`EMIT_REFUSED_MARKER`], the emit guard's
+/// refusal of a record the spawn emitted) rather than a plain spawn or stage failure. Robust to
+/// the conductor's own `format!("... {}", e.0)` wrapping at every call site, since each marker
+/// survives as a substring.
 fn carries_marker(e: &Error, marker: &str) -> bool {
     e.0.contains(marker)
+}
+
+/// The note a spawn re-run after the emit guard refused a record it emitted carries: the
+/// refusal its previous run's error named, kept by [`RefusedRecord::reruns`] and put after the
+/// role's prompt by [`RefusedRecord::task`], so the author reads why its record did not land.
+/// Empty until a refusal, and set once: a second refusal reaches the role's own failure
+/// handling instead of a further re-run.
+#[derive(Default)]
+struct RefusedRecord(Option<String>);
+
+impl RefusedRecord {
+    /// Whether the spawn that failed with `e` re-runs once: `e` is the emit guard's refusal
+    /// ([`EMIT_REFUSED_MARKER`]), none came before it in this spawn's runs, and `retry_left` says
+    /// the caller's retry window holds an id for the re-run. A `true` keeps the refusal for the
+    /// re-run's prompt.
+    fn reruns(&mut self, e: &Error, retry_left: bool) -> bool {
+        let rerun = self.0.is_none() && retry_left && carries_marker(e, EMIT_REFUSED_MARKER);
+        if rerun {
+            self.0 = Some(format!(
+                "Your previous run's record was refused: {}; emit it again correctly.",
+                strip_failure_marker(e).trim_end_matches('.')
+            ));
+        }
+        rerun
+    }
+
+    /// `prompt`, followed by the refusal note once a refusal is kept.
+    fn task<'p>(&self, prompt: &'p str) -> std::borrow::Cow<'p, str> {
+        match &self.0 {
+            Some(note) => format!("{prompt}\n\n{note}").into(),
+            None => prompt.into(),
+        }
+    }
+}
+
+/// Run `spawn` at the first id of `retries`, and once more at the next when the emit guard
+/// refused a record it emitted ([`RefusedRecord::reruns`]), handing each run the note its
+/// prompt carries. Every other outcome, and a refusal past that one re-run or past the window,
+/// returns as the spawn gave it, still marked, to the caller's own failure handling.
+fn rerun_once_on_refusal<T>(
+    retries: std::ops::RangeInclusive<u32>,
+    mut spawn: impl FnMut(u32, &RefusedRecord) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let (mut retry, last) = (*retries.start(), *retries.end());
+    let mut refused = RefusedRecord::default();
+    loop {
+        match spawn(retry, &refused) {
+            Err(e) if refused.reruns(&e, retry < last) => retry += 1,
+            outcome => return outcome,
+        }
+    }
 }
 
 /// The sentinel a REVIEW-TIER spawn (lens/adversary/adjudicator) embeds in its refusal
@@ -1545,7 +1610,9 @@ fn is_parked_or_budget_refused(e: &Error) -> bool {
 /// under a fresh deterministic id ([`spawn_retry_id`]); bounded here so a persistently
 /// broken reviewer agent/driver cannot loop the conductor forever. The reviewer runs at
 /// most `1 + REVIEWER_RESPAWN_BOUND` times (its original spawn plus this many respawns)
-/// before [`degenerate_reviewer`] halts the run.
+/// before [`degenerate_reviewer`] halts the run. A reviewer, sdet author or re-planner whose
+/// record the emit guard refused re-runs once inside the same window
+/// ([`rerun_once_on_refusal`]).
 const REVIEWER_RESPAWN_BOUND: u32 = 2;
 
 /// The reviewer retry ids one review round spans: the round a unit's stage runs under infra
@@ -1851,10 +1918,25 @@ pub struct Deps<'a> {
     /// wired graph it could not make. The composition root wires it to stderr.
     pub log: &'a (dyn Fn(&str) + Sync),
     /// THE ONE HASH FUNCTION (spec 107): a file's bytes to the object id git gives them, which
-    /// the run's ingest sink names in each ledger entry it records. Injected so the conductor
-    /// spawns no process: the composition root binds it to `git hash-object` in the run's tree.
+    /// the run's ingest sink names in each ledger entry it records. Inside a repository the hash
+    /// writes the object it hashes into that repository's object database before the call
+    /// returns (spec 124, THE BLOB IS WRITTEN), so another process re-extracting the entry reads
+    /// its blob from there; outside one, where no object database stands, it hashes without
+    /// writing; a hash that fails, a failed write included, answers its error. Injected so the
+    /// conductor spawns no process: the composition root binds it to `git hash-object` in the
+    /// run's tree.
     pub hash_blob: &'a (dyn Fn(&[u8]) -> Result<String, worktree::Error> + Sync),
+    /// THE ONE EMIT GUARD every emit surface runs: judges an event an agent's spawn emits, built
+    /// with its stamps, against the store BEFORE it is appended, answering why it refuses a
+    /// payload the fold cannot apply or a record whose id another seat holds. Injected because
+    /// its home, the graph adapter's `contextgraph::check_emit`, is a crate the conductor may not
+    /// name (the dependency direction the boundary audit enforces): the composition root binds it.
+    pub check_emit: &'a EmitGuard,
 }
+
+/// The emit guard's shape ([`Deps::check_emit`]): the store an event would land in, the stream,
+/// and the event as built with its stamps, answering why it is refused.
+pub type EmitGuard = dyn Fn(&dyn EventStore, &str, &Event) -> Result<(), String> + Sync;
 
 impl<'a> Deps<'a> {
     /// The store every event the run appends goes through: [`Deps::store`], folding each append
@@ -2309,7 +2391,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // `harvest_proposed` below exactly as before. The `integrated`/`terminal` guards in
     // `harvest_proposed` keep a baseline that already started/integrated in a prior
     // window from being yanked out from under its own work.
-    ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
+    ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)?;
 
     // Coverage gate (§3.2, §8). A planner (`produces`) stage DEFERS coverage to
     // after planning: it has no units yet, so we run the planning wave + harvest
@@ -2346,7 +2428,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                 &mut terminal,
                 &mut in_flight,
             )?;
-            ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
+            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)?;
         }
         // If the workflow wires a plan-critique stage, review the PROPOSED DAG with its
         // adversary + adjudicator BEFORE any implementer runs. A reject loops the planner
@@ -2483,7 +2565,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                 ctx.trip_budget_breaker()?;
                 break;
             }
-            ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
+            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)?;
             // Post-integration compensation (spec 12, unit 4): a review this wave may have
             // proven a PRIOR integrated unit wrong. Drain the queued rollbacks now, between
             // waves (single-threaded), reverting the condemned unit's integrating commit(s)
@@ -2678,7 +2760,7 @@ fn settle_run_state(
 /// fallback, unchanged by this unit), never solely inside `compute_attention`.
 ///
 /// Deterministically ordered - stably sorted by [`ledger::attention_kind_rank`] (escalated,
-/// spec-defect, halted, worker-death-recurred, budget-final-tenth, stalled-frontier), lexical by
+/// spec-defect, halted, reject-recurrence, budget-final-tenth, stalled-frontier), lexical by
 /// unit id within a kind (`after.units` is a `BTreeMap`, `parked_units` a `BTreeSet`) - so two
 /// folds of the same log agree byte-for-byte on the wire (main.rs's merge preserves this
 /// canonical order too; see its own comment).
@@ -2736,17 +2818,16 @@ fn compute_attention(
         }
     }
 
-    // Signal 3: a worker's death RECURRED - a unit's remediation attempt count rose during
-    // this call to its SECOND (or later) failure. A unit's FIRST-ever failure is not a
-    // recurrence (nothing "recurred" yet), so it deliberately stamps nothing.
+    // Signal 3: REJECT RECURRENCE - a unit's failed-attempt count rose during this call and
+    // the unit now awaits an operator's finding audit ([`blocker::awaits_finding_audit`], the
+    // test the needs-you dock lists it on): still remediating, at or past the diagnose
+    // threshold, with no resume grant in effect. A failure below the threshold, the failure
+    // that escalates the unit (signal 1 reports that one) and a failure inside an operator's
+    // grant stamp nothing.
     for (id, unit) in &after.units {
         let before_attempts = prior.units.get(id).map_or(0, |u| u.attempts);
-        if unit.attempts > before_attempts && unit.attempts >= 2 {
-            out.push(ledger::AttentionEntry::unit_scoped(
-                ledger::ATTENTION_WORKER_DEATH_RECURRED,
-                id.clone(),
-                format!("{} attempts", unit.attempts),
-            ));
+        if unit.attempts > before_attempts && crate::blocker::awaits_finding_audit(unit) {
+            out.push(ledger::AttentionEntry::reject_recurrence(id, unit.attempts));
         }
     }
 
@@ -2806,8 +2887,9 @@ fn has_producer(stages: &BTreeMap<String, Stage>) -> bool {
 /// event carries the stop's completion key ([`spec_defect_escalated_key`] at `s - 1`). A re-plan
 /// is recorded by its `SpawnRequested` or `SpawnResult` (the stepwise driver records both) or by
 /// an event it emitted, stamped with its id as [`META_SPAWN`] (a blocking driver records no spawn
-/// event). So a first `spec-ambiguity` reject re-plans as before, and the stop fires on one that
-/// follows a re-plan which did not clear the previous one.
+/// event), under its own id or the `~retry` id it re-ran as after a refused record
+/// ([`RunCtx::re_plan`]). So a first `spec-ambiguity` reject re-plans as before, and the stop
+/// fires on one that follows a re-plan which did not clear the previous one.
 fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spawn::Adjudication> {
     let earlier = s.checked_sub(2)?;
     let stopping = s - 1;
@@ -2822,10 +2904,12 @@ fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spa
             .filter(spawn::Adjudication::is_spec_ambiguity)
     };
     let re_planned = |attempt: u32| {
-        let id = spawn_id(plan, ROLE_REPLAN, attempt);
-        spawn::is_recorded(run, &id)
-            || matches!(spawn::result_of(run, &id), Ok(Some(_)))
-            || run.iter().any(|e| e.meta.get(META_SPAWN) == Some(&id))
+        review_retry_window(0).any(|retry| {
+            let id = spawn_retry_id(plan, ROLE_REPLAN, attempt, retry);
+            spawn::is_recorded(run, &id)
+                || matches!(spawn::result_of(run, &id), Ok(Some(_)))
+                || run.iter().any(|e| e.meta.get(META_SPAWN) == Some(&id))
+        })
     };
     spec_ambiguity(earlier)?;
     let adjudication = spec_ambiguity(stopping)?;
@@ -3173,6 +3257,44 @@ impl<'a> RunCtx<'a> {
     }
 }
 
+/// An event of `type_` carrying `payload`, with each `(key, value)` of `meta` whose value is
+/// non-empty stamped in its metadata: the one build [`RunCtx::emit_meta`],
+/// [`RunCtx::emit_agent`] and the replay-keyed [`RunCtx::keyed_event`] share.
+fn event_with_meta(type_: &str, payload: Value, meta: &[(&str, &str)]) -> Result<Event, Error> {
+    let mut ev = Event::new(type_, serde_json::to_vec(&payload)?);
+    for (k, v) in meta {
+        if !v.is_empty() {
+            ev = ev.with_meta(*k, *v);
+        }
+    }
+    Ok(ev)
+}
+
+/// The `UnitStarted` body of stage `st` as unit `name`, the one shape every start records - the
+/// full lifecycle's ([`RunCtx::start_and_run_stage`]) and a landed unit's
+/// ([`RunCtx::land_if_landed`]) alike - so the ledger, status and the dash read both one way.
+/// `branch` is the unit's checkpoint branch (empty for a landed unit, which has none) and
+/// `adopted_from` the earlier attempt whose branch it continues, as `(unit, tip, spec)`.
+fn unit_started_payload(
+    name: &str,
+    st: &Stage,
+    branch: &str,
+    adopted_from: Option<&(String, String, String)>,
+) -> Value {
+    json!({
+        "id": name,
+        "unit": name,
+        "spec_criterion": st.coverage,
+        "criterion": st.coverage,
+        "criterion_id": st.criterion_id,
+        "agent": st.agent,
+        "needs": st.needs,
+        "branch": branch,
+        "adopted_from": adopted_from
+            .map(|(unit, tip, spec)| json!({"unit": unit, "tip": tip, "spec": spec})),
+    })
+}
+
 impl RunCtx<'_> {
     fn emit(&self, type_: &str, payload: Value) -> Result<(), Error> {
         self.emit_with_actor("", type_, payload)
@@ -3206,9 +3328,10 @@ impl RunCtx<'_> {
     }
 
     /// The conductor's batched event-mutation authority: append a whole slice of already-built
-    /// events to the run stream in ONE append and fold them into the live graph in ONE transaction
-    /// (spec 49's batched-fold cadence - one transaction per file's batch, not per event, since the
-    /// measured cold-build throughput was transaction-cadence bound). Run-id stamping is
+    /// events to the run stream in ONE append and fold them into the live graph in ONE batched
+    /// fold, at the transaction cadence [`Projection::apply_batch`] states - spec 49's batched
+    /// fold, rather than one fold per event, since the measured cold-build throughput was
+    /// transaction-cadence bound. Run-id stamping is
     /// [`stamped`](RunCtx::stamped) (spec 06, unit 1), which this and the ingest sink's ledger
     /// entry both go through, and the batched append-and-fold + position assignment is
     /// the shared [`crate::ingest::FoldingStore`]'s, whose fold is the one a cold `rigger graph
@@ -3267,12 +3390,28 @@ impl RunCtx<'_> {
     /// [`META_WORKTREE_SHA`] can ride an un-keyed lifecycle event without a second event
     /// type, the same way `emit_keyed_meta` rides the model stamps on the keyed ones.
     fn emit_meta(&self, type_: &str, payload: Value, extra: &[(&str, &str)]) -> Result<(), Error> {
-        let mut ev = Event::new(type_, serde_json::to_vec(&payload)?);
-        for (k, v) in extra {
-            if !v.is_empty() {
-                ev = ev.with_meta(*k, *v);
-            }
-        }
+        self.append_and_fold(event_with_meta(type_, payload, extra)?)
+            .map(|_| ())
+    }
+
+    /// THE AGENT EMIT: an event an agent's spawn emits through the driver's in-process emit
+    /// callback - on a cli host, each record line the agent printed, which the driver's bridge
+    /// replays through it - built like [`emit_meta`](RunCtx::emit_meta) with the spawn's `stamps`,
+    /// then judged by the one emit guard every emit surface runs ([`Deps::check_emit`]) before it
+    /// is appended. A payload the fold cannot apply, or a record whose id another seat holds,
+    /// lands nothing, and the refusal is the callback's error, so it is the spawn's, marked
+    /// with [`EMIT_REFUSED_MARKER`]: the implementer's attempt is charged with it, and every
+    /// other author's spawn re-runs once told why ([`rerun_once_on_refusal`]); neither is rerun
+    /// as infra.
+    fn emit_agent(
+        &self,
+        type_: &str,
+        payload: Value,
+        stamps: &[(&str, &str)],
+    ) -> Result<(), Error> {
+        let ev = event_with_meta(type_, payload, stamps)?;
+        (self.deps.check_emit)(self.deps.store, STREAM, &ev)
+            .map_err(|refusal| Error(format!("{EMIT_REFUSED_MARKER}{refusal}")))?;
         self.append_and_fold(ev).map(|_| ())
     }
 
@@ -3307,23 +3446,52 @@ impl RunCtx<'_> {
         payload: Value,
         extra: &[(&str, &str)],
     ) -> Result<(), Error> {
-        {
-            // A first insert means this key is new work; a repeat means the log already
-            // carries it (seeded at run start) or this process already emitted it - a
-            // replay, so append nothing. Holding the lock only around the set guard lets
-            // concurrent units in a wave append their own keyed events in parallel.
-            if !self.replayed_keys.insert(key) {
-                return Ok(());
-            }
+        match self.keyed_event(key, type_, payload, extra)? {
+            Some(ev) => self.append_and_fold(ev).map(|_| ()),
+            None => Ok(()),
         }
-        let mut ev =
-            Event::new(type_, serde_json::to_vec(&payload)?).with_meta(META_REPLAY_KEY, key);
-        for (k, v) in extra {
-            if !v.is_empty() {
-                ev = ev.with_meta(*k, *v);
-            }
+    }
+
+    /// The event [`emit_keyed_meta`](RunCtx::emit_keyed_meta) appends under replay `key`:
+    /// `payload` as `type_`, with `extra` and the key stamped in its metadata - or `None` when
+    /// the key is a replay. A first call CLAIMS the key, so its caller appends what it returns.
+    fn keyed_event(
+        &self,
+        key: &str,
+        type_: &str,
+        payload: Value,
+        extra: &[(&str, &str)],
+    ) -> Result<Option<Event>, Error> {
+        // A first insert means this key is new work; a repeat means the log already
+        // carries it (seeded at run start) or this process already emitted it - a
+        // replay, so append nothing. Holding the lock only around the set guard lets
+        // concurrent units in a wave append their own keyed events in parallel.
+        if !self.replayed_keys.insert(key) {
+            return Ok(None);
         }
-        self.append_and_fold(ev).map(|_| ())
+        Ok(Some(
+            event_with_meta(type_, payload, extra)?.with_meta(META_REPLAY_KEY, key),
+        ))
+    }
+
+    /// Several `(key, type, payload)` replay-keyed events appended TOGETHER, in one append, so
+    /// a crash never records some of them without the rest. Each is built by
+    /// [`keyed_event`](RunCtx::keyed_event), so a replayed key adds nothing, and an append that
+    /// wrote fewer events than it was handed is the lost write it is.
+    fn emit_keyed_together(&self, events: Vec<(String, &str, Value)>) -> Result<(), Error> {
+        let mut fresh = Vec::new();
+        for (key, type_, payload) in events {
+            fresh.extend(self.keyed_event(&key, type_, payload, &[])?);
+        }
+        let written = self.append_and_fold_batch(&fresh)?.written();
+        if written != fresh.len() {
+            return Err(Error(format!(
+                "{} of {} keyed events of this run were not recorded on {STREAM:?}",
+                fresh.len() - written,
+                fresh.len()
+            )));
+        }
+        Ok(())
     }
 
     /// THE RUN'S INGEST SINK (spec 107): record one file's batch, as a walk handed it with its
@@ -3355,10 +3523,12 @@ impl RunCtx<'_> {
     ///
     /// The entry is built by its one constructor, stamped with the run id as every event this run
     /// appends is, and appended and folded with its extraction through the ledger form of the
-    /// folding store, in ONE store append and ONE graph transaction. Everything slow happened
+    /// folding store, in ONE store append, the fold committing the entry and its extraction in
+    /// the transaction [`Projection::apply_generation`] states. Everything slow happened
     /// before the append: the fold only moves the extraction in. A failed append fails the emit;
-    /// a fold that could not be made - the graph owes its rebuild, or refused the write - leaves
-    /// the entry on the log and is said through [`Deps::log`], as every lost fold of the run is.
+    /// a fold that could not be made - the graph owes its rebuild, its write lock or catch-up held
+    /// the fold past the appender's ceiling (spec 124), or it refused the write - leaves the entry
+    /// on the log and is said through [`Deps::log`], as every lost fold of the run is.
     /// A run wired to no graph has no graph side to read, so the emit fails; its callers walk
     /// nothing there ([`Deps::ingests`]).
     ///
@@ -4244,19 +4414,7 @@ impl RunCtx<'_> {
         self.emit_keyed_meta(
             &format!("{name}/started"),
             ledger::TYPE_UNIT_STARTED,
-            json!({
-                "id": name,
-                "unit": name,
-                "spec_criterion": st.coverage,
-                "criterion": st.coverage,
-                "criterion_id": st.criterion_id,
-                "agent": st.agent,
-                "needs": st.needs,
-                "branch": unit_branch(name),
-                "adopted_from": adopted_from
-                    .as_ref()
-                    .map(|(unit, tip, spec)| json!({"unit": unit, "tip": tip, "spec": spec})),
-            }),
+            unit_started_payload(name, st, &unit_branch(name), adopted_from.as_ref()),
             // UnitStarted is a once-per-unit checkpoint, so it names the model the unit's
             // FIRST attempt asks for - rung 0 of any cascade. The per-attempt rungs a
             // remediating unit escalates through ride on the per-attempt green/verified
@@ -4987,7 +5145,8 @@ impl RunCtx<'_> {
     /// the unit back and what goes to the operator. On a LATER round, each REQUIRED item
     /// [`ReviewRound::blocks`] does not keep is recorded as a lesson for the operator about its
     /// file and leaves the verdict; a reject that leaves no item converges to an approve whose
-    /// evidence is [`CONVERGED`]. Returns the verdict, its reason, and the REQUIRED list the
+    /// evidence is [`CONVERGED`] above the verdict text, so the notes that round upheld are
+    /// read from it like an approve's. Returns the verdict, its reason, and the REQUIRED list the
     /// next round holds the unit to. A first round's reject keeps every item, and so does a
     /// reject blaming infrastructure. `ordinal` is the stage run's infra retry ordinal, so an
     /// infra rerun's review records its own lessons.
@@ -5029,7 +5188,7 @@ impl RunCtx<'_> {
             )?;
         }
         if kept.is_empty() && !dropped.is_empty() {
-            return Ok((true, CONVERGED.to_string(), kept));
+            return Ok((true, format!("{CONVERGED}\n{reason}"), kept));
         }
         Ok((false, reason, kept))
     }
@@ -5185,7 +5344,9 @@ impl RunCtx<'_> {
     /// `workflow.yml` change, which would drift the pinned definition). The deterministic
     /// spawn id (`spawn_id(stage, ROLE_SDET_AUTHOR, attempt)` - `attempt` is the single-lane
     /// remediation attempt or the speculation lane) lets a stepwise/replay driver answer or
-    /// park it exactly like the implementer. The spawn is gated on a real worktree (an empty
+    /// park it exactly like the implementer; a spawn whose record the emit guard refused re-runs
+    /// once under the next [`review_retry_window`] id with the refusal after its prompt
+    /// ([`rerun_once_on_refusal`]). The spawn is gated on a real worktree (an empty
     /// `dir` is a repo-less or `isolation: none` unit with no tree to author into, and an
     /// Edit/Write agent must never run in the live main checkout) and on the agent being
     /// configured (absent-agent tolerance: a clean no-op when the operator has not installed
@@ -5202,6 +5363,9 @@ impl RunCtx<'_> {
     /// frontier); the caller unwinds per its own discipline - the single lane propagates it
     /// (holding the unit, no commit), a speculation lane collects it into `any_parked` and does
     /// NOT commit that candidate, so a later step replays the sdet and its periphery tests land.
+    /// Returns the stage error naming the refusal when the emit guard refused the re-run's record
+    /// too: a refusal is a defect in what the sdet printed, never a crash to proceed past, so the
+    /// single lane fails its stage with it and a speculation candidate loses.
     ///
     /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
     /// appends [`DOC_ONLY_ROUND`] to the prompt, so a wording round moves an existing pin's
@@ -5230,17 +5394,6 @@ impl RunCtx<'_> {
         let Some(sdet_def) = self.cfg.agents.get(ROLE_SDET_AUTHOR) else {
             return Ok(());
         };
-        let sdet_id = spawn_id(&st.name, ROLE_SDET_AUTHOR, attempt);
-        // Budget breaker at spawn granularity: reserve the sdet spawn against the run budget
-        // FIRST, exactly like the implementer and every reviewer tier, so it funnels through the
-        // single spawn-budget mutation authority - it respects/trips the breaker instead of
-        // spawning past it, and the cross-step budget symmetry d-budget-folds-from-log
-        // guarantees (cumulative = base_spawns + admitted-this-process) holds. Keyed on the
-        // deterministic id so a REPLAY of an already-recorded sdet spawn is admitted free
-        // (spawn_is_recorded). Refused at a spent budget => do not spawn (proceed author-less).
-        if !self.reserve_spawn(&sdet_id) {
-            return Ok(());
-        }
         // The SDET-author spawn is part of the IMPLEMENT lifecycle stage (the build seam), reached
         // only for a non-producer unit (after the producer early-return in `run_single_stage`), so it
         // gets the trimmed implement slice like the implementer it authors periphery tests alongside.
@@ -5268,43 +5421,76 @@ impl RunCtx<'_> {
             resume_task.push_str(DOC_ONLY_ROUND);
         }
         let resume_task = Some(resume_task);
-        let sdet_emit = |t: &str, v: Value| self.emit_with_actor(ROLE_SDET_AUTHOR, t, v);
-        let opts = match self.reviewer_spawn_opts(
-            &sdet_id,
-            ROLE_SDET_AUTHOR,
-            ROLE_SDET_AUTHOR,
-            dir,
-            attempt,
-            false,
-            st,
-            // The sdet-author writes periphery tests - it is not a review tier judging
-            // another agent's output, so it carries no roster (spec 67, criterion 4).
-            &[],
-        ) {
-            // A log that cannot be read is a fault, propagated - never a cold start.
-            Ok(opts) => self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task)?,
-            // An opts-guard error takes the crash disposition below: the unit proceeds to
-            // the commit.
-            Err(_) => return Ok(()),
+        let sdet_emit = |t: &str, v: Value| {
+            self.emit_agent(t, v, &[(contextgraph::META_ACTOR, ROLE_SDET_AUTHOR)])
         };
-        match self
-            .deps
-            .driver
-            .spawn(sdet_def, &sdet_prompt, &opts, &sdet_emit)
-        {
-            // A normal result: its authored files are already in the worktree, so the caller
-            // falls through to the commit that sweeps them in. The session it ran as is
-            // recorded for its next attempt to continue.
-            Ok(result) => self.record_session(&opts, &result),
-            // A PARKED spawn (the stepwise/replay driver reached an unrecorded frontier):
-            // surface the park so the caller unwinds cleanly - no UnitFailed, no remediation -
-            // and a later step replays the result.
-            Err(e) if is_parked(&e) => Err(e),
-            // The crash disposition (a non-parked spawn/opts-guard error) is the next unit's to
-            // decide; this unit places the spawn and its parked arm, so a crash proceeds to the
-            // commit rather than propagating past the unit.
-            Err(_) => Ok(()),
-        }
+        rerun_once_on_refusal(review_retry_window(0), |retry, refused| {
+            let sdet_id = spawn_retry_id(&st.name, ROLE_SDET_AUTHOR, attempt, retry);
+            // Budget breaker at spawn granularity: reserve the sdet spawn against the run budget
+            // FIRST, exactly like the implementer and every reviewer tier, so it funnels through
+            // the single spawn-budget mutation authority - it respects/trips the breaker instead
+            // of spawning past it, and the cross-step budget symmetry d-budget-folds-from-log
+            // guarantees (cumulative = base_spawns + admitted-this-process) holds. Keyed on the
+            // deterministic id so a REPLAY of an already-recorded sdet spawn is admitted free
+            // (spawn_is_recorded). Refused at a spent budget => do not spawn (proceed
+            // author-less).
+            if !self.reserve_spawn(&sdet_id) {
+                return Ok(());
+            }
+            let opts = match self.reviewer_spawn_opts(
+                &sdet_id,
+                ROLE_SDET_AUTHOR,
+                ROLE_SDET_AUTHOR,
+                dir,
+                attempt,
+                false,
+                st,
+                // The sdet-author writes periphery tests - it is not a review tier judging
+                // another agent's output, so it carries no roster (spec 67, criterion 4).
+                &[],
+            ) {
+                // A log that cannot be read is a fault, propagated - never a cold start. A
+                // re-run after a refusal starts fresh rather than continuing the session that
+                // printed the refused record.
+                Ok(opts) if retry == 0 => {
+                    self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task.clone())?
+                }
+                Ok(opts) => opts,
+                // An opts-guard error takes the crash disposition below: the unit proceeds to
+                // the commit.
+                Err(_) => return Ok(()),
+            };
+            match self
+                .deps
+                .driver
+                .spawn(sdet_def, &refused.task(&sdet_prompt), &opts, &sdet_emit)
+            {
+                // A normal result: its authored files are already in the worktree, so the
+                // caller falls through to the commit that sweeps them in. The session it ran as
+                // is recorded for its next attempt to continue.
+                Ok(result) => self.record_session(&opts, &result),
+                // A PARKED spawn (the stepwise/replay driver reached an unrecorded frontier):
+                // surface the park so the caller unwinds cleanly - no UnitFailed, no
+                // remediation - and a later step replays the result. A refused record surfaces
+                // too: the first re-runs above, a second fails the stage below.
+                Err(e) if is_parked(&e) || carries_marker(&e, EMIT_REFUSED_MARKER) => Err(e),
+                // The crash disposition (a non-parked spawn/opts-guard error) is the next
+                // unit's to decide; this unit places the spawn and its parked arm, so a crash
+                // proceeds to the commit rather than propagating past the unit.
+                Err(_) => Ok(()),
+            }
+        })
+        .map_err(|e| {
+            if carries_marker(&e, EMIT_REFUSED_MARKER) {
+                Error(format!(
+                    "stage {:?} sdet author: {}",
+                    st.name,
+                    strip_failure_marker(&e)
+                ))
+            } else {
+                e
+            }
+        })
     }
 
     /// THE HALTED-SPAWN CHECKPOINT's guard (spec 103): whether `named_spawn_id` (the
@@ -5662,6 +5848,13 @@ impl RunCtx<'_> {
             // result is consumed (and on the resume-skip path, which re-uses a prior
             // window's diff without a fresh spawn), so its metadata is then omitted.
             let mut resolved_model = String::new();
+            // A fresh accumulator for THIS attempt's failure specifics (item 3 + 5). The
+            // REQUIRED list stays open until a review round rules on it, so a crash or a red
+            // gate before the review carries it to the next attempt.
+            let mut next = PriorFailure {
+                required: prior.required.clone(),
+                ..PriorFailure::default()
+            };
             if skip_implement {
                 // Reuse the prior window's committed implementation: re-record the
                 // `green` status (the ledger reflects the reused diff) without
@@ -5711,8 +5904,15 @@ impl RunCtx<'_> {
                 // ONLY the implement stage, so the slice is keyed on the implement stage specifically
                 // via `implement_slice`: a true implement stage gets the trimmed slice, a producer
                 // keeps the FULL context (adv-u36c1-planner-first-spawn-trimmed).
-                let prompt =
+                let mut prompt =
                     self.build_prompt_with_failure(st, &prior, attempts, implement_slice(st))?;
+                // The check-in stage's first attempt is the run's note sweep: its prompt ends
+                // with the notes the run's review upheld, read from the log at stage entry. A
+                // later attempt answers its gates, as every stage's does.
+                if attempts == 0 && is_check_in(st, &self.cfg.workflow.stages) {
+                    let notes = run_notes(&events).map_err(|e| Error(e.to_string()))?;
+                    prompt.push_str(&notes_block(&notes));
+                }
                 // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-
                 // undercosted): stamp META_SPAWN alongside the actor, not only the actor,
                 // so a producer/planner spawn's UnitProposed events carry THIS spawn's own
@@ -5726,7 +5926,7 @@ impl RunCtx<'_> {
                 // `run_reviewer`'s identical pattern) for a plain implementer's own
                 // DecisionMade emits, which carry no episode significance.
                 let emit = |t: &str, v: Value| {
-                    self.emit_meta(
+                    self.emit_agent(
                         t,
                         v,
                         &[
@@ -5830,6 +6030,19 @@ impl RunCtx<'_> {
                     // UnitFailed and no remediation, so the step ends once every
                     // in-flight spawn is parked and a later step replays the result.
                     Err(e) if is_parked(&e) => return Err(e),
+                    // A record this spawn emitted that the emit guard refused (a payload the
+                    // fold cannot apply, an id another seat holds) is a defect in what the
+                    // attempt printed, not an outage: an uncharged rerun would reprint it. It is
+                    // charged like a review reject - CAUSE_REJECT already covers "this unit's
+                    // output was refused" - and the refusal rides into the next attempt's
+                    // prompt, so the agent learns why. Its edits are committed as the attempt's
+                    // checkpoint, as a gate failure's are before its gates run, so the UnitFailed
+                    // below carries that sha and an escalation's teardown keeps them.
+                    Err(e) if carries_marker(&e, EMIT_REFUSED_MARKER) => {
+                        checkpoint_attempt(wt, &st.name, attempts)?;
+                        cause = CAUSE_REJECT.to_string();
+                        next.review_reason = strip_failure_marker(&e);
+                    }
                     // A mid-spawn crash (a non-zero exit, a live host's wall-clock stop) is
                     // an infrastructure failure: rerun uncharged at the same attempt (F3)
                     // below, never propagated - it must not abort the whole run (§8).
@@ -5848,21 +6061,15 @@ impl RunCtx<'_> {
                 }
             }
 
-            // A fresh accumulator for THIS attempt's failure specifics (item 3 + 5). The
-            // REQUIRED list stays open until a review round rules on it, so a crash or a red
-            // gate before the review carries it to the next attempt.
-            let mut next = PriorFailure {
-                required: prior.required.clone(),
-                ..PriorFailure::default()
-            };
             // The unit's own lifecycle (§3.2): implement -> the unit's gates -> the
             // three-tier review OF THIS UNIT -> integrate. The gates and the
             // adjudicator's verdict BOTH gate integration: a gate failure OR a reject
             // feeds back into this same loop (re-ground via build_prompt, re-implement
             // WITH THE FEEDBACK, re-review) and escalates after the retry bound. Review
             // runs only once the implementer's own gates are green, so the lenses never
-            // review a red diff.
-            if spawn_err.is_none() {
+            // review a red diff. None of it runs once the spawn itself failed this attempt
+            // (a crash or a refused emit, each setting `cause` above).
+            if cause.is_empty() {
                 // A `produces` (planner) stage emits a DAG, NOT code: its agent has
                 // just proposed the units (UnitProposed events). It wrote no diff, so
                 // there is nothing to gate, nothing for the three-tier review to read
@@ -5957,13 +6164,7 @@ impl RunCtx<'_> {
                     // Committing here collapses gate-green to committed-green. The
                     // worktree-less path (no `wt`, e.g. an `isolation: none` agent or a
                     // repo-less run) has no commit step and is unchanged.
-                    if let Some(w) = wt {
-                        w.commit_checkpoint(&format!(
-                            "rigger: {} attempt {}",
-                            st.name,
-                            attempts + 1
-                        ))?;
-                    }
+                    checkpoint_attempt(wt, &st.name, attempts)?;
                     // Blast-radius gate selection (spec 12, unit 3): the implement/remediate
                     // INNER LOOP runs only the gates whose `inputs:` intersect the unit's grounded
                     // blast radius (its `grounded_seed`, the SAME radius the spawn uses),
@@ -6376,68 +6577,75 @@ impl RunCtx<'_> {
             // single-lane implementer's, since the lanes differ only in SCHEDULING, not assembly.
             let prompt =
                 self.build_prompt_with_failure(st, &logged, lane, GroundingSlice::Implement)?;
-            let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
+            let emit = |t: &str, v: Value| {
+                self.emit_agent(t, v, &[(contextgraph::META_ACTOR, st.agent.as_str())])
+            };
             let isolation_check = self.assert_isolated_cwd("implementer", &st.agent, &dir);
-            match isolation_check.and_then(|()| {
-                self.deps.driver.spawn(
-                    &agent_def,
-                    &prompt,
-                    &SpawnOpts {
-                        system_prompt: self.build_system_prompt(&agent_def),
-                        dir: dir.clone(),
-                        isolation: true,
-                        parallel: true,
-                        blast_radius: blast_radius.clone(),
-                        id: impl_id.clone(),
-                        unit: st.name.clone(),
-                        stage: st.name.clone(),
-                        // The live work-line: the unit's criterion, so each speculation
-                        // candidate narrates the WORK, not just `{unit}:{stage}` (spec 19a, c4).
-                        title: st.coverage.trim().to_string(),
-                        attempt: lane,
-                        run_id: self.run_id.clone(),
-                        // The ONE build-environment authority (spec 65) PLUS this lane's
-                        // own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION):
-                        // every speculation candidate's own `cargo` invocations share the
-                        // same wrapper cache AND land in its own lane's per-unit cache,
-                        // never a `target/` dir embedded in its own lane worktree.
-                        env: Self::spawn_env(&build_env, &dir, crate::worktree::UNIT_CACHE_PREFIX),
-                        // A speculation candidate is an implementer lane, never a review
-                        // tier: no roster to render (spec 67, criterion 4).
-                        reviews: Vec::new(),
-                        // The existing blocking drivers (cli/workflow) ignore these;
-                        // spec 104's host is not wired in here yet.
-                        settings_json: String::new(),
-                        launch: 0,
-                        resumed_from: String::new(),
-                        resume_task: String::new(),
-                    },
-                    &emit,
-                )
-            }) {
+            match isolation_check
+                .and_then(|()| {
+                    self.deps.driver.spawn(
+                        &agent_def,
+                        &prompt,
+                        &SpawnOpts {
+                            system_prompt: self.build_system_prompt(&agent_def),
+                            dir: dir.clone(),
+                            isolation: true,
+                            parallel: true,
+                            blast_radius: blast_radius.clone(),
+                            id: impl_id.clone(),
+                            unit: st.name.clone(),
+                            stage: st.name.clone(),
+                            // The live work-line: the unit's criterion, so each speculation
+                            // candidate narrates the WORK, not just `{unit}:{stage}` (spec 19a, c4).
+                            title: st.coverage.trim().to_string(),
+                            attempt: lane,
+                            run_id: self.run_id.clone(),
+                            // The ONE build-environment authority (spec 65) PLUS this lane's
+                            // own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION):
+                            // every speculation candidate's own `cargo` invocations share the
+                            // same wrapper cache AND land in its own lane's per-unit cache,
+                            // never a `target/` dir embedded in its own lane worktree.
+                            env: Self::spawn_env(
+                                &build_env,
+                                &dir,
+                                crate::worktree::UNIT_CACHE_PREFIX,
+                            ),
+                            // A speculation candidate is an implementer lane, never a review
+                            // tier: no roster to render (spec 67, criterion 4).
+                            reviews: Vec::new(),
+                            // The existing blocking drivers (cli/workflow) ignore these;
+                            // spec 104's host is not wired in here yet.
+                            settings_json: String::new(),
+                            launch: 0,
+                            resumed_from: String::new(),
+                            resume_task: String::new(),
+                        },
+                        &emit,
+                    )
+                })
+                // The SDET-author spawn (spec 33): author periphery tests into THIS candidate's
+                // worktree at the same build seam the single-lane path uses - AFTER the implementer
+                // produced its diff and BEFORE this candidate's commit below - through the ONE shared
+                // seam authority. So the committed tree PHASE B's gates judge (and the winner
+                // integrates) carries the periphery tests for WHICHEVER candidate wins - a
+                // speculation-built unit is not a silent hole in the "no boundary surface lands
+                // untested" guarantee. Each lane reserves its OWN sdet id (keyed on the `lane`
+                // attempt), so the budget breaker counts every candidate's sdet exactly as it counts
+                // every candidate's implementer.
+                //
+                // A PARKED sdet (an unrecorded stepwise/replay frontier) takes the park arm below -
+                // like the implementer park - and this candidate is NOT committed, so all K park
+                // together this step and a later step replays the sdet and commits the candidate
+                // WITH its periphery. The lane dir persists across the park (dropping `wt` does not
+                // remove it - `Worktree` has no `Drop`), so the worker finds it. An sdet whose record
+                // the emit guard refused again after its one re-run takes the crash arm: the
+                // candidate loses, as a losing candidate has no later attempt to carry the refusal
+                // into.
+                .and_then(|result| {
+                    self.spawn_sdet_author(st, Some(&wt), &dir, lane, &[])
+                        .map(|()| result)
+                }) {
                 Ok(result) => {
-                    // The SDET-author spawn (spec 33): author periphery tests into THIS
-                    // candidate's worktree at the same build seam the single-lane path uses -
-                    // AFTER the implementer produced its diff and BEFORE this candidate's
-                    // commit below - through the ONE shared seam authority. So the committed
-                    // tree PHASE B's gates judge (and the winner integrates) carries the
-                    // periphery tests for WHICHEVER candidate wins - a speculation-built unit
-                    // is not a silent hole in the "no boundary surface lands untested"
-                    // guarantee. Each lane reserves its OWN sdet id (keyed on the `lane`
-                    // attempt), so the budget breaker counts every candidate's sdet exactly as
-                    // it counts every candidate's implementer.
-                    //
-                    // A PARKED sdet (an unrecorded stepwise/replay frontier) is COLLECTED into
-                    // `any_parked` - like the implementer park above - and this candidate is
-                    // NOT committed: control skips to the next lane, so all K park together
-                    // this step and a later step replays the sdet and commits the candidate
-                    // WITH its periphery. The lane dir persists across the park (dropping `wt`
-                    // does not remove it - `Worktree` has no `Drop`), so the worker finds it.
-                    if let Err(e) = self.spawn_sdet_author(st, Some(&wt), &dir, lane, &[]) {
-                        debug_assert!(is_parked(&e), "spawn_sdet_author only errors on a park");
-                        any_parked = true;
-                        continue;
-                    }
                     // The candidate produced a diff: commit its worktree so the gates measure
                     // exactly the committed artifact. Its `green` status is DEFERRED until it is
                     // chosen the winner below - emitting a routing status (Green/Verified) per
@@ -6460,8 +6668,9 @@ impl RunCtx<'_> {
                 // A candidate parked (stepwise/replay frontier): collect it and keep going so
                 // ALL K candidates park this step. The dir persists for the worker.
                 Err(e) if is_parked(&e) => any_parked = true,
-                // A candidate CRASHED (usage limit, non-zero exit): it is simply absent from
-                // the group - a losing candidate that produced no diff. The remaining
+                // A candidate CRASHED (usage limit, non-zero exit, or an sdet record refused
+                // past its re-run): it is simply absent from the group - a losing candidate
+                // whose diff never commits. The remaining
                 // candidates still race; if none survives, the escalation tail fires. Its lane
                 // worktree AND branch were already created (above), and NO terminal path below
                 // tears them down - winner cleanup, `cancel_speculation_candidates`, and the
@@ -7308,6 +7517,12 @@ impl RunCtx<'_> {
     /// a substantive result for a retry id lets the next step replay it and fold normally
     /// (see [`degenerate_reviewer`]).
     ///
+    /// A spawn whose record the emit guard refused (a line the fold cannot apply, or an id
+    /// another seat holds) is the reviewer's own defect, not infra: it re-runs once at the
+    /// window's next id with the refusal after its prompt ([`RefusedRecord`]), so the reviewer
+    /// reads why; a second refusal, or one at the window's last id, takes the stage error below,
+    /// its text unmarked.
+    ///
     /// `tier` is the human label the audit trail/`reviewer_spawn_opts` use; `role` is the
     /// deterministic-id role token (`lens_role(agent)` / [`ROLE_ADVERSARY`] /
     /// [`ROLE_ADJUDICATOR`]); `parallel` sets the reviewer's isolation-opt (§6, lenses run
@@ -7362,6 +7577,7 @@ impl RunCtx<'_> {
         // Whether a gating result of this round already came back with no verdict line: the
         // first re-drives the review, a second halts (one bounded re-drive, never a loop).
         let mut verdictless = false;
+        let mut refused = RefusedRecord::default();
         for retry in window {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
             let opts =
@@ -7415,48 +7631,55 @@ impl RunCtx<'_> {
                 // which a concurrent sibling adjudicator (`run_wave` fan-out) carries too -
                 // the per-spawn correlation the mismatch backstop (`gating_spawn_emitted_approve`)
                 // keys on to exclude a sibling's approve.
-                self.emit_meta(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
+                self.emit_agent(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
             };
-            let result = match self.deps.driver.spawn(agent_def, prompt, &opts, &emit) {
-                Ok(result) => {
-                    self.record_session(&opts, &result)?;
-                    result
-                }
-                Err(e) => {
-                    // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
-                    // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
-                    // exhaustion, a crash) whose error the death courier (or the operator) recorded
-                    // on its id - is an INFRASTRUCTURE fault, NOT a verdict. An error is not a
-                    // verdict: review must COMPLETE. So the conductor does NOT adopt the error as
-                    // the review outcome and does NOT fail the step; it charges the unit no attempt
-                    // (the work was never judged) and RE-PARKS a FRESH attempt of the SAME review by
-                    // looping to the next `spawn_retry_id`. That id is unrecorded, so the replay
-                    // driver parks it and the next `rigger step` returns it in the wave; a completed
-                    // real verdict then folds through the NORMAL adjudication path below. This is
-                    // bounded by `REVIEWER_RESPAWN_BOUND` exactly like the degenerate loop, so a
-                    // persistently-erroring review spawn escalates through the halt below rather
-                    // than re-parking forever (spec 51, criterion 2 owns that bound).
-                    //
-                    // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
-                    // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
-                    // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream). And the LIVE
-                    // drivers (cli / workflow) never RECORD a spawn result, so `review_spawn_errored`
-                    // is false there and a genuine in-process review failure still propagates to
-                    // remediation exactly as before - only a REPLAYED recorded error re-parks.
-                    if !is_parked_or_budget_refused(&e) && self.review_spawn_errored(&id)? {
-                        continue;
+            let result =
+                match self
+                    .deps
+                    .driver
+                    .spawn(agent_def, &refused.task(prompt), &opts, &emit)
+                {
+                    Ok(result) => {
+                        self.record_session(&opts, &result)?;
+                        result
                     }
-                    // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` only recognizes
-                    // its own `\u{2}` prefix, so a PARKED_MARKER/BUDGET_MARKER error
-                    // (`\u{1}`-prefixed) still passes through byte-for-byte unchanged
-                    // here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream are unaffected.
-                    return Err(Error(format!(
-                        "stage {:?} {tier} {agent_id:?}: {}",
-                        st.name,
-                        strip_failure_marker(&e)
-                    )));
-                }
-            };
+                    Err(e) if refused.reruns(&e, retry < last_retry) => continue,
+                    Err(e) => {
+                        // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
+                        // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
+                        // exhaustion, a crash) whose error the death courier (or the operator) recorded
+                        // on its id - is an INFRASTRUCTURE fault, NOT a verdict. An error is not a
+                        // verdict: review must COMPLETE. So the conductor does NOT adopt the error as
+                        // the review outcome and does NOT fail the step; it charges the unit no attempt
+                        // (the work was never judged) and RE-PARKS a FRESH attempt of the SAME review by
+                        // looping to the next `spawn_retry_id`. That id is unrecorded, so the replay
+                        // driver parks it and the next `rigger step` returns it in the wave; a completed
+                        // real verdict then folds through the NORMAL adjudication path below. This is
+                        // bounded by `REVIEWER_RESPAWN_BOUND` exactly like the degenerate loop, so a
+                        // persistently-erroring review spawn escalates through the halt below rather
+                        // than re-parking forever (spec 51, criterion 2 owns that bound).
+                        //
+                        // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
+                        // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
+                        // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream). And the LIVE
+                        // drivers (cli / workflow) never RECORD a spawn result, so `review_spawn_errored`
+                        // is false there and a genuine in-process review failure still propagates as
+                        // the stage's error exactly as before - only a REPLAYED recorded error re-parks.
+                        if !is_parked_or_budget_refused(&e) && self.review_spawn_errored(&id)? {
+                            continue;
+                        }
+                        // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
+                        // `\u{2}`-bracketed class and the emit guard's refusal marker, so a
+                        // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
+                        // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
+                        // are unaffected.
+                        return Err(Error(format!(
+                            "stage {:?} {tier} {agent_id:?}: {}",
+                            st.name,
+                            strip_failure_marker(&e)
+                        )));
+                    }
+                };
             // A substantive result folds into the review; a degenerate one loops to respawn
             // the SAME reviewer under the next retry id.
             if !self.reviewer_result_is_degenerate(output, &id, &result, findings.get())? {
@@ -7729,7 +7952,8 @@ impl RunCtx<'_> {
     /// `adversary_id` are the routed panel's own lens agent ids and adversary agent id
     /// (spec 67, criterion 4) - the CALLER's already-routed values (light or full),
     /// combined via [`adjudicator_roster`] into this spawn's [`SpawnOpts::reviews`] roster.
-    /// Its prompt says how a reject names its REQUIRED list ([`REQUIRED_PROTOCOL`]) and, on
+    /// Its prompt says which findings its verdict line upholds ([`UPHELD_PROTOCOL`]), how a
+    /// reject names its REQUIRED list ([`REQUIRED_PROTOCOL`]) and, on
     /// a later review round, ends with that round's block, where a reject naming no
     /// REQUIRED item is degenerate ([`ReviewerOutput::RoundVerdict`]).
     // Each argument is a distinct, already-documented review input (stage, agent id, dir,
@@ -7762,7 +7986,7 @@ impl RunCtx<'_> {
         // driven) - so it carries the SAME reviewer discipline those two tiers get via
         // `review_protocol` (spec 103, criterion 6), appended directly here.
         let prompt = format!(
-            "{}{REVIEWER_DISCIPLINE}{REQUIRED_PROTOCOL}{}",
+            "{}{REVIEWER_DISCIPLINE}{UPHELD_PROTOCOL}{REQUIRED_PROTOCOL}{}",
             self.review_base_prompt(st, dir)?,
             round.map(ReviewRound::block).unwrap_or_default()
         );
@@ -7948,8 +8172,10 @@ impl RunCtx<'_> {
     /// DAG (Unit 1, spec 10: "a reject feeds back to the planner"). The re-plan spawn id
     /// is deterministic (`plan/replan#<critique-attempt>`), distinct from the plan stage's
     /// own `plan/implementer#0`, so a stepwise/replay driver parks and replays it exactly
-    /// like any other spawn; its budget is reserved through the same breaker. The planner
-    /// (`isolation: none`) runs in the project cwd like its first-wave spawn. Its revised
+    /// like any other spawn; its budget is reserved through the same breaker. A re-plan whose
+    /// record the emit guard refused re-runs once as `plan/replan#<critique-attempt>~retry1`,
+    /// told why ([`rerun_once_on_refusal`]); a second refusal is the gate's error, unmarked. The
+    /// planner (`isolation: none`) runs in the project cwd like its first-wave spawn. Its revised
     /// `UnitProposed` emits land in the log; the caller re-harvests them into the DAG.
     fn re_plan(
         &self,
@@ -7964,15 +8190,6 @@ impl RunCtx<'_> {
                 plan_st.agent
             ))
         })?;
-        let id = spawn_id(plan_name, ROLE_REPLAN, critique_attempt);
-        if !self.reserve_spawn(&id) {
-            return Err(spawn_halt(
-                SpawnHalt::BudgetRefused,
-                plan_name,
-                "planner",
-                &plan_st.agent,
-            ));
-        }
         let prompt = format!(
             "The plan-critique gate REJECTED your previous decomposition:\n{}\n\nRevise \
              the unit DAG to resolve it, then re-emit your UnitProposed refinements. To \
@@ -7984,80 +8201,92 @@ impl RunCtx<'_> {
             feedback.trim(),
             self.build_prompt(plan_st)?
         );
-        // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-undercosted):
-        // stamp META_SPAWN with THIS re-plan spawn's own deterministic id, mirroring the
-        // matching fix at the initial planner spawn site (`run_single_stage`) - see its
-        // comment for why. A re-plan is a distinct PLAN-EPISODE from the initial wave
-        // (and from any earlier re-plan), so it needs its own stamp here too.
-        let emit = |t: &str, v: Value| {
-            self.emit_meta(
-                t,
-                v,
-                &[
-                    (contextgraph::META_ACTOR, plan_st.agent.as_str()),
-                    (META_SPAWN, id.as_str()),
-                ],
-            )
-        };
         let build_env = self.build_env()?;
-        // The planner opts out of isolation (`isolation: none`), so - like its first-wave
-        // spawn in `run_single_stage` - it runs in the project cwd; only an ISOLATED agent
-        // must carry a worktree dir (asserted there, not here). An isolated planner would
-        // be a misconfiguration the first-wave spawn already rejects.
-        self.deps
-            .driver
-            .spawn(
-                agent_def,
-                &prompt,
-                &SpawnOpts {
-                    system_prompt: self.build_system_prompt(agent_def),
-                    dir: String::new(),
-                    isolation: false,
-                    parallel: false,
-                    blast_radius: self.grounded_seed(plan_st),
-                    id: id.clone(),
-                    unit: plan_name.to_string(),
-                    stage: plan_name.to_string(),
-                    // The live work-line: the plan stage's criterion, so a re-plan spawn
-                    // narrates what it is decomposing, not just `{unit}:{stage}` (spec 19a, c4).
-                    title: plan_st.coverage.trim().to_string(),
-                    run_id: self.run_id.clone(),
-                    // The re-plan is remediation of the DECOMPOSITION: the critique
-                    // attempt drives the planner's ladder rung exactly as a unit's
-                    // remediation attempt drives its implementer's (spec 10 unit 4).
-                    attempt: critique_attempt,
-                    // The ONE build-environment authority (spec 65): a planner is not
-                    // guaranteed to build, but carries the same resolved env uniformly
-                    // like every other spawn, so a planner that does explore via cargo
-                    // shares the cache too. Routed through `spawn_env` for uniformity with
-                    // every other call site (spec 77 c1); the planner's own `dir` is
-                    // always empty (no worktree, `isolation: none`), so `unit_cache_sibling`
-                    // yields `None` and no `CARGO_TARGET_DIR` is added here.
-                    env: Self::spawn_env(&build_env, "", crate::worktree::UNIT_CACHE_PREFIX),
-                    // The planner/re-planner is never a review tier: no roster to render
-                    // (spec 67, criterion 4).
-                    reviews: Vec::new(),
-                    // The existing blocking drivers (cli/workflow) ignore these; spec
-                    // 104's host is not wired in here yet.
-                    settings_json: String::new(),
-                    launch: 0,
-                    resumed_from: String::new(),
-                    resume_task: String::new(),
-                },
-                &emit,
-            )
-            .map_err(|e| {
-                // adj-u104c5 REQUIRED FIX 2: strip a FAILURE_MARKER-bracketed class
-                // before it reaches this wrapped, operator-visible text - a no-op for
-                // every other marker (park/budget survive, see the review-tier site's
-                // own comment) and every marker-free driver error.
-                Error(format!(
-                    "plan-critique re-plan {:?}: {}",
-                    plan_st.agent,
-                    strip_failure_marker(&e)
-                ))
-            })?;
-        Ok(())
+        rerun_once_on_refusal(review_retry_window(0), |retry, refused| {
+            let id = spawn_retry_id(plan_name, ROLE_REPLAN, critique_attempt, retry);
+            if !self.reserve_spawn(&id) {
+                return Err(spawn_halt(
+                    SpawnHalt::BudgetRefused,
+                    plan_name,
+                    "planner",
+                    &plan_st.agent,
+                ));
+            }
+            // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-undercosted):
+            // stamp META_SPAWN with THIS re-plan spawn's own deterministic id, mirroring the
+            // matching fix at the initial planner spawn site (`run_single_stage`) - see its
+            // comment for why. A re-plan is a distinct PLAN-EPISODE from the initial wave
+            // (and from any earlier re-plan), so it needs its own stamp here too.
+            let emit = |t: &str, v: Value| {
+                self.emit_agent(
+                    t,
+                    v,
+                    &[
+                        (contextgraph::META_ACTOR, plan_st.agent.as_str()),
+                        (META_SPAWN, id.as_str()),
+                    ],
+                )
+            };
+            // The planner opts out of isolation (`isolation: none`), so - like its first-wave
+            // spawn in `run_single_stage` - it runs in the project cwd; only an ISOLATED agent
+            // must carry a worktree dir (asserted there, not here). An isolated planner would
+            // be a misconfiguration the first-wave spawn already rejects.
+            self.deps
+                .driver
+                .spawn(
+                    agent_def,
+                    &refused.task(&prompt),
+                    &SpawnOpts {
+                        system_prompt: self.build_system_prompt(agent_def),
+                        dir: String::new(),
+                        isolation: false,
+                        parallel: false,
+                        blast_radius: self.grounded_seed(plan_st),
+                        id: id.clone(),
+                        unit: plan_name.to_string(),
+                        stage: plan_name.to_string(),
+                        // The live work-line: the plan stage's criterion, so a re-plan spawn
+                        // narrates what it is decomposing, not just `{unit}:{stage}` (spec 19a,
+                        // c4).
+                        title: plan_st.coverage.trim().to_string(),
+                        run_id: self.run_id.clone(),
+                        // The re-plan is remediation of the DECOMPOSITION: the critique
+                        // attempt drives the planner's ladder rung exactly as a unit's
+                        // remediation attempt drives its implementer's (spec 10 unit 4).
+                        attempt: critique_attempt,
+                        // The ONE build-environment authority (spec 65): a planner is not
+                        // guaranteed to build, but carries the same resolved env uniformly
+                        // like every other spawn, so a planner that does explore via cargo
+                        // shares the cache too. Routed through `spawn_env` for uniformity with
+                        // every other call site (spec 77 c1); the planner's own `dir` is
+                        // always empty (no worktree, `isolation: none`), so `unit_cache_sibling`
+                        // yields `None` and no `CARGO_TARGET_DIR` is added here.
+                        env: Self::spawn_env(&build_env, "", crate::worktree::UNIT_CACHE_PREFIX),
+                        // The planner/re-planner is never a review tier: no roster to render
+                        // (spec 67, criterion 4).
+                        reviews: Vec::new(),
+                        // The existing blocking drivers (cli/workflow) ignore these; spec
+                        // 104's host is not wired in here yet.
+                        settings_json: String::new(),
+                        launch: 0,
+                        resumed_from: String::new(),
+                        resume_task: String::new(),
+                    },
+                    &emit,
+                )
+                .map(|_| ())
+        })
+        .map_err(|e| {
+            // adj-u104c5 REQUIRED FIX 2: strip a FAILURE_MARKER-bracketed class (or an emit
+            // refusal's marker) before it reaches this wrapped, operator-visible text - a no-op
+            // for park/budget (they survive, see the review-tier site's own comment) and every
+            // marker-free driver error.
+            Error(format!(
+                "plan-critique re-plan {:?}: {}",
+                plan_st.agent,
+                strip_failure_marker(&e)
+            ))
+        })
     }
 
     /// Run the adversarial plan-critique gate (Unit 1, spec 10): the existing adversary +
@@ -9619,6 +9848,11 @@ impl RunCtx<'_> {
             (unit_tip, run_tip)
         } else {
             let mut retry = 0u32;
+            // The `retry` the last mixed-conflict round recorded its regenerate-pending set
+            // under: the episode tag the owed regeneration's commit record pairs with, kept
+            // apart from `retry` because a resolver re-run after a refused record advances
+            // `retry` past it.
+            let mut staged = 0u32;
             // Counts EVERY loop iteration (spec 88, criterion 1 round 4 TABLE rows 1 and 4):
             // unlike `retry`, which counts only mixed-conflict-episode ROUNDS, `pass`
             // advances on every single attempt at the merge - a confined-regenerate loop-back
@@ -9724,10 +9958,10 @@ impl RunCtx<'_> {
                         drop(lock);
                         // TABLE row 3's mutation - its before-record (the regenerate-pending set)
                         // is the SAME durable marker `record_regenerate_pending` already wrote
-                        // below, keyed by this same mixed-conflict episode's `retry` (unchanged
-                        // since that write - no new conflict has been detected in between).
+                        // below, keyed by this same mixed-conflict episode's `staged` round (no
+                        // new conflict has been detected since that write).
                         self.regenerate_and_record(wt, &st.name, attempt, &owed, |_| {
-                            retry.to_string()
+                            staged.to_string()
                         })?;
                         lock = self.integrate_mu.lock().unwrap();
                         // Loop back: the next pass's `merge_into_worktree` picks up the follow-up
@@ -9821,10 +10055,11 @@ impl RunCtx<'_> {
                         // resolution commit, unchanged) - this ordering is a narrower guarantee,
                         // for the LOG WRITE that must survive a crash purely to unblock `git
                         // commit`, which refuses while ANY path is still unmerged.
+                        staged = retry;
                         self.record_regenerate_pending(
                             &st.name,
                             attempt,
-                            &retry.to_string(),
+                            &staged.to_string(),
                             &regenerable,
                         )?;
                         for p in &regenerable {
@@ -9838,11 +10073,16 @@ impl RunCtx<'_> {
                         // no lock held at all; a real (non-parked) result - a replay hit, or a
                         // synchronous/blocking driver - re-acquires `lock` and loops back to
                         // re-attempt the merge from scratch, never trusting anything this
-                        // iteration observed before the spawn.
+                        // iteration observed before the spawn. A resolver whose record the emit
+                        // guard refused re-runs once at the next round's id, told why, so the
+                        // re-run spends one of the episode's `CONFLICT_RESOLVE_BOUND` rounds.
                         drop(lock);
-                        self.spawn_conflict_resolution_implementer(
-                            st, wt, attempt, retry, &source,
-                        )?;
+                        rerun_once_on_refusal(retry..=CONFLICT_RESOLVE_BOUND, |round, refused| {
+                            retry = round;
+                            self.spawn_conflict_resolution_implementer(
+                                st, wt, attempt, round, &source, refused,
+                            )
+                        })?;
                         // Defense in depth (spec 64 criterion 3): the spawn just above is real
                         // wall-clock time, the window in which an out-of-band actor could
                         // delete the worktree before the next iteration's read consumes it.
@@ -10709,7 +10949,8 @@ impl RunCtx<'_> {
     /// [`spawn_retry_id`] `~retry{n}` suffix, never [`safety::remediate`]'s bump - mirroring
     /// [`Self::run_reviewer`]'s identical free-respawn pattern for a degenerate reviewer
     /// result (spec 07), the established precedent for "infrastructure, not a defect" in
-    /// this loop.
+    /// this loop. `refused` carries the refusal a re-run after the emit guard refused the
+    /// previous round's record puts after the prompt ([`rerun_once_on_refusal`]).
     ///
     /// Operator ruling op-u88c1-round-1-conflict-resolution-is-a-parked-spawn-not-an-inline-
     /// loop (round 1 REJECT): the caller ([`Self::integrate_and_emit`]) drops `integrate_mu`
@@ -10723,6 +10964,7 @@ impl RunCtx<'_> {
         attempt: u32,
         retry: u32,
         source: &[String],
+        refused: &RefusedRecord,
     ) -> Result<(), Error> {
         let id = spawn_retry_id(&st.name, ROLE_IMPLEMENTER, attempt, retry);
         if !self.reserve_spawn(&id) {
@@ -10744,8 +10986,9 @@ impl RunCtx<'_> {
         }
         let build_env = self.build_env()?;
         let prompt = conflict_resolution_prompt(&st.name, source);
+        let prompt = refused.task(&prompt);
         let emit = |t: &str, v: Value| {
-            self.emit_meta(
+            self.emit_agent(
                 t,
                 v,
                 &[
@@ -11177,15 +11420,16 @@ impl RunCtx<'_> {
         // and the producer/planner - keeps the FULL bulk unchanged.
         match slice {
             // The trimmed doer slice: OMIT the capped bulk, point at the lookup verbs instead. The
-            // reference history stays retrievable UNCAPPED through `rigger peers` (memory), with
-            // `rigger graph --around` (structure) and `rigger graph --show` (text) for the rest;
-            // the store keeps everything, the implement prompt just stops pushing the truncated blob.
+            // reference history stays retrievable through `rigger peers` (memory: the newest under
+            // the sections' own budget), with `rigger graph --around` (structure) and `rigger graph
+            // --show` (text, any record by id) for the rest; the store keeps everything, the
+            // implement prompt just stops pushing the truncated blob.
             GroundingSlice::Implement => write_peers_pointer(&mut b),
             // The full slice: every prompt slice is budgeted (Gap 15's principle, extended to all
             // sections by Gap 17): the decisions, lessons, and findings sections each render through
             // ONE shared budgeted-section writer (recent-N verbatim under a hard per-section byte
             // budget, the older remainder collapsed into a visible elision note that names the count
-            // and the `rigger peers <file>` recovery). So no single section - not even findings, the
+            // and reading an elided record by id through the graph). So no single section - not even findings, the
             // LARGER contributor on a hot file (measured ~95KiB ABOUT conductor.rs, ~187KiB ABOUT
             // main.rs, 4-8x the 24KiB decisions cap) - can blow the prompt; the store keeps the full
             // history, only the prompt slice narrows. The findings subgraph is seeded on the unit's
@@ -11407,6 +11651,73 @@ impl RunCtx<'_> {
             .unwrap_or(true)
     }
 
+    /// Every run's lifecycle events, read by type ([`crate::run::read::ADOPTION_TYPES`]): the
+    /// history the cross-run criterion reads ([`prior_criterion_unit`], [`recorded_adoption`],
+    /// [`landed_criterion_unit`]) fold, and never a prior run's other events (spec 101).
+    fn read_lifecycle(&self) -> Result<Vec<Event>, Error> {
+        Ok(self.deps.store.read_stream_typed(
+            STREAM,
+            0,
+            crate::eventstore::TypeSelection::Only(&crate::run::read::ADOPTION_TYPES),
+        )?)
+    }
+
+    /// Land stage `st` with no spawn when an earlier run of this run's spec already integrated
+    /// its criterion ([`landed_criterion_unit`]) and every commit of that attempt is on the
+    /// branch this run integrates into ([`on_run_branch`]): record its `UnitStarted` and a
+    /// `UnitIntegrated` whose commit is [`REVIEW_ONLY_NO_ARTIFACT`] - no worktree, implementer,
+    /// gates, review or merge, the way a producer stage integrates - and whose `landed_from`
+    /// names the earlier unit, its run, this run's spec path and that unit's commit, which a
+    /// later run checks in place of the marker. Both are replay-keyed and appended together, so
+    /// a resumed step records nothing again and a crash never leaves one without the other.
+    /// Returns whether it landed; a stage that did not keeps the full lifecycle, branch adoption
+    /// included.
+    ///
+    /// `lifecycle` is the caller's one read of every run's lifecycle events, made at the first
+    /// stage that serves a criterion and reused for the rest.
+    fn land_if_landed(
+        &self,
+        st: &Stage,
+        lifecycle: &mut Option<Vec<Event>>,
+    ) -> Result<bool, Error> {
+        if st.criterion_id.is_empty() {
+            return Ok(false);
+        }
+        if lifecycle.is_none() {
+            *lifecycle = Some(self.read_lifecycle()?);
+        }
+        let events = lifecycle.as_deref().unwrap_or_default();
+        let Some(landed) = landed_criterion_unit(events, &st.criterion_id, &st.name) else {
+            return Ok(false);
+        };
+        if !on_run_branch(&self.deps.repo, &landed.commits) {
+            return Ok(false);
+        }
+        let name = st.name.as_str();
+        self.emit_keyed_together(vec![
+            (
+                format!("{name}/started"),
+                ledger::TYPE_UNIT_STARTED,
+                unit_started_payload(name, st, "", None),
+            ),
+            (
+                format!("{name}/landed"),
+                ledger::TYPE_UNIT_INTEGRATED,
+                json!({
+                    "id": name,
+                    "commit": REVIEW_ONLY_NO_ARTIFACT,
+                    "landed_from": {
+                        "unit": landed.unit,
+                        "run": landed.run,
+                        "spec": crate::run::current_run_spec_path(events),
+                        "commit": landed.commits.last(),
+                    },
+                }),
+            ),
+        ])?;
+        Ok(true)
+    }
+
     /// ADOPTION KEYS ON THE CRITERION (spec 88, decided; round 4 corrects the crash
     /// durability per operator ruling
     /// `op-u88c2-round-4-adoption-keys-corrected-escalated-baselines-are-always-
@@ -11539,11 +11850,7 @@ impl RunCtx<'_> {
         // Adoption is decided across runs by contract (spec 88: a criterion's abandoned attempt
         // from an earlier run is adopted), so it reads every run's LIFECYCLE events by type -
         // the only ones its rules consult - and never a prior run's other events (spec 101).
-        let events = self.deps.store.read_stream_typed(
-            STREAM,
-            0,
-            crate::eventstore::TypeSelection::Only(&crate::run::read::ADOPTION_TYPES),
-        )?;
+        let events = self.read_lifecycle()?;
         let spec = current_run_spec(&events);
         if let Some((prior, tip, prior_spec)) =
             recorded_adoption(&events, &st.name, &st.criterion_id, &spec)
@@ -11799,10 +12106,13 @@ impl RunCtx<'_> {
         &self,
         stages: &mut BTreeMap<String, Stage>,
         proposed: &mut HashSet<String>,
-        integrated: &HashSet<String>,
-        terminal: &HashSet<String>,
+        integrated: &mut HashSet<String>,
+        terminal: &mut HashSet<String>,
     ) -> Result<(), Error> {
         let events = self.read_current_run()?;
+        // Every run's lifecycle events, read once, at the first added stage that serves a
+        // criterion ([`RunCtx::land_if_landed`]).
+        let mut lifecycle = None;
         // GATE INHERITANCE (spec 103, decided): the fan-out template's gates are the
         // base every proposed unit's stage carries below - a proposal's own `gates`
         // field is accepted for compatibility and UNIONED in ([`union_gates`]), so a
@@ -12174,6 +12484,7 @@ impl RunCtx<'_> {
             // the SAME `with_gate_hold` authority the same-id fold path re-applies, so a
             // refined re-emit stays held behind the gate exactly as its first proposal was.
             let needs = with_gate_hold(u.needs, &u.id, gate.as_ref());
+            let id = u.id.clone();
             stages.insert(
                 u.id.clone(),
                 Stage {
@@ -12196,6 +12507,15 @@ impl RunCtx<'_> {
                     ..Default::default()
                 },
             );
+            // A LANDED CRITERION IS NOT BUILT AGAIN: a unit whose criterion an earlier run of
+            // this spec already integrated reaches Integrated here, as it enters the DAG, with
+            // no spawn, so its dependents are ready at once. Decided here, where a resumed step
+            // and a fresh step both add the unit, so the two agree; a unit already terminal in
+            // this run (landed by an earlier step, or built) is left as it stands.
+            if !terminal.contains(&id) && self.land_if_landed(&stages[&id], &mut lifecycle)? {
+                integrated.insert(id.clone());
+                terminal.insert(id);
+            }
         }
         Ok(())
     }
@@ -12350,7 +12670,9 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 ///   proved this one wrong - a deferred reject, since the disqualifying signal is itself
 ///   a review verdict), and a producer's own commit touching a path outside `specs/`
 ///   (spec 88 criterion 4: the conductor's OWN scope check refuses the unit's output,
-///   the same kind of refusal a review verdict is).
+///   the same kind of refusal a review verdict is), and a record the implementer emitted
+///   that the emit guard refused (a payload the fold cannot apply, an id another seat
+///   holds: the guard refuses the unit's output the same way).
 /// - [`CAUSE_INTEGRATE_CONFLICT`]: the merge landed cleanly but the POST-MERGE re-gate
 ///   went red - a batch-mate's already-integrated change combined into a broken tree -
 ///   or a producer's `specs/`-only cherry-pick conflicted with a concurrent operator
@@ -12489,6 +12811,36 @@ pub const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree 
 /// adjudicator's prompt by [`RunCtx::run_adjudicator`].
 const REQUIRED_PROTOCOL: &str = " On a reject, your verdict line also lists every item the next attempt must fix, as \"required\":[{\"finding\":\"<what must change>\",\"path\":\"<the repo-relative file it is in>\",\"correctness\":<true for a correctness defect, else false>,\"pattern\":\"<the defect's shape when it recurs across sites, else empty>\"}].";
 
+/// What an adjudicator's verdict line names beside the verdict, approve or reject: the id of
+/// every finding it agrees is real, a note among them, which is how a workflow's check-in stage
+/// learns the notes it fixes ([`run_notes`]). Appended to every adjudicator's prompt by
+/// [`RunCtx::run_adjudicator`], before [`REQUIRED_PROTOCOL`].
+const UPHELD_PROTOCOL: &str = " Your verdict line lists as \"upheld\":[\"<finding id>\"] every finding you agree is real, a note as well as a blocking one: the upheld notes are the run's notes, fixed once by the workflow's check-in stage where it has one.";
+
+/// The block the check-in stage's first prompt ends with when the run's review upheld any
+/// finding (`notes`, from [`run_notes`]): each note once, with its locations and text, and what
+/// the stage does with them. Empty for no note, so the stage's prompt is then unchanged.
+fn notes_block(notes: &[RunNote]) -> String {
+    if notes.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from("\n\nRUN NOTES: the review of this run upheld these findings:\n");
+    for note in notes {
+        let at = if note.about.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", note.about.join(", "))
+        };
+        block.push_str(&format!("- {}{at}: {}\n", note.id, note.summary));
+    }
+    block.push_str(
+        "Check each note against the current tree. Fix, in one pass, every note that is still \
+         true; leave a note that is false or already fixed. A note owes no record beyond the \
+         commit that fixes it.\n",
+    );
+    block
+}
+
 /// A LATER REVIEW ROUND: an earlier round judged the unit at `base` and sent it back, its
 /// worktree has since changed `delta` ([`RunCtx::round_delta`]), and `required` is the
 /// REQUIRED list that round left open - the one this attempt's implementer was handed. A
@@ -12551,8 +12903,9 @@ fn rejects_without_required(output: &str) -> bool {
             .is_some_and(|a| a.verdict.is_some() && a.required.is_empty() && !a.is_infra_fault())
 }
 
-/// The `reviewed` evidence of a later round's reject that converged: every item it required
-/// was a finding outside its delta and no correctness defect, so each went to the operator.
+/// The first line of the `reviewed` evidence of a later round's reject that converged: every
+/// item it required was a finding outside its delta and no correctness defect, so each went to
+/// the operator. The verdict text follows it.
 const CONVERGED: &str = "converged";
 
 /// One `- <path>: <finding>` line per REQUIRED item, followed for a pattern item by
@@ -12581,37 +12934,39 @@ fn audit_id(unit: &str, attempt: u32) -> String {
 
 /// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
 /// prompt. Older ones collapse into a single visible elision note. The store keeps
-/// the full history; only this prompt slice narrows.
-const DECISIONS_VERBATIM_N: usize = 12;
+/// the full history; only this prompt slice narrows. This and the five constants after it
+/// also bound `rigger peers` / the `rigger_peers` tool section by section, through the one
+/// [`within_budget`] rule.
+pub const DECISIONS_VERBATIM_N: usize = 12;
 
 /// Gap-15 prompt budget: a hard byte cap on the verbatim body of the
 /// decisions-that-govern section. Verbatim rendering stops as soon as the next
 /// entry would cross this budget (whichever of it and [`DECISIONS_VERBATIM_N`]
 /// binds first), so a pile of chunky rejection verdicts can never blow the prompt.
-const DECISIONS_BUDGET_BYTES: usize = 24 * 1024;
+pub const DECISIONS_BUDGET_BYTES: usize = 24 * 1024;
 
 /// Gap-17 prompt budget: the most-recent lessons kept VERBATIM in a prompt. Lessons
 /// are terse one-liners recorded once per escalation, so the count that keeps the
 /// section actionable matches the decisions count.
-const LESSONS_VERBATIM_N: usize = 12;
+pub const LESSONS_VERBATIM_N: usize = 12;
 
 /// Gap-17 prompt budget: a hard byte cap on the verbatim body of the lessons section.
 /// Lessons are the smallest of the three sections (short summaries, few of them), so
 /// this is the tightest budget; the older remainder collapses into a visible note.
-const LESSONS_BUDGET_BYTES: usize = 12 * 1024;
+pub const LESSONS_BUDGET_BYTES: usize = 12 * 1024;
 
 /// Gap-17 prompt budget: the most-recent findings kept VERBATIM in a prompt. Findings
 /// are the PRIMARY cross-tier review channel (a later tier addresses or refutes them),
 /// so a larger count survives verbatim than for decisions or lessons before the byte
 /// budget takes over.
-const FINDINGS_VERBATIM_N: usize = 24;
+pub const FINDINGS_VERBATIM_N: usize = 24;
 
 /// Gap-17 prompt budget: a hard byte cap on the verbatim body of the findings section.
 /// Findings were measured 4-8x larger than decisions on a hot file (~95KiB about
 /// conductor.rs, ~187KiB about main.rs, spec 07 line 11), so this is the LARGEST of the
 /// three per-section budgets - still hard-bounded so an unbounded review history can
 /// never blow the prompt, but generous enough to carry the findings a later tier weighs.
-const FINDINGS_BUDGET_BYTES: usize = 48 * 1024;
+pub const FINDINGS_BUDGET_BYTES: usize = 48 * 1024;
 
 /// The header for the decisions-that-govern injection - single-sourced so the
 /// capped renderer and any test that asserts its presence agree byte-for-byte.
@@ -12702,6 +13057,40 @@ const DESIGN_INTENT_BUDGET_BYTES: usize = 24 * 1024;
 const DESIGN_INTENT_HEADER: &str =
     "Design intent that governs these files (the handbook rule that governs them, the RA/architecture section that specifies them, the load-bearing decision that constrains them, and the local rationale - reached by the one graph traversal, honor them):";
 
+/// The ONE budget rule every capped record surface shares - the prompt sections (through
+/// [`render_capped_section`]) and `rigger peers` / the `rigger_peers` tool alike: walking
+/// `entries` in their ranked order (newest first), keep the leading ones while fewer than
+/// `verbatim_n` are kept AND the next entry's `size` still fits under `budget_bytes`; the first
+/// entry that crosses either cap ends the slice, so the kept prefix is the most-recent slice the
+/// caps allow and everything after it is left out. Entries are produced lazily, so nothing past
+/// the cut is rendered.
+pub fn within_budget<T>(
+    entries: impl IntoIterator<Item = T>,
+    verbatim_n: usize,
+    budget_bytes: usize,
+    size: impl Fn(&T) -> usize,
+) -> Vec<T> {
+    let mut used = 0usize;
+    let mut kept = Vec::new();
+    for entry in entries {
+        let bytes = size(&entry);
+        if kept.len() >= verbatim_n || used + bytes > budget_bytes {
+            break;
+        }
+        used += bytes;
+        kept.push(entry);
+    }
+    kept
+}
+
+/// How a reader reaches a decision, lesson or finding a capped surface left out: by its id
+/// through the graph. Every capped record surface names it in its left-out note - the prompt
+/// sections, `rigger peers` (which keeps only the newest under the same budget, so it is no
+/// full-set recovery) and `rigger graph --around`'s governance tail - so the instruction is
+/// stated once.
+pub const RECORD_RECOVERY: &str = "read one by id with `rigger graph --show <id>` (the \
+     `rigger_graph` tool's `show`; its `around` on a file lists the ids)";
+
 /// The SINGLE recent-N + byte-budget + elision-note core behind EVERY budgeted prompt section -
 /// the three node sections (through [`write_capped_section`]) AND the code-neighborhood section
 /// ([`write_code_neighborhood`]). Given the already-ranked, already-deduped `candidates` and a
@@ -12732,16 +13121,17 @@ fn render_capped_section<'a>(
     b.push_str(header);
     b.push('\n');
 
-    // The verbatim slice under the count / byte caps, tracking the ids actually rendered so
-    // dependency-restore can seed from them and the elision note can exclude anything restored.
-    let mut used = 0usize;
+    // The verbatim slice under the count / byte caps (the one [`within_budget`] rule), tracking
+    // the ids actually rendered so dependency-restore can seed from them and the elision note can
+    // exclude anything restored.
     let mut rendered_ids: BTreeSet<&'a str> = BTreeSet::new();
-    for &n in candidates {
-        let entry = line(n);
-        if rendered_ids.len() >= verbatim_n || used + entry.len() > budget_bytes {
-            break;
-        }
-        used += entry.len();
+    let slice = within_budget(
+        candidates.iter().map(|&n| (n, line(n))),
+        verbatim_n,
+        budget_bytes,
+        |(_, entry)| entry.len(),
+    );
+    for (n, entry) in slice {
         b.push_str(&entry);
         rendered_ids.insert(n.id.as_str());
     }
@@ -12768,8 +13158,8 @@ fn render_capped_section<'a>(
 /// Render ONE kind-filtered graph section (decisions, lessons, or findings) under the
 /// shared Gap-17 prompt budget: the most-recent `verbatim_n` nodes render verbatim AND
 /// stay under `budget_bytes` (whichever binds first), and the older remainder collapses
-/// into ONE visible elision note naming the elided count and the `rigger peers <file>`
-/// recovery command. This is the SINGLE budgeted-section writer behind all three
+/// into ONE visible elision note naming the elided count and [`RECORD_RECOVERY`], reading an
+/// elided record by id through the graph. This is the SINGLE budgeted-section writer behind all three
 /// `graph_context` sections (the three thin wrappers below name each section's config),
 /// so no section gets a divergent second capping mechanism and the earlier triplicated
 /// node-section render loop (arch-u5) is collapsed into one. The store keeps the FULL
@@ -12901,14 +13291,9 @@ fn write_capped_section<'g>(
     });
 
     // Delegate the count / byte cap and the elision note to the SINGLE budgeted-section core,
-    // supplying the restore closure that keeps THIS section's slice fact-complete and the note in
-    // this section's exact `rigger peers <file>` wording - the honest recovery for a decision /
-    // lesson / finding, all of which `rigger peers` prints.
-    let files = if seed.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", seed.join(" "))
-    };
+    // supplying the restore closure that keeps THIS section's slice fact-complete and the note
+    // naming [`RECORD_RECOVERY`] - reading an elided decision / lesson / finding by id through the
+    // graph, since `rigger peers` keeps only the newest under this same budget.
     render_capped_section(
         b,
         header,
@@ -12963,7 +13348,7 @@ fn write_capped_section<'g>(
         },
         |elided: usize| {
             format!(
-                "- (+{elided} older {noun}(s) elided to keep this prompt under budget - recover the full set with `rigger peers{files}`)\n",
+                "- (+{elided} older {noun}(s) elided to keep this prompt under budget - {RECORD_RECOVERY})\n",
             )
         },
     );
@@ -13348,15 +13733,16 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
 /// sections (spec 36): the implement prompt stops PUSHING the large, ~85%-truncated reference blob
 /// and says the history is retrievable, not inlined. The three verbs that retrieve it are named by
 /// the shared [`write_lookup_pointer`] appended right after (spec 58), so this note and the pointer
-/// stay one story - `rigger peers` is the memory verb that returns the omitted decisions / lessons
-/// / findings UNCAPPED. A fixed string with no seed/graph data, so it is deterministic by
-/// construction. Hyphens only (a gate rejects U+2014), and it names only first-party tools.
+/// stay one story - `rigger peers` is the memory verb that returns the newest omitted decisions /
+/// lessons / findings scoped to the files, and `rigger graph --show` reads any one by id. A fixed
+/// string with no seed/graph data, so it is deterministic by construction. Hyphens only (a gate
+/// rejects U+2014), and it names only first-party tools.
 fn write_peers_pointer(b: &mut String) {
     b.push_str(
         "\nPrior decisions, lessons, and findings about these files are not inlined here to keep \
-         this prompt precise - retrieve the ones your sub-problem needs, uncapped and scoped to \
-         your blast-radius files, with the lookup verbs below (the full history is retained in the \
-         store, not truncated into this prompt).\n",
+         this prompt precise - retrieve the ones your sub-problem needs, scoped to your \
+         blast-radius files, with the lookup verbs below (the full history is retained in the \
+         store and any record reads by id, not truncated into this prompt).\n",
     );
     write_lookup_pointer(b);
 }
@@ -13461,52 +13847,18 @@ fn current_run_spec(events: &[Event]) -> String {
 /// tie-break: two prior units sharing a criterion, a replanned run, resolve to the most
 /// recent tip).
 ///
-/// SPEC-SCOPED (round 3, criterion-id-unscoped-crosses-specs): [`criterion_stable_id`] is
-/// only `position` + a content hash of the criterion TEXT - two unrelated specs whose
-/// criterion at the same position is byte-for-byte identical text (this repo's own
-/// corpus proved this happens today: several specs share the boilerplate "both feature
-/// lanes green..." as their 3rd Done-when item) mint the IDENTICAL `criterion_id`. Without
-/// scoping, a fresh unit for spec B's criterion could adopt spec A's abandoned attempt at
-/// its own, textually-identical criterion - real content contamination across unrelated
-/// specs. So a candidate only ever counts when its OWN `[RunStarted, next RunStarted)`
-/// window's spec ([`crate::run::RunStarted::spec`], stemmed through the SAME
-/// [`ledger::spec_stem`] authority `pr_head_branch` uses) matches `this_unit`'s - the
-/// LAST `RunStarted` in `events`, since this call always runs live within the current
-/// (still-open) run and that is exactly this unit's own owning spec. A store with no
-/// `RunStarted` at all (a legacy pre-spec-82 log, or a bare unit test) resolves every
-/// spec identity to the same empty string, so matching is UNCHANGED there.
+/// SPEC-SCOPED (round 3, criterion-id-unscoped-crosses-specs): a candidate counts only when
+/// its own run's spec is `this_unit`'s - the LAST `RunStarted` in `events`, since this call
+/// always runs live within the current (still-open) run - for the reason
+/// [`criterion_history`] gives.
 ///
-/// A single forward fold over `events` in LOG order (deliberately the WHOLE stream, not
-/// [`crate::run::current_run`] - a prior run's `UnitStarted` lives BEFORE the current
-/// run's boundary by construction, and that is exactly the history this looks for):
-/// every `UnitStarted` whose OWN `criterion_id` matches, AND whose spec (at the moment it
-/// started) matches the target spec, becomes the new leading candidate (with the spec it
-/// was recorded under), so the LAST one walked (the most recent) is what survives. The
-/// integrated-exclusion set is keyed on `(id, criterion_id, spec)`, never bare id: a
-/// planner id carries no cross-run uniqueness guarantee (nothing enforces one - a slug
-/// can be reused across two runs, or two specs, for two different criteria), so a later
-/// integration of the SAME id for a DIFFERENT criterion or spec must never mask an
-/// EARLIER, still-abandoned attempt at THIS criterion sharing that id. `UnitIntegrated`
-/// itself carries only `id` (no `criterion_id`/spec), so the criterion and spec an
-/// integration actually satisfied are looked up off the most recent `UnitStarted` walked
-/// for that id so far - a unit cannot integrate before it starts, so its `UnitStarted`
-/// always precedes its `UnitIntegrated` earlier in this same log, regardless of how many
-/// resumed processes wrote the two events.
-///
-/// TEMPORAL (round 3, exclusion-set-permanent-blocks-a-genuine-redo): a later
-/// COMPENSATION (spec 12, unit 4 - a `UnitFailed` carrying [`META_COMPENSATED`] metadata,
-/// never a new event type) proves an integrated unit's work wrong and reverts it -
-/// genuinely un-integrating its criterion again, an established mechanism this same
-/// fold must honor rather than treat the exclusion set as monotonic-only. So a
-/// compensation walked for an id CLEARS that id's `(id, criterion, spec)` triple from the
-/// set (using the same "most recently walked `UnitStarted`" lookup `UnitIntegrated`
-/// uses), letting a genuine later redo adopt the reverted unit's still-existing branch
-/// instead of being permanently barred from its reviewed progress. An ORDINARY
-/// remediation `UnitFailed` (no `META_COMPENSATED`) touches nothing - only a real
-/// compensation reopens the exclusion.
-///
-/// The final candidate is returned only when `(candidate, criterion_id, candidate's own
-/// spec)` is NOT in that set at the end of the fold.
+/// The candidate is the most recent start [`criterion_history`] walks for this criterion under
+/// this spec (deliberately over the WHOLE stream, not [`crate::run::current_run`] - a prior run's
+/// `UnitStarted` lives BEFORE the current run's boundary by construction, and that is exactly the
+/// history this looks for), returned only when it is not standing integrated at the end of the
+/// fold - so a compensation that reverted its integrate makes it adoptable again (TEMPORAL, round
+/// 3, exclusion-set-permanent-blocks-a-genuine-redo), and an ORDINARY remediation `UnitFailed`
+/// reopens nothing.
 ///
 /// This deliberately does NOT re-search for an OLDER non-integrated unit when the most
 /// recent one for this criterion already integrated: a criterion whose latest attempt
@@ -13521,62 +13873,206 @@ fn prior_criterion_unit(events: &[Event], criterion_id: &str, this_unit: &str) -
     if criterion_id.is_empty() {
         return None;
     }
-    let target_spec = current_run_spec(events);
-    // (id, spec) at the moment of selection, so a LATER RunStarted encountered further
-    // along the fold (a still-later, unrelated run reusing the same id) can never
-    // retroactively change which spec THIS candidate was actually recorded under.
-    let mut candidate: Option<(String, String)> = None;
-    let mut current_spec = String::new();
-    // The criterion (and spec) each id's most recently walked `UnitStarted` served -
-    // consulted when that id later reaches `UnitIntegrated` (or a compensating
-    // `UnitFailed`), neither of which carries a criterion/spec of its own to key the
-    // exclusion set on directly.
-    let mut started_criterion: HashMap<String, String> = HashMap::new();
-    let mut started_spec: HashMap<String, String> = HashMap::new();
-    let mut integrated: HashSet<(String, String, String)> = HashSet::new();
-    for e in events {
-        if e.type_ == crate::run::TYPE_RUN_STARTED {
-            if let Ok(rs) = serde_json::from_slice::<crate::run::RunStarted>(&e.data) {
-                current_spec = ledger::spec_stem(&rs.spec);
-            }
-        } else if e.type_ == ledger::TYPE_UNIT_STARTED {
-            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
-                if !u.id.is_empty() {
-                    if u.id != this_unit
-                        && u.criterion_id == criterion_id
-                        && current_spec == target_spec
-                    {
-                        candidate = Some((u.id.clone(), current_spec.clone()));
-                    }
-                    started_criterion.insert(u.id.clone(), u.criterion_id);
-                    started_spec.insert(u.id, current_spec.clone());
-                }
-            }
-        } else if e.type_ == ledger::TYPE_UNIT_INTEGRATED {
-            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
-                if !u.id.is_empty() {
-                    if let Some(served) = started_criterion.get(&u.id).cloned() {
-                        let spec = started_spec.get(&u.id).cloned().unwrap_or_default();
-                        integrated.insert((u.id, served, spec));
-                    }
-                }
-            }
-        } else if e.type_ == ledger::TYPE_UNIT_FAILED
-            && e.meta.get(META_COMPENSATED).is_some_and(|c| !c.is_empty())
-        {
-            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
-                if let Some(served) = started_criterion.get(&u.id).cloned() {
-                    let spec = started_spec.get(&u.id).cloned().unwrap_or_default();
-                    integrated.remove(&(u.id, served, spec));
-                }
-            }
+    let history = criterion_history(events, criterion_id, &current_run_spec(events));
+    let (candidate, _) = history
+        .starts
+        .into_iter()
+        .rev()
+        .find(|(id, _)| id != this_unit)?;
+    (!history.standing.contains_key(&candidate)).then_some(candidate)
+}
+
+/// One criterion's lifecycle under one spec, across every run [`criterion_history`] folds: the
+/// ONE fold both [`prior_criterion_unit`] (which abandoned attempt a fresh unit adopts) and
+/// [`landed_criterion_unit`] (whether an earlier run already landed the criterion) read, so the
+/// two can never disagree on which attempts integrated.
+struct CriterionHistory {
+    /// Every `UnitStarted` that served the criterion under the target spec, in log order, as
+    /// `(unit id, id of the run it started in)`.
+    starts: Vec<(String, String)>,
+    /// The units whose integration of the criterion under the target spec stands - integrated,
+    /// and not reverted by a compensation since - each with the commit it put on its run branch
+    /// ([`IntegratedProbe::branch_commit`]).
+    standing: HashMap<String, String>,
+}
+
+/// The fields [`criterion_history`] reads from a [`ledger::TYPE_UNIT_INTEGRATED`] event: the unit,
+/// the commit it records and, for a unit that landed with no spawn ([`RunCtx::land_if_landed`]),
+/// the earlier commit its `landed_from` carries.
+#[derive(Deserialize)]
+struct IntegratedProbe {
+    id: String,
+    #[serde(default)]
+    commit: String,
+    #[serde(default)]
+    landed_from: Option<LandedFromProbe>,
+}
+
+/// The commit an [`IntegratedProbe`]'s `landed_from` carries.
+#[derive(Deserialize)]
+struct LandedFromProbe {
+    #[serde(default)]
+    commit: String,
+}
+
+impl IntegratedProbe {
+    /// The commit this integrate put on its run branch: its own, or, behind the no-artifact
+    /// marker, the earlier commit its `landed_from` carries - empty when it carries none, so a
+    /// unit with no real commit is never on any branch ([`on_run_branch`]).
+    fn branch_commit(self) -> String {
+        if self.commit == REVIEW_ONLY_NO_ARTIFACT {
+            self.landed_from.map(|from| from.commit).unwrap_or_default()
+        } else {
+            self.commit
         }
     }
-    candidate
-        .filter(|(c, spec)| {
-            !integrated.contains(&(c.clone(), criterion_id.to_string(), spec.clone()))
-        })
-        .map(|(c, _)| c)
+}
+
+/// The [`CriterionHistory`] of `criterion_id` under `target_spec` (a spec stem,
+/// [`current_run_spec`]'s shape): a single forward fold over `events` in LOG order.
+///
+/// Each `RunStarted` opens a `[RunStarted, next RunStarted)` window whose spec
+/// ([`crate::run::RunStarted::spec`], stemmed through the SAME [`ledger::spec_stem`] authority
+/// `pr_head_branch` uses) and run id every start inside it carries. A start counts only when its
+/// OWN `criterion_id` matches AND its window's spec is the target spec (SPEC-SCOPED, round 3,
+/// criterion-id-unscoped-crosses-specs): [`criterion_stable_id`] is only `position` + a content
+/// hash of the criterion TEXT, so two unrelated specs whose criterion at the same position is
+/// byte-for-byte identical text (this repo's own corpus has several sharing the boilerplate "both
+/// feature lanes green..." as their 3rd Done-when item) mint the IDENTICAL id, and without the
+/// scope one spec's attempt would read as the other's. A store with no `RunStarted` at all (a
+/// legacy pre-spec-82 log, or a bare unit test) resolves every spec identity to the same empty
+/// string, so matching is unchanged there.
+///
+/// `UnitIntegrated` and a compensating `UnitFailed` (spec 12, unit 4 - [`META_COMPENSATED`]
+/// metadata, never a new event type) carry only an id, so what they act on is that id's most
+/// recently walked `UnitStarted` - a unit cannot integrate before it starts, so its start always
+/// precedes its integrate in the log, however many resumed processes wrote the two. An integrate
+/// makes the id standing when that start served this criterion under the target spec, and a
+/// compensation clears it again; a planner id carries no cross-run uniqueness guarantee, so an
+/// integrate of the SAME id for a DIFFERENT criterion or spec never masks this criterion's
+/// attempt. An ORDINARY remediation `UnitFailed` touches nothing.
+fn criterion_history(events: &[Event], criterion_id: &str, target_spec: &str) -> CriterionHistory {
+    let mut history = CriterionHistory {
+        starts: Vec::new(),
+        standing: HashMap::new(),
+    };
+    let (mut spec, mut run) = (String::new(), String::new());
+    // Whether each id's most recently walked start served this criterion under the target spec.
+    let mut serves: HashMap<String, bool> = HashMap::new();
+    let unit = |e: &Event| {
+        serde_json::from_slice::<StartedCriterionProbe>(&e.data)
+            .ok()
+            .filter(|u| !u.id.is_empty())
+    };
+    for e in events {
+        match e.type_.as_str() {
+            crate::run::TYPE_RUN_STARTED => {
+                if let Ok(rs) = serde_json::from_slice::<crate::run::RunStarted>(&e.data) {
+                    spec = ledger::spec_stem(&rs.spec);
+                    run = rs.run;
+                }
+            }
+            ledger::TYPE_UNIT_STARTED => {
+                if let Some(u) = unit(e) {
+                    let served = u.criterion_id == criterion_id && spec == target_spec;
+                    if served {
+                        history.starts.push((u.id.clone(), run.clone()));
+                    }
+                    serves.insert(u.id, served);
+                }
+            }
+            ledger::TYPE_UNIT_INTEGRATED => {
+                if let Some(u) = serde_json::from_slice::<IntegratedProbe>(&e.data)
+                    .ok()
+                    .filter(|u| serves.get(&u.id) == Some(&true))
+                {
+                    history.standing.insert(u.id.clone(), u.branch_commit());
+                }
+            }
+            ledger::TYPE_UNIT_FAILED
+                if e.meta.get(META_COMPENSATED).is_some_and(|c| !c.is_empty()) =>
+            {
+                if let Some(u) = unit(e).filter(|u| serves.get(&u.id) == Some(&true)) {
+                    history.standing.remove(&u.id);
+                }
+            }
+            _ => {}
+        }
+    }
+    history
+}
+
+/// An earlier run's landing of a criterion ([`landed_criterion_unit`]).
+struct LandedCriterion {
+    /// The attempt's most recent unit, the one a new unit's `landed_from` names.
+    unit: String,
+    /// The run that attempt ran in.
+    run: String,
+    /// The commit each unit of the attempt put on its run branch, in start order, so the last
+    /// is `unit`'s.
+    commits: Vec<String>,
+}
+
+/// The earlier landing `this_unit` rests on when an EARLIER run of this run's spec already landed
+/// `criterion_id` in the log - so the unit reaches Integrated with no spawn
+/// ([`RunCtx::land_if_landed`]) once its commits are on this run's branch ([`on_run_branch`]) -
+/// or `None`, and it takes the full lifecycle.
+///
+/// `events` are every run's lifecycle events ([`crate::run::read::ADOPTION_TYPES`]); only the
+/// slice BEFORE the current run's `RunStarted` is folded ([`criterion_history`]), never the whole
+/// stream minus `this_unit` by id: a planner mints the same slug for the same criterion text in
+/// every run, so excluding by id would hide the very integrate this looks for. The latest attempt
+/// decides, as it does for [`prior_criterion_unit`]: the run of the most recent start that served
+/// the criterion under this spec is its latest attempt, and the criterion is landed only when
+/// every unit of that attempt (each part of a split) stands integrated - one a compensation
+/// reverted, or one that never integrated, leaves it open. The unit named is that attempt's most
+/// recent start, beside the commit of every unit of the attempt.
+///
+/// Never landed: an empty `criterion_id` (the plan, plan-critique and check-in stages), an empty
+/// spec identity (a run that recorded no spec cannot be shown to be the same spec), and a unit
+/// that already started in the current run (it is on its own path).
+fn landed_criterion_unit(
+    events: &[Event],
+    criterion_id: &str,
+    this_unit: &str,
+) -> Option<LandedCriterion> {
+    let spec = current_run_spec(events);
+    if criterion_id.is_empty() || spec.is_empty() {
+        return None;
+    }
+    let this_run = crate::run::current_run(events);
+    let started_here = this_run.iter().any(|e| {
+        e.type_ == ledger::TYPE_UNIT_STARTED
+            && serde_json::from_slice::<StartedCriterionProbe>(&e.data)
+                .is_ok_and(|u| u.id == this_unit)
+    });
+    if started_here {
+        return None;
+    }
+    let earlier = &events[..events.len() - this_run.len()];
+    let history = criterion_history(earlier, criterion_id, &spec);
+    let (unit, run) = history.starts.last()?.clone();
+    let commits = history
+        .starts
+        .iter()
+        .filter(|(_, started_in)| *started_in == run)
+        .map(|(id, _)| history.standing.get(id).cloned())
+        .collect::<Option<Vec<String>>>()?;
+    Some(LandedCriterion { unit, run, commits })
+}
+
+/// Whether every one of `commits` is in the history of the branch checked out in `repo`: the run
+/// branch every integrate lands on ([`Worktree::land`]) and every compensation reverts on. The
+/// log alone never lands a criterion, since a run branch deleted, recreated or reset after the
+/// earlier run no longer holds its work. `false` with no repository, with no commit, and for an
+/// empty commit or one git cannot place in that history ([`worktree::is_ancestor`]), so a unit
+/// with nothing to check is built again: the guard only ever errs toward a rebuild.
+fn on_run_branch(repo: &str, commits: &[String]) -> bool {
+    !repo.is_empty()
+        && !commits.is_empty()
+        && commits
+            .iter()
+            .all(|commit| !commit.is_empty() && worktree::is_ancestor(repo, commit, "HEAD"))
 }
 
 /// The `(criterion_id, spec)` THIS BARE unit id's branch was most recently started under,
@@ -14196,8 +14692,8 @@ mod tests {
     };
     use crate::test_support::{
         critique_reject, keyed_index, keyed_payload, payloads_of_type, run_log,
-        spec_defect_halt_text, stop_records, the_stop_records, DAG_CRITIQUE_VERDICT_PARAGRAPH,
-        STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY,
+        spec_defect_halt_text, stop_records, the_stop_records, wave_lessons,
+        DAG_CRITIQUE_VERDICT_PARAGRAPH, STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -14237,6 +14733,7 @@ mod tests {
                 criteria,
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             }
         }
 
@@ -14381,13 +14878,13 @@ mod tests {
             Vec::<String>::new(),
             "a fold that lands is not reported"
         );
-        std::fs::write(dir.path().join("graph.db.owed"), b"").unwrap();
+        crate::test_support::owe_a_rebuild(&graph, &path);
         ctx.emit_with_actor("", contextgraph::TYPE_DECISION_MADE, json!({"id": "d2"}))
             .unwrap();
         assert_eq!(
             snapshot(&lines),
-            vec![format!(
-                "rigger: recorded 1 run event(s); not folded into the context graph: graph: {}",
+            vec![crate::test_support::recorded_not_folded(
+                1,
                 contextgraph::REBUILD_OWED
             )]
         );
@@ -15782,6 +16279,10 @@ mod tests {
         /// single lens a ReviewFinding to emit so the test can assert the finding
         /// reaches a LATER tier through the graph (not through prompt threading).
         emits_by_agent: HashMap<String, Vec<(String, Value)>>,
+        /// Per-SPAWN-ID emits, after the shared and per-agent ones: lets a test have ONE spawn
+        /// of an agent print a record the emit guard refuses while its re-run prints none -
+        /// which `emits_by_agent` (identical on every spawn of the agent) cannot.
+        emits_by_spawn_id: HashMap<String, Vec<(String, Value)>>,
         output: String,
         /// Per-agent canned output, overriding `output` for that agent id. Lets one
         /// test give a lens a distinct finding and the adjudicator a distinct verdict
@@ -15909,6 +16410,7 @@ mod tests {
                 write_files_by_spawn_id: HashMap::new(),
                 emits: Vec::new(),
                 emits_by_agent: HashMap::new(),
+                emits_by_spawn_id: HashMap::new(),
                 output: String::new(),
                 output_by_agent: HashMap::new(),
                 output_by_spawn_id: HashMap::new(),
@@ -16153,7 +16655,13 @@ mod tests {
             for (t, v) in &self.emits {
                 emit(t, v.clone())?;
             }
-            if let Some(per) = self.emits_by_agent.get(&a.id) {
+            for per in [
+                self.emits_by_agent.get(&a.id),
+                self.emits_by_spawn_id.get(&opts.id),
+            ]
+            .into_iter()
+            .flatten()
+            {
                 for (t, v) in per {
                     emit(t, v.clone())?;
                 }
@@ -16376,6 +16884,7 @@ mod tests {
             ],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -16634,6 +17143,250 @@ mod tests {
         );
     }
 
+    // --- THE CHECK-IN STAGE IS THE RUN'S NOTE SWEEP ---
+
+    /// The two criteria a note-sweep run covers.
+    const SWEEP_CRITERIA: [&str; 2] = ["the first slice lands", "the second slice lands"];
+
+    /// The baseline unit a note-sweep run builds for criterion `n` (1-based).
+    fn sweep_unit(n: usize) -> String {
+        unit_slug(n, SWEEP_CRITERIA[n - 1])
+    }
+
+    /// A lens's `ReviewFinding` of `id` about `about` saying `summary`.
+    fn lens_finding(id: &str, about: &[&str], summary: &str) -> (String, Value) {
+        (
+            contextgraph::TYPE_REVIEW_FINDING.to_string(),
+            json!({"id": id, "summary": summary, "about": about}),
+        )
+    }
+
+    /// Run the check-in fixture ([`fan_out_checkin_cfg`]) over [`SWEEP_CRITERIA`] in a real
+    /// repository under a `lens` + `adj` review panel, the store first holding `seed` (none
+    /// for an empty slice): each spawn named in `emits` emits its records, each adjudicator
+    /// spawn named in `verdicts` answers its verdict line and every other adjudicator spawn
+    /// approves upholding nothing. Every implementer spawn writes a file of its own, so each
+    /// review round has a delta. Returns the run's state and the driver.
+    fn run_sweep(
+        emits: Vec<(String, Vec<(String, Value)>)>,
+        verdicts: Vec<(String, &str)>,
+        seed: &[Event],
+    ) -> (RunState, Stub) {
+        let mut cfg = fan_out_checkin_cfg("ok", "ok");
+        for id in ["lens", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let writes = [
+            (sweep_unit(1), 0),
+            (sweep_unit(2), 0),
+            (sweep_unit(2), 1),
+            ("checkin".to_string(), 0),
+        ];
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("lens".to_string(), "lens: reviewed".to_string()),
+                ("adj".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            output_by_spawn_id: verdicts
+                .into_iter()
+                .map(|(id, verdict)| (id, verdict.to_string()))
+                .collect(),
+            emits_by_spawn_id: emits.into_iter().collect(),
+            write_files_by_spawn_id: writes
+                .iter()
+                .map(|(unit, attempt)| {
+                    (
+                        spawn_id(unit, ROLE_IMPLEMENTER, *attempt),
+                        vec![format!("{unit}-{attempt}.rs")],
+                    )
+                })
+                .collect(),
+            ..Stub::new()
+        };
+        let repo = temp_git_project_with_commit();
+        let st = Store::open(":memory:").unwrap();
+        if !seed.is_empty() {
+            seed_events_in_run(&st, &SWEEP_CRITERIA, seed);
+        }
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(
+                &st,
+                &driver,
+                SWEEP_CRITERIA.iter().map(|c| c.to_string()).collect(),
+            )
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["checkin"].status,
+            ledger::Status::Integrated,
+            "the fixture's check-in stage must run and integrate"
+        );
+        (rs, driver)
+    }
+
+    /// The prompt the check-in stage's agent was first spawned with: the last `worker`
+    /// prompt, since the check-in stage runs once every unit has integrated.
+    fn checkin_prompt(driver: &Stub) -> String {
+        driver
+            .prompts_for("worker")
+            .last()
+            .cloned()
+            .expect("the check-in stage's agent spawned")
+    }
+
+    #[test]
+    fn the_checkin_prompt_carries_each_upheld_note_of_an_integrated_unit_once() {
+        // Two units integrate with upheld notes. The second's first round rejects, upholding a
+        // note and a blocking finding; its second round rejects on only a wording item outside
+        // its delta, so it converges, upholding the note again, its lens having raised it again,
+        // and a note of its own: the check-in stage's first prompt carries each upheld finding
+        // once, in id order, with the text the latest round recorded. A unit seeded into the run
+        // that never integrated upheld a note too, and it is not carried.
+        let (u1, u2) = (sweep_unit(1), sweep_unit(2));
+        let lens = lens_role("lens");
+        let ghost = [
+            Event::new(
+                contextgraph::TYPE_REVIEW_FINDING,
+                serde_json::to_vec(
+                    &json!({"id": "ghost-note", "by": "lens", "summary": "never landed", "about": ["src/ghost.rs"]}),
+                )
+                .unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_FAILED,
+                serde_json::to_vec(&json!({
+                    "id": "ghost-unit",
+                    "attempts": 1,
+                    "cause": "reject",
+                    "review_reason": r#"{"verdict":"reject","upheld":["ghost-note"]}"#,
+                }))
+                .unwrap(),
+            ),
+        ];
+        let (rs, driver) = run_sweep(
+            vec![
+                (
+                    spawn_id(&u1, &lens, 0),
+                    vec![lens_finding("n-one", &["src/a.rs:3"], "name the bound")],
+                ),
+                (
+                    spawn_id(&u2, &lens, 0),
+                    vec![
+                        lens_finding("n-two", &["src/b.rs"], "first wording"),
+                        lens_finding("b-two", &["src/b.rs:9"], "the read is unscoped"),
+                    ],
+                ),
+                (
+                    spawn_id(&u2, &lens, 1),
+                    vec![
+                        lens_finding("n-two", &["src/b.rs:4"], "latest wording"),
+                        lens_finding("c-two", &["src/b.rs:7"], "reword the doc comment"),
+                    ],
+                ),
+            ],
+            vec![
+                (
+                    spawn_id(&u1, ROLE_ADJUDICATOR, 0),
+                    r#"{"verdict":"approve","upheld":["n-one"]}"#,
+                ),
+                (
+                    spawn_id(&u2, ROLE_ADJUDICATOR, 0),
+                    r#"{"verdict":"reject","upheld":["n-two","b-two"],"required":[{"finding":"close the unscoped read","path":"src/b.rs","correctness":true}]}"#,
+                ),
+                (
+                    spawn_id(&u2, ROLE_ADJUDICATOR, 1),
+                    r#"{"verdict":"reject","upheld":["n-two","c-two"],"required":[{"finding":"reword the doc comment","path":"src/b.rs","correctness":false}]}"#,
+                ),
+            ],
+            &ghost,
+        );
+        let want = [
+            RunNote {
+                id: "b-two".into(),
+                about: vec!["src/b.rs:9".into()],
+                summary: "the read is unscoped".into(),
+            },
+            RunNote {
+                id: "c-two".into(),
+                about: vec!["src/b.rs:7".into()],
+                summary: "reword the doc comment".into(),
+            },
+            RunNote {
+                id: "n-one".into(),
+                about: vec!["src/a.rs:3".into()],
+                summary: "name the bound".into(),
+            },
+            RunNote {
+                id: "n-two".into(),
+                about: vec!["src/b.rs:4".into()],
+                summary: "latest wording".into(),
+            },
+        ];
+        assert_eq!(
+            rs.units.get("ghost-unit").map(|u| u.status),
+            Some(ledger::Status::Failed),
+            "premise: the seeded unit is the run's own and never integrated"
+        );
+        assert!(
+            !notes_block(&want).is_empty(),
+            "premise: four notes render a block"
+        );
+        assert_eq!(
+            rs.units[&u2].attempts, 1,
+            "premise: the second unit's second round converged, charged nothing more"
+        );
+        assert_eq!(
+            checkin_prompt(&driver),
+            format!("{EMIT_PROTOCOL}{}", notes_block(&want)),
+            "the check-in prompt is today's, then each upheld note once"
+        );
+        let judged = driver.prompts_for("adj");
+        assert_eq!(judged.len(), 4, "premise: four review rounds were judged");
+        for prompt in judged {
+            assert!(
+                prompt.contains(UPHELD_PROTOCOL),
+                "every adjudicator is told to list the notes it upholds:\n{prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_with_no_upheld_note_runs_its_checkin_stage_as_before() {
+        // No adjudicator upholds anything, though a lens raised a finding: the check-in stage's
+        // prompt is byte-for-byte the prompt it had before the sweep, and the run spawns
+        // exactly the agents it spawned before - each unit's implementer, lens and adjudicator,
+        // then the check-in stage's.
+        let (u1, u2) = (sweep_unit(1), sweep_unit(2));
+        let lens = lens_role("lens");
+        let (_, driver) = run_sweep(
+            vec![(
+                spawn_id(&u1, &lens, 0),
+                vec![lens_finding("n-one", &["src/a.rs:3"], "name the bound")],
+            )],
+            Vec::new(),
+            &[],
+        );
+        assert_eq!(checkin_prompt(&driver), EMIT_PROTOCOL);
+        let mut want = Vec::new();
+        for unit in [u1.as_str(), u2.as_str(), "checkin"] {
+            want.extend([
+                spawn_id(unit, ROLE_IMPLEMENTER, 0),
+                spawn_id(unit, &lens, 0),
+                spawn_id(unit, ROLE_ADJUDICATOR, 0),
+            ]);
+        }
+        let mut spawned = driver.spawn_ids();
+        spawned.sort();
+        want.sort();
+        assert_eq!(spawned, want, "no spawn beyond the run's own");
+    }
+
     #[test]
     fn producer_prompt_carries_the_criteria_and_plan_protocol_grounded_on_the_spec() {
         // A `produces: dag` planner stage must be wired: its prompt carries the spec's
@@ -16727,6 +17480,7 @@ mod tests {
             criteria: vec![criterion.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
 
@@ -17170,9 +17924,9 @@ mod tests {
         }
 
         let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
 
         // (a) EXACTLY ONE stage for u-a carrying the REFINED needs (the u-b edge): the
@@ -17310,9 +18064,9 @@ mod tests {
 
         let mut stages = seed_refine_dag(&deps.criteria);
         let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
 
         // The retarget did NOT move u-a's coverage: it still serves criterion A.
@@ -17375,9 +18129,9 @@ mod tests {
 
         let mut stages = seed_refine_dag(&deps.criteria);
         let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
 
         // The gate stage is UNTOUCHED: its fan-out hold `needs = [plan]` survives, its
@@ -17435,14 +18189,14 @@ mod tests {
 
         let mut stages = seed_refine_dag(&deps.criteria);
         let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
         let after_first = shape(&stages);
 
         // A second harvest over the identical event stream, as every later wave runs.
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
         let after_second = shape(&stages);
 
@@ -17503,9 +18257,9 @@ mod tests {
 
         let mut stages = seed_refine_dag(&deps.criteria);
         let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
 
         // BOTH distinct-id split units survive as their OWN stages - the fold keyed on id,
@@ -17741,11 +18495,265 @@ mod tests {
         ctx.harvest_proposed(
             &mut stages,
             &mut HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
+            &mut HashSet::new(),
+            &mut HashSet::new(),
         )
         .unwrap();
         stages
+    }
+
+    /// The spec both runs of a landed-criterion row run under, unless the row moves run 1.
+    const LANDED_SPEC: &str = "specs/7-landed-criteria.md";
+
+    /// The commit run 1's integrate of criterion A records.
+    #[derive(Clone, Copy)]
+    enum Run1Commit {
+        /// A commit in the history of the branch the new run integrates into.
+        OnBranch,
+        /// A commit the repository holds that the branch's history does not, as after a reset.
+        OffBranch,
+        /// The no-artifact marker, with no `landed_from` commit behind it: nothing to check.
+        Marker,
+    }
+
+    /// One row of the landed-criterion table: run 1 ran under `run1_spec` and integrated criterion
+    /// A as `u-a-1` at `run1_commit`, a compensation reverting that integrate when `compensated`,
+    /// and, when `split`, left a second part of A (`u-a-2`) failed beside it; when `relanded`, a
+    /// run 2 landed A through the skip and the run driven is run 3; that run is driven as one step
+    /// or, when `resumed`, as two (the first parks `u-b`'s implementer); `lands` says whether its
+    /// `u-a` reaches Integrated with no spawn.
+    #[derive(Clone, Copy)]
+    struct LandedRow {
+        run1_spec: &'static str,
+        run1_commit: Run1Commit,
+        compensated: bool,
+        split: bool,
+        relanded: bool,
+        resumed: bool,
+        lands: bool,
+    }
+
+    /// The base row: run 1 of the same spec integrated A on the run branch, nothing reverted it,
+    /// so run 2's A lands.
+    const LANDS: LandedRow = LandedRow {
+        run1_spec: LANDED_SPEC,
+        run1_commit: Run1Commit::OnBranch,
+        compensated: false,
+        split: false,
+        relanded: false,
+        resumed: false,
+        lands: true,
+    };
+
+    /// A CRITERION AN EARLIER RUN OF THE SAME SPEC INTEGRATED IS NOT BUILT AGAIN: over a seeded
+    /// log where run 1 integrated criterion A and left criterion B failed, run 2 plans `u-a` for A
+    /// and `u-b` for B, `u-b` needing `u-a`, in a repository whose checked-out branch is the run
+    /// branch. Per `row`, `u-a` either reaches Integrated with no spawn - recorded once, with the
+    /// no-artifact marker, naming the earlier unit and run 1's commit - or takes the full
+    /// lifecycle; `u-b` always spawns and integrates.
+    fn assert_landed_criterion(row: LandedRow) {
+        let crit_a = "criterion A: the metrics module is implemented";
+        let crit_b = "criterion B: the stats endpoint is implemented";
+        let (cid_a, cid_b) = (
+            criterion_stable_id(1, crit_a),
+            criterion_stable_id(2, crit_b),
+        );
+        let criteria = vec![crit_a.to_string(), crit_b.to_string()];
+        let run_started = |run: &str, spec: &str| {
+            Event::new(
+                crate::run::TYPE_RUN_STARTED,
+                serde_json::to_vec(&json!({"run": run, "spec": spec, "criteria": criteria}))
+                    .unwrap(),
+            )
+        };
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        git_ok(
+            &repo_path,
+            &["commit", "--allow-empty", "-q", "-m", "run 1 integrates A"],
+        );
+        let run1_commit = match row.run1_commit {
+            Run1Commit::OnBranch => git_out(&repo_path, &["rev-parse", "HEAD"]),
+            Run1Commit::OffBranch => git_out(
+                &repo_path,
+                &[
+                    "commit-tree",
+                    "HEAD^{tree}",
+                    "-p",
+                    "HEAD",
+                    "-m",
+                    "off the run branch",
+                ],
+            ),
+            Run1Commit::Marker => REVIEW_ONLY_NO_ARTIFACT.to_string(),
+        };
+        let integrate = |data: Value| {
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&data).unwrap(),
+            )
+        };
+        let mut log = vec![
+            run_started("run-1", row.run1_spec),
+            started_with_criterion("u-a-1", &cid_a),
+            integrate(json!({"id": "u-a-1", "commit": run1_commit})),
+        ];
+        if row.compensated {
+            log.push(compensated("u-a-1"));
+        }
+        if row.split {
+            log.extend([
+                started_with_criterion("u-a-2", &cid_a),
+                plain_failure("u-a-2", 1),
+            ]);
+        }
+        log.extend([
+            started_with_criterion("u-b-1", &cid_b),
+            plain_failure("u-b-1", 1),
+        ]);
+        if row.relanded {
+            log.extend([
+                run_started("run-2", LANDED_SPEC),
+                started_with_criterion("u-a", &cid_a),
+                integrate(json!({
+                    "id": "u-a",
+                    "commit": REVIEW_ONLY_NO_ARTIFACT,
+                    "landed_from": {
+                        "unit": "u-a-1",
+                        "run": "run-1",
+                        "spec": LANDED_SPEC,
+                        "commit": run1_commit,
+                    },
+                })),
+                started_with_criterion("u-b", &cid_b),
+                plain_failure("u-b", 1),
+            ]);
+        }
+        let (current, from) = if row.relanded {
+            ("run-3", ("u-a", "run-2"))
+        } else {
+            ("run-2", ("u-a-1", "run-1"))
+        };
+        log.push(run_started(current, LANDED_SPEC));
+        let st = Store::open(":memory:").unwrap();
+        st.append(STREAM, ExpectedRevision::Any, &log).unwrap();
+
+        let cfg = supersede_cfg();
+        // `u-b` needs `u-a`, so it spawns only once `u-a` is Integrated: a landed `u-a` frees it
+        // in the same step.
+        let mut b = proposal_data("u-b", crit_b, &cid_b);
+        b["needs"] = json!(["u-a"]);
+        let proposals: Vec<(String, Value)> = [proposal_data("u-a", crit_a, &cid_a), b]
+            .into_iter()
+            .map(|data| (TYPE_UNIT_PROPOSED.to_string(), data))
+            .collect();
+        let parks: Vec<String> = if row.resumed {
+            vec![spawn_id("u-b", ROLE_IMPLEMENTER, 0)]
+        } else {
+            Vec::new()
+        };
+        let steps: Vec<(ledger::RunState, Vec<String>)> = parks
+            .iter()
+            .map(Some)
+            .chain([None])
+            .map(|park| {
+                let driver = Stub {
+                    emits_by_agent: HashMap::from([("planner".to_string(), proposals.clone())]),
+                    park_spawn_ids: park.into_iter().cloned().collect(),
+                    ..Stub::new()
+                };
+                let deps = Deps {
+                    repo: repo_path.clone(),
+                    ..stub_deps(&st, &driver, criteria.clone())
+                };
+                let rs = run_isolated(&cfg, &deps).unwrap();
+                (rs, driver.spawn_ids())
+            })
+            .collect();
+        let spawns: Vec<&String> = steps.iter().flat_map(|(_, ids)| ids).collect();
+        let rs = &steps.last().unwrap().0;
+
+        let spawned = |unit: &str| spawns.iter().any(|id| id.starts_with(&format!("{unit}/")));
+        assert_eq!(
+            !spawned("u-a"),
+            row.lands,
+            "u-a spawns exactly when its criterion is not landed: {spawns:?}"
+        );
+        assert!(spawned("u-b"), "u-b spawns: {spawns:?}");
+        for unit in ["u-a", "u-b"] {
+            assert_eq!(rs.units[unit].status, ledger::Status::Integrated, "{unit}");
+        }
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let of_a = |type_: &str| -> Vec<Value> {
+            crate::run::current_run(&events)
+                .iter()
+                .filter(|e| e.type_ == type_)
+                .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+                .filter(|data| data["id"] == "u-a")
+                .collect()
+        };
+        assert_eq!(of_a(ledger::TYPE_UNIT_STARTED).len(), 1, "u-a starts once");
+        let integrates = of_a(ledger::TYPE_UNIT_INTEGRATED);
+        assert_eq!(integrates.len(), 1, "u-a integrates once: {integrates:?}");
+        let landed_from = &integrates[0]["landed_from"];
+        if row.lands {
+            assert_eq!(integrates[0]["commit"], REVIEW_ONLY_NO_ARTIFACT);
+            assert_eq!(landed_from["unit"], from.0, "names the earlier unit");
+            assert_eq!(landed_from["run"], from.1, "names the earlier run");
+            assert_eq!(
+                landed_from["commit"],
+                run1_commit.as_str(),
+                "carries run 1's commit"
+            );
+        } else {
+            assert!(
+                landed_from.is_null(),
+                "a built unit rests on no earlier one"
+            );
+        }
+    }
+
+    crate::test_cases! {
+        /// The base row: run 1 of the same spec integrated A, so run 2's A lands with no spawn.
+        a_criterion_an_earlier_run_of_the_spec_integrated_lands_with_no_spawn:
+            assert_landed_criterion(LANDS);
+        /// A criterion landed under a DIFFERENT spec path never counts: A is built.
+        a_criterion_landed_under_another_spec_is_built_again:
+            assert_landed_criterion(LandedRow {
+                run1_spec: "specs/8-other.md",
+                lands: false,
+                ..LANDS
+            });
+        /// A compensation that reverted run 1's integrate of A reopens it: A is built.
+        a_compensated_integrate_of_the_criterion_is_built_again:
+            assert_landed_criterion(LandedRow { compensated: true, lands: false, ..LANDS });
+        /// A criterion run 1 split, with one part integrated and the other failed, is not landed:
+        /// A is built.
+        a_criterion_whose_earlier_split_left_a_part_unintegrated_is_built_again:
+            assert_landed_criterion(LandedRow { split: true, lands: false, ..LANDS });
+        /// A resumed step of run 2 agrees with its first: A lands once and never spawns.
+        a_resumed_step_of_the_new_run_never_spawns_the_landed_criterion:
+            assert_landed_criterion(LandedRow { resumed: true, ..LANDS });
+        /// Run 1's integrate commit is not in the run branch's history (the branch was reset
+        /// since): the log alone never lands A, so it is built again.
+        a_criterion_whose_earlier_commit_is_off_the_run_branch_is_built_again:
+            assert_landed_criterion(LandedRow {
+                run1_commit: Run1Commit::OffBranch,
+                lands: false,
+                ..LANDS
+            });
+        /// A run 3 over a run 2 that landed A through the skip lands A again, its `landed_from`
+        /// naming run 2's unit and carrying run 1's commit.
+        a_third_run_lands_the_criterion_again_on_the_first_runs_commit:
+            assert_landed_criterion(LandedRow { relanded: true, ..LANDS });
+        /// Run 1's integrate records the no-artifact marker with no earlier commit behind it:
+        /// with nothing to check on the run branch, A is built again.
+        an_earlier_integrate_with_no_commit_to_check_is_built_again:
+            assert_landed_criterion(LandedRow {
+                run1_commit: Run1Commit::Marker,
+                lands: false,
+                ..LANDS
+            });
     }
 
     /// Two planner proposals for `criterion` - `u-ep1` from an earlier episode, then `u-ep2` from
@@ -18015,8 +19023,8 @@ mod tests {
             ("u-ep2", crit_x, cid_x.clone(), "plan/replan#1"),
         ];
 
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
 
         // RESUME: the whole history is already in the store (a crash-then-restart
         // shape) before the fresh process's ONE pre-wave catch-up call.
@@ -18033,8 +19041,8 @@ mod tests {
             .harvest_proposed(
                 &mut stages_resume,
                 &mut proposed_resume,
-                &integrated,
-                &terminal,
+                &mut integrated,
+                &mut terminal,
             )
             .unwrap();
 
@@ -18050,7 +19058,12 @@ mod tests {
         for (id, crit, cid, spawn) in &history {
             append_proposal(&st_live, id, crit, cid, Some(spawn));
             ctx_live
-                .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
+                .harvest_proposed(
+                    &mut stages_live,
+                    &mut proposed_live,
+                    &mut integrated,
+                    &mut terminal,
+                )
                 .unwrap();
         }
 
@@ -18107,8 +19120,8 @@ mod tests {
         let cid = criterion_stable_id(1, criterion);
         let criteria = vec![criterion.to_string()];
 
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
 
         // RESUME: the entire legacy-then-identified history is already in the
         // store before the fresh process's ONE catch-up call.
@@ -18126,8 +19139,8 @@ mod tests {
             .harvest_proposed(
                 &mut stages_resume,
                 &mut proposed_resume,
-                &integrated,
-                &terminal,
+                &mut integrated,
+                &mut terminal,
             )
             .unwrap();
 
@@ -18154,11 +19167,21 @@ mod tests {
 
         append_proposal(&st_live, "u-legacy-1", criterion, &cid, None);
         ctx_live
-            .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
+            .harvest_proposed(
+                &mut stages_live,
+                &mut proposed_live,
+                &mut integrated,
+                &mut terminal,
+            )
             .unwrap();
         append_proposal(&st_live, "u-legacy-2", criterion, &cid, None);
         ctx_live
-            .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
+            .harvest_proposed(
+                &mut stages_live,
+                &mut proposed_live,
+                &mut integrated,
+                &mut terminal,
+            )
             .unwrap();
         // MUTUAL SIBLINGS: with only the two legacy proposals folded so far and no
         // later identified episode yet, BOTH survive - neither cannibalizes the
@@ -18172,7 +19195,12 @@ mod tests {
 
         append_proposal(&st_live, "u-new", criterion, &cid, Some("plan/replan#1"));
         ctx_live
-            .harvest_proposed(&mut stages_live, &mut proposed_live, &integrated, &terminal)
+            .harvest_proposed(
+                &mut stages_live,
+                &mut proposed_live,
+                &mut integrated,
+                &mut terminal,
+            )
             .unwrap();
 
         assert!(
@@ -18285,7 +19313,7 @@ mod tests {
 
             // Wave 1: harvest the initial proposals. u-a enters the DAG as a GENUINE
             // proposed unit (it went through the add path), carrying its gate-held needs.
-            ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
                 .unwrap();
             assert!(
                 proposed.contains("u-a"),
@@ -18314,7 +19342,7 @@ mod tests {
 
             // Wave 2: harvest again over the full stream (as every later wave does). The
             // late re-emit names a SETTLED unit, so the fold guard skips it.
-            ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
                 .unwrap();
 
             // The settled unit's needs are UNCHANGED: the late refinement did not fold in.
@@ -18380,9 +19408,9 @@ mod tests {
         let ctx = RunCtx::for_test(&cfg, &deps);
         let mut stages = seed_refine_dag(&deps.criteria);
         let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
 
         // (a) Supersedes-a-baseline: the template's own gate survives even though the
@@ -18405,7 +19433,7 @@ mod tests {
             Some(criterion_stable_id(1, crit_a)),
             "extra2",
         );
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
         assert_eq!(
             stages["u-a"].gates,
@@ -18424,7 +19452,7 @@ mod tests {
             None,
             "extra3",
         );
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+        ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
             .unwrap();
         assert_eq!(
             stages["u-new"].gates,
@@ -19130,6 +20158,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
         // implement prompt and points the implementer at `rigger_peers` instead), so a REVIEW/planner
@@ -19202,6 +20231,7 @@ mod tests {
             criteria: vec![criterion.trim().to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let verbatim = criterion.trim();
@@ -19332,6 +20362,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let seed = vec!["modifier.rs".to_string()];
@@ -19384,8 +20415,8 @@ mod tests {
         // as a DecisionMade governing the unit's file) must NOT be concatenated
         // verbatim into the prompt. The most-recent decisions stay verbatim under a
         // hard byte budget; the older remainder collapses into ONE visible elision note
-        // naming the count and the `rigger peers <file>` recovery command. The store
-        // keeps the full history - only the prompt slice narrows.
+        // naming the count and how to read an elided record by id through the graph. The
+        // store keeps the full history - only the prompt slice narrows.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("modifier.rs"), "fn modifier() {}\n").unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
@@ -19434,6 +20465,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
         // implement prompt), so this cap behavior is exercised through `GroundingSlice::Full` for the
@@ -19465,16 +20497,18 @@ mod tests {
             (1..=DECISIONS_VERBATIM_N).contains(&verbatim),
             "verbatim decisions must be capped to <= N; got {verbatim}"
         );
-        // The trim is VISIBLE: one elision note naming the elided count and the
-        // `rigger peers <file>` recovery command.
+        // The trim is VISIBLE: one elision note naming the elided count and reaching an
+        // elided record by id through the graph (`rigger peers` keeps only the newest under
+        // the same budget, so it is no full-set recovery).
         let elided = K - verbatim;
         assert!(
             prompt.contains(&format!("+{elided} older decision")),
             "the elision note must name the elided count ({elided})"
         );
         assert!(
-            prompt.contains("rigger peers modifier.rs"),
-            "the elision note must name the `rigger peers <file>` recovery command"
+            prompt.contains("`rigger graph --show <id>`")
+                && !prompt.contains("recover the full set with `rigger peers"),
+            "the elision note must name reading an elided record by id through the graph"
         );
     }
 
@@ -19772,15 +20806,15 @@ mod tests {
     /// A capped `noun` section `out`, rendered from `k` chunky entries whose i-th (oldest first)
     /// carries `{marker}_{i} `, stays under `budget` (plus slack for the header and the elision
     /// note line), keeps the newest verbatim, elides the oldest (it stays in the store), and
-    /// makes the trim VISIBLE: one elision note naming the elided count and the
-    /// `rigger peers <file>` recovery command (`peers_why`).
+    /// makes the trim VISIBLE: one elision note naming the elided count and reaching an elided
+    /// record by id through the graph (`recovery_why`), never `rigger peers` as the full set.
     fn assert_capped_with_elision(
         out: &str,
         marker: &str,
         k: usize,
         budget: usize,
         noun: &str,
-        peers_why: &str,
+        recovery_why: &str,
     ) {
         assert!(
             out.len() < budget + 2 * 1024,
@@ -19807,7 +20841,11 @@ mod tests {
             out.contains(&format!("+{elided} older {noun}")),
             "the elision note must name the elided {noun} count ({elided})"
         );
-        assert!(out.contains("rigger peers conductor.rs"), "{peers_why}");
+        assert!(
+            out.contains("`rigger graph --show <id>`")
+                && !out.contains("recover the full set with `rigger peers"),
+            "{recovery_why}"
+        );
     }
 
     #[test]
@@ -19816,9 +20854,9 @@ mod tests {
         // unbounded pile of them ABOUT a hot file could blow the prompt on its own. The
         // findings section rides the SAME budgeted-section writer as decisions: the
         // most-recent findings stay verbatim under FINDINGS_BUDGET_BYTES, the older
-        // remainder collapses into ONE visible elision note naming the count and the
-        // `rigger peers <file>` recovery command. The store keeps the full history - only
-        // the prompt slice narrows.
+        // remainder collapses into ONE visible elision note naming the count and how to
+        // read an elided finding by id through the graph. The store keeps the full history -
+        // only the prompt slice narrows.
         let seed = vec!["conductor.rs".to_string()];
         // K chunky findings, oldest (f000) first; recency grows with i, so f{K-1} is newest.
         const K: usize = 300;
@@ -19845,7 +20883,7 @@ mod tests {
             K,
             FINDINGS_BUDGET_BYTES,
             "finding",
-            "the elision note must name the `rigger peers <file>` recovery command",
+            "the elision note must name reading an elided finding by id through the graph",
         );
         // The finding line still names the raising reviewer (`by`) and the id, preserving
         // the prior write_findings format that a later reviewer reads.
@@ -19892,6 +20930,41 @@ mod tests {
             out.contains(&format!("+{} older finding", total - FINDINGS_VERBATIM_N)),
             "the elision note must name the count the N cap trims; output was:\n{out}"
         );
+    }
+
+    /// A record citing a line of a file (`tests/x.rs:12`) or a span of lines (`tests/x.rs:12-20`)
+    /// is about that file: the finding, decision and lesson sections rendered for the file's seed
+    /// each carry it, as they carry a record naming the bare path.
+    #[test]
+    fn a_record_citing_lines_of_a_file_renders_in_the_files_sections() {
+        let seed = vec!["tests/x.rs".to_string()];
+        let sections = [
+            (
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-line", "by": "adversary", "summary": "the retry doc misleads", "about": ["tests/x.rs:12"]}),
+                write_capped_findings as fn(&mut String, &Graph, &[String]),
+                "- adversary (f-line): the retry doc misleads",
+            ),
+            (
+                contextgraph::TYPE_DECISION_MADE,
+                json!({"id": "d-span", "summary": "retry twice", "governs": ["tests/x.rs:12-20"]}),
+                write_capped_decisions,
+                "- d-span: retry twice",
+            ),
+            (
+                contextgraph::TYPE_LESSON_LEARNED,
+                json!({"id": "l-line", "summary": "never sleep in a test", "about": ["tests/x.rs:7"]}),
+                write_capped_lessons,
+                "- l-line: never sleep in a test",
+            ),
+        ];
+        for (type_, payload, write, line) in sections {
+            let out = render_capped(type_, vec![payload], &seed, write);
+            assert!(
+                out.contains(line),
+                "the {type_} citing lines of tests/x.rs must render for its seed; output was:\n{out}"
+            );
+        }
     }
 
     #[test]
@@ -19987,6 +21060,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let prompt = ctx.graph_context(&seed, GroundingSlice::Full);
@@ -20167,6 +21241,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20346,6 +21421,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20448,6 +21524,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20552,6 +21629,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20645,6 +21723,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20825,11 +21904,11 @@ mod tests {
         use super::*;
         use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
         use crate::test_support::{
-            arm_read_fault, entry_records, fixture_entry_events, generation_ingested, git_answer,
-            git_hash_object, group_lookups, handed_by_the_walk, held_generations, ledger_head_read,
-            logged_generations, one_lookup_each, owe_a_rebuild, planted_extraction_tree,
-            rebuild_from_the_tree, seed_generations_on_another_stream, source_with,
-            walked_generations, walked_identities, write_file, CountedRead, Handed,
+            arm_read_fault, assert_outside_any_repository, entry_records, fixture_entry_events,
+            generation_ingested, git_hash_object, group_lookups, handed_by_the_walk,
+            held_generations, ledger_head_read, logged_generations, one_lookup_each, owe_a_rebuild,
+            planted_extraction_tree, rebuild_from_the_tree, seed_generations_on_another_stream,
+            source_with, walked_generations, walked_identities, write_file, CountedRead, Handed,
             ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH, MOVED, SOURCE, SOURCE_BODY,
             SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED, WORKFLOW_BODY, WORKFLOW_PATH,
         };
@@ -20872,6 +21951,7 @@ mod tests {
                 repo: repo.to_string(),
                 graph: Some(graph),
                 hash_blob,
+                check_emit: &crate::contextgraph::check_emit,
                 ..stub_deps(store, driver, Vec::new())
             }
         }
@@ -21305,11 +22385,7 @@ mod tests {
         fn a_tree_that_is_not_a_git_repository_records_the_blob_id_git_hash_object_gives() {
             let tree = planted_extraction_tree(write_file);
             let root = tree.path().to_str().unwrap();
-            assert_eq!(
-                git_answer(tree.path(), &["rev-parse", "--git-dir"]),
-                None,
-                "the tree is outside any repository"
-            );
+            assert_outside_any_repository(tree.path());
             let st = Store::open(":memory:").unwrap();
             let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
             let driver = Stub::new();
@@ -21454,7 +22530,10 @@ mod tests {
                 let deps = sink_deps(&st, &driver, &failing, root, &sized_hash);
                 assert_eq!(
                     handed.emit(&RunCtx::for_test(&cfg, &deps)),
-                    Err(format!("{said}: graph: {GRAPH_REFUSED}"))
+                    Err(format!(
+                        "{said}: {}",
+                        crate::test_support::graph_error(GRAPH_REFUSED)
+                    ))
                 );
                 assert_eq!(recorded(&st), Recorded::new());
             }
@@ -21472,6 +22551,7 @@ mod tests {
             let deps = Deps {
                 repo: root.to_string(),
                 hash_blob: &sized_hash,
+                check_emit: &crate::contextgraph::check_emit,
                 ..stub_deps(&st, &driver, Vec::new())
             };
             let cfg = Config::default();
@@ -21479,7 +22559,7 @@ mod tests {
 
             assert_eq!(
                 handed_by_the_walk(root, SOURCE).emit(&ctx),
-                Err("graph: no context graph is wired".to_string())
+                Err(crate::test_support::unwired())
             );
             assert_eq!(recorded(&st), Recorded::new());
         }
@@ -21517,7 +22597,7 @@ mod tests {
             let graph_path = graph_dir.path().join("graph.db");
             let graph = contextgraph::sqlite::Projector::open(graph_path.to_str().unwrap(), "test")
                 .unwrap();
-            owe_a_rebuild(&graph);
+            owe_a_rebuild(&graph, &graph_path);
             let st = Store::open(":memory:").unwrap();
             let driver = Stub::new();
             let said: Mutex<Vec<String>> = Mutex::default();
@@ -21554,10 +22634,7 @@ mod tests {
                     ),
                 ])
             );
-            let refused = format!(
-                "rigger: recorded 1 run event(s); not folded into the context graph: graph: {}",
-                contextgraph::REBUILD_OWED
-            );
+            let refused = crate::test_support::recorded_not_folded(1, contextgraph::REBUILD_OWED);
             assert_eq!(*said.lock().unwrap(), [refused.clone(), refused]);
             assert_eq!(graph.current_generation(SOURCE).unwrap(), None);
         }
@@ -21598,10 +22675,7 @@ mod tests {
             );
             assert_eq!(
                 *said.lock().unwrap(),
-                [format!(
-                    "rigger: recorded 1 run event(s); not folded into the context graph: \
-                     graph: {GRAPH_REFUSED}"
-                )]
+                [crate::test_support::recorded_not_folded(1, GRAPH_REFUSED)]
             );
             assert_eq!(graph.current_generation(SOURCE).unwrap(), None);
         }
@@ -22155,7 +23229,10 @@ mod tests {
                 assert_eq!(
                     handed_twice_over_an_empty_store(root, &source, &failing, &sized_hash),
                     the_same_answer_twice_from_one_lookup(
-                        Err(format!("{said}: graph: {GRAPH_REFUSED}")),
+                        Err(format!(
+                            "{said}: {}",
+                            crate::test_support::graph_error(GRAPH_REFUSED)
+                        )),
                         SOURCE
                     )
                 );
@@ -22276,7 +23353,8 @@ mod tests {
                 one_lookup_each(STREAM, &identities)
             );
 
-            // The rebuild: every entry re-extracted from the tree, no object database to ask.
+            // The rebuild: each entry its fold asks a batch for, re-extracted from the tree with no
+            // object database to ask.
             write_file(&file, source_with(MOVED).as_bytes());
             let log = inner.read_stream(STREAM, 0, Direction::Forward).unwrap();
             rebuild_from_the_tree(&graph_db, &log, tree.path());
@@ -22359,7 +23437,7 @@ mod tests {
             }
             write_file(&file, SOURCE_BODY.as_bytes());
             match after {
-                AfterAnotherProcess::Owes => owe_a_rebuild(&graph),
+                AfterAnotherProcess::Owes => owe_a_rebuild(&graph, &graph_db),
                 AfterAnotherProcess::RebuiltAtTheFirstBody => {
                     let log = inner.read_stream(STREAM, 0, Direction::Forward).unwrap();
                     rebuild_from_the_tree(&graph_db, &log, tree.path());
@@ -22657,6 +23735,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -22776,6 +23855,7 @@ mod tests {
             criteria: vec!["first criterion".into()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg1, &deps1).unwrap();
 
@@ -22812,6 +23892,7 @@ mod tests {
             criteria: vec!["second criterion".into()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg2, &deps2).unwrap();
 
@@ -22999,6 +24080,7 @@ mod tests {
             criteria: vec![criterion.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
 
         // Run one records generation A of both files and the design doc.
@@ -23151,6 +24233,7 @@ mod tests {
             criteria: vec![criterion.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let mut campaigns = 0;
         let mut run_over_the_tree = |criterion: &'static str| {
@@ -23453,6 +24536,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -23586,6 +24670,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -24011,9 +25096,9 @@ mod tests {
         // half of this unit's charter had ZERO render coverage, which is exactly why a dead
         // recovery note shipped past all three tiers. This pins the whole rendered contract:
         // the header, freshest-first recency, the byte cap firing on a pile of chunky
-        // lessons, and ONE visible elision note naming the elided count and the honest
-        // `rigger peers <file>` recovery (now backed by sidecar::lessons_for). The store
-        // keeps the full history - only the prompt slice narrows.
+        // lessons, and ONE visible elision note naming the elided count and how to read an
+        // elided lesson by id through the graph. The store keeps the full history - only the
+        // prompt slice narrows.
         let seed = vec!["conductor.rs".to_string()];
         // K chunky lessons, oldest (l000) first; recency grows with i, so l{K-1} is newest.
         const K: usize = 200;
@@ -24045,8 +25130,7 @@ mod tests {
             K,
             LESSONS_BUDGET_BYTES,
             "lesson",
-            "the elision note must name the `rigger peers <file>` recovery command \
-             (backed by sidecar::lessons_for so it is not a dead promise)",
+            "the elision note must name reading an elided lesson by id through the graph",
         );
     }
 
@@ -25537,6 +26621,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).expect("a verdict-less re-park is a clean unwind");
         };
@@ -25595,6 +26680,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             // The whole point: a recorded review error is a CLEAN re-park, never a run failure.
             run_isolated(&cfg, &deps)
@@ -25715,6 +26801,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).map(|_| ())
         };
@@ -26629,6 +27716,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
         let g = graph.subgraph(&["d1".to_string()], 2).unwrap();
@@ -27128,6 +28216,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         // The caller asserts on the recorded run state + the store (the routing marker and
@@ -27403,6 +28492,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -27802,6 +28892,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
@@ -28067,6 +29158,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -28404,6 +29496,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
@@ -29954,6 +31047,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -30590,15 +31684,14 @@ mod tests {
 
     /// A later round's reject whose every item is a non-correctness finding outside the delta
     /// that round reviewed converges: each item is recorded as a lesson for the operator about
-    /// its file, and the unit lands on that round, approved "converged", charged nothing more.
+    /// its file, and the unit lands on that round, approved "converged" above the verdict text,
+    /// charged nothing more.
     #[test]
     fn a_round_two_reject_on_only_out_of_delta_wording_lands_and_records_operator_lessons() {
+        let converging = r#"{"verdict":"reject","required":[{"finding":"reword the doc comment","path":"feature.rs","correctness":false}]}"#;
         let (rs, events, _) = run_review_rounds(&[
             (adjudicator_at(0, 0), REJECT_FEATURE),
-            (
-                adjudicator_at(1, 0),
-                r#"{"verdict":"reject","required":[{"finding":"reword the doc comment","path":"feature.rs","correctness":false}]}"#,
-            ),
+            (adjudicator_at(1, 0), converging),
         ]);
         assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
         assert_eq!(
@@ -30621,8 +31714,8 @@ mod tests {
             .collect();
         assert_eq!(
             reviewed.last().map(|b| b["evidence"]["review"].clone()),
-            Some(json!("converged")),
-            "the converged round's approve says so: {reviewed:?}"
+            Some(json!(format!("converged\n{converging}"))),
+            "the converged round's approve says so, above the verdict text: {reviewed:?}"
         );
     }
 
@@ -31650,25 +32743,18 @@ mod tests {
         /// Spec 69, criterion 5, signal 1 (unit ESCALATED): the step during which a unit exhausts
         /// remediation and goes terminal without integrating must surface it on the wire, naming
         /// the unit - not just fold it into `units[..].status`, which an orchestrator would have to
-        /// poll every unit to notice. The default remediation bound (MAX_RETRIES=3) means the
-        /// escalating attempt is ALSO the unit's third failure - a recurrence - so both entries
-        /// fire together; that co-occurrence is correct, not a double-report of the same signal.
+        /// poll every unit to notice. The default remediation bound (MAX_RETRIES=3) makes the
+        /// escalating attempt the unit's third failure, the reject-recurrence diagnose threshold
+        /// too, yet the unit is no longer remediating, so the escalation is its one entry.
         a_newly_escalated_unit_stamps_an_attention_entry: assert_attention(
             failing_gate_run(),
-            vec![
-                ledger::AttentionEntry::unit_scoped(
-                    ledger::ATTENTION_ESCALATED,
-                    "s",
-                    "escalated after exhausting remediation",
-                ),
-                ledger::AttentionEntry::unit_scoped(
-                    ledger::ATTENTION_WORKER_DEATH_RECURRED,
-                    "s",
-                    "3 attempts",
-                ),
-            ],
-            "an escalated unit must stamp an `escalated` entry naming it, in deterministic \
-             kind order ahead of the co-occurring recurrence",
+            vec![ledger::AttentionEntry::unit_scoped(
+                ledger::ATTENTION_ESCALATED,
+                "s",
+                "escalated after exhausting remediation",
+            )],
+            "an escalated unit must stamp one `escalated` entry naming it, and no \
+             reject-recurrence entry for the attempt that ended its remediation",
         );
         /// Spec 69, criterion 5, signal 2 (run HALTED with reason): mirrors `budget_halt` exactly
         /// (same reason string), but on the generic `attention` channel a driver can render
@@ -31982,56 +33068,42 @@ mod tests {
     }
 
     #[test]
-    fn a_second_failure_recurs_and_a_third_also_stalls_the_frontier() {
-        // Spec 69, criterion 5, signals 3 (a worker's death RECURRED) and 5 (STALLED
-        // FRONTIER - a parked spawn already carrying more than two recorded results):
-        // driven over the stepwise/replay driver across several real `rigger step`-shaped
-        // calls, since "still parked" is a property of the wave a step process prints,
-        // not of the blocking Stub driver's single synchronous call.
+    fn a_third_failure_recurs_and_stalls_the_frontier() {
+        // Spec 69, criterion 5, signals 3 (REJECT RECURRENCE - a still-remediating unit's
+        // failed attempts reached the diagnose threshold) and 5 (STALLED FRONTIER - a parked
+        // spawn already carrying more than two recorded results): driven over the
+        // stepwise/replay driver across several real `rigger step`-shaped calls, since "still
+        // parked" is a property of the wave a step process prints, not of the blocking Stub
+        // driver's single synchronous call.
         //
         // max_retries=5 (> 3) so the unit is STILL retrying (not yet escalated) once its
-        // attempt count passes the stalled-frontier threshold of 2 - the scenario the
-        // signal exists to catch.
+        // attempt count reaches both thresholds - the scenario the signals exist to catch.
         let (cfg, st) = parked_unit_u(5);
 
-        // Attempt 0 fails: the FIRST failure is not a recurrence.
-        fail_attempt(&st, "u", 0);
-        let rs = replay_step(&cfg, &st);
-        assert_eq!(rs.units["u"].attempts, 1);
-        assert!(
-            rs.attention.is_empty(),
-            "a unit's FIRST failure is not a recurrence and must stamp nothing, got {:?}",
-            rs.attention
-        );
+        // Attempts 0 and 1 fail: below the diagnose threshold the loop is remediating on its
+        // own, so neither failure stamps anything.
+        for attempt in 0..2 {
+            fail_attempt(&st, "u", attempt);
+            let rs = replay_step(&cfg, &st);
+            assert_eq!(rs.units["u"].attempts, attempt + 1);
+            assert!(
+                rs.attention.is_empty(),
+                "failure {} is below the diagnose threshold and must stamp nothing, got {:?}",
+                attempt + 1,
+                rs.attention
+            );
+        }
 
-        // Attempt 1 fails: the SECOND failure - a recurrence.
-        fail_attempt(&st, "u", 1);
-        let rs = replay_step(&cfg, &st);
-        assert_eq!(rs.units["u"].attempts, 2);
-        assert_eq!(
-            rs.attention,
-            vec![ledger::AttentionEntry::unit_scoped(
-                ledger::ATTENTION_WORKER_DEATH_RECURRED,
-                "u",
-                "2 attempts",
-            )],
-            "a unit's SECOND failure must stamp exactly one worker-death-recurred entry"
-        );
-
-        // Attempt 2 fails: the THIRD failure - another recurrence, AND now the unit
-        // already carries more than two recorded (failed) results while a fresh attempt
-        // (#3) is still parked awaiting an answer: the stalled-frontier signal.
+        // Attempt 2 fails: the THIRD failure reaches the diagnose threshold, AND the unit
+        // now carries more than two recorded (failed) results while a fresh attempt (#3) is
+        // still parked awaiting an answer: the stalled-frontier signal.
         fail_attempt(&st, "u", 2);
         let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].attempts, 3);
         assert_eq!(
             rs.attention,
             vec![
-                ledger::AttentionEntry::unit_scoped(
-                    ledger::ATTENTION_WORKER_DEATH_RECURRED,
-                    "u",
-                    "3 attempts",
-                ),
+                ledger::AttentionEntry::reject_recurrence("u", 3),
                 ledger::AttentionEntry::unit_scoped(
                     ledger::ATTENTION_STALLED_FRONTIER,
                     "u",
@@ -32039,7 +33111,7 @@ mod tests {
                 ),
             ],
             "the THIRD failure must stamp both a recurrence AND a stalled-frontier entry \
-             (deterministically ordered, escalated < halted < worker-death-recurred < \
+             (deterministically ordered, escalated < halted < reject-recurrence < \
              budget-final-tenth < stalled-frontier)"
         );
 
@@ -32055,6 +33127,105 @@ mod tests {
             "a step that folds no new result must not re-stamp a crossing this run already \
              surfaced, got {:?}",
             rs.attention
+        );
+    }
+
+    /// The count signal 3 fires at, the one the dock and `rigger watch` read.
+    const DIAGNOSE_THRESHOLD: u32 = crate::blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD;
+
+    /// The attention [`compute_attention`] stamps over a call that moved the run from the
+    /// folded `prior` log to the folded `after` log, with no budget and nothing parked, so only
+    /// signals 1 (escalated) and 3 (reject-recurrence) can fire.
+    fn attention_across(prior: &[Event], after: &[Event]) -> Vec<ledger::AttentionEntry> {
+        compute_attention(
+            &ledger::project(prior).unwrap(),
+            &ledger::project(after).unwrap(),
+            0,
+            0,
+            0,
+            false,
+            &BTreeSet::new(),
+        )
+    }
+
+    /// Unit `u`'s log: started, failed with `attempts` recorded, then `tail`.
+    fn u_failed_at(attempts: u32, tail: &[Event]) -> Vec<Event> {
+        let mut events = vec![
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(&json!({"id": "u"})).unwrap(),
+            ),
+            plain_failure("u", attempts),
+        ];
+        events.extend_from_slice(tail);
+        events
+    }
+
+    /// `u`'s escalation, then an operator's grant of two more attempts.
+    fn u_escalated_and_resumed() -> [Event; 2] {
+        [
+            unit_event(ledger::TYPE_UNIT_ESCALATED, "u", ("reason", "")),
+            Event::new(
+                ledger::TYPE_UNIT_RESUMED,
+                serde_json::to_vec(&json!({"unit": "u", "attempts_granted": 2, "by": "operator"}))
+                    .unwrap(),
+            ),
+        ]
+    }
+
+    crate::test_cases! {
+        /// Signal 3 stays silent on the failure just below the reject-recurrence diagnose
+        /// threshold: the loop is still remediating on its own.
+        reject_recurrence_stamps_nothing_just_below_the_diagnose_threshold: assert_eq!(
+            attention_across(
+                &u_failed_at(DIAGNOSE_THRESHOLD - 2, &[]),
+                &u_failed_at(DIAGNOSE_THRESHOLD - 1, &[]),
+            ),
+            Vec::new()
+        );
+        /// The failure that reaches the threshold stamps exactly one entry, the count the dock
+        /// and `rigger watch` alert on.
+        reject_recurrence_stamps_one_entry_at_the_diagnose_threshold: assert_eq!(
+            attention_across(
+                &u_failed_at(DIAGNOSE_THRESHOLD - 1, &[]),
+                &u_failed_at(DIAGNOSE_THRESHOLD, &[]),
+            ),
+            vec![ledger::AttentionEntry::reject_recurrence("u", DIAGNOSE_THRESHOLD)]
+        );
+        /// A failure at the threshold that also escalates the unit ends its remediation, so the
+        /// escalation is the call's one entry.
+        reject_recurrence_stamps_nothing_on_the_failure_that_escalates: assert_eq!(
+            attention_across(
+                &u_failed_at(DIAGNOSE_THRESHOLD - 1, &[]),
+                &u_failed_at(
+                    DIAGNOSE_THRESHOLD,
+                    &[unit_event(ledger::TYPE_UNIT_ESCALATED, "u", ("reason", ""))],
+                ),
+            ),
+            vec![ledger::AttentionEntry::unit_scoped(
+                ledger::ATTENTION_ESCALATED,
+                "u",
+                "escalated after exhausting remediation",
+            )]
+        );
+        /// A unit an operator resumed past the threshold has had its look, so its next failure
+        /// inside the grant stamps nothing, as the dock lists nothing for it.
+        reject_recurrence_stamps_nothing_on_a_resumed_units_next_failure: assert_eq!(
+            attention_across(
+                &u_failed_at(
+                    DIAGNOSE_THRESHOLD,
+                    &u_escalated_and_resumed(),
+                ),
+                &u_failed_at(
+                    DIAGNOSE_THRESHOLD,
+                    &[
+                        u_escalated_and_resumed().to_vec(),
+                        vec![plain_failure("u", DIAGNOSE_THRESHOLD + 1)],
+                    ]
+                    .concat(),
+                ),
+            ),
+            Vec::new()
         );
     }
 
@@ -32910,6 +34081,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
         assert!(
@@ -33675,6 +34847,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -35831,6 +37004,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -36014,6 +37188,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -36758,6 +37933,19 @@ mod tests {
             ) -> Result<Vec<Event>, crate::eventstore::Error> {
                 self.inner.read_all(from, dir, filter)
             }
+            fn read_all_page(
+                &self,
+                from: crate::eventstore::Position,
+                filter: &crate::eventstore::Filter,
+                max: usize,
+            ) -> Result<Vec<Event>, crate::eventstore::Error> {
+                self.inner.read_all_page(from, filter, max)
+            }
+            fn log_head(
+                &self,
+            ) -> Result<Option<crate::eventstore::Position>, crate::eventstore::Error> {
+                self.inner.log_head()
+            }
             fn subscribe_all(
                 &self,
                 from: crate::eventstore::Position,
@@ -36887,6 +38075,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
         let g = graph
@@ -37530,6 +38719,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         for name in ["s1", "s2", "s3"] {
@@ -37650,6 +38840,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
@@ -38062,6 +39253,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -38293,6 +39485,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         // F3: the zero limit bounds the STAGE too - an infra red is never charged, and with no
         // rerun to give, the first one halts the step.
@@ -38374,6 +39567,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             // An infra outage halts the step (F3) and a flaky failure escalates: either way the
             // run ends, and only the gate runs and the ratchet are under test here.
@@ -39229,6 +40423,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
 
         let rs = run_isolated(&cfg, &deps).unwrap();
@@ -39354,6 +40549,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
@@ -39635,6 +40831,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -39683,6 +40880,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -39923,6 +41121,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let base = RunCtx::for_test(&cfg, &base_deps).grounded_blast_radius(&st);
         assert_eq!(
@@ -39944,6 +41143,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let r = RunCtx::for_test(&cfg, &deps).grounded_blast_radius(&st);
 
@@ -40381,6 +41581,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -40848,6 +42049,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let radii = ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
@@ -40883,6 +42085,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let plain_ctx = RunCtx::for_test(&cfg, &plain_deps);
         let plain_radii = plain_ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
@@ -41014,6 +42217,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -41173,6 +42377,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -41837,6 +43042,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -42337,16 +43543,25 @@ mod tests {
         /// resolve it, so [`RunCtx::integrate_and_emit`]'s conflict-loop bound (`CONFLICT_RESOLVE_BOUND`)
         /// is exhausted for real - the one path that DOES charge a remediation attempt.
         resolve_on_retry: bool,
+        /// The `~retry{n}` re-park that, having resolved and committed, emits
+        /// [`refused_decision`], which the emit guard refuses; `None` in every other test.
+        refused_retry: Option<u32>,
+        /// The prompt each spawn id was launched with.
+        prompts: Mutex<HashMap<String, String>>,
     }
     impl AgentDriver for ConflictDriver {
         fn spawn(
             &self,
             _a: &AgentDef,
-            _prompt: &str,
+            prompt: &str,
             opts: &SpawnOpts,
-            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
         ) -> Result<AgentResult, Error> {
             self.calls.lock().unwrap().push(opts.id.clone());
+            self.prompts
+                .lock()
+                .unwrap()
+                .insert(opts.id.clone(), prompt.to_string());
             let unit = opts.id.split('/').next().unwrap_or_default();
             if opts.id.contains("/implementer#") {
                 if opts.id.contains("~retry") {
@@ -42371,6 +43586,14 @@ mod tests {
                             .args(args)
                             .output()
                             .unwrap();
+                    }
+                    if self
+                        .refused_retry
+                        .is_some_and(|n| opts.id.ends_with(&format!("~retry{n}")))
+                    {
+                        for (t, v) in refused_decision() {
+                            emit(&t, v)?;
+                        }
                     }
                     return Ok(AgentResult::default());
                 }
@@ -43177,6 +44400,8 @@ mod tests {
             repo: repo_path.clone(),
             calls: Mutex::new(Vec::new()),
             resolve_on_retry,
+            refused_retry: None,
+            prompts: Mutex::new(HashMap::new()),
         };
         let _ = regenerate;
         (repo, repo_path, store, driver)
@@ -43187,12 +44412,15 @@ mod tests {
     /// integrate lock merges cleanly and the second's merge CONFLICTS. BOTH units must integrate -
     /// the loser's textual conflict is resolved within the SAME integration call, never escalated -
     /// with no remediation attempt charged to either and no UnitFailed ever recorded (a conflict is
-    /// not a defect). Returns every spawn id the driver was called with and the run branch's
-    /// merged `c.rs`.
+    /// not a defect). The resolver's `~retry{n}` re-park emits a record the emit guard refuses
+    /// when `refused_retry` names it. Returns every spawn id the driver was called with, the run
+    /// branch's merged `c.rs` and the prompt each spawn id was launched with.
     fn assert_both_conflicting_units_land(
         regenerate: Vec<crate::config::RegenerateRule>,
-    ) -> (Vec<String>, String) {
-        let (repo, repo_path, store, driver) = conflict_fixture(regenerate.clone(), true);
+        refused_retry: Option<u32>,
+    ) -> (Vec<String>, String, HashMap<String, String>) {
+        let (repo, repo_path, store, mut driver) = conflict_fixture(regenerate.clone(), true);
+        driver.refused_retry = refused_retry;
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_retries = 3;
         cfg.workflow.regenerate = regenerate;
@@ -43243,7 +44471,7 @@ mod tests {
         let calls = driver.calls.lock().unwrap().clone();
         let merged = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
         drop(repo);
-        (calls, merged)
+        (calls, merged, driver.prompts.into_inner().unwrap())
     }
 
     #[test]
@@ -43254,7 +44482,7 @@ mod tests {
         // to win the integrate lock merges cleanly; the second's merge CONFLICTS, is re-parked
         // (never reset, never charged an attempt), resolves, and lands too - BOTH units
         // integrate, unlike the semantic post-merge-break case where the loser escalates.
-        let (calls, merged) = assert_both_conflicting_units_land(Vec::new());
+        let (calls, merged, _) = assert_both_conflicting_units_land(Vec::new(), None);
         // The re-parked implementer ran under a `~retry` id (spec 07's established free-
         // respawn shape), never a fresh `attempts` bump.
         assert!(
@@ -43270,17 +44498,39 @@ mod tests {
     }
 
     #[test]
+    fn a_conflict_resolver_whose_record_is_refused_re_runs_once_told_why_and_both_units_land() {
+        // A conflict resolver re-park whose record the emit guard refuses re-runs once, under
+        // the episode's next `~retry` id, told why - in the tree it already committed its
+        // resolution to - and the conflict still resolves within the same call, uncharged.
+        let (calls, merged, prompts) = assert_both_conflicting_units_land(Vec::new(), Some(1));
+        let rerun = calls
+            .iter()
+            .find(|id| id.ends_with("/implementer#0~retry2"))
+            .unwrap_or_else(|| panic!("the refused resolver re-runs once: {calls:?}"));
+        assert!(
+            prompts[rerun].contains(&format!(
+                "Your previous run's record was refused: {REFUSAL}"
+            )),
+            "the re-run's prompt names the refusal: {}",
+            prompts[rerun]
+        );
+        assert_eq!(merged, "RESOLVED\n", "the resolution lands");
+    }
+
+    #[test]
     fn integrate_conflict_confined_to_a_regenerable_path_resolves_with_no_spawn() {
         // Spec 88, criterion 1, Done-when: "a conflict confined to a registered regenerable
         // path is resolved by regeneration with no spawn." Same two-batch-mate textual
         // conflict as above, but `c.rs` is registered regenerable: the conductor must resolve
         // it ITSELF (running the registered command and committing) - the loser's implementer
         // is never re-parked a second time at all.
-        let (calls, merged) =
-            assert_both_conflicting_units_land(vec![crate::config::RegenerateRule {
+        let (calls, merged, _) = assert_both_conflicting_units_land(
+            vec![crate::config::RegenerateRule {
                 paths: vec!["c.rs".into()],
                 run: "printf 'REGENERATED\\n' > c.rs".into(),
-            }]);
+            }],
+            None,
+        );
         // NO SPAWN AT ALL for the conflict: no `~retry` implementer id anywhere the driver
         // was ever called with.
         assert!(
@@ -43943,6 +45193,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -43992,6 +45243,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -44024,6 +45276,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -44096,6 +45349,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -44206,6 +45460,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -44343,6 +45598,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).unwrap()
         };
@@ -44381,6 +45637,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -44453,6 +45710,7 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
                 hash_blob: &|_| Ok(String::new()),
+                check_emit: &crate::contextgraph::check_emit,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -44644,6 +45902,7 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert!(
@@ -45339,13 +46598,24 @@ mod tests {
         );
     }
 
-    /// Run one merging, gated unit `s` in a real repo whose implementer writes the unit's feature
-    /// (so there is a real diff to commit and gate, the worktree is non-empty and control reaches
-    /// the sdet seam) - with an `sdet-author` agent configured when `with_sdet` (it authors
-    /// NOTHING, and its deterministic spawn CRASHES with a non-parked Err when `crash_sdet`).
-    /// The sdet-author is spawned at the seam exactly when configured (`spawn_why`), and the unit
-    /// still integrates (`why`): the build is never blocked by the sdet seam.
-    fn assert_sdet_seam_integrates(with_sdet: bool, crash_sdet: bool, spawn_why: &str, why: &str) {
+    /// A driver whose implementer writes the unit's feature, so a [`run_sdet_lane`] has a real
+    /// diff to commit and gate, the worktree is non-empty and control reaches the sdet seam.
+    /// `write_file_by_agent` is keyed on the agent id, so leaving the sdet out of it (and
+    /// `write_file: None`) means its spawn returns a normal result having written no periphery
+    /// file at all.
+    fn sdet_lane_driver() -> Stub {
+        Stub {
+            write_file_by_agent: HashMap::from([("worker".to_string(), "feature.rs".to_string())]),
+            ..Stub::new()
+        }
+    }
+
+    /// A run's own result and its whole log.
+    type RunAndLog = (Result<RunState, Error>, Vec<Event>);
+
+    /// Run one merging, gated unit `s` under `driver` in a real repo, with an `sdet-author` agent
+    /// configured when `with_sdet`: the run's own result and the whole log.
+    fn run_sdet_lane(with_sdet: bool, driver: &Stub) -> RunAndLog {
         let repo = temp_git_project_with_commit();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -45365,24 +46635,31 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        // `write_file_by_agent` is keyed on the agent id, so leaving the sdet out of it (and
-        // `write_file: None`) means its spawn returns a normal result having written no
-        // periphery file at all; `fail_spawn_ids` crashes ONLY the sdet spawn.
-        let mut driver = Stub {
-            write_file_by_agent: HashMap::from([("worker".to_string(), "feature.rs".to_string())]),
-            ..Stub::new()
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, driver, Vec::new())
         };
+        (run_isolated(&cfg, &deps), run_log(&st))
+    }
+
+    /// Run a [`run_sdet_lane`] whose sdet-author (configured when `with_sdet`) authors NOTHING,
+    /// and whose deterministic spawn CRASHES with a non-parked Err when `crash_sdet`
+    /// (`fail_spawn_ids` crashes ONLY the sdet spawn). The sdet-author is spawned at the seam
+    /// exactly when configured (`spawn_why`), and the unit still integrates (`why`): the build
+    /// is never blocked by the sdet seam.
+    fn assert_sdet_seam_integrates(with_sdet: bool, crash_sdet: bool, spawn_why: &str, why: &str) {
+        let mut driver = sdet_lane_driver();
         if crash_sdet {
             driver.fail_spawn_ids =
                 std::collections::HashSet::from([spawn_id("s", ROLE_SDET_AUTHOR, 0)]);
         }
-        let deps = Deps {
-            repo: repo.path().to_str().unwrap().to_string(),
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        let rs = run_isolated(&cfg, &deps).unwrap();
+        let (rs, _) = run_sdet_lane(with_sdet, &driver);
         assert_eq!(driver.spawned(ROLE_SDET_AUTHOR), with_sdet, "{spawn_why}");
-        assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
+        assert_eq!(
+            rs.unwrap().units["s"].status,
+            ledger::Status::Integrated,
+            "{why}"
+        );
     }
 
     crate::test_cases! {
@@ -45725,15 +47002,8 @@ mod tests {
             root: dir.path().to_string_lossy().into_owned(),
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
             grounder: Some(&grep),
-            graph: None,
-            criteria: vec![criterion.to_string()],
-            log: &|_| {},
-            hash_blob: &|_| Ok(String::new()),
+            ..stub_deps(&st, &driver, vec![criterion.to_string()])
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -45946,15 +47216,8 @@ mod tests {
             root: dir.path().to_string_lossy().into_owned(),
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
             grounder: Some(&grep),
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-            log: &|_| {},
-            hash_blob: &|_| Ok(String::new()),
+            ..stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()])
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -45988,15 +47251,8 @@ mod tests {
             root: dir.path().to_string_lossy().into_owned(),
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
             grounder: Some(&grep),
-            graph: None,
-            criteria: vec![criterion.to_string()],
-            log: &|_| {},
-            hash_blob: &|_| Ok(String::new()),
+            ..stub_deps(&st, &driver, vec![criterion.to_string()])
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
         driver
@@ -46359,6 +47615,7 @@ mod tests {
             criteria: vec![crit.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs1 = run_isolated(&cfg, &deps1).unwrap();
         assert_eq!(
@@ -46382,6 +47639,7 @@ mod tests {
             criteria: vec![crit.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         let rs2 = run_isolated(&cfg, &deps2).unwrap();
         assert_eq!(
@@ -46598,6 +47856,171 @@ mod tests {
             Some(retry_round),
             "the round re-entered in a later process must open with the logged reject, exactly \
              as the in-process retry round does"
+        );
+    }
+
+    // --- A RECORD THE EMIT GUARD REFUSES RE-RUNS ITS SPAWN ONCE, TOLD WHY ---
+
+    /// The emit guard's refusal of [`refused_decision`].
+    const REFUSAL: &str = "refusing to emit: DecisionMade payload field `governs`";
+
+    /// A `DecisionMade` the fold cannot apply - its `governs` is a string, not an array - so the
+    /// emit guard refuses it before the append.
+    fn refused_decision() -> Vec<(String, Value)> {
+        vec![(
+            contextgraph::TYPE_DECISION_MADE.to_string(),
+            json!({"id": "d-bad", "summary": "s", "governs": "src/x.rs"}),
+        )]
+    }
+
+    /// `driver` with the spawns `ids` each emitting [`refused_decision`].
+    fn refusing_at(driver: Stub, ids: &[String]) -> Stub {
+        Stub {
+            emits_by_spawn_id: ids
+                .iter()
+                .map(|id| (id.clone(), refused_decision()))
+                .collect(),
+            ..driver
+        }
+    }
+
+    /// An author other than the implementer whose emitted record the guard refuses: the driver
+    /// its run starts from, the run (its result and its log), the `(unit, role, attempt)` its
+    /// refused spawn runs under, the agent whose prompts it reads, and whether, past its re-run,
+    /// the role's failure is its wave's lesson.
+    struct RefusedAuthor {
+        driver: fn() -> Stub,
+        run: fn(&Stub) -> RunAndLog,
+        seat: (&'static str, &'static str, u32),
+        agent: &'static str,
+        wave_lesson: bool,
+    }
+
+    /// The sdet author of a single-lane unit: past its re-run, its stage fails in its wave.
+    fn sdet_author_refused() -> RefusedAuthor {
+        RefusedAuthor {
+            driver: sdet_lane_driver,
+            run: |driver| run_sdet_lane(true, driver),
+            seat: ("s", ROLE_SDET_AUTHOR, 0),
+            agent: ROLE_SDET_AUTHOR,
+            wave_lesson: true,
+        }
+    }
+
+    /// The re-planner a plan-critique reject drives: past its re-run, the gate's error halts the
+    /// step.
+    fn re_planner_refused() -> RefusedAuthor {
+        RefusedAuthor {
+            driver: || reject_then_approve_critique(false),
+            run: |driver| {
+                let st = Store::open(":memory:").unwrap();
+                let rs = critique_step_under(&critique_cfg(), &st, driver);
+                (rs, run_log(&st))
+            },
+            seat: ("plan", ROLE_REPLAN, 1),
+            agent: "planner",
+            wave_lesson: false,
+        }
+    }
+
+    /// `author`'s spawns refuse a record on their first `refused` runs: the refused spawn re-runs
+    /// once, under its next `~retry` id, with a prompt naming the refusal, and never again. One
+    /// refusal is cleared by that re-run, so the run carries on; a second reaches the role's own
+    /// failure handling with the refusal text, unmarked. The refused record never lands.
+    fn assert_a_refused_record_reruns_its_spawn_once(author: RefusedAuthor, refused: usize) {
+        let (unit, role, attempt) = author.seat;
+        let ids: Vec<String> = (0..=2)
+            .map(|retry| spawn_retry_id(unit, role, attempt, retry))
+            .collect();
+        let driver = refusing_at((author.driver)(), &ids[..refused]);
+        let (rs, events) = (author.run)(&driver);
+        let spawned = driver.spawn_ids();
+        assert!(
+            spawned.contains(&ids[1]) && !spawned.contains(&ids[2]),
+            "the refused spawn re-runs once, under its next retry id: {spawned:?}"
+        );
+        let rerun = driver
+            .prompts_for(author.agent)
+            .last()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            rerun.contains(&format!(
+                "Your previous run's record was refused: {REFUSAL}"
+            )) && !rerun.contains('\u{1}'),
+            "the re-run's prompt names the refusal, unmarked: {rerun}"
+        );
+        assert!(
+            !payloads_of_type(&events, contextgraph::TYPE_DECISION_MADE)
+                .iter()
+                .any(|d| d["id"] == "d-bad"),
+            "the refused record lands nothing"
+        );
+        let lessons = wave_lessons(&events);
+        match rs {
+            Ok(_) => assert!(
+                refused == 1 && lessons.is_empty(),
+                "only a refusal its re-run cleared carries the run on: {lessons:?}"
+            ),
+            Err(e) => {
+                assert!(
+                    refused == 2 && e.0.contains(REFUSAL) && !e.0.contains('\u{1}'),
+                    "past its re-run, the refusal reaches the role's failure, unmarked: {e:?}"
+                );
+                assert_eq!(
+                    lessons.iter().any(|l| l.contains(REFUSAL)),
+                    author.wave_lesson,
+                    "the stage's wave lesson carries the refusal: {lessons:?}"
+                );
+            }
+        }
+    }
+
+    crate::test_cases! {
+        an_sdet_author_whose_record_is_refused_re_runs_once_told_why:
+            assert_a_refused_record_reruns_its_spawn_once(sdet_author_refused(), 1);
+        an_sdet_author_refused_again_fails_its_stage_with_the_refusal:
+            assert_a_refused_record_reruns_its_spawn_once(sdet_author_refused(), 2);
+        a_re_planner_whose_record_is_refused_re_runs_once_told_why:
+            assert_a_refused_record_reruns_its_spawn_once(re_planner_refused(), 1);
+        a_re_planner_refused_again_halts_the_gate_with_the_refusal:
+            assert_a_refused_record_reruns_its_spawn_once(re_planner_refused(), 2);
+    }
+
+    /// A speculation candidate's sdet author refused on its run and on its re-run loses the
+    /// candidate, as a crashed candidate does - a losing candidate has no continuation to carry
+    /// a reason into - and the next candidate races on and wins.
+    #[test]
+    fn a_speculation_candidate_whose_sdet_author_is_refused_again_loses_to_the_next() {
+        let repo = temp_git_project_with_commit();
+        let mut cfg = spec_cfg(2);
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        let st = Store::open(":memory:").unwrap();
+        let driver = refusing_at(
+            Stub {
+                write_file: Some("feature.rs".into()),
+                output: r#"{"verdict":"approve"}"#.into(),
+                ..Stub::new()
+            },
+            &[0, 1].map(|retry| spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, retry)),
+        );
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        let spawned = driver.spawn_ids();
+        assert_eq!(
+            (
+                spawned.contains(&spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, 1)),
+                spawned.contains(&spawn_id("s", ROLE_ADJUDICATOR, 0)),
+                spawned.contains(&spawn_id("s", ROLE_ADJUDICATOR, 1)),
+                rs.units["s"].status,
+            ),
+            (true, false, true, ledger::Status::Integrated),
+            "candidate 0's sdet re-runs once, then the candidate loses and candidate 1 wins: \
+             {spawned:?}"
         );
     }
 
@@ -46822,16 +48245,9 @@ mod tests {
                 .iter()
                 .map(|a| (a.kind, a.unit.as_str(), a.detail.clone()))
                 .collect::<Vec<_>>(),
-            vec![
-                (ledger::ATTENTION_SPEC_DEFECT, "plan-critique", stop_halt()),
-                (
-                    ledger::ATTENTION_WORKER_DEATH_RECURRED,
-                    "plan-critique",
-                    "2 attempts".to_string()
-                ),
-            ],
+            vec![(ledger::ATTENTION_SPEC_DEFECT, "plan-critique", stop_halt())],
             "the stop's attention entry is its own kind carrying the halt, in place of the \
-             gate's escalation entry, and never a halted entry"
+             gate's escalation entry, and never a halted or reject-recurrence entry"
         );
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(
@@ -47081,11 +48497,13 @@ mod tests {
                 .unwrap(),
             run[2].clone(),
         ];
-        let emitted = vec![
-            run[0].clone(),
-            Event::new(TYPE_UNIT_PROPOSED, b"{}".to_vec()).with_meta(META_SPAWN, re_plan_id(1)),
-            run[2].clone(),
-        ];
+        let emitted_by = |id: String| {
+            vec![
+                run[0].clone(),
+                Event::new(TYPE_UNIT_PROPOSED, b"{}".to_vec()).with_meta(META_SPAWN, id),
+                run[2].clone(),
+            ]
+        };
         let mut other_stop_done = run.clone();
         other_stop_done.push(
             Event::new(ledger::TYPE_UNIT_ESCALATED, b"{}".to_vec())
@@ -47095,17 +48513,19 @@ mod tests {
             (
                 stops_at(&run, 2),
                 stops_at(&answered, 2),
-                stops_at(&emitted, 2),
+                stops_at(&emitted_by(re_plan_id(1)), 2),
+                stops_at(&emitted_by(spawn_retry_id("plan", ROLE_REPLAN, 1, 1)), 2),
                 stops_at(&other_stop_done, 2),
             ),
             (
                 stopping.clone(),
                 stopping.clone(),
                 stopping.clone(),
+                stopping.clone(),
                 stopping
             ),
-            "a re-plan is recorded by its request, its result or an event it emitted; another \
-             attempt's completion key does not complete this stop"
+            "a re-plan is recorded by its request, its result or an event it or its re-run after \
+             a refusal emitted; another attempt's completion key does not complete this stop"
         );
     }
 
@@ -47167,6 +48587,14 @@ mod tests {
             (
                 "the re-plan the stopping reject would drive is recorded",
                 with(re_plan_requested(2)),
+                2,
+            ),
+            (
+                "the re-plan the stopping reject would drive re-ran after a refusal",
+                with(
+                    Event::new(TYPE_UNIT_PROPOSED, b"{}".to_vec())
+                        .with_meta(META_SPAWN, spawn_retry_id("plan", ROLE_REPLAN, 2, 1)),
+                ),
                 2,
             ),
             (
@@ -47281,15 +48709,8 @@ mod tests {
             ),
         ]);
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
             grounder: Some(&grep),
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-            log: &|_| {},
-            hash_blob: &|_| Ok(String::new()),
+            ..stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()])
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -47344,15 +48765,8 @@ mod tests {
             false,
         );
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
             grounder: Some(&grep),
-            graph: None,
-            criteria: vec![criterion.to_string()],
-            log: &|_| {},
-            hash_blob: &|_| Ok(String::new()),
+            ..stub_deps(&st, &driver, vec![criterion.to_string()])
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
 
@@ -47500,6 +48914,7 @@ mod tests {
             criteria: vec![criterion.to_string()],
             log: &|_| {},
             hash_blob: &|_| Ok(String::new()),
+            check_emit: &crate::contextgraph::check_emit,
         };
         run_isolated(&cfg, &deps).unwrap();
 

@@ -28,12 +28,9 @@
 
 mod common;
 
+use common::fixtures::read_text as read;
 use common::repo::repo_root;
-use std::path::{Path, PathBuf};
-
-fn read(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
-}
+use std::path::PathBuf;
 
 /// Extract the value of the first `grounder:` key in a YAML-ish document: the token after the
 /// colon, with any inline `#` comment and surrounding whitespace stripped. Returns `None` if no

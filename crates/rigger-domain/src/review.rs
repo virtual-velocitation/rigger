@@ -2,16 +2,19 @@
 //! risk-tiered review-depth routing, the review rosters, and the spec critique (spec 112): its
 //! prompt, its finding lines and the record keyed on a spec's content hash.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::contextgraph::TYPE_DECISION_MADE;
+use crate::contextgraph::query::referenced_id;
+use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
 use crate::eventstore::{Error as StoreError, Event, EventStore, Position, TypeSelection};
+use crate::ledger;
 use crate::playbooks::fnv1a_64;
 use crate::spawn::{
-    attempt_of, lens_role, requests, result_of, spawn_id, SpawnEvent, SpawnResult, ROLE_ADVERSARY,
-    TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT,
+    attempt_of, lens_role, requests, result_of, spawn_id, Adjudication, SpawnEvent, SpawnResult,
+    ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT,
 };
 
 /// The two review-depth tiers a unit routes to: `TIER_LIGHT` runs the reduced roster,
@@ -669,7 +672,8 @@ fn string_entries(value: &Value) -> impl Iterator<Item = &str> {
 /// CLEAN): the ids of its BLOCKING findings, in finding order, minus every id named in the
 /// `resolves` of a `DecisionMade` among `decisions` that the store recorded after the critique's
 /// result (a greater position) and whose `governs` names `spec` - the spec path already made
-/// repo-relative - once each entry is normalized against `root` like the spec path
+/// repo-relative - once each entry is read as the id it names ([`referenced_id`], so a citation of
+/// lines of the spec names the spec) and normalized against `root` like the spec path
 /// ([`normalize_spec_path`]). An id the critique does not hold is ignored, and supersession is not
 /// read: a recorded resolution stands until the text changes.
 pub fn open_findings(
@@ -683,8 +687,9 @@ pub fn open_findings(
         .filter(|event| event.type_ == TYPE_DECISION_MADE && event.position > critique.position)
         .filter_map(Event::decode::<Value>)
         .filter(|decision| {
-            string_entries(&decision["governs"])
-                .any(|governed| normalize_spec_path(root, governed).as_deref() == Some(spec))
+            string_entries(&decision["governs"]).any(|governed| {
+                normalize_spec_path(root, referenced_id(governed)).as_deref() == Some(spec)
+            })
         })
         .flat_map(|decision| {
             string_entries(&decision["resolves"])
@@ -698,6 +703,62 @@ pub fn open_findings(
         .filter(|finding| finding.blocking && !resolved.contains(&finding.id))
         .map(|finding| finding.id.clone())
         .collect()
+}
+
+/// One upheld review finding a workflow's check-in stage fixes before its gates: the finding's id,
+/// the locations it is about (a path, or a path and line) and its text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunNote {
+    pub id: String,
+    pub about: Vec<String>,
+    pub summary: String,
+}
+
+/// The run's notes for its check-in stage: every finding id an adjudicator's verdict upheld on
+/// a unit that integrated, once each in id order, with the locations and text the latest
+/// `ReviewFinding` of that id recorded. A verdict is read where every driver records it: a
+/// landing round's `reviewed` status evidence - an approve's, or a later round's reject that
+/// converged - and a failed round's `UnitFailed` `review_reason`. An upheld id no recorded
+/// finding carries has no text to fix and is left out. `events` is the current run.
+pub fn run_notes(events: &[Event]) -> Result<Vec<RunNote>, serde_json::Error> {
+    let state = ledger::project(events)?;
+    let integrated = |unit: &str| {
+        state
+            .units
+            .get(unit)
+            .is_some_and(|u| u.status == ledger::Status::Integrated)
+    };
+    let mut findings: BTreeMap<String, RunNote> = BTreeMap::new();
+    let mut upheld: BTreeSet<String> = BTreeSet::new();
+    for event in events {
+        let Some(body) = event.decode::<Value>() else {
+            continue;
+        };
+        let id = body["id"].as_str().unwrap_or_default();
+        let verdict = match event.type_.as_str() {
+            TYPE_REVIEW_FINDING => {
+                let note = RunNote {
+                    id: id.to_string(),
+                    about: string_entries(&body["about"]).map(str::to_string).collect(),
+                    summary: body["summary"].as_str().unwrap_or_default().to_string(),
+                };
+                findings.insert(note.id.clone(), note);
+                continue;
+            }
+            ledger::TYPE_UNIT_STATUS if body["status"] == "reviewed" => &body["evidence"]["review"],
+            ledger::TYPE_UNIT_FAILED => &body["review_reason"],
+            _ => continue,
+        };
+        if let Some(verdict) = verdict.as_str().and_then(Adjudication::parse) {
+            if integrated(id) {
+                upheld.extend(verdict.upheld);
+            }
+        }
+    }
+    Ok(upheld
+        .into_iter()
+        .filter_map(|id| findings.remove(&id))
+        .collect())
 }
 
 #[cfg(test)]
@@ -1262,6 +1323,177 @@ mod tests {
             ["b1"],
             "an approve beside a BLOCKING line still counts as blocking: the verdict is never read"
         );
+    }
+
+    /// A later resolution whose `governs` cites lines of the spec (`path:line`, `path:from-to`)
+    /// governs the spec, so it closes the ids it names.
+    #[test]
+    fn a_resolution_citing_lines_of_the_spec_closes_the_ids_it_names() {
+        let critique = critique_at_ten(&[("b1", true), ("b2", true), ("b3", true)]);
+        assert_eq!(
+            open_findings(
+                &critique,
+                &[
+                    resolution(11, &["specs/a.md:12"], &["b1"]),
+                    resolution(12, &["/work/repo/specs/a.md:3-9"], &["b2"]),
+                ],
+                "specs/a.md",
+                Path::new("/work/repo"),
+            ),
+            ["b3"],
+            "a resolution citing lines of the spec, relative or absolute, closes its ids"
+        );
+    }
+
+    /// A `ReviewFinding` of `id` about `about` saying `summary`.
+    fn finding_event(id: &str, about: &[&str], summary: &str) -> Event {
+        ev_at(
+            0,
+            TYPE_REVIEW_FINDING,
+            json!({"id": id, "by": "lens:sdet", "summary": summary, "about": about}),
+        )
+    }
+
+    /// The event recording `unit`'s review `verdict` (`approve` or `reject`) whose verdict line
+    /// upholds `upheld`: an approve's `reviewed` status evidence, a reject's `UnitFailed`.
+    fn judged(unit: &str, verdict: &str, upheld: &[&str]) -> Event {
+        let line = json!({"verdict": verdict, "upheld": upheld}).to_string();
+        let (type_, body) = if verdict == "approve" {
+            (
+                ledger::TYPE_UNIT_STATUS,
+                json!({"id": unit, "status": "reviewed", "evidence": {"review": format!("judged\n{line}")}}),
+            )
+        } else {
+            (
+                ledger::TYPE_UNIT_FAILED,
+                json!({"id": unit, "attempts": 1, "cause": "reject", "review_reason": line}),
+            )
+        };
+        ev_at(0, type_, body)
+    }
+
+    /// The `UnitIntegrated` of `unit`.
+    fn integrated(unit: &str) -> Event {
+        ev_at(
+            0,
+            ledger::TYPE_UNIT_INTEGRATED,
+            json!({"id": unit, "commit": "abc"}),
+        )
+    }
+
+    /// The note `id` about `about` saying `summary`.
+    fn note(id: &str, about: &[&str], summary: &str) -> RunNote {
+        RunNote {
+            id: id.to_string(),
+            about: about.iter().map(|a| a.to_string()).collect(),
+            summary: summary.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_run_notes_are_the_upheld_findings_of_integrated_units_once_each() {
+        let cases: Vec<(&str, Vec<Event>, Vec<RunNote>)> = vec![
+            (
+                "no verdict upheld anything",
+                vec![
+                    finding_event("n1", &["a.rs"], "a"),
+                    judged("u1", "approve", &[]),
+                    integrated("u1"),
+                ],
+                vec![],
+            ),
+            (
+                "an approve's upheld finding on an integrated unit",
+                vec![
+                    finding_event("n1", &["a.rs:4"], "a"),
+                    judged("u1", "approve", &["n1"]),
+                    integrated("u1"),
+                ],
+                vec![note("n1", &["a.rs:4"], "a")],
+            ),
+            (
+                "a reject's upheld finding, and one upheld again on the approving round, once",
+                vec![
+                    finding_event("n1", &["a.rs"], "first text"),
+                    finding_event("b1", &["b.rs"], "blocking"),
+                    judged("u1", "reject", &["n1", "b1"]),
+                    finding_event("n1", &["a.rs:9"], "latest text"),
+                    judged("u1", "approve", &["n1"]),
+                    integrated("u1"),
+                ],
+                vec![
+                    note("b1", &["b.rs"], "blocking"),
+                    note("n1", &["a.rs:9"], "latest text"),
+                ],
+            ),
+            (
+                "two integrated units upholding the same id carry it once",
+                vec![
+                    finding_event("n1", &["a.rs"], "a"),
+                    judged("u1", "approve", &["n1"]),
+                    judged("u2", "approve", &["n1"]),
+                    integrated("u1"),
+                    integrated("u2"),
+                ],
+                vec![note("n1", &["a.rs"], "a")],
+            ),
+            (
+                "a later round's reject that converged upholds through its reviewed evidence",
+                vec![
+                    finding_event("c1", &["c.rs:2"], "wording"),
+                    ev_at(
+                        0,
+                        ledger::TYPE_UNIT_STATUS,
+                        json!({"id": "u1", "status": "reviewed", "evidence": {"review": "converged\n{\"verdict\":\"reject\",\"upheld\":[\"c1\"]}"}}),
+                    ),
+                    integrated("u1"),
+                ],
+                vec![note("c1", &["c.rs:2"], "wording")],
+            ),
+            (
+                "a unit that never integrated carries nothing",
+                vec![
+                    finding_event("g1", &["g.rs"], "ghost"),
+                    judged("ghost", "reject", &["g1"]),
+                    judged("ghost", "approve", &["g1"]),
+                ],
+                vec![],
+            ),
+            (
+                "an upheld id no finding carries is left out",
+                vec![judged("u1", "approve", &["missing"]), integrated("u1")],
+                vec![],
+            ),
+            (
+                "an approve with no verdict line upholds nothing",
+                vec![
+                    finding_event("n1", &["a.rs"], "a"),
+                    ev_at(
+                        0,
+                        ledger::TYPE_UNIT_STATUS,
+                        json!({"id": "u1", "status": "reviewed", "evidence": {"review": "approved"}}),
+                    ),
+                    integrated("u1"),
+                ],
+                vec![],
+            ),
+            (
+                "a status other than reviewed is no verdict",
+                vec![
+                    finding_event("n1", &["a.rs"], "a"),
+                    ev_at(
+                        0,
+                        ledger::TYPE_UNIT_STATUS,
+                        json!({"id": "u1", "status": "verified", "evidence": {"review": r#"{"verdict":"approve","upheld":["n1"]}"#}}),
+                    ),
+                    integrated("u1"),
+                ],
+                vec![],
+            ),
+        ];
+        for (why, events, want) in cases {
+            assert_eq!(run_notes(&events).unwrap(), want, "{why}");
+        }
     }
 
     #[test]

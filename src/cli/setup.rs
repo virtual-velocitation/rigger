@@ -1,4 +1,5 @@
 use super::*;
+use rigger::contextgraph::sqlite::CatchUp;
 
 /// `rigger version` (and `rigger --version` / `-V`): print the crate version and the build
 /// provenance, so any agent can identify the exact binary without guessing.
@@ -697,8 +698,8 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // criterion 4).
     let scaffold = init_project(root, TEMPLATE_SETS)?;
     // Pay the one cold rebuild a `graph.db` owes (spec 101) - folded under an older fold rule, or
-    // missing an event the log holds: the only command that rebuilds it, because it is the verb
-    // every install already runs.
+    // missing an event the log holds, in the cases `rebuild_owed_graph` names: the only command
+    // that rebuilds it, because it is the verb every install already runs.
     let graph_rebuilt = rebuild_owed_graph()?;
     let workflow = install_workflow(root)?;
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
@@ -869,97 +870,156 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     Ok(())
 }
 
-/// How many events a graph rebuild folds per committed batch: an interrupted rebuild resumes from
-/// its last committed batch, and a batch is what it holds in memory at once.
+/// How many events a graph rebuild reads from the log per batch: a batch is what it holds in memory
+/// at once, never a transaction bound - the fold commits each batch in the bounded transactions its
+/// graph cuts it into, and an interrupted rebuild resumes from the last of them committed.
 const REBUILD_BATCH: usize = 10_000;
 
-/// Rebuild this project's `graph.db` from the event log when it owes that rebuild (spec 101) -
-/// it was folded under an older fold rule, or it misses an event the log holds, which setup finds
-/// on every run by reading the file's ledger of folded positions against the log's live selection
-/// whether or not a mark says so - saying so, naming the cause, reporting how far along it is, and
-/// report whether it did. A rebuild's own unfinished work - the shadow a stopped swap left
-/// standing, or the tail past the cursor a swap put in place - is no owed cause: it is finished
-/// with no `rebuilding graph.db ...: <cause>` line, still reporting how far along it is, and so
-/// rewrites a `graph.db` whose ledger owes nothing. Only a `graph.db` that owes nothing and holds
-/// no unfinished rebuild is left untouched; with no `graph.db` there is nothing to rebuild, and the
-/// owed mark a removed one left behind is dropped, so the file a later command makes in its place
-/// starts owing nothing it recorded. The rebuild folds the log's live selection - the rows `rigger
-/// reset --derived` keeps - into a shadow file whose pruned copy replaces `graph.db` in one step
+/// Rebuild this project's `graph.db` from the event log when it owes that rebuild (spec 101) - it
+/// was folded under an older fold rule, or it misses an event the log holds, which setup finds by
+/// seeding the file's `caught_up` cursor ([`Projector::seed_cursor`]): on a file not yet carrying
+/// it, the seeding reads the file's ledger of folded positions against the log's live selection,
+/// and the prefix it finds violated is owed - a position missing up to the bound the seeding names
+/// and older than the catch-up horizon (every one on a server-backed log, whose stamps are taken on
+/// another host's clock, so their skew moves nothing), an empty ledger beside a non-empty log, or a
+/// non-empty one beside an empty log or past its head - saying so, naming the cause, reporting how
+/// far along it is, and report whether it did. The owed mark an older binary's lost fold left
+/// beside the file names no cause (spec 124, THE MARK). On a file that owes its rebuild for an
+/// older fold rule, or whose rebuild's tail is unfinished, the seeding seeds no cursor and reads
+/// only an old missing position as lost. A rebuild's own unfinished work - the shadow a stopped
+/// rebuild left standing, or the tail past the cursor a swap put in place - is no owed cause: it is
+/// paid with no `rebuilding graph.db ...: <cause>` line, still reporting how far along it is, and
+/// so rewrites a `graph.db` that owes nothing - a resumable shadow resumed, one that is not
+/// resumable refolded from the start, a tail finished ([`Projector::rebuild`]). Only a `graph.db`
+/// that owes nothing and holds no unfinished rebuild is not rebuilt; a NEW rebuild is refused while
+/// the run is live (below). With no `graph.db` - a cold start - the owed mark a removed one left
+/// behind is dropped first, since it speaks of the removed file alone, and setup makes that file:
+/// seeded at 0 beside an empty log, whose `events.db` it never makes, and rebuilt beside a
+/// non-empty one. The rebuild folds the log's live selection - the rows `rigger reset --derived`
+/// keeps - into a shadow file whose pruned copy replaces `graph.db` in one step
 /// ([`Projector::rebuild`]), streaming the log once, resuming an interrupted rebuild from its last
-/// committed batch and finishing exactly the tail of one interrupted after its swap.
+/// committed transaction and finishing exactly the tail of one interrupted after its swap.
 ///
-/// A ledger entry of perception folds with the batch re-extracted for it (spec 107,
-/// `ingest::resolve_entry`): from the entry's blob in the repository's object database, read
-/// through one batch process ([`entry_blobs`]) started when the rebuild meets its first entry and
-/// kept to its end, else from the tree's file under THE ONE ROOT ([`tree_root`]), asked of git at
-/// that first entry too, else from no bytes; an entry no source resolves folds nothing. A rebuild
-/// that folds no entry starts no batch process. The report that follows a rebuild
-/// ([`identities_behind_their_recording`]) reads the tree under the same root, and is the one to
-/// ask git for it when no entry did and an identity is behind its latest recording: the root is
-/// asked for once, by whichever needs it first, and git is asked nothing when neither does.
+/// Setup opens `graph.db` for write once, under the rebuild lock ([`open_graph_for_write`]): the
+/// file it seeds, rebuilds and catches up is that one, made by that open on a cold start. After the
+/// rebuild, or with none owed, setup folds the file forward from its `caught_up` cursor to the
+/// log's head (spec 124, ONE PROCEDURE, [`catch_up_to_head`]) and says how that ended, unless the
+/// seeding met another writer's write lock; the catch-up reads the log through the store the
+/// projector opens for itself at its first call, a second open of the log the seeding and the
+/// rebuild read, and re-extracts each ledger entry its fold hands a re-extraction - one not yet
+/// folded, whose payload parses and whose generation its identity does not already hold - from the
+/// sources a rebuild reads (below, [`reextract_entry`]). A catch-up stopped at a failure fails
+/// setup with the line naming the position it stopped at.
 ///
-/// Before it reads or writes anything else it takes the rebuild lock on `graph.db.lock`
-/// ([`Projector::lock_rebuild`]), making that zero-byte file beside `graph.db` if it is not there,
-/// and holds it until the rebuild is paid or found not owed: while another holds it - a rebuild,
-/// whatever phase it is in, or a `rigger reset` - this setup is refused at once with the one
-/// refusal text naming the lock, having opened no graph file and made none.
+/// A NEW rebuild - one whose pay starts a fresh shadow and folds the log from its start
+/// ([`Projector::rebuild_starts_fresh`]): a cause owed beside no standing shadow, a swapped-in
+/// tail standing or not, or a standing shadow that is not resumable, an older-rule binary's among
+/// them - is refused while the run is live (spec 124): through `refuse_if_live`, the live-run
+/// refusal `rigger reset --derived` has, over the log the rebuild reads, this project's `.rigger`
+/// and its store selection, with the scratch configuration, registry and clock
+/// [`ResetEnv::resolve`] reads only once such a rebuild is owed. Setup then fails with
+/// [`live_run_rebuild_refusal`]'s text, offering no override, and otherwise holds the step lock the
+/// probe took, making `.rigger/step.lock` where none stands, until the rebuild returns. Resuming a
+/// resumable shadow, cause or not, and finishing a tail no cause is owed beside are exempt and run
+/// beside a live run, and a `graph.db` whose pay starts no fresh shadow reads no liveness.
+///
+/// A ledger entry of perception whose fold asks a batch - one not yet folded, whose payload parses
+/// and whose generation its identity does not already hold - folds with the batch re-extracted for
+/// it (spec 107, `ingest::resolve_entry`) by a re-extraction the rebuild builds for itself from the
+/// factory the write open installs ([`Projector::with_reextraction`]), as each catch-up call builds
+/// its own. In the lane compiled with an extraction the batch is re-extracted from the entry's blob
+/// in the repository's object database, else from the tree's file under THE ONE ROOT of the open's
+/// cell ([`TreeRoot`]), else from no bytes; in the lane compiled without one no source re-extracts
+/// a batch. An entry no source resolves folds nothing and is passed over as resolved to nothing
+/// (spec 124, THE DECIDE STEP). The root is asked of git at the first entry the rebuild's
+/// re-extraction is handed, resolved or not, in either lane. In the lane compiled with an
+/// extraction that first entry also asks whether an object database stands there and, inside a
+/// repository, starts the one batch process ([`entry_blobs`]) the blobs are read through, ended as
+/// the rebuild returns - before the report and the catch-up, each call of which starts its own at
+/// the first entry it is handed - so no two batch processes run at once; a batch process that
+/// cannot start there fails the rebuild, naming its command, rather than fold the entries with no
+/// object database asked. The lane compiled without one asks for no object database and starts no
+/// batch process. A rebuild that meets no entry starts no batch process. The report that follows a
+/// rebuild ([`identities_behind_their_recording`]) reads the tree under the same root, from the
+/// same cell, and is the one to ask git for it when the rebuild handed its re-extraction no entry
+/// and an identity is behind its latest recording: the root is asked for once, by whichever reader
+/// of the cell needs it first - the rebuild's re-extraction, the report or a catch-up call's
+/// re-extraction - and of git by none when none does.
+///
+/// Once an orphaned mark is dropped, and before it reads or writes anything else, it takes the
+/// rebuild lock on `graph.db.lock` ([`Projector::lock_rebuild`]), making that zero-byte file
+/// beside `graph.db` if it is not there, and holds it until the rebuild is paid or found not
+/// owed: while another holds it - a rebuild, whatever phase it is in, or a `rigger reset` - this
+/// setup is refused at once with the one refusal text naming the lock, having opened no graph file
+/// and made none.
 fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     let graph_db = db_path("graph.db");
-    if !Path::new(&graph_db).exists() {
-        Projector::forget_orphaned_mark(&graph_db)?;
-        return Ok(false);
-    }
+    Projector::forget_orphaned_mark(&graph_db)?;
     let held = Projector::lock_rebuild(&graph_db)?;
     // The scaffold may just have minted the durable identity: the log moves to it first (the
     // migration every run driver performs on open), so the rebuild reads the history the legacy
     // namespace still holds.
-    migrate_local_identity()?;
+    migrate_local_identity(Some(&held))?;
     let project = project_identity();
     let graph_error = |e: rigger::eventstore::Error| contextgraph::Error(e.to_string());
-    // Where the tree is rooted is decided once, by the first to need it: the first entry that
-    // resolves, or else the report's first identity behind its latest recording, which reads the
-    // tree under the root the entries resolved under. Whether an object database can be asked is
-    // decided at that first entry alone: `batch` is none until it, and then holds the batch
-    // process, or none where no database can be asked. A rebuild that folds no entry and leaves
-    // no identity behind asks git for neither.
-    let rooted = std::cell::OnceCell::new();
-    let tree = || -> &Path { rooted.get_or_init(|| tree_root(&cwd().join(RIGGER_DIR))) };
-    let mut batch: Option<Option<rigger::worktree::BlobBatch>> = None;
-    let mut reextract = |entry: &Event| {
-        let root = tree();
-        let blobs = batch.get_or_insert_with(|| entry_blobs(root));
-        let mut held = blobs
-            .as_mut()
-            .map(|batch| |id: &str| batch.blob(id).map_err(|e| contextgraph::Error(e.0)));
-        rigger::ingest::resolve_entry(
-            root,
-            entry,
-            held.as_mut()
-                .map(|source| source as &mut rigger::ingest::BlobSource),
+    // A NEW rebuild - one whose pay starts a fresh shadow - is refused while the run is live (spec
+    // 124): the live-run refusal `rigger reset --derived` has, over this store's log, its scratch
+    // configuration, registry and clock read only once the pay would start one, so a setup whose
+    // pay starts none reads none of them.
+    let selection = store_selection(None, None)?;
+    let loc = StoreLocation {
+        dir: cwd().join(RIGGER_DIR),
+    };
+    let refuse = |log: &dyn EventStore| {
+        refuse_if_live(
+            &loc,
+            &selection,
+            &ResetEnv::resolve(&loc)?,
+            log,
+            live_run_rebuild_refusal,
         )
     };
-    match store_selection(None, None)? {
-        StoreSelection::Sqlite => {
-            let store = open_sqlite_store(&db_path("events.db"))?;
+    // The one write open of `graph.db` this setup makes, under the rebuild lock: the file it seeds,
+    // rebuilds and catches up, with the catch-up's log and re-extraction installed. The rebuild
+    // re-extracts through a re-extraction it builds for itself from that installed factory and
+    // drops as it returns, which, compiled with an extraction, asks git for the object database at
+    // the first entry it is handed, and compiled without one never does. Where the tree is rooted
+    // is asked of git once, from the one cell the open returns, by the first reader to need it: the
+    // first entry the rebuild's re-extraction is handed, resolved or not, or else the report's
+    // first identity behind its latest recording, which reads the tree under the root any entry was
+    // handed under, or else the first entry a catch-up call's re-extraction is handed. A rebuild
+    // that meets no entry and leaves no identity behind asks git for neither.
+    let (graph, root) = open_graph_for_write(held.path(), &project, &selection)?;
+    let tree = || root.get();
+    match &selection {
+        sqlite @ StoreSelection::Sqlite => {
+            // A project with no run recorded has no log file: its log is read as the empty one it
+            // is, so setup never makes `events.db`.
+            let events_db = db_path("events.db");
+            let store = open_sqlite_store(sqlite.log_file(&events_db))?;
             let prefix = Namespaced::prefix_for(&project);
             let identity = rigger::ingest::derived_index_identity();
             pay_owed_rebuild(
                 &held,
-                &project,
+                &graph,
                 &Namespaced::new(&store, &project),
                 &tree,
-                &mut |sink| {
-                    store
-                        .read_live_positions(
-                            &prefix,
-                            conductor::STREAM,
-                            &identity,
-                            REBUILD_BATCH,
-                            &mut |positions| {
-                                sink(positions).map_err(|e| rigger::eventstore::Error::Backend(e.0))
-                            },
-                        )
-                        .map_err(graph_error)
+                SeedingReads {
+                    live: &mut |sink| {
+                        store
+                            .read_live_positions(
+                                &prefix,
+                                conductor::STREAM,
+                                &identity,
+                                REBUILD_BATCH,
+                                &mut |positions| {
+                                    sink(positions)
+                                        .map_err(|e| rigger::eventstore::Error::Backend(e.0))
+                                },
+                            )
+                            .map_err(graph_error)
+                    },
+                    stamp_of: &mut |at| store.recorded_at(at).map_err(graph_error),
                 },
                 &mut |after, sink| {
                     store
@@ -976,14 +1036,16 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                         )
                         .map_err(graph_error)
                 },
-                &mut reextract,
+                &refuse,
             )
         }
         // A server-backed log has no compaction plan (`rigger reset --derived` is sqlite-only), so
         // its live selection is its run stream as it stands: its positions are read through the
-        // store port alone, and a rebuild reads each of its events once.
+        // store port alone, and a rebuild reads each of its events once. Its store stamps are
+        // taken on the server's clock, not this host's, so the seeding is handed none: the
+        // server's skew moves nothing, and every position the file misses counts old.
         selection => {
-            let backend = resolve_store(&selection, &db_path("events.db"))?;
+            let backend = resolve_store(selection, &db_path("events.db"))?;
             let store = Namespaced::new(backend.as_ref(), &project);
             let mut positions =
                 contextgraph::sqlite::stream_positions(&store, conductor::STREAM, REBUILD_BATCH);
@@ -991,49 +1053,103 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                 contextgraph::sqlite::stream_source(&store, conductor::STREAM, REBUILD_BATCH);
             pay_owed_rebuild(
                 &held,
-                &project,
+                &graph,
                 &store,
                 &tree,
-                &mut positions,
+                SeedingReads {
+                    live: &mut positions,
+                    stamp_of: &mut |_| Ok(None),
+                },
                 &mut source,
-                &mut reextract,
+                &refuse,
             )
         }
     }
 }
 
-/// The batch process a rebuild reads its entries' blobs from, over the repository holding `root`:
-/// none outside a git repository or when the process cannot start, and none in the lane that
-/// compiles no extraction, where no entry resolves and no process is started.
-fn entry_blobs(root: &Path) -> Option<rigger::worktree::BlobBatch> {
-    if cfg!(feature = "symbols") {
-        rigger::worktree::BlobBatch::start(root)
-    } else {
-        None
-    }
+/// The two reads of the log that seed `graph.db`'s `caught_up` cursor ([`Projector::seed_cursor`],
+/// spec 124, THE CURSOR AND ITS SEEDING): the positions of its live selection, and the store stamp
+/// of the event it holds at a position.
+struct SeedingReads<'r, 's> {
+    live: &'r mut contextgraph::sqlite::PositionSource<'s>,
+    stamp_of: &'r mut contextgraph::sqlite::StampLookup<'s>,
 }
 
-/// Read why the `graph.db` whose rebuild lock is `held` owes its rebuild - its own records, and
-/// its ledger against the positions `live` streams ([`Projector::owed_against`]) - say so naming
-/// each cause, and pay it by rebuilding from `source`, each ledger entry of perception folded with
-/// the batch `reextract` answers for it, which also finishes a rebuild's own
-/// unfinished work (a standing shadow, or a swapped-in cursor's tail) with no cause to name, since
-/// the ledger owes none of it; print how far along the rebuild is, what its run-closure prune
-/// removed from the rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own) and how
-/// many events it passed over because the fold rejects their payload, and, read from `log` and the
-/// rebuilt graph once the rebuild ends, how many identities the next ingest records again
-/// ([`rebuild_report_line`]); report whether it rebuilt.
+/// The live-run refusal a new rebuild of `graph.db` meets: [`refuse_if_live`] over the log it is
+/// handed, answering the step lock its probe took, still held, or the refusal.
+type LiveRunRefusal<'a> =
+    dyn Fn(&dyn EventStore) -> Result<Option<HeldLock>, Box<dyn std::error::Error>> + 'a;
+
+/// The refusal `rigger setup` fails with when a new rebuild of `graph.db` is owed while the run is
+/// live (spec 124, CATCH-UP LINES), `reasons` being what the live-writer probe names, joined. It
+/// offers no override: `--force-live` is `rigger reset --derived`'s alone.
+fn live_run_rebuild_refusal(reasons: &str) -> String {
+    format!(
+        "rigger setup: refusing to rebuild graph.db while the run is live - {reasons}; stop the \
+         run's driver, run rigger setup, then relaunch the run by adoption"
+    )
+}
+
+/// Seed the `caught_up` cursor of `graph`, the `graph.db` whose rebuild lock is `held`, against the
+/// log through `seeding`, handed the head of `log` read once here and its missing positions aged
+/// against the clock read once here ([`Projector::seed_cursor`]); read why the file owes its
+/// rebuild ([`contextgraph::sqlite::causes_once_seeded`]) - the older fold rule the file records
+/// ([`Projector::owed_because`]), and the lost fold ([`contextgraph::OWED_LOST_FOLD`]) when the
+/// seeding ran and found the prefix violated;
+/// when the pay starts a NEW rebuild, a fresh shadow the log is folded into from its start
+/// ([`Projector::rebuild_starts_fresh`]) - a cause owed beside no standing shadow, a swapped-in
+/// tail standing or not, or a standing shadow that is not resumable - ask `refuse_if_live` of `log`
+/// and fail with its refusal while the run is live, before any line is printed or the file
+/// rewritten, else hold the step lock its probe took until the rebuild returns; say so naming each
+/// cause, and pay it by rebuilding from `source`, the log's live selection, each ledger entry of
+/// perception its fold asks a batch for folded with the batch the rebuild's own re-extraction
+/// answers for it ([`Projector::rebuild`]), which also pays a rebuild's own unfinished work with no
+/// cause to name, since neither the file's records nor the seeding names it: a standing shadow,
+/// resumed when it is resumable and else refolded from the start, or a swapped-in cursor's tail,
+/// finished - the resume and the tail with no liveness asked, so beside a live run too; print how
+/// far along the rebuild is, what its run-closure prune removed from the rebuilt graph
+/// ([`pruned_line`], as `rigger reset --runs` words its own), and, read from `log` and the rebuilt
+/// graph once the rebuild ends, how many identities the next ingest records again
+/// ([`rebuild_report_line`]); then, when the seeding met another writer's write lock
+/// ([`contextgraph::sqlite::Seeding::Skipped`]), that the catch-up was not started, the next setup
+/// seeding the file (spec 124, CATCH-UP LINES), and otherwise fold the file forward from its cursor
+/// to the log's head ([`catch_up_to_head`]), saying how that ended; then, rebuilt or not, how many
+/// events the file records passed over, by cause, whenever it records any
+/// ([`Projector::passed_over`], spec 124, CATCH-UP LINES); then remove the owed mark an older
+/// binary's lost fold left beside the file once it carries `caught_up`, whether or not the seeding
+/// was contended or the catch-up stopped ([`Projector::forget_cursored_mark`], spec 124, THE MARK);
+/// and report whether it rebuilt. A catch-up that stopped at a failure fails setup with the line
+/// naming where it stopped, whatever the passed-over read or the removal answered - a mark left
+/// standing is no cause, and the next setup's removal retries it; only when the catch-up did not
+/// stop at a failure is a failed passed-over read setup's failure, and after it a mark the removal
+/// cannot remove, naming the mark.
 fn pay_owed_rebuild<'t>(
     held: &contextgraph::sqlite::RebuildLock,
-    project: &str,
+    graph: &Projector,
     log: &dyn EventStore,
     tree: &dyn Fn() -> &'t Path,
-    live: &mut contextgraph::sqlite::PositionSource,
+    seeding: SeedingReads,
     source: &mut contextgraph::sqlite::RebuildSource,
-    reextract: &mut contextgraph::sqlite::Reextract,
+    refuse_if_live: &LiveRunRefusal,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let causes = Projector::open(held.path(), project)?.owed_against(live)?;
-    if !causes.is_empty() {
+    let seeded = graph.seed_cursor(
+        seeding.live,
+        seeding.stamp_of,
+        log.log_head()?,
+        std::time::SystemTime::now(),
+    )?;
+    let causes = contextgraph::sqlite::causes_once_seeded(graph.owed_because()?, &seeded);
+    let owed = !causes.is_empty();
+    // A NEW rebuild - one whose pay starts a fresh shadow and folds the log from its start - is
+    // refused while the run is live, and the step lock the probe took is held until the rebuild
+    // returns. Resuming a resumable shadow, or finishing a tail no cause is owed beside, is exempt
+    // and asks no liveness, so it runs beside a live run.
+    let _step_lock = if graph.rebuild_starts_fresh(held, owed)? {
+        refuse_if_live(log)?
+    } else {
+        None
+    };
+    if owed {
         println!(
             "rebuilding graph.db from the event log: {}, so the log's live selection is refolded \
              once",
@@ -1041,34 +1157,97 @@ fn pay_owed_rebuild<'t>(
         );
     }
     let mut printed = 0;
-    let rebuilt = Projector::rebuild(
-        held,
-        project,
-        !causes.is_empty(),
-        source,
-        reextract,
-        &mut |at| {
-            if let Some(line) = rebuild_progress_line(at, &mut printed) {
-                println!("{line}");
-            }
-        },
-    )?;
+    let rebuilt = graph.rebuild(held, owed, source, &mut |at| {
+        if let Some(line) = rebuild_progress_line(at, &mut printed) {
+            println!("{line}");
+        }
+    })?;
     if let Some(rebuilt) = rebuilt {
         println!("rebuilt graph.db from the event log");
         println!("{} from the rebuilt graph", pruned_line(&rebuilt.pruned));
-        if rebuilt.passed_over > 0 {
-            println!(
-                "passed over {} event(s) whose payload the fold rejects, recorded as folded",
-                rebuilt.passed_over
-            );
-        }
-        let graph = Projector::open(held.path(), project)?;
         println!(
             "{}",
-            rebuild_report_line(identities_behind_their_recording(log, &graph, tree)?)
+            rebuild_report_line(identities_behind_their_recording(log, graph, tree)?)
         );
     }
+    let caught_up = if seeded == contextgraph::sqlite::Seeding::Skipped {
+        println!(
+            "graph.db catch-up was not started: another writer holds the write lock - the next \
+             rigger setup starts it"
+        );
+        Ok(None)
+    } else {
+        catch_up_to_head(&mut || graph.catch_up())?
+    };
+    if let Ok(Some(line)) = &caught_up {
+        println!("{line}");
+    }
+    let passed = graph.passed_over();
+    if let Ok(passed) = &passed {
+        if let Some(by_cause) = passed_over_by_cause(passed) {
+            println!(
+                "passed over {} event(s) the fold could not fold {by_cause}, recorded as folded - \
+                 {}",
+                passed.total(),
+                PASSED_OVER_RETRIED
+            );
+        }
+    }
+    let forgotten = graph.forget_cursored_mark();
+    // A catch-up that stopped at a failure is setup's failure first, whatever the passed-over
+    // read or the mark's removal answered, so its line and position are never masked.
+    if let Err(stopped) = caught_up {
+        return Err(stopped.into());
+    }
+    passed?;
+    forgotten?;
     Ok(rebuilt.is_some())
+}
+
+/// Fold `graph.db` forward from its `caught_up` cursor to the log's head (spec 124, ONE
+/// PROCEDURE): call `catch_up` while a call answers [`CatchUp::Advanced`], and answer, once one
+/// answers anything else, what `rigger setup` says of it (CATCH-UP LINES). `Ok` carries the line
+/// setup prints and exits zero beside: that it caught the file up, counting the positions the
+/// calls recorded, for a call that reached the head once any was recorded; where another writer
+/// stopped a call ([`CatchUp::Skipped`]); and none for a call that reached the head with nothing
+/// recorded, or for a file that folds no catch-up of its own ([`CatchUp::Inert`]), whose rebuild
+/// setup runs before this. `Err` carries the line setup fails with, for a call that stopped at a
+/// failure ([`CatchUp::Failed`]). A failure to read the file's own standing is the outer error.
+fn catch_up_to_head(
+    catch_up: &mut dyn FnMut() -> Result<CatchUp, contextgraph::Error>,
+) -> Result<Result<Option<String>, String>, contextgraph::Error> {
+    let mut recorded_by_the_calls = 0;
+    loop {
+        return Ok(match catch_up()? {
+            CatchUp::Advanced { recorded } => {
+                recorded_by_the_calls += recorded;
+                continue;
+            }
+            CatchUp::AtHead => Ok((recorded_by_the_calls > 0).then(|| {
+                format!(
+                    "caught graph.db up with the event log: folded {recorded_by_the_calls} \
+                     event(s) it missed"
+                )
+            })),
+            CatchUp::Inert(_) => Ok(None),
+            CatchUp::Skipped { at } => Ok(Some(catch_up_stopped(
+                at,
+                "another writer holds the write lock or advanced the cursor past this call's \
+                 read - the next fold through the folding store or the next rigger setup \
+                 continues it",
+            ))),
+            CatchUp::Failed { at, error } => Err(catch_up_stopped(
+                at,
+                &format!("{error} - rerun rigger setup once the cause is fixed"),
+            )),
+        });
+    }
+}
+
+/// The line `rigger setup` says its catch-up of `graph.db` stopped with, at the position `at` its
+/// last call read, or would read, its page from, for the reason `why` (spec 124, CATCH-UP LINES).
+fn catch_up_stopped(at: rigger::eventstore::Position, why: &str) -> String {
+    format!("graph.db catch-up stopped at position {at}: {why}")
 }
 
 /// How many identities `graph` holds at a generation that is not their latest recording's on
@@ -1510,15 +1689,28 @@ fn write_if_absent(path: &Path, content: &str) -> Result<bool, Box<dyn std::erro
 }
 
 /// The README `rigger init` scaffolds into `.rigger/instructions/`, explaining the operator
-/// instruction layer. The loader skips it, so documenting the layer never injects it.
+/// instruction layer: the file name of each built-in entry, and how a file of that name replaces
+/// or switches off its built-in while every other file appends. The loader skips it, so
+/// documenting the layer never injects it.
 const SCAFFOLD_INSTRUCTIONS_README: &str = "\
 # Operator instructions
 
-Every `*.md` file in this directory (except this README) is appended, in filename order,
-to the system prompt of every agent rigger spawns: after the agent's persona and the
-built-in engineering principles and working discipline, before rigger's communication
-discipline. Name files with a numeric prefix (`10-house.md`, `20-team.md`) to control their
-order.
+Rigger composes the system prompt of every agent it spawns from the agent's persona, then the
+built-in instructions rigger ships, then the operator files in this directory. The built-ins,
+in the order they are injected, each named by the file that overrides it:
+
+- `engineering-principles.md`
+- `working-discipline.md`
+- `communication.md`
+
+A file in this directory named exactly as a built-in (case-sensitive, nothing trimmed) replaces
+that built-in: its body is injected in the built-in's place. A same-named file whose body is
+blank (empty or whitespace only, one leading byte-order mark ignored) switches the built-in
+off: neither the built-in nor the file is injected.
+
+Every other `*.md` file in this directory (except this README) is appended after the
+built-ins, in filename order. Name files with a numeric prefix (`10-house.md`, `20-team.md`)
+to control their order.
 
 Run `rigger instructions` to read exactly what your agents are held to.
 
@@ -1720,7 +1912,11 @@ isolation: none\n\
 recurse: true\n\
 ---\n\
 You decompose the spec into a DAG of small, independently-verifiable units, each\n\
-serving one acceptance criterion. Emit each as a UnitProposed decision. Do not write code.\n",
+serving one acceptance criterion. Emit each as a UnitProposed decision. Do not write code.\n\
+Add a `needs` edge only for a real dependency: a file one unit edits that another\n\
+reads or edits, or an API one unit adds that another calls. Units with no such\n\
+dependency carry no edge between them and run in parallel; never chain units in\n\
+order by default.\n",
     ),
     (
         "rust-engineer.md",
@@ -1793,9 +1989,10 @@ isolation: none\n\
 recurse: true\n\
 ---\n\
 You are the adjudicator (tier 3), the neutral final judge. Weigh the expert lenses\n\
-against the adversary and decide who wins. Be neutral in tone but EXTREMELY strict\n\
-on design / architecture / ADR adherence: any deviation or cut corner is a reject,\n\
-no matter which side flagged it. When you reject, say exactly what must change.\n\
+against the adversary and decide who wins. Be neutral in tone, and weigh every\n\
+finding you uphold against the review rule of the working discipline, no matter\n\
+which side flagged it: one in a blocking class is a reject, any other a note that\n\
+never blocks. When you reject, say exactly what must change and its class.\n\
 A red gate is non-negotiable: never weaken, skip or re-wire a gate to get green.\n\
 End\n\
 with a single JSON line {\"verdict\":\"approve\"} or {\"verdict\":\"reject\"} - reject\n\
@@ -1808,6 +2005,7 @@ mod tests {
     use super::*;
     use crate::test_support::git_init_quiet;
     use crate::test_support::language_marker_hits;
+    use crate::test_support::read_text;
     use crate::test_support::tool_available;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{
@@ -1859,6 +2057,120 @@ mod tests {
             vec!["rebuilt 0 events, through position 7 of 7 (100%)"],
             "a log holding nothing past the start is wholly folded"
         );
+    }
+
+    /// A new rebuild of `graph.db` - a file made beside a log that holds a position, whose
+    /// seeding finds its empty ledger a lost fold, so its pay starts a fresh shadow - holds the
+    /// step lock its live-run probe took until the rebuild returns: a `rigger step` started at
+    /// either read of the log the rebuild folds, the shadow's and the tail's, refuses with the
+    /// busy token its courier retries on, and the next step acquires the lock once it returns.
+    #[test]
+    fn a_new_rebuild_holds_the_step_lock_its_probe_took_until_the_rebuild_returns() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph_db = dir.path().join("graph.db");
+        let held = Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap();
+        let log = open_sqlite_store(":memory:").unwrap();
+        let mut racing = Vec::new();
+        let rebuilt = pay_owed_rebuild(
+            &held,
+            &Projector::open(held.path(), "proj").unwrap(),
+            &log,
+            &|| dir.path(),
+            SeedingReads {
+                live: &mut |sink| sink(&[1]),
+                stamp_of: &mut |_| Ok(None),
+            },
+            &mut |_, _| {
+                racing.push(
+                    acquire_step_lock(dir.path())
+                        .map(drop)
+                        .map_err(|e| e.to_string().contains(STEP_BUSY_TOKEN)),
+                );
+                Ok(())
+            },
+            &|_: &dyn EventStore| Ok(Some(acquire_step_lock(dir.path())?)),
+        )
+        .unwrap();
+        let next = acquire_step_lock(dir.path())
+            .map(drop)
+            .map_err(|e| e.to_string());
+        assert_eq!(
+            (rebuilt, racing, next),
+            (true, vec![Err(true), Err(true)], Ok(())),
+            "a step started at the shadow's read or the tail's refuses with the busy token, and \
+             the next one acquires the lock once the rebuild returns"
+        );
+    }
+
+    /// Spec 124, ONE PROCEDURE and CATCH-UP LINES: setup calls `catch_up` while a call answers
+    /// `Advanced`, summing the positions the calls recorded, and calls no more once one answers
+    /// anything else, saying how the calls ended - the success line for a call that reached the
+    /// head once a position was recorded, nothing for one that reached it with none recorded or
+    /// for a file that folds no catch-up of its own, the skipped line where another writer
+    /// stopped a call, the failed line as the error for a call that failed, and a failure to read
+    /// the file's standing as the outer error.
+    #[test]
+    fn setup_catches_up_while_a_call_advances_and_says_how_the_calls_ended() {
+        use crate::test_support::{catch_up_failed_line, catch_up_skipped_line, caught_up_line};
+        use contextgraph::sqlite::Inert;
+        type Said = Result<Result<Option<String>, String>, String>;
+        let advanced = |recorded| Ok(CatchUp::Advanced { recorded });
+        let at_head = || Ok(CatchUp::AtHead);
+        let rows: Vec<(Vec<Result<CatchUp, contextgraph::Error>>, Said)> = vec![
+            (
+                vec![advanced(2), advanced(0), advanced(3), at_head()],
+                Ok(Ok(Some(caught_up_line(5)))),
+            ),
+            (vec![at_head()], Ok(Ok(None))),
+            (vec![advanced(0), at_head()], Ok(Ok(None))),
+            (
+                vec![advanced(1), at_head()],
+                Ok(Ok(Some(caught_up_line(1)))),
+            ),
+            (vec![Ok(CatchUp::Inert(Inert::NoCursor))], Ok(Ok(None))),
+            (
+                vec![advanced(4), Ok(CatchUp::Inert(Inert::RebuildState))],
+                Ok(Ok(None)),
+            ),
+            (
+                vec![advanced(4), Ok(CatchUp::Skipped { at: 9 })],
+                Ok(Ok(Some(catch_up_skipped_line(9)))),
+            ),
+            (
+                vec![
+                    advanced(2),
+                    Ok(CatchUp::Failed {
+                        at: 7,
+                        error: "page read failed".into(),
+                    }),
+                ],
+                Ok(Err(catch_up_failed_line(7, "page read failed"))),
+            ),
+            (
+                vec![
+                    advanced(1),
+                    Err(contextgraph::Error("standing unreadable".into())),
+                ],
+                Err("standing unreadable".into()),
+            ),
+        ];
+        for (row, (answers, said)) in rows.into_iter().enumerate() {
+            let calls = answers.len();
+            let mut answers = answers.into_iter();
+            let mut called = 0;
+            let got = catch_up_to_head(&mut || {
+                called += 1;
+                answers
+                    .next()
+                    .expect("no call follows one that did not advance")
+            })
+            .map_err(|e| e.0);
+            assert_eq!(
+                (got, called),
+                (said, calls),
+                "row {row}: the calls end at the first answer that is not Advanced, saying so"
+            );
+        }
     }
 
     /// spec 24, crit 2 (idempotency + non-clobbering, byte level): a pre-existing pre-commit
@@ -3453,6 +3765,118 @@ mod tests {
             .unwrap_or_else(|| panic!("{file} must be a committed persona"))
     }
 
+    /// The tracked files under `paths`, repo-relative, as `git ls-files` lists them.
+    fn tracked_files(paths: &[&str]) -> Vec<String> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo())
+            .args(["ls-files", "--"])
+            .args(paths)
+            .output()
+            .expect("git ls-files runs");
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The awk program the author block spells after `open`, up to the `close` that ends it.
+    fn author_awk_program(open: &str, close: &str) -> String {
+        let text = committed_persona("rust-engineer.md");
+        let from = text
+            .find(open)
+            .unwrap_or_else(|| panic!("the block spells {open:?}"))
+            + open.len();
+        let len = text[from..]
+            .find(close)
+            .unwrap_or_else(|| panic!("the awk after {open:?} closes at {close:?}"));
+        text[from..from + len].to_string()
+    }
+
+    /// What awk prints running `program` over `files`; the run must succeed.
+    fn awk_output(program: &str, files: &[std::path::PathBuf]) -> String {
+        let out = std::process::Command::new("awk")
+            .arg(program)
+            .args(files)
+            .output()
+            .expect("awk runs");
+        assert!(
+            out.status.success(),
+            "awk runs the block's program: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    /// The public functions of the tracked `tests/common` files that reach the checked-in tree,
+    /// by name: each whose body spells the package root `CARGO_MANIFEST_DIR` or a compile-time
+    /// include, then each whose body names one already found, to a fixpoint. The bodies are
+    /// read by the tree's one lexer, so a comment naming a function is no call.
+    fn tree_reaching_helpers() -> std::collections::BTreeSet<String> {
+        use crate::source_audit::{block_span, fn_sig_lines, tokenize, RawKind};
+        const PRIMITIVES: [&str; 3] = ["CARGO_MANIFEST_DIR", "include_str!(", "include_bytes!("];
+        struct Item {
+            name: String,
+            public: bool,
+            spelled: String,
+            names: std::collections::BTreeSet<String>,
+        }
+        let mut items = Vec::new();
+        for file in tracked_files(&["tests/common"]) {
+            if !file.ends_with(".rs") {
+                continue;
+            }
+            let text = read_text(&repo().join(&file));
+            let lines: Vec<&str> = text.lines().collect();
+            for sig in fn_sig_lines(&lines, &[]) {
+                let (start, end) = block_span(&lines, sig);
+                let chars: Vec<char> = lines[start..=end].join("\n").chars().collect();
+                let toks = tokenize(&chars);
+                let Some(at) = toks
+                    .iter()
+                    .position(|t| t.kind == RawKind::Keyword && t.text == "fn")
+                else {
+                    continue;
+                };
+                let Some(name) = toks.get(at + 1).filter(|t| t.kind == RawKind::Ident) else {
+                    continue;
+                };
+                items.push(Item {
+                    name: name.text.clone(),
+                    public: toks[..at].iter().any(|t| t.text == "pub"),
+                    spelled: toks.iter().map(|t| t.text.as_str()).collect(),
+                    names: toks[at + 2..]
+                        .iter()
+                        .filter(|t| t.kind == RawKind::Ident)
+                        .map(|t| t.text.clone())
+                        .collect(),
+                });
+            }
+        }
+        let mut found = std::collections::BTreeSet::new();
+        loop {
+            let more: Vec<String> = items
+                .iter()
+                .filter(|item| !found.contains(&item.name))
+                .filter(|item| {
+                    PRIMITIVES.iter().any(|p| item.spelled.contains(p))
+                        || item.names.iter().any(|n| found.contains(n))
+                })
+                .map(|item| item.name.clone())
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            found.extend(more);
+        }
+        items
+            .into_iter()
+            .filter(|item| item.public && found.contains(&item.name))
+            .map(|item| item.name)
+            .collect()
+    }
+
     /// Every agent text rigger ships, labelled: the committed personas and scaffold seeds, the
     /// fan-out helpers, the built-in instruction entries and the discipline every review-tier
     /// prompt carries.
@@ -3541,11 +3965,12 @@ mod tests {
         );
     }
 
-    /// Spec 120's THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT: the working-discipline body,
-    /// read through the shipped-text helper, holds the three review sentences the reviewer
-    /// discipline no longer carries, in order, as the whole of its `## When you review` section,
-    /// which sits after the hand-over section and before the fan-out one, and the fan-out
-    /// section's `verify` bullet no longer restates the battery rule.
+    /// Spec 120's THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT, with the review rule: the
+    /// working-discipline body, read through the shipped-text helper, holds the three review
+    /// sentences the reviewer discipline no longer carries and the four sentences of the review
+    /// rule, in order, as the whole of its `## When you review` section, which sits after the
+    /// hand-over section and before the fan-out one, and the fan-out section's `verify` bullet no
+    /// longer restates the battery rule.
     #[test]
     fn the_working_discipline_body_holds_the_review_method_under_when_you_review() {
         let body = every_shipped_agent_text()
@@ -3559,8 +3984,8 @@ mod tests {
             WHEN_YOU_REVIEW.join(" ")
         );
         let review = words.find(&section).expect(
-            "`## When you review` holds the three review sentences, in order, and nothing else, \
-             right before the fan-out section",
+            "`## When you review` holds the review method and the review rule, in order, and \
+             nothing else, right before the fan-out section",
         );
         assert_eq!(
             (
@@ -3666,6 +4091,33 @@ mod tests {
         }
     }
 
+    /// Units run in parallel unless one depends on another: the committed planner and its scaffold
+    /// seed add a `needs` edge only for a real dependency - a file one unit edits that another
+    /// reads or edits, or an API one unit adds that another calls - and never chain units by
+    /// default.
+    #[test]
+    fn the_planner_adds_a_needs_edge_only_for_a_real_dependency() {
+        const RULE: &str = "Add a `needs` edge only for a real dependency: a file one unit edits \
+                            that another reads or edits, or an API one unit adds that another \
+                            calls. Units with no such dependency carry no edge between them and \
+                            run in parallel; never chain units in order by default.";
+        let planners: Vec<(String, String)> = every_shipped_persona()
+            .into_iter()
+            .filter(|(at, _)| at.ends_with("planner.md"))
+            .collect();
+        assert_eq!(
+            planners.len(),
+            2,
+            "the committed planner and its scaffold seed"
+        );
+        for (at, text) in planners {
+            assert!(
+                rigger::wave::normalize_ws(&text).contains(RULE),
+                "{at} must say {RULE:?}"
+            );
+        }
+    }
+
     /// The plan protocol in the binary is the one source of the rule that splits a criterion too
     /// large for one unit into ordered units: no shipped planner persona restates the rule or
     /// forbids the split.
@@ -3740,37 +4192,18 @@ mod tests {
     /// The two author roles carry this project's anchors for the built-in hand-over rules as one
     /// block, byte-identical in both and in no other persona: the implement gate set by name, the
     /// commands the author runs before it reports (clippy on both lanes, the audit gate with a
-    /// clean `git status`, the boundary audit, the content gates and red-before-green), the whole
-    /// suite left to the gates, the audit's closing rule, the test homes with the tool that
-    /// searches them, the counted checks: the roots a retired spelling is counted over with the
-    /// command that counts it, and the audit record owed for every added test-side shape with the
-    /// search command it pastes with its hits for the `sdet` lens to re-run (every test home,
-    /// the root crate's `src/` test modules included), run once per term of the statements of
-    /// each added test-side body and of the changed statements of each edited one over the
-    /// unit's whole range, a twin among untouched statements named as the tree's debt - each
-    /// string literal alone and in full, quotes
-    /// inside the term and one run per literal however short, and each outside call with its
-    /// first argument token, never the body's name, the record organised by statement, each
-    /// added or edited statement quoted with its `file:line` above its terms - and the sentence
-    /// walk's generators as commands over the unit's whole range on every round (the merge base
-    /// with the run branch to head, never the round's delta), the graph's caller lookup at depth
-    /// 1 with its counted fallback recorded as a gap, the count and the caller lookup run once
-    /// per item of the walk's hunk list and paired with it in the record, each item the hunks
-    /// add - a SQL conjunct inside a query string included - carrying its one-home line in one
-    /// of the working discipline's three forms, the item list read by shape as well as by name
-    /// with every added predicate under `ADDED PREDICATES` and a set of named members searched
-    /// by each member's name, each FIXED or new line's `file:line` witness, one per case the
-    /// code splits a quantified sentence's subject into with the cases named, the rule-spelling
-    /// search over every tracked text file, one run per pair of short terms - the feature's name
-    /// and the rule's noun phrase, both on one joined line with any words between - for a
-    /// rewritten rule's old statement and each label its cases carried (a term in another case
-    /// or a sentence split by a rewrap still a hit) whose command and hits the walk pastes for
-    /// the `sdet` lens to re-run, each boolean term a production hunk adds to or removes from a
-    /// filter, guard or predicate read as a rewritten rule whose consumer phrases - the notes,
-    /// Returns paragraphs, variant docs and oracles of the function's depth-1 callers - that
-    /// search runs as the function's name and the old answer's noun, and the foreground wait for
-    /// the long runs (the test binaries on both lanes and a lane script), polled to its exit
-    /// line when the host backgrounds one.
+    /// clean `git status`, the boundary audit, the content gates, red-before-green and, when the
+    /// production hunks touch `src/` or `crates/`, every root test that reaches the checked-in
+    /// tree - by the package root, a compile-time include, a read of a literal path or a
+    /// `tests/common` helper that resolves against the root or reads the root-relative path its
+    /// caller hands it, each anchor the block's command names - listed by that command and run
+    /// on both lanes), the whole suite left to the gates, the audit's closing rule, the test homes
+    /// with the tool that searches them, the counted check - the roots a retired spelling is
+    /// counted over with the command that counts it - and the foreground wait for the long runs
+    /// (the test binaries on both lanes and a lane script), polled to its exit line when the host
+    /// backgrounds one. The block owes no record: no sentence walk and its generators, no
+    /// one-home line, no rule-spelling search, no hand-applied mutation and no per-statement
+    /// test-shape record.
     #[test]
     fn the_author_roles_carry_one_hand_over_block_naming_the_checks_and_the_test_homes() {
         const HEADING: &str = "## Hand-over checks in this project";
@@ -3804,6 +4237,16 @@ mod tests {
             "`sh .rigger/gates/content.sh no-os-kill`",
             "`sh .rigger/gates/red-before-green.sh`",
             "every test binary your change touched, on both lanes",
+            "When your production hunks touch `src/` or `crates/`",
+            "`git ls-files 'tests/*.rs' | awk -F/ 'NF == 2' | xargs awk 'index($0, \
+             \"CARGO_MANIFEST_DIR\") || index($0, \"include_str!(\") || index($0, \
+             \"include_bytes!(\") || index($0, \"read_to_string(\\\"\") || index($0, \
+             \"fs::read(\\\"\") || index($0, \"read_dir(\\\"\") || index($0, \
+             \"File::open(\\\"\") || index($0, \"read_text(Path::new(\\\"\") || index($0, \
+             \"read_audit_record\") || index($0, \"production_sources\") || index($0, \
+             \"collect_rs_files\") || index($0, \"collect_files\") || index($0, \
+             \"for_each_rs_file\")",
+            "run it again with `xargs cargo test --no-default-features` as its last stage",
             "The whole workspace suite on both lanes is the test and lane-no-default gates' run, \
              not yours",
             "`every_open_cluster_is_dispositioned`",
@@ -3816,109 +4259,7 @@ mod tests {
             "the `tests/*.rs` doc comments, `//!` module docs, comments and assertion messages \
              included",
             "`git ls-files src crates tests docs skills scaffold .rigger | xargs awk",
-            "Every test-side shape you add, merged or not, is recorded as one \
-             `<unit>-test-shape-audit` DecisionMade naming each site FIXED or CHECKED",
-            "`git diff --name-only <base>..HEAD`",
-            "`rigger-run` when it names none",
-            "the `impl` header above a changed fn and above each of its callers names the trait \
-             item it implements",
-            "`rigger graph --around <file>::<item> --depth 1` lists each changed item's callers \
-             on the lines naming them (the default depth answers the item's whole file \
-             neighbourhood, never its callers)",
-            "when it answers nothing the callers are the lines the count above prints for the \
-             item's name",
-            "a `GAP:` clause naming the item in the record",
-            "the count above with `t='<name>'`",
-            "The count and the caller lookup run once per item of the walk's hunk list - every \
-             item the hunks touch, new or pre-existing, its body or its doc changed - each \
-             item's count run as `git ls-files src crates tests docs skills scaffold .rigger | \
-             xargs awk -v t='<name>' 'index($0, t) { print FILENAME \":\" FNR }'` with its name, \
-             and the record pairs each item of the hunk list with its count, the lines read and \
-             its callers.",
-            "Each item the hunks add - a constant, static, list, closure, predicate - a SQL \
-             conjunct inside a query string included - or fn - carries beside its count its \
-             one-home line in one of the working discipline's three forms: `no other \
-             spelling` with the terms searched (its name count, its caller lookup and the \
-             fact's distinguishing literal - a table name, a kind string - run with the count \
-             above), `derived from <file:line>` or `pinned to <file:line> by <test>`.",
-            "The item list is read from the hunks by shape as well as by name: every boolean \
-             expression they add - an `if`, `else if`, `while` or match-guard condition, each \
-             operand of an `&&` or `||` chain inside one, the body of a closure passed to \
-             `filter`, `any`, `all`, `retain`, `position` or `find`, a conjunct inside a query, \
-             format or macro string - is quoted with its `file:line` under the record's `ADDED \
-             PREDICATES` heading with its one-home line, a changed condition among them listed \
-             there too, and two of one fact are lifted to one home or `pinned to` each other.",
-            "A set of named members - an array of constants, an `IN (..)` list, a `matches!` or \
-             `match` arm per member, an `||` chain of equalities - runs the count above once per \
-             member's name, every statement, `match` or macro call holding two or more members \
-             read as a second spelling of the set, and its line names the member sites it read.",
-            "one `<unit>-sentence-walk` DecisionMade beside the `<unit>-test-shape-audit` one",
-            "On every round, the first and each later one alike, `<base>` is the unit's merge \
-             base with that branch, `$(git merge-base rigger-run HEAD)`, so the walk's range is \
-             `$(git merge-base rigger-run HEAD)..HEAD`, the unit's whole range, never the \
-             round's delta your prompt carries.",
-            "Each FIXED or new line of the record carries its witness beside that location: the \
-             `file:line` of the code at head that makes the sentence true.",
-            "A sentence with a quantifier (every, all, always, any, a plural subject with a \
-             predicate) carries one witness per case the code splits its subject into - each \
-             arm, key component, filter condition or match branch - the cases named in the \
-             record.",
-            "The search is this command, one run per distinguishing expression, the expression \
-             its one argument",
-            "`git ls-files tests crates src | t='<expression>' xargs awk",
-            "and the root crate's `src/` test modules the same way",
-            "The expressions are the statements' own terms, never a body's name: every string \
-             literal each test-side body you add or edit spells, in full, and every call it \
-             makes outside the shared home with its first argument token \
-             (`create_dir_all(root.join(`, `for_extension(\"rs\")`), the command run once per \
-             term.",
-            "The bodies are read over the unit's whole range: a body you add whole, every \
-             statement, and a body you edit in the statements `git diff $(git merge-base \
-             rigger-run HEAD)..HEAD -- tests crates src` shows changed, a twin found only among \
-             statements you did not touch named in your hand-over as the tree's debt.",
-            "A literal's term is the literal alone, its quotes inside the term \
-             (`t='\"src/f.rs\"'`) and nothing around it - never the call, format string or \
-             statement that spells it - one run per literal, none set aside as short or \
-             conventional (`\"x\"`, `\":memory:\"`, a fixture path), and every hit the run \
-             prints listed under its disposition.",
-            "index($0, ENVIRON[\"t\"])",
-            "END { print n + 0 \" hits\" }'`",
-            "The record pastes each command as run, its hit count and every hit it printed, each \
-             FIXED or CHECKED, and the `sdet` lens re-runs each on the review tree.",
-            "The record is organised by statement: each statement you add or edit is quoted with \
-             its `file:line` and followed by its terms and their searches, a single call into the \
-             shared home marked so with its callee named; a term the statement spells that the \
-             record lacks under it is a record defect the `sdet` lens blocks on.",
-            "Each rule the change rewrites is searched by two short terms for its old statement \
-             and for each label its cases carried (a name a doc, test or comment gives a case \
-             the old rule decided): the feature's name as the code spells it (`--around`, the \
-             fn, field, variant or table the rule concerns) and the rule's shortest \
-             distinguishing noun phrase (`exact id`, `import`, `collision`), each term at most \
-             three words, one run per pair, over every tracked text file of the project (`.rs`, \
-             `.md`, `.sh`, `.yml`, `.toml`, `.json`, `.js`, `.mjs` and `.html`",
-            "prints the line when the joined text holds both terms, in either order and with any \
-             words, names or code spans between them, so a term in another case, or a sentence a \
-             rewrap splits across two lines, is still a hit",
-            "BEGIN { a = tolower(ENVIRON[\"a\"]); b = tolower(ENVIRON[\"b\"]) }",
-            "s = tolower($0)",
-            "`git ls-files | awk '/\\.(rs|md|sh|yml|toml|json|js|mjs|html)$/' | a='<feature \
-             name>' b='<noun phrase>' xargs awk",
-            "index(s, a) && index(s, b) || index(j, a) && index(j, b) && !(index(p, a) && \
-             index(p, b))",
-            "The `<unit>-sentence-walk` record pastes each command as run, its hit count and \
-             every hit it printed, each FIXED or CHECKED with its reason, or names the \
-             rewritten-rule set empty; the `sdet` lens re-derives the generators' sets and \
-             re-runs each search on the review tree.",
-            "A changed condition rewrites a rule too: every boolean term your production hunks \
-             in `crates/` and `src/` add to or remove from a filter, guard or predicate, listed \
-             from `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src` with the test \
-             regions left out, changes the rule its function answers.",
-            "Its old statement is what the function's callers from `rigger graph --around \
-             <file>::<fn> --depth 1` spell - the notes they print, their Returns paragraphs, the \
-             docs of the variants the answer maps to and the oracles asserting them - and each \
-             such consumer phrase runs as a pair of the search above, the function's name as \
-             the code spells it and the old answer's noun, one run per pair, every hit FIXED \
-             with the new qualifier or CHECKED with the reason it does not reach it.",
+            "It prints nothing, or your hand-over names each line it prints with its reason.",
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
@@ -3940,265 +4281,282 @@ mod tests {
             !block.contains("mutant-probes"),
             "the hand-over block owes no record of hand-applied mutations"
         );
+        assert!(
+            !block.contains("test-shape-audit"),
+            "the hand-over block owes no per-statement test-shape record"
+        );
+        for retired in [
+            "ADDED PREDICATES",
+            "every hit it printed",
+            "sentence walk",
+            "<unit>-sentence-walk",
+            "one-home line",
+            "DecisionMade",
+            "witness",
+            "CHECKED",
+            "changed condition",
+            "Each rule the change rewrites",
+        ] {
+            assert!(
+                !block.contains(retired),
+                "the hand-over block owes no record: {retired:?}"
+            );
+        }
     }
 
-    /// The author block's rule-spelling search runs as the block spells it: a line, joined with
-    /// the one before, its comment marker stripped and lower-cased, is a hit when it holds both
-    /// terms with any words or a code span between them, and a line holding one term alone is
-    /// not.
+    /// The author roles owe no sentence-walk record, so no persona and no scaffold seed spells a
+    /// command only that record ran: the rule-spelling search over a pair of terms, or the
+    /// by-shape generator of the predicates a range adds. The root-test selector and the counted
+    /// check stay, each pinned by its own test.
     #[test]
-    fn the_author_rule_search_finds_both_terms_on_one_joined_line_and_never_one_alone() {
-        const OPEN: &str = "b='<noun phrase>' xargs awk '";
-        let text = committed_persona("rust-engineer.md");
-        let from = text.find(OPEN).expect("the block spells the rule search") + OPEN.len();
-        let program = &text[from..from + text[from..].find("'`").expect("the awk closes")];
-        let dir = tempfile::tempdir().unwrap();
-        let fixture = dir.path().join("fixture.md");
-        std::fs::write(
-            &fixture,
-            "/// bare names resolve where an `--around` seed is an exact id only\n\
-             unrelated\n\
-             an exact id alone on its line\n\
-             unrelated\n\
-             the around flag alone on its line\n\
-             unrelated\n\
-             a seed given to --AROUND\n\
-             is an Exact Id too\n",
-        )
-        .unwrap();
-        let out = std::process::Command::new("awk")
-            .arg(program)
-            .arg(&fixture)
-            .env("a", "around")
-            .env("b", "exact id")
-            .output()
-            .expect("awk runs");
-        let path = fixture.display();
-        assert_eq!(
-            String::from_utf8(out.stdout).unwrap(),
-            format!(
-                "{path}:1: /// bare names resolve where an `--around` seed is an exact id only\n\
-                 {path}:8: is an Exact Id too\n\
-                 2 hits\n"
+    fn no_persona_or_seed_spells_a_retired_walk_command() {
+        let seeds = SCAFFOLD_AGENTS
+            .iter()
+            .map(|(file, text)| (format!("seed {file}"), text.to_string()));
+        let texts: Vec<(String, String)> = committed_personas().into_iter().chain(seeds).collect();
+        for (command, marker) in [
+            ("the rule-spelling search", "b='<noun phrase>' xargs awk"),
+            ("the rule-spelling search", "tolower(ENVIRON[\"a\"])"),
+            ("the by-shape generator", "git diff -U0"),
+            ("the by-shape generator", "index(s, \"is_none_or(\")"),
+        ] {
+            for (file, text) in &texts {
+                assert!(
+                    !text.contains(marker),
+                    "{file} spells {command}, a command of the retired walk: {marker:?}"
+                );
+            }
+        }
+    }
+
+    /// The author block's root-test selector finds a top-level test by each way it can reach
+    /// the checked-in tree: the package root `CARGO_MANIFEST_DIR`, a compile-time include, a
+    /// read given a literal path (a root test runs from the package root), the audit-record
+    /// reader and the walkers, each given the root-relative path its caller hands it, and every
+    /// public `tests/common` function that resolves against the root, derived from the tracked
+    /// `tests/common` files rather than listed, each found called plainly and by turbofish. A
+    /// read of a temporary file is no tree read, and the selector passes it by.
+    #[test]
+    fn the_author_text_test_selector_finds_every_way_a_root_test_reaches_the_tree() {
+        let helpers = tree_reaching_helpers();
+        for known in ["repo_root", "repo_text", "production_main_rs"] {
+            assert!(
+                helpers.contains(known),
+                "the derivation reads tests/common and finds {known}: {helpers:?}"
+            );
+        }
+        let program = author_awk_program("awk -F/ 'NF == 2' | xargs awk '", "' | sort -u");
+        let mut reaches: Vec<(String, String)> = [
+            (
+                "manifest_dir",
+                "let root = PathBuf::from(env!(\"CARGO_MANIFEST_DIR\"));",
             ),
-            "both terms on one joined line are a hit, one term alone is not"
+            (
+                "include_str",
+                "const DOC: &str = include_str!(\"../README.md\");",
+            ),
+            (
+                "include_bytes",
+                "const RAW: &[u8] = include_bytes!(\"../Cargo.lock\");",
+            ),
+            (
+                "read_to_string",
+                "let lib = fs::read_to_string(\"src/lib.rs\").unwrap();",
+            ),
+            (
+                "fs_read",
+                "let manifest = std::fs::read(\"Cargo.toml\").unwrap();",
+            ),
+            (
+                "read_dir",
+                "let docs = std::fs::read_dir(\"docs\").unwrap();",
+            ),
+            (
+                "file_open",
+                "let lock = File::open(\"Cargo.lock\").unwrap();",
+            ),
+            (
+                "read_text_literal",
+                "let readme = read_text(Path::new(\"README.md\"));",
+            ),
+            (
+                "audit_record",
+                "let record = read_audit_record(\"docs/audit/core-lane-purity.json\");",
+            ),
+            (
+                "production_sources",
+                "let sources = production_sources(Path::new(\"src\"));",
+            ),
+            (
+                "collect_rs_files",
+                "collect_rs_files(Path::new(\"crates\"), &mut found);",
+            ),
+            (
+                "collect_files",
+                "collect_files(Path::new(\"docs\"), &mut found);",
+            ),
+            (
+                "collect_files_with_extension",
+                "collect_files_with_extension(Path::new(\"docs\"), \"md\", &mut found);",
+            ),
+            (
+                "for_each_rs_file",
+                "for_each_rs_file(Path::new(\"src\"), &mut visit);",
+            ),
+        ]
+        .into_iter()
+        .map(|(label, line)| (label.to_string(), line.to_string()))
+        .collect();
+        for name in &helpers {
+            reaches.push((
+                format!("call_{name}"),
+                format!("let _ = common::{name}(&at);"),
+            ));
+            reaches.push((
+                format!("turbofish_{name}"),
+                format!("let _ = {name}::<Vec<String>>(&at);"),
+            ));
+        }
+        const TEMPORARY: &str = "temporary_read";
+        let dir = tempfile::tempdir().unwrap();
+        let files: Vec<std::path::PathBuf> = reaches
+            .iter()
+            .map(|(label, line)| (label.as_str(), line.as_str()))
+            .chain([(
+                TEMPORARY,
+                "let out = read_text(&dir.path().join(\"out.txt\"));",
+            )])
+            .map(|(label, line)| {
+                let file = dir.path().join(format!("{label}.rs"));
+                std::fs::write(&file, format!("{line}\n")).unwrap();
+                file
+            })
+            .collect();
+        let printed: std::collections::BTreeSet<String> = awk_output(&program, &files)
+            .lines()
+            .map(|path| {
+                std::path::Path::new(path)
+                    .file_stem()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        let missed: Vec<&str> = reaches
+            .iter()
+            .map(|(label, _)| label.as_str())
+            .filter(|label| !printed.contains(*label))
+            .collect();
+        assert!(
+            missed.is_empty(),
+            "the selector names no anchor for these ways to the tree: {missed:?}"
+        );
+        assert!(
+            !printed.contains(TEMPORARY),
+            "a read of a temporary file is no tree read"
         );
     }
 
-    /// The `sdet` lens is the enforcement of two built-in rules. Of the shape rule: it re-runs
-    /// every search the author's shape record carries on the review tree and compares the hit
-    /// sets, and a hit the record lacks, a CHECKED reason that does not hold or a record with no
-    /// command is BLOCKING; it derives the expression set itself from the unit's test hunks -
-    /// the string literals in full and the outside calls with their first argument of every
-    /// statement of an added body and of the changed statements of an edited one, a literal of
-    /// an untouched statement named to the operator as debt and never BLOCKING -
-    /// runs each with the authors' search, every literal alone, and an uncarried hit, a record of
-    /// names only for a body that spells either, a literal the record never searched alone or a
-    /// statement or format string searched in a literal's place is BLOCKING; it reads the record
-    /// statement by statement, and a term a statement spells that the record lacks under it, or
-    /// a statement the hunks add or edit that the record does not list, is BLOCKING. Of the
-    /// sentence rule: it re-derives each generator's set from the
-    /// diff over the unit's whole range and the graph and compares it with the walk record,
-    /// re-runs every rule-spelling search the record carries and re-reads every hit and every
-    /// witness against head, and an omitted member, an uncarried hit, a CHECKED reason that
-    /// does not hold, a record naming no search and no empty set, a witness that no longer makes
-    /// its sentence true, a new or FIXED sentence with no witness, or sets re-derived over a
-    /// round's delta is BLOCKING; it compares the record's count list with its hunk list item by
-    /// item, and an item the hunks touch with no name count or no depth-1 caller read is
-    /// BLOCKING; it derives the changed-condition set itself - each boolean
-    /// term the unit's production hunks add to or remove from a filter, guard or predicate -
-    /// and reads every consumer sentence of that function against it, and one stating the
-    /// pre-change answer that the record does not carry is BLOCKING; it reads the record's
-    /// rule-spelling searches as the built-in's term pairs and runs the feature's name AND the
-    /// rule's noun phrase itself for each rewritten rule, the function's name AND the old
-    /// answer's noun for each changed condition, with the authors' command and carrying no copy
-    /// of its awk, and a hit the record lacks or a CHECKED reason that does not hold at head is
-    /// BLOCKING; every sentence it reads, a
-    /// CHECKED member, an omitted member or a search hit, it reads claim by claim against the
-    /// unit's change with a `file:line` witness per claim at head, a conditional claim against
-    /// whether the diff changes its condition and a cross-surface claim against each surface it
-    /// names, a quantified claim read against each case the code splits its subject into, each
-    /// case with its `file:line` and listed beside the claim in its record, a claim with no
-    /// witness, a quantified claim with one witness or a failing case BLOCKING and a grouped
-    /// verdict with no per-sentence witness, over the author's CHECKED members as over any other
-    /// sentence it reads, a record it cannot write. The records are the author's instruments, never
-    /// a gate, so the lens's rule against re-running a green gate does not reach them.
+    /// The `sdet` lens reads the unit's tests against the Done-when criteria it owns: a behaviour
+    /// a criterion names that no test drives, or drives without an assertion a wrong change
+    /// would break, is the missing test the built-in review rule blocks on, named with its
+    /// criterion. Test shape - copies of a test function where one table would do, a test-side
+    /// shape the unit added twice - and a sentence false at head are notes, each cited with its
+    /// `file:line`, while duplication the unit did not write is never a finding. The lens reads
+    /// the hunks and docs itself and requires and keeps no record of searches, walks or
+    /// witnesses, so none of the retired walk enforcement is spelled in the persona.
     #[test]
-    fn the_sdet_lens_re_runs_every_recorded_search_and_re_derives_the_walk() {
-        const HEADING: &str = "## Re-run the author's searches and re-derive its walk";
+    fn the_sdet_lens_blocks_on_a_missing_criterion_test_and_notes_shape_and_sentences() {
+        const HEADING: &str = "## Review the tests against the criteria";
         for (file, text) in committed_personas() {
             assert_eq!(
                 text.matches(HEADING).count(),
                 usize::from(file == "sdet.md"),
-                "{file}: the recorded-search enforcement belongs to the sdet lens alone"
+                "{file}: the criterion-test review belongs to the sdet lens alone"
             );
         }
         let flat = rigger::wave::normalize_ws(&committed_persona("sdet.md"));
         for wanted in [
-            "A recorded search is the author's instrument, not a gate",
-            "you re-run every search the record carries, on the review tree, and compare the \
-             hit sets",
-            "A hit the record does not carry is BLOCKING",
-            "a CHECKED hit whose reason does not hold - its shape does not differ in the way \
-             the record names - is a twin and BLOCKING",
-            "a record with no command is BLOCKING",
-            "You also derive the expression set yourself: list the unit's added or edited \
-             test-side bodies from `git diff $(git merge-base rigger-run HEAD)..HEAD -- tests \
-             crates src`",
-            "the hunks inside the test homes the authors' search reads, and the statements each \
-             body owes: every statement of an added body, and of an edited body the statements \
-             those hunks change.",
-            "Take every string literal those statements spell, in full, and every call they \
-             make outside the shared home with its first argument token, and run each with the \
-             authors' search, `git ls-files tests crates src | t='<expression>' xargs awk",
-            "A literal of a statement the unit did not touch is the tree's duplication debt, \
-             never a BLOCKING finding: you name it to the operator in your review as debt, with \
-             its hit count.",
-            "A hit the record does not carry is BLOCKING, and so is a record whose expressions \
-             are names only - a fn name, the callee a helper wraps - for a body that spells a \
-             literal or an outside call.",
-            "You run every literal of each derived body ALONE - its text in full with its \
-             quotes, `t='\"src/f.rs\"'`, nothing around it, however short - and compare the \
-             record's terms with that list: a literal the record never searched alone, or a \
-             record whose terms for a body are statements, bracketed expressions or format \
-             strings in place of its literals, is BLOCKING on its own, citing the literal, its \
-             hit count and the first hits the record does not carry.",
-            "You read the record statement by statement: for each statement the hunks add or \
-             edit you derive its terms yourself and match them against the terms the record \
-             lists under that statement's `file:line`; a term the statement spells that the \
-             record lacks there, or a statement the hunks add or edit that the record does not \
-             list, is BLOCKING on its own, citing the statement's `file:line` and the term.",
-            "You are also the enforcement of the built-in rule that every sentence about the \
-             changed behaviour is true at head.",
-            "The author's `<unit>-sentence-walk` record names what each generator returned and \
-             carries one rule-spelling search per term pair of each rule the change rewrites - \
-             the built-in's two-term form, the feature's name AND the rule's noun phrase on one \
-             joined line - or names that set empty.",
-            "you re-derive each generator's set on the review tree from the diff and the graph",
-            "each hunk's identifiers, doc links (`[...]`) and constants included",
-            "the depth-1 callers (`rigger graph --around <file>::<item> --depth 1`)",
-            "the tracked lines spelling a changed item's name",
-            "and compare it with the record, and you re-run every rule-spelling search the \
-             record carries and compare the hit sets",
-            "and you re-read every hit, CHECKED ones included, against the code at head",
-            "A member the record omits is BLOCKING",
-            "a hit the record does not carry is BLOCKING",
-            "a CHECKED hit whose reason does not hold at head - it is a spelling of the retired \
-             rule or of one of its case labels after all - is BLOCKING",
-            "a record naming no rule-spelling search and no empty set is BLOCKING",
-            "a record that names the set empty while the diff rewrites a rule",
-            "You derive every set over the unit's whole range, `$(git merge-base rigger-run \
-             HEAD)..HEAD` run in your own worktree, never the round's delta your prompt carries",
-            "you read every witness the record carries - the `file:line` beside each new or \
-             FIXED sentence - against the code at head",
-            "A sentence whose witness no longer makes it true is BLOCKING; a new or FIXED \
-             sentence with no witness is BLOCKING; a record whose sets are re-derived over a \
-             round's delta is BLOCKING.",
-            "You also derive the changed-condition set yourself: list every boolean term the \
-             unit's production hunks add to or remove from a filter, guard, match-arm guard or \
-             predicate from `git diff $(git merge-base rigger-run HEAD)..HEAD -- crates src`, \
-             leaving out the test regions (files under a `tests/` directory and hunks inside a \
-             `#[cfg(test)]` module)",
-            "name the rule each changes - the question its function answers - and read every \
-             consumer sentence of that function - its depth-1 callers' notes, their Returns \
-             paragraphs, the docs of the variants the answer maps to and the oracles asserting \
-             them - against the condition at head",
-            "A consumer sentence stating the pre-change answer that the record does not carry \
-             FIXED or CHECKED is BLOCKING",
-            "You run that two-term search yourself, with the authors' rule-spelling command: the \
-             feature's name AND the rule's shortest noun phrase for each rule the change \
-             rewrites, and the function's name AND the old answer's noun for each changed \
-             condition you derive. A hit the record lacks, or a hit CHECKED with a reason that \
-             does not hold at head, is BLOCKING on its own, citing the hit's file:line and the \
-             pair.",
-            "Every sentence you read - a CHECKED member of the record, a member the record \
-             omits that you read yourself, a hit of a rule-spelling search - you read claim by \
-             claim against the unit's change: you write down each claim the sentence makes and \
-             the `file:line` at head that makes that claim true for THIS unit's change",
-            "checking a conditional claim (when X changes, Y; so does a change to X) by whether \
-             the unit's diff changes X and, when it does, whether Y holds at head, and a \
-             cross-surface claim (the way other surfaces do; every caller; both show surfaces) \
-             by reading each surface it names.",
-            "A claim with no witness is a BLOCKING finding on its own, the sentence false or \
-             unwitnessable, never a CHECKED.",
-            "A claim with a quantifier - every, all, always, any, a plural subject with a \
-             predicate (twins keep; a definition's parent is) - you read case by case: you list \
-             the cases the code at head splits its subject into, each arm that assigns the \
-             value, each component of a key or comparator, each condition of a filter or guard, \
-             each branch of a match, each with its `file:line`, and read the claim against each",
-            "One witness for a quantified claim, or a case the claim does not hold for, is \
-             BLOCKING on its own, citing the case and its line.",
-            "You find the sentences with the generators above, the count `git ls-files src \
-             crates tests docs skills scaffold .rigger | xargs awk -v t='<name>' 'index($0, t) \
-             { print FILENAME \":\" FNR }'` run once per name of every item the unit's hunks \
-             change, and the rule-spelling searches",
-            "You compare the record's count list with its hunk list item by item: an item the \
-             hunks touch, new or pre-existing, its body or its doc changed, with no count of its \
-             name or no depth-1 caller read beside it in the record is BLOCKING on its own, \
-             citing the item, the count you got and its callers.",
-            "your review-complete record carries, for every sentence you read - each CHECKED \
-             member of the author's record first of all, each member the record omits, each hit \
-             of a rule-spelling search - its location, its claims and each claim's witness at \
-             head, a quantified claim's cases beside it, each with its witness, and a grouped \
-             verdict (\"none false\", \"each a field reference\", \"the \
-             CHECKED hits hold\") over sentences with no per-sentence witness is a record you \
-             cannot write.",
+            "Read the unit's test hunks over its whole range, `git diff $(git merge-base \
+             rigger-run HEAD)..HEAD -- tests crates src`, beside the Done-when criteria the unit \
+             owns.",
+            "A behaviour a criterion names that no test of the unit drives, or that a test drives \
+             without an assertion a wrong change would break, is the missing test the review \
+             rule blocks on: name the criterion, the behaviour and the test that would prove it.",
+            "Test shape is a note: cases of one behaviour that differ only in their values, \
+             written as copies of a test function instead of rows of one table, and a table, \
+             fixture, helper or oracle the unit added that duplicates one already in the shared \
+             home or in another test home, citing both sites' `file:line`.",
+            "Duplication the unit did not write is never a finding, a statement the unit \
+             touched only in a lift's call-site rewrite included.",
+            "A sentence about the changed behaviour that is false at head is a note, citing the \
+             sentence's `file:line` and the `file:line` of the code at head that contradicts it.",
+            "You read the hunks and the docs they touch yourself: no author record of a search, a \
+             walk or a witness is owed or read, and your review keeps none of its own beyond its \
+             findings.",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
-        // The lens's per-sentence list covers the author's CHECKED members it re-reads, so no
-        // clause leaves the record's own members out of it.
-        assert!(
-            !flat.contains("beyond the author's record"),
-            "the lens's per-sentence list covers the author's CHECKED members too"
-        );
-        assert!(
-            !flat.contains("mutant-probes"),
-            "the sdet lens applies no hand mutations and reads no record of them"
-        );
-        assert!(
-            !flat.contains("ENVIRON[\"b\"]"),
-            "sdet.md refers to the authors' rule-spelling command instead of re-spelling its awk"
-        );
+        for retired in [
+            "## Re-run the author's searches and re-derive its walk",
+            "## Review the test shape",
+            "<unit>-sentence-walk",
+            "BLOCKING",
+            "Reject on sight",
+            "review-complete record",
+            "re-derive",
+            "rule-spelling",
+            "changed-condition",
+            "one-home line",
+            "xargs awk",
+            "mutant-probes",
+            "test-shape-audit",
+            "ENVIRON[\"b\"]",
+        ] {
+            assert!(
+                !flat.contains(retired),
+                "sdet.md requires no record and blocks on no note: {retired:?}"
+            );
+        }
     }
 
-    /// The architecture lens is the enforcement of the built-in rule that every fact the
-    /// production delta states has one home: it derives the added items itself from the
-    /// production hunks by shape as well as by name, a SQL conjunct inside a query string
-    /// included, reads the walk record's one-home line for each, its `ADDED PREDICATES` list
-    /// included, and a missing line, two lines for two predicates of one fact or one false at
-    /// head is BLOCKING; for every added set of named members it runs the member search itself,
-    /// and a second spelling the line does not name is BLOCKING.
+    /// The architecture lens raises each structural defect as a finding the adjudicator weighs by
+    /// the built-in review rule - wrong code when it breaks something, a note when it bends a
+    /// principle and nothing breaks - and a second spelling of a fact the production delta states
+    /// as a note citing both spellings, read from the hunks itself: it requires and reads no
+    /// author record, spells no generator and blocks on no one-home line.
     #[test]
-    fn the_architecture_lens_reads_the_one_home_line_of_every_added_item() {
+    fn the_architecture_lens_raises_a_second_spelling_as_a_note_and_reads_no_record() {
         let flat = rigger::wave::normalize_ws(&committed_persona("architecture-reviewer.md"));
         for wanted in [
-            "you derive the set of constants, statics, lists, closures and predicates the unit \
-             adds yourself from its production hunks by shape as well as by name - every \
-             boolean expression of the shapes the built-in rule lists for its `ADDED PREDICATES`, \
-             a boolean expression or SQL conjunct inside a query string, format string or macro \
-             argument included - and read the `<unit>-sentence-walk` record's one-home lines for \
-             every item of it, its `ADDED PREDICATES` list included, and an added item with no \
-             line, two added predicates of one fact with two lines, or a line false at head (the \
-             fact has another spelling the line does not name, or the named derivation or pin \
-             does not exist), is BLOCKING (DRY, single responsibility), cited with both \
-             spellings' `file:line`.",
-            "For every added set of named members, of the forms the built-in rule names, you run \
-             the member search yourself, the count of each member's name, every statement, \
-             `match` or macro call holding two or more of them read as a second spelling of the \
-             set, and a second spelling the one-home line does not name is BLOCKING on its own.",
+            "Raise as a finding: an adapter imported by the domain, a use case reaching for a \
+             concrete type, a new parallel abstraction where one already exists, a dependency \
+             that isn't injected, a trait port that leaks its implementation.",
+            "Cite file:line, and say whether it breaks something - wrong code, which blocks - or \
+             bends a principle and breaks nothing, a note.",
+            "A fact the unit's production delta spells a second time - a constant, list, closure \
+             or predicate the tree already states - is a DRY finding raised as a note, citing \
+             both spellings' `file:line`: you read the unit's production hunks for it yourself, \
+             and no author record of it is owed or read.",
         ] {
             assert!(
                 flat.contains(wanted),
                 "architecture-reviewer.md must say {wanted:?}"
             );
         }
-        // The predicate shapes and the set forms are listed once, in the working discipline's
-        // one-home rule; the lens names that list and carries no copy of it.
-        for copied in ["`retain`, `position`", "an `||` chain of equalities"] {
+        for retired in [
+            "<unit>-sentence-walk",
+            "one-home line",
+            "BLOCKING",
+            "Reject:",
+            "git diff -U0",
+            "member search",
+            "ADDED PREDICATES",
+        ] {
             assert!(
-                !flat.contains(copied),
-                "architecture-reviewer.md names the built-in's list instead of copying {copied:?}"
+                !flat.contains(retired),
+                "architecture-reviewer.md requires no record and blocks on no one-home line: \
+                 {retired:?}"
             );
         }
     }
@@ -4257,17 +4615,11 @@ mod tests {
     #[test]
     fn no_built_in_entry_persona_helper_or_production_line_names_mutation_testing() {
         let mut texts = every_shipped_agent_text();
-        let tracked = std::process::Command::new("git")
-            .arg("-C")
-            .arg(repo())
-            .args(["ls-files", "--", "crates", "src"])
-            .output()
-            .expect("git ls-files runs");
-        for file in String::from_utf8(tracked.stdout).unwrap().lines() {
+        for file in tracked_files(&["crates", "src"]) {
             if !file.ends_with(".rs") || file.split('/').any(|part| part == "tests") {
                 continue;
             }
-            let text = std::fs::read_to_string(repo().join(file)).unwrap();
+            let text = std::fs::read_to_string(repo().join(&file)).unwrap();
             let lines: Vec<&str> = text.lines().collect();
             let opens_test_module = |at: usize| {
                 lines[at].trim_start().starts_with("#[cfg(test)]")
@@ -4313,11 +4665,13 @@ mod tests {
 
     /// The periphery author's surface probes: the CLI probe diffs the handlers in `src/cli/`
     /// alongside the registry in `src/main.rs`, every probe reads a raw diff written to a file,
-    /// never a pipe from the git command, and an empty accounting cites the diff's stat with a
-    /// positive control, so a probe that returns nothing on added source lines reads as a broken
-    /// instrument (`d112-op-sdet-probe-raw-diff`).
+    /// never a pipe from the git command, and probes that all return nothing are checked against
+    /// the diff's stat with a positive control, so a probe that returns nothing on added source
+    /// lines reads as a broken instrument (`d112-op-sdet-probe-raw-diff`). Each hit is read for a
+    /// surface a Done-when criterion names, which gets its periphery test; the author owes no
+    /// accounting record of the hits, and a missed surface blocks only as that missing test.
     #[test]
-    fn sdet_author_probes_read_raw_diff_files_and_prove_an_empty_accounting() {
+    fn sdet_author_probes_read_raw_diff_files_and_owe_no_accounting_record() {
         let text = committed_persona("sdet-author.md");
         assert!(
             text.contains("git diff BASE -- src/main.rs src/cli"),
@@ -4345,8 +4699,25 @@ mod tests {
             "with a positive control",
             "A probe that returns nothing on a diff whose stat shows added source lines is a \
              broken instrument, not an empty surface.",
+            "Read each hit: a surface a Done-when criterion names gets a periphery test that \
+             drives it, and the hits owe no record.",
+            "a behaviour a Done-when criterion names that no test drives is the missing test \
+             the review rule blocks on",
         ] {
             assert!(flat.contains(wanted), "sdet-author.md must say {wanted:?}");
+        }
+        for retired in [
+            "## Account for every item",
+            "MUST account for",
+            "TESTED",
+            "EXEMPT",
+            "accounting as a `DecisionMade`",
+            "RE-ENUMERATES",
+        ] {
+            assert!(
+                !flat.contains(retired),
+                "sdet-author.md owes no accounting record of its probes: {retired:?}"
+            );
         }
     }
 
@@ -4360,12 +4731,9 @@ mod tests {
             ("lookup.md", "model: haiku"),
             ("verify.md", "model: sonnet"),
         ] {
-            let committed = repo().join(".claude").join("agents").join(file);
-            let committed = std::fs::read_to_string(&committed)
-                .unwrap_or_else(|e| panic!("{} must be committed: {e}", committed.display()));
-            let scaffolded = dir.path().join(".claude").join("agents").join(file);
-            let scaffolded = std::fs::read_to_string(&scaffolded)
-                .unwrap_or_else(|e| panic!("init must write {}: {e}", scaffolded.display()));
+            let helper = Path::new(".claude").join("agents").join(file);
+            let committed = read_text(&repo().join(&helper));
+            let scaffolded = read_text(&dir.path().join(&helper));
             assert_eq!(
                 scaffolded, committed,
                 "{file}: the scaffold mirrors the committed file"
@@ -4374,6 +4742,44 @@ mod tests {
         }
         let rerun = init_project(dir.path(), TEMPLATE_SETS).expect("a rerun must succeed");
         assert!(!rerun.changed(), "a rerun rewrites no helper");
+    }
+
+    /// Spec 120's THE SCAFFOLDED README DOCUMENTS THE OVERRIDE: the README `init` scaffolds
+    /// lists every built-in entry, in injection order, as the `<name>.md` file that overrides
+    /// it, states the replace, switch-off and append rules, and the repository's own committed
+    /// `.rigger/instructions/README.md` carries the same text, whitespace normalized.
+    #[test]
+    fn the_scaffolded_instructions_readme_names_every_built_in_and_the_override_rules() {
+        let listed: Vec<&str> = SCAFFOLD_INSTRUCTIONS_README
+            .lines()
+            .filter(|line| line.starts_with("- `"))
+            .collect();
+        let expected: Vec<String> = instructions::BUILTIN
+            .iter()
+            .map(|(name, _)| format!("- `{name}.md`"))
+            .collect();
+        assert_eq!(
+            listed, expected,
+            "the README lists every built-in entry as its `<name>.md` file, in injection order"
+        );
+        let readme = rigger::wave::normalize_ws(SCAFFOLD_INSTRUCTIONS_README);
+        for rule in [
+            "A file in this directory named exactly as a built-in (case-sensitive, nothing \
+             trimmed) replaces that built-in: its body is injected in the built-in's place.",
+            "A same-named file whose body is blank (empty or whitespace only, one leading \
+             byte-order mark ignored) switches the built-in off: neither the built-in nor the \
+             file is injected.",
+            "Every other `*.md` file in this directory (except this README) is appended after \
+             the built-ins, in filename order.",
+        ] {
+            assert!(readme.contains(rule), "the README must state {rule:?}");
+        }
+        let committed = crate::test_support::instructions_readme_text(&repo());
+        assert_eq!(
+            rigger::wave::normalize_ws(&committed),
+            readme,
+            "the committed instructions README carries the scaffold's text"
+        );
     }
 
     /// KISS is the fewest moving parts, never a line count: no agent, instruction or handbook

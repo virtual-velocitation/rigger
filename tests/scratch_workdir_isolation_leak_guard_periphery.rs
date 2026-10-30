@@ -109,6 +109,7 @@ fn an_isolated_in_process_fan_out_run_creates_no_new_entry_under_the_real_cache_
         criteria: vec!["a widget exists".to_string()],
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
 
     let would_leak = rigger::worktree::cache_scratch_root_from(
@@ -160,6 +161,7 @@ fn the_isolated_workdirs_real_worktree_is_gone_once_its_owning_repo_tempdir_drop
         criteria: vec!["a widget exists".to_string()],
         log: &|_| {},
         hash_blob: &|_| Ok(String::new()),
+        check_emit: &rigger::contextgraph::check_emit,
     };
     run(&cfg, &deps).expect("the isolated in-process run must complete");
     assert!(

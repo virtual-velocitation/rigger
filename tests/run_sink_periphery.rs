@@ -176,6 +176,7 @@ impl Files {
             criteria: criteria.iter().map(|c| c.to_string()).collect(),
             log: &log,
             hash_blob: &hash_blob,
+            check_emit: &rigger::contextgraph::check_emit,
         };
         run(cfg, &deps).unwrap()
     }
@@ -613,10 +614,10 @@ fn the_public_sink_answer_for_a_deleted_file_and_one_out_of_scope_names_no_blob_
 /// shape, one whose key names a prefix no half extracts, and no batch at all,
 /// THEN each fails naming the key and asks no hash;
 /// AND WHEN it asks about the reindexed source batch under `worktree::hash_blob` bound to a root
-/// that does not exist, so the hash process cannot start,
+/// that does not exist, so the git the hash starts fails to change into it,
 /// THEN it fails naming the identity and the hash's own failure - the command and the root.
 #[test]
-fn the_public_sink_answer_fails_naming_a_key_with_no_identity_and_a_hash_that_cannot_start() {
+fn the_public_sink_answer_fails_naming_a_key_with_no_identity_and_a_hash_whose_root_is_missing() {
     let tree = committed_tree();
     let root = tree.path();
     let files = Files::new();
@@ -644,18 +645,18 @@ fn the_public_sink_answer_fails_naming_a_key_with_no_identity_and_a_hash_that_ca
     );
 
     let nowhere = root.join("no-such-root");
-    let cannot_start = |bytes: &[u8]| rigger::worktree::hash_blob(&nowhere, bytes);
-    let why = cannot_start(b"").unwrap_err();
+    let hash_in_nowhere = |bytes: &[u8]| rigger::worktree::hash_blob(&nowhere, bytes);
+    let why = hash_in_nowhere(b"").unwrap_err();
     assert!(
         why.0.starts_with(&format!(
-            "git hash-object --stdin in {}: ",
+            "git hash-object --no-filters --stdin in {}: ",
             nowhere.display()
         )),
         "sanity: the hash names its command and root: {why}"
     );
 
     assert_eq!(
-        handed.answer(root, &files, &cannot_start),
+        handed.answer(root, &files, &hash_in_nowhere),
         Err(format!("the bytes of {SOURCE} could not be hashed: {why}"))
     );
     assert_eq!(entry_records(&files.log()), Vec::new());
@@ -703,12 +704,10 @@ fn a_run_over_a_graph_db_that_owes_its_rebuild_records_one_entry_per_generation_
     let tree = committed_tree();
     let root = tree.path();
     let files = Files::new();
-    owe_a_rebuild(&files.graph());
+    owe_a_rebuild(&files.graph(), &files.graph_db());
     let owed_applied = applied_positions(&files.graph_db());
     let first_walk = walked_git_entry_records(root);
-    let lost = format!(
-        "rigger: recorded 1 run event(s); not folded into the context graph: graph: {REBUILD_OWED}"
-    );
+    let lost = common::fixtures::recorded_not_folded(1, REBUILD_OWED);
 
     files.run_over(root, "first criterion");
 
@@ -932,10 +931,10 @@ fn one_run_over_pre_ledger_rows_asks_the_group_lookup_once_per_identity_across_i
     );
 }
 
-/// A driver whose one agent, before it writes [`REWORDED`] into its worktree, rebuilds the
-/// run's `graph.db` from the log as it stands, re-extracting each entry from the tree at
-/// `unresolving` with no object database to ask, and keeps the generation the rebuilt graph
-/// holds for each of `identities`.
+/// A driver whose one agent, before it writes [`REWORDED`] into its worktree, rebuilds the run's
+/// `graph.db` from the log as it stands, re-extracting each entry its fold asks a batch for from
+/// the tree at `unresolving` with no object database to ask, and keeps the generation the rebuilt
+/// graph holds for each of `identities`.
 struct RebuildsThenRewords<'a> {
     files: &'a Files,
     unresolving: &'a Path,

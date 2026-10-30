@@ -62,13 +62,21 @@ fn json_arg(composed: Result<Vec<u8>, hooks::Error>, what: &str) -> Result<Strin
         .map_err(|e| Error(format!("driver: compose the spawn's {what}: {e}")))
 }
 
+/// The environment variable a worker reads the spawn it runs as from: the host exports the
+/// spawn's id under it ([`harness_env`]), and the worker's own `rigger emit` stamps that id as the
+/// record's author when no `--spawn` names one, exactly as the spawn-bound MCP server stamps a
+/// `rigger_emit` call. The emit core judges a record id's ownership by that stamp.
+pub const SPAWN_ENV: &str = "RIGGER_SPAWN";
+
 /// The harness environment every headless worker gets, whichever host launches it: the
-/// `(key, value)` pairs each host applies to the spawned `claude -p` process at its env
-/// injection site, BEFORE the build environment (`SpawnOpts::env`). `Command::env` is
+/// `(key, value)` pairs each host applies to the spawned `claude -p` process of spawn `spawn` at
+/// its env injection site, BEFORE the build environment (`SpawnOpts::env`). `Command::env` is
 /// last-write-wins per key, so a value the operator puts in the build environment under the
 /// same key overrides the one here.
 ///
-/// Today exactly one pair, `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`. In print mode a session
+/// Two pairs. [`SPAWN_ENV`] carries `spawn`, set even when empty so a worker never inherits the
+/// id of a spawn that launched its host. `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` is the other,
+/// and the rest of this comment is about it. In print mode a session
 /// that ended its final turn with a background subagent still running (one dispatched without
 /// waiting on it) stays open until that subagent completes, but only for a default ceiling of
 /// ten minutes of continuous idle waiting; past it the harness stops whatever is still running
@@ -97,8 +105,11 @@ fn json_arg(composed: Result<Vec<u8>, hooks::Error>, what: &str) -> Result<Strin
 /// Sources: <https://code.claude.com/docs/en/headless.md> (the print-mode wait on background
 /// work and its ceiling) and <https://code.claude.com/docs/en/env-vars.md> (the variable,
 /// its ten-minute default and `0` waiting without one).
-pub(crate) fn harness_env() -> [(&'static str, &'static str); 1] {
-    [("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "0")]
+pub(crate) fn harness_env(spawn: &str) -> [(&'static str, &str); 2] {
+    [
+        (SPAWN_ENV, spawn),
+        ("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "0"),
+    ]
 }
 
 /// What `claude -p --resume <id>` prints on stderr, exiting non-zero before any turn runs, when
