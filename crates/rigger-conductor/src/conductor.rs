@@ -18461,9 +18461,9 @@ mod tests {
 
     /// A CRITERION AN EARLIER RUN OF THE SAME SPEC INTEGRATED IS NOT BUILT AGAIN: over a seeded
     /// log where run 1 integrated criterion A and left criterion B failed, run 2 plans `u-a` for A
-    /// and `u-b` for B. Per `row`, `u-a` either reaches Integrated with no spawn - recorded once,
-    /// with the no-artifact marker, naming run 1's `u-a-1` - or takes the full lifecycle; `u-b`
-    /// always spawns and integrates.
+    /// and `u-b` for B, `u-b` needing `u-a`. Per `row`, `u-a` either reaches Integrated with no
+    /// spawn - recorded once, with the no-artifact marker, naming run 1's `u-a-1` - or takes the
+    /// full lifecycle; `u-b` always spawns and integrates.
     fn assert_landed_criterion(row: LandedRow) {
         let crit_a = "criterion A: the metrics module is implemented";
         let crit_b = "criterion B: the stats endpoint is implemented";
@@ -18502,13 +18502,14 @@ mod tests {
         st.append(STREAM, ExpectedRevision::Any, &log).unwrap();
 
         let cfg = supersede_cfg();
-        let proposals: Vec<(String, Value)> = [
-            proposal_data("u-a", crit_a, &cid_a),
-            proposal_data("u-b", crit_b, &cid_b),
-        ]
-        .into_iter()
-        .map(|data| (TYPE_UNIT_PROPOSED.to_string(), data))
-        .collect();
+        // `u-b` needs `u-a`, so it spawns only once `u-a` is Integrated: a landed `u-a` frees it
+        // in the same step.
+        let mut b = proposal_data("u-b", crit_b, &cid_b);
+        b["needs"] = json!(["u-a"]);
+        let proposals: Vec<(String, Value)> = [proposal_data("u-a", crit_a, &cid_a), b]
+            .into_iter()
+            .map(|data| (TYPE_UNIT_PROPOSED.to_string(), data))
+            .collect();
         let parks: Vec<String> = if row.resumed {
             vec![spawn_id("u-b", ROLE_IMPLEMENTER, 0)]
         } else {
