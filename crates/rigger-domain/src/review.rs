@@ -1504,4 +1504,122 @@ mod tests {
         );
         assert_eq!(spec_root(Path::new("/proj"), ""), PathBuf::from("/proj"));
     }
+
+    /// A lens step of `agents`.
+    fn lens_step(agents: &[&str]) -> ReviewStep {
+        ReviewStep::Lenses(agents.iter().map(|a| a.to_string()).collect())
+    }
+
+    /// A minter spelling each token's kind, agent and 1-based ordinal among the steps of its
+    /// kind, so a roster shows which step each of its tokens came from.
+    fn ordinal_mint(kind: ReviewKind, agent: &str, k: u32) -> String {
+        format!("{kind:?}:{agent}:{k}")
+    }
+
+    #[test]
+    fn a_step_roster_mints_every_spawn_of_every_earlier_step_and_a_lens_step_none() {
+        let x = || ReviewStep::Adversary("x".into());
+        let z = || ReviewStep::Adjudicator("z".into());
+        let canonical: &[ReviewStep] = &[lens_step(&["a", "b"]), x(), z()];
+        let dropped: &[ReviewStep] = &[lens_step(&["a", "b"]), z()];
+        let no_lenses: &[ReviewStep] = &[x(), z()];
+        let one_step: &[ReviewStep] = &[z()];
+        let five: &[ReviewStep] = &[lens_step(&["a", "b"]), x(), lens_step(&["c"]), x(), z()];
+        let lens_twice: &[ReviewStep] = &[lens_step(&["a"]), lens_step(&["a"]), z()];
+        let bare: fn(ReviewKind, &str, u32) -> String = bare_review_role;
+        let ordinal: fn(ReviewKind, &str, u32) -> String = ordinal_mint;
+        let rows = [
+            (canonical, 0, bare, vec![]),
+            (canonical, 1, bare, vec!["lens:a", "lens:b"]),
+            (canonical, 2, bare, vec!["lens:a", "lens:b", "adversary"]),
+            // One past the last step: the roster a step appended after them would carry.
+            (
+                canonical,
+                3,
+                bare,
+                vec!["lens:a", "lens:b", "adversary", "adjudicator"],
+            ),
+            // The DROPPED adversary: the adjudicator's roster names the lenses alone.
+            (dropped, 1, bare, vec!["lens:a", "lens:b"]),
+            (no_lenses, 0, bare, vec![]),
+            (no_lenses, 1, bare, vec!["adversary"]),
+            (one_step, 0, bare, vec![]),
+            (five, 0, ordinal, vec![]),
+            (five, 1, ordinal, vec!["Lens:a:1", "Lens:b:1"]),
+            // A lens step after the adversary still carries no roster.
+            (five, 2, ordinal, vec![]),
+            (
+                five,
+                3,
+                ordinal,
+                vec!["Lens:a:1", "Lens:b:1", "Adversary:x:1", "Lens:c:2"],
+            ),
+            (
+                five,
+                4,
+                ordinal,
+                vec![
+                    "Lens:a:1",
+                    "Lens:b:1",
+                    "Adversary:x:1",
+                    "Lens:c:2",
+                    "Adversary:x:2",
+                ],
+            ),
+            (
+                five,
+                5,
+                ordinal,
+                vec![
+                    "Lens:a:1",
+                    "Lens:b:1",
+                    "Adversary:x:1",
+                    "Lens:c:2",
+                    "Adversary:x:2",
+                    "Adjudicator:z:1",
+                ],
+            ),
+            // A lens agent in two lens steps is rostered once per step, under each step's token.
+            (lens_twice, 2, ordinal, vec!["Lens:a:1", "Lens:a:2"]),
+            (lens_twice, 2, bare, vec!["lens:a", "lens:a"]),
+            (lens_twice, 1, ordinal, vec![]),
+        ];
+        for (steps, index, mint, roster) in rows {
+            assert_eq!(
+                step_roster(steps, index, mint),
+                roster,
+                "{steps:?} at {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_review_and_adjudicator_rosters_are_the_canonical_sequences_step_rosters() {
+        // (lenses, adversary, review_roster, adjudicator_roster): the rows the step-roster
+        // table above pins for the same canonical sequences under the bare minter.
+        let ab: Vec<String> = vec!["a".into(), "b".into()];
+        for (lenses, adversary, review, adjudicator) in [
+            (
+                &ab[..],
+                "x",
+                vec!["lens:a", "lens:b"],
+                vec!["lens:a", "lens:b", "adversary"],
+            ),
+            (
+                &ab[..],
+                "",
+                vec!["lens:a", "lens:b"],
+                vec!["lens:a", "lens:b"],
+            ),
+            (&[][..], "x", vec![], vec!["adversary"]),
+            (&[][..], "", vec![], vec![]),
+        ] {
+            assert_eq!(review_roster(lenses), review, "review_roster({lenses:?})");
+            assert_eq!(
+                adjudicator_roster(lenses, adversary),
+                adjudicator,
+                "adjudicator_roster({lenses:?}, {adversary:?})"
+            );
+        }
+    }
 }

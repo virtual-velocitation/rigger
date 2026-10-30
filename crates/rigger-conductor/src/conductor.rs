@@ -34141,6 +34141,233 @@ mod tests {
         );
     }
 
+    /// The panel this repository's `.rigger/workflow.yml` declares for its implement stage.
+    fn repo_review_panel() -> crate::config::ReviewPanel {
+        crate::config::ReviewPanel {
+            lenses: vec!["architecture-reviewer".into(), "sdet".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adjudicator".into(),
+            tiers: None,
+        }
+    }
+
+    /// Run unit `s`, implemented by `worker` and reviewed by `review`, through the per-unit
+    /// review path (repo-less, `on_pass: none`): the `adjudicator` approves and every other
+    /// reviewer returns a substantive review; each agent's model is `<id>-model`. The grounder
+    /// gives the unit one file, `src/f.rs`, which routes a `tiers` panel LIGHT under its
+    /// threshold and FULL when one of its `high_risk_paths` names it. Returns one line per
+    /// review spawn in spawn order - its spawn id, its `SpawnOpts.reviews` roster and the
+    /// fnv1a-64 of its task prompt (never the system prompt) - with the spawns of a lens step
+    /// sorted by spawn id, since they start on scoped threads, then one line per status the
+    /// unit was stamped with and the model alias it carries: the round's verdict. The second
+    /// value is every review task prompt in full, for a mismatch's message.
+    fn review_identity(review: crate::config::ReviewPanel) -> (Vec<String>, String) {
+        let mut cfg = Config::default();
+        for a in [
+            "worker",
+            "architecture-reviewer",
+            "sdet",
+            "adversary",
+            "adjudicator",
+        ] {
+            cfg.agents.insert(
+                a.into(),
+                AgentDef {
+                    model: format!("{a}-model"),
+                    ..agent(a)
+                },
+            );
+        }
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                coverage: "s".into(),
+                on_pass: "none".into(),
+                review,
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            output_by_agent: HashMap::from(
+                ["architecture-reviewer", "sdet", "adversary", "adjudicator"].map(|a| {
+                    let out = if a == "adjudicator" {
+                        r#"{"verdict":"approve"}"#
+                    } else {
+                        "reviewed: no blocker"
+                    };
+                    (a.to_string(), out.to_string())
+                }),
+            ),
+            ..Stub::new()
+        };
+        let grounder = StubGrounder {
+            by_query: HashMap::from([("s".to_string(), vec!["src/f.rs".to_string()])]),
+        };
+        let store = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            grounder: Some(&grounder),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        run_isolated(&cfg, &deps).unwrap();
+        drop(deps);
+        let agents = driver.call_order.lock().unwrap().clone();
+        let mut spawns: Vec<(String, String)> = Vec::new();
+        let mut prompts = String::new();
+        for (agent_id, id) in agents.iter().zip(driver.spawn_ids()) {
+            if agent_id == "worker" {
+                continue;
+            }
+            let prompt = driver.prompts_for(agent_id);
+            assert_eq!(prompt.len(), 1, "{agent_id} reviews the unit once");
+            prompts.push_str(&format!("--- {id}\n{}\n", prompt[0]));
+            let line = format!(
+                "{id} {:?} {:016x}",
+                driver.reviews_for(agent_id).unwrap(),
+                fnv1a_64(prompt[0].as_bytes())
+            );
+            spawns.push((id, line));
+        }
+        let mut lines = Vec::new();
+        for group in spawns.chunk_by(|a, b| a.0.contains("/lens:") && b.0.contains("/lens:")) {
+            let mut group = group.to_vec();
+            group.sort();
+            lines.extend(group.into_iter().map(|(_, line)| line));
+        }
+        for e in store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap()
+        {
+            let data: Value = serde_json::from_slice(&e.data).unwrap();
+            if e.type_ == ledger::TYPE_UNIT_STATUS && data["id"] == "s" {
+                lines.push(format!(
+                    "{} {} {:?}",
+                    data["status"],
+                    data["evidence"],
+                    e.meta.get(META_MODEL_ALIAS)
+                ));
+            }
+        }
+        (lines, prompts)
+    }
+
+    /// Assert the CANONICAL IDENTITY SURFACE of `review` (spec 120, criterion 6): the review
+    /// spawns and the verdict [`review_identity`] reads equal `golden`, captured on the tree
+    /// before the review panel ran as a sequence of steps.
+    fn assert_review_identity(review: crate::config::ReviewPanel, golden: &[&str]) {
+        let (lines, prompts) = review_identity(review);
+        assert_eq!(lines, golden, "the review task prompts:\n{prompts}");
+    }
+
+    /// A `tiers` panel over [`repo_review_panel`] whose light panel is the `sdet` lens and the
+    /// adjudicator, with a threshold of 5 grounded files and `high_risk_paths`.
+    fn tiered_review_panel(high_risk_paths: &[&str]) -> crate::config::ReviewPanel {
+        let light = crate::config::ReviewPanel {
+            lenses: vec!["sdet".into()],
+            adjudicator: "adjudicator".into(),
+            ..Default::default()
+        };
+        crate::config::ReviewPanel {
+            tiers: depth_tiers(light, 5, high_risk_paths),
+            ..repo_review_panel()
+        }
+    }
+
+    // The golden lines [`review_identity`] read on the tree before the review panel ran as a
+    // sequence of steps (spec 120, criterion 6): each review spawn, then each status stamp.
+    const ARCHITECTURE_LENS_SPAWN: &str = r#"s/lens:architecture-reviewer#0 [] 90da538e7cf34bb5"#;
+    const SDET_LENS_SPAWN: &str = r#"s/lens:sdet#0 [] 7ce018ae5d845d41"#;
+    const ADVERSARY_SPAWN: &str =
+        r#"s/adversary#0 ["lens:architecture-reviewer", "lens:sdet"] 711070660f68834f"#;
+    const ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN: &str = r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet", "adversary"] eefbf75b395904f6"#;
+    const ADJUDICATOR_AFTER_LENSES_SPAWN: &str =
+        r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet"] eefbf75b395904f6"#;
+    const ADJUDICATOR_AFTER_SDET_SPAWN: &str = r#"s/adjudicator#0 ["lens:sdet"] eefbf75b395904f6"#;
+    const GREEN_STAMP: &str = r#""green" {"green":"implemented by worker"} Some("worker-model")"#;
+    const VERIFIED_STAMP: &str = r#""verified" {} Some("worker-model")"#;
+    const LIGHT_TIER_STAMP: &str = r#""review-tier" {"blast-radius":"1","empty-radius":"false","flapped":"false","high-risk-path":"","review-tier":"light","threshold":"5"} None"#;
+    const FULL_TIER_STAMP: &str = r#""review-tier" {"blast-radius":"1","empty-radius":"false","flapped":"false","high-risk-path":"src/f.rs","review-tier":"full","threshold":"5"} None"#;
+    const ROUND_START_STAMP: &str = r#""review-round-start" null None"#;
+    const REVIEWED_STAMP: &str =
+        r#""reviewed" {"review":"{\"verdict\":\"approve\"}"} Some("adjudicator-model")"#;
+
+    crate::test_cases! {
+        /// This repository's own panel: two lenses, the adversary, the adjudicator.
+        the_repo_panel_reviews_as_before_the_step_sequence: assert_review_identity(
+            repo_review_panel(),
+            &[
+                ARCHITECTURE_LENS_SPAWN,
+                SDET_LENS_SPAWN,
+                ADVERSARY_SPAWN,
+                ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN,
+                GREEN_STAMP,
+                VERIFIED_STAMP,
+                ROUND_START_STAMP,
+                REVIEWED_STAMP,
+            ],
+        );
+        /// A lenses-only panel: no roster and no `reviewed` stamp.
+        a_lenses_only_panel_reviews_as_before_the_step_sequence: assert_review_identity(
+            crate::config::ReviewPanel {
+                adversary: String::new(),
+                adjudicator: String::new(),
+                ..repo_review_panel()
+            },
+            &[
+                ARCHITECTURE_LENS_SPAWN,
+                SDET_LENS_SPAWN,
+                GREEN_STAMP,
+                VERIFIED_STAMP,
+                ROUND_START_STAMP,
+            ],
+        );
+        /// The DROPPED adversary: the adjudicator's roster names the lenses alone.
+        a_lenses_and_adjudicator_panel_reviews_as_before_the_step_sequence: assert_review_identity(
+            crate::config::ReviewPanel {
+                adversary: String::new(),
+                ..repo_review_panel()
+            },
+            &[
+                ARCHITECTURE_LENS_SPAWN,
+                SDET_LENS_SPAWN,
+                ADJUDICATOR_AFTER_LENSES_SPAWN,
+                GREEN_STAMP,
+                VERIFIED_STAMP,
+                ROUND_START_STAMP,
+                REVIEWED_STAMP,
+            ],
+        );
+        /// A `tiers` panel routed LIGHT: one grounded file under the threshold.
+        a_tiers_panel_routed_light_reviews_as_before_the_step_sequence: assert_review_identity(
+            tiered_review_panel(&[]),
+            &[
+                SDET_LENS_SPAWN,
+                ADJUDICATOR_AFTER_SDET_SPAWN,
+                GREEN_STAMP,
+                VERIFIED_STAMP,
+                LIGHT_TIER_STAMP,
+                ROUND_START_STAMP,
+                REVIEWED_STAMP,
+            ],
+        );
+        /// A `tiers` panel routed FULL: its one grounded file is a high-risk path.
+        a_tiers_panel_routed_full_reviews_as_before_the_step_sequence: assert_review_identity(
+            tiered_review_panel(&["src/f.rs"]),
+            &[
+                ARCHITECTURE_LENS_SPAWN,
+                SDET_LENS_SPAWN,
+                ADVERSARY_SPAWN,
+                ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN,
+                GREEN_STAMP,
+                VERIFIED_STAMP,
+                FULL_TIER_STAMP,
+                ROUND_START_STAMP,
+                REVIEWED_STAMP,
+            ],
+        );
+    }
+
     #[test]
     fn stage_autonomy_override_seeds_the_gate() {
         // A stage with `autonomy: silent` seeds its gate's ratchet at Silent, so the

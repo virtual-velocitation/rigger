@@ -1505,3 +1505,102 @@ pub fn find_cycle(stages: &BTreeMap<String, Stage>) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A map-form panel of `lenses`, `adversary` and `adjudicator` with no tier policy.
+    fn panel(lenses: &[&str], adversary: &str, adjudicator: &str) -> ReviewPanel {
+        ReviewPanel {
+            lenses: lenses.iter().map(|l| l.to_string()).collect(),
+            adversary: adversary.into(),
+            adjudicator: adjudicator.into(),
+            tiers: None,
+        }
+    }
+
+    /// `full` carrying a `tiers` policy whose light panel is `light`.
+    fn tiered(full: ReviewPanel, light: ReviewPanel) -> ReviewPanel {
+        ReviewPanel {
+            tiers: Some(Box::new(ReviewDepth {
+                light,
+                threshold: 5,
+                high_risk_paths: Vec::new(),
+            })),
+            ..full
+        }
+    }
+
+    #[test]
+    fn a_map_form_panel_steps_through_its_set_lenses_adversary_and_adjudicator_in_that_order() {
+        let ab = || ReviewStep::Lenses(vec!["a".into(), "b".into()]);
+        let x = || ReviewStep::Adversary("x".into());
+        let z = || ReviewStep::Adjudicator("z".into());
+        for (panel, steps) in [
+            (panel(&["a", "b"], "x", "z"), vec![ab(), x(), z()]),
+            (panel(&["a", "b"], "x", ""), vec![ab(), x()]),
+            (panel(&["a", "b"], "", "z"), vec![ab(), z()]),
+            (panel(&["a", "b"], "", ""), vec![ab()]),
+            (panel(&[], "x", "z"), vec![x(), z()]),
+            (panel(&[], "x", ""), vec![x()]),
+            (panel(&[], "", "z"), vec![z()]),
+            (panel(&[], "", ""), vec![]),
+            // The light panel is a panel of its own: `steps` is the full panel's sequence.
+            (
+                tiered(panel(&["a", "b"], "", "z"), panel(&["c"], "", "w")),
+                vec![ab(), z()],
+            ),
+        ] {
+            assert_eq!(panel.steps(), steps, "{panel:?}");
+        }
+    }
+
+    #[test]
+    fn the_panel_accessors_read_its_steps_then_its_light_panel() {
+        // (panel, is_empty, full_roster, gating_agent_ids, agent_ids)
+        for (panel, empty, full, gating, all) in [
+            (
+                panel(&["a", "b"], "x", "z"),
+                false,
+                vec!["a", "b", "x", "z"],
+                vec!["z"],
+                vec!["a", "b", "x", "z"],
+            ),
+            (
+                panel(&["a", "b"], "", ""),
+                false,
+                vec!["a", "b"],
+                vec![],
+                vec!["a", "b"],
+            ),
+            (panel(&[], "x", ""), false, vec!["x"], vec![], vec!["x"]),
+            (panel(&[], "", "z"), false, vec!["z"], vec!["z"], vec!["z"]),
+            (panel(&[], "", ""), true, vec![], vec![], vec![]),
+            (
+                tiered(panel(&["a", "b"], "x", "z"), panel(&["c"], "", "w")),
+                false,
+                vec!["a", "b", "x", "z"],
+                vec!["z", "w"],
+                vec!["a", "b", "x", "z", "c", "w"],
+            ),
+            // A `tiers` policy alone names no step, so the panel stays empty.
+            (
+                tiered(panel(&[], "", ""), panel(&["c"], "", "w")),
+                true,
+                vec![],
+                vec!["w"],
+                vec!["c", "w"],
+            ),
+        ] {
+            assert_eq!(panel.is_empty(), empty, "is_empty of {panel:?}");
+            assert_eq!(panel.full_roster(), full, "full_roster of {panel:?}");
+            assert_eq!(
+                panel.gating_agent_ids(),
+                gating,
+                "gating_agent_ids of {panel:?}"
+            );
+            assert_eq!(panel.agent_ids(), all, "agent_ids of {panel:?}");
+        }
+    }
+}

@@ -5929,6 +5929,38 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "repo_review_panel",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "217519ce96412670"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "review_identity",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "0e92710dbb638cc2"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "assert_review_identity",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "e588800e22bc5e89"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "tiered_review_panel",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "22536b485caf3f72"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "stage_autonomy_override_seeds_the_gate",
     "is_test": true,
     "proposed_module": "conductor::tests",
