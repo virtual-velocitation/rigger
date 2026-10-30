@@ -3471,9 +3471,9 @@ impl RunCtx<'_> {
     /// folding store, in ONE store append, the fold committing the entry and its extraction in
     /// the transaction [`Projection::apply_generation`] states. Everything slow happened
     /// before the append: the fold only moves the extraction in. A failed append fails the emit;
-    /// a fold that could not be made - the graph owes its rebuild, or its write lock or catch-up
-    /// held the fold past the appender's ceiling (spec 124) - leaves
-    /// the entry on the log and is said through [`Deps::log`], as every lost fold of the run is.
+    /// a fold that could not be made - the graph owes its rebuild, its write lock or catch-up held
+    /// the fold past the appender's ceiling (spec 124), or it refused the write - leaves the entry
+    /// on the log and is said through [`Deps::log`], as every lost fold of the run is.
     /// A run wired to no graph has no graph side to read, so the emit fails; its callers walk
     /// nothing there ([`Deps::ingests`]).
     ///
