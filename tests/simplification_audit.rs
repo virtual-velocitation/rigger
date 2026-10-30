@@ -8561,6 +8561,15 @@ mod tests {
             ("fn ok(a: u32) -> Self { Self { a, b: 0 } }", true),
             ("fn ok(a: u32) -> Self { Self { a } }", true),
         ]);
+        /// The tokenizer splits `::` into two `:` tokens, so a delegating constructor's body
+        /// (`{ Widget::ctor(..) }`) opens with a path, never a field, while a literal whose field
+        /// value is a path still constructs its own type.
+        constructs_own_type_literal_never_reads_a_path_separator_as_a_field_colon:
+            assert_constructs_own_widget_literal(&[
+            ("fn ok() -> Widget { Widget { a: 1 } }", true),
+            ("fn ok() -> Self { Widget::ctor(1, 2) }", false),
+            ("fn ok() -> Self { Self { a: Other::x() } }", true),
+        ]);
     }
 
     #[test]
