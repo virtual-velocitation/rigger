@@ -265,6 +265,13 @@
 //! the unit's own work and the out-of-band mover's content land on the run branch (the
 //! documented recovery folds the mover in, never discards it), and the repo ends up clean -
 //! `land`'s own "the repo is untouched" half of its contract, checked at the whole-run level.
+//!
+//! GAP 12, `unit_integrated_records_the_landed_sha_on_every_merge_loop_path`. A mixed conflict
+//! whose resolver commits the regenerated artifact itself leaves the conductor's owed
+//! regeneration nothing new to commit: it records the landed sha as the regeneration commit and
+//! loops back, and that last pass merges nothing. `UnitIntegrated` must still carry the sha the
+//! unit landed at, because the landed-criterion skip reads it and treats a unit with no commit
+//! as not landed. The plain clean path is the control row.
 
 mod common;
 use common::git::run_git;
@@ -681,6 +688,151 @@ fn a_mixed_source_and_regenerable_conflict_resolves_the_source_first_then_regene
         "every path of every landing in one integration is touched"
     );
     drop(repo);
+}
+
+// ============================================================================================
+// Gap 12: the commit `UnitIntegrated` records on every path through the merge loop.
+// ============================================================================================
+
+/// GAP 2's two batch-mates, conflicting on `c.rs` and the regenerable `docs/audit/report.md`,
+/// except that the loser's resolver writes the regenerated report itself and commits it with
+/// its source fix: the conductor's owed regeneration then commits nothing new, and the pass
+/// after the landing merges nothing. A single unit has no batch-mate and lands clean.
+struct ResolverRegeneratesDriver {
+    repo: String,
+    units: usize,
+}
+
+impl AgentDriver for ResolverRegeneratesDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        if !opts.id.contains("/implementer#") {
+            return Ok(review_or_adjudicate(opts));
+        }
+        if opts.id.contains("~retry") {
+            let dir = Path::new(&opts.dir);
+            std::fs::write(dir.join("c.rs"), "RESOLVED_C\n").unwrap();
+            std::fs::write(dir.join("docs/audit/report.md"), "REGENERATED\n").unwrap();
+            git_commit_paths(
+                &opts.dir,
+                &["c.rs", "docs/audit/report.md"],
+                "resolve the source and regenerate the report",
+            );
+        } else if !opts.dir.is_empty() {
+            if self.units > 1 {
+                wait_for_both_unit_branches(&self.repo);
+            }
+            write_unit_side(
+                &opts.dir,
+                opts.id.split('/').next().unwrap_or_default(),
+                &[
+                    ("c.rs", "A_C\n", "B_C\n"),
+                    ("docs/audit/report.md", "A_AUDIT\n", "B_AUDIT\n"),
+                ],
+            );
+        }
+        Ok(AgentResult::default())
+    }
+}
+
+/// The `evidence.sha` of every integrate row with `status` that `unit` recorded, in log order.
+fn integrate_row_shas(events: &[Event], unit: &str, status: &str) -> Vec<String> {
+    events
+        .iter()
+        .filter(|e| e.type_ == ledger::TYPE_UNIT_STATUS)
+        .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+        .filter(|v| v["id"] == unit && v["status"] == status)
+        .filter_map(|v| v["evidence"]["sha"].as_str().map(String::from))
+        .collect()
+}
+
+/// The `commit` of every `UnitIntegrated` event `unit` recorded, in log order.
+fn integrated_commits(events: &[Event], unit: &str) -> Vec<String> {
+    events
+        .iter()
+        .filter(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
+        .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+        .filter(|v| v["id"] == unit)
+        .filter_map(|v| v["commit"].as_str().map(String::from))
+        .collect()
+}
+
+#[test]
+fn unit_integrated_records_the_landed_sha_on_every_merge_loop_path() {
+    // (case, batch-mates, whether a unit loops back after a regeneration that commits nothing,
+    // the report the run branch ends with)
+    for (case, units, loops_back, report) in [
+        ("regenerate loop-back", 2, true, "REGENERATED\n"),
+        ("plain clean path", 1, false, "A_AUDIT\n"),
+    ] {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        std::fs::create_dir_all(Path::new(&repo_path).join("docs/audit")).unwrap();
+        std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE_C\n").unwrap();
+        std::fs::write(
+            Path::new(&repo_path).join("docs/audit/report.md"),
+            "BASE_AUDIT\n",
+        )
+        .unwrap();
+        git_commit_all(&repo_path, "base c.rs + docs/audit/report.md");
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = ResolverRegeneratesDriver {
+            repo: repo_path.clone(),
+            units,
+        };
+        let mut cfg = gated_scratch_cfg(&repo_path);
+        cfg.workflow.defaults.max_retries = 3;
+        cfg.workflow.regenerate = vec![RegenerateRule {
+            paths: vec!["docs/audit/*".into()],
+            run: "printf 'REGENERATED\\n' > docs/audit/report.md".into(),
+        }];
+        let names = &["unit-a", "unit-b"][..units];
+        for name in names {
+            cfg.workflow
+                .stages
+                .insert(name.to_string(), mk_stage(name, "g"));
+        }
+
+        let deps = bare_deps(&store, &driver, &rigger::gate::ExecRunner, &repo_path);
+        let rs = run(&cfg, &deps).unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let mut looped_back = false;
+        for name in names {
+            assert_eq!(
+                rs.units[*name].status,
+                ledger::Status::Integrated,
+                "{case}: {name} integrates"
+            );
+            let landed = integrate_row_shas(&events, name, "integrate-landed");
+            let regenerated =
+                integrate_row_shas(&events, name, "integrate-conflict-regenerate-commit");
+            // One landing, and the regeneration after it named that same sha: it committed nothing.
+            looped_back |= !regenerated.is_empty() && regenerated == landed;
+            let landed_at = landed.last().cloned().unwrap_or_default();
+            assert!(!landed_at.is_empty(), "{case}: {name} records its landing");
+            assert_eq!(
+                integrated_commits(&events, name),
+                vec![landed_at],
+                "{case}: {name}'s UnitIntegrated carries the sha it landed at"
+            );
+        }
+        assert_eq!(
+            looped_back, loops_back,
+            "{case}: a regeneration that commits nothing new is driven exactly in its own row"
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&repo_path).join("docs/audit/report.md")).unwrap(),
+            report,
+            "{case}: the report the run branch carries"
+        );
+        drop(repo);
+    }
 }
 
 // ============================================================================================
