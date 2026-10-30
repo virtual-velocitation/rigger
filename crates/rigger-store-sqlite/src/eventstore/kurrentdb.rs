@@ -443,10 +443,9 @@ fn first_match<X, T>(
 
 /// THE PAGE over a forward `$all` pull that starts at `from` (the server's start is inclusive),
 /// each record as its commit position and the event it delivers, if any: the delivered events of
-/// the records [`past`] `from`, up to `max` of them and on to the last event of the `max`-th one's
-/// commit, so a page never splits the events one append committed together. The pull stops at
-/// the record that ends the page, the one record it reads past it. A failed pull ends the page in
-/// an error naming the read, never a short page.
+/// the records [`past`] `from`, up to `max` of them. The pull stops at the record that ends the
+/// page, the one record it reads past it. A failed pull ends the page in an error naming the
+/// read, never a short page.
 fn page_of(
     records: impl IntoIterator<Item = Result<(Position, Option<Event>), kurrentdb::Error>>,
     from: Position,
@@ -459,7 +458,7 @@ fn page_of(
         if !past(from, commit) {
             continue;
         }
-        if page.len() >= max && page.last().is_none_or(|last| last.position != commit) {
+        if page.len() >= max {
             break;
         }
         page.extend(event);
@@ -1508,22 +1507,20 @@ mod tests {
         })
     }
 
-    /// A log of single-event commits at 10 and 30 around the one commit (20) the server issued to
-    /// a three-event append, then a record no caller is delivered (25).
+    /// A log of single-event commits at 10, 20, 30 and 40, with a record no caller is delivered
+    /// (25) between the second and the third.
     const PAGED_LOG: &[(u64, Option<&str>)] = &[
         (10, Some("A")),
-        (20, Some("B0")),
-        (20, Some("B1")),
-        (20, Some("B2")),
+        (20, Some("B")),
         (25, None),
         (30, Some("C")),
+        (40, Some("D")),
     ];
 
     /// Spec 124, the server half of the page: from `from` (exclusive) at most `max` delivered
-    /// events, except that a page never splits a commit - its `max`-th event's commit is read to
-    /// its last event - and the read pulls no record past the one that ends the page.
+    /// events, and the read pulls no record past the one that ends the page.
     #[test]
-    fn a_page_holds_max_events_past_from_and_never_splits_a_commit() {
+    fn a_page_holds_at_most_max_events_past_from_and_stops_at_the_record_ending_it() {
         type Row<'a> = (
             &'a [(u64, Option<&'a str>)],
             Position,
@@ -1535,42 +1532,23 @@ mod tests {
             // A bound of 0 reads nothing, pulling only the record that ends the page.
             (PAGED_LOG, 0, 0, &[], 1),
             (PAGED_LOG, 0, 1, &[("A", 10)], 2),
-            // A bound that falls inside the commit at 20 - at its first event, at one before its
-            // last - is read to its last event; one at its last ends there; one past it reaches
-            // the next commit across the undelivered record.
-            (
-                PAGED_LOG,
-                0,
-                2,
-                &[("A", 10), ("B0", 20), ("B1", 20), ("B2", 20)],
-                5,
-            ),
-            (
-                PAGED_LOG,
-                0,
-                3,
-                &[("A", 10), ("B0", 20), ("B1", 20), ("B2", 20)],
-                5,
-            ),
-            (
-                PAGED_LOG,
-                0,
-                4,
-                &[("A", 10), ("B0", 20), ("B1", 20), ("B2", 20)],
-                5,
-            ),
+            // A page ends at the record past its `max`-th event, an undelivered one included; a
+            // page still short of `max` at the undelivered record reads across it to the next
+            // event.
+            (PAGED_LOG, 0, 2, &[("A", 10), ("B", 20)], 3),
+            (PAGED_LOG, 0, 3, &[("A", 10), ("B", 20), ("C", 30)], 5),
+            // A bound past the log reads every event of it, pulling every record.
             (
                 PAGED_LOG,
                 0,
                 5,
-                &[("A", 10), ("B0", 20), ("B1", 20), ("B2", 20), ("C", 30)],
-                6,
+                &[("A", 10), ("B", 20), ("C", 30), ("D", 40)],
+                5,
             ),
-            // `from` is exclusive: the record at it and every record before it are passed over,
-            // the whole commit at 20 when `from` is 20.
-            (PAGED_LOG, 10, 1, &[("B0", 20), ("B1", 20), ("B2", 20)], 5),
-            (PAGED_LOG, 20, 1, &[("C", 30)], 6),
-            (PAGED_LOG, 30, 1, &[], 6),
+            // `from` is exclusive: the record at it and every record before it are passed over.
+            (PAGED_LOG, 10, 1, &[("B", 20)], 3),
+            (PAGED_LOG, 20, 1, &[("C", 30)], 5),
+            (PAGED_LOG, 40, 1, &[], 5),
             // A `from` of 0 is the log's start, so a record the server issued at commit 0 is read.
             (&[(0, Some("Z"))], 0, 1, &[("Z", 0)], 1),
         ];

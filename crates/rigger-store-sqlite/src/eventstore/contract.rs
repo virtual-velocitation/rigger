@@ -24,7 +24,7 @@ pub fn assert_contract(store: &dyn EventStore) {
     forward_stream_read_honors_nonzero_from(store);
     backward_all_read_reverses_set(store);
     all_position_round_trips_into_read_and_subscribe(store);
-    a_page_reads_whole_positions_past_from_bounded_by_max_and_pages_resume_without_a_gap(store);
+    a_page_reads_up_to_max_events_past_from_and_pages_resume_without_a_gap(store);
     the_log_head_is_the_newest_position_issued_and_every_later_append_lands_above_it(store);
     nonexistent_stream_reads_empty(store);
     concurrent_appends_to_distinct_streams_get_distinct_positions(store);
@@ -1224,15 +1224,12 @@ fn all_position_round_trips_into_read_and_subscribe(store: &dyn EventStore) {
 }
 
 /// THE PAGE (spec 124): `read_all_page` reads forward from `from` (exclusive) `max` of the
-/// filter's events, or every one there is when fewer are, and on to the last event of the
-/// position the last of them shares, so a page over single-event appends holds exactly `max`
-/// where as many lie past `from`. Over a batch append
-/// the page is held to the property it exists for, whether or not a backend issues the batch's
-/// events one position each: pages, each resumed from the last one's final position, hand back the
-/// forward read exactly, in order and once each, whatever the bound.
-fn a_page_reads_whole_positions_past_from_bounded_by_max_and_pages_resume_without_a_gap(
-    store: &dyn EventStore,
-) {
+/// filter's events, or every one there is when fewer are, a batch append's events included: a
+/// bound that falls inside a batch append ends the page at its `max`-th event, and a page resumed
+/// from one of the batch's events starts at the next. Over a batch append, pages, each resumed
+/// from the last one's final position, hand back the forward read exactly, in order and once
+/// each, whatever the bound.
+fn a_page_reads_up_to_max_events_past_from_and_pages_resume_without_a_gap(store: &dyn EventStore) {
     use crate::test_support::{ev, types_of};
     let filter = Filter {
         stream_prefix: Some("c-page-".to_string()),
@@ -1279,6 +1276,24 @@ fn a_page_reads_whole_positions_past_from_bounded_by_max_and_pages_resume_withou
             "a page's `from` is exclusive and an event outside the slice is never handed back",
         ),
         (0, 0, &[][..], "a page bounded at 0 reads nothing"),
+        (
+            all[2].position,
+            2,
+            &["Q3", "Q4"][..],
+            "a page whose bound falls inside a batch append ends at its `max`-th event",
+        ),
+        (
+            all[2].position,
+            3,
+            &["Q3", "Q4", "Q5"][..],
+            "a page whose bound reaches a batch append's last event ends at it",
+        ),
+        (
+            all[3].position,
+            1,
+            &["Q4"][..],
+            "a page resumed from a batch append's event starts at the next one",
+        ),
         (
             all[6].position,
             2,
