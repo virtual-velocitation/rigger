@@ -267,24 +267,21 @@ pub fn step_roster(
     if let Some(ReviewStep::Lenses(_)) = steps.get(index) {
         return Vec::new();
     }
-    let mut ordinals: BTreeMap<ReviewKind, u32> = BTreeMap::new();
     let mut roster = Vec::new();
-    for step in steps.iter().take(index) {
-        let kind = match step {
-            ReviewStep::Lenses(_) => ReviewKind::Lens,
-            ReviewStep::Adversary(_) => ReviewKind::Adversary,
-            ReviewStep::Adjudicator(_) => ReviewKind::Adjudicator,
-        };
-        let k = *ordinals.entry(kind).and_modify(|k| *k += 1).or_insert(1);
+    for (earlier, step) in steps.iter().enumerate().take(index) {
+        let (kind, k) = (step.kind(), step_ordinal(steps, earlier));
         roster.extend(step.agents().iter().map(|agent| mint(kind, agent, k)));
     }
     roster
 }
 
-/// The 1-based ordinal of `steps[index]` among the steps of its kind: stub until the green
-/// commit.
-pub fn step_ordinal(_steps: &[ReviewStep], _index: usize) -> u32 {
-    1
+/// The 1-based ordinal of `steps[index]` among the steps of its kind, the `k` of
+/// [`review_step_role`]: a pure function of the sequence and the index, so a resumed process
+/// counts what the first one counted.
+pub fn step_ordinal(steps: &[ReviewStep], index: usize) -> u32 {
+    let kind = steps[index].kind();
+    let earlier = steps[..index].iter().filter(|step| step.kind() == kind);
+    earlier.count() as u32 + 1
 }
 
 /// The adversary's routed review roster: the [`step_roster`] of an adversary step after a lens

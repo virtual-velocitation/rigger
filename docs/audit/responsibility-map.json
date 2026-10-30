@@ -957,7 +957,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "62a30095edd2416d"
+    "content_hash": "e4a20024f65d9645"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1093,7 +1093,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "66d374d01874f829"
+    "content_hash": "0855c40225a664ca"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1101,15 +1101,15 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "1bc2b093c56f3da0"
+    "content_hash": "2d42a2e023bb83be"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "run_lens",
+    "name": "run_finding_reviewer",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "67ddf91757ce2cc5"
+    "content_hash": "e249b02e88a95be5"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1145,19 +1145,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "run_adversary",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "5ce5b85fd9ab55e9"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_adjudicator",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "b0789c094d87f44b"
+    "content_hash": "e88e5cce6903dcbf"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

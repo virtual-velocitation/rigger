@@ -13,6 +13,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::failure;
+use crate::spawn::{ReviewKind, STEP_TOKEN_SEPARATOR};
 
 /// The per-project state directory at a project's root (like `.git/`): the declarative
 /// surface (`workflow.yml`, `agents/`, `instructions/`) and every store rigger keeps. The ONE
@@ -423,9 +424,6 @@ fn first_seen(ids: impl IntoIterator<Item = String>) -> Vec<String> {
         .collect()
 }
 
-/// The character a step token separates its parts with, so an agent id never holds it.
-const STEP_TOKEN_SEPARATOR: char = '@';
-
 /// Refuse an agent id holding [`STEP_TOKEN_SEPARATOR`], with a bare message the caller prefixes
 /// with the place that names the id.
 pub fn check_agent_id(id: &str) -> Result<(), String> {
@@ -463,6 +461,15 @@ impl ReviewStep {
         match self {
             ReviewStep::Adjudicator(id) => Some(id),
             ReviewStep::Lenses(_) | ReviewStep::Adversary(_) => None,
+        }
+    }
+
+    /// The kind of this step, what a roster minter and the step ordinal read.
+    pub fn kind(&self) -> ReviewKind {
+        match self {
+            ReviewStep::Lenses(_) => ReviewKind::Lens,
+            ReviewStep::Adversary(_) => ReviewKind::Adversary,
+            ReviewStep::Adjudicator(_) => ReviewKind::Adjudicator,
         }
     }
 
@@ -614,17 +621,6 @@ impl ReviewPanel {
                 return Err(format!(
                     "{scope} steps[{first}] is an adjudicator step with a step after it: the \
                      adjudicator step is the last step"
-                ));
-            }
-        }
-        // Interim, until the step tokens of spec 120 criterion 8: two steps of one kind would
-        // mint one spawn id.
-        for (i, step) in steps.iter().enumerate() {
-            if steps[..i].iter().any(|prior| prior.key() == step.key()) {
-                return Err(format!(
-                    "{scope} steps[{i}] repeats the {} step kind: a list names one step of each \
-                     kind",
-                    step.key()
                 ));
             }
         }
