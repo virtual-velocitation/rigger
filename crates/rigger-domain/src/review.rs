@@ -1119,8 +1119,16 @@ mod tests {
                  running gates or any build or test command, editing a file, and recording \
                  through `rigger_emit`, `rigger_progress` or `rigger_scratch`. Read the spec and \
                  the repository; the finding lines and the verdict line of your final message are \
-                 the only output.\n\n{CRITIQUE_OUTPUT_CONTRACT}The spec under critique, \
-                 `specs/9-a.md`, verbatim:\n\n{text}"
+                 the only output.\n\nThe output contract: one finding per line, then the verdict \
+                 as the last line:\n\n\
+                 <critic id> | BLOCKING | <criterion n or Design block title> | <exact reading \
+                 that breaks> | <smallest Design change that closes it>\n\
+                 <critic id> | NON-BLOCKING | ...\n\
+                 {{\"verdict\":\"reject\"}}\n\n\
+                 A finding line has five `|`-separated fields whose second is exactly BLOCKING or \
+                 NON-BLOCKING; any other line is prose. `<critic id>` is your own short label for \
+                 the finding. The verdict is reject when any line is BLOCKING, else \
+                 approve.\n\nThe spec under critique, `specs/9-a.md`, verbatim:\n\n{text}"
             )
         );
     }
