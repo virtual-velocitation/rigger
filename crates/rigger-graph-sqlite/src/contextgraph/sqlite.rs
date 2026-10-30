@@ -3233,16 +3233,19 @@ impl Projection for Projector {
     /// file that owes its rebuild, and writing no mark for any failure.
     ///
     /// Folded directly, it folds in ONE transaction ([`fold_entry`]), its batch function asked
-    /// inside it, and answers the outcome that transaction folded it with: an entry the file
-    /// already folded answers [`EntryFold::AlreadyApplied`], or, recorded passed over, that cause
-    /// ([`FrameError::Recorded`]); a batch function answering no batch folds nothing past the
-    /// entry's `applied` row ([`EntryFold::BatchAsked`]); and a fold that fails - an entry whose
-    /// payload does not parse, a batch function that fails, a batch event the fold rejects - rolls
-    /// back whole, its `applied` row included, and returns its cause.
+    /// inside it when the entry's fold asks a batch - not an entry the file already folded, one
+    /// whose payload does not parse, or a re-recording - and answers the outcome that transaction
+    /// folded it with: an entry the file already folded answers [`EntryFold::AlreadyApplied`],
+    /// or, recorded passed over, that cause ([`FrameError::Recorded`]); a batch function
+    /// answering no batch folds nothing past the entry's `applied` row ([`EntryFold::BatchAsked`]);
+    /// and a fold that fails - an entry whose payload does not parse, a batch function that fails,
+    /// a batch event the fold rejects - rolls back whole, its `applied` row included, and returns
+    /// its cause.
     ///
-    /// Folded by its calls, a call whose cut is the entry alone folds it from the same batch, in
-    /// that cut's transaction ([`fold_entry_alone`]), its batch function asked just before that
-    /// transaction opens, and the appender answers the outcome that call folded it with, or
+    /// Folded by its calls, a call whose cut is the entry alone folds it in that cut's transaction
+    /// ([`fold_entry_alone`]), its batch function asked just before that transaction opens when
+    /// the entry's fold asks a batch - not one already folded, one whose payload does not parse,
+    /// or a re-recording - and the appender answers the outcome that call folded it with, or
     /// [`EntryFold::AlreadyApplied`] when another writer folded it first, its batch asked for or
     /// not. An entry whose own payload the judge rejects is passed over with
     /// [`PAYLOAD_REJECTED`], one whose batch holds an event the judge rejects with
