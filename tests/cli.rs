@@ -28895,6 +28895,40 @@ fn prime_and_instructions_beside_a_store_in_a_subdirectory_report_the_project_s_
     assert_reporters_in(&sub, &[]);
 }
 
+/// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from a deleted directory: given a subdirectory of
+/// a project whose `.rigger/instructions/` holds the named-entry fixture, removed while the operator
+/// stands in it, when the operator runs `rigger instructions` and `rigger prime` there, then
+/// neither can name the project, so each reports every built-in in force and no operator file:
+/// `rigger instructions` exits 0 printing the built-ins and `(none)`, and `rigger prime` prints its
+/// in-force line, then fails at its store lookup with exit 1. A process cannot remove its own
+/// working directory on Windows.
+#[cfg(unix)]
+#[test]
+fn instructions_and_prime_from_a_deleted_directory_report_the_built_ins_alone() {
+    use common::cli::{run_rigger_from_deleted, write_operator_layer};
+    use common::fixtures::{
+        rendered_built_ins_only_layer, shadowing_operator_layer, subdirectory_of,
+        BUILT_INS_ONLY_IN_FORCE_LINE,
+    };
+    for (report, printed, code) in [
+        ("instructions", rendered_built_ins_only_layer(), 0),
+        ("prime", format!("{BUILT_INS_ONLY_IN_FORCE_LINE}\n"), 1),
+    ] {
+        let proj = temp_project();
+        write_operator_layer(proj.path(), &shadowing_operator_layer());
+        let out = run_rigger_from_deleted(&subdirectory_of(proj.path()), &[report]);
+        assert_eq!(
+            (
+                String::from_utf8_lossy(&out.stdout).as_ref(),
+                out.status.code()
+            ),
+            (printed.as_str(), Some(code)),
+            "`rigger {report}` from a deleted directory; stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
 /// `rigger init` scaffolds the operator instruction directory with its README, the text of
 /// this repository's own committed `.rigger/instructions/README.md` (whitespace normalized),
 /// and names it in the first-run summary.

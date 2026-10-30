@@ -241,6 +241,27 @@ fn rendered_beside_the_shadowing_entries(communication: &str, tail: &str) -> Str
     )
 }
 
+/// What `rigger instructions` prints when no operator file is read, spelled without calling
+/// `render`: every built-in in force, in `BUILTIN` order, then `(none)` under the operator heading.
+pub fn rendered_built_ins_only_layer() -> String {
+    let sections = [
+        "engineering-principles",
+        "working-discipline",
+        "communication",
+    ]
+    .map(|name| {
+        format!(
+            "\n## {name} (built-in)\n{}\n",
+            builtin_body(name).trim_end()
+        )
+    })
+    .concat();
+    format!(
+        "{}\n\nBuilt-in:\n{sections}{RENDERED_OPERATOR_HEADING}(none)\n",
+        rigger::instructions::HEADING
+    )
+}
+
 /// The advisories `rigger validate` prints over [`shadowing_operator_layer`], in `BUILTIN` order.
 pub const SHADOWING_LAYER_ADVISORIES: [&str; 2] = [
     "warning: built-in instruction working-discipline is switched off by \

@@ -427,6 +427,27 @@ pub fn run_rigger_in_state_home(cwd: &Path, state_home: &Path, args: &[&str]) ->
         .expect("the rigger binary runs")
 }
 
+/// Run `rigger <args>` from the empty directory `dir` with `dir` deleted: a spawn cannot enter a
+/// directory already gone, so a shell enters it, removes it and execs the binary, with the
+/// environment [`rigger_command`] sets, and the process starts with no working directory to read.
+pub fn run_rigger_from_deleted(dir: &Path, args: &[&str]) -> Output {
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
+    let rigger = rigger_command(dir, args, &[], state.path());
+    let mut shell = Command::new("sh");
+    shell
+        .args(["-c", r#"cd "$1" && rmdir "$1" && shift && exec "$@""#, "sh"])
+        .arg(dir)
+        .arg(rigger.get_program())
+        .args(rigger.get_args());
+    for (name, value) in rigger.get_envs() {
+        match value {
+            Some(value) => shell.env(name, value),
+            None => shell.env_remove(name),
+        };
+    }
+    shell.output().expect("the shell runs the rigger binary")
+}
+
 /// `rigger emit <typ> <json>` in `root`, asserting it succeeds.
 pub fn emit(root: &Path, typ: &str, json: &str) {
     let (_o, err, ok) = run_rigger(root, &["emit", typ, json]);
