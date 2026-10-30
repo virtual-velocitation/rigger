@@ -1222,7 +1222,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-beb4e5be1b10",
+    "id": "dup-9701ca5fcf49",
     "classification": "semantic",
     "sites": [
       {
@@ -2039,6 +2039,11 @@
         "file": "src/cli/setup.rs",
         "name": "\"`sh .rigger/gates/red-before-green.sh`\"",
         "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\"Once these checks have run, a later commit or an amend re-runs only what its new \\\n             diff can change: a diff that touches only comments, doc comments or Markdown \\\n             re-runs `cargo fmt --all --check`, the default-lane clippy line, `sh \\\n             .rigger/gates/audit.sh` with `git status --porcelain` empty and the root tests that \\\n             read a checked-in file as text; any other hunk re-runs the full list.\"",
+        "content_hash": "25597419b8dbb616"
       },
       {
         "file": "src/cli/setup.rs",
@@ -4217,7 +4222,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 598 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 599 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

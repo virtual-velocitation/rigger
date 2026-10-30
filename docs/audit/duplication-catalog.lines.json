@@ -1150,7 +1150,7 @@
     ]
   },
   {
-    "id": "dup-beb4e5be1b10",
+    "id": "dup-9701ca5fcf49",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1949,38 +1949,43 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4219,
-        "end_line": 4219
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 4221,
-        "end_line": 4221
-      },
-      {
-        "file": "src/cli/setup.rs",
         "start_line": 4222,
         "end_line": 4222
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4223,
-        "end_line": 4223
+        "start_line": 4224,
+        "end_line": 4224
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4243,
-        "end_line": 4243
+        "start_line": 4225,
+        "end_line": 4225
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4246,
-        "end_line": 4246
+        "start_line": 4226,
+        "end_line": 4226
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 4248,
-        "end_line": 4248
+        "start_line": 4239,
+        "end_line": 4239
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 4252,
+        "end_line": 4252
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 4255,
+        "end_line": 4255
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 4257,
+        "end_line": 4257
       },
       {
         "file": "src/cli/validate.rs",

@@ -4182,8 +4182,11 @@ mod tests {
     /// tree - by the package root, a compile-time include, a read of a literal path or a
     /// `tests/common` helper that resolves against the root or reads the root-relative path its
     /// caller hands it, each anchor the block's command names - listed by that command and run
-    /// on both lanes), the whole suite left to the gates, the audit's closing rule, the test homes
-    /// with the tool that searches them, the counted check - the roots a retired spelling is
+    /// once on the default lane, the lane-no-default gate running them on the final tree), the
+    /// re-run after a later commit or an amend (a comment, doc-comment or Markdown diff re-runs
+    /// fmt, the default-lane clippy line, the audit and the text-reading root tests; any other
+    /// hunk the full list), the whole suite left to the gates, the audit's closing rule, the test
+    /// homes with the tool that searches them, the counted check - the roots a retired spelling is
     /// counted over with the command that counts it - and the foreground wait for the long runs
     /// (the test binaries on both lanes and a lane script), polled to its exit line when the host
     /// backgrounds one. The block owes no record: no sentence walk and its generators, no
@@ -4231,7 +4234,13 @@ mod tests {
              \"read_audit_record\") || index($0, \"production_sources\") || index($0, \
              \"collect_rs_files\") || index($0, \"collect_files\") || index($0, \
              \"for_each_rs_file\")",
-            "run it again with `xargs cargo test --no-default-features` as its last stage",
+            "which lists them and runs them in one invocation, on the default lane alone, since \
+             the lane-no-default gate runs them on the final tree:",
+            "Once these checks have run, a later commit or an amend re-runs only what its new \
+             diff can change: a diff that touches only comments, doc comments or Markdown \
+             re-runs `cargo fmt --all --check`, the default-lane clippy line, `sh \
+             .rigger/gates/audit.sh` with `git status --porcelain` empty and the root tests that \
+             read a checked-in file as text; any other hunk re-runs the full list.",
             "The whole workspace suite on both lanes is the test and lane-no-default gates' run, \
              not yours",
             "`every_open_cluster_is_dispositioned`",
@@ -4254,6 +4263,12 @@ mod tests {
                 "the hand-over block must say {wanted:?}"
             );
         }
+        assert_eq!(
+            block.matches("--no-default-features").count(),
+            2,
+            "the no-default lane runs only the clippy line and the touched binaries; the \
+             text-reading root tests run once, on the default lane"
+        );
         assert!(
             !block.contains("t='<phrase>'"),
             "the rule search runs a term pair, never one phrase as its one argument"
