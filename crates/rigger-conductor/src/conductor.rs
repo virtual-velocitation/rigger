@@ -37286,6 +37286,54 @@ mod tests {
         );
     }
 
+    /// A stage a landing makes ready joins the wave the landing happened in: `a` (fast) and `b`
+    /// (slow) start side by side at `max_parallel_units: 2`, and `c` needs one of them. When `c`
+    /// needs `a`, `a` landing frees a slot and makes `c` ready while `b` still runs, so `c`
+    /// starts before `b` ends instead of waiting for the next wave; when `c` needs `b`, it waits
+    /// for `b`. Driven through `run`, the wave loop `rigger run` drives.
+    #[test]
+    fn a_stage_a_landing_makes_ready_starts_in_that_wave_under_max_parallel_units() {
+        // (what `c` needs, whether `c` starts before `b` ends)
+        for (c_needs, starts_before_b_ends) in [("a", true), ("b", false)] {
+            let probe = OverlapProbe::new(&[("a", 50), ("b", 1500), ("c", 50)]);
+            let mut cfg = Config::default();
+            cfg.workflow.defaults.max_parallel_units = 2;
+            cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+            for (name, needs) in [("a", None), ("b", None), ("c", Some(c_needs))] {
+                cfg.agents.insert(name.into(), agent(name));
+                cfg.workflow.stages.insert(
+                    name.into(),
+                    Stage {
+                        name: name.into(),
+                        agent: name.into(),
+                        needs: needs.into_iter().map(String::from).collect(),
+                        gates: vec!["ok".into()],
+                        ..Default::default()
+                    },
+                );
+            }
+            let (rs, _) = run_logged(&cfg, &probe);
+            for name in ["a", "b", "c"] {
+                assert_eq!(
+                    rs.units[name].status,
+                    ledger::Status::Integrated,
+                    "c needs {c_needs}: {name} integrates"
+                );
+            }
+            let (_, b_end) = probe.window("b");
+            let (c_start, _) = probe.window("c");
+            assert_eq!(
+                c_start < b_end,
+                starts_before_b_ends,
+                "c needs {c_needs}: c starts while b still runs exactly when its need lands first"
+            );
+            assert!(
+                probe.peak() <= 2,
+                "c needs {c_needs}: the width bound holds"
+            );
+        }
+    }
+
     #[test]
     fn run_wave_leaves_a_stage_the_width_refuses_neither_terminal_nor_integrated_across_waves() {
         // Spec 102, criterion 1: a stage the width refuses is never failed. At
