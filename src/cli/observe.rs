@@ -643,6 +643,34 @@ mod tests {
         );
     }
 
+    /// `rigger watch` prints no line for a run tip the remote does not have (a run never pushes
+    /// mid-run, so there is no CI to read), still notes every other `gh` failure as before, and
+    /// notes nothing for a CI that reads.
+    #[test]
+    fn an_unpushed_run_tip_notes_nothing_and_every_other_gh_failure_still_notes() {
+        let checks = r#"{"check_runs":[{"name":"build-test","conclusion":"success"}]}"#;
+        for (outcome, read, expected) in [
+            (
+                "unpushed tip",
+                Err("gh: No commit found for SHA: 0123abcd (HTTP 422)\n"),
+                None,
+            ),
+            (
+                "other gh failure",
+                Err("gh: HTTP 401: Bad credentials\n"),
+                Some("rigger: watch: CI not read: gh api failed: gh: HTTP 401: Bad credentials"),
+            ),
+            ("CI read", Ok(checks), None),
+        ] {
+            let ci = ci_probe_from_gh_read("0123abcd", read);
+            assert_eq!(
+                unread_ci_note(&ci, &mut None).as_deref(),
+                expected,
+                "{outcome}: {ci:?}"
+            );
+        }
+    }
+
     /// Spec 69, criterion 4: `dash_status_line` renders each [`dash::DashStatus`] outcome to
     /// the EXACT text `rigger status` prints - `Absent` prints nothing (today's silent
     /// no-recorded-dash case), `Serving` prints the unchanged `dashboard: <url>` line, a
